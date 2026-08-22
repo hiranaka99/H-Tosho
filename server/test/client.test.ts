@@ -244,4 +244,22 @@ describe('KavitaClient', () => {
       lockCover: true,
     });
   });
+
+  it('targets the correct Kavita library scan endpoints', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = async (input) => {
+      urls.push(String(input));
+      return Response.json({ ok: true });
+    };
+
+    const client = new KavitaClient('https://kavita.example', 'secret');
+    await client.scanLibrary(7);
+    await client.scanAllLibraries();
+
+    // A single-library scan is a query-parameter call; there is no /scan/{id} route.
+    assert.deepEqual(urls, [
+      'https://kavita.example/api/Library/scan?libraryId=7',
+      'https://kavita.example/api/Library/scan-all',
+    ]);
+  });
 });

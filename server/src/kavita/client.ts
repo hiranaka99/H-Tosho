@@ -363,14 +363,14 @@ export class KavitaClient {
     return fetchBuffer(url, { headers: { 'User-Agent': 'H-Tosho/1.0' } });
   }
 
-  /** POST /api/Library/scan/{id} - rescan a single library for new media. */
+  /** POST /api/Library/scan?libraryId={id} - rescan a single library for new media. */
   async scanLibrary(libraryId: number): Promise<void> {
-    await this.postJson(`/Library/scan/${libraryId}`, {}, `Scan library ${libraryId}`);
+    await this.postJson(`/Library/scan?libraryId=${encodeURIComponent(libraryId)}`, {}, `Scan library ${libraryId}`);
   }
 
-  /** POST /api/Library/scan - rescan all libraries for new media. */
+  /** POST /api/Library/scan-all - rescan all libraries for new media. */
   async scanAllLibraries(): Promise<void> {
-    await this.postJson('/Library/scan', {}, 'Scan all libraries');
+    await this.postJson('/Library/scan-all', {}, 'Scan all libraries');
   }
 }
 
