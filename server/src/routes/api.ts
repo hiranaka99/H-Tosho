@@ -371,8 +371,23 @@ api.post('/doujin/search', async (c) => {
   const provider = getDoujinProvider(body.source);
   if (!provider) return c.json({ error: `Unknown source: ${body.source}` }, 400);
   try {
-    const results = await provider.search(body.query, 24);
+    // Request the full result set (both providers cap internally at ~1000).
+    const results = await provider.search(body.query, 1000);
     return c.json(results);
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
+/** Autocomplete tag/artist suggestions for a doujinshi source search box. */
+api.post('/doujin/suggestions', async (c) => {
+  const body = (await c.req.json()) as { source: string; query: string };
+  if (!body.source || !body.query?.trim()) return c.json({ error: 'source and query are required' }, 400);
+  const provider = getDoujinProvider(body.source);
+  if (!provider) return c.json({ error: `Unknown source: ${body.source}` }, 400);
+  if (typeof provider.suggest !== 'function') return c.json([]);
+  try {
+    return c.json(await provider.suggest(body.query, 10));
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

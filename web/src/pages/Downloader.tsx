@@ -16,15 +16,35 @@ import {
   Languages,
   FileArchive,
   FolderOpen,
+  X,
+  ArrowRight,
+  ExternalLink,
+  BookOpen,
+  Users,
+  Layers,
+  Star,
+  Tags,
 } from 'lucide-react';
-import { api, type DoujinSource, type DoujinSearchResult, type DownloadTask } from '../lib/api';
-import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, EmptyState, Spinner, ProgressBar } from '../components/ui';
+import { api, type DoujinSource, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
+import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, EmptyState, Spinner, ProgressBar, Dialog, DialogContent } from '../components/ui';
 import { cn, timeAgo } from '../lib/utils';
 
 const SOURCES: { id: DoujinSource; label: string }[] = [
   { id: 'hitomi', label: 'Hitomi.la' },
   { id: 'nhentai', label: 'NHentai' },
 ];
+
+/** Badge color per suggestion tag type (mirrors the NHentai search dropdown). */
+const SUGG_TYPE_STYLES: Record<string, string> = {
+  artist: 'bg-violet-500/20 text-violet-300',
+  group: 'bg-amber-500/25 text-amber-300',
+  character: 'bg-pink-500/20 text-pink-300',
+  parody: 'bg-blue-500/20 text-blue-300',
+  series: 'bg-cyan-500/20 text-cyan-300',
+  language: 'bg-emerald-500/20 text-emerald-300',
+  category: 'bg-rose-500/20 text-rose-300',
+  tag: 'bg-slate-500/25 text-slate-300',
+};
 
 function SourceBadge({ source }: { source: DoujinSource }) {
   const color = source === 'nhentai' ? '#e91e63' : '#ff5722';
@@ -36,11 +56,12 @@ function SourceBadge({ source }: { source: DoujinSource }) {
   );
 }
 
-function Cover({ url, title }: { url?: string | null; title: string }) {
+function Cover({ url, title, className }: { url?: string | null; title: string; className?: string }) {
   const [failed, setFailed] = React.useState(false);
+  const size = className ?? 'h-40 w-full';
   if (!url || failed) {
     return (
-      <div className="flex h-40 w-full items-center justify-center bg-surface-2 text-muted">
+      <div className={cn('flex items-center justify-center bg-surface-2 text-muted', size)}>
         <ImageOff className="h-6 w-6" />
       </div>
     );
@@ -52,7 +73,7 @@ function Cover({ url, title }: { url?: string | null; title: string }) {
       referrerPolicy="no-referrer"
       loading="lazy"
       onError={() => setFailed(true)}
-      className="h-40 w-full object-cover"
+      className={cn('object-cover', size)}
     />
   );
 }
@@ -76,12 +97,23 @@ function DownloadStatusBadge({ status }: { status: string }) {
 
 // ---------------- Gallery card ----------------
 
-function GalleryCard({ item, onDownload, downloading }: { item: DoujinSearchResult; onDownload: () => void; downloading: boolean }) {
+function GalleryCard({ item, onOpen, onDownload, downloading }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean }) {
   const tags = [...item.artists, ...item.tags].slice(0, 6);
   return (
-    <div className="group flex flex-col overflow-hidden rounded-lg border border-border bg-surface transition-shadow hover:shadow-md">
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      className="group flex cursor-pointer flex-col overflow-hidden rounded-lg border border-border bg-surface transition-all hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+    >
       <div className="relative">
-        <Cover url={item.coverUrl} title={item.title} />
+        <Cover url={item.coverUrl} title={item.title} className="aspect-[3/4] w-full" />
         {item.language && (
           <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">
             <Languages className="h-3 w-3" /> {item.language}
@@ -90,6 +122,11 @@ function GalleryCard({ item, onDownload, downloading }: { item: DoujinSearchResu
         {item.pageCount ? (
           <span className="absolute right-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">{item.pageCount}p</span>
         ) : null}
+        <div className="pointer-events-none absolute inset-0 flex items-end justify-center bg-gradient-to-t from-black/80 via-black/10 to-transparent opacity-0 transition-opacity group-hover:opacity-100">
+          <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-white">
+            <Search className="h-3 w-3" /> Details
+          </span>
+        </div>
       </div>
       <div className="flex flex-1 flex-col gap-2 p-3">
         <p className="line-clamp-2 text-sm font-medium" title={item.title}>{item.title}</p>
@@ -102,12 +139,150 @@ function GalleryCard({ item, onDownload, downloading }: { item: DoujinSearchResu
         )}
         <div className="mt-auto flex items-center justify-between pt-1">
           <SourceBadge source={item.source} />
-          <Button size="sm" onClick={onDownload} disabled={downloading}>
+          <Button size="sm" onClick={(e) => { e.stopPropagation(); onDownload(); }} disabled={downloading}>
             {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <DownloadIcon className="h-3.5 w-3.5" />} Download
           </Button>
         </div>
       </div>
     </div>
+  );
+}
+
+// ---------------- Gallery detail modal ----------------
+
+const TAG_GROUP_STYLES: Record<string, string> = {
+  Artists: 'bg-violet-500/20 text-violet-300',
+  Groups: 'bg-amber-500/25 text-amber-300',
+  Characters: 'bg-pink-500/20 text-pink-300',
+  Series: 'bg-cyan-500/20 text-cyan-300',
+  Tags: 'bg-slate-500/25 text-slate-300',
+};
+
+function TagList({ label, items, icon }: { label: string; items?: string[]; icon?: React.ReactNode }) {
+  if (!items?.length) return null;
+  const style = Object.entries(TAG_GROUP_STYLES).find(([k]) => label.startsWith(k))?.[1] ?? 'bg-slate-500/25 text-slate-300';
+  return (
+    <div className="flex flex-col gap-1.5">
+      <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+        {icon} {label}
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {items.map((t, i) => (
+          <span key={i} className={cn('rounded-full px-2.5 py-1 text-xs', style)}>
+            {t}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MetaItem({ label, value }: { label: string; value?: string | number | null }) {
+  if (value === undefined || value === null || value === '') return null;
+  return (
+    <div className="flex flex-col gap-0.5 rounded-md border border-border bg-surface-2/50 px-3 py-2">
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-muted">{label}</span>
+      <span className="text-sm font-medium">{value}</span>
+    </div>
+  );
+}
+
+function GalleryDetailModal({ item, onClose, onDownload, downloading }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; downloading: boolean }) {
+  const { data: gallery, isPending, isError, error } = useQuery({
+    queryKey: ['doujin-gallery', item.source, item.galleryId],
+    queryFn: () => api.doujinGallery(item.source, item.galleryId),
+    staleTime: 5 * 60_000,
+  });
+
+  const g = gallery;
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-2xl">
+        <div className="flex max-h-[85vh] gap-5 overflow-y-auto p-5">
+          {/* Cover */}
+          <div className="w-40 shrink-0 sm:w-48">
+            <Cover url={g?.coverUrl ?? item.coverUrl} title={item.title} className="aspect-[3/4] w-full rounded-md border border-border" />
+            {g?.url && (
+              <a
+                href={g.url}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 inline-flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-primary"
+              >
+                <ExternalLink className="h-3 w-3" /> View on {item.source === 'nhentai' ? 'NHentai' : 'Hitomi.la'}
+              </a>
+            )}
+          </div>
+
+          {/* Details */}
+          <div className="flex min-w-0 flex-1 flex-col gap-4">
+            <div className="min-w-0 pr-6">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <SourceBadge source={item.source} />
+                {g?.language && (
+                  <Badge tone="info"><Languages className="h-3 w-3" /> {g.language}</Badge>
+                )}
+              </div>
+              <h2 className="text-lg font-semibold leading-snug">{g?.title ?? item.title}</h2>
+            </div>
+
+            {isPending && (
+              <div className="flex items-center gap-2 py-6 text-sm text-muted">
+                <Spinner /> Loading gallery details…
+              </div>
+            )}
+
+            {isError && (
+              <div className="rounded-md bg-danger/10 p-3 text-sm text-danger">
+                Failed to load details: {error instanceof Error ? error.message : String(error)}
+              </div>
+            )}
+
+            {g && (
+              <>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  <MetaItem label="Pages" value={g.pageCount ? `${g.pageCount} pages` : null} />
+                  <MetaItem label="Language" value={g.language} />
+                  <MetaItem label="Gallery ID" value={g.galleryId} />
+                </div>
+
+                <TagList label="Artists" items={g.artists ?? item.artists} icon={<Users className="h-3 w-3" />} />
+                <TagList label="Groups" items={g.groups} icon={<Layers className="h-3 w-3" />} />
+                <TagList label="Characters" items={g.genres} icon={<Star className="h-3 w-3" />} />
+                {g.series && (
+                  <div className="flex flex-col gap-1.5">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+                      <BookOpen className="h-3 w-3" /> Series
+                    </p>
+                    <span className="w-fit rounded-full bg-cyan-500/20 px-2.5 py-1 text-xs text-cyan-300">{g.series}</span>
+                  </div>
+                )}
+                {g.tags?.length ? (
+                  <TagList label={`Tags (${g.tags.length})`} items={g.tags} icon={<Tags className="h-3 w-3" />} />
+                ) : null}
+
+                <div className="mt-auto flex items-center justify-end gap-2 pt-2">
+                  <Button variant="ghost" onClick={onClose}>
+                    <X className="h-4 w-4" /> Close
+                  </Button>
+                  <Button onClick={onDownload} disabled={downloading}>
+                    {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <DownloadIcon className="h-4 w-4" />} Download
+                  </Button>
+                </div>
+              </>
+            )}
+
+            {!g && (
+              <div className="mt-auto flex items-center justify-end gap-2 pt-2">
+                <Button onClick={onDownload} disabled={downloading}>
+                  {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <DownloadIcon className="h-4 w-4" />} Download
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -177,6 +352,66 @@ export function Downloader() {
   const [source, setSource] = React.useState<DoujinSource>('nhentai');
   const [query, setQuery] = React.useState('');
   const [searchKey, setSearchKey] = React.useState<string | null>(null);
+  const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
+
+  // Autocomplete dropdown state (NHentai tag/artist suggestions).
+  const [suggestions, setSuggestions] = React.useState<DoujinSuggestion[]>([]);
+  const [suggLoading, setSuggLoading] = React.useState(false);
+  const [inputFocused, setInputFocused] = React.useState(false);
+  const [highlight, setHighlight] = React.useState(-1);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+
+  /**
+   * Extract the "active word" being typed at the caret so we can suggest tags for
+   * just that token (like nhentai.net), rather than the whole query string. This
+   * lets you build multi-tag filters such as `artist:"konboi" language:english`.
+   */
+  function activeSeed(): string {
+    const el = inputRef.current;
+    const full = el ? el.value : query;
+    const caret = el && document.activeElement === el ? (el.selectionStart ?? full.length) : full.length;
+    const before = full.slice(0, caret);
+    let idx = before.length;
+    while (idx > 0 && !/\s/.test(before[idx - 1])) idx--;
+    let seed = before.slice(idx);
+    if (seed.includes(':')) seed = seed.slice(seed.indexOf(':') + 1);
+    return seed.replace(/^[\s"']+|[\s"']+$/g, '');
+  }
+
+  // Debounced tag/artist autocomplete for the active token. Only NHentai implements
+  // `suggest`, so the dropdown stays empty for Hitomi (its search is unchanged).
+  React.useEffect(() => {
+    if (source !== 'nhentai') {
+      setSuggestions([]);
+      setSuggLoading(false);
+      return;
+    }
+    const seed = activeSeed();
+    if (seed.length < 2) {
+      setSuggestions([]);
+      setSuggLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSuggLoading(true);
+    const t = window.setTimeout(async () => {
+      try {
+        const res = await api.doujinSuggestions(source, seed);
+        if (!cancelled) {
+          setSuggestions(Array.isArray(res) ? res : []);
+          setHighlight(-1);
+        }
+      } catch {
+        if (!cancelled) setSuggestions([]);
+      } finally {
+        if (!cancelled) setSuggLoading(false);
+      }
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [query, source]);
 
   const { data: results, isFetching } = useQuery({
     queryKey: ['doujin-search', source, searchKey],
@@ -205,6 +440,58 @@ export function Downloader() {
     mutationFn: (id: number) => api.deleteDownload(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['downloads'] }),
   });
+
+  function selectSuggestion(s: DoujinSuggestion) {
+    const el = inputRef.current;
+    const q = s.filter ?? s.name;
+    const full = el ? el.value : query;
+    const caret = el && document.activeElement === el ? (el.selectionStart ?? full.length) : full.length;
+    const before = full.slice(0, caret);
+    let idx = before.length;
+    while (idx > 0 && !/\s/.test(before[idx - 1])) idx--;
+    const prefix = before.slice(0, idx);
+    const rest = full.slice(caret);
+    const needsLead = prefix.length > 0 && !/\s$/.test(prefix);
+    let newQuery = prefix + (needsLead ? ' ' : '') + q;
+    if (rest.trim().length > 0) {
+      newQuery += /\s$/.test(newQuery) || /^\s/.test(rest) ? rest : ` ${rest}`;
+    } else {
+      newQuery += ' '; // trailing space so the next tag can be typed immediately
+    }
+    setQuery(newQuery);
+    setSuggestions([]);
+    setHighlight(-1);
+    // Keep focus and park the caret after the inserted filter so more tags can be added.
+    requestAnimationFrame(() => {
+      const node = inputRef.current;
+      if (!node) return;
+      node.focus();
+      try {
+        node.setSelectionRange(newQuery.length, newQuery.length);
+      } catch {
+        /* ignore */
+      }
+    });
+  }
+
+  function onInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlight((h) => Math.min(suggestions.length - 1, h + 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlight((h) => (h <= 0 ? Math.max(0, suggestions.length - 1) : h - 1));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (highlight >= 0 && suggestions[highlight]) selectSuggestion(suggestions[highlight]);
+      else if (query.trim()) setSearchKey(query.trim());
+    } else if (e.key === 'Escape') {
+      setSuggestions([]);
+      setHighlight(-1);
+    }
+  }
+
+  const showDropdown = inputFocused && (suggestions.length > 0 || suggLoading);
 
   const runSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -244,7 +531,69 @@ export function Downloader() {
             </div>
             <div className="relative flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
-              <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by keyword, tag, artist, gallery ID or URL…" className="pl-9" />
+              <Input
+                ref={inputRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={onInputKeyDown}
+                onFocus={() => setInputFocused(true)}
+                onBlur={() => {
+                  setInputFocused(false);
+                  setHighlight(-1);
+                }}
+                placeholder="Search by keyword, tag, artist, gallery ID or URL…"
+                className="pl-9 pr-8"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery('')}
+                  title="Clear"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted hover:text-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+
+              {showDropdown && (
+                <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-border bg-surface shadow-xl">
+                  {suggLoading && suggestions.length === 0 ? (
+                    <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted">
+                      <Spinner /> Searching tags…
+                    </div>
+                  ) : (
+                    <div className="max-h-80 overflow-y-auto py-1">
+                      {suggestions.map((s, i) => (
+                        <button
+                          key={`${s.type}-${s.name}`}
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            selectSuggestion(s);
+                          }}
+                          onMouseEnter={() => setHighlight(i)}
+                          className={cn(
+                            'flex w-full items-center gap-2 px-3 py-2 text-left text-sm',
+                            i === highlight ? 'bg-surface-2' : 'hover:bg-surface-2',
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                              SUGG_TYPE_STYLES[s.type] ?? 'bg-slate-500/25 text-slate-300',
+                            )}
+                          >
+                            {s.type}
+                          </span>
+                          <span className="truncate">{s.name}</span>
+                          {typeof s.count === 'number' && <span className="text-xs text-muted">{s.count}</span>}
+                          <ArrowRight className="ml-auto h-3.5 w-3.5 shrink-0 text-muted" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <Button type="submit" disabled={isFetching || !query.trim()}>
               {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
@@ -261,20 +610,36 @@ export function Downloader() {
               <Spinner /> Searching {source === 'nhentai' ? 'NHentai' : 'Hitomi.la'}…
             </div>
           ) : results && results.length > 0 ? (
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-              {results.map((item) => (
-                <GalleryCard
-                  key={item.source + item.galleryId}
-                  item={item}
-                  downloading={startDownload.isPending && startDownload.variables?.galleryId === item.galleryId}
-                  onDownload={() => startDownload.mutate(item)}
-                />
-              ))}
-            </div>
+            <>
+              <p className="mb-3 text-xs text-muted">
+                {results.length} {results.length === 1 ? 'gallery' : 'galleries'} found on {source === 'nhentai' ? 'NHentai' : 'Hitomi.la'}
+              </p>
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+                {results.map((item) => (
+                  <GalleryCard
+                    key={item.source + item.galleryId}
+                    item={item}
+                    onOpen={() => setSelected(item)}
+                    downloading={startDownload.isPending && startDownload.variables?.galleryId === item.galleryId}
+                    onDownload={() => startDownload.mutate(item)}
+                  />
+                ))}
+              </div>
+            </>
           ) : (
             <EmptyState icon={<Search className="h-8 w-8" />} title="No results" description={`No galleries found for “${searchKey}” on ${source === 'nhentai' ? 'NHentai' : 'Hitomi.la'}.`} />
           )}
         </div>
+      )}
+
+      {/* Gallery detail modal */}
+      {selected && (
+        <GalleryDetailModal
+          item={selected}
+          onClose={() => setSelected(null)}
+          downloading={startDownload.isPending && startDownload.variables?.galleryId === selected.galleryId}
+          onDownload={() => startDownload.mutate(selected)}
+        />
       )}
 
       {/* Download manager */}

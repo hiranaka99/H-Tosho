@@ -276,6 +276,8 @@ export interface DownloaderSettings {
   requestDelayMs: number;
   /** Trigger a Kavita library scan after a download completes. */
   autoSyncKavita: boolean;
+  /** Optional nhentai.net API key for higher rate limits. Falls back to the NHENTAI_API_KEY env var when empty. */
+  nhentaiApiKey: string;
 }
 
 export const DEFAULT_DOWNLOADER: DownloaderSettings = {
@@ -285,6 +287,7 @@ export const DEFAULT_DOWNLOADER: DownloaderSettings = {
   maxImageConcurrency: 4,
   requestDelayMs: 150,
   autoSyncKavita: false,
+  nhentaiApiKey: '',
 };
 
 export function getDownloaderSettings(): DownloaderSettings {

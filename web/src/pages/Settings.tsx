@@ -352,6 +352,12 @@ function DownloaderSettingsCard() {
           </div>
         </div>
 
+        <div className="flex flex-col gap-1">
+          <Label>NHentai API key</Label>
+          <Input type="password" value={dlSettings.nhentaiApiKey} onChange={(e) => setDlSettings({ ...dlSettings, nhentaiApiKey: e.target.value })} placeholder="optional — NHENTAI_API_KEY env var is used as a fallback" autoComplete="off" />
+          <p className="text-xs text-muted">Optional key from nhentai.net for higher API rate limits. Leave blank to use the NHENTAI_API_KEY environment variable, if set.</p>
+        </div>
+
         <div className="flex items-center justify-between rounded-md border border-border bg-surface-2 p-3">
           <div>
             <p className="text-sm">Auto-sync Kavita</p>

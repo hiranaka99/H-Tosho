@@ -333,37 +333,42 @@ export const hitomiProvider: DoujinProvider = {
     const ids = await searchGalleryIds(q, version);
     if (!ids.length) return [];
 
-    // Hydrate the top N results with metadata (one request each). Fetch a few
-    // extra so that failed lookups don't shrink the page below `limit`.
-    const candidates = ids.slice(0, Math.min(limit + 6, 40));
+    // Hydrate the top N results with metadata (one request each), in bounded
+    // batches so a large result set doesn't open thousands of concurrent
+    // connections. `ids` is newest-first, so batching preserves recency order.
+    const target = Math.max(limit, 1);
+    const candidates = ids.slice(0, target);
     const out: DoujinSearchResult[] = [];
-    await Promise.all(
-      candidates.map(async (id) => {
-        if (out.length >= limit) return;
-        try {
-          const info = parseGalleryInfo(await fetchText(`${API_BASE}/galleries/${id}.js`));
-          const gg = await loadGG();
-          const files: HitomiFile[] = info.files ?? [];
-          out.push({
-            source: 'hitomi',
-            galleryId: String(id),
-            title: stripTags(info.title) || `Gallery ${id}`,
-            coverUrl: coverUrlFor(gg, files),
-            language: typeof info.language === 'string' && info.language ? info.language : undefined,
-            tags: (info.tags ?? []).map(tagValue).filter(Boolean).slice(0, 24),
-            artists: (info.artists ?? []).map(tagValue).filter(Boolean).slice(0, 8),
-            pageCount: files.length || undefined,
-            url: `${BASE}/${id}`,
-          });
-        } catch {
-          /* skip failed lookups */
-        }
-      }),
-    );
+    const BATCH = 25;
+    for (let i = 0; i < candidates.length && out.length < target; i += BATCH) {
+      await Promise.all(
+        candidates.slice(i, i + BATCH).map(async (id) => {
+          if (out.length >= target) return;
+          try {
+            const info = parseGalleryInfo(await fetchText(`${API_BASE}/galleries/${id}.js`));
+            const gg = await loadGG();
+            const files: HitomiFile[] = info.files ?? [];
+            out.push({
+              source: 'hitomi',
+              galleryId: String(id),
+              title: stripTags(info.title) || `Gallery ${id}`,
+              coverUrl: coverUrlFor(gg, files),
+              language: typeof info.language === 'string' && info.language ? info.language : undefined,
+              tags: (info.tags ?? []).map(tagValue).filter(Boolean).slice(0, 24),
+              artists: (info.artists ?? []).map(tagValue).filter(Boolean).slice(0, 8),
+              pageCount: files.length || undefined,
+              url: `${BASE}/${id}`,
+            });
+          } catch {
+            /* skip failed lookups */
+          }
+        }),
+      );
+    }
 
     // Preserve recency order (ids are newest-first).
     const byId = new Map(out.map((r) => [r.galleryId, r]));
-    return ids.map((id) => byId.get(String(id))).filter((r): r is DoujinSearchResult => !!r).slice(0, limit);
+    return ids.map((id) => byId.get(String(id))).filter((r): r is DoujinSearchResult => !!r).slice(0, target);
   },
 
   async getGallery(idOrUrl: string): Promise<DoujinGallery> {

@@ -6,6 +6,19 @@
 
 export type DoujinSource = 'hitomi' | 'nhentai';
 
+/** A tag/artist/group autocomplete suggestion (as shown by the source's own search box). */
+export interface DoujinSuggestion {
+  source: DoujinSource;
+  /** Tag category, e.g. artist, group, character, series, tag, language… */
+  type: string;
+  name: string;
+  /** Gallery count for this tag (when the source exposes it). */
+  count?: number;
+  /** Query fragment that filters to this tag on the source, e.g. `artist:konboi`. */
+  filter?: string;
+  url?: string;
+}
+
 export interface DoujinSearchResult {
   source: DoujinSource;
   galleryId: string;
@@ -68,4 +81,6 @@ export interface DoujinProvider {
   getGallery(idOrUrl: string): Promise<DoujinGallery>;
   /** Keyword/tag/artist search. */
   search(query: string, limit?: number): Promise<DoujinSearchResult[]>;
+  /** Optional tag/artist autocomplete suggestions for a query prefix. */
+  suggest?(query: string, limit?: number): Promise<DoujinSuggestion[]>;
 }

@@ -146,6 +146,15 @@ export interface DoujinSearchResult {
   pageCount?: number | null;
 }
 
+export interface DoujinSuggestion {
+  source: DoujinSource;
+  type: string;
+  name: string;
+  count?: number;
+  filter?: string;
+  url?: string;
+}
+
 export interface DoujinGallery {
   source: DoujinSource;
   galleryId: string;
@@ -155,6 +164,10 @@ export interface DoujinGallery {
   series?: string | null;
   artists: string[];
   tags: string[];
+  /** Group/circle names (Hitomi). */
+  groups?: string[];
+  /** Characters / genres (Hitomi maps characters here). */
+  genres?: string[];
   pageCount: number;
   url?: string;
 }
@@ -166,6 +179,7 @@ export interface DownloaderSettings {
   maxImageConcurrency: number;
   requestDelayMs: number;
   autoSyncKavita: boolean;
+  nhentaiApiKey: string;
 }
 
 export type DownloadStatus = 'queued' | 'downloading' | 'completed' | 'failed' | 'paused';
@@ -272,6 +286,11 @@ export const api = {
   doujinProviders: () => request<DoujinProvider[]>('/doujin/providers'),
   doujinSearch: (source: DoujinSource, query: string) =>
     request<DoujinSearchResult[]>('/doujin/search', {
+      method: 'POST',
+      body: JSON.stringify({ source, query }),
+    }),
+  doujinSuggestions: (source: DoujinSource, query: string) =>
+    request<DoujinSuggestion[]>('/doujin/suggestions', {
       method: 'POST',
       body: JSON.stringify({ source, query }),
     }),

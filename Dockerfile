@@ -24,6 +24,11 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV HTOSHO_DATA_DIR=/data
 
+# curl is used by the NHentai tag-autocomplete provider (Cloudflare lets curl
+# through where Node's fetch gets challenged).
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # npm workspaces hoist all runtime dependencies to the root node_modules.
 COPY package.json ./
 COPY --from=build /app/node_modules ./node_modules
