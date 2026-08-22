@@ -180,6 +180,8 @@ export interface DownloaderSettings {
   requestDelayMs: number;
   autoSyncKavita: boolean;
   nhentaiApiKey: string;
+  /** Tag names to exclude from all NHentai searches (e.g. "loli", "big breasts"). */
+  nhentaiBannedTags: string[];
 }
 
 export type DownloadStatus = 'queued' | 'downloading' | 'completed' | 'failed' | 'paused';

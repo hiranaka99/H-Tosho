@@ -43,6 +43,36 @@ function getApiKey(): string {
   return process.env.NHENTAI_API_KEY?.trim() || '';
 }
 
+/**
+ * Build the NHentai query fragment that excludes every configured banned tag.
+ * Returns a space-separated list of `-"<tag>"` terms (empty when nothing is set).
+ *
+ * NHentai's search grammar negates a term with a leading `-`. Quoting the name
+ * makes multi-word tags (e.g. "big breasts") match as a single tag rather than
+ * excluding anything containing either word. A direct gallery-ID lookup is an
+ * explicit request, so banned tags only affect keyword/tag searches.
+ */
+function buildBannedExclusions(): string {
+  let tags: unknown;
+  try {
+    tags = getDownloaderSettings().nhentaiBannedTags;
+  } catch {
+    return '';
+  }
+  if (!Array.isArray(tags)) return '';
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  for (const raw of tags) {
+    const name = String(raw ?? '').trim().replace(/"/g, '');
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    parts.push(`-"${name}"`);
+  }
+  return parts.join(' ');
+}
+
 function headers(): Record<string, string> {
   const h: Record<string, string> = {
     'User-Agent': UA,
@@ -234,6 +264,12 @@ export const nhentaiProvider: DoujinProvider = {
       ];
     }
 
+    // Append configured banned-tag exclusions so galleries carrying any of them
+    // never show up in keyword/tag searches. (A bare gallery-ID lookup above is
+    // an explicit request and intentionally skips this filter.)
+    const banned = buildBannedExclusions();
+    const searchQuery = banned ? `${q} ${banned}` : q;
+
     const cdn = await getCdn();
     const want = Math.max(limit, 1);
     // The API caps `limit` at 50 per request and paginates via `page`. Walk the
@@ -248,7 +284,7 @@ export const nhentaiProvider: DoujinProvider = {
 
     let page = 1;
     do {
-      const url = `${BASE}/api/v2/search?query=${encodeURIComponent(q)}&limit=50&page=${page}`;
+      const url = `${BASE}/api/v2/search?query=${encodeURIComponent(searchQuery)}&limit=50&page=${page}`;
       // Retry transient rate limits (429) / server errors with backoff so a
       // multi-page search doesn't fail on a single throttled request.
       interface SearchFetchResult { status: number; data: ApiSearchResponse | null }

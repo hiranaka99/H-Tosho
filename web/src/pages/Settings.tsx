@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download } from 'lucide-react';
+import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus } from 'lucide-react';
 import { api, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings } from '../lib/api';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge } from '../components/ui';
 import { cn } from '../lib/utils';
@@ -297,6 +297,51 @@ export function Settings() {
   );
 }
 
+/** Tag list editor for NHentai banned tags. Enter adds a tag; comma-separated input adds several at once. */
+function BannedTagsEditor({ value, onChange }: { value: string[]; onChange: (tags: string[]) => void }) {
+  const [draft, setDraft] = React.useState('');
+  const addTag = () => {
+    const parts = draft.split(',').map((s) => s.trim().replace(/^"+|"+$/g, '')).filter(Boolean);
+    if (!parts.length) return;
+    const next = [...value];
+    for (const p of parts) {
+      if (!next.some((v) => v.toLowerCase() === p.toLowerCase())) next.push(p);
+    }
+    onChange(next);
+    setDraft('');
+  };
+  return (
+    <div className="flex flex-col gap-1">
+      <Label>NHentai banned tags</Label>
+      <p className="text-xs text-muted">Galleries carrying any of these tags never appear in NHentai searches. Separate multiple tags with commas.</p>
+      {value.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 py-1">
+          {value.map((tag) => (
+            <span key={tag} className="inline-flex items-center gap-1 rounded-full bg-danger/15 px-2 py-0.5 text-xs font-medium text-danger">
+              {tag}
+              <button type="button" onClick={() => onChange(value.filter((t) => t !== tag))} className="rounded p-0.5 hover:bg-danger/30" aria-label={`Remove ${tag}`}>
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <Input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }}
+          placeholder="e.g. loli, big breasts, nsfw"
+          className="flex-1"
+        />
+        <Button size="sm" variant="outline" onClick={addTag} disabled={!draft.trim()}>
+          <Plus className="h-3.5 w-3.5" /> Add
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function DownloaderSettingsCard() {
   const qc = useQueryClient();
   const dl = useQuery({ queryKey: ['downloader-settings'], queryFn: api.downloaderSettings });
@@ -357,6 +402,8 @@ function DownloaderSettingsCard() {
           <Input type="password" value={dlSettings.nhentaiApiKey} onChange={(e) => setDlSettings({ ...dlSettings, nhentaiApiKey: e.target.value })} placeholder="optional — NHENTAI_API_KEY env var is used as a fallback" autoComplete="off" />
           <p className="text-xs text-muted">Optional key from nhentai.net for higher API rate limits. Leave blank to use the NHENTAI_API_KEY environment variable, if set.</p>
         </div>
+
+        <BannedTagsEditor value={dlSettings.nhentaiBannedTags ?? []} onChange={(tags) => setDlSettings({ ...dlSettings, nhentaiBannedTags: tags })} />
 
         <div className="flex items-center justify-between rounded-md border border-border bg-surface-2 p-3">
           <div>

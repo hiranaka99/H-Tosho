@@ -278,6 +278,8 @@ export interface DownloaderSettings {
   autoSyncKavita: boolean;
   /** Optional nhentai.net API key for higher rate limits. Falls back to the NHENTAI_API_KEY env var when empty. */
   nhentaiApiKey: string;
+  /** Tag names to exclude from all NHentai searches (e.g. "loli", "big breasts"). */
+  nhentaiBannedTags: string[];
 }
 
 export const DEFAULT_DOWNLOADER: DownloaderSettings = {
@@ -288,13 +290,17 @@ export const DEFAULT_DOWNLOADER: DownloaderSettings = {
   requestDelayMs: 150,
   autoSyncKavita: false,
   nhentaiApiKey: '',
+  nhentaiBannedTags: [],
 };
 
 export function getDownloaderSettings(): DownloaderSettings {
   const db = getDb();
   const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'downloader')).get();
   if (!row) return { ...DEFAULT_DOWNLOADER };
-  return { ...DEFAULT_DOWNLOADER, ...(JSON.parse(row.valueJson) as Partial<DownloaderSettings>) };
+  const s: DownloaderSettings = { ...DEFAULT_DOWNLOADER, ...(JSON.parse(row.valueJson) as Partial<DownloaderSettings>) };
+  // Guard against stale/malformed rows so callers always get a string array.
+  if (!Array.isArray(s.nhentaiBannedTags)) s.nhentaiBannedTags = [];
+  return s;
 }
 
 export function setDownloaderSettings(s: DownloaderSettings): void {
