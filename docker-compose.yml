@@ -1,0 +1,17 @@
+services:
+  h-tosho:
+    build: .
+    image: h-tosho:latest
+    container_name: h-tosho
+    ports:
+      - "8787:8787"
+    environment:
+      - PORT=8787
+      - HOST=0.0.0.0
+      - HTOSHO_DATA_DIR=/data
+    volumes:
+      - h-tosho-data:/data
+    restart: unless-stopped
+
+volumes:
+  h-tosho-data:

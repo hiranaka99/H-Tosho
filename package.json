@@ -1,0 +1,22 @@
+{
+  "name": "h-tosho",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Metadata fetcher & manager for Kavita (AniList, MangaUpdates, MangaDex, MyAnimeList, Bangumi)",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c cyan,magenta \"npm run dev --workspace @h-tosho/server\" \"npm run dev --workspace @h-tosho/web\"",
+    "build": "npm run build --workspace @h-tosho/web && npm run build --workspace @h-tosho/server",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "start": "npm run build && node server/dist/index.js"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

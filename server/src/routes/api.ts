@@ -1,0 +1,494 @@
+import { Hono } from 'hono';
+import { eq } from 'drizzle-orm';
+import { getDb, schema } from '../db/index.js';
+import { KavitaClient } from '../kavita/client.js';
+import { KAVITA_OPENAPI_VERSION, type KavitaLibrary, type KavitaSeries } from '../kavita/types.js';
+import { getProvider } from '../providers/registry.js';
+import {
+  getAggregationOptions,
+  getCredentialMap,
+  getGlobalFieldConfig,
+  getKavitaConnection,
+  getLibraryOverride,
+  getNotificationSettings,
+  getPollInterval,
+  getProviderPriorities,
+  getProviderSettings,
+  type AggregationOptions,
+  setAggregationOptions,
+  setGlobalFieldConfig,
+  setKavitaConnection,
+  setLibraryOverride,
+  setNotificationSettings,
+  setPollInterval,
+  setProviderPriorities,
+  setProviderSetting,
+} from '../services/settings.js';
+import { jobQueue, type JobType } from '../jobs/queue.js';
+import { autoMatch, fetchAggregatedMetadata } from '../match/autoMatcher.js';
+import { applyToKavita, fetchCover } from '../services/sync.js';
+import { testNotification } from '../notify/dispatcher.js';
+import { getDownloaderSettings, setDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
+import { downloadQueue } from '../downloader/engine.js';
+import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
+import type { DoujinSource } from '../downloader/types.js';
+
+const CREDENTIAL_FIELDS: Record<string, { key: string; label: string }[]> = {
+  myanimelist: [{ key: 'clientId', label: 'Client ID' }],
+};
+
+const FIELD_NAMES = [
+  'title',
+  'sortTitle',
+  'summary',
+  'genres',
+  'tags',
+  'writers',
+  'artists',
+  'publishers',
+  'imprints',
+  'releaseDate',
+  'ageRating',
+  'language',
+  'status',
+  'rating',
+  'url',
+  'cover',
+] as const;
+
+function connectedClient(): KavitaClient | null {
+  const conn = getKavitaConnection();
+  if (!conn.baseUrl || !conn.apiKey) return null;
+  return new KavitaClient(conn.baseUrl, conn.apiKey);
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+export const api = new Hono();
+
+api.get('/health', (c) => c.json({ ok: true, name: 'h-tosho', time: new Date().toISOString() }));
+
+// ---------------- Kavita connection ----------------
+
+api.get('/kavita/status', async (c) => {
+  const conn = getKavitaConnection();
+  if (!conn.baseUrl || !conn.apiKey) return c.json({ configured: false });
+  try {
+    const info = await new KavitaClient(conn.baseUrl, conn.apiKey).testConnection();
+    return c.json({ configured: true, version: info.version, apiVersion: KAVITA_OPENAPI_VERSION, error: null });
+  } catch (e) {
+    return c.json({ configured: true, version: null, apiVersion: KAVITA_OPENAPI_VERSION, error: errMsg(e) });
+  }
+});
+
+api.post('/kavita/connection', async (c) => {
+  const body = (await c.req.json()) as { baseUrl: string; apiKey: string };
+  if (!body.baseUrl || !body.apiKey) return c.json({ error: 'baseUrl and apiKey are required' }, 400);
+  setKavitaConnection(body);
+  let test: string;
+  let connected: boolean;
+  try {
+    const info = await new KavitaClient(body.baseUrl, body.apiKey).testConnection();
+    test = `Connected (Kavita ${info.version})`;
+    connected = true;
+  } catch (e) {
+    test = 'Saved, but connection test failed: ' + errMsg(e);
+    connected = false;
+  }
+  return c.json({ saved: true, connected, test });
+});
+
+api.get('/kavita/libraries', async (c) => {
+  const client = connectedClient();
+  if (!client) return c.json({ error: 'Kavita not configured' }, 503);
+  try {
+    const libs = await client.getLibraries();
+    const rows = getDb().select().from(schema.seriesMatches).all();
+    const counts = new Map<number, { total: number; matched: number }>();
+    for (const lib of libs) {
+      const series = (await client.getSeries(lib.id)) as KavitaSeries[];
+      const matched = series.filter((s) => rows.some((r) => r.kavitaSeriesId === s.id && r.status === 'matched')).length;
+      counts.set(lib.id, { total: series.length, matched });
+    }
+    const out: (KavitaLibrary & { seriesCount: number; matchedCount: number })[] = libs.map((l) => ({
+      ...l,
+      seriesCount: counts.get(l.id)?.total ?? 0,
+      matchedCount: counts.get(l.id)?.matched ?? 0,
+    }));
+    return c.json(out);
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
+api.get('/kavita/libraries/:id/series', async (c) => {
+  const client = connectedClient();
+  if (!client) return c.json({ error: 'Kavita not configured' }, 503);
+  try {
+    const libraryId = Number(c.req.param('id'));
+    const series = (await client.getSeries(libraryId)) as KavitaSeries[];
+    const rows = getDb().select().from(schema.seriesMatches).all();
+    const byId = new Map(rows.map((r) => [r.kavitaSeriesId, r]));
+    return c.json(
+      series.map((s) => {
+        const m = byId.get(s.id);
+        return {
+          id: s.id,
+          name: s.name,
+          slug: s.slug,
+          bookCount: s.bookCount,
+          cover: s.cover ? `/api/kavita/series/${s.id}/cover` : null,
+          status: m?.status ?? 'unmatched',
+          providerId: m?.providerId ?? null,
+          matchScore: m?.matchScore ?? null,
+          lastSyncedAt: m?.lastSyncedAt ?? null,
+          errorMessage: m?.errorMessage ?? null,
+        };
+      }),
+    );
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
+api.get('/kavita/series/:id/cover', async (c) => {
+  const client = connectedClient();
+  if (!client) return c.json({ error: 'Kavita not configured' }, 503);
+  try {
+    const cover = await client.getSeriesCover(Number(c.req.param('id')));
+    return c.body(new Uint8Array(cover.data), 200, {
+      'Content-Type': cover.contentType,
+      'Cache-Control': 'private, max-age=300',
+    });
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
+// ---------------- Series detail / identify / apply ----------------
+
+api.get('/series/:id', async (c) => {
+  const client = connectedClient();
+  if (!client) return c.json({ error: 'Kavita not configured' }, 503);
+  try {
+    const seriesId = Number(c.req.param('id'));
+    const series = await client.getSeriesById(seriesId);
+    const row = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
+    let metadata = null;
+    if (row?.metadataJson) {
+      try {
+        metadata = JSON.parse(row.metadataJson);
+      } catch {
+        metadata = null;
+      }
+    }
+    return c.json({ series, match: row ?? null, metadata });
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
+api.get('/series/:id/identify', async (c) => {
+  const client = connectedClient();
+  if (!client) return c.json({ error: 'Kavita not configured' }, 503);
+  try {
+    const seriesId = Number(c.req.param('id'));
+    const series = await client.getSeriesById(seriesId);
+    const { credentials, enabledProviders } = getCredentialMap();
+    const outcome = await autoMatch(series, {
+      providerOrder: getProviderPriorities().filter((id) => enabledProviders.includes(id)),
+      credentials,
+      enabledProviders,
+    });
+    return c.json(outcome);
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
+api.post('/series/:id/apply', async (c) => {
+  const client = connectedClient();
+  if (!client) return c.json({ error: 'Kavita not configured' }, 503);
+  const body = (await c.req.json()) as { providerId: string; providerSeriesId: string };
+  if (!body.providerId || !body.providerSeriesId) return c.json({ error: 'providerId and providerSeriesId required' }, 400);
+  try {
+    const seriesId = Number(c.req.param('id'));
+    const series = await client.getSeriesById(seriesId);
+    const { credentials, enabledProviders } = getCredentialMap();
+    const meta = await fetchAggregatedMetadata(
+      { providerId: body.providerId, providerSeriesId: body.providerSeriesId },
+      { providerOrder: getProviderPriorities(), credentials, enabledProviders },
+      getGlobalFieldConfig(),
+    );
+    const agg = getAggregationOptions();
+    const cover = agg.replaceCover ? await fetchCover(client, meta.coverUrl) : null;
+    const result = await applyToKavita(client, seriesId, meta, {
+      agg,
+      fieldConfig: getGlobalFieldConfig(),
+      cover,
+      title: series.name,
+    });
+    const db = getDb();
+    db.insert(schema.seriesMatches)
+      .values({
+        kavitaSeriesId: seriesId,
+        status: result.errors.length ? 'failed' : 'matched',
+        providerId: body.providerId,
+        providerSeriesId: body.providerSeriesId,
+        metadataJson: JSON.stringify(meta),
+        errorMessage: result.errors.length ? result.errors.join('; ') : null,
+        lastSyncedAt: new Date().toISOString(),
+      })
+      .onConflictDoUpdate({
+        target: schema.seriesMatches.kavitaSeriesId,
+        set: {
+          status: result.errors.length ? 'failed' : 'matched',
+          providerId: body.providerId,
+          providerSeriesId: body.providerSeriesId,
+          metadataJson: JSON.stringify(meta),
+          errorMessage: result.errors.length ? result.errors.join('; ') : null,
+          lastSyncedAt: new Date().toISOString(),
+        },
+      })
+      .run();
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
+// ---------------- Providers & settings ----------------
+
+api.get('/providers', (c) => {
+  const settings = getProviderSettings();
+  const out = Object.entries(settings).map(([id, s]) => {
+    const p = getProvider(id);
+    return {
+      id,
+      name: p?.name ?? id,
+      color: p?.color ?? '#888888',
+      helpUrl: p?.helpUrl ?? null,
+      supportedTypes: p?.supportedTypes ?? [],
+      requiresCredentials: p?.requiresCredentials ?? false,
+      providesFields: p?.providesFields ?? [],
+      credentialFields: CREDENTIAL_FIELDS[id] ?? [],
+      enabled: s.enabled,
+      hasCredentials: Object.values(s.credentials).some((v) => v && v.length > 0),
+    };
+  });
+  return c.json(out);
+});
+
+api.put('/providers/:id', async (c) => {
+  const id = c.req.param('id');
+  if (!getProvider(id)) return c.json({ error: 'Unknown provider' }, 404);
+  const body = (await c.req.json()) as { enabled?: boolean; credentials?: Record<string, string> };
+  setProviderSetting(id, { enabled: body.enabled, credentials: body.credentials });
+  return c.json({ ok: true });
+});
+
+api.post('/providers/:id/test', async (c) => {
+  const id = c.req.param('id');
+  const p = getProvider(id);
+  if (!p) return c.json({ error: 'Unknown provider' }, 404);
+  const s = getProviderSettings()[id];
+  try {
+    p.setCredentials(s.credentials);
+    await p.testConnection();
+    return c.json({ ok: true });
+  } catch (e) {
+    return c.json({ ok: false, error: errMsg(e) });
+  }
+});
+
+api.get('/settings', (c) => {
+  return c.json({
+    priorities: getProviderPriorities(),
+    aggregation: getAggregationOptions(),
+    fieldConfig: getGlobalFieldConfig(),
+    fields: FIELD_NAMES,
+    notifications: getNotificationSettings(),
+    pollInterval: getPollInterval(),
+  });
+});
+
+api.put('/settings/priorities', async (c) => {
+  const body = (await c.req.json()) as { priorities: string[] };
+  setProviderPriorities(body.priorities);
+  return c.json({ ok: true });
+});
+
+api.put('/settings/aggregation', async (c) => {
+  const body = (await c.req.json()) as { aggregation: AggregationOptions };
+  setAggregationOptions(body.aggregation);
+  return c.json({ ok: true });
+});
+
+api.put('/settings/field-config', async (c) => {
+  const body = (await c.req.json()) as { fieldConfig: Record<string, string | null> };
+  setGlobalFieldConfig(body.fieldConfig);
+  return c.json({ ok: true });
+});
+
+api.put('/settings/notifications', async (c) => {
+  const body = (await c.req.json()) as {
+    notifications: { discord: { enabled: boolean; webhookUrl: string }; apprise: { enabled: boolean; url: string } };
+  };
+  setNotificationSettings(body.notifications);
+  return c.json({ ok: true });
+});
+
+api.put('/settings/notifications/test', async (c) => {
+  const result = await testNotification();
+  return c.json(result);
+});
+
+api.put('/settings/poll-interval', async (c) => {
+  const body = (await c.req.json()) as { minutes: number };
+  setPollInterval(Math.max(0, Number(body.minutes) || 0));
+  return c.json({ ok: true });
+});
+
+// ---------------- Doujinshi downloader ----------------
+
+api.get('/settings/downloader', (c) => c.json(getDownloaderSettings()));
+
+api.put('/settings/downloader', async (c) => {
+  const body = (await c.req.json()) as DownloaderSettings;
+  setDownloaderSettings({ ...getDownloaderSettings(), ...body });
+  return c.json({ ok: true, settings: getDownloaderSettings() });
+});
+
+/** List the available doujinshi sources for the UI source selector. */
+api.get('/doujin/providers', (c) => c.json(listDoujinProviders()));
+
+/** Search a doujinshi source by keyword/tag/artist/id-or-url. */
+api.post('/doujin/search', async (c) => {
+  const body = (await c.req.json()) as { source: string; query: string };
+  if (!body.source || !body.query?.trim()) return c.json({ error: 'source and query are required' }, 400);
+  const provider = getDoujinProvider(body.source);
+  if (!provider) return c.json({ error: `Unknown source: ${body.source}` }, 400);
+  try {
+    const results = await provider.search(body.query, 24);
+    return c.json(results);
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
+/** Resolve full gallery metadata + image list (for preview / page count). */
+api.post('/doujin/gallery', async (c) => {
+  const body = (await c.req.json()) as { source: string; idOrUrl: string };
+  if (!body.source || !body.idOrUrl?.trim()) return c.json({ error: 'source and idOrUrl are required' }, 400);
+  const provider = getDoujinProvider(body.source);
+  if (!provider) return c.json({ error: `Unknown source: ${body.source}` }, 400);
+  try {
+    // Return metadata without exposing the full image URL list (keeps payload small).
+    const gallery = await provider.getGallery(body.idOrUrl);
+    const { pages, ...meta } = gallery;
+    return c.json({ ...meta, pageCount: pages.length });
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
+/** Enqueue a gallery download. */
+api.post('/downloads', async (c) => {
+  const body = (await c.req.json()) as { source: string; galleryId: string; title?: string; format?: 'cbz' | 'folder' };
+  if (!body.source || !body.galleryId) return c.json({ error: 'source and galleryId are required' }, 400);
+  if (!getDoujinProvider(body.source)) return c.json({ error: `Unknown source: ${body.source}` }, 400);
+  const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, body.title ?? null, body.format);
+  return c.json({ id, status: 'queued' }, 202);
+});
+
+api.get('/downloads', (c) => c.json(downloadQueue.list(100)));
+
+api.get('/downloads/:id', (c) => {
+  const task = downloadQueue.get(Number(c.req.param('id')));
+  if (!task) return c.json({ error: 'Download not found' }, 404);
+  return c.json(task);
+});
+
+const DOWNLOAD_ACTIONS = ['pause', 'resume', 'cancel', 'retry'] as const;
+for (const action of DOWNLOAD_ACTIONS) {
+  api.post(`/downloads/:id/${action}`, (c) => {
+    const id = Number(c.req.param('id'));
+    const ok = downloadQueue[action](id);
+    if (!ok) return c.json({ error: `Could not ${action} download` }, 400);
+    return c.json({ ok: true });
+  });
+}
+
+api.delete('/downloads/:id', (c) => {
+  const id = Number(c.req.param('id'));
+  downloadQueue.remove(id);
+  return c.json({ ok: true });
+});
+
+api.post('/downloads/clear-completed', (c) => {
+  const removed = downloadQueue.clearCompleted();
+  return c.json({ ok: true, removed });
+});
+
+// ---------------- Library overrides ----------------
+
+api.get('/libraries/:id/override', (c) => {
+  const id = Number(c.req.param('id'));
+  const ov = getLibraryOverride(id);
+  return c.json(ov ?? { libraryId: id, priority: getProviderPriorities(), autoMatch: true, fieldConfig: {} });
+});
+
+api.put('/libraries/:id/override', async (c) => {
+  const id = Number(c.req.param('id'));
+  const body = (await c.req.json()) as { priority: string[]; autoMatch: boolean; fieldConfig: Record<string, string | null> };
+  setLibraryOverride({ libraryId: id, priority: body.priority, autoMatch: body.autoMatch, fieldConfig: body.fieldConfig });
+  return c.json({ ok: true });
+});
+
+// ---------------- Jobs ----------------
+
+api.post('/jobs', async (c) => {
+  const body = (await c.req.json()) as { type: JobType; libraryId?: number; seriesId?: number; seriesIds?: number[] };
+  if (!body.type) return c.json({ error: 'type is required' }, 400);
+  const id = jobQueue.enqueue(body.type, { libraryId: body.libraryId, seriesId: body.seriesId, seriesIds: body.seriesIds });
+  return c.json({ id }, 202);
+});
+
+api.get('/jobs', (c) => c.json(jobQueue.list(100)));
+
+api.get('/jobs/:id', (c) => {
+  const job = jobQueue.get(Number(c.req.param('id')));
+  if (!job) return c.json({ error: 'Job not found' }, 404);
+  return c.json({ job, logs: jobQueue.logs(job.id) });
+});
+
+api.get('/logs', (c) => c.json(jobQueue.recentLogs(300)));
+
+api.get('/stats', (c) => {
+  const rows = getDb().select().from(schema.seriesMatches).all();
+  const byStatus: Record<string, number> = {};
+  for (const r of rows) byStatus[r.status] = (byStatus[r.status] ?? 0) + 1;
+  const jobs = jobQueue.list(100);
+  return c.json({
+    totalSeries: rows.length,
+    byStatus,
+    activeJobs: jobs.filter((j) => j.status === 'running' || j.status === 'queued').length,
+    recentJobs: jobs.slice(0, 8),
+  });
+});
+
+api.get('/history', (c) => {
+  const rows = getDb().select().from(schema.syncHistory).limit(200).all().reverse();
+  return c.json(
+    rows.map((r) => ({
+      id: r.id,
+      kavitaSeriesId: r.kavitaSeriesId,
+      seriesTitle: r.seriesTitle,
+      action: r.action,
+      details: r.detailsJson,
+      createdAt: r.createdAt,
+    })),
+  );
+});
