@@ -87,6 +87,22 @@ function translateQuery(query: string, from: DoujinSource, to: DoujinSource): st
   return out.join(' ');
 }
 
+/**
+ * Build a single-tag/artist search fragment from the details card, formatted for
+ * the target source's query syntax. Hitomi uses bare underscored multi-word values
+ * (e.g. `artist:charu_lee`); nHentai wraps values in quotes (e.g. `artist:"Charu Lee"`).
+ * An empty namespace yields a plain keyword search on the raw value.
+ */
+function buildTagSearchFragment(value: string, ns: string | undefined, source: DoujinSource): string {
+  const v = value.trim();
+  if (!v) return '';
+  if (source === 'nhentai') {
+    return ns ? `${ns}:"${v}"` : `"${v}"`;
+  }
+  const underscored = v.replace(/\s+/g, '_');
+  return ns ? `${ns}:${underscored}` : underscored;
+}
+
 /** Badge color per suggestion tag type (mirrors the nHentai search dropdown). */
 const SUGG_TYPE_STYLES: Record<string, string> = {
   artist: 'bg-violet-500/20 text-violet-300',
@@ -232,7 +248,7 @@ const TAG_GROUP_STYLES: Record<string, string> = {
   Tags: 'bg-slate-500/25 text-slate-300',
 };
 
-function TagList({ label, items, icon }: { label: string; items?: string[]; icon?: React.ReactNode }) {
+function TagList({ label, items, icon, onSearch }: { label: string; items?: string[]; icon?: React.ReactNode; onSearch?: (value: string) => void }) {
   if (!items?.length) return null;
   const style = Object.entries(TAG_GROUP_STYLES).find(([k]) => label.startsWith(k))?.[1] ?? 'bg-slate-500/25 text-slate-300';
   return (
@@ -242,9 +258,19 @@ function TagList({ label, items, icon }: { label: string; items?: string[]; icon
       </p>
       <div className="flex flex-wrap gap-1.5">
         {items.map((t, i) => (
-          <span key={i} className={cn('rounded-full px-2.5 py-1 text-xs', style)}>
+          <button
+            key={i}
+            type="button"
+            onClick={() => onSearch?.(t)}
+            title={onSearch ? `Search for “${t}”` : undefined}
+            className={cn(
+              'rounded-full px-2.5 py-1 text-xs transition-all',
+              style,
+              onSearch && 'cursor-pointer hover:brightness-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+            )}
+          >
             {t}
-          </span>
+          </button>
         ))}
       </div>
     </div>
@@ -261,7 +287,7 @@ function MetaItem({ label, value }: { label: string; value?: string | number | n
   );
 }
 
-function GalleryDetailModal({ item, onClose, onDownload, downloading }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; downloading: boolean }) {
+function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTag }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; downloading: boolean; onSearchTag: (fragment: string) => void }) {
   const { data: gallery, isPending, isError, error } = useQuery({
     queryKey: ['doujin-gallery', item.source, item.galleryId],
     queryFn: () => api.doujinGallery(item.source, item.galleryId),
@@ -269,6 +295,12 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading }: { item: 
   });
 
   const g = gallery;
+
+  /** Search a single tag/artist value (from the details card) on this source. */
+  const searchFor = (value: string, ns?: string) => {
+    const fragment = buildTagSearchFragment(value, ns, item.source);
+    if (fragment) onSearchTag(fragment);
+  };
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-2xl">
@@ -321,19 +353,26 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading }: { item: 
                   <MetaItem label="Gallery ID" value={g.galleryId} />
                 </div>
 
-                <TagList label="Artists" items={g.artists ?? item.artists} icon={<Users className="h-3 w-3" />} />
-                <TagList label="Groups" items={g.groups} icon={<Layers className="h-3 w-3" />} />
-                <TagList label="Characters" items={g.genres} icon={<Star className="h-3 w-3" />} />
+                <TagList label="Artists" items={g.artists ?? item.artists} icon={<Users className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'artist')} />
+                <TagList label="Groups" items={g.groups} icon={<Layers className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'group')} />
+                <TagList label="Characters" items={g.genres} icon={<Star className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'character')} />
                 {g.series && (
                   <div className="flex flex-col gap-1.5">
                     <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
                       <BookOpen className="h-3 w-3" /> Series
                     </p>
-                    <span className="w-fit rounded-full bg-cyan-500/20 px-2.5 py-1 text-xs text-cyan-300">{g.series}</span>
+                    <button
+                      type="button"
+                      onClick={() => searchFor(g.series ?? '', 'series')}
+                      title={`Search for “${g.series}”`}
+                      className="w-fit cursor-pointer rounded-full bg-cyan-500/20 px-2.5 py-1 text-xs text-cyan-300 transition-all hover:brightness-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                    >
+                      {g.series}
+                    </button>
                   </div>
                 )}
                 {g.tags?.length ? (
-                  <TagList label={`Tags (${g.tags.length})`} items={g.tags} icon={<Tags className="h-3 w-3" />} />
+                  <TagList label={`Tags (${g.tags.length})`} items={g.tags} icon={<Tags className="h-3 w-3" />} onSearch={(v) => searchFor(v)} />
                 ) : null}
 
                 <div className="mt-auto flex items-center justify-end gap-2 pt-2">
@@ -584,6 +623,21 @@ export function Downloader() {
     setSearchKey(trimmed);
   }
 
+  /**
+   * Run a fresh search for a single tag/artist clicked in the details card.
+   * Replaces the search bar with just that fragment and commits it immediately,
+   * then closes the modal so the new results are visible.
+   */
+  function searchTagFragment(fragment: string) {
+    const trimmed = fragment.trim();
+    if (!trimmed) return;
+    setQuery(trimmed);
+    setSearchKey(trimmed);
+    setSuggestions([]);
+    setHighlight(-1);
+    setSelected(null);
+  }
+
   // Swap the active source, translating the current query into the target
   // source's syntax for the displayed text.
   function switchSource(next: DoujinSource) {
@@ -752,6 +806,7 @@ export function Downloader() {
           onClose={() => setSelected(null)}
           downloading={pendingKey === `${selected.source}:${selected.galleryId}`}
           onDownload={() => doStartDownload(selected)}
+          onSearchTag={searchTagFragment}
         />
       )}
 
