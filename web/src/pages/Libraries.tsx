@@ -8,8 +8,14 @@ import { IdentifyModal } from '../components/IdentifyModal';
 import { cn, timeAgo } from '../lib/utils';
 
 function Cover({ src, name, className }: { src?: string | null; name: string; className?: string }) {
-  if (src && /^https?:\/\//.test(src)) {
-    return <img src={src} alt={name} className={cn('h-full w-full object-cover', className)} loading="lazy" />;
+  const [failed, setFailed] = React.useState(false);
+  // Covers may be absolute provider URLs or same-origin relative paths
+  // (e.g. the Kavita proxy at /api/kavita/series/{id}/cover). Fall back to a
+  // letter placeholder when there is no URL or the image fails to load
+  // (e.g. Kavita returns 404 because the cover file is missing on disk).
+  const showImage = !failed && src !== null && src !== undefined && src !== '' && (/^https?:\/\//i.test(src) || src.startsWith('/'));
+  if (showImage) {
+    return <img src={src} alt={name} className={cn('h-full w-full object-cover', className)} loading="lazy" onError={() => setFailed(true)} />;
   }
   return (
     <div className={cn('flex h-full w-full items-center justify-center bg-surface-2 text-2xl font-semibold text-muted', className)}>

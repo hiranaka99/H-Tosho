@@ -346,9 +346,15 @@ export class KavitaClient {
     await this.postJson('/Upload/series', body, `Update series ${seriesId} cover`);
   }
 
-  /** GET /api/Image/series-cover?seriesId={seriesId} */
+  /**
+   * GET /api/Image/series-cover?seriesId={seriesId}&apiKey={key}
+   *
+   * Kavita's image endpoints (unlike JSON endpoints) require the API key to be
+   * passed as a `?apiKey=` query parameter; sending it only via the `x-api-key`
+   * header is rejected with HTTP 400 ("The apiKey field is required.").
+   */
   async getSeriesCover(seriesId: number): Promise<{ data: Buffer; contentType: string }> {
-    const path = `/Image/series-cover?seriesId=${encodeURIComponent(seriesId)}`;
+    const path = `/Image/series-cover?seriesId=${encodeURIComponent(seriesId)}&apiKey=${encodeURIComponent(this.apiKey)}`;
     const response = await fetch(this.url(path), {
       headers: this.headers,
     });
