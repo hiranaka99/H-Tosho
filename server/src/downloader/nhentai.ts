@@ -9,7 +9,7 @@ import type { DoujinGallery, DoujinProvider, DoujinSearchResult, DoujinSuggestio
 const execFileAsync = promisify(execFile);
 
 /**
- * NHentai (nhentai.net) provider — uses the official v2 JSON API.
+ * nHentai (nhentai.net) provider — uses the official v2 JSON API.
  *
  * Endpoints (see https://nhentai.net/api/v2/docs):
  *   - `GET /api/v2/search?query=<q>&limit=<n>`  -> { result: GalleryListItem[] }
@@ -44,10 +44,10 @@ function getApiKey(): string {
 }
 
 /**
- * Build the NHentai query fragment that excludes every configured banned tag.
+ * Build the nHentai query fragment that excludes every configured banned tag.
  * Returns a space-separated list of `-"<tag>"` terms (empty when nothing is set).
  *
- * NHentai's search grammar negates a term with a leading `-`. Quoting the name
+ * nHentai's search grammar negates a term with a leading `-`. Quoting the name
  * makes multi-word tags (e.g. "big breasts") match as a single tag rather than
  * excluding anything containing either word. A direct gallery-ID lookup is an
  * explicit request, so banned tags only affect keyword/tag searches.
@@ -106,7 +106,7 @@ async function getCdn(): Promise<CdnConfig> {
   if (cdnCache && Date.now() - cdnCacheAt < CDN_TTL_MS) return cdnCache;
   const res = await fetchJson<{ image_servers: string[]; thumb_servers: string[] }>(`${BASE}/api/v2/cdn`, { headers: headers() });
   if (res.status !== 200 || !res.data?.image_servers?.length) {
-    throw new Error('NHentai CDN config fetch failed');
+    throw new Error('nHentai CDN config fetch failed');
   }
   cdnCache = { imageServers: res.data.image_servers, thumbServers: res.data.thumb_servers };
   cdnCacheAt = Date.now();
@@ -121,7 +121,7 @@ function joinServer(server: string | undefined, relPath: string): string {
 
 // ---- tag taxonomy -----------------------------------------------------------
 
-/** Map an NHentai v2 tag `type` onto our normalized tag category. */
+/** Map an nHentai v2 tag `type` onto our normalized tag category. */
 function mapTagType(type: string): string {
   const t = (type || '').trim().toLowerCase();
   if (!t) return 'other';
@@ -239,7 +239,7 @@ interface ApiGalleryDetail {
 
 export const nhentaiProvider: DoujinProvider = {
   id: 'nhentai',
-  name: 'NHentai',
+  name: 'nHentai',
   color: '#e91e63',
 
   async search(query: string, limit = 24): Promise<DoujinSearchResult[]> {
@@ -294,7 +294,7 @@ export const nhentaiProvider: DoujinProvider = {
         res = await fetchJson<ApiSearchResponse>(url, { headers: headers() });
       }
       if (res.status !== 200 || !Array.isArray(res.data?.result)) {
-        throw new Error(`NHentai search failed (HTTP ${res.status})`);
+        throw new Error(`nHentai search failed (HTTP ${res.status})`);
       }
       const items = res.data.result;
       if (!items.length) break;
@@ -368,11 +368,11 @@ export const nhentaiProvider: DoujinProvider = {
 
   async getGallery(idOrUrl: string): Promise<DoujinGallery> {
     const id = extractGalleryId(idOrUrl, GALLERY_URL_RE);
-    if (!id) throw new Error('Could not parse an NHentai gallery ID from the input.');
+    if (!id) throw new Error('Could not parse an nHentai gallery ID from the input.');
 
     const res = await fetchJson<ApiGalleryDetail>(`${BASE}/api/v2/galleries/${id}`, { headers: headers() });
     if (res.status !== 200 || !res.data) {
-      throw new Error(`NHentai gallery fetch failed (HTTP ${res.status})`);
+      throw new Error(`nHentai gallery fetch failed (HTTP ${res.status})`);
     }
     const g = res.data;
 
@@ -386,7 +386,7 @@ export const nhentaiProvider: DoujinProvider = {
 
     const apiPages: ApiPage[] = Array.isArray(g.pages) && g.pages.length ? g.pages : [];
     const pageCount = apiPages.length || g.num_pages || 0;
-    if (!pageCount) throw new Error(`Could not determine the page count for NHentai gallery ${id}.`);
+    if (!pageCount) throw new Error(`Could not determine the page count for nHentai gallery ${id}.`);
 
     const pages: string[] = [];
     const pageFallbacks: (string | null)[] = [];
@@ -402,7 +402,7 @@ export const nhentaiProvider: DoujinProvider = {
         const ext = apiPages[0]?.path?.split('.').pop() ?? 'jpg';
         fullUrl = joinServer(imageServer, `galleries/${mediaId}/${n}.${ext}`);
       }
-      if (!fullUrl) throw new Error(`Could not resolve image URLs for NHentai gallery ${id} (page ${n}).`);
+      if (!fullUrl) throw new Error(`Could not resolve image URLs for nHentai gallery ${id} (page ${n}).`);
       pages.push(fullUrl);
       pageFallbacks.push(thumbUrl && thumbUrl !== fullUrl ? thumbUrl : null);
     }

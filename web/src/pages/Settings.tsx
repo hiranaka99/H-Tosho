@@ -297,7 +297,7 @@ export function Settings() {
   );
 }
 
-/** Tag list editor for NHentai banned tags. Enter adds a tag; comma-separated input adds several at once. */
+/** Tag list editor for nHentai banned tags. Enter adds a tag; comma-separated input adds several at once. */
 function BannedTagsEditor({ value, onChange }: { value: string[]; onChange: (tags: string[]) => void }) {
   const [draft, setDraft] = React.useState('');
   const addTag = () => {
@@ -312,8 +312,8 @@ function BannedTagsEditor({ value, onChange }: { value: string[]; onChange: (tag
   };
   return (
     <div className="flex flex-col gap-1">
-      <Label>NHentai banned tags</Label>
-      <p className="text-xs text-muted">Galleries carrying any of these tags never appear in NHentai searches. Separate multiple tags with commas.</p>
+      <Label>nHentai banned tags</Label>
+      <p className="text-xs text-muted">Galleries carrying any of these tags never appear in nHentai searches. Separate multiple tags with commas.</p>
       {value.length > 0 && (
         <div className="flex flex-wrap gap-1.5 py-1">
           {value.map((tag) => (
@@ -398,7 +398,7 @@ function DownloaderSettingsCard() {
         </div>
 
         <div className="flex flex-col gap-1">
-          <Label>NHentai API key</Label>
+          <Label>nHentai API key</Label>
           <Input type="password" value={dlSettings.nhentaiApiKey} onChange={(e) => setDlSettings({ ...dlSettings, nhentaiApiKey: e.target.value })} placeholder="optional — NHENTAI_API_KEY env var is used as a fallback" autoComplete="off" />
           <p className="text-xs text-muted">Optional key from nhentai.net for higher API rate limits. Leave blank to use the NHENTAI_API_KEY environment variable, if set.</p>
         </div>

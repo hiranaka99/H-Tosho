@@ -79,7 +79,6 @@ export default function App() {
             </NavLink>
           ))}
         </nav>
-        <div className="border-t border-border p-3 text-[10px] text-muted">v1.0.0</div>
       </aside>
       <main className={cn('flex-1 overflow-y-auto', inLibrary ? 'p-6' : 'p-8')}>
         <PageErrorBoundary key={location.pathname}>

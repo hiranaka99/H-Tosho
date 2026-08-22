@@ -32,10 +32,59 @@ import { cn, timeAgo } from '../lib/utils';
 
 const SOURCES: { id: DoujinSource; label: string }[] = [
   { id: 'hitomi', label: 'Hitomi.la' },
-  { id: 'nhentai', label: 'NHentai' },
+  { id: 'nhentai', label: 'nHentai' },
 ];
 
-/** Badge color per suggestion tag type (mirrors the NHentai search dropdown). */
+/** Human-facing display name for a doujin source. */
+const SOURCE_LABELS: Record<DoujinSource, string> = { hitomi: 'Hitomi.la', nhentai: 'nHentai' };
+
+/**
+ * Translate a search query from one doujin source's syntax to the other's so a
+ * search can be re-run against the new source. nHentai uses quoted values and
+ * supports negation (`-term`); Hitomi uses underscores for multi-word tag values
+ * and has no negation, so excluded terms are dropped when heading to Hitomi.
+ */
+function translateQuery(query: string, from: DoujinSource, to: DoujinSource): string {
+  if (from === to) return query;
+  const trimmed = query.trim();
+  if (!trimmed) return query;
+  const out: string[] = [];
+  for (const rawTerm of trimmed.split(/\s+/)) {
+    let negated = false;
+    let term = rawTerm;
+    if (term.startsWith('-')) {
+      negated = true;
+      term = term.slice(1);
+    }
+    const colon = term.indexOf(':');
+    const ns = colon > 0 ? term.slice(0, colon) : null;
+    let val = colon > 0 ? term.slice(colon + 1) : term;
+    // Strip surrounding quotes (nHentai style).
+    val = val.replace(/^["']+|["']+$/g, '');
+
+    if (to === 'hitomi') {
+      // Hitomi has no negation → drop excluded terms.
+      if (negated) continue;
+      // Multi-word values become a single underscored token.
+      val = val.replace(/\s+/g, '_');
+    } else {
+      // nHentai: tag values are always quoted (multi-word values keep spaces).
+      val = `"${val.replace(/_/g, ' ')}"`;
+    }
+    out.push(ns ? `${ns}:${val}` : val);
+  }
+  return out.join(' ');
+}
+
+/** Apply per-source search normalization (Hitomi appends an implicit English filter). */
+function normalizeForSearch(raw: string, source: DoujinSource): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  if (source === 'hitomi' && !/language:/i.test(trimmed)) return `${trimmed} language:english`;
+  return trimmed;
+}
+
+/** Badge color per suggestion tag type (mirrors the nHentai search dropdown). */
 const SUGG_TYPE_STYLES: Record<string, string> = {
   artist: 'bg-violet-500/20 text-violet-300',
   group: 'bg-amber-500/25 text-amber-300',
@@ -52,7 +101,7 @@ function SourceBadge({ source }: { source: DoujinSource }) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium" style={{ backgroundColor: color + '22', color }}>
       <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
-      {source === 'nhentai' ? 'NHentai' : 'Hitomi.la'}
+      {SOURCE_LABELS[source]}
     </span>
   );
 }
@@ -222,7 +271,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading }: { item: 
                 rel="noreferrer"
                 className="mt-2 inline-flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-primary"
               >
-                <ExternalLink className="h-3 w-3" /> View on {item.source === 'nhentai' ? 'NHentai' : 'Hitomi.la'}
+                <ExternalLink className="h-3 w-3" /> View on {SOURCE_LABELS[item.source]}
               </a>
             )}
           </div>
@@ -369,12 +418,12 @@ function QueueRow({ task, onAction }: { task: DownloadTask; onAction: (a: 'pause
 export function Downloader() {
   // Shared app-wide download state (live via SSE + polling fallback) and actions.
   const { tasks, active, liveConnected, startDownload, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
-  const [source, setSource] = React.useState<DoujinSource>('nhentai');
+  const [source, setSource] = React.useState<DoujinSource>('hitomi');
   const [query, setQuery] = React.useState('');
   const [searchKey, setSearchKey] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
 
-  // Autocomplete dropdown state (NHentai tag/artist suggestions).
+  // Autocomplete dropdown state (nHentai tag/artist suggestions).
   const [suggestions, setSuggestions] = React.useState<DoujinSuggestion[]>([]);
   const [suggLoading, setSuggLoading] = React.useState(false);
   const [inputFocused, setInputFocused] = React.useState(false);
@@ -398,7 +447,7 @@ export function Downloader() {
     return seed.replace(/^[\s"']+|[\s"']+$/g, '');
   }
 
-  // Debounced tag/artist autocomplete for the active token. Only NHentai implements
+  // Debounced tag/artist autocomplete for the active token. Only nHentai implements
   // `suggest`, so the dropdown stays empty for Hitomi (its search is unchanged).
   React.useEffect(() => {
     const seed = activeSeed();
@@ -508,17 +557,26 @@ export function Downloader() {
 
   const showDropdown = inputFocused && (suggestions.length > 0 || suggLoading);
 
-  // Commit a search. For Hitomi, always append "language:english" in the
-  // background (unless the user already set a language filter) so results are
-  // scoped to English galleries without cluttering the input box.
+  // Commit a search, applying per-source normalization. For Hitomi this appends
+  // an implicit "language:english" filter (unless the user set one already) so
+  // results are scoped to English galleries without cluttering the input box.
   function commitQuery(raw: string) {
-    const trimmed = raw.trim();
-    if (!trimmed) return;
-    let finalQuery = trimmed;
-    if (source === 'hitomi' && !/language:/i.test(trimmed)) {
-      finalQuery = `${trimmed} language:english`;
-    }
+    // Normalization (e.g. Hitomi's implicit language:english filter) is applied
+    // only to the search key sent to the API, so it never clutters the input box.
+    const finalQuery = normalizeForSearch(raw, source);
+    if (!finalQuery) return;
     setSearchKey(finalQuery);
+  }
+
+  // Swap the active source, translating the current query into the target
+  // source's syntax for the displayed text. Per-source filters are applied only
+  // to the search key (background), so the box just reflects the translated syntax.
+  function switchSource(next: DoujinSource) {
+    if (next === source) return;
+    const translated = translateQuery(query, source, next);
+    setQuery(translated);
+    setSearchKey(normalizeForSearch(translated, next) || null);
+    setSource(next);
   }
 
   const runSearch = (e: React.FormEvent) => {
@@ -534,7 +592,7 @@ export function Downloader() {
         <h1 className="flex items-center gap-2 text-xl font-semibold">
           <ListVideo className="h-5 w-5" /> Doujinshi Downloader
         </h1>
-        <p className="text-sm text-muted">Search Hitomi.la & NHentai (nhentai.net) and download galleries straight into your Kavita library.</p>
+        <p className="text-sm text-muted">Search Hitomi.la & nHentai (nhentai.net) and download galleries straight into your Kavita library.</p>
       </div>
 
       {/* Search bar */}
@@ -546,7 +604,7 @@ export function Downloader() {
                 <button
                   key={s.id}
                   type="button"
-                  onClick={() => setSource(s.id)}
+                  onClick={() => switchSource(s.id)}
                   className={cn(
                     'px-4 py-2 text-sm font-medium transition-colors',
                     source === s.id ? 'bg-primary text-white' : 'bg-surface-2 text-muted hover:text-foreground',
@@ -634,12 +692,12 @@ export function Downloader() {
         <div>
           {isFetching ? (
             <div className="flex items-center justify-center gap-2 py-16 text-muted">
-              <Spinner /> Searching {source === 'nhentai' ? 'NHentai' : 'Hitomi.la'}…
+              <Spinner /> Searching {SOURCE_LABELS[source]}…
             </div>
           ) : results && results.length > 0 ? (
             <>
               <p className="mb-3 text-xs text-muted">
-                {results.length} {results.length === 1 ? 'gallery' : 'galleries'} found on {source === 'nhentai' ? 'NHentai' : 'Hitomi.la'}
+                {results.length} {results.length === 1 ? 'gallery' : 'galleries'} found on {SOURCE_LABELS[source]}
               </p>
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
                 {results.map((item) => (
@@ -654,7 +712,7 @@ export function Downloader() {
               </div>
             </>
           ) : (
-            <EmptyState icon={<Search className="h-8 w-8" />} title="No results" description={`No galleries found for “${searchKey}” on ${source === 'nhentai' ? 'NHentai' : 'Hitomi.la'}.`} />
+            <EmptyState icon={<Search className="h-8 w-8" />} title="No results" description={`No galleries found for “${searchKey}” on ${SOURCE_LABELS[source]}.`} />
           )}
         </div>
       )}

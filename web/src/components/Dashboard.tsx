@@ -17,10 +17,10 @@ interface GalleryDetail {
 
 const DOUJIN_SOURCES: { id: DoujinSource; name: string }[] = [
   { id: 'hitomi', name: 'Hitomi.la' },
-  { id: 'nhentai', name: 'NHentai' },
+  { id: 'nhentai', name: 'nHentai' },
 ];
 
-/** Badge color per suggestion tag type (mirrors the NHentai search dropdown). */
+/** Badge color per suggestion tag type (mirrors the nHentai search dropdown). */
 const SUGG_TYPE_STYLES: Record<string, string> = {
   artist: 'bg-violet-500/20 text-violet-300',
   group: 'bg-amber-500/25 text-amber-300',

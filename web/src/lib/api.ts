@@ -181,7 +181,7 @@ export interface DownloaderSettings {
   requestDelayMs: number;
   autoSyncKavita: boolean;
   nhentaiApiKey: string;
-  /** Tag names to exclude from all NHentai searches (e.g. "loli", "big breasts"). */
+  /** Tag names to exclude from all nHentai searches (e.g. "loli", "big breasts"). */
   nhentaiBannedTags: string[];
 }
 

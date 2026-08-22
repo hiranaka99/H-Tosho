@@ -1,6 +1,5 @@
 {
   "name": "h-tosho",
-  "version": "1.0.0",
   "private": true,
   "description": "Metadata fetcher & manager for Kavita (AniList, MangaUpdates, MangaDex, MyAnimeList, Bangumi)",
   "workspaces": [
