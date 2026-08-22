@@ -1,16 +1,48 @@
+# ---- Dependencies ---------------------------------------------------------
 node_modules/
+
+# ---- Build output ---------------------------------------------------------
 dist/
 build/
-*.log
-.env
-.env.local
+*.tsbuildinfo
+coverage/
+.nyc_output/
 
-# Runtime data & databases (anywhere in the project)
+# ---- Environment / local config & secrets ---------------------------------
+.env
+.env.*
+!.env.example
+
+# ---- Logs & error dumps ----------------------------------------------------
+*.log
+*.err
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- Runtime data & databases (anywhere in the project) -------------------
 **/data/
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite3
+# Archived legacy databases produced by the migration routine
+*.migrated
 
+# ---- Downloaded media / galleries ------------------------------------------
+downloads/
+*.cbz
+
+# ---- Editor / IDE ---------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---- OS files -------------------------------------------------------------
 .DS_Store
-*.tsbuildinfo
+Thumbs.db
+desktop.ini
