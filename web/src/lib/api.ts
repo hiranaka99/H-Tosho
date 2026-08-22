@@ -196,6 +196,10 @@ export interface DownloadTask {
   progressTotal: number;
   speed: number | null;
   currentFile: string | null;
+  /** Total image bytes received so far this run. */
+  bytesCurrent?: number;
+  /** Total image bytes expected for the run (0 until known). */
+  bytesTotal?: number;
   outputFormat: 'cbz' | 'folder';
   outputPath: string | null;
   errorMessage: string | null;
@@ -203,6 +207,11 @@ export interface DownloadTask {
   startedAt?: string | null;
   finishedAt?: string | null;
 }
+
+/** A single frame pushed over the download SSE stream. */
+export type DownloadEvent =
+  | { type: 'snapshot'; tasks: DownloadTask[] }
+  | { type: 'task'; task: DownloadTask };
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch('/api' + path, {

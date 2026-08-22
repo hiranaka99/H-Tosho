@@ -53,8 +53,34 @@ export function initDb(): Db {
   sqlite.pragma('journal_mode = WAL');
   sqlite.pragma('foreign_keys = ON');
   sqlite.exec(SCHEMA_DDL);
+  migrateDownloadQueueColumns(sqlite);
   db = drizzle(sqlite, { schema });
   return db;
+}
+
+/**
+ * Add columns introduced after initial release to databases that already exist.
+ * `CREATE TABLE IF NOT EXISTS` only affects brand-new tables, so any DB created
+ * by an older build must be upgraded in place. Each ALTER is guarded by a
+ * column-existence check and wrapped so a failure never blocks startup.
+ */
+function migrateDownloadQueueColumns(sqlite: Database.Database): void {
+  const existing = new Set(
+    (sqlite.prepare('PRAGMA table_info(download_queue)').all() ?? []).map((c) => (c as { name: string }).name),
+  );
+  if (existing.size === 0) return; // table created by the DDL above already has every column
+  const additions: [string, string][] = [
+    ['bytes_current', 'INTEGER NOT NULL DEFAULT 0'],
+    ['bytes_total', 'INTEGER NOT NULL DEFAULT 0'],
+  ];
+  for (const [col, def] of additions) {
+    if (existing.has(col)) continue;
+    try {
+      sqlite.exec(`ALTER TABLE download_queue ADD COLUMN ${col} ${def}`);
+    } catch (err) {
+      console.warn(`[h-tosho] failed to add download_queue column ${col}:`, err);
+    }
+  }
 }
 
 /**
@@ -265,6 +291,8 @@ CREATE TABLE IF NOT EXISTS download_queue (
   progress_total INTEGER NOT NULL DEFAULT 0,
   speed REAL,
   current_file TEXT,
+  bytes_current INTEGER NOT NULL DEFAULT 0,
+  bytes_total INTEGER NOT NULL DEFAULT 0,
   output_format TEXT NOT NULL DEFAULT 'cbz',
   output_path TEXT,
   error_message TEXT,

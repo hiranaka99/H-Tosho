@@ -106,6 +106,10 @@ export const downloadQueue = sqliteTable('download_queue', {
   progressTotal: integer('progress_total').notNull().default(0),
   speed: real('speed'),
   currentFile: text('current_file'),
+  /** Total image bytes received so far this run. */
+  bytesCurrent: integer('bytes_current').notNull().default(0),
+  /** Total image bytes expected for the run (0 until known). */
+  bytesTotal: integer('bytes_total').notNull().default(0),
   /** cbz | folder */
   outputFormat: text('output_format').notNull().default('cbz'),
   outputPath: text('output_path'),

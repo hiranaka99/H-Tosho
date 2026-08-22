@@ -26,6 +26,7 @@ import {
   Tags,
 } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
+import { useDownloadEvents } from '../lib/useDownloadEvents';
 import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, EmptyState, Spinner, ProgressBar, Dialog, DialogContent } from '../components/ui';
 import { cn, timeAgo } from '../lib/utils';
 
@@ -82,6 +83,18 @@ function formatSpeed(bps: number | null): string {
   if (!bps || bps <= 0) return '';
   const mb = bps / (1024 * 1024);
   return mb >= 1 ? `${mb.toFixed(1)} MB/s` : `${Math.round(bps / 1024)} KB/s`;
+}
+
+function formatBytes(bytes: number | null | undefined): string {
+  if (!bytes || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let v = bytes;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 function DownloadStatusBadge({ status }: { status: string }) {
@@ -316,10 +329,16 @@ function QueueRow({ task, onAction }: { task: DownloadTask; onAction: (a: 'pause
       {task.status === 'downloading' && (
         <>
           <ProgressBar value={task.progressCurrent} max={task.progressTotal} />
-          <div className="flex items-center justify-between text-xs text-muted">
-            <span>{task.currentFile ? `Saving ${task.currentFile}` : 'Starting…'}</span>
-            <span>
+          {typeof task.bytesTotal === 'number' && task.bytesTotal > 0 && (
+            <ProgressBar value={Math.min(task.bytesCurrent ?? 0, task.bytesTotal)} max={task.bytesTotal} className="h-1" />
+          )}
+          <div className="flex items-center justify-between gap-2 text-xs text-muted">
+            <span className="truncate">{task.currentFile ? `Saving ${task.currentFile}` : 'Starting…'}</span>
+            <span className="shrink-0">
               {task.progressTotal > 0 ? `${task.progressCurrent}/${task.progressTotal} pages (${pct}%)` : 'Resolving gallery…'}
+              {typeof task.bytesCurrent === 'number' && (task.bytesCurrent > 0 || (task.bytesTotal ?? 0) > 0) && (
+                ` · ${formatBytes(task.bytesCurrent)}${(task.bytesTotal ?? 0) > 0 ? ` / ${formatBytes(task.bytesTotal)}` : ''}`
+              )}
               {formatSpeed(task.speed) && ` · ${formatSpeed(task.speed)}`}
             </span>
           </div>
@@ -349,6 +368,8 @@ function QueueRow({ task, onAction }: { task: DownloadTask; onAction: (a: 'pause
 
 export function Downloader() {
   const qc = useQueryClient();
+  // Real-time download progress via Server-Sent Events (REST polling below is the fallback).
+  const liveConnected = useDownloadEvents();
   const [source, setSource] = React.useState<DoujinSource>('nhentai');
   const [query, setQuery] = React.useState('');
   const [searchKey, setSearchKey] = React.useState<string | null>(null);
@@ -419,7 +440,8 @@ export function Downloader() {
     enabled: searchKey !== null && searchKey.trim().length > 0,
   });
 
-  const { data: tasks = [] } = useQuery({ queryKey: ['downloads'], queryFn: api.downloads, refetchInterval: 1500 });
+  // Poll as a lightweight fallback; live progress is driven by the SSE stream above.
+  const { data: tasks = [] } = useQuery({ queryKey: ['downloads'], queryFn: api.downloads, refetchInterval: 5000 });
 
   const startDownload = useMutation({
     mutationFn: (item: DoujinSearchResult) => api.startDownload({ source: item.source, galleryId: item.galleryId, title: item.title }),
@@ -647,6 +669,11 @@ export function Downloader() {
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle className="flex items-center gap-2">
             <DownloadIcon className="h-4 w-4" /> Download Manager
+            {liveConnected && (
+              <span title="Real-time updates connected" className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" /> Live
+              </span>
+            )}
             {active.length > 0 && <Badge tone="info">{active.length} active</Badge>}
           </CardTitle>
           {finished.some((t) => t.status === 'completed') && (

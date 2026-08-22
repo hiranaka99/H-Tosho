@@ -2,22 +2,27 @@ import { desc, eq } from 'drizzle-orm';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, schema } from '../db/index.js';
-import { fetchBuffer, sleep } from '../lib/http.js';
+import { fetchBufferStreaming, sleep, type StreamProgressHandlers } from '../lib/http.js';
 import { generateComicInfoXml } from './comicinfo.js';
 import { buildZip } from './zip.js';
 import { extFromUrl, padPage, sanitizeFilename } from './util.js';
 import { getDoujinProvider } from './providers.js';
-import type { DownloadProgress, DoujinGallery, DoujinSource } from './types.js';
-import { getDownloaderSettings, getKavitaConnection, type DownloaderSettings } from '../services/settings.js';
-import { KavitaClient } from '../kavita/client.js';
+import type { DoujinGallery, DoujinSource } from './types.js';
+import { getDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
 
 /**
  * Doujinshi download queue engine.
  *
  * Manages gallery download jobs with a small state machine
  * (queued -> downloading -> completed | failed | paused), bounded concurrency,
- * per-request rate limiting, progress tracking (pages / speed / current file),
- * and writes either a .cbz archive or a raw image folder + ComicInfo.xml.
+ * per-request rate limiting, and live progress tracking at both the page and
+ * byte level (streaming each image so speed/bytes update in real time). Output
+ * is written into a per-doujin subfolder of the configured download location —
+ * either a `.cbz` archive or a raw image folder + ComicInfo.xml.
+ *
+ * Live updates are fanned out to in-process subscribers (used by the SSE
+ * endpoint) while being persisted to SQLite on a throttled cadence so REST
+ * polling clients stay fresh without hammering the database.
  */
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0';
@@ -34,19 +39,21 @@ function isTransientError(err: unknown): boolean {
   return /fetch failed|ECONNRESET|socket hang up|network|aborted|timeout|ENOTFOUND/i.test(err.message);
 }
 
-/** Fetch a URL, retrying transient errors (rate limits / 5xx) with backoff. */
-async function fetchWithRetry(url: string, headers: Record<string, string>, maxAttempts = 5): Promise<Buffer> {
+/**
+ * Stream a URL into a Buffer, retrying transient failures (429/5xx/network)
+ * with exponential backoff. Non-transient errors are rethrown immediately so the
+ * caller can fall through to a per-page fallback without needless retries.
+ */
+async function fetchPageWithRetry(url: string, headers: Record<string, string>, handlers: StreamProgressHandlers): Promise<Buffer> {
+  const attempts = 3;
   let lastErr: unknown;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+  for (let i = 0; i < attempts; i++) {
     try {
-      return await fetchBuffer(url, { headers });
+      return await fetchBufferStreaming(url, headers, handlers);
     } catch (err) {
       lastErr = err;
-      const transient = isTransientError(err);
-      if (!transient || attempt === maxAttempts - 1) throw err;
-      // Back off longer when the CDN explicitly rate-limits us (429/503).
-      const rateLimited = /HTTP (429|503)/.test(String((err as Error).message));
-      await sleep((rateLimited ? 1500 : 500) * 2 ** attempt);
+      if (!isTransientError(err)) throw err;
+      if (i < attempts - 1) await sleep(600 * 2 ** i);
     }
   }
   throw lastErr;
@@ -64,6 +71,10 @@ export interface DownloadTask {
   progressTotal: number;
   speed: number | null;
   currentFile: string | null;
+  /** Total image bytes received so far this run. */
+  bytesCurrent: number;
+  /** Total image bytes expected for the run (0 until known). */
+  bytesTotal: number;
   outputFormat: 'cbz' | 'folder';
   outputPath: string | null;
   errorMessage: string | null;
@@ -82,6 +93,8 @@ interface DownloadRow {
   progressTotal: number;
   speed: number | null;
   currentFile: string | null;
+  bytesCurrent: number;
+  bytesTotal: number;
   outputFormat: string;
   outputPath: string | null;
   errorMessage: string | null;
@@ -101,6 +114,8 @@ function rowToTask(row: DownloadRow): DownloadTask {
     progressTotal: row.progressTotal,
     speed: row.speed,
     currentFile: row.currentFile,
+    bytesCurrent: row.bytesCurrent ?? 0,
+    bytesTotal: row.bytesTotal ?? 0,
     outputFormat: (row.outputFormat as 'cbz' | 'folder') ?? 'cbz',
     outputPath: row.outputPath,
     errorMessage: row.errorMessage,
@@ -116,15 +131,45 @@ interface RunContext {
   pauseSignal: { paused: boolean };
 }
 
+/** Volatile progress fields that update faster than the throttled DB write. */
+type LiveFieldKeys = 'progressCurrent' | 'progressTotal' | 'speed' | 'currentFile' | 'bytesCurrent' | 'bytesTotal';
+type LiveFields = Partial<Pick<DownloadTask, LiveFieldKeys>>;
+
 class DownloadQueue {
   private running = 0;
   private pumping = false;
   /** id -> live run context (used for cancel/pause of in-flight jobs). */
   private activeRuns = new Map<number, RunContext>();
+  /** id -> freshest in-memory task snapshot (source of truth while a run is active). */
+  private live = new Map<number, DownloadTask>();
+  /** id -> last SSE broadcast timestamp (ms) for throttling. */
+  private lastBroadcast = new Map<number, number>();
+  /** id -> last DB persist timestamp (ms) for throttling. */
+  private lastWrite = new Map<number, number>();
+  private listeners = new Set<(task: DownloadTask) => void>();
   private settingsProvider: () => DownloaderSettings;
 
   constructor(settingsProvider: () => DownloaderSettings) {
     this.settingsProvider = settingsProvider;
+  }
+
+  // ---------------- Live update fan-out (SSE) ----------------
+
+  /** Subscribe to live task updates. Returns an unsubscribe function. */
+  subscribe(listener: (task: DownloadTask) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private broadcast(task: DownloadTask): void {
+    if (this.listeners.size === 0) return;
+    for (const l of this.listeners) {
+      try {
+        l(task);
+      } catch {
+        /* a misbehaving listener must never break the pipeline */
+      }
+    }
   }
 
   // ---------------- CRUD / state machine ----------------
@@ -148,9 +193,19 @@ class DownloadQueue {
     return id;
   }
 
-  get(id: number): DownloadTask | null {
+  /** Raw read from SQLite (no live overlay). */
+  private readRow(id: number): DownloadTask | null {
     const row = getDb().select().from(schema.downloadQueue).where(eq(schema.downloadQueue.id, id)).get();
     return row ? rowToTask(row) : null;
+  }
+
+  /** Task with any fresher in-memory progress fields overlaid on the DB row. */
+  get(id: number): DownloadTask | null {
+    const base = this.readRow(id);
+    if (!base) return null;
+    const live = this.live.get(id);
+    if (!live) return base;
+    return { ...base, ...pickLiveFields(live) };
   }
 
   list(limit = 100): DownloadTask[] {
@@ -160,7 +215,11 @@ class DownloadQueue {
       .orderBy(desc(schema.downloadQueue.id))
       .limit(limit)
       .all();
-    return rows.map(rowToTask);
+    return rows.map((row) => {
+      const task = rowToTask(row);
+      const live = this.live.get(task.id);
+      return live ? { ...task, ...pickLiveFields(live) } : task;
+    });
   }
 
   /** Count of currently in-flight (downloading) tasks. */
@@ -177,16 +236,55 @@ class DownloadQueue {
     } else {
       db.update(schema.downloadQueue).set({ status }).where(eq(schema.downloadQueue.id, id)).run();
     }
+    this.syncLive(id);
   }
 
-  private setProgress(id: number, p: DownloadProgress): void {
+  /** Reload a task from the DB into the live snapshot and force-broadcast it. */
+  private syncLive(id: number): void {
+    const t = this.readRow(id);
+    if (t) this.live.set(id, t);
+    else this.live.delete(id);
+    if (t) this.broadcast(t);
+  }
+
+  /**
+   * Merge volatile progress fields into the in-memory snapshot, then fan out to
+   * subscribers and persist to SQLite — each on its own throttle so high-frequency
+   * byte-level updates stay smooth without overloading the database.
+   */
+  private updateProgress(id: number, patch: LiveFields, opts?: { force?: boolean }): void {
+    let snap = this.live.get(id);
+    if (!snap) {
+      const base = this.readRow(id);
+      if (!base) return;
+      snap = { ...base };
+    }
+    const merged = { ...snap, ...patch };
+    this.live.set(id, merged);
+
+    const now = Date.now();
+    const lastB = this.lastBroadcast.get(id) ?? 0;
+    if (opts?.force || now - lastB >= 80) {
+      this.broadcast(merged);
+      this.lastBroadcast.set(id, now);
+    }
+    const lastW = this.lastWrite.get(id) ?? 0;
+    if (opts?.force || now - lastW >= 250) {
+      this.persistProgress(id, merged);
+      this.lastWrite.set(id, now);
+    }
+  }
+
+  private persistProgress(id: number, p: DownloadTask): void {
     getDb()
       .update(schema.downloadQueue)
       .set({
-        progressCurrent: p.downloaded,
-        progressTotal: p.total,
-        speed: p.bytesPerSecond,
+        progressCurrent: p.progressCurrent,
+        progressTotal: p.progressTotal,
+        speed: p.speed,
         currentFile: p.currentFile,
+        bytesCurrent: p.bytesCurrent,
+        bytesTotal: p.bytesTotal,
       })
       .where(eq(schema.downloadQueue.id, id))
       .run();
@@ -224,8 +322,8 @@ class DownloadQueue {
     if (task.status === 'queued' || task.status === 'downloading') {
       const run = this.activeRuns.get(id);
       if (run) run.cancelled = true;
-      this.setStatus(id, 'failed');
       getDb().update(schema.downloadQueue).set({ errorMessage: 'Cancelled by user' }).where(eq(schema.downloadQueue.id, id)).run();
+      this.setStatus(id, 'failed');
       return true;
     }
     return false;
@@ -235,9 +333,10 @@ class DownloadQueue {
   retry(id: number): boolean {
     const task = this.get(id);
     if (!task) return false;
+    this.live.delete(id);
     getDb()
       .update(schema.downloadQueue)
-      .set({ status: 'queued', progressCurrent: 0, speed: null, currentFile: null, errorMessage: null, startedAt: null, finishedAt: null })
+      .set({ status: 'queued', progressCurrent: 0, speed: null, currentFile: null, bytesCurrent: 0, bytesTotal: 0, errorMessage: null, startedAt: null, finishedAt: null })
       .where(eq(schema.downloadQueue.id, id))
       .run();
     void this.pump();
@@ -246,6 +345,7 @@ class DownloadQueue {
 
   remove(id: number): boolean {
     getDb().delete(schema.downloadQueue).where(eq(schema.downloadQueue.id, id)).run();
+    this.live.delete(id);
     return true;
   }
 
@@ -305,29 +405,37 @@ class DownloadQueue {
       if (!provider) throw new Error(`Unknown source: ${row.source}`);
 
       // Resolve the full gallery (metadata + image list).
+      this.updateProgress(row.id, { progressCurrent: 0, progressTotal: 0, speed: 0, currentFile: 'Resolving gallery…', bytesCurrent: 0, bytesTotal: 0 }, { force: true });
       const gallery = await provider.getGallery(row.galleryId);
       const total = gallery.pages.length;
       if (!total) throw new Error('Gallery has no downloadable pages.');
-      this.setProgress(row.id, { downloaded: 0, total, bytesPerSecond: 0, currentFile: null });
+      this.updateProgress(row.id, { progressCurrent: 0, progressTotal: total, speed: 0, currentFile: null, bytesCurrent: 0, bytesTotal: 0 }, { force: true });
 
-      // Download all pages with bounded concurrency + rate limiting.
+      // Download all pages with bounded concurrency + rate limiting (streamed for live progress).
       const images = await this.downloadPages(gallery, row.id, settings, ctx);
 
       // Write to disk (cbz or folder) and record the output path.
+      this.updateProgress(row.id, { currentFile: 'Packing archive…' }, { force: true });
       const outputPath = await this.writeOutput(row.id, gallery, images, settings);
       getDb().update(schema.downloadQueue).set({ outputPath }).where(eq(schema.downloadQueue.id, row.id)).run();
 
       this.setStatus(row.id, 'completed');
-      this.setProgress(row.id, { downloaded: total, total, bytesPerSecond: 0, currentFile: null });
+      this.updateProgress(row.id, { progressCurrent: total, progressTotal: total, speed: 0, currentFile: null }, { force: true });
 
       // Optional Kavita auto-sync.
       if (settings.autoSyncKavita) await this.triggerKavitaScan(outputPath);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      getDb().update(schema.downloadQueue).set({ errorMessage: message }).where(eq(schema.downloadQueue.id, row.id)).run();
+      getDb().update(schema.downloadQueue).set({ errorMessage: message, speed: 0 }).where(eq(schema.downloadQueue.id, row.id)).run();
       if (!ctx.cancelled) this.setStatus(row.id, 'failed');
     } finally {
+      // Drop the in-memory snapshot so subsequent reads reflect the authoritative DB state.
+      this.live.delete(row.id);
+      this.lastBroadcast.delete(row.id);
+      this.lastWrite.delete(row.id);
       this.activeRuns.delete(row.id);
+      const final = this.readRow(row.id);
+      if (final) this.broadcast(final);
     }
   }
 
@@ -344,16 +452,88 @@ class DownloadQueue {
     const delay = Math.max(0, settings.requestDelayMs || 0);
     const pageHeaders: Record<string, string> = { 'User-Agent': UA, ...gallery.requestHeaders };
     const out: { name: string; data: Buffer }[] = new Array(total);
-    let downloaded = 0;
-    let lastTick = Date.now();
 
-    const report = (currentFile: string) => {
+    // Per-run byte-level accounting used to derive a live bytes-current/total.
+    const bs = {
+      actual: new Map<number, number>(), // index -> final page size
+      inflight: new Map<number, number>(), // index -> partial bytes received
+      known: new Map<number, number>(), // index -> content-length (when the server reports it)
+      completed: new Set<number>(),
+      lastT: Date.now(),
+      lastBytes: 0,
+      ema: 0,
+    };
+
+    const currentBytes = (): number => {
+      let sum = 0;
+      for (const v of bs.actual.values()) sum += v;
+      for (const [i, v] of bs.inflight) {
+        const cap = bs.known.get(i);
+        sum += cap ? Math.min(v, cap) : v;
+      }
+      return sum;
+    };
+
+    const estimateTotal = (): number => {
+      const completedCount = bs.completed.size;
+      let completedBytes = 0;
+      for (const v of bs.actual.values()) completedBytes += v;
+      const avg = completedCount > 0 ? completedBytes / completedCount : 0;
+      let est = 0;
+      for (let i = 0; i < total; i++) {
+        if (bs.completed.has(i)) est += bs.actual.get(i) ?? 0;
+        else if (bs.known.has(i)) est += bs.known.get(i) ?? 0;
+        else est += avg;
+      }
+      return Math.max(Math.round(est), Math.round(currentBytes()));
+    };
+
+    const speed = (): number => {
       const now = Date.now();
-      const elapsedSec = Math.max(0.25, (now - lastTick) / 1000);
-      // Rough speed estimate: bytes for the latest page over the tick window.
-      const bps = downloaded > 0 ? Math.round(((out[downloaded - 1]?.data.length ?? 0) / elapsedSec)) : 0;
-      lastTick = now;
-      this.setProgress(taskId, { downloaded, total, bytesPerSecond: bps, currentFile });
+      const dt = (now - bs.lastT) / 1000;
+      if (dt > 0.05) {
+        const cur = currentBytes();
+        const inst = Math.max(0, (cur - bs.lastBytes) / dt);
+        bs.ema = bs.ema === 0 ? inst : bs.ema * 0.6 + inst * 0.4;
+        bs.lastT = now;
+        bs.lastBytes = cur;
+      }
+      return Math.round(bs.ema);
+    };
+
+    let lastFileName: string | null = null;
+    let lastReport = 0;
+    const report = (force: boolean): void => {
+      const now = Date.now();
+      if (!force && now - lastReport < 100) return;
+      lastReport = now;
+      this.updateProgress(
+        taskId,
+        {
+          progressCurrent: bs.completed.size,
+          progressTotal: total,
+          speed: speed(),
+          currentFile: lastFileName,
+          bytesCurrent: Math.round(currentBytes()),
+          bytesTotal: estimateTotal(),
+        },
+        { force },
+      );
+    };
+
+    const onChunk = (i: number, received: number, totalBytes: number | null): void => {
+      if (totalBytes && totalBytes > 0) bs.known.set(i, totalBytes);
+      bs.inflight.set(i, received);
+      lastFileName = `Page ${i + 1}/${total}`;
+      report(false);
+    };
+
+    const onPageDone = (i: number, size: number): void => {
+      bs.actual.set(i, size);
+      bs.completed.add(i);
+      bs.inflight.delete(i);
+      lastFileName = `Page ${i + 1}/${total}`;
+      report(true);
     };
 
     let nextIndex = 0;
@@ -374,7 +554,12 @@ class DownloadQueue {
         let lastErr: unknown = null;
         for (const url of candidates) {
           try {
-            data = await fetchWithRetry(url, pageHeaders);
+            data = await fetchPageWithRetry(url, pageHeaders, {
+              onAttemptStart: () => {
+                bs.inflight.set(i, 0);
+              },
+              onProgress: (received, totalBytes) => onChunk(i, received, totalBytes),
+            });
             usedUrl = url;
             break;
           } catch (err) {
@@ -384,8 +569,7 @@ class DownloadQueue {
         if (!data) throw lastErr instanceof Error ? lastErr : new Error(`Failed to download page ${i + 1}`);
         const name = `${padPage(i + 1, total)}.${extFromUrl(usedUrl ?? pages[i])}`;
         out[i] = { name, data };
-        downloaded++;
-        report(name);
+        onPageDone(i, data.length);
         if (delay > 0) await sleep(delay);
       }
     };
@@ -395,6 +579,12 @@ class DownloadQueue {
     return out;
   }
 
+  /**
+   * Write the finished gallery into a subfolder named after the doujin under the
+   * configured download location. Both output formats live inside that folder:
+   *   <downloadLocation>/<Doujin Name>/Doujin Name.cbz      (cbz)
+   *   <downloadLocation>/<Doujin Name>/001.jpg, …           (folder)
+   */
   private async writeOutput(
     taskId: number,
     gallery: DoujinGallery,
@@ -402,12 +592,11 @@ class DownloadQueue {
     settings: DownloaderSettings,
   ): Promise<string> {
     const base = path.resolve(settings.downloadDirectory);
-    fs.mkdirSync(base, { recursive: true });
     const folderName = sanitizeFilename(gallery.title || `Gallery ${gallery.galleryId}`, `Gallery-${gallery.galleryId}`);
+    const dir = path.join(base, folderName);
+    fs.mkdirSync(dir, { recursive: true });
 
     if (settings.format === 'folder') {
-      const dir = path.join(base, folderName);
-      fs.mkdirSync(dir, { recursive: true });
       for (const img of images) {
         fs.writeFileSync(path.join(dir, img.name), img.data);
       }
@@ -415,13 +604,13 @@ class DownloadQueue {
       return dir;
     }
 
-    // cbz: pack all images + ComicInfo.xml into a single archive.
+    // cbz: pack all images + ComicInfo.xml into a single archive inside the folder.
     const entries = [
       ...images.map((img) => ({ name: img.name, data: img.data })),
       { name: 'ComicInfo.xml', data: Buffer.from(generateComicInfoXml(gallery), 'utf8') },
     ];
     const zipBuf = buildZip(entries);
-    const file = path.join(base, `${folderName}.cbz`);
+    const file = path.join(dir, `${folderName}.cbz`);
     fs.writeFileSync(file, zipBuf);
     return file;
   }
@@ -443,6 +632,17 @@ class DownloadQueue {
       // Auto-sync is best-effort; never fail the download over it.
     }
   }
+}
+
+function pickLiveFields(t: DownloadTask): LiveFields {
+  return {
+    progressCurrent: t.progressCurrent,
+    progressTotal: t.progressTotal,
+    speed: t.speed,
+    currentFile: t.currentFile,
+    bytesCurrent: t.bytesCurrent,
+    bytesTotal: t.bytesTotal,
+  };
 }
 
 /** Shared singleton wired to live settings at construction time. */

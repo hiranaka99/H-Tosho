@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { streamSSE } from 'hono/streaming';
 import { eq } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
@@ -419,6 +420,35 @@ api.post('/downloads', async (c) => {
 });
 
 api.get('/downloads', (c) => c.json(downloadQueue.list(100)));
+
+/**
+ * Server-Sent Events stream of live download-task updates. The client receives
+ * an initial `snapshot` of every task, then a `task` event each time a tracked
+ * field changes (throttled server-side). Used for real-time progress without
+ * polling; the REST endpoints remain as the fallback/authoritative source.
+ */
+api.get('/downloads/events', (c) =>
+  streamSSE(c, async (sse) => {
+    // Push the current state immediately so a freshly-opened client is up to date.
+    await sse.write(`data: ${JSON.stringify({ type: 'snapshot', tasks: downloadQueue.list(100) })}\n\n`);
+
+    const unsubscribe = downloadQueue.subscribe((task) => {
+      void sse.write(`data: ${JSON.stringify({ type: 'task', task })}\n\n`).catch(() => {});
+    });
+
+    // Keep the connection alive so proxies/clients don't time out during idle.
+    const heartbeat = setInterval(() => {
+      void sse.write(': ping\n\n').catch(() => {});
+    }, 15_000);
+
+    await new Promise<void>((resolve) => {
+      c.req.raw.signal.addEventListener('abort', () => resolve(), { once: true });
+    });
+
+    clearInterval(heartbeat);
+    unsubscribe();
+  }),
+);
 
 api.get('/downloads/:id', (c) => {
   const task = downloadQueue.get(Number(c.req.param('id')));
