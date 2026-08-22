@@ -382,6 +382,8 @@ function tokenizeQuery(query: string): { ns?: string; val: string }[] {
  * the query mixes terms (e.g. `artist:charu language:english`), each term is
  * resolved independently and the id sets are AND-intersected, mirroring how the
  * live site combines filters. A term that matches nothing yields zero results.
+ * Results are restricted to English by default (unless the query names an
+ * explicit `language:`), so searches don't surface non-English galleries.
  */
 async function searchGalleryIds(query: string, version: string): Promise<number[]> {
   const terms = tokenizeQuery(query);
@@ -392,25 +394,37 @@ async function searchGalleryIds(query: string, version: string): Promise<number[
   // a naturally-capitalized title still matches.
   const btreeTerm = (t: { val: string }) => getGalleryIdsForTerm(t.val.toLowerCase(), version);
 
-  // No namespaced term → plain keyword search (union of per-term lookups, so
-  // "one piece" returns galleries matching either word).
+  let ids: number[];
   if (!terms.some((t) => t.ns)) {
+    // No namespaced term → plain keyword search (union of per-term lookups, so
+    // "one piece" returns galleries matching either word).
     const sets = await Promise.all(terms.map(btreeTerm));
-    return unionIds(sets);
+    ids = unionIds(sets);
+  } else {
+    // Filtered search: AND-intersect every term (nozomi for namespaced terms,
+    // B-tree for bare keywords).
+    const sets = await Promise.all(
+      terms.map(async (t) => {
+        if (t.ns) {
+          const f = nozomiFilterFromTerm(`${t.ns}:${t.val}`);
+          return f ? fetchNozomiIds(f) : [];
+        }
+        return btreeTerm(t);
+      })
+    );
+    ids = intersectIds(sets);
   }
 
-  // Filtered search: AND-intersect every term (nozomi for namespaced terms,
-  // B-tree for bare keywords).
-  const sets = await Promise.all(
-    terms.map(async (t) => {
-      if (t.ns) {
-        const f = nozomiFilterFromTerm(`${t.ns}:${t.val}`);
-        return f ? fetchNozomiIds(f) : [];
-      }
-      return btreeTerm(t);
-    })
-  );
-  return intersectIds(sets);
+  // Restrict results to English so plain keyword/tag searches don't surface
+  // non-English galleries. An explicit `language:` term takes precedence, letting
+  // users still search other languages. Fail open if the English index is
+  // unavailable so a transient error doesn't blank out all results.
+  if (ids.length && !terms.some((t) => t.ns?.toLowerCase() === 'language')) {
+    const english = await fetchNozomiIds({ tag: 'index', language: 'english' });
+    if (english.length) ids = intersectIds([ids, english]);
+  }
+
+  return ids;
 }
 
 // ---------------------------------------------------------------------------
