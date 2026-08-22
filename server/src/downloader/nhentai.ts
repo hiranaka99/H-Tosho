@@ -24,7 +24,10 @@ const execFileAsync = promisify(execFile);
  */
 
 const BASE = 'https://nhentai.net';
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+// nHentai asks clients to send a descriptive User-Agent ("AppName/version") so
+// they can identify the traffic and reach out if needed — this also lowers the
+// chance of being throttled.
+const UA = 'H-Tosho/1.0 (doujin downloader; https://github.com/hiranaka99/H-Tosho)';
 /** Accepts `/g/<id>/`, bare ids, or the legacy `/gallery/<id>` form. */
 const GALLERY_URL_RE = /\/(?:g|gallery)\/(\d+)/;
 
@@ -81,14 +84,14 @@ function headers(): Record<string, string> {
     Referer: `${BASE}/`,
   };
   const key = getApiKey();
-  if (key) h.Authorization = `Bearer ${key}`;
+  if (key) h.Authorization = `Key ${key}`;
   return h;
 }
 
 /** curl header args, mirroring headers() for the subprocess path. */
 function curlAuthArgs(): string[] {
   const key = getApiKey();
-  return key ? ['-H', `Authorization: Bearer ${key}`] : [];
+  return key ? ['-H', `Authorization: Key ${key}`] : [];
 }
 
 // ---- CDN config cache -------------------------------------------------------
