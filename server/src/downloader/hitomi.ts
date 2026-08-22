@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { fetchBuffer } from '../lib/http.js';
 import { extractGalleryId, stripTags } from './util.js';
-import type { DoujinGallery, DoujinProvider, DoujinSearchResult } from './types.js';
+import type { DoujinGallery, DoujinProvider, DoujinSearchResult, DoujinSuggestion } from './types.js';
 
 /**
  * Hitomi.la provider.
@@ -20,9 +20,14 @@ import type { DoujinGallery, DoujinProvider, DoujinSearchResult } from './types.
  *   - Gallery metadata: `/galleries/{id}.js` returns `var galleryinfo = {...}`
  *     with title, language (string), artists/tags (objects), and a `files`
  *     array of `{name, hash, haswebp, hasavif, ...}`.
- *   - Search: a B-tree over `/galleriesindex/galleries.{version}.index`
+ *   - Keyword search: a B-tree over `/galleriesindex/galleries.{version}.index`
  *     (node tree) + `.data` (values), keyed by the first 4 bytes of
  *     SHA-256(term). Nodes are fetched with HTTP Range requests.
+ *   - Filtered/namespaced search (e.g. `artist:charu`, `language:english`):
+ *     resolved via the `.nozomi` binary endpoint, which ANDs all filters.
+ *   - Tag suggestions: `tagindex.hitomi.la/{field}/{c1}/{c2}...json` returns
+ *     `[["name", count, "namespace"], ...]` for a character-prefix query — the
+ *     same endpoint the live site's search dropdown uses.
  *
  * `gg.js` is re-fetched (and cached briefly) so its rotating base path and
  * routing table stay in sync with the live site. Image requests must carry a
@@ -32,6 +37,10 @@ import type { DoujinGallery, DoujinProvider, DoujinSearchResult } from './types.
 const BASE = 'https://hitomi.la';
 const CDN = 'gold-usergeneratedcontent.net';
 const API_BASE = `https://ltn.${CDN}`;
+// Tag-autocomplete index. GET {TAG_INDEX}/{field}/{c1}/{c2}...json returns an
+// array of [name, count, namespace] triples for the character-prefix query — this
+// is exactly what powers the live site's search dropdown (see search.js).
+const TAG_INDEX = 'https://tagindex.hitomi.la';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0';
 const GALLERY_URL_RE = /\/(\d+)/;
 
@@ -155,7 +164,7 @@ function coverUrlFor(gg: GG, files: HitomiFile[]): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// B-tree search (mirrors live search.js get_galleryids_for_query)
+// B-tree keyword search (mirrors live search.js get_galleryids_for_query)
 // ---------------------------------------------------------------------------
 
 function hashTerm(term: string): Uint8Array {
@@ -223,7 +232,7 @@ async function getGalleriesIndexVersion(): Promise<string> {
   return galleriesIndexVersion;
 }
 
-/** Resolve the gallery ids that exactly match a single search term. */
+/** Resolve the gallery ids that exactly match a single keyword term. */
 async function getGalleryIdsForTerm(term: string, version: string): Promise<number[]> {
   const key = hashTerm(term);
   const indexUrl = `${API_BASE}/galleriesindex/galleries.${version}.index`;
@@ -264,29 +273,65 @@ async function getGalleryIdsForTerm(term: string, version: string): Promise<numb
   return [];
 }
 
-/**
- * Search gallery ids for a query. A single term is hashed directly; multi-word
- * queries are split and each term's id set is unioned (so "one piece" returns
- * galleries matching either word).
- */
-async function searchGalleryIds(query: string, version: string): Promise<number[]> {
-  // Normalize the query into tag terms. Hitomi uses '_' for spaces in tags and
-  // ':' is not part of any tag (e.g. "re:zero" is tagged "rezero"), so colons
-  // are removed and underscores become term separators.
-  const terms = query.replace(/_/g, ' ').replace(/:/g, '').trim().split(/\s+/).filter(Boolean);
-  if (!terms.length) return [];
-  if (terms.length === 1) return getGalleryIdsForTerm(terms[0], version);
+// ---------------------------------------------------------------------------
+// Nozomi-based filtered search (namespaced queries, e.g. artist:charu language:english)
+// ---------------------------------------------------------------------------
 
-  const sets = await Promise.all(terms.map((t) => getGalleryIdsForTerm(t, version)));
+/**
+ * A parsed Hitomi filter query for the `.nozomi` endpoint. Mirrors the live
+ * client's state object in `nozomi_address_from_state`: a single optional
+ * tag/area pair plus an optional language, all ANDed together.
+ */
+interface NozomiFilter {
+  /** The nozomi area, e.g. "artist", "character". Undefined for language-only. */
+  area?: string;
+  /** The tag to filter on (or "index" for a language-only filter). */
+  tag: string;
+  /** Language filter, e.g. "english" or "all". */
+  language: string;
+}
+
+/** Build the `.nozomi` URL for a filter (mirrors get_galleryids_from_nozomi). */
+function nozomiUrl(f: NozomiFilter): string {
+  const tail = `${f.tag}-${f.language}`;
+  return f.area ? `${API_BASE}/n/${f.area}/${tail}.nozomi` : `${API_BASE}/n/${tail}.nozomi`;
+}
+
+/** Fetch the big-endian int32 gallery-id list from a nozomi filter. */
+async function fetchNozomiIds(f: NozomiFilter): Promise<number[]> {
+  try {
+    const r = await fetch(nozomiUrl(f), { headers: { ...headers() } });
+    if (r.status !== 200) return [];
+    const buf = Buffer.from(await r.arrayBuffer());
+    const count = Math.floor(buf.byteLength / 4);
+    const ids: number[] = [];
+    for (let i = 0; i < count; i++) ids.push(buf.readInt32BE(i * 4));
+    return ids;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Build a nozomi filter from a single `ns:tag` term, mirroring the live
+ * client's `get_galleryids_for_query`. Handles artist:/character:/series:/
+ * group:/parody:/type:, plus the special female:/male: (area "tag") and
+ * language: (no area, tag "index") cases.
+ */
+function nozomiFilterFromTerm(term: string): NozomiFilter | null {
+  const [ns, ...rest] = term.split(':');
+  const val = rest.join(':');
+  if (!val) return null;
+  if (ns === 'female' || ns === 'male') return { area: 'tag', tag: term, language: 'all' };
+  if (ns === 'language') return { area: undefined, tag: 'index', language: val };
+  return { area: ns, tag: val, language: 'all' };
+}
+
+/** Union a list of id sets, preserving first-seen (newest-first) order. */
+function unionIds(sets: number[][]): number[] {
   const merged: number[] = [];
+  const seen = new Set<number>();
   for (const set of sets) {
-    if (!set.length) continue;
-    if (!merged.length) {
-      merged.push(...set);
-      continue;
-    }
-    // Union while keeping the most-recent-first order of each set.
-    const seen = new Set<number>(merged);
     for (const id of set) {
       if (!seen.has(id)) {
         seen.add(id);
@@ -295,6 +340,97 @@ async function searchGalleryIds(query: string, version: string): Promise<number[
     }
   }
   return merged;
+}
+
+/** AND-intersect a list of id sets (empty result if any set is empty). */
+function intersectIds(sets: number[][]): number[] {
+  const nonEmpty = sets.filter((s) => s.length > 0);
+  if (!nonEmpty.length) return [];
+  let result: number[] | null = null;
+  for (const set of nonEmpty) {
+    const asSet = new Set(set);
+    result = result === null ? [...set] : result.filter((id) => asSet.has(id));
+    if (result.length === 0) return [];
+  }
+  return result ?? [];
+}
+
+/**
+ * Search gallery ids for a query. Plain keywords use the B-tree index; any
+ * namespaced/filtered term (`ns:tag`) is resolved via the nozomi endpoint. When
+ * the query mixes terms (e.g. `artist:charu language:english`), each term is
+ * resolved independently and the id sets are AND-intersected, mirroring how the
+ * live site combines filters.
+ */
+async function searchGalleryIds(query: string, version: string): Promise<number[]> {
+  const q = query.replace(/_/g, ' ').trim();
+  if (!q) return [];
+  const terms = q.split(/\s+/).filter(Boolean);
+  if (!terms.length) return [];
+
+  // No namespaced term → plain keyword search (union of per-term lookups, so
+  // "one piece" returns galleries matching either word).
+  if (!terms.some((t) => t.includes(':'))) {
+    if (terms.length === 1) return getGalleryIdsForTerm(terms[0], version);
+    const sets = await Promise.all(terms.map((t) => getGalleryIdsForTerm(t, version)));
+    return unionIds(sets);
+  }
+
+  // Filtered search: AND-intersect every term (nozomi for namespaced terms,
+  // B-tree for bare keywords).
+  const sets = await Promise.all(
+    terms.map(async (t) => {
+      if (t.includes(':')) {
+        const f = nozomiFilterFromTerm(t);
+        return f ? fetchNozomiIds(f) : [];
+      }
+      return getGalleryIdsForTerm(t, version);
+    })
+  );
+  return intersectIds(sets);
+}
+
+// ---------------------------------------------------------------------------
+// Tag suggestions (mirrors live search.js get_suggestions_for_query)
+// ---------------------------------------------------------------------------
+
+interface TagSuggestion {
+  name: string;
+  count: number;
+  ns: string;
+}
+
+/**
+ * Fetch tag suggestions from the tag index. Mirrors the live site's
+ * `get_suggestions_for_query`: each character of the (lowercased) term becomes a
+ * path segment under `{field}`, yielding `[name, count, namespace]` triples.
+ */
+async function fetchTagSuggestions(field: string, term: string): Promise<TagSuggestion[]> {
+  if (!term) return [];
+
+  const encoded = term.toLowerCase().replace(/_/g, ' ');
+  const chars = encoded.split('').map((c) => (c === '/' ? 'slash' : c === '.' ? 'dot' : c));
+
+  let url = `${TAG_INDEX}/${field}`;
+  if (chars.length > 0) url += '/' + chars.join('/');
+  url += '.json';
+
+  try {
+    const r = await fetch(url, { headers: { ...headers() } });
+    if (r.status !== 200) return [];
+    const data: unknown = await r.json();
+    if (!Array.isArray(data)) return [];
+    const out: TagSuggestion[] = [];
+    for (const item of data) {
+      if (!Array.isArray(item) || item.length < 3) continue;
+      const [name, count, ns] = item as [string, number, string];
+      if (typeof name !== 'string') continue;
+      out.push({ name, count: typeof count === 'number' ? count : 0, ns: String(ns) });
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +505,42 @@ export const hitomiProvider: DoujinProvider = {
     // Preserve recency order (ids are newest-first).
     const byId = new Map(out.map((r) => [r.galleryId, r]));
     return ids.map((id) => byId.get(String(id))).filter((r): r is DoujinSearchResult => !!r).slice(0, target);
+  },
+
+  /**
+   * Tag/artist autocomplete, mirroring the live site's search dropdown. Backed
+   * by `tagindex.hitomi.la`, which returns [name, count, namespace] triples for
+   * a character-prefix query. If the seed contains a colon (e.g. "artist:charu"),
+   * the part before it scopes the lookup to that namespace; otherwise 'global'.
+   */
+  async suggest(query: string, limit = 10): Promise<DoujinSuggestion[]> {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+
+    let field = 'global';
+    let term = q;
+    if (q.includes(':')) {
+      const [ns, ...rest] = q.split(':');
+      if (ns) field = ns;
+      term = rest.join(':');
+    }
+    if (!term) return [];
+
+    const suggestions = await fetchTagSuggestions(field, term);
+    const out: DoujinSuggestion[] = [];
+    for (const s of suggestions.slice(0, Math.max(limit, 1))) {
+      // Filter fragment is `ns:tag_name` with spaces as underscores, which the
+      // search() nozomi path understands (e.g. "artist:charu", "language:english").
+      const filter = `${s.ns}:${s.name.replace(/\s/g, '_')}`;
+      out.push({
+        source: 'hitomi',
+        type: s.ns,
+        name: s.name,
+        count: s.count,
+        filter,
+      });
+    }
+    return out;
   },
 
   async getGallery(idOrUrl: string): Promise<DoujinGallery> {

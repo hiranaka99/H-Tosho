@@ -32,6 +32,7 @@ import { testNotification } from '../notify/dispatcher.js';
 import { getDownloaderSettings, setDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
 import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
+import { rewriteHitomiCover } from './media.js';
 import type { DoujinSource } from '../downloader/types.js';
 
 const CREDENTIAL_FIELDS: Record<string, { key: string; label: string }[]> = {
@@ -374,7 +375,9 @@ api.post('/doujin/search', async (c) => {
   try {
     // Request the full result set (both providers cap internally at ~1000).
     const results = await provider.search(body.query, 1000);
-    return c.json(results);
+    // Route hitomi covers through the /media proxy so they carry the Referer
+    // their CDN requires (browsers can't send it cross-origin).
+    return c.json(results.map(rewriteHitomiCover));
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }
@@ -404,7 +407,7 @@ api.post('/doujin/gallery', async (c) => {
     // Return metadata without exposing the full image URL list (keeps payload small).
     const gallery = await provider.getGallery(body.idOrUrl);
     const { pages, ...meta } = gallery;
-    return c.json({ ...meta, pageCount: pages.length });
+    return c.json({ ...rewriteHitomiCover(meta), pageCount: pages.length });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

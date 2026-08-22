@@ -11,6 +11,11 @@ export default defineConfig({
         target: 'http://localhost:8787',
         changeOrigin: true,
       },
+      // Doujin cover media proxy (Hitomi CDN requires a hitomi.la Referer).
+      '/media': {
+        target: 'http://localhost:8787',
+        changeOrigin: true,
+      },
     },
   },
   build: {

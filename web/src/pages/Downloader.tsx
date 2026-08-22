@@ -401,11 +401,6 @@ export function Downloader() {
   // Debounced tag/artist autocomplete for the active token. Only NHentai implements
   // `suggest`, so the dropdown stays empty for Hitomi (its search is unchanged).
   React.useEffect(() => {
-    if (source !== 'nhentai') {
-      setSuggestions([]);
-      setSuggLoading(false);
-      return;
-    }
     const seed = activeSeed();
     if (seed.length < 2) {
       setSuggestions([]);
@@ -504,7 +499,7 @@ export function Downloader() {
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (highlight >= 0 && suggestions[highlight]) selectSuggestion(suggestions[highlight]);
-      else if (query.trim()) setSearchKey(query.trim());
+      else commitQuery(query);
     } else if (e.key === 'Escape') {
       setSuggestions([]);
       setHighlight(-1);
@@ -513,9 +508,22 @@ export function Downloader() {
 
   const showDropdown = inputFocused && (suggestions.length > 0 || suggLoading);
 
+  // Commit a search. For Hitomi, always append "language:english" in the
+  // background (unless the user already set a language filter) so results are
+  // scoped to English galleries without cluttering the input box.
+  function commitQuery(raw: string) {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    let finalQuery = trimmed;
+    if (source === 'hitomi' && !/language:/i.test(trimmed)) {
+      finalQuery = `${trimmed} language:english`;
+    }
+    setSearchKey(finalQuery);
+  }
+
   const runSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (query.trim()) setSearchKey(query.trim());
+    commitQuery(query);
   };
 
   const finished = tasks.filter((t) => t.status !== 'downloading' && t.status !== 'queued');

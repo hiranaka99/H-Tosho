@@ -5,6 +5,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { api } from './routes/api.js';
+import { mediaRouter } from './routes/media.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,6 +27,8 @@ export function createApp(): Hono {
 
   app.use('/api/*', cors());
   app.route('/api', api);
+  // Media proxy for doujin covers (Hitomi CDN requires a hitomi.la Referer).
+  app.route('/', mediaRouter());
 
   if (webDist) {
     app.use('/*', serveStatic({ root: webDist }));
