@@ -47,8 +47,10 @@ const GALLERY_URL_RE = /\/(\d+)/;
 const MAX_NODE_SIZE = 464;
 const B = 16;
 // gg.js rotates its base path (gg.b) and routing table every few minutes, so keep
-// the cache short to avoid building URLs against a stale prefix mid-download.
-const GG_CACHE_TTL_MS = 90 * 1000;
+// the cache short to avoid building URLs against a stale prefix mid-download. The
+// CDN answers 404 for any base path older than the current one, so this must be
+// well under the rotation cadence (~1-2 min observed).
+const GG_CACHE_TTL_MS = 20 * 1000;
 
 function headers(): Record<string, string> {
   return {
@@ -70,8 +72,9 @@ interface GG {
 
 let ggCache: { value: GG; at: number } | null = null;
 
-async function loadGG(): Promise<GG> {
-  if (ggCache && Date.now() - ggCache.at < GG_CACHE_TTL_MS) return ggCache.value;
+/** Load the live CDN routing table, honoring a short cache unless `force`. */
+async function loadGG(force = false): Promise<GG> {
+  if (!force && ggCache && Date.now() - ggCache.at < GG_CACHE_TTL_MS) return ggCache.value;
   const code = await fetchText(`${API_BASE}/gg.js`);
   // gg.js begins with 'use strict'; and assigns to a bare `gg`. Provide `gg`
   // as a parameter so that assignment is legal within the function scope.
@@ -92,23 +95,63 @@ async function fetchText(url: string): Promise<string> {
 // Image URL construction (mirrors live common.js)
 // ---------------------------------------------------------------------------
 
-function subdomainPrefix(gg: GG, hash: string, dir: 'avif' | 'webp'): string {
-  // The image CDN host is a single letter ('a' for avif, 'w' for webp) followed
-  // by (1 + gg.m(g)) where g is the last 3 hex chars of the hash as an int.
-  const letter = dir === 'avif' ? 'a' : 'w';
+/** The routing bucket number for a hash: 1 + gg.m(g), where g is the last 3 hex chars. */
+function subdomainNumber(gg: GG, hash: string): number | null {
   // Match the last three hex chars of the bare 64-char hash. (The live client
   // runs this against the full image URL, which has a leading '/'; here we pass
   // just the hash, so no slash is required.)
   const m = /[0-9a-f]{61}([0-9a-f]{2})([0-9a-f])/.exec(hash);
-  if (!m) return letter;
+  if (!m) return null;
   const g = parseInt(m[2] + m[1], 16);
-  if (Number.isNaN(g)) return letter;
-  return `${letter}${1 + gg.m(g)}`;
+  if (Number.isNaN(g)) return null;
+  return 1 + gg.m(g);
+}
+
+/** Subdomain for a compressed rendition: 'a{n}' (avif) or 'w{n}' (webp). */
+function subdomainPrefix(gg: GG, hash: string, dir: 'avif' | 'webp'): string {
+  const letter = dir === 'avif' ? 'a' : 'w';
+  const n = subdomainNumber(gg, hash);
+  return n === null ? letter : `${letter}${n}`;
 }
 
 function imageUrl(gg: GG, hash: string, ext: 'avif' | 'webp'): string {
   const prefix = subdomainPrefix(gg, hash, ext);
   return `https://${prefix}.${CDN}/${gg.b}${gg.s(hash)}/${hash}.${ext}`;
+}
+
+/**
+ * URL for an original-format file (no webp/avif rendition). Mirrors the live
+ * client's `url_from_hash` when `dir` is None: the subdomain is the bare routing
+ * bucket number `{n}` (no letter prefix), unlike compressed renditions.
+ */
+function originalUrl(gg: GG, hash: string, ext: string): string {
+  const n = subdomainNumber(gg, hash);
+  const host = n === null ? 'a' : String(n);
+  return `https://${host}.${CDN}/${gg.b}${gg.s(hash)}/${hash}.${ext}`;
+}
+
+/** Per-page source metadata needed to rebuild a fresh image URL on demand. */
+export interface HitomiPageRef {
+  hash: string;
+  /** Preferred compressed extension ('avif' | 'webp'), when the file has one. */
+  ext?: 'avif' | 'webp';
+  /** Fallback compressed extension (used when the primary fails to download). */
+  fallbackExt?: 'avif' | 'webp';
+  /** Original-format extension for files with no webp/avif rendition. */
+  origExt?: string;
+}
+
+/**
+ * Build a Hitomi image URL from a page ref using the *current* gg.js routing
+ * table (freshly fetched when its cache has expired). Because the CDN only
+ * serves the current base path, URLs must be constructed close to the moment of
+ * the request — this is what lets downloads survive mid-run CDN rotation.
+ */
+export async function buildHitomiPageUrl(ref: HitomiPageRef, opts?: { forceGgRefresh?: boolean }): Promise<string> {
+  const gg = await loadGG(opts?.forceGgRefresh);
+  if (ref.ext) return imageUrl(gg, ref.hash, ref.ext);
+  // Original format — no compressed rendition; bare numeric subdomain.
+  return originalUrl(gg, ref.hash, ref.origExt ?? 'jpg');
 }
 
 // ---------------------------------------------------------------------------
@@ -590,28 +633,41 @@ export const hitomiProvider: DoujinProvider = {
     const files: HitomiFile[] = info.files ?? [];
     if (!files.length) throw new Error(`Could not find any images for Hitomi gallery ${id}.`);
 
+    // Per-page refs capture just enough (hash + renditions) to rebuild a fresh
+    // image URL at download time. The static `pages`/`pageFallbacks` below are
+    // built once for compatibility, but the engine re-resolves via
+    // `resolvePageUrl` so long downloads survive CDN base-path rotation.
+    const refs: HitomiPageRef[] = [];
+    for (const f of files) {
+      if (!f?.hash) continue;
+      const ref: HitomiPageRef = { hash: f.hash };
+      if (f.hasavif) {
+        ref.ext = 'avif';
+        if (f.haswebp) ref.fallbackExt = 'webp';
+      } else if (f.haswebp) {
+        ref.ext = 'webp';
+      } else {
+        // Original format — no compressed rendition; keep the original extension.
+        ref.origExt = f.name.split('.').pop()?.toLowerCase() ?? 'jpg';
+      }
+      refs.push(ref);
+    }
+
     const gg = await loadGG();
 
     // Primary pages: AVIF when available (best compression/quality), else WEBP,
     // else a constructed original URL. Fallbacks give the engine a second path.
     const pages: string[] = [];
     const pageFallbacks: (string | null)[] = [];
-    for (const f of files) {
-      if (!f?.hash) continue;
-      let primary: string | null = null;
-      let fallback: string | null = null;
-      if (f.hasavif) {
-        primary = imageUrl(gg, f.hash, 'avif');
-        if (f.haswebp) fallback = imageUrl(gg, f.hash, 'webp');
-      } else if (f.haswebp) {
-        primary = imageUrl(gg, f.hash, 'webp');
+    for (const ref of refs) {
+      if (ref.ext) {
+        pages.push(imageUrl(gg, ref.hash, ref.ext));
+        pageFallbacks.push(ref.fallbackExt && ref.fallbackExt !== ref.ext ? imageUrl(gg, ref.hash, ref.fallbackExt) : null);
       } else {
-        // Original format — best-effort path without a known extension.
-        const ext = f.name.split('.').pop()?.toLowerCase() ?? 'jpg';
-        primary = `https://a.${CDN}/${gg.b}${gg.s(f.hash)}/${f.hash}.${ext}`;
+        // Original format — bare numeric subdomain (no letter prefix).
+        pages.push(originalUrl(gg, ref.hash, ref.origExt ?? 'jpg'));
+        pageFallbacks.push(null);
       }
-      pages.push(primary);
-      pageFallbacks.push(fallback);
     }
 
     const title = stripTags(info.title) || `Gallery ${id}`;
@@ -642,6 +698,24 @@ export const hitomiProvider: DoujinProvider = {
       // The image CDN rejects requests that lack a hitomi.la Referer.
       requestHeaders: { Referer: `${BASE}/` },
       url: `${BASE}/${id}`,
+      // Re-resolve a page's URL against the *current* gg.js routing table so the
+      // engine can build it moments before the request (and force-refresh after a
+      // 404, in case the CDN base path rotated mid-download).
+      resolvePageUrl: async (index, opts) => {
+        const ref = refs[index];
+        if (!ref) return null;
+        const o = opts?.forceRefresh ? { forceGgRefresh: true } : undefined;
+        const url = await buildHitomiPageUrl(ref, o);
+        const fallback = await buildHitomiPageFallbackUrlLive(ref, o);
+        return { url, fallback };
+      },
     };
   },
 };
+
+/** Async fallback builder (fresh routing table) for the live resolver. */
+async function buildHitomiPageFallbackUrlLive(ref: HitomiPageRef, opts?: { forceGgRefresh?: boolean }): Promise<string | null> {
+  if (!ref.fallbackExt || ref.fallbackExt === ref.ext) return null;
+  const gg = await loadGG(opts?.forceGgRefresh);
+  return imageUrl(gg, ref.hash, ref.fallbackExt);
+}

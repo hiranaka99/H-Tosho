@@ -64,6 +64,14 @@ export interface DoujinGallery extends DoujinSearchResult {
    * Some CDNs (e.g. Hitomi) reject requests that lack a matching Referer.
    */
   requestHeaders?: Record<string, string>;
+  /**
+   * Optional live URL resolver. When present, the engine calls this to rebuild a
+   * page's primary + fallback URLs against the provider's *current* routing/CDN
+   * state immediately before fetching (and again after a failure, with
+   * `forceRefresh`), so long downloads survive CDN base-path rotation that would
+   * otherwise 404 stale pre-built URLs. Returns null if the index is unknown.
+   */
+  resolvePageUrl?: (index: number, opts?: { forceRefresh?: boolean }) => Promise<{ url: string; fallback?: string | null } | null>;
 }
 
 /** Progress payload persisted on the queue row during a run. */

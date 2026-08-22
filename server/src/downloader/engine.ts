@@ -59,6 +59,33 @@ async function fetchPageWithRetry(url: string, headers: Record<string, string>, 
   throw lastErr;
 }
 
+/**
+ * Build the ordered list of candidate URLs for a page, re-resolving them against
+ * the provider's *current* CDN routing state when it supports a live resolver
+ * (Hitomi). Providers without one fall back to the static URL captured at
+ * resolve time. `forceRefresh` asks the provider to re-fetch its routing table
+ * first — used after a failure that may be caused by a rotated/stale base path.
+ */
+async function resolvePageCandidates(
+  gallery: DoujinGallery,
+  i: number,
+  forceRefresh = false,
+): Promise<string[]> {
+  if (gallery.resolvePageUrl) {
+    try {
+      const r = await gallery.resolvePageUrl(i, { forceRefresh });
+      if (r && typeof r.url === 'string' && r.url.length > 0) {
+        return [r.url, ...(typeof r.fallback === 'string' && r.fallback ? [r.fallback] : [])];
+      }
+    } catch {
+      /* fall through to the static URLs */
+    }
+  }
+  const primary = gallery.pages[i];
+  const fallback = gallery.pageFallbacks?.[i];
+  return [primary, fallback].filter((u): u is string => typeof u === 'string' && u.length > 0);
+}
+
 export type DownloadStatus = 'queued' | 'downloading' | 'completed' | 'failed' | 'paused';
 
 export interface DownloadTask {
@@ -547,24 +574,30 @@ class DownloadQueue {
         }
         const i = nextIndex++;
         if (i >= total) break;
-        // Try the primary URL, then any per-page fallbacks before giving up.
-        const candidates = [pages[i], fallbacks[i]].filter((u): u is string => typeof u === 'string' && u.length > 0);
+        // Re-resolve the page URL against the provider's *current* CDN routing
+        // state right before fetching, so long downloads survive base-path
+        // rotation. If both primary and fallback fail, force a routing-table
+        // refresh (the CDN may have rotated) and try once more before giving up.
         let data: Buffer | null = null;
         let usedUrl: string | null = null;
         let lastErr: unknown = null;
-        for (const url of candidates) {
-          try {
-            data = await fetchPageWithRetry(url, pageHeaders, {
-              onAttemptStart: () => {
-                bs.inflight.set(i, 0);
-              },
-              onProgress: (received, totalBytes) => onChunk(i, received, totalBytes),
-            });
-            usedUrl = url;
-            break;
-          } catch (err) {
-            lastErr = err;
+        for (const force of [false, true]) {
+          const candidates = await resolvePageCandidates(gallery, i, force);
+          for (const url of candidates) {
+            try {
+              data = await fetchPageWithRetry(url, pageHeaders, {
+                onAttemptStart: () => {
+                  bs.inflight.set(i, 0);
+                },
+                onProgress: (received, totalBytes) => onChunk(i, received, totalBytes),
+              });
+              usedUrl = url;
+              break;
+            } catch (err) {
+              lastErr = err;
+            }
           }
+          if (data) break;
         }
         if (!data) throw lastErr instanceof Error ? lastErr : new Error(`Failed to download page ${i + 1}`);
         const name = `${padPage(i + 1, total)}.${extFromUrl(usedUrl ?? pages[i])}`;
