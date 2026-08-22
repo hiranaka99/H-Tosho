@@ -25,14 +25,25 @@ import {
   Star,
   Tags,
 } from 'lucide-react';
-import { api, type DoujinSource, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
+import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
 import { useDownloads } from '../lib/DownloadsContext';
-import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, EmptyState, Spinner, ProgressBar, Dialog, DialogContent } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent } from '../components/ui';
 import { cn, timeAgo } from '../lib/utils';
 
 const SOURCES: { id: DoujinSource; label: string }[] = [
   { id: 'hitomi', label: 'Hitomi.la' },
   { id: 'nhentai', label: 'nHentai' },
+];
+
+/**
+ * Result ordering options for nHentai searches, mirroring nhentai.net's own
+ * sort controls. Only shown for the nHentai source (Hitomi has no equivalent).
+ */
+const NHENTAI_SORTS: { value: DoujinSort; label: string }[] = [
+  { value: 'default', label: 'Newest' },
+  { value: 'popular', label: 'Popular — all time' },
+  { value: 'popular-week', label: 'Popular — this week' },
+  { value: 'popular-today', label: 'Popular — today' },
 ];
 
 /** Human-facing display name for a doujin source. */
@@ -423,6 +434,9 @@ export function Downloader() {
   const [source, setSource] = React.useState<DoujinSource>('hitomi');
   const [query, setQuery] = React.useState('');
   const [searchKey, setSearchKey] = React.useState<string | null>(null);
+  // Result ordering for nHentai searches (ignored by other sources). Persisted
+  // across source switches so it applies the next time nHentai is searched.
+  const [sort, setSort] = React.useState<DoujinSort>('default');
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
 
   // Autocomplete dropdown state (nHentai tag/artist suggestions).
@@ -480,8 +494,10 @@ export function Downloader() {
   }, [query, source]);
 
   const { data: results, isFetching } = useQuery({
-    queryKey: ['doujin-search', source, searchKey],
-    queryFn: () => api.doujinSearch(source, searchKey!),
+    // `sort` is part of the key so changing it re-runs an already-committed
+    // search immediately (nHentai only; other sources ignore the value).
+    queryKey: ['doujin-search', source, searchKey, sort],
+    queryFn: () => api.doujinSearch(source, searchKey!, sort),
     enabled: searchKey !== null && searchKey.trim().length > 0,
   });
 
@@ -679,6 +695,19 @@ export function Downloader() {
                 </div>
               )}
             </div>
+            {/* Popularity ordering — nHentai only (mirrors nhentai.net's sort). */}
+            {source === 'nhentai' && (
+              <Select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as DoujinSort)}
+                title="Sort results"
+                className="w-44 shrink-0"
+              >
+                {NHENTAI_SORTS.map((s) => (
+                  <option key={s.value} value={s.value}>{s.label}</option>
+                ))}
+              </Select>
+            )}
             <Button type="submit" disabled={isFetching || !query.trim()}>
               {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
             </Button>

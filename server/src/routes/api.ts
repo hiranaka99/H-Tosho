@@ -33,7 +33,7 @@ import { getDownloaderSettings, setDownloaderSettings, type DownloaderSettings }
 import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
 import { rewriteHitomiCover } from './media.js';
-import type { DoujinSource } from '../downloader/types.js';
+import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
 
 const CREDENTIAL_FIELDS: Record<string, { key: string; label: string }[]> = {
   myanimelist: [{ key: 'clientId', label: 'Client ID' }],
@@ -368,13 +368,16 @@ api.get('/doujin/providers', (c) => c.json(listDoujinProviders()));
 
 /** Search a doujinshi source by keyword/tag/artist/id-or-url. */
 api.post('/doujin/search', async (c) => {
-  const body = (await c.req.json()) as { source: string; query: string };
+  const body = (await c.req.json()) as { source: string; query: string; sort?: DoujinSort };
   if (!body.source || !body.query?.trim()) return c.json({ error: 'source and query are required' }, 400);
   const provider = getDoujinProvider(body.source);
   if (!provider) return c.json({ error: `Unknown source: ${body.source}` }, 400);
+  // Optional popularity ordering (nHentai only; other providers ignore it).
+  // Unknown values fall back to the default ordering.
+  const sort: DoujinSort = body.sort && DOUJIN_SORTS.includes(body.sort) ? body.sort : 'default';
   try {
     // Request the full result set (both providers cap internally at ~1000).
-    const results = await provider.search(body.query, 1000);
+    const results = await provider.search(body.query, 1000, sort);
     // Route hitomi covers through the /media proxy so they carry the Referer
     // their CDN requires (browsers can't send it cross-origin).
     return c.json(results.map(rewriteHitomiCover));

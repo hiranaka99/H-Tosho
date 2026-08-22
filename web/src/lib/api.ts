@@ -130,6 +130,9 @@ export interface MatchOutcome {
 
 export type DoujinSource = 'hitomi' | 'nhentai';
 
+/** Result ordering for a source search (only nHentai supports popularity sorts). */
+export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today';
+
 export interface DoujinProvider {
   id: DoujinSource;
   name: string;
@@ -300,10 +303,10 @@ export const api = {
       body: JSON.stringify(s),
     }),
   doujinProviders: () => request<DoujinProvider[]>('/doujin/providers'),
-  doujinSearch: (source: DoujinSource, query: string) =>
+  doujinSearch: (source: DoujinSource, query: string, sort?: DoujinSort) =>
     request<DoujinSearchResult[]>('/doujin/search', {
       method: 'POST',
-      body: JSON.stringify({ source, query }),
+      body: JSON.stringify({ source, query, ...(sort && sort !== 'default' ? { sort } : {}) }),
     }),
   doujinSuggestions: (source: DoujinSource, query: string) =>
     request<DoujinSuggestion[]>('/doujin/suggestions', {

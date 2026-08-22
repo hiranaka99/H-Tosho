@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { getDownloaderSettings } from '../services/settings.js';
 import { fetchJson } from '../lib/http.js';
 import { extractGalleryId, toIsoDate } from './util.js';
-import type { DoujinGallery, DoujinProvider, DoujinSearchResult, DoujinSuggestion } from './types.js';
+import { DOUJIN_SORTS, type DoujinGallery, type DoujinProvider, type DoujinSearchResult, type DoujinSort, type DoujinSuggestion } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -247,9 +247,15 @@ export const nhentaiProvider: DoujinProvider = {
   name: 'nHentai',
   color: '#e91e63',
 
-  async search(query: string, limit = 24): Promise<DoujinSearchResult[]> {
+  async search(query: string, limit = 24, sort?: DoujinSort): Promise<DoujinSearchResult[]> {
     const q = query.trim();
     if (!q) return [];
+
+    // Optional popularity ordering, mirroring nhentai.net's own sort controls
+    // (`sort=popular` all time, `popular-week`, `popular-today`). Unknown or
+    // omitted values fall back to the API's default (newest-first).
+    const sortParam =
+      sort && sort !== 'default' && DOUJIN_SORTS.includes(sort) ? `&sort=${sort}` : '';
 
     // A bare gallery id / URL should resolve to that single gallery.
     if (/^\d+$/.test(q)) {
@@ -289,7 +295,7 @@ export const nhentaiProvider: DoujinProvider = {
 
     let page = 1;
     do {
-      const url = `${BASE}/api/v2/search?query=${encodeURIComponent(searchQuery)}&limit=50&page=${page}`;
+      const url = `${BASE}/api/v2/search?query=${encodeURIComponent(searchQuery)}&limit=50&page=${page}${sortParam}`;
       // Retry transient rate limits (429) / server errors with backoff so a
       // multi-page search doesn't fail on a single throttled request. Retries are
       // capped for BOTH 429 and 5xx — previously the 429 branch had no attempt

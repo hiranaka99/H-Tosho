@@ -6,6 +6,15 @@
 
 export type DoujinSource = 'hitomi' | 'nhentai';
 
+/**
+ * Optional result ordering for a source search. Only nHentai supports
+ * popularity sorting (mirroring nhentai.net's `sort=popular[-week|-today]`);
+ * other providers ignore the option and keep their default ordering.
+ */
+export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today';
+
+export const DOUJIN_SORTS: DoujinSort[] = ['default', 'popular', 'popular-week', 'popular-today'];
+
 /** A tag/artist/group autocomplete suggestion (as shown by the source's own search box). */
 export interface DoujinSuggestion {
   source: DoujinSource;
@@ -91,8 +100,8 @@ export interface DoujinProvider {
   color: string;
   /** Lookup by gallery id or URL string. */
   getGallery(idOrUrl: string): Promise<DoujinGallery>;
-  /** Keyword/tag/artist search. */
-  search(query: string, limit?: number): Promise<DoujinSearchResult[]>;
+  /** Keyword/tag/artist search. `sort` is only honored by providers that support it. */
+  search(query: string, limit?: number, sort?: DoujinSort): Promise<DoujinSearchResult[]>;
   /** Optional tag/artist autocomplete suggestions for a query prefix. */
   suggest?(query: string, limit?: number): Promise<DoujinSuggestion[]>;
 }
