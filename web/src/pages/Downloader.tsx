@@ -76,14 +76,6 @@ function translateQuery(query: string, from: DoujinSource, to: DoujinSource): st
   return out.join(' ');
 }
 
-/** Apply per-source search normalization (Hitomi appends an implicit English filter). */
-function normalizeForSearch(raw: string, source: DoujinSource): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return '';
-  if (source === 'hitomi' && !/language:/i.test(trimmed)) return `${trimmed} language:english`;
-  return trimmed;
-}
-
 /** Badge color per suggestion tag type (mirrors the nHentai search dropdown). */
 const SUGG_TYPE_STYLES: Record<string, string> = {
   artist: 'bg-violet-500/20 text-violet-300',
@@ -146,6 +138,14 @@ function formatBytes(bytes: number | null | undefined): string {
   return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+/** Format an ISO 8601 date string for display, or undefined when absent/invalid. */
+function formatDate(iso?: string | null): string | undefined {
+  if (!iso) return undefined;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toISOString().slice(0, 10);
+}
+
 function DownloadStatusBadge({ status }: { status: string }) {
   const map: Record<string, React.ReactNode> = {
     queued: <Badge tone="muted"><Circle className="h-3 w-3" /> Queued</Badge>,
@@ -176,6 +176,7 @@ function GalleryCard({ item, onOpen, onDownload, downloading }: { item: DoujinSe
     >
       <div className="relative">
         <Cover url={item.coverUrl} title={item.title} className="aspect-[3/4] w-full" />
+        {/* Show the gallery's language badge (e.g. "english", "japanese"). */}
         {item.language && (
           <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">
             <Languages className="h-3 w-3" /> {item.language}
@@ -305,6 +306,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading }: { item: 
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                   <MetaItem label="Pages" value={g.pageCount ? `${g.pageCount} pages` : null} />
                   <MetaItem label="Language" value={g.language} />
+                  <MetaItem label="Uploaded" value={formatDate(g.uploadedAt ?? item.uploadedAt)} />
                   <MetaItem label="Gallery ID" value={g.galleryId} />
                 </div>
 
@@ -557,25 +559,22 @@ export function Downloader() {
 
   const showDropdown = inputFocused && (suggestions.length > 0 || suggLoading);
 
-  // Commit a search, applying per-source normalization. For Hitomi this appends
-  // an implicit "language:english" filter (unless the user set one already) so
-  // results are scoped to English galleries without cluttering the input box.
+  // Commit a search. The query is sent verbatim (trimmed), matching how the
+  // sources' own search boxes behave — Hitomi defaults to "all languages" unless
+  // the user adds an explicit `language:` filter.
   function commitQuery(raw: string) {
-    // Normalization (e.g. Hitomi's implicit language:english filter) is applied
-    // only to the search key sent to the API, so it never clutters the input box.
-    const finalQuery = normalizeForSearch(raw, source);
-    if (!finalQuery) return;
-    setSearchKey(finalQuery);
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    setSearchKey(trimmed);
   }
 
   // Swap the active source, translating the current query into the target
-  // source's syntax for the displayed text. Per-source filters are applied only
-  // to the search key (background), so the box just reflects the translated syntax.
+  // source's syntax for the displayed text.
   function switchSource(next: DoujinSource) {
     if (next === source) return;
-    const translated = translateQuery(query, source, next);
+    const translated = translateQuery(query, source, next).trim();
     setQuery(translated);
-    setSearchKey(normalizeForSearch(translated, next) || null);
+    setSearchKey(translated || null);
     setSource(next);
   }
 

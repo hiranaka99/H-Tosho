@@ -145,6 +145,8 @@ export interface DoujinSearchResult {
   artists: string[];
   language?: string | null;
   pageCount?: number | null;
+  /** When the gallery was uploaded/published (ISO 8601 date string). */
+  uploadedAt?: string | null;
 }
 
 export interface DoujinSuggestion {
@@ -171,6 +173,8 @@ export interface DoujinGallery {
   genres?: string[];
   pageCount: number;
   url?: string;
+  /** When the gallery was uploaded/published (ISO 8601 date string). */
+  uploadedAt?: string | null;
 }
 
 export interface DownloaderSettings {

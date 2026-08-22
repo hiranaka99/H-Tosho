@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 
 import { getDownloaderSettings } from '../services/settings.js';
 import { fetchJson } from '../lib/http.js';
-import { extractGalleryId } from './util.js';
+import { extractGalleryId, toIsoDate } from './util.js';
 import type { DoujinGallery, DoujinProvider, DoujinSearchResult, DoujinSuggestion } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -235,6 +235,8 @@ interface ApiGalleryDetail {
   num_pages?: number;
   tags?: ApiTag[];
   pages?: ApiPage[];
+  /** Upload date as unix seconds. */
+  upload_date?: number;
 }
 
 export const nhentaiProvider: DoujinProvider = {
@@ -273,11 +275,11 @@ export const nhentaiProvider: DoujinProvider = {
     const cdn = await getCdn();
     const want = Math.max(limit, 1);
     // The API caps `limit` at 50 per request and paginates via `page`. Walk the
-    // pages until we've collected `want` results or run out of pages, so callers
-    // receive the full result set rather than just the first page. A hard cap
-    // keeps open-ended queries (e.g. a single common tag) from issuing hundreds
-    // of requests and stalling the UI.
-    const MAX_RESULTS = 1000;
+    // pages until we've collected `want` results or run out of pages. A hard cap
+    // keeps open-ended queries (e.g. a single common tag) from issuing dozens of
+    // sequential page requests — which is slow and easily trips nHentai's rate
+    // limits, especially without a valid API key.
+    const MAX_RESULTS = 250;
     const target = Math.min(want, MAX_RESULTS);
     const out: DoujinSearchResult[] = [];
     const seen = new Set<string>();
@@ -286,12 +288,20 @@ export const nhentaiProvider: DoujinProvider = {
     do {
       const url = `${BASE}/api/v2/search?query=${encodeURIComponent(searchQuery)}&limit=50&page=${page}`;
       // Retry transient rate limits (429) / server errors with backoff so a
-      // multi-page search doesn't fail on a single throttled request.
+      // multi-page search doesn't fail on a single throttled request. Retries are
+      // capped for BOTH 429 and 5xx — previously the 429 branch had no attempt
+      // guard, so a sustained throttle retried forever (ever-growing backoff) and
+      // hung the whole search well past a minute.
       interface SearchFetchResult { status: number; data: ApiSearchResponse | null }
       let res: SearchFetchResult = await fetchJson<ApiSearchResponse>(url, { headers: headers() });
-      for (let attempt = 0; res.status === 429 || res.status >= 500 && attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 3 && (res.status === 429 || res.status >= 500); attempt++) {
         await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
         res = await fetchJson<ApiSearchResponse>(url, { headers: headers() });
+      }
+      if (res.status === 429) {
+        throw new Error(
+          'nHentai is rate-limiting this search. Set a valid nHentai API key in Settings to raise the limit, then try again.',
+        );
       }
       if (res.status !== 200 || !Array.isArray(res.data?.result)) {
         throw new Error(`nHentai search failed (HTTP ${res.status})`);
@@ -441,6 +451,7 @@ export const nhentaiProvider: DoujinProvider = {
       pageCount,
       pages,
       pageFallbacks,
+      uploadedAt: toIsoDate(g.upload_date),
       url: `${BASE}/g/${id}/`,
     };
   },

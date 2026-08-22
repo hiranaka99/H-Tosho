@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { fetchBuffer } from '../lib/http.js';
-import { extractGalleryId, stripTags } from './util.js';
+import { extractGalleryId, stripTags, toIsoDate } from './util.js';
 import type { DoujinGallery, DoujinProvider, DoujinSearchResult, DoujinSuggestion } from './types.js';
 
 /**
@@ -320,11 +320,14 @@ async function fetchNozomiIds(f: NozomiFilter): Promise<number[]> {
  */
 function nozomiFilterFromTerm(term: string): NozomiFilter | null {
   const [ns, ...rest] = term.split(':');
-  const val = rest.join(':');
+  // The `.nozomi` endpoint is case-sensitive (its indices are built from
+  // lowercased tags), so normalize the area and tag value to lowercase.
+  const val = rest.join(':').toLowerCase();
   if (!val) return null;
-  if (ns === 'female' || ns === 'male') return { area: 'tag', tag: term, language: 'all' };
-  if (ns === 'language') return { area: undefined, tag: 'index', language: val };
-  return { area: ns, tag: val, language: 'all' };
+  const area = ns.toLowerCase();
+  if (area === 'female' || area === 'male') return { area: 'tag', tag: term.toLowerCase(), language: 'all' };
+  if (area === 'language') return { area: undefined, tag: 'index', language: val };
+  return { area, tag: val, language: 'all' };
 }
 
 /** Union a list of id sets, preserving first-seen (newest-first) order. */
@@ -384,10 +387,15 @@ async function searchGalleryIds(query: string, version: string): Promise<number[
   const terms = tokenizeQuery(query);
   if (!terms.length) return [];
 
+  // Hitomi's keyword index is built from lowercased terms, so the B-tree lookup
+  // is case-sensitive. Lowercase bare keywords (e.g. "Chibikko" → "chibikko") so
+  // a naturally-capitalized title still matches.
+  const btreeTerm = (t: { val: string }) => getGalleryIdsForTerm(t.val.toLowerCase(), version);
+
   // No namespaced term → plain keyword search (union of per-term lookups, so
   // "one piece" returns galleries matching either word).
   if (!terms.some((t) => t.ns)) {
-    const sets = await Promise.all(terms.map((t) => getGalleryIdsForTerm(t.val, version)));
+    const sets = await Promise.all(terms.map(btreeTerm));
     return unionIds(sets);
   }
 
@@ -399,7 +407,7 @@ async function searchGalleryIds(query: string, version: string): Promise<number[
         const f = nozomiFilterFromTerm(`${t.ns}:${t.val}`);
         return f ? fetchNozomiIds(f) : [];
       }
-      return getGalleryIdsForTerm(t.val, version);
+      return btreeTerm(t);
     })
   );
   return intersectIds(sets);
@@ -476,6 +484,7 @@ export const hitomiProvider: DoujinProvider = {
           artists: g.artists,
           pageCount: g.pageCount,
           url: g.url,
+          uploadedAt: g.uploadedAt,
         },
       ];
     }
@@ -509,6 +518,7 @@ export const hitomiProvider: DoujinProvider = {
               artists: (info.artists ?? []).map(tagValue).filter(Boolean).slice(0, 8),
               pageCount: files.length || undefined,
               url: `${BASE}/${id}`,
+              uploadedAt: toIsoDate(info.date),
             });
           } catch {
             /* skip failed lookups */
@@ -598,6 +608,7 @@ export const hitomiProvider: DoujinProvider = {
     const series = parodies[0] ?? undefined;
     const language = typeof info.language === 'string' && info.language ? info.language : undefined;
     const tags = (info.tags ?? []).map(tagValue).filter(Boolean).slice(0, 40);
+    const uploadedAt = toIsoDate(info.date);
 
     return {
       source: 'hitomi',
@@ -613,6 +624,7 @@ export const hitomiProvider: DoujinProvider = {
       pageCount: files.length,
       pages,
       pageFallbacks,
+      uploadedAt,
       // The image CDN rejects requests that lack a hitomi.la Referer.
       requestHeaders: { Referer: `${BASE}/` },
       url: `${BASE}/${id}`,

@@ -120,3 +120,28 @@ export function padPage(index: number, total: number): string {
   const width = total >= 1000 ? 4 : total >= 100 ? 3 : 2;
   return String(index).padStart(width, '0');
 }
+
+/**
+ * Normalize a provider-supplied upload/publish date into an ISO 8601 string
+ * (UTC), or undefined when the value is missing/unparseable. Handles the two
+ * shapes the doujin sources use:
+ *   - nHentai v2 `upload_date`: unix **seconds** (e.g. 1403964737).
+ *   - Hitomi `date`: a string like `"2026-08-22 12:53:00-05"` (space separator
+ *     and a short `±HH` offset, which is not valid ISO on its own).
+ */
+export function toIsoDate(raw: unknown): string | undefined {
+  if (raw == null || raw === '') return undefined;
+  let d: Date;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    // Treat small numbers as unix seconds, large ones as milliseconds.
+    const ms = raw < 1e12 ? raw * 1000 : raw;
+    d = new Date(ms);
+  } else {
+    let norm = String(raw).trim().replace(' ', 'T');
+    // Expand a short "±HH" trailing offset into "±HH:00".
+    norm = norm.replace(/([+-]\d{2})$/, '$1:00');
+    d = new Date(norm);
+  }
+  if (Number.isNaN(d.getTime())) return undefined;
+  return d.toISOString();
+}

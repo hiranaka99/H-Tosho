@@ -30,6 +30,8 @@ export interface DoujinSearchResult {
   pageCount?: number;
   /** Original gallery URL (for user reference). */
   url?: string;
+  /** When the gallery was uploaded/published, as an ISO 8601 date string. */
+  uploadedAt?: string;
 }
 
 /** Full gallery metadata + image list resolved by a provider fetcher. */
