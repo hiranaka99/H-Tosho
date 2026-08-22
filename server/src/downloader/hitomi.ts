@@ -344,10 +344,8 @@ function unionIds(sets: number[][]): number[] {
 
 /** AND-intersect a list of id sets (empty result if any set is empty). */
 function intersectIds(sets: number[][]): number[] {
-  const nonEmpty = sets.filter((s) => s.length > 0);
-  if (!nonEmpty.length) return [];
   let result: number[] | null = null;
-  for (const set of nonEmpty) {
+  for (const set of sets) {
     const asSet = new Set(set);
     result = result === null ? [...set] : result.filter((id) => asSet.has(id));
     if (result.length === 0) return [];
@@ -356,23 +354,40 @@ function intersectIds(sets: number[][]): number[] {
 }
 
 /**
+ * Split a query into terms the way hitomi.la's results.js does: whitespace is
+ * the term separator, and underscores act as escaped spaces *inside* a term
+ * ("To enter a tag name with spaces, use the _ character"). So
+ * `female:schoolgirl_uniform` stays one namespaced term whose value is
+ * "schoolgirl uniform", while bare keywords are de-underscored for the B-tree.
+ */
+function tokenizeQuery(query: string): { ns?: string; val: string }[] {
+  return query
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((t) => {
+      const ci = t.indexOf(':');
+      if (ci <= 0) return { val: t.replace(/_/g, ' ') };
+      // Keep the namespace intact; de-underscore only the tag value.
+      return { ns: t.slice(0, ci), val: t.slice(ci + 1).replace(/_/g, ' ') };
+    });
+}
+
+/**
  * Search gallery ids for a query. Plain keywords use the B-tree index; any
  * namespaced/filtered term (`ns:tag`) is resolved via the nozomi endpoint. When
  * the query mixes terms (e.g. `artist:charu language:english`), each term is
  * resolved independently and the id sets are AND-intersected, mirroring how the
- * live site combines filters.
+ * live site combines filters. A term that matches nothing yields zero results.
  */
 async function searchGalleryIds(query: string, version: string): Promise<number[]> {
-  const q = query.replace(/_/g, ' ').trim();
-  if (!q) return [];
-  const terms = q.split(/\s+/).filter(Boolean);
+  const terms = tokenizeQuery(query);
   if (!terms.length) return [];
 
   // No namespaced term → plain keyword search (union of per-term lookups, so
   // "one piece" returns galleries matching either word).
-  if (!terms.some((t) => t.includes(':'))) {
-    if (terms.length === 1) return getGalleryIdsForTerm(terms[0], version);
-    const sets = await Promise.all(terms.map((t) => getGalleryIdsForTerm(t, version)));
+  if (!terms.some((t) => t.ns)) {
+    const sets = await Promise.all(terms.map((t) => getGalleryIdsForTerm(t.val, version)));
     return unionIds(sets);
   }
 
@@ -380,11 +395,11 @@ async function searchGalleryIds(query: string, version: string): Promise<number[
   // B-tree for bare keywords).
   const sets = await Promise.all(
     terms.map(async (t) => {
-      if (t.includes(':')) {
-        const f = nozomiFilterFromTerm(t);
+      if (t.ns) {
+        const f = nozomiFilterFromTerm(`${t.ns}:${t.val}`);
         return f ? fetchNozomiIds(f) : [];
       }
-      return getGalleryIdsForTerm(t, version);
+      return getGalleryIdsForTerm(t.val, version);
     })
   );
   return intersectIds(sets);
