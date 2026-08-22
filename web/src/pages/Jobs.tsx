@@ -48,6 +48,14 @@ const LOG_COLOR: Record<string, string> = {
   success: 'text-success',
 };
 
+/** Render a job's stored result (arbitrary JSON from the server) as displayable text. */
+function jobResultText(j: Job): string {
+  if (j.result != null) {
+    return typeof j.result === 'string' ? j.result : JSON.stringify(j.result);
+  }
+  return j.errorMessage ?? '';
+}
+
 function LogConsole({ logs }: { logs: JobLog[] }) {
   const ref = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
@@ -129,8 +137,8 @@ export function Jobs() {
                           </span>
                         </div>
                       </td>
-                      <td className="max-w-[28%] truncate p-2 text-xs text-muted" title={j.result ?? j.errorMessage ?? ''}>
-                        {j.result ?? j.errorMessage ?? ''}
+                      <td className="max-w-[28%] truncate p-2 text-xs text-muted" title={jobResultText(j)}>
+                        {jobResultText(j)}
                       </td>
                       <td className="p-2 text-xs text-muted" title={shortDate(j.createdAt)}>
                         {timeAgo(j.createdAt)}

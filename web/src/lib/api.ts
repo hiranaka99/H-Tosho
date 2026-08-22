@@ -60,7 +60,8 @@ export interface Job {
   status: string;
   progressCurrent: number;
   progressTotal: number;
-  result: string | null;
+  /** Arbitrary JSON summary stored by the job executor (often an object). */
+  result: unknown;
   errorMessage: string | null;
   createdAt: string;
   startedAt?: string | null;

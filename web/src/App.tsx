@@ -9,6 +9,34 @@ import { Settings } from './pages/Settings';
 import { DownloadTray } from './components/DownloadTray';
 import { cn } from './lib/utils';
 
+/** Catches render errors inside a page so the rest of the app (sidebar etc.) stays intact. */
+class PageErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
+          <p className="font-medium">Something went wrong on this page.</p>
+          <p className="max-w-md break-all text-sm text-muted">{this.state.error.message}</p>
+          <button
+            type="button"
+            onClick={() => this.setState({ error: null })}
+            className="mt-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary-hover"
+          >
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/libraries', label: 'Libraries', icon: Library },
@@ -54,15 +82,17 @@ export default function App() {
         <div className="border-t border-border p-3 text-[10px] text-muted">v1.0.0</div>
       </aside>
       <main className={cn('flex-1 overflow-y-auto', inLibrary ? 'p-6' : 'p-8')}>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/libraries" element={<Libraries />} />
-          <Route path="/libraries/:libraryId" element={<Libraries />} />
-          <Route path="/downloader" element={<Downloader />} />
-          <Route path="/jobs" element={<Jobs />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="*" element={<Dashboard />} />
-        </Routes>
+        <PageErrorBoundary key={location.pathname}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/libraries" element={<Libraries />} />
+            <Route path="/libraries/:libraryId" element={<Libraries />} />
+            <Route path="/downloader" element={<Downloader />} />
+            <Route path="/jobs" element={<Jobs />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="*" element={<Dashboard />} />
+          </Routes>
+        </PageErrorBoundary>
       </main>
       <DownloadTray />
     </div>
