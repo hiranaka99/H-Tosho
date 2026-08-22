@@ -6,6 +6,7 @@ import { Libraries } from './pages/Libraries';
 import { Downloader } from './pages/Downloader';
 import { Jobs } from './pages/Jobs';
 import { Settings } from './pages/Settings';
+import { DownloadTray } from './components/DownloadTray';
 import { cn } from './lib/utils';
 
 const NAV = [
@@ -63,6 +64,7 @@ export default function App() {
           <Route path="*" element={<Dashboard />} />
         </Routes>
       </main>
+      <DownloadTray />
     </div>
   );
 }

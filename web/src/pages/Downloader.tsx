@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
   Search,
   Download as DownloadIcon,
@@ -26,7 +26,7 @@ import {
   Tags,
 } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
-import { useDownloadEvents } from '../lib/useDownloadEvents';
+import { useDownloads } from '../lib/DownloadsContext';
 import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, EmptyState, Spinner, ProgressBar, Dialog, DialogContent } from '../components/ui';
 import { cn, timeAgo } from '../lib/utils';
 
@@ -367,9 +367,8 @@ function QueueRow({ task, onAction }: { task: DownloadTask; onAction: (a: 'pause
 // ---------------- Page ----------------
 
 export function Downloader() {
-  const qc = useQueryClient();
-  // Real-time download progress via Server-Sent Events (REST polling below is the fallback).
-  const liveConnected = useDownloadEvents();
+  // Shared app-wide download state (live via SSE + polling fallback) and actions.
+  const { tasks, active, liveConnected, startDownload, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
   const [source, setSource] = React.useState<DoujinSource>('nhentai');
   const [query, setQuery] = React.useState('');
   const [searchKey, setSearchKey] = React.useState<string | null>(null);
@@ -440,28 +439,27 @@ export function Downloader() {
     enabled: searchKey !== null && searchKey.trim().length > 0,
   });
 
-  // Poll as a lightweight fallback; live progress is driven by the SSE stream above.
-  const { data: tasks = [] } = useQuery({ queryKey: ['downloads'], queryFn: api.downloads, refetchInterval: 5000 });
+  // Tracks which gallery a start-download is in flight for (for button spinners).
+  const [pendingKey, setPendingKey] = React.useState<string | null>(null);
 
-  const startDownload = useMutation({
-    mutationFn: (item: DoujinSearchResult) => api.startDownload({ source: item.source, galleryId: item.galleryId, title: item.title }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['downloads'] }),
-  });
+  async function doStartDownload(item: DoujinSearchResult) {
+    const key = `${item.source}:${item.galleryId}`;
+    setPendingKey(key);
+    try {
+      await startDownload({ source: item.source, galleryId: item.galleryId, title: item.title ?? undefined });
+    } catch {
+      /* surfaced via toast */
+    } finally {
+      setPendingKey(null);
+    }
+  }
 
-  const act = useMutation({
-    mutationFn: ({ id, action }: { id: number; action: 'pause' | 'resume' | 'cancel' | 'retry' }) => api.downloadAction(id, action),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['downloads'] }),
-  });
-
-  const clearCompleted = useMutation({
-    mutationFn: api.clearCompletedDownloads,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['downloads'] }),
-  });
-
-  const removeTask = useMutation({
-    mutationFn: (id: number) => api.deleteDownload(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['downloads'] }),
-  });
+  const act = (id: number, a: 'pause' | 'resume' | 'cancel' | 'retry') => {
+    if (a === 'pause') pause(id);
+    else if (a === 'resume') resume(id);
+    else if (a === 'cancel') cancel(id);
+    else retry(id);
+  };
 
   function selectSuggestion(s: DoujinSuggestion) {
     const el = inputRef.current;
@@ -520,7 +518,6 @@ export function Downloader() {
     if (query.trim()) setSearchKey(query.trim());
   };
 
-  const active = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued');
   const finished = tasks.filter((t) => t.status !== 'downloading' && t.status !== 'queued');
 
   return (
@@ -642,8 +639,8 @@ export function Downloader() {
                     key={item.source + item.galleryId}
                     item={item}
                     onOpen={() => setSelected(item)}
-                    downloading={startDownload.isPending && startDownload.variables?.galleryId === item.galleryId}
-                    onDownload={() => startDownload.mutate(item)}
+                    downloading={pendingKey === `${item.source}:${item.galleryId}`}
+                    onDownload={() => doStartDownload(item)}
                   />
                 ))}
               </div>
@@ -659,8 +656,8 @@ export function Downloader() {
         <GalleryDetailModal
           item={selected}
           onClose={() => setSelected(null)}
-          downloading={startDownload.isPending && startDownload.variables?.galleryId === selected.galleryId}
-          onDownload={() => startDownload.mutate(selected)}
+          downloading={pendingKey === `${selected.source}:${selected.galleryId}`}
+          onDownload={() => doStartDownload(selected)}
         />
       )}
 
@@ -677,7 +674,7 @@ export function Downloader() {
             {active.length > 0 && <Badge tone="info">{active.length} active</Badge>}
           </CardTitle>
           {finished.some((t) => t.status === 'completed') && (
-            <Button size="sm" variant="outline" onClick={() => clearCompleted.mutate()} disabled={clearCompleted.isPending}>
+            <Button size="sm" variant="outline" onClick={() => clearCompleted()}>
               <Trash2 className="h-3.5 w-3.5" /> Clear completed
             </Button>
           )}
@@ -690,7 +687,7 @@ export function Downloader() {
               {active.length > 0 && (
                 <div className="flex flex-col gap-2">
                   {active.map((t) => (
-                    <QueueRow key={t.id} task={t} onAction={(a) => act.mutate({ id: t.id, action: a })} />
+                    <QueueRow key={t.id} task={t} onAction={(a) => act(t.id, a)} />
                   ))}
                 </div>
               )}
@@ -699,9 +696,9 @@ export function Downloader() {
                   <p className="text-xs font-semibold text-muted">History</p>
                   {finished.map((t) => (
                     <div key={t.id} className="relative">
-                      <QueueRow task={t} onAction={(a) => act.mutate({ id: t.id, action: a })} />
+                      <QueueRow task={t} onAction={(a) => act(t.id, a)} />
                       <button
-                        onClick={() => removeTask.mutate(t.id)}
+                        onClick={() => removeTask(t.id)}
                         title="Remove from list"
                         className="absolute right-2 top-2 rounded-md p-1 text-muted hover:bg-surface-2 hover:text-danger"
                       >
