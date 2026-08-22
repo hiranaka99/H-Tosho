@@ -49,7 +49,7 @@ async function fetchPageWithRetry(url: string, headers: Record<string, string>, 
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
-      return await fetchBufferStreaming(url, headers, handlers);
+      return await fetchBufferStreaming(url, { headers }, handlers);
     } catch (err) {
       lastErr = err;
       if (!isTransientError(err)) throw err;
