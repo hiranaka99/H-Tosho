@@ -1,0 +1,228 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, it } from 'node:test';
+import { eq } from 'drizzle-orm';
+
+// Isolated DB before the db module loads.
+process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-fixes-'));
+
+const originalFetch = globalThis.fetch;
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
+
+const { initDb, getDb, schema } = await import('../src/db/index.js');
+initDb();
+
+const { fetchJson } = await import('../src/lib/http.js');
+const { jobQueue } = await import('../src/jobs/queue.js');
+const { testNotification } = await import('../src/notify/dispatcher.js');
+const { setNotificationSettings, getNotificationSettings, parseNotificationSettings } = await import('../src/services/settings.js');
+const { anilistProvider } = await import('../src/providers/anilist.js');
+const { mediaRouter, mediaProxyUrl } = await import('../src/routes/media.js');
+const { searchCatalog, invalidateCatalogCache } = await import('../src/match/mangadexCatalog.js');
+
+describe('fetchJson error contract', () => {
+  it('throws on non-2xx by default', async () => {
+    globalThis.fetch = (async () => Response.json({ error: 'boom' }, { status: 500 })) as typeof fetch;
+    await assert.rejects(() => fetchJson('https://example.com/x'), /HTTP 500/);
+  });
+
+  it('returns the response when raw is set', async () => {
+    globalThis.fetch = (async () => Response.json({ error: 'boom' }, { status: 429 })) as typeof fetch;
+    const res = await fetchJson<{ error: string }>('https://example.com/x', {}, 5_000, { raw: true });
+    assert.equal(res.status, 429);
+    assert.deepEqual(res.data, { error: 'boom' });
+  });
+
+  it('strips query strings from the thrown URL (no credential leak)', async () => {
+    globalThis.fetch = (async () => new Response('nope', { status: 400 })) as typeof fetch;
+    await assert.rejects(
+      () => fetchJson('https://example.com/api/Image/series-cover?seriesId=1&apiKey=SECRET'),
+      (e: Error) => e.message.includes('HTTP 400') && !e.message.includes('SECRET'),
+    );
+  });
+});
+
+describe('notification settings validation', () => {
+  it('returns full defaults for malformed stored rows', () => {
+    getDb()
+      .insert(schema.keyValueStore)
+      .values({ key: 'notifications', valueJson: '{"discord":{"enabled":true}}' })
+      .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: '{"discord":{"enabled":true}}' } })
+      .run();
+    const s = getNotificationSettings();
+    assert.deepEqual(s, { discord: { enabled: false, webhookUrl: '' }, apprise: { enabled: false, url: '' } });
+  });
+
+  it('rejects wrong shapes in parseNotificationSettings', () => {
+    assert.equal(parseNotificationSettings(null), null);
+    assert.equal(parseNotificationSettings({}), null);
+    assert.equal(parseNotificationSettings({ discord: { enabled: true }, apprise: { enabled: false, url: '' } }), null);
+    const ok = parseNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://x' }, apprise: { enabled: false, url: '' } });
+    assert.ok(ok);
+  });
+});
+
+describe('dispatcher status handling', () => {
+  it('reports a bad Discord webhook as a failure, not ok', async () => {
+    setNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://discord.com/api/webhooks/bad' }, apprise: { enabled: false, url: '' } });
+    globalThis.fetch = (async () => new Response('forbidden', { status: 403 })) as typeof fetch;
+    const out = await testNotification();
+    assert.match(out.discord, /HTTP 403/);
+    assert.equal(out.apprise, 'disabled');
+  });
+
+  it('retries once after Retry-After on 429', async () => {
+    setNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://discord.com/api/webhooks/rate' }, apprise: { enabled: false, url: '' } });
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      if (calls === 1) return new Response('rate limited', { status: 429, headers: { 'retry-after': '1' } });
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const out = await testNotification();
+    assert.equal(out.discord, 'ok');
+    assert.equal(calls, 2);
+  });
+
+  it('reports an unreachable Apprise endpoint', async () => {
+    setNotificationSettings({ discord: { enabled: false, webhookUrl: '' }, apprise: { enabled: true, url: 'http://127.0.0.1:1/apprise' } });
+    globalThis.fetch = (async () => {
+      throw new Error('fetch failed');
+    }) as unknown as typeof fetch;
+    const out = await testNotification();
+    assert.match(out.apprise, /unreachable/);
+  });
+});
+
+describe('job queue fixes', () => {
+  function insertJob(status: string): number {
+    const res = getDb()
+      .insert(schema.jobs)
+      .values({ type: 'scan-new', payloadJson: '{}', status })
+      .run();
+    return Number(res.lastInsertRowid);
+  }
+
+  it('active() includes queued and running jobs', () => {
+    const q = insertJob('queued');
+    const r = insertJob('running');
+    insertJob('completed');
+    const ids = jobQueue.active().map((j) => j.id);
+    assert.ok(ids.includes(q));
+    assert.ok(ids.includes(r));
+  });
+
+  it('cancel of a just-claimed queued job falls back to the checkpoint path', () => {
+    const id = insertJob('queued');
+    // Simulate claimNext racing ahead: the row is running by the time cancel runs.
+    getDb().update(schema.jobs).set({ status: 'running' }).where(eq(schema.jobs.id, id)).run();
+    assert.equal(jobQueue.cancel(id), true);
+    assert.equal(jobQueue.isCancelRequested(id), true);
+  });
+
+  it('cancel of a finished job returns false', () => {
+    const id = insertJob('completed');
+    assert.equal(jobQueue.cancel(id), false);
+  });
+});
+
+describe('AniList provider fixes', () => {
+  it('queries Media by id without a MANGA type filter (NOVEL works)', async () => {
+    let capturedQuery = '';
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}'));
+      capturedQuery = String(body.query ?? '');
+      return Response.json({
+        data: {
+          Media: {
+            id: 42,
+            title: { romaji: 'Some Novel' },
+            format: 'NOVEL',
+            coverImage: {},
+            description: '<p>a novel</p>',
+            averageScore: 80,
+            startDate: { year: 2020 },
+            genres: [],
+            tags: [],
+            studios: null,
+            status: 'FINISHED',
+          },
+        },
+      });
+    }) as typeof fetch;
+
+    const meta = await anilistProvider.getSeriesMetadata('42');
+    assert.ok(!capturedQuery.includes('type: MANGA'), 'query must not hardcode the MANGA type');
+    assert.equal(meta.type, 'NOVEL');
+  });
+
+  it('surfaces GraphQL errors instead of returning empty results', async () => {
+    globalThis.fetch = (async () =>
+      Response.json({ errors: [{ message: 'Field "foo" is not defined on type "Query"' }] })) as typeof fetch;
+    await assert.rejects(() => anilistProvider.search('anything'), /GraphQL error/);
+  });
+});
+
+describe('media proxy allowlist', () => {
+  const app = mediaRouter();
+  const u = (url: string): string => Buffer.from(url, 'utf8').toString('base64url');
+
+  it('rejects non-allowlisted hosts and IP literals', async () => {
+    globalThis.fetch = (async () => new Response('x')) as typeof fetch;
+    assert.equal((await app.request(`/media?u=${u('http://169.254.169.254/latest/meta-data')}`)).status, 400);
+    assert.equal((await app.request(`/media?u=${u('https://evil.example.com/x.png')}`)).status, 400);
+    assert.equal((await app.request('/media?u=not-base64!!')).status, 400);
+  });
+
+  it('proxies allowlisted CDN hosts', async () => {
+    globalThis.fetch = (async () => new Response('fakeimg', { status: 200, headers: { 'content-type': 'image/png' } })) as typeof fetch;
+    const res = await app.request(`/media?u=${u('https://a1.gold-usergeneratedcontent.net/b1/abc.avif')}`);
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), 'fakeimg');
+  });
+
+  it('does not follow redirects to disallowed hosts', async () => {
+    globalThis.fetch = (async () => new Response(null, { status: 302, headers: { location: 'https://evil.example.com/x' } })) as typeof fetch;
+    const res = await app.request(`/media?u=${u('https://uploads.mangadex.org/covers/abc/1.png')}`);
+    assert.equal(res.status, 502);
+  });
+
+  it('mediaProxyUrl produces a base64url target', () => {
+    const proxied = mediaProxyUrl('https://uploads.mangadex.org/covers/abc/1.png');
+    assert.equal(Buffer.from(proxied.slice('/media?u='.length), 'base64url').toString('utf8'), 'https://uploads.mangadex.org/covers/abc/1.png');
+  });
+});
+
+describe('catalog scoring pre-filter', () => {
+  it('keeps short fuzzy matches but skips zero-token long pairs', () => {
+    invalidateCatalogCache();
+    const db = getDb();
+    db.delete(schema.mangadexCatalog).run();
+    // Long single-word titles, one edit apart, zero shared tokens: below the floor even with full scoring.
+    db.insert(schema.mangadexCatalog)
+      .values({ mangaId: 'long-fuzzy', titleEn: 'fuderoosiss', altTitlesJson: '[]', mdUpdatedAt: new Date().toISOString(), fetchedAt: new Date().toISOString() })
+      .run();
+    // Long pair sharing no tokens at all — must be skipped (score 0, not a floor-level false positive).
+    db.insert(schema.mangadexCatalog)
+      .values({ mangaId: 'zero-token', titleEn: 'totally unrelated very long catalog name words', altTitlesJson: '[]', mdUpdatedAt: new Date().toISOString(), fetchedAt: new Date().toISOString() })
+      .run();
+    // Normal containment match must still work.
+    db.insert(schema.mangadexCatalog)
+      .values({ mangaId: 'containment', titleEn: 'at home harem fudeoro sisters', altTitlesJson: '[]', mdUpdatedAt: new Date().toISOString(), fetchedAt: new Date().toISOString() })
+      .run();
+
+    const contained = searchCatalog('fudeoro sisters');
+    assert.ok(contained.some((c) => c.providerSeriesId === 'containment' && c.score >= 0.9), 'containment match preserved');
+
+    const zeroToken = searchCatalog('completely different short title alpha beta');
+    assert.ok(!zeroToken.some((c) => c.providerSeriesId === 'zero-token'), 'zero-token long pair must not surface');
+
+    // Short one-edit romanization variant (len <= 12) keeps full scoring.
+    const fuzzy = searchCatalog('fuderoosis');
+    assert.ok(fuzzy.some((c) => c.providerSeriesId === 'long-fuzzy'), 'short fuzzy match preserved');
+  });
+});

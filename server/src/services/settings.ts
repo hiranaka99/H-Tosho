@@ -22,6 +22,8 @@ export interface AggregationOptions {
   /** Push per-volume cover art (MangaDex) onto matching Kavita volumes. */
   replaceVolumeCovers: boolean;
   lockCovers: boolean;
+  /** Lock pushed metadata fields in Kavita so its own sync does not overwrite them. */
+  lockMetadata: boolean;
 }
 
 export const DEFAULT_AGGREGATION: AggregationOptions = {
@@ -30,6 +32,7 @@ export const DEFAULT_AGGREGATION: AggregationOptions = {
   replaceCover: true,
   replaceVolumeCovers: true,
   lockCovers: false,
+  lockMetadata: true,
 };
 
 export interface LibraryOverride {
@@ -249,20 +252,49 @@ export function setPollInterval(minutes: number): void {
     .run();
 }
 
-export function getNotificationSettings(): {
+/** Notification delivery configuration. */
+export interface NotificationSettings {
   discord: { enabled: boolean; webhookUrl: string };
   apprise: { enabled: boolean; url: string };
-} {
-  const db = getDb();
-  const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'notifications')).get();
-  if (!row) return { discord: { enabled: false, webhookUrl: '' }, apprise: { enabled: false, url: '' } };
-  return JSON.parse(row.valueJson);
 }
 
-export function setNotificationSettings(s: {
-  discord: { enabled: boolean; webhookUrl: string };
-  apprise: { enabled: boolean; url: string };
-}): void {
+export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
+  discord: { enabled: false, webhookUrl: '' },
+  apprise: { enabled: false, url: '' },
+};
+
+/**
+ * Validate and normalize a stored or submitted notification config. Returns
+ * null when the shape is wrong so callers can reject (400) or fall back to
+ * defaults instead of crashing on missing fields.
+ */
+export function parseNotificationSettings(v: unknown): NotificationSettings | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  const discord = o.discord as Record<string, unknown> | undefined;
+  const apprise = o.apprise as Record<string, unknown> | undefined;
+  if (!discord || typeof discord.enabled !== 'boolean' || typeof discord.webhookUrl !== 'string') return null;
+  if (!apprise || typeof apprise.enabled !== 'boolean' || typeof apprise.url !== 'string') return null;
+  return {
+    discord: { enabled: discord.enabled, webhookUrl: discord.webhookUrl },
+    apprise: { enabled: apprise.enabled, url: apprise.url },
+  };
+}
+
+export function getNotificationSettings(): NotificationSettings {
+  const db = getDb();
+  const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'notifications')).get();
+  if (!row) return structuredClone(DEFAULT_NOTIFICATIONS);
+  try {
+    const parsed = parseNotificationSettings(JSON.parse(row.valueJson));
+    if (parsed) return parsed;
+  } catch {
+    // malformed row — fall through to defaults
+  }
+  return structuredClone(DEFAULT_NOTIFICATIONS);
+}
+
+export function setNotificationSettings(s: NotificationSettings): void {
   const db = getDb();
   db.insert(schema.keyValueStore)
     .values({ key: 'notifications', valueJson: JSON.stringify(s) })

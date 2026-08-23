@@ -18,6 +18,11 @@ interface AniListMedia {
   studios: { nodes: { name: string }[] } | null;
   status: string;
 }
+interface GqlEnvelope<TData> {
+  data?: TData | null;
+  errors?: { message?: string }[];
+}
+
 
 /**
  * AniList (GraphQL) — primary source for manga & light novel metadata:
@@ -36,20 +41,25 @@ class AniListProvider extends BaseProvider {
   ];
   protected baseUrl = API_URL;
 
-  private gql(query: string, variables: Record<string, unknown>): Promise<any> {
-    return this.getPost<any>('/graphql', { query, variables }, {
+  private async gql<TData>(query: string, variables: Record<string, unknown>): Promise<GqlEnvelope<TData>> {
+    const result = await this.getPost<GqlEnvelope<TData>>('/graphql', { query, variables }, {
       'Content-Type': 'application/json',
     });
+    // GraphQL can return validation/execution errors with HTTP 200 — surface them
+    // instead of silently treating the response as an empty result.
+    const err = result.errors?.[0]?.message;
+    if (err) throw new Error(`AniList GraphQL error: ${String(err).slice(0, 240)}`);
+    return result;
   }
 
   async testConnection(): Promise<void> {
-    await this.gql('{ Media(id: 1) { id } }', {});
+    await this.gql<{ Media?: { id: number } | null }>('{ Media(id: 1) { id } }', {});
   }
 
   async search(query: string, type?: string): Promise<SearchResult[]> {
     const isNovel = type === 'NOVEL';
     const formatIn = isNovel ? 'NOVEL' : 'MANGA, NOVEL';
-    const result = await this.gql(
+    const result = await this.gql<{ Page?: { media?: AniListMedia[] } | null }>(
       `query ($search: String) {
         Page(perPage: 20, page: 1) {
           media(format_in: [${formatIn}] search: $search sort: SEARCH_MATCH) {
@@ -65,7 +75,7 @@ class AniListProvider extends BaseProvider {
       }`,
       { search: query },
     );
-    const media: AniListMedia[] = result?.data?.Page?.media ?? [];
+    const media: AniListMedia[] = result.data?.Page?.media ?? [];
     return media
       .filter((m) => (isNovel ? m.format === 'NOVEL' : true))
       .map((m) => ({
@@ -80,9 +90,9 @@ class AniListProvider extends BaseProvider {
   }
 
   async getSeriesMetadata(providerSeriesId: string): Promise<SeriesMetadata> {
-    const result = await this.gql(
+    const result = await this.gql<{ Media?: AniListMedia | null }>(
       `query ($id: Int) {
-        Media(id: $id, type: MANGA) {
+        Media(id: $id) {
           id
           title { romaji english native }
           format
@@ -98,7 +108,7 @@ class AniListProvider extends BaseProvider {
       }`,
       { id: Number(providerSeriesId) },
     );
-    const m: AniListMedia | undefined = result?.data?.Media;
+    const m = result.data?.Media;
     if (!m) throw new Error(`AniList: media ${providerSeriesId} not found`);
 
     const date = m.startDate;
@@ -125,7 +135,6 @@ class AniListProvider extends BaseProvider {
       imprints: [],
       rating: toKavitaRating(m.averageScore),
       readingDirection: 'RTL',
-      language: 'en',
       status: mapAniListStatus(m.status),
       url: `https://anilist.co/manga/${m.id}`,
     };

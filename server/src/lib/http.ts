@@ -7,10 +7,21 @@ export interface HttpResponse<T = unknown> {
   data: T;
 }
 
+export interface FetchJsonOptions {
+  /**
+   * Return non-2xx responses instead of throwing. Callers that build their own
+   * status-specific errors (Kavita client, metadata providers, the nhentai 429
+   * retry loop) opt in explicitly; everyone else gets a thrown Error so HTTP
+   * failures cannot be silently ignored.
+   */
+  raw?: boolean;
+}
+
 export async function fetchJson<T = unknown>(
   url: string,
   init: RequestInit = {},
   timeoutMs = 15_000,
+  opts: FetchJsonOptions = {},
 ): Promise<HttpResponse<T>> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -26,6 +37,11 @@ export async function fetchJson<T = unknown>(
       data = text ? (JSON.parse(text) as T) : (undefined as T);
     } catch {
       data = text as unknown as T;
+    }
+    if (!res.ok && !opts.raw) {
+      // Strip the query string from the display URL — some endpoints carry
+      // credentials in it.
+      throw new Error(`HTTP ${res.status} from ${url.split('?')[0]}`);
     }
     return { status: res.status, data };
   } finally {
@@ -59,7 +75,10 @@ export interface StreamProgressHandlers {
 
 /**
  * Fetch a URL into a Buffer while streaming the body so callers can observe
- * byte-level progress. Falls back to a single arrayBuffer read when the
+ * byte-level progress. `timeoutMs` is an IDLE timeout: it aborts when no bytes
+ * arrive for that long (header phase or between chunks), and each received
+ * chunk resets the window — so large, slow page images are not aborted mid-body
+ * and retried from byte zero. Falls back to a single arrayBuffer read when the
  * response exposes no readable stream.
  */
 export async function fetchBufferStreaming(
@@ -69,10 +88,15 @@ export async function fetchBufferStreaming(
   timeoutMs = 30_000,
 ): Promise<Buffer> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timer = setTimeout(() => controller.abort(), timeoutMs);
+  const armTimer = (): void => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+  };
   try {
     const res = await fetch(url, { ...init, signal: controller.signal, redirect: 'follow' });
     if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
+    armTimer(); // headers received — start the idle window for the body
     const lengthHeader = res.headers.get('content-length');
     const totalBytes = lengthHeader ? Number(lengthHeader) || null : null;
     handlers.onAttemptStart?.();
@@ -89,6 +113,7 @@ export async function fetchBufferStreaming(
         const { done, value } = await reader.read();
         if (done) break;
         if (value) {
+          armTimer(); // bytes arrived — reset the idle window
           const buf = Buffer.from(value);
           chunks.push(buf);
           received += buf.length;

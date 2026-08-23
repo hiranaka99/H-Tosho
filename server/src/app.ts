@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context, Next } from 'hono';
 import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
 import path from 'node:path';
@@ -21,11 +22,32 @@ function resolveWebDist(): string | null {
   return null;
 }
 
+/**
+ * Optional shared-secret auth. When HTOSHO_TOKEN is set, every /api and /media
+ * request must present it — via `Authorization: Bearer <token>` or a `?token=`
+ * query param (the query form exists because <img> tags and EventSource cannot
+ * set headers). Unset = no auth, which pairs with the local-only bind default.
+ */
+function tokenMiddleware(token: string) {
+  return async (c: Context, next: Next): Promise<Response> => {
+    const header = c.req.header('authorization');
+    if (header !== `Bearer ${token}` && c.req.query('token') !== token) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    await next();
+    return c.res ?? c.text('Not Found', 404);
+  };
+}
 export function createApp(): Hono {
   const app = new Hono();
   const webDist = resolveWebDist();
 
   app.use('/api/*', cors());
+  const token = process.env.HTOSHO_TOKEN;
+  if (token) {
+    app.use('/api/*', tokenMiddleware(token));
+    app.use('/media', tokenMiddleware(token));
+  }
   app.route('/api', api);
   // Media proxy for doujin covers (Hitomi CDN requires a hitomi.la Referer).
   app.route('/', mediaRouter());

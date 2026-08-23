@@ -1,4 +1,4 @@
-import { asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 
 /** Types of background jobs the queue can run. */
@@ -134,7 +134,7 @@ class JobQueue {
 
   /** Jobs that are queued or currently running. */
   active(): Job[] {
-    const rows = getDb().select().from(schema.jobs).where(eq(schema.jobs.status, 'running')).all();
+    const rows = getDb().select().from(schema.jobs).where(inArray(schema.jobs.status, ['queued', 'running'])).all();
     return rows.map(rowToJob);
   }
 
@@ -147,11 +147,20 @@ class JobQueue {
     const job = this.get(id);
     if (!job) return false;
     if (job.status === 'queued') {
-      getDb().update(schema.jobs).set({ status: 'cancelled', finishedAt: new Date().toISOString() }).where(eq(schema.jobs.id, id)).run();
-      this.log(id, 'info', 'Job cancelled before start');
-      return true;
+      // Conditional update: the job may be claimed as running between the read
+      // and the write — in that case fall through to the checkpoint path.
+      const res = getDb()
+        .update(schema.jobs)
+        .set({ status: 'cancelled', finishedAt: new Date().toISOString() })
+        .where(and(eq(schema.jobs.id, id), eq(schema.jobs.status, 'queued')))
+        .run();
+      if (Number(res.changes ?? 0) > 0) {
+        this.log(id, 'info', 'Job cancelled before start');
+        return true;
+      }
     }
-    if (job.status === 'running') {
+    const current = this.get(id);
+    if (current?.status === 'running') {
       this.cancelRequested.add(id);
       this.log(id, 'info', 'Cancellation requested; stopping at next checkpoint');
       return true;
@@ -214,7 +223,6 @@ class JobQueue {
         .set({
           status: 'completed',
           resultJson: result === undefined ? null : JSON.stringify(result),
-          progressTotal: job.progressTotal,
           finishedAt: new Date().toISOString(),
         })
         .where(eq(schema.jobs.id, job.id))

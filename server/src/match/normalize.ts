@@ -119,16 +119,5 @@ export function titleScore(kavitaTitle: string, candidateTitle: string): number 
   return scoreCanonical(canonicalTitle(kavitaTitle), canonicalTitle(candidateTitle));
 }
 
-/** Year bonus/penalty for candidate matches. */
-export function yearBonus(kavitaYear: number | undefined, candidateYear: number | undefined): number {
-  if (kavitaYear && candidateYear) {
-    const diff = Math.abs(kavitaYear - candidateYear);
-    if (diff === 0) return 0.05;
-    if (diff <= 2) return 0.02;
-    if (diff > 10) return -0.1;
-  }
-  return 0;
-}
-
 /** Minimum combined score to accept an automatic match. */
 export const AUTO_MATCH_THRESHOLD = 0.72;

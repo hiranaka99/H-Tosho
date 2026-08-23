@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus } from 'lucide-react';
-import { api, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings } from '../lib/api';
+import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, KeyRound } from 'lucide-react';
+import { api, getAuthToken, setAuthToken, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings } from '../lib/api';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge } from '../components/ui';
 import { cn } from '../lib/utils';
 
@@ -14,6 +14,7 @@ const AGG_LABELS: { key: keyof Agg; label: string; hint: string }[] = [
   { key: 'replaceCover', label: 'Replace cover', hint: 'Download & push provider cover art to Kavita' },
   { key: 'replaceVolumeCovers', label: 'Replace volume covers', hint: 'Push per-volume cover art (MangaDex) onto matching Kavita volumes' },
   { key: 'lockCovers', label: 'Lock covers', hint: 'Lock replacement covers so Kavita does not overwrite them' },
+  { key: 'lockMetadata', label: 'Lock metadata', hint: 'Lock pushed metadata fields in Kavita so its own metadata sync does not overwrite them' },
 ];
 
 async function saveFieldConfigRequest(fieldConfig: Record<string, string | null>): Promise<{ ok: boolean }> {
@@ -74,6 +75,11 @@ export function Settings() {
       setKavitaMsg({ ok: res.connected, text: res.test });
     },
   });
+  const [tokenInput, setTokenInput] = React.useState('');
+  React.useEffect(() => {
+    setTokenInput(getAuthToken());
+  }, []);
+  const saveToken = () => setAuthToken(tokenInput.trim());
 
   const [order, setOrder] = React.useState<string[]>([]);
   const dragIndex = React.useRef<number | null>(null);
@@ -97,7 +103,7 @@ export function Settings() {
     });
   };
 
-  const [agg, setAgg] = React.useState<Agg>({ mergeTags: true, mergeGenres: true, replaceCover: true, replaceVolumeCovers: true, lockCovers: false });
+  const [agg, setAgg] = React.useState<Agg>({ mergeTags: true, mergeGenres: true, replaceCover: true, replaceVolumeCovers: true, lockCovers: false, lockMetadata: true });
   React.useEffect(() => {
     if (s) setAgg(s.aggregation);
   }, [s?.aggregation]);
@@ -174,6 +180,18 @@ export function Settings() {
               </span>
             )}
           </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <SectionHeader icon={<KeyRound className="h-4 w-4" />} title="API access token">
+          <SaveButton label="Save token" onClick={saveToken} disabled={!tokenInput.trim()} />
+        </SectionHeader>
+        <CardContent className="flex flex-col gap-2">
+          <div className="flex flex-col gap-1">
+            <Label>Token</Label>
+            <Input type="password" value={tokenInput} onChange={(e) => setTokenInput(e.target.value)} placeholder="Only needed if the server is started with HTOSHO_TOKEN" />
+          </div>
+          <p className="text-xs text-muted">Stored in this browser only. Sent with every API and media request so the UI keeps working when the server requires a shared token.</p>
         </CardContent>
       </Card>
 

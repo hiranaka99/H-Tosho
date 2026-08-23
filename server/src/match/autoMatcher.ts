@@ -1,5 +1,5 @@
 import { getProvider } from '../providers/registry.js';
-import { AUTO_MATCH_THRESHOLD, titleScore, yearBonus } from './normalize.js';
+import { AUTO_MATCH_THRESHOLD, titleScore } from './normalize.js';
 import type { SearchResult, SeriesMetadata, MediaType } from '../providers/types.js';
 import type { KavitaSeries } from '../kavita/types.js';
 
@@ -70,7 +70,7 @@ export async function autoMatch(
       searchedProviders.push(providerId);
       for (const r of results) {
         if (!r.title) continue;
-        const score = titleScore(series.name, r.title) + yearBonus(undefined, r.year);
+        const score = titleScore(series.name, r.title);
         candidates.push({
           providerId: provider.id,
           providerSeriesId: r.providerSeriesId,

@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { getDownloaderSettings } from '../services/settings.js';
-import { fetchJson } from '../lib/http.js';
+import { fetchJson, sleep } from '../lib/http.js';
 import { extractGalleryId, toIsoDate } from './util.js';
 import { DOUJIN_SORTS, type DoujinGallery, type DoujinProvider, type DoujinSearchResult, type DoujinSort, type DoujinSuggestion } from './types.js';
 
@@ -107,7 +107,7 @@ const CDN_TTL_MS = 10 * 60_000;
 
 async function getCdn(): Promise<CdnConfig> {
   if (cdnCache && Date.now() - cdnCacheAt < CDN_TTL_MS) return cdnCache;
-  const res = await fetchJson<{ image_servers: string[]; thumb_servers: string[] }>(`${BASE}/api/v2/cdn`, { headers: headers() });
+  const res = await fetchJson<{ image_servers: string[]; thumb_servers: string[] }>(`${BASE}/api/v2/cdn`, { headers: headers() }, 15_000, { raw: true });
   if (res.status !== 200 || !res.data?.image_servers?.length) {
     throw new Error('nHentai CDN config fetch failed');
   }
@@ -302,10 +302,10 @@ export const nhentaiProvider: DoujinProvider = {
       // guard, so a sustained throttle retried forever (ever-growing backoff) and
       // hung the whole search well past a minute.
       interface SearchFetchResult { status: number; data: ApiSearchResponse | null }
-      let res: SearchFetchResult = await fetchJson<ApiSearchResponse>(url, { headers: headers() });
+      let res: SearchFetchResult = await fetchJson<ApiSearchResponse>(url, { headers: headers() }, 15_000, { raw: true });
       for (let attempt = 0; attempt < 3 && (res.status === 429 || res.status >= 500); attempt++) {
-        await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
-        res = await fetchJson<ApiSearchResponse>(url, { headers: headers() });
+        await sleep(800 * (attempt + 1));
+        res = await fetchJson<ApiSearchResponse>(url, { headers: headers() }, 15_000, { raw: true });
       }
       if (res.status === 429) {
         throw new Error(
@@ -363,7 +363,7 @@ export const nhentaiProvider: DoujinProvider = {
         method: 'POST',
         headers: headers(),
         body,
-      });
+      }, 15_000, { raw: true });
       if (res.status === 200 && Array.isArray(res.data)) data = res.data;
     }
     if (!data) return [];
@@ -389,7 +389,7 @@ export const nhentaiProvider: DoujinProvider = {
     const id = extractGalleryId(idOrUrl, GALLERY_URL_RE);
     if (!id) throw new Error('Could not parse an nHentai gallery ID from the input.');
 
-    const res = await fetchJson<ApiGalleryDetail>(`${BASE}/api/v2/galleries/${id}`, { headers: headers() });
+    const res = await fetchJson<ApiGalleryDetail>(`${BASE}/api/v2/galleries/${id}`, { headers: headers() }, 15_000, { raw: true });
     if (res.status !== 200 || !res.data) {
       throw new Error(`nHentai gallery fetch failed (HTTP ${res.status})`);
     }

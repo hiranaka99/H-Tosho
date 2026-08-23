@@ -41,6 +41,12 @@ const LIBRARY_MEDIA_FORMATS: Record<KavitaLibraryType, MediaFormat> = {
   [KavitaLibraryType.ComicVine]: 'comic',
 };
 
+/** Options for updateSeriesMetadata. */
+export interface UpdateMetadataOptions {
+  /** When false, pushed fields are written without setting Kavita's field-lock flags. */
+  lockMetadata?: boolean;
+}
+
 /** Thin typed wrapper over the Kavita v0.9.0.22 REST API. */
 export class KavitaClient {
   private readonly baseUrl: string;
@@ -72,13 +78,16 @@ export class KavitaClient {
         : status === 404
           ? ' Check that the Base URL points to the Kavita server root (do not include /api).'
           : '';
+    // Strip any query string before displaying: image endpoints carry the API
+    // key as ?apiKey= and must never leak it into error messages.
+    const displayUrl = `${this.baseUrl}/api${path.split('?')[0]}`;
     return new Error(
-      `${action} failed at ${this.url(path)}: HTTP ${status}${detail ? ` - ${detail}` : ''}.${hint}`,
+      `${action} failed at ${displayUrl}: HTTP ${status}${detail ? ` - ${detail}` : ''}.${hint}`,
     );
   }
 
   private async getJson<T>(path: string, action: string): Promise<T> {
-    const res = await fetchJson<T>(this.url(path), { headers: this.headers });
+    const res = await fetchJson<T>(this.url(path), { headers: this.headers }, 15_000, { raw: true });
     if (res.status !== 200) throw this.requestError(action, path, res.status, res.data);
     return res.data;
   }
@@ -88,7 +97,7 @@ export class KavitaClient {
       method: 'POST',
       headers: { ...this.headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    });
+    }, 15_000, { raw: true });
     if (res.status < 200 || res.status >= 300) {
       throw this.requestError(action, path, res.status, res.data);
     }
@@ -193,7 +202,8 @@ export class KavitaClient {
   }
 
   /** Read, merge, and write using Kavita's split v0.9 update endpoints. */
-  async updateSeriesMetadata(seriesId: number, patch: SeriesMetadataPayload): Promise<void> {
+  async updateSeriesMetadata(seriesId: number, patch: SeriesMetadataPayload, opts: UpdateMetadataOptions = {}): Promise<void> {
+    const lock = opts.lockMetadata !== false;
     if (patch.name !== undefined || patch.sortName !== undefined) {
       const current = await this.getSeriesDto(seriesId);
       const update: KavitaUpdateSeriesDto = {
@@ -202,8 +212,8 @@ export class KavitaClient {
         localizedName: current.localizedName ?? null,
         sortName: patch.sortName ?? current.sortName ?? null,
         coverImageLocked: current.coverImageLocked ?? false,
-        nameLocked: patch.name !== undefined ? true : (current.nameLocked ?? false),
-        sortNameLocked: patch.sortName !== undefined ? true : (current.sortNameLocked ?? false),
+        nameLocked: patch.name !== undefined && lock ? true : (current.nameLocked ?? false),
+        sortNameLocked: patch.sortName !== undefined && lock ? true : (current.sortNameLocked ?? false),
         localizedNameLocked: current.localizedNameLocked ?? false,
         metadataProviderOverride: current.metadataProviderOverride ?? null,
         aniListId: current.aniListId ?? null,
@@ -219,7 +229,7 @@ export class KavitaClient {
 
     if (this.hasMetadataPatch(patch)) {
       const metadata = this.normalizeMetadata(await this.getSeriesMetadata(seriesId), seriesId);
-      this.mergeMetadataPatch(metadata, patch);
+      this.mergeMetadataPatch(metadata, patch, lock);
       const body: KavitaUpdateSeriesMetadataDto = { seriesMetadata: metadata };
       await this.postJson('/Series/metadata', body, `Update series ${seriesId} metadata`);
     }
@@ -276,56 +286,56 @@ export class KavitaClient {
     };
   }
 
-  private mergeMetadataPatch(metadata: KavitaSeriesMetadataDto, patch: SeriesMetadataPayload): void {
+  private mergeMetadataPatch(metadata: KavitaSeriesMetadataDto, patch: SeriesMetadataPayload, lock = true): void {
     const tags = (values: string[]): KavitaTagDto[] => values.map((title) => ({ id: 0, title }));
     const people = (values: string[]): KavitaPersonDto[] => values.map((name) => ({ id: 0, name }));
 
     if (patch.summary !== undefined) {
       metadata.summary = patch.summary;
-      metadata.summaryLocked = true;
+      if (lock) metadata.summaryLocked = true;
     }
     if (patch.genres !== undefined) {
       metadata.genres = tags(patch.genres);
-      metadata.genresLocked = true;
+      if (lock) metadata.genresLocked = true;
     }
     if (patch.tags !== undefined) {
       metadata.tags = tags(patch.tags);
-      metadata.tagsLocked = true;
+      if (lock) metadata.tagsLocked = true;
     }
     if (patch.writers !== undefined) {
       metadata.writers = people(patch.writers);
-      metadata.writerLocked = true;
+      if (lock) metadata.writerLocked = true;
     }
     if (patch.artists !== undefined) {
       // The unified provider model has one generic artist role. Penciller is
       // Kavita's closest series-level equivalent and remains independently
       // editable from cover artist, inker, and colorist roles.
       metadata.pencillers = people(patch.artists);
-      metadata.pencillerLocked = true;
+      if (lock) metadata.pencillerLocked = true;
     }
     if (patch.publishers !== undefined) {
       metadata.publishers = people(patch.publishers);
-      metadata.publisherLocked = true;
+      if (lock) metadata.publisherLocked = true;
     }
     if (patch.imprints !== undefined) {
       metadata.imprints = people(patch.imprints);
-      metadata.imprintLocked = true;
+      if (lock) metadata.imprintLocked = true;
     }
     if (patch.ageRating !== undefined) {
       metadata.ageRating = patch.ageRating;
-      metadata.ageRatingLocked = true;
+      if (lock) metadata.ageRatingLocked = true;
     }
     if (patch.releaseYear !== undefined) {
       metadata.releaseYear = patch.releaseYear;
-      metadata.releaseYearLocked = true;
+      if (lock) metadata.releaseYearLocked = true;
     }
     if (patch.language !== undefined) {
       metadata.language = patch.language;
-      metadata.languageLocked = true;
+      if (lock) metadata.languageLocked = true;
     }
     if (patch.publicationStatus !== undefined) {
       metadata.publicationStatus = patch.publicationStatus;
-      metadata.publicationStatusLocked = true;
+      if (lock) metadata.publicationStatusLocked = true;
     }
     if (patch.webLinks !== undefined) metadata.webLinks = patch.webLinks;
   }
@@ -371,6 +381,7 @@ export class KavitaClient {
     const path = `/Image/series-cover?seriesId=${encodeURIComponent(seriesId)}&apiKey=${encodeURIComponent(this.apiKey)}`;
     const response = await fetch(this.url(path), {
       headers: this.headers,
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) throw this.requestError(`Get series ${seriesId} cover`, path, response.status);
     return {

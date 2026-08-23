@@ -7,7 +7,10 @@ import { runJob } from './jobs/executor.js';
 import { getKavitaConnection, getPollInterval } from './services/settings.js';
 
 const PORT = Number(process.env.PORT ?? 8787);
-const HOST = process.env.HOST ?? '0.0.0.0';
+// Local-only by default: the API has no per-user auth, so binding to all
+// interfaces exposes it to the whole LAN. Set HOST=0.0.0.0 (plus HTOSHO_TOKEN)
+// deliberately when remote access is needed.
+const HOST = process.env.HOST ?? '127.0.0.1';
 
 function main(): void {
   initDb();
@@ -42,6 +45,9 @@ function main(): void {
   const app = createApp();
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST });
   console.log(`[h-tosho] listening on http://${HOST}:${PORT} (api at /api)`);
+  if (HOST === '0.0.0.0' || HOST === '::') {
+    console.warn('[h-tosho] WARNING: bound to all network interfaces. Set HTOSHO_TOKEN to protect the API, or keep the default HOST=127.0.0.1 for local-only use.');
+  }
 
   const shutdown = (): void => {
     console.log('[h-tosho] shutting down');

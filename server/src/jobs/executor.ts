@@ -161,14 +161,20 @@ async function matchAndApply(
     base.errors = result.errors;
     base.coverUrl = meta.coverUrl ?? best.coverUrl;
 
-    await notify({
-      title: `${force ? 'Updated' : 'Matched'}: ${series.name}`,
-      body: `Matched to ${best.providerId} (${Math.round(best.score * 100)}%). Pushed: ${
-        result.pushed.length ? result.pushed.join(', ') : 'none'
-      }${result.errors.length ? ' — errors: ' + result.errors.join('; ') : ''}`,
-      coverUrl: meta.coverUrl ?? best.coverUrl,
-      success: result.errors.length === 0,
-    });
+    // Notification failures must not flip an already-applied match to failed —
+    // the metadata push succeeded by the time we get here.
+    try {
+      await notify({
+        title: `${force ? 'Updated' : 'Matched'}: ${series.name}`,
+        body: `Matched to ${best.providerId} (${Math.round(best.score * 100)}%). Pushed: ${
+          result.pushed.length ? result.pushed.join(', ') : 'none'
+        }${result.errors.length ? ' — errors: ' + result.errors.join('; ') : ''}`,
+        coverUrl: meta.coverUrl ?? best.coverUrl,
+        success: result.errors.length === 0,
+      });
+    } catch (e) {
+      log?.('warn', `Notification failed for ${series.name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
     log?.(result.errors.length ? 'warn' : 'success', `${series.name} -> ${best.providerId} (${Math.round(best.score * 100)}%)`);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -234,12 +240,13 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
     case 'match-unmatched': {
       const libs = await client.getLibraries();
       const rows = getDb().select().from(schema.seriesMatches).all();
+      const statusBySeries = new Map(rows.map((r) => [r.kavitaSeriesId, r.status]));
       for (const lib of libs) {
         if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled();
         const series = (await client.getSeries(lib.id)) as { id: number; name: string }[];
         for (const s of series) {
-          const row = rows.find((r) => r.kavitaSeriesId === s.id);
-          if (!row || row.status !== 'matched') targets.push({ id: s.id, name: s.name, libraryId: lib.id });
+          // O(1) lookup instead of a per-series rows.find scan.
+          if (statusBySeries.get(s.id) !== 'matched') targets.push({ id: s.id, name: s.name, libraryId: lib.id });
         }
       }
       break;
@@ -266,9 +273,10 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
         const libraryId = job.payload.libraryId;
         if (libraryId === undefined) throw new Error('seriesIds or libraryId required');
         const rows = getDb().select().from(schema.seriesMatches).all();
+        const matchedIds = new Set(rows.filter((r) => r.status === 'matched').map((r) => r.kavitaSeriesId));
         const series = (await client.getSeries(libraryId)) as { id: number; name: string }[];
         for (const s of series) {
-          if (rows.some((r) => r.kavitaSeriesId === s.id && r.status === 'matched')) {
+          if (matchedIds.has(s.id)) {
             targets.push({ id: s.id, name: s.name, libraryId });
           }
         }
@@ -294,16 +302,24 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
   // (single-series jobs never block on a multi-minute build).
   if (getCredentialMap().enabledProviders.includes('mangadex')) {
     let matureCount = 0;
-    for (const t of targets) {
-      try {
-        if (isMatureAgeRating((await client.getSeriesMetadata(t.id)).ageRating)) {
-          t.mature = true;
-          matureCount++;
+    // Bounded concurrency — sequential metadata calls took 20-60 s on large
+    // libraries before matching could even start.
+    const METADATA_CONCURRENCY = 5;
+    let nextTarget = 0;
+    const detectMaturity = async (): Promise<void> => {
+      while (nextTarget < targets.length) {
+        const t = targets[nextTarget++];
+        try {
+          if (isMatureAgeRating((await client.getSeriesMetadata(t.id)).ageRating)) {
+            t.mature = true;
+            matureCount++;
+          }
+        } catch {
+          /* series without a metadata row yet */
         }
-      } catch {
-        /* series without a metadata row yet */
       }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(METADATA_CONCURRENCY, targets.length) }, () => detectMaturity()));
     log('info', `${matureCount} of ${targets.length} target(s) flagged mature`);
     if (catalogNeedsRefresh()) {
       if (job.type === 'match-series') {

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { DownloadEvent, DownloadTask } from './api';
+import { getAuthToken, type DownloadEvent, type DownloadTask } from './api';
 
 /**
  * Subscribe to the download Server-Sent Events stream and fold updates straight
@@ -20,7 +20,8 @@ export function useDownloadEvents(): boolean {
   React.useEffect(() => {
     let es: EventSource | null = null;
     try {
-      es = new EventSource('/api/downloads/events');
+      const token = getAuthToken();
+      es = new EventSource('/api/downloads/events' + (token ? `?token=${encodeURIComponent(token)}` : ''));
     } catch {
       return; // EventSource unsupported — rely on polling fallback.
     }

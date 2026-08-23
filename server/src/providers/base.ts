@@ -53,7 +53,7 @@ export abstract class BaseProvider implements MetadataProvider {
 
   protected async get<T>(path: string, init: RequestInit = {}, timeoutMs = 20_000): Promise<T> {
     const url = this.baseUrl.replace(/\/+$/, '') + path;
-    const res = await fetchJson<T>(url, init, timeoutMs);
+    const res = await fetchJson<T>(url, init, timeoutMs, { raw: true });
     if (res.status >= 400) {
       throw new Error(this.describeError(res.status, res.data));
     }
@@ -66,7 +66,7 @@ export abstract class BaseProvider implements MetadataProvider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify(body),
-    });
+    }, 15_000, { raw: true });
     if (res.status >= 400) {
       throw new Error(this.describeError(res.status, res.data));
     }

@@ -517,8 +517,8 @@ export async function refreshCatalog(ctx: RefreshContext): Promise<{ added: numb
 
 /** Process-local cache of parsed catalog rows (rebuilt after refresh). */
 interface CachedEntry extends CatalogEntry {
-  /** Precomputed canonical forms of every comparable title. */
-  scoredTitles: Array<{ raw: string; canon: string }>;
+  /** Precomputed canonical forms + token sets of every comparable title. */
+  scoredTitles: Array<{ raw: string; canon: string; tokens: Set<string> }>;
 }
 let cache: CachedEntry[] | null = null;
 
@@ -539,7 +539,7 @@ function loadEntries(): CachedEntry[] {
       year: r.year ?? undefined,
       coverFile: r.coverFile ?? undefined,
     };
-    return { ...entry, scoredTitles: entryTitles(entry).map((raw) => ({ raw, canon: canonicalTitle(raw) })) };
+    return { ...entry, scoredTitles: entryTitles(entry).map((raw) => { const canon = canonicalTitle(raw); return { raw, canon, tokens: new Set(canon.split(' ')) }; }) };
   });
   return cache;
 }
@@ -553,6 +553,12 @@ function safeParse(json: string): string[] {
   }
 }
 
+/** True when two token sets share at least one token (iterates the smaller set). */
+function sharesAnyToken(a: Set<string>, b: Set<string>): boolean {
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+  for (const w of small) if (large.has(w)) return true;
+  return false;
+}
 /**
  * Score a Kavita series name against the local adult catalog.
  * Returns up to MAX_CANDIDATES candidates shaped like live search results so
@@ -560,11 +566,18 @@ function safeParse(json: string): string[] {
  */
 export function searchCatalog(kavitaTitle: string): CandidateMatch[] {
   const a = canonicalTitle(kavitaTitle);
+  const queryTokens = new Set(a.split(' '));
   const scored = loadEntries()
     .map((entry) => {
       let best = { score: 0, title: '' };
       for (const t of entry.scoredTitles) {
-        const s = scoreCanonical(a, t.canon);
+        // Pre-filter: with zero shared tokens the containment branch is
+        // impossible and the score caps at 0.5 * Levenshtein similarity —
+        // unreachable above CATALOG_SCORE_FLOOR unless the strings are nearly
+        // identical, which short titles can be (one-edit romanization). So skip
+        // the O(n*m) distance only for long×long pairs; everything else keeps
+        // full scoring.
+        const s = !sharesAnyToken(queryTokens, t.tokens) && a.length > 12 && t.canon.length > 12 ? 0 : scoreCanonical(a, t.canon);
         if (s > best.score) best = { score: s, title: t.raw };
       }
       return { entry, ...best };
@@ -620,7 +633,9 @@ export async function resolveCatalogCover(mangaId: string): Promise<string | nul
   try {
     const res = await fetch(`${BASE_URL}/cover?manga%5B%5D=${mangaId}&limit=100`, { headers: HEADERS });
     if (!res.ok) return null;
-    const data = (await res.json()) as { data?: Array<{ attributes?: { fileName?: string; volume?: number | null; updatedAt?: string } }> };
+    const data = (await res.json()) as {
+      data?: Array<{ attributes?: { fileName?: string; volume?: number | string | null; locale?: string; updatedAt?: string } }>;
+    };
     // Series-level covers have no volume; among re-uploads the newest wins.
     let fileName: string | undefined;
     let bestAt = '';
@@ -631,6 +646,29 @@ export async function resolveCatalogCover(mangaId: string): Promise<string | nul
       if (at >= bestAt) {
         fileName = attrs.fileName;
         bestAt = at;
+      }
+    }
+    // Some titles only have volume-level covers (no series-level upload); fall
+    // back to the lowest-numbered volume so catalog candidates still get a
+    // thumbnail. Locale preference en > ja, newest re-upload wins within it.
+    if (!fileName) {
+      let bestVol = Infinity;
+      let bestRank = 3;
+      let bestVolAt = '';
+      for (const item of data?.data ?? []) {
+        const attrs = item.attributes;
+        if (!attrs?.fileName || attrs.volume == null) continue;
+        const vol = Number(attrs.volume);
+        if (!Number.isFinite(vol)) continue;
+        const locale = (attrs.locale ?? '').toLowerCase();
+        const rank = locale === 'en' ? 0 : locale === 'ja' ? 1 : 2;
+        const at = attrs.updatedAt ?? '';
+        if (vol < bestVol || (vol === bestVol && (rank < bestRank || (rank === bestRank && at >= bestVolAt)))) {
+          bestVol = vol;
+          bestRank = rank;
+          bestVolAt = at;
+          fileName = attrs.fileName;
+        }
       }
     }
     if (!fileName) return null;

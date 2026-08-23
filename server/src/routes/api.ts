@@ -14,6 +14,7 @@ import {
   getNotificationSettings,
   getPollInterval,
   getProviderPriorities,
+  parseNotificationSettings,
   getProviderSettings,
   type AggregationOptions,
   setAggregationOptions,
@@ -70,6 +71,16 @@ function connectedClient(): KavitaClient | null {
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
+/**
+ * Parse an integer route parameter. Returns null for non-integers so callers
+ * can answer 400 — a NaN id would otherwise bind as NULL against NOT NULL
+ * primary keys and surface as an unhandled 500.
+ */
+function intParam(raw: string | undefined): number | null {
+  if (!raw || !/^-?\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) ? n : null;
+}
 
 export const api = new Hono();
 
@@ -111,17 +122,18 @@ api.get('/kavita/libraries', async (c) => {
   try {
     const libs = await client.getLibraries();
     const rows = getDb().select().from(schema.seriesMatches).all();
-    const counts = new Map<number, { total: number; matched: number }>();
-    for (const lib of libs) {
-      const series = (await client.getSeries(lib.id)) as KavitaSeries[];
-      const matched = series.filter((s) => rows.some((r) => r.kavitaSeriesId === s.id && r.status === 'matched')).length;
-      counts.set(lib.id, { total: series.length, matched });
-    }
-    const out: (KavitaLibrary & { seriesCount: number; matchedCount: number })[] = libs.map((l) => ({
-      ...l,
-      seriesCount: counts.get(l.id)?.total ?? 0,
-      matchedCount: counts.get(l.id)?.matched ?? 0,
-    }));
+    const matchedIds = new Set(rows.filter((r) => r.status === 'matched').map((r) => r.kavitaSeriesId));
+    // Fetch every library's series in parallel (was a sequential per-library
+    // round-trip) and count matches with an O(1) set lookup.
+    const seriesLists = await Promise.all(libs.map((lib) => client.getSeries(lib.id)));
+    const out: (KavitaLibrary & { seriesCount: number; matchedCount: number })[] = libs.map((l, i) => {
+      const series = seriesLists[i] as KavitaSeries[];
+      return {
+        ...l,
+        seriesCount: series.length,
+        matchedCount: series.filter((s) => matchedIds.has(s.id)).length,
+      };
+    });
     return c.json(out);
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
@@ -132,7 +144,8 @@ api.get('/kavita/libraries/:id/series', async (c) => {
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
   try {
-    const libraryId = Number(c.req.param('id'));
+    const libraryId = intParam(c.req.param('id'));
+    if (libraryId === null) return c.json({ error: 'Invalid library id' }, 400);
     const series = (await client.getSeries(libraryId)) as KavitaSeries[];
     const rows = getDb().select().from(schema.seriesMatches).all();
     const byId = new Map(rows.map((r) => [r.kavitaSeriesId, r]));
@@ -162,7 +175,9 @@ api.get('/kavita/series/:id/cover', async (c) => {
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
   try {
-    const cover = await client.getSeriesCover(Number(c.req.param('id')));
+    const seriesId = intParam(c.req.param('id'));
+    if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
+    const cover = await client.getSeriesCover(seriesId);
     return c.body(new Uint8Array(cover.data), 200, {
       'Content-Type': cover.contentType,
       'Cache-Control': 'private, max-age=300',
@@ -178,7 +193,8 @@ api.get('/series/:id', async (c) => {
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
   try {
-    const seriesId = Number(c.req.param('id'));
+    const seriesId = intParam(c.req.param('id'));
+    if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
     const series = await client.getSeriesById(seriesId);
     const row = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
     let metadata = null;
@@ -206,7 +222,8 @@ api.get('/series/:id/identify', async (c) => {
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
   try {
-    const seriesId = Number(c.req.param('id'));
+    const seriesId = intParam(c.req.param('id'));
+    if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
     const series = await client.getSeriesById(seriesId);
     const { credentials, enabledProviders } = getCredentialMap();
     const providerOrder = providerOrderFor(series.libraryId);
@@ -251,7 +268,8 @@ api.post('/series/:id/apply', async (c) => {
   const body = (await c.req.json()) as { providerId: string; providerSeriesId: string; excludedFields?: string[]; cover?: boolean };
   if (!body.providerId || !body.providerSeriesId) return c.json({ error: 'providerId and providerSeriesId required' }, 400);
   try {
-    const seriesId = Number(c.req.param('id'));
+    const seriesId = intParam(c.req.param('id'));
+    if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
     const series = await client.getSeriesById(seriesId);
     const { credentials, enabledProviders } = getCredentialMap();
     const meta = await fetchAggregatedMetadata(
@@ -405,10 +423,12 @@ api.put('/settings/field-config', async (c) => {
 });
 
 api.put('/settings/notifications', async (c) => {
-  const body = (await c.req.json()) as {
-    notifications: { discord: { enabled: boolean; webhookUrl: string }; apprise: { enabled: boolean; url: string } };
-  };
-  setNotificationSettings(body.notifications);
+  const body = (await c.req.json().catch(() => null)) as { notifications?: unknown } | null;
+  const parsed = parseNotificationSettings(body?.notifications);
+  if (!parsed) {
+    return c.json({ error: 'Invalid notification settings: expected { discord: { enabled, webhookUrl }, apprise: { enabled, url } }' }, 400);
+  }
+  setNotificationSettings(parsed);
   return c.json({ ok: true });
 });
 
@@ -527,7 +547,9 @@ api.get('/downloads/events', (c) =>
 );
 
 api.get('/downloads/:id', (c) => {
-  const task = downloadQueue.get(Number(c.req.param('id')));
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid download id' }, 400);
+  const task = downloadQueue.get(id);
   if (!task) return c.json({ error: 'Download not found' }, 404);
   return c.json(task);
 });
@@ -535,7 +557,8 @@ api.get('/downloads/:id', (c) => {
 const DOWNLOAD_ACTIONS = ['pause', 'resume', 'cancel', 'retry'] as const;
 for (const action of DOWNLOAD_ACTIONS) {
   api.post(`/downloads/:id/${action}`, (c) => {
-    const id = Number(c.req.param('id'));
+    const id = intParam(c.req.param('id'));
+    if (id === null) return c.json({ error: 'Invalid download id' }, 400);
     const ok = downloadQueue[action](id);
     if (!ok) return c.json({ error: `Could not ${action} download` }, 400);
     return c.json({ ok: true });
@@ -543,7 +566,8 @@ for (const action of DOWNLOAD_ACTIONS) {
 }
 
 api.delete('/downloads/:id', (c) => {
-  const id = Number(c.req.param('id'));
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid download id' }, 400);
   downloadQueue.remove(id);
   return c.json({ ok: true });
 });
@@ -556,13 +580,15 @@ api.post('/downloads/clear-completed', (c) => {
 // ---------------- Library overrides ----------------
 
 api.get('/libraries/:id/override', (c) => {
-  const id = Number(c.req.param('id'));
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid library id' }, 400);
   const ov = getLibraryOverride(id);
   return c.json(ov ?? { libraryId: id, priority: getProviderPriorities(), autoMatch: true, fieldConfig: {} });
 });
 
 api.put('/libraries/:id/override', async (c) => {
-  const id = Number(c.req.param('id'));
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid library id' }, 400);
   // Partial merge: fields omitted from the body keep their current value, so a
   // client can flip a single option without snapshotting the rest.
   const body = (await c.req.json()) as Partial<{ priority: string[]; autoMatch: boolean; fieldConfig: Record<string, string | null> }>;
@@ -588,13 +614,16 @@ api.post('/jobs', async (c) => {
 api.get('/jobs', (c) => c.json(jobQueue.list(100)));
 
 api.get('/jobs/:id', (c) => {
-  const job = jobQueue.get(Number(c.req.param('id')));
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid job id' }, 400);
+  const job = jobQueue.get(id);
   if (!job) return c.json({ error: 'Job not found' }, 404);
   return c.json({ job, logs: jobQueue.logs(job.id) });
 });
 
 api.post('/jobs/:id/cancel', (c) => {
-  const id = Number(c.req.param('id'));
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid job id' }, 400);
   if (!jobQueue.cancel(id)) return c.json({ error: 'Job is not active' }, 409);
   return c.json({ ok: true });
 });

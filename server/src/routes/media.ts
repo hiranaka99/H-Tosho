@@ -17,14 +17,41 @@ import { cors } from 'hono/cors';
  * The target URL is passed base64url-encoded as `?u=` so arbitrary CDN paths
  * (which include slashes) survive query-string encoding without ambiguity:
  *   GET /media?u=<base64url(https://a2.gold-usergeneratedcontent.net/...avif)>
+ *
+ * Security: the proxy is an SSRF surface by construction (the server fetches a
+ * caller-supplied URL). Targets are therefore restricted to an explicit host
+ * allowlist (the two CDNs above), IP literals are rejected, and every redirect
+ * hop is re-validated against the allowlist. Response bodies are capped so a
+ * hostile or misbehaving upstream cannot pin unbounded memory.
  */
 
 /** In-memory cache of proxied image bytes so repeated renders don't re-fetch the CDN. */
 const cache = new Map<string, { at: number; type: string; buf: Buffer }>();
 const CACHE_TTL_MS = 60 * 60_000; // covers are stable once a gallery exists
-const CACHE_MAX = 200;
-/** MangaDex cover files can exceed 10 MB; don't pin those in RAM. */
-const CACHE_MAX_BYTES = 5 * 1024 * 1024;
+/** Cache holds realistic cover sizes only (a few MB at most per file). */
+const CACHE_MAX = 100;
+const CACHE_MAX_BYTES = 2 * 1024 * 1024;
+/** Hard cap on any single proxied response (covers never approach this). */
+const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+/** Max redirect hops followed (each hop is re-validated against the allowlist). */
+const MAX_REDIRECTS = 5;
+
+/**
+ * Hosts allowed as /media targets. A target host matches when it equals an
+ * entry or is a subdomain of one. Exact-name matching keeps this a closed set:
+ * IP literals, other CDNs, and internal service names all fail.
+ */
+const ALLOWED_HOSTS = ['uploads.mangadex.org', 'gold-usergeneratedcontent.net'];
+
+function isAllowedHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  if (!h || h.includes(':')) return false; // reject empty and IPv6-literal hosts
+  return ALLOWED_HOSTS.some((a) => h === a || h.endsWith('.' + a));
+}
+
+function isHttpUrl(u: URL): boolean {
+  return u.protocol === 'https:' || u.protocol === 'http:';
+}
 
 function getCached(key: string): { type: string; buf: Buffer } | null {
   const hit = cache.get(key);
@@ -67,6 +94,61 @@ function refererForHost(hostname: string): string | undefined {
   return 'https://hitomi.la/';
 }
 
+/** Fetch headers for one hop, based on that hop's host. */
+function hopHeaders(hostname: string): Record<string, string> {
+  const referer = refererForHost(hostname);
+  return {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0',
+    ...(referer ? { Referer: referer } : {}),
+    Accept: 'image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8',
+  };
+}
+
+/**
+ * Follow redirects manually, re-validating every hop's target against the
+ * allowlist (a redirect from an allowed CDN to an internal host must not be
+ * followed). Throws on disallowed targets or when the hop budget is exceeded.
+ */
+async function fetchWithValidatedRedirects(start: URL): Promise<Response> {
+  let current = start;
+  for (let hop = 0; ; hop++) {
+    const res = await fetch(current, { headers: hopHeaders(current.hostname), redirect: 'manual' });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location');
+      if (!loc || hop >= MAX_REDIRECTS) throw new Error('Too many redirects');
+      const next = new URL(loc, current);
+      if (!isHttpUrl(next) || !isAllowedHost(next.hostname)) throw new Error('Redirect to disallowed host');
+      current = next;
+      continue;
+    }
+    return res;
+  }
+}
+
+/** Read a response body into a Buffer, throwing once the byte cap is exceeded. */
+async function readBodyWithCap(res: Response, maxBytes: number): Promise<Buffer> {
+  const body = res.body as unknown as { getReader?: () => { read(): Promise<{ done: boolean; value?: Uint8Array }> } } | null;
+  if (body && typeof body.getReader === 'function') {
+    const reader = body.getReader();
+    const chunks: Buffer[] = [];
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        const buf = Buffer.from(value);
+        received += buf.length;
+        if (received > maxBytes) throw new Error('Response exceeds size cap');
+        chunks.push(buf);
+      }
+    }
+    return Buffer.concat(chunks);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > maxBytes) throw new Error('Response exceeds size cap');
+  return buf;
+}
+
 export function mediaRouter(): Hono {
   const r = new Hono();
   r.use('*', cors());
@@ -81,7 +163,7 @@ export function mediaRouter(): Hono {
         parsed = null;
       }
     }
-    if (!parsed || (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')) {
+    if (!parsed || !isHttpUrl(parsed) || !isAllowedHost(parsed.hostname)) {
       return c.json({ error: 'Invalid media URL' }, 400);
     }
 
@@ -93,20 +175,24 @@ export function mediaRouter(): Hono {
       });
     }
 
-    const res = await fetch(parsed, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0',
-        ...(refererForHost(parsed.hostname) ? { Referer: refererForHost(parsed.hostname)! } : {}),
-        Accept: 'image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8',
-      },
-      redirect: 'follow',
-    });
+    let res: Response;
+    try {
+      res = await fetchWithValidatedRedirects(parsed);
+    } catch {
+      return c.json({ error: 'Upstream fetch failed' }, 502);
+    }
 
     if (!res.ok) {
       return c.json({ error: `Upstream returned HTTP ${res.status}` }, 502);
     }
 
-    const buf = Buffer.from(await res.arrayBuffer());
+    let buf: Buffer;
+    try {
+      buf = await readBodyWithCap(res, MAX_DOWNLOAD_BYTES);
+    } catch {
+      return c.json({ error: 'Response too large' }, 502);
+    }
+
     const type = res.headers.get('content-type') || 'image/jpeg';
     setCached(target as string, type, buf);
     return c.body(new Uint8Array(buf), 200, {
@@ -118,10 +204,16 @@ export function mediaRouter(): Hono {
   return r;
 }
 
+/** Query token for <img>/EventSource consumers when shared-secret auth is on. */
+function proxyTokenParam(): string {
+  const token = process.env.HTOSHO_TOKEN;
+  return token ? `&token=${encodeURIComponent(token)}` : '';
+}
+
 /** Wrap an absolute image URL in a same-origin `/media` proxy URL (base64url-encoded). */
 export function mediaProxyUrl(url: string): string {
   const b64 = Buffer.from(url, 'utf8').toString('base64url');
-  return `/media?u=${b64}`;
+  return `/media?u=${b64}${proxyTokenParam()}`;
 }
 
 /** Rewrite hitomi cover URLs to route through the proxy (other sources are untouched). */
@@ -132,7 +224,7 @@ export function rewriteHitomiCover<T extends { source?: string; coverUrl?: strin
   return r;
 }
 
-/** Rewrite MangaDex CDN cover URLs to route through the proxy (other URLs untouched). */
+/** Rewrite MangaDex CDN cover URLs to route through the proxy (other URLs are untouched). */
 export function rewriteMangaDexCoverUrl(url?: string | null): string | undefined {
   if (typeof url === 'string' && url.startsWith('https://uploads.mangadex.org/covers/')) {
     return mediaProxyUrl(url);

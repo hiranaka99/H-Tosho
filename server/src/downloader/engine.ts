@@ -1,10 +1,10 @@
 import { desc, eq } from 'drizzle-orm';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getDb, schema } from '../db/index.js';
+import { getDb, getTmpDir, schema } from '../db/index.js';
 import { fetchBufferStreaming, sleep, type StreamProgressHandlers } from '../lib/http.js';
 import { generateComicInfoXml } from './comicinfo.js';
-import { buildZip } from './zip.js';
+import { buildZipFromFiles } from './zip.js';
 import { extFromUrl, padPage, sanitizeFilename } from './util.js';
 import { getDoujinProvider } from './providers.js';
 import type { DoujinGallery, DoujinSource } from './types.js';
@@ -335,6 +335,15 @@ class DownloadQueue {
     const task = this.get(id);
     if (!task) return false;
     if (task.status === 'paused' || task.status === 'failed') {
+      const run = this.activeRuns.get(id);
+      if (run) {
+        // The original worker is still alive, sleeping on the pause signal —
+        // wake it in place instead of re-queueing (which would start a second
+        // download of the same gallery and leak the first run's concurrency slot).
+        run.pauseSignal.paused = false;
+        this.setStatus(id, 'downloading');
+        return true;
+      }
       this.setStatus(id, 'queued');
       void this.pump();
       return true;
@@ -346,7 +355,7 @@ class DownloadQueue {
   cancel(id: number): boolean {
     const task = this.get(id);
     if (!task) return false;
-    if (task.status === 'queued' || task.status === 'downloading') {
+    if (task.status === 'queued' || task.status === 'downloading' || task.status === 'paused') {
       const run = this.activeRuns.get(id);
       if (run) run.cancelled = true;
       getDb().update(schema.downloadQueue).set({ errorMessage: 'Cancelled by user' }).where(eq(schema.downloadQueue.id, id)).run();
@@ -360,6 +369,7 @@ class DownloadQueue {
   retry(id: number): boolean {
     const task = this.get(id);
     if (!task) return false;
+    if (task.status !== 'failed' && task.status !== 'completed') return false;
     this.live.delete(id);
     getDb()
       .update(schema.downloadQueue)
@@ -387,16 +397,25 @@ class DownloadQueue {
 
   private claimNext(): DownloadRow | null {
     const db = getDb();
-    const row = db
-      .select()
-      .from(schema.downloadQueue)
-      .where(eq(schema.downloadQueue.status, 'queued'))
-      .orderBy(desc(schema.downloadQueue.id))
-      .limit(1)
-      .get();
-    if (!row) return null;
-    this.setStatus(row.id, 'downloading');
-    return row;
+    for (;;) {
+      const row = db
+        .select()
+        .from(schema.downloadQueue)
+        .where(eq(schema.downloadQueue.status, 'queued'))
+        .orderBy(desc(schema.downloadQueue.id))
+        .limit(1)
+        .get();
+      if (!row) return null;
+      if (this.activeRuns.has(row.id)) {
+        // A live run already owns this task (a pause/resume race re-queued it);
+        // restore its status and claim the next queued row instead of starting
+        // a second process for the same gallery.
+        this.setStatus(row.id, 'downloading');
+        continue;
+      }
+      this.setStatus(row.id, 'downloading');
+      return row;
+    }
   }
 
   private async pump(): Promise<void> {
@@ -423,6 +442,9 @@ class DownloadQueue {
   private async process(row: DownloadRow): Promise<void> {
     const ctx: RunContext = { cancelled: false, pauseSignal: { paused: false } };
     this.activeRuns.set(row.id, ctx);
+    // Per-task scratch space: pages stream to disk here so only the in-flight
+    // images (bounded by maxImageConcurrency) live in RAM.
+    const tmpDir = path.join(getTmpDir(), 'downloads', String(row.id));
     try {
       const settings = this.settingsProvider();
       if (!settings.downloadDirectory) {
@@ -439,7 +461,7 @@ class DownloadQueue {
       this.updateProgress(row.id, { progressCurrent: 0, progressTotal: total, speed: 0, currentFile: null, bytesCurrent: 0, bytesTotal: 0 }, { force: true });
 
       // Download all pages with bounded concurrency + rate limiting (streamed for live progress).
-      const images = await this.downloadPages(gallery, row.id, settings, ctx);
+      const images = await this.downloadPages(gallery, row.id, settings, ctx, tmpDir);
 
       // Write to disk (cbz or folder) and record the output path.
       this.updateProgress(row.id, { currentFile: 'Packing archive…' }, { force: true });
@@ -456,6 +478,7 @@ class DownloadQueue {
       getDb().update(schema.downloadQueue).set({ errorMessage: message, speed: 0 }).where(eq(schema.downloadQueue.id, row.id)).run();
       if (!ctx.cancelled) this.setStatus(row.id, 'failed');
     } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
       // Drop the in-memory snapshot so subsequent reads reflect the authoritative DB state.
       this.live.delete(row.id);
       this.lastBroadcast.delete(row.id);
@@ -471,14 +494,16 @@ class DownloadQueue {
     taskId: number,
     settings: DownloaderSettings,
     ctx: RunContext,
-  ): Promise<{ name: string; data: Buffer }[]> {
+    tmpDir: string,
+  ): Promise<{ name: string; path: string }[]> {
     const pages = gallery.pages;
     const fallbacks = gallery.pageFallbacks ?? [];
     const total = pages.length;
     const concurrency = Math.max(1, settings.maxImageConcurrency || 1);
     const delay = Math.max(0, settings.requestDelayMs || 0);
     const pageHeaders: Record<string, string> = { 'User-Agent': UA, ...gallery.requestHeaders };
-    const out: { name: string; data: Buffer }[] = new Array(total);
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const out: { name: string; path: string }[] = new Array(total);
 
     // Per-run byte-level accounting used to derive a live bytes-current/total.
     const bs = {
@@ -601,7 +626,10 @@ class DownloadQueue {
         }
         if (!data) throw lastErr instanceof Error ? lastErr : new Error(`Failed to download page ${i + 1}`);
         const name = `${padPage(i + 1, total)}.${extFromUrl(usedUrl ?? pages[i])}`;
-        out[i] = { name, data };
+        // Persist the page immediately so only `concurrency` images live in RAM.
+        const filePath = path.join(tmpDir, String(i));
+        await fs.promises.writeFile(filePath, data);
+        out[i] = { name, path: filePath };
         onPageDone(i, data.length);
         if (delay > 0) await sleep(delay);
       }
@@ -621,7 +649,7 @@ class DownloadQueue {
   private async writeOutput(
     taskId: number,
     gallery: DoujinGallery,
-    images: { name: string; data: Buffer }[],
+    images: { name: string; path: string }[],
     settings: DownloaderSettings,
   ): Promise<string> {
     const base = path.resolve(settings.downloadDirectory);
@@ -631,20 +659,15 @@ class DownloadQueue {
 
     if (settings.format === 'folder') {
       for (const img of images) {
-        fs.writeFileSync(path.join(dir, img.name), img.data);
+        await moveIntoPlace(img.path, path.join(dir, img.name));
       }
       fs.writeFileSync(path.join(dir, 'ComicInfo.xml'), generateComicInfoXml(gallery));
       return dir;
     }
 
-    // cbz: pack all images + ComicInfo.xml into a single archive inside the folder.
-    const entries = [
-      ...images.map((img) => ({ name: img.name, data: img.data })),
-      { name: 'ComicInfo.xml', data: Buffer.from(generateComicInfoXml(gallery), 'utf8') },
-    ];
-    const zipBuf = buildZip(entries);
+    // cbz: stream all pages + ComicInfo.xml into a single archive inside the folder.
     const file = path.join(dir, `${folderName}.cbz`);
-    fs.writeFileSync(file, zipBuf);
+    await buildZipFromFiles(images, file, [{ name: 'ComicInfo.xml', data: Buffer.from(generateComicInfoXml(gallery), 'utf8') }]);
     return file;
   }
 
@@ -657,13 +680,25 @@ class DownloadQueue {
       const { KavitaClient } = await import('../kavita/client.js');
       const client = new KavitaClient(conn.baseUrl, conn.apiKey);
       // If a specific library path contains our output, scan just that one.
+      // Normalize separators first — Kavita reports '/' while Windows paths use '\\'.
+      const norm = (p: string): string => path.normalize(p).replace(/\\/g, '/');
       const libraries = await client.getLibraries();
-      const matched = libraries.find((l) => l.path && _outputPath.startsWith(l.path));
+      const matched = libraries.find((l) => l.path && norm(_outputPath).startsWith(norm(l.path)));
       if (matched) await client.scanLibrary(matched.id);
       else await client.scanAllLibraries();
     } catch {
       // Auto-sync is best-effort; never fail the download over it.
     }
+  }
+}
+
+/** Move a temp page into its final location, copying across volumes where rename cannot. */
+async function moveIntoPlace(src: string, dest: string): Promise<void> {
+  try {
+    await fs.promises.rename(src, dest);
+  } catch {
+    await fs.promises.copyFile(src, dest);
+    await fs.promises.unlink(src);
   }
 }
 

@@ -52,11 +52,33 @@ export function initDb(): Db {
   const sqlite = new Database(dbFile);
   sqlite.pragma('journal_mode = WAL');
   sqlite.pragma('foreign_keys = ON');
+  // Tolerate brief lock contention from concurrent readers (SSE snapshots, UI polls).
+  sqlite.pragma('busy_timeout = 5000');
   sqlite.exec(SCHEMA_DDL);
   migrateDownloadQueueColumns(sqlite);
   migrateCatalogColumns(sqlite);
+  pruneOldData(sqlite);
   db = drizzle(sqlite, { schema });
   return db;
+}
+/** Retention windows for finished work so the database does not grow unbounded. */
+const JOB_RETENTION_DAYS = 30;
+const HISTORY_RETENTION_DAYS = 90;
+
+/**
+ * Delete finished jobs (and their logs) older than JOB_RETENTION_DAYS and sync
+ * history older than HISTORY_RETENTION_DAYS. Runs once per process start; the
+ * tables are small and indexed, so this is cheap. Cutoffs use SQLite's own
+ * timestamp format ('YYYY-MM-DD HH:MM:SS') for consistent lexicographic
+ * comparison against both default-generated and app-written timestamps.
+ */
+function pruneOldData(sqlite: Database.Database): void {
+  const cutoff = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 19).replace('T', ' ');
+  sqlite.prepare(
+    `DELETE FROM job_logs WHERE job_id IN (SELECT id FROM jobs WHERE status IN ('completed','failed','cancelled') AND finished_at < ?)`,
+  ).run(cutoff(JOB_RETENTION_DAYS));
+  sqlite.prepare(`DELETE FROM jobs WHERE status IN ('completed','failed','cancelled') AND finished_at < ?`).run(cutoff(JOB_RETENTION_DAYS));
+  sqlite.prepare(`DELETE FROM sync_history WHERE created_at < ?`).run(cutoff(HISTORY_RETENTION_DAYS));
 }
 
 /**
@@ -334,6 +356,10 @@ CREATE TABLE IF NOT EXISTS key_value_store (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_job_logs_job_id ON job_logs(job_id);
+CREATE INDEX IF NOT EXISTS idx_sync_history_series ON sync_history(kavita_series_id);
+CREATE INDEX IF NOT EXISTS idx_download_queue_gallery ON download_queue(source, gallery_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 `;
 
 export function getDb(): Db {

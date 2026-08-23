@@ -169,7 +169,7 @@ export async function applyToKavita(
   const fields = Object.keys(payload).filter((k) => (payload as Record<string, unknown>)[k] !== undefined);
   if (fields.length) {
     try {
-      await client.updateSeriesMetadata(seriesId, payload);
+      await client.updateSeriesMetadata(seriesId, payload, { lockMetadata: opts.agg.lockMetadata });
       pushed.push(...fields);
     } catch (err) {
       errors.push(`metadata: ${err instanceof Error ? err.message : String(err)}`);
