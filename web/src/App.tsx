@@ -6,7 +6,7 @@ import { Libraries } from './pages/Libraries';
 import { Downloader } from './pages/Downloader';
 import { Jobs } from './pages/Jobs';
 import { Settings } from './pages/Settings';
-import { DownloadTray } from './components/DownloadTray';
+import { SidebarStatus } from './components/SidebarStatus';
 import { cn } from './lib/utils';
 
 /** Catches render errors inside a page so the rest of the app (sidebar etc.) stays intact. */
@@ -79,6 +79,7 @@ export default function App() {
             </NavLink>
           ))}
         </nav>
+        <SidebarStatus />
       </aside>
       <main className={cn('flex-1 overflow-y-auto', inLibrary ? 'p-6' : 'p-8')}>
         <PageErrorBoundary key={location.pathname}>
@@ -93,7 +94,6 @@ export default function App() {
           </Routes>
         </PageErrorBoundary>
       </main>
-      <DownloadTray />
     </div>
   );
 }
