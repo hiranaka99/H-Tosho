@@ -20,15 +20,31 @@ export interface LibraryOverride {
   autoMatch: boolean;
 }
 
+/** JSON.parse that returns null on malformed input instead of throwing. */
+function safeParseJson<T>(text: string): T | null {
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
 /** Ordered global provider priorities. */
 export function getProviderPriorities(): string[] {
   const db = getDb();
   const rows = db.select().from(schema.providerPriorities).all();
   if (rows.length === 0) return allProviderIds();
   const map = new Map(rows.map((r) => [r.providerId, r.position]));
-  return allProviderIds()
+  const known = allProviderIds()
     .filter((id) => map.has(id))
     .sort((a, b) => (map.get(a) ?? 0) - (map.get(b) ?? 0));
+  // Providers added to the registry after priorities were last saved have no
+  // stored position; append them in canonical order so they are still tried
+  // (at the end) instead of being silently excluded from matching.
+  for (const id of allProviderIds()) {
+    if (!map.has(id)) known.push(id);
+  }
+  return known;
 }
 
 export function setProviderPriorities(orderedIds: string[]): void {
@@ -62,7 +78,7 @@ export function getProviderSettings(): Record<string, ProviderSetting> {
     out[p] = {
       providerId: p,
       enabled: row?.enabled ?? true,
-      credentials: row ? (JSON.parse(row.credentialsJson) as ProviderCredentials) : {},
+      credentials: row ? (safeParseJson<ProviderCredentials>(row.credentialsJson) ?? {}) : {},
     };
   }
   return out;
@@ -117,9 +133,11 @@ export function getLibraryOverride(libraryId: number): LibraryOverride | null {
   const db = getDb();
   const row = db.select().from(schema.libraryOverrides).where(eq(schema.libraryOverrides.libraryId, libraryId)).get();
   if (!row) return null;
+  const priority = safeParseJson<string[]>(row.priorityJson);
+  if (!priority) return null; // malformed override — fall back to global priorities
   return {
     libraryId,
-    priority: JSON.parse(row.priorityJson),
+    priority,
     autoMatch: row.autoMatch,
   };
 }
@@ -143,11 +161,13 @@ export function setLibraryOverride(lib: LibraryOverride): void {
 }
 
 /** Effective provider order for a library (override-aware, enabled providers only). */
-export function providerOrderFor(libraryId?: number): string[] {
-  const { enabledProviders } = getCredentialMap();
+export function providerOrderFor(libraryId?: number, enabledProviders?: string[]): string[] {
+  // Callers that already fetched the credential map may pass its enabled list
+  // to avoid a second full scan of the provider settings.
+  const enabled = enabledProviders ?? getCredentialMap().enabledProviders;
   const base =
     libraryId !== undefined ? getLibraryOverride(libraryId)?.priority ?? getProviderPriorities() : getProviderPriorities();
-  return base.filter((id) => enabledProviders.includes(id));
+  return base.filter((id) => enabled.includes(id));
 }
 
 export function clearLibraryOverrides(libraryIds: number[]): void {
@@ -159,22 +179,24 @@ export function clearLibraryOverrides(libraryIds: number[]): void {
 
 export function getAllLibraryOverrides(): LibraryOverride[] {
   const db = getDb();
-  return db
-    .select()
-    .from(schema.libraryOverrides)
-    .all()
-    .map((r) => ({
-      libraryId: r.libraryId,
-      priority: JSON.parse(r.priorityJson),
-      autoMatch: r.autoMatch,
-    }));
+  const out: LibraryOverride[] = [];
+  for (const r of db.select().from(schema.libraryOverrides).all()) {
+    const priority = safeParseJson<string[]>(r.priorityJson);
+    if (!priority) continue; // skip malformed rows rather than crashing the settings page
+    out.push({ libraryId: r.libraryId, priority, autoMatch: r.autoMatch });
+  }
+  return out;
 }
+
+const DEFAULT_POLL_INTERVAL = 15;
 
 /** Polling interval (minutes) for detecting new series in Kavita. 0 disables. */
 export function getPollInterval(): number {
   const db = getDb();
   const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'pollInterval')).get();
-  return row ? Number(JSON.parse(row.valueJson)) : 15;
+  if (!row) return DEFAULT_POLL_INTERVAL;
+  const parsed = Number(safeParseJson<unknown>(row.valueJson));
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_POLL_INTERVAL;
 }
 
 export function setPollInterval(minutes: number): void {
@@ -268,7 +290,9 @@ export function getDownloaderSettings(): DownloaderSettings {
   const db = getDb();
   const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'downloader')).get();
   if (!row) return { ...DEFAULT_DOWNLOADER };
-  const s: DownloaderSettings = { ...DEFAULT_DOWNLOADER, ...(JSON.parse(row.valueJson) as Partial<DownloaderSettings>) };
+  const stored = safeParseJson<Partial<DownloaderSettings>>(row.valueJson);
+  if (!stored) return { ...DEFAULT_DOWNLOADER };
+  const s: DownloaderSettings = { ...DEFAULT_DOWNLOADER, ...stored };
   // Guard against stale/malformed rows so callers always get a string array.
   if (!Array.isArray(s.nhentaiBannedTags)) s.nhentaiBannedTags = [];
   return s;

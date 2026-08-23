@@ -240,11 +240,11 @@ export function Settings() {
 
       <Card className="animate-fade-up" style={{ animationDelay: '240ms' }}>
         <SectionHeader icon={<Timer className="h-4 w-4" />} title="Auto-scan interval">
-          <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => { savePoll.mutate(); pollFlash.flash(); }} disabled={savePoll.isPending || !poll || Number(poll) < 1} />
+          <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => { savePoll.mutate(); pollFlash.flash(); }} disabled={savePoll.isPending || poll === '' || Number(poll) < 0} />
         </SectionHeader>
         <CardContent className="flex items-center gap-3">
-          <Input type="number" min={1} value={poll} onChange={(e) => setPoll(e.target.value)} className="w-28" />
-          <span className="text-sm text-muted">minutes between background scans for newly ingested series</span>
+          <Input type="number" min={0} value={poll} onChange={(e) => setPoll(e.target.value)} className="w-28" />
+          <span className="text-sm text-muted">minutes between background scans for newly ingested series (0 disables)</span>
         </CardContent>
       </Card>
 

@@ -29,6 +29,7 @@ import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult, type 
 import { useDownloads } from '../lib/DownloadsContext';
 import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent } from '../components/ui';
 import { cn, timeAgo, toIsoUtc } from '../lib/utils';
+import { toast } from '../lib/toast';
 
 const SOURCES: { id: DoujinSource; label: string }[] = [
   { id: 'hitomi', label: 'Hitomi.la' },
@@ -549,8 +550,8 @@ export function Downloader() {
     setPendingKey(key);
     try {
       await startDownload({ source: item.source, galleryId: item.galleryId, title: item.title ?? undefined });
-    } catch {
-      /* surfaced via toast */
+    } catch (e) {
+      toast({ tone: 'danger', title: 'Could not start download', description: e instanceof Error ? e.message : String(e) });
     } finally {
       setPendingKey(null);
     }

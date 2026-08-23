@@ -86,7 +86,7 @@ async function matchAndApply(
 ): Promise<MatchResult> {
   const base: MatchResult = { seriesId: series.id, title: series.name, matched: false, errors: [] };
   const { credentials, enabledProviders } = getCredentialMap();
-  const order = providerOrderFor(libraryId);
+  const order = providerOrderFor(libraryId, enabledProviders);
 
   if (order.length === 0) {
     base.errors.push('No providers enabled/configured');
@@ -266,13 +266,13 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       const ids =
         job.payload.seriesIds?.length ? job.payload.seriesIds : job.payload.seriesId !== undefined ? [job.payload.seriesId] : [];
       if (!ids.length) throw new Error('seriesId or seriesIds required');
-      for (const id of ids) targets.push(await byId(id));
+      targets.push(...(await Promise.all(ids.map((id) => byId(id)))));
       break;
     }
     case 'sync-series': {
       const ids = job.payload.seriesIds?.length ? job.payload.seriesIds : [];
       if (ids.length) {
-        for (const id of ids) targets.push(await byId(id));
+        targets.push(...(await Promise.all(ids.map((id) => byId(id)))));
       } else {
         const libraryId = job.payload.libraryId;
         if (libraryId === undefined) throw new Error('seriesIds or libraryId required');

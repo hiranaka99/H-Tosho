@@ -219,7 +219,7 @@ class MangaDexProvider extends BaseProvider {
    * then Japanese, then anything else; within a locale the most recently
    * updated upload wins (MangaDex re-uploads bump `updatedAt`).
    */
-  private async fetchVolumeCovers(mangaId: string): Promise<VolumeCover[]> {
+  private async fetchVolumeCovers(mangaId: string, opts?: { stopAtVolume1?: boolean }): Promise<VolumeCover[]> {
     const byVolume = new Map<number, { rank: number; updatedAt: string; fileName: string }>();
     // Page through the collection (100/page); cap at 5 pages so a runaway
     // catalogue can't stall metadata fetches.
@@ -243,6 +243,9 @@ class MangaDexProvider extends BaseProvider {
         }
       }
       if (res?.response !== 'collection' || items.length < 100) break;
+      // Volumes arrive in ascending order, so once Volume 1 has been seen the
+      // remaining pages can only add higher volumes — stop paging early.
+      if (opts?.stopAtVolume1 && byVolume.has(1)) break;
     }
     return [...byVolume.entries()]
       .sort((x, y) => x[0] - y[0])
@@ -258,7 +261,7 @@ class MangaDexProvider extends BaseProvider {
    */
   async preferredSeriesCoverUrl(mangaId: string): Promise<string | undefined> {
     try {
-      const volumeCovers = await this.fetchVolumeCovers(mangaId);
+      const volumeCovers = await this.fetchVolumeCovers(mangaId, { stopAtVolume1: true });
       return volumeCovers.find((v) => v.number === 1)?.url;
     } catch {
       return undefined;

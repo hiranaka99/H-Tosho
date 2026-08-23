@@ -167,6 +167,11 @@ function migrateLegacyDatabases(canonicalFile: string): void {
       const src = new Database(legacyFile);
       source = src;
       const target = new Database(canonicalFile);
+      // The canonical file may not exist yet (first run after a filename
+      // rename), in which case the copy below would see no target tables and
+      // silently skip every row. Create the schema up front so the column
+      // intersection below always has something to match against.
+      target.exec(SCHEMA_DDL);
       // ATTACH lets us copy rows across databases in a single statement.
       target.exec(`ATTACH DATABASE '${legacyFile.replace(/'/g, "''")}' AS legacy`);
       const copyAll = target.transaction(() => {
@@ -210,7 +215,7 @@ function migrateLegacyDatabases(canonicalFile: string): void {
     if (!migrated || !source) {
       // Leave the original in place rather than archive data we failed to copy.
       console.warn(`[h-tosho] skipping archival of ${label} because migration did not complete`);
-      return;
+      continue;
     }
 
     try {

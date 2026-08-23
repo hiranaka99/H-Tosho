@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { eq } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
 import { KAVITA_OPENAPI_VERSION, type KavitaLibrary, type KavitaSeries } from '../kavita/types.js';
@@ -105,10 +105,16 @@ api.get('/kavita/libraries', async (c) => {
     const rows = getDb().select().from(schema.seriesMatches).all();
     const matchedIds = new Set(rows.filter((r) => r.status === 'matched').map((r) => r.kavitaSeriesId));
     // Fetch every library's series in parallel (was a sequential per-library
-    // round-trip) and count matches with an O(1) set lookup.
-    const seriesLists = await Promise.all(libs.map((lib) => client.getSeries(lib.id)));
-    const out: (KavitaLibrary & { seriesCount: number; matchedCount: number })[] = libs.map((l, i) => {
-      const series = seriesLists[i] as KavitaSeries[];
+    // round-trip) and count matches with an O(1) set lookup. One failing
+    // library must not 502 the whole list: it is reported with zero counts
+    // and an error note instead.
+    const results = await Promise.allSettled(libs.map((lib) => client.getSeries(lib.id)));
+    const out: (KavitaLibrary & { seriesCount: number; matchedCount: number; error?: string })[] = libs.map((l, i) => {
+      const r = results[i];
+      if (r.status === 'rejected') {
+        return { ...l, seriesCount: 0, matchedCount: 0, error: errMsg(r.reason) };
+      }
+      const series = r.value as KavitaSeries[];
       return {
         ...l,
         seriesCount: series.length,
@@ -208,7 +214,7 @@ api.get('/series/:id/identify', async (c) => {
     if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
     const series = await client.getSeriesById(seriesId);
     const { credentials, enabledProviders } = getCredentialMap();
-    const providerOrder = providerOrderFor(series.libraryId);
+    const providerOrder = providerOrderFor(series.libraryId, enabledProviders);
     // The local MangaDex adult catalog covers chapterless titles that are
     // invisible to live title search. Flagged-mature series match fuzzily;
     // others only on exact title match (see catalogCandidates).
@@ -681,7 +687,7 @@ api.get('/stats', (c) => {
 });
 
 api.get('/history', (c) => {
-  const rows = getDb().select().from(schema.syncHistory).limit(200).all().reverse();
+  const rows = getDb().select().from(schema.syncHistory).orderBy(desc(schema.syncHistory.id)).limit(200).all();
   return c.json(
     rows.map((r) => ({
       id: r.id,
