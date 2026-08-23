@@ -184,9 +184,15 @@ export interface KavitaUpdateSeriesMetadataDto {
   seriesMetadata: KavitaSeriesMetadataDto;
 }
 
+/**
+ * Body for POST /api/Upload/series. `url` carries the base64-encoded image —
+ * the payload shape accepted across Kavita v0.9 builds (newer builds also
+ * accept a staged temp `fileName`, but base64 works everywhere, including
+ * 0.9.0.x servers that lack /Upload/upload-by-file).
+ */
 export interface KavitaUploadCoverFileDto {
   id: number;
-  fileName: string;
+  url: string;
   lockCover: boolean;
 }
 

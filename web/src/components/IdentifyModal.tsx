@@ -101,7 +101,7 @@ export function IdentifyModal({ seriesId, seriesName, currentMetadata, onClose }
                     <Check className="h-4 w-4 text-success" />
                     <div>
                       <p className="text-sm font-medium">
-                        Auto-matched to {PROVIDER_NAMES[autoBest.providerId] ?? autoBest.providerId} · {Math.round(autoBest.score)}%
+                        Auto-matched to {PROVIDER_NAMES[autoBest.providerId] ?? autoBest.providerId} · {Math.round(autoBest.score * 100)}%
                       </p>
                       <p className="text-xs text-muted">{autoBest.title}</p>
                     </div>

@@ -160,13 +160,13 @@ async function matchAndApply(
 
     await notify({
       title: `${force ? 'Updated' : 'Matched'}: ${series.name}`,
-      body: `Matched to ${best.providerId} (${Math.round(best.score)}%). Pushed: ${
+      body: `Matched to ${best.providerId} (${Math.round(best.score * 100)}%). Pushed: ${
         result.pushed.length ? result.pushed.join(', ') : 'none'
       }${result.errors.length ? ' — errors: ' + result.errors.join('; ') : ''}`,
       coverUrl: meta.coverUrl ?? best.coverUrl,
       success: result.errors.length === 0,
     });
-    log?.(result.errors.length ? 'warn' : 'success', `${series.name} -> ${best.providerId} (${Math.round(best.score)}%)`);
+    log?.(result.errors.length ? 'warn' : 'success', `${series.name} -> ${best.providerId} (${Math.round(best.score * 100)}%)`);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     base.errors.push(msg);

@@ -217,30 +217,22 @@ describe('KavitaClient', () => {
     });
   });
 
-  it('uses Kavita staged uploads and forwards the cover lock state', async () => {
+  it('posts a base64 cover payload and forwards the cover lock state', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     globalThis.fetch = async (input, init) => {
       requests.push({ url: String(input), init });
-      if (String(input).endsWith('/api/Upload/upload-by-file')) {
-        const form = init?.body as FormData;
-        assert.ok(form.get('file') instanceof Blob);
-        return Response.json('coverupload_safe.jpg');
-      }
       return Response.json({ ok: true });
     };
 
-    await new KavitaClient('https://kavita.example', 'secret').updateSeriesCover(
-      42,
-      Buffer.from('image'),
-      'cover-42.jpg',
-      true,
-    );
+    await new KavitaClient('https://kavita.example', 'secret').updateSeriesCover(42, Buffer.from('image'), true);
 
-    assert.equal(requests[0]?.url, 'https://kavita.example/api/Upload/upload-by-file');
-    assert.equal(requests[1]?.url, 'https://kavita.example/api/Upload/series');
-    assert.deepEqual(JSON.parse(String(requests[1]?.init?.body)), {
+    // A single inline base64 POST — no staging round-trip (the /Upload/upload-by-file
+    // endpoint does not exist on Kavita 0.9.0.x servers).
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.url, 'https://kavita.example/api/Upload/series');
+    assert.deepEqual(JSON.parse(String(requests[0]?.init?.body)), {
       id: 42,
-      fileName: 'coverupload_safe.jpg',
+      url: Buffer.from('image').toString('base64'),
       lockCover: true,
     });
   });

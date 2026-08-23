@@ -163,10 +163,10 @@ const STATUS_TONE: Record<string, 'success' | 'muted' | 'warning' | 'danger'> = 
   failed: 'danger',
 };
 
-export function StatusBadge({ status, className }: { status: string; className?: string }) {
+export function StatusBadge({ status, className, title }: { status: string; className?: string; title?: string }) {
   const label = status.charAt(0).toUpperCase() + status.slice(1);
   return (
-    <Badge tone={STATUS_TONE[status] ?? 'default'} className={className}>
+    <Badge tone={STATUS_TONE[status] ?? 'default'} className={className} title={title}>
       {status === 'syncing' && <Loader2 className="h-3 w-3 animate-spin" />}
       {label}
     </Badge>

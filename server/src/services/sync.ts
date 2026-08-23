@@ -108,7 +108,7 @@ export async function applyToKavita(
 
   if (opts.agg.replaceCover && opts.cover && opts.cover.length > 0) {
     try {
-      await client.updateSeriesCover(seriesId, opts.cover, `cover-${seriesId}.jpg`, opts.agg.lockCovers);
+      await client.updateSeriesCover(seriesId, opts.cover, opts.agg.lockCovers);
       coverUpdated = true;
       locked = opts.agg.lockCovers;
       pushed.push('cover');

@@ -328,21 +328,14 @@ export class KavitaClient {
     if (patch.webLinks !== undefined) metadata.webLinks = patch.webLinks;
   }
 
-  /** POST /api/Upload/upload-by-file, then POST /api/Upload/series. */
-  async updateSeriesCover(seriesId: number, image: Buffer, filename: string, lockCover: boolean): Promise<void> {
-    const form = new FormData();
-    form.append('file', new Blob([image]), filename);
-    const stagePath = '/Upload/upload-by-file';
-    const staged = await fetchJson<string>(this.url(stagePath), {
-      method: 'POST',
-      headers: this.headers,
-      body: form,
-    });
-    if (staged.status < 200 || staged.status >= 300 || typeof staged.data !== 'string' || !staged.data) {
-      throw this.requestError('Stage series cover', stagePath, staged.status, staged.data);
-    }
-
-    const body: KavitaUploadCoverFileDto = { id: seriesId, fileName: staged.data, lockCover };
+  /**
+   * POST /api/Upload/series with a base64 image payload. This is the cover
+   * replacement shape accepted across Kavita v0.9 builds; newer versions also
+   * support staging via /Upload/upload-by-file, but that endpoint does not
+   * exist on 0.9.0.x servers (it 404s), so we always send the payload inline.
+   */
+  async updateSeriesCover(seriesId: number, image: Buffer, lockCover: boolean): Promise<void> {
+    const body: KavitaUploadCoverFileDto = { id: seriesId, url: image.toString('base64'), lockCover };
     await this.postJson('/Upload/series', body, `Update series ${seriesId} cover`);
   }
 

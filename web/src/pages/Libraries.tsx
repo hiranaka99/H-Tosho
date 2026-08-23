@@ -214,7 +214,7 @@ export function Libraries() {
                     <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-1 bg-gradient-to-t from-black/90 to-transparent p-2 pt-6">
                       <p className="truncate text-xs font-medium text-white">{r.name}</p>
                       <div className="flex items-center gap-1">
-                        <StatusBadge status={r.status} />
+                        <StatusBadge status={r.status} title={r.errorMessage ?? undefined} />
                         {r.providerId && <ProviderBadge id={r.providerId} />}
                       </div>
                     </div>
@@ -257,10 +257,10 @@ export function Libraries() {
                           </div>
                         </td>
                         <td className="p-2">
-                          <StatusBadge status={r.status} />
+                          <StatusBadge status={r.status} title={r.errorMessage ?? undefined} />
                         </td>
                         <td className="p-2">{r.providerId ? <ProviderBadge id={r.providerId} /> : <span className="text-muted">—</span>}</td>
-                        <td className="p-2 text-muted">{r.matchScore ? Math.round(r.matchScore) + '%' : '—'}</td>
+                        <td className="p-2 text-muted">{r.matchScore ? Math.round(r.matchScore * 100) + '%' : '—'}</td>
                         <td className="p-2 text-xs text-muted">{timeAgo(r.lastSyncedAt)}</td>
                         <td className="p-2 text-right">
                           <Button size="sm" variant="outline" onClick={() => setIdentify({ id: r.id, name: r.name })}>
