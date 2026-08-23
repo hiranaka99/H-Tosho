@@ -119,6 +119,16 @@ function CoverThumb({ src, alt }: { src?: string | null; alt: string }) {
   );
 }
 
+/** Thumbnail for candidate rows: falls back to the search icon when the cover is missing or fails to load. */
+function CandidateCover({ src }: { src?: string }) {
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => {
+    setFailed(false);
+  }, [src]);
+  if (!src || failed) return <Search className="h-4 text-muted" />;
+  return <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} className="h-full w-full object-cover" />;
+}
+
 export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps) {
   const qc = useQueryClient();
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
@@ -263,7 +273,7 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
                         className="flex h-14 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-surface-2"
                         style={{ border: isSelected ? '1px solid var(--color-primary)' : '1px solid var(--color-border)' }}
                       >
-                        {c.coverUrl ? <img src={c.coverUrl} alt="" className="h-full w-full object-cover" loading="lazy" /> : <Search className="h-4 text-muted" />}
+                        <CandidateCover src={c.coverUrl} />
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">

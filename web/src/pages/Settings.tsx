@@ -12,6 +12,7 @@ const AGG_LABELS: { key: keyof Agg; label: string; hint: string }[] = [
   { key: 'mergeTags', label: 'Merge tags', hint: 'Combine tags from all contributing providers' },
   { key: 'mergeGenres', label: 'Merge genres', hint: 'Combine genres from all contributing providers' },
   { key: 'replaceCover', label: 'Replace cover', hint: 'Download & push provider cover art to Kavita' },
+  { key: 'replaceVolumeCovers', label: 'Replace volume covers', hint: 'Push per-volume cover art (MangaDex) onto matching Kavita volumes' },
   { key: 'lockCovers', label: 'Lock covers', hint: 'Lock replacement covers so Kavita does not overwrite them' },
 ];
 
@@ -91,7 +92,7 @@ export function Settings() {
     });
   };
 
-  const [agg, setAgg] = React.useState<Agg>({ mergeTags: true, mergeGenres: true, replaceCover: true, lockCovers: false });
+  const [agg, setAgg] = React.useState<Agg>({ mergeTags: true, mergeGenres: true, replaceCover: true, replaceVolumeCovers: true, lockCovers: false });
   React.useEffect(() => {
     if (s) setAgg(s.aggregation);
   }, [s?.aggregation]);

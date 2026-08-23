@@ -16,6 +16,13 @@ export interface SearchResult {
   summary?: string;
 }
 
+/** A single cover image for one volume of a series. */
+export interface VolumeCover {
+  /** 1-based volume number as published by the provider. */
+  number: number;
+  /** Resolved CDN URL of the cover image. */
+  url: string;
+}
 /** Unified series-level metadata. All list fields are optional/emptyable. */
 export interface SeriesMetadata {
   providerId: string;
@@ -43,6 +50,8 @@ export interface SeriesMetadata {
   /** ONGOING | COMPLETED | HIATUS | CANCELLED | UNKNOWN */
   status?: 'ONGOING' | 'COMPLETED' | 'HIATUS' | 'CANCELLED' | 'UNKNOWN';
   url?: string;
+  /** Per-volume cover art (MangaDex only), one entry per volume number. */
+  volumeCovers?: VolumeCover[];
 }
 
 /** Unified book/chapter-level metadata (optional per provider). */

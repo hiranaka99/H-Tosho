@@ -6,7 +6,8 @@ import {
   KavitaPublicationStatus,
   type SeriesMetadataPayload,
 } from '../kavita/types.js';
-import type { SeriesMetadata } from '../providers/types.js';
+import type { SeriesMetadata, VolumeCover } from '../providers/types.js';
+import type { KavitaVolume } from '../kavita/types.js';
 import type { AggregationOptions } from './settings.js';
 import { getKavitaConnection, getNotificationSettings } from './settings.js';
 import { notify } from '../notify/dispatcher.js';
@@ -16,8 +17,20 @@ export interface ApplyResult {
   seriesId: number;
   pushed: string[];
   coverUpdated: boolean;
+  /** Number of volume covers successfully pushed. */
+  volumeCoversUpdated: number;
   locked: boolean;
   errors: string[];
+}
+
+/** A provider volume cover paired with the Kavita volume it maps onto. */
+export interface VolumeCoverAssignment {
+  /** Kavita volume id to upload to. */
+  volumeId: number;
+  /** Matched volume number. */
+  number: number;
+  /** Provider CDN URL to download from. */
+  url: string;
 }
 
 const PUBLICATION_STATUS: Record<NonNullable<SeriesMetadata['status']>, KavitaPublicationStatus | undefined> = {
@@ -77,7 +90,8 @@ export function buildSeriesPayload(
  * Apply matched metadata to a Kavita series:
  * 1. Read/merge/write identity and metadata fields
  * 2. Stage and apply cover image (if enabled + available)
- * 3. Record sync history + fire notifications
+ * 3. Push per-volume covers onto matching Kavita volumes (if enabled + available)
+ * 4. Record sync history + fire notifications
  */
 export async function applyToKavita(
   client: KavitaClient,
@@ -87,12 +101,14 @@ export async function applyToKavita(
     agg: AggregationOptions;
     fieldConfig: Record<string, string | null>;
     cover: Buffer | null;
+    volumeCovers?: VolumeCover[];
     title: string;
   },
 ): Promise<ApplyResult> {
   const errors: string[] = [];
   const pushed: string[] = [];
   let coverUpdated = false;
+  let volumeCoversUpdated = 0;
   let locked = false;
 
   const payload = buildSeriesPayload(meta, opts.agg, opts.fieldConfig);
@@ -117,6 +133,14 @@ export async function applyToKavita(
     }
   }
 
+  const fromPrimary = (f: string) => (opts.fieldConfig[f] ?? null) === null || opts.fieldConfig[f] === meta.providerId;
+  if (opts.agg.replaceVolumeCovers && opts.volumeCovers?.length && fromPrimary('volumeCovers')) {
+    const volResult = await applyVolumeCovers(client, seriesId, opts.volumeCovers, opts.agg.lockCovers);
+    volumeCoversUpdated = volResult.updated;
+    errors.push(...volResult.errors);
+    if (volResult.updated > 0) pushed.push(`volumeCovers:${volResult.updated}`);
+  }
+
   // Persist history
   const db = getDb();
   db.insert(schema.syncHistory)
@@ -124,7 +148,7 @@ export async function applyToKavita(
       kavitaSeriesId: seriesId,
       seriesTitle: opts.title,
       action: errors.length ? 'failed' : 'updated',
-      detailsJson: JSON.stringify({ provider: meta.providerId, pushed, coverUpdated, locked, errors }),
+      detailsJson: JSON.stringify({ provider: meta.providerId, pushed, coverUpdated, volumeCoversUpdated, locked, errors }),
     })
     .run();
 
@@ -152,7 +176,7 @@ export async function applyToKavita(
       .run();
   }
 
-  return { seriesId, pushed, coverUpdated, locked, errors };
+  return { seriesId, pushed, coverUpdated, volumeCoversUpdated, locked, errors };
 }
 
 /** Download a cover from a provider URL, returning null on failure. */
@@ -164,6 +188,59 @@ export async function fetchCover(client: KavitaClient, url?: string): Promise<Bu
   } catch {
     return null;
   }
+}
+/**
+ * Download and push per-volume covers onto matching Kavita volumes. Failures
+ * are reported per volume (never aborting the remaining ones); a missing or
+ * unmatched volume simply goes without a cover.
+ */
+export async function applyVolumeCovers(
+  client: KavitaClient,
+  seriesId: number,
+  covers: VolumeCover[],
+  lockCover: boolean,
+): Promise<{ updated: number; errors: string[] }> {
+  let volumes: KavitaVolume[];
+  try {
+    volumes = await client.getVolumes(seriesId);
+  } catch (err) {
+    return { updated: 0, errors: [`volumes: ${err instanceof Error ? err.message : String(err)}`] };
+  }
+  const errors: string[] = [];
+  let updated = 0;
+  for (const assignment of matchVolumeCovers(volumes, covers)) {
+    const image = await fetchCover(client, assignment.url);
+    if (!image) {
+      errors.push(`vol ${assignment.number}: cover download failed`);
+      continue;
+    }
+    try {
+      await client.updateVolumeCover(assignment.volumeId, image, lockCover);
+      updated += 1;
+    } catch (err) {
+      errors.push(`vol ${assignment.number}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { updated, errors };
+}
+
+/**
+ * Pair provider volume covers with Kavita volumes by volume number. Kavita's
+ * `minNumber` is the volume number; entries without a usable number are
+ * skipped. Each Kavita volume and each provider cover is used at most once.
+ */
+export function matchVolumeCovers(volumes: KavitaVolume[], covers: VolumeCover[]): VolumeCoverAssignment[] {
+  const out: VolumeCoverAssignment[] = [];
+  const used = new Set<number>();
+  for (const cover of covers) {
+    const vol = volumes.find(
+      (v) => !used.has(v.id) && v.number !== undefined && Number.isFinite(v.number) && Math.round(v.number) === cover.number,
+    );
+    if (!vol) continue;
+    used.add(vol.id);
+    out.push({ volumeId: vol.id, number: cover.number, url: cover.url });
+  }
+  return out;
 }
 
 export function getConnectedClient(): KavitaClient | null {

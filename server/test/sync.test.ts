@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { KavitaAgeRating, KavitaPublicationStatus } from '../src/kavita/types.js';
 import type { SeriesMetadata } from '../src/providers/types.js';
-import { buildSeriesPayload } from '../src/services/sync.js';
+import { buildSeriesPayload, matchVolumeCovers } from '../src/services/sync.js';
 
 describe('Kavita metadata mapping', () => {
   it('maps provider metadata onto Kavita v0.9 fields and enums', () => {
@@ -30,7 +30,7 @@ describe('Kavita metadata mapping', () => {
     assert.deepEqual(
       buildSeriesPayload(
         metadata,
-        { mergeTags: true, mergeGenres: true, replaceCover: true, lockCovers: true },
+        { mergeTags: true, mergeGenres: true, replaceCover: true, replaceVolumeCovers: true, lockCovers: true },
         {},
       ),
       {
@@ -71,10 +71,46 @@ describe('Kavita metadata mapping', () => {
 
     const payload = buildSeriesPayload(
       metadata,
-      { mergeTags: true, mergeGenres: true, replaceCover: false, lockCovers: false },
+        { mergeTags: true, mergeGenres: true, replaceCover: false, replaceVolumeCovers: false, lockCovers: false },
       {},
     );
     assert.equal(payload.ageRating, undefined);
     assert.equal(payload.publicationStatus, undefined);
+  });
+});
+
+describe('matchVolumeCovers', () => {
+  it('pairs provider covers with Kavita volumes by volume number', () => {
+    const volumes = [
+      { id: 11, name: 'Volume 1', minNumber: 1, maxNumber: 1, number: 1 },
+      { id: 12, name: 'Volume 2', minNumber: 2, maxNumber: 2, number: 2 },
+      { id: 13, name: 'Unnumbered', minNumber: undefined, maxNumber: undefined },
+    ];
+    const covers = [
+      { number: 2, url: 'https://cdn.example/vol2.jpg' },
+      { number: 1, url: 'https://cdn.example/vol1.jpg' },
+      { number: 9, url: 'https://cdn.example/vol9.jpg' },
+    ];
+
+    assert.deepEqual(matchVolumeCovers(volumes, covers), [
+      { volumeId: 12, number: 2, url: 'https://cdn.example/vol2.jpg' },
+      { volumeId: 11, number: 1, url: 'https://cdn.example/vol1.jpg' },
+    ]);
+  });
+
+  it('skips volumes without a usable number and unmatched covers', () => {
+    const volumes = [{ id: 21, name: null, minNumber: undefined, maxNumber: undefined }];
+    assert.deepEqual(matchVolumeCovers(volumes, [{ number: 3, url: 'https://cdn.example/vol3.jpg' }]), []);
+  });
+
+  it('assigns each Kavita volume at most one cover', () => {
+    const volumes = [{ id: 31, name: 'Volume 1', minNumber: 1, maxNumber: 1, number: 1 }];
+    const covers = [
+      { number: 1, url: 'https://cdn.example/vol1-en.jpg' },
+      { number: 1, url: 'https://cdn.example/vol1-ja.jpg' },
+    ];
+    assert.deepEqual(matchVolumeCovers(volumes, covers), [
+      { volumeId: 31, number: 1, url: 'https://cdn.example/vol1-en.jpg' },
+    ]);
   });
 });

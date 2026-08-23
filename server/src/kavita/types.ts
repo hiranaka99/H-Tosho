@@ -226,6 +226,26 @@ export interface KavitaSeries {
   lastAdded?: string;
   cover?: string;
 }
+/** Volume as returned by GET /api/Series/volumes (only consumed fields). */
+export interface KavitaVolumeDto {
+  id: number;
+  /** Volume number (or range start); e.g. 3 for "Vol. 3". */
+  minNumber?: number;
+  maxNumber?: number;
+  name?: string | null;
+  /** @deprecated int volume number, kept as fallback for older servers. */
+  number?: number;
+}
+
+/** H-Tosho's mapped volume model. */
+export interface KavitaVolume {
+  id: number;
+  name?: string | null;
+  minNumber?: number;
+  maxNumber?: number;
+  /** Effective volume number (minNumber, falling back to the deprecated field). */
+  number?: number;
+}
 
 /** H-Tosho's patch model; the client merges it into Kavita's current DTOs. */
 export interface SeriesMetadataPayload {

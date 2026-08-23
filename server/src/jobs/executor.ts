@@ -135,6 +135,7 @@ async function matchAndApply(
       agg,
       fieldConfig: getGlobalFieldConfig(),
       cover,
+      volumeCovers: meta.volumeCovers,
       title: series.name,
     });
 

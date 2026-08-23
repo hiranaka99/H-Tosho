@@ -32,7 +32,7 @@ import { testNotification } from '../notify/dispatcher.js';
 import { getDownloaderSettings, setDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
 import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
-import { rewriteHitomiCover } from './media.js';
+import { rewriteHitomiCover, rewriteMangaDexCoverUrl } from './media.js';
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
 
 const CREDENTIAL_FIELDS: Record<string, { key: string; label: string }[]> = {
@@ -56,6 +56,7 @@ const FIELD_NAMES = [
   'rating',
   'url',
   'cover',
+  'volumeCovers',
 ] as const;
 
 function connectedClient(): KavitaClient | null {
@@ -211,7 +212,16 @@ api.get('/series/:id/identify', async (c) => {
       credentials,
       enabledProviders,
     });
-    return c.json(outcome);
+    // MangaDex's cover CDN serves a placeholder card to third-party browser
+    // Referers (anything but mangadex.org / "localhost"), so route candidate
+    // covers through the same-origin media proxy.
+    return c.json({
+      ...outcome,
+      candidates: outcome.candidates.map((cand) => ({
+        ...cand,
+        coverUrl: rewriteMangaDexCoverUrl(cand.coverUrl),
+      })),
+    });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }
@@ -237,6 +247,7 @@ api.post('/series/:id/apply', async (c) => {
       agg,
       fieldConfig: getGlobalFieldConfig(),
       cover,
+      volumeCovers: meta.volumeCovers,
       title: series.name,
     });
     const db = getDb();
@@ -283,7 +294,11 @@ api.get('/providers/:id/series/:seriesId', async (c) => {
       { providerOrder: getProviderPriorities(), credentials, enabledProviders },
       getGlobalFieldConfig(),
     );
-    return c.json(meta);
+    return c.json({
+      ...meta,
+      coverUrl: rewriteMangaDexCoverUrl(meta.coverUrl),
+      volumeCovers: meta.volumeCovers?.map((v) => ({ ...v, url: rewriteMangaDexCoverUrl(v.url) ?? v.url })),
+    });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

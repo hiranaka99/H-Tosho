@@ -133,6 +133,7 @@ export async function fetchAggregatedMetadata(
       for (const field of wanted) {
         if (field === 'summary' && meta.summary) base.summary = meta.summary;
         else if (field === 'cover' && meta.coverUrl) base.coverUrl = meta.coverUrl;
+        else if (field === 'volumeCovers' && meta.volumeCovers?.length) base.volumeCovers = meta.volumeCovers;
         else if (field === 'genres' && meta.genres.length) base.genres = mergeLists(base.genres, meta.genres);
         else if (field === 'tags' && meta.tags.length) base.tags = mergeLists(base.tags, meta.tags);
         else if (field === 'writers' && meta.writers.length) base.writers = mergeLists(base.writers, meta.writers);

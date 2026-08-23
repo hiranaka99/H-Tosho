@@ -2,13 +2,17 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 
 /**
- * Media proxy for doujinshi gallery covers.
+ * Media proxy for CDN cover images that browsers cannot load directly.
  *
  * Hitomi's image CDN (`gold-usergeneratedcontent.net`) rejects requests that do
- * not carry a `hitomi.la` Referer (it answers 404). Browsers cannot attach such
- * a Referer to cross-origin `<img>` loads, so hitomi cover URLs served straight
- * to the UI never render. We proxy those images through the server, which fetches
- * them with the required headers and streams the bytes back to the client.
+ * not carry a `hitomi.la` Referer (it answers 404). MangaDex's cover CDN
+ * (`uploads.mangadex.org`) does the opposite: it answers third-party Referers
+ * (anything other than mangadex.org or the literal hostname "localhost") with
+ * a placeholder promo card instead of the cover — including 127.0.0.1 and LAN
+ * addresses, so the app only renders covers when opened via http://localhost.
+ * Browsers cannot attach (or omit) such Referers on cross-origin `<img>` loads,
+ * so these images are proxied through the server, which fetches them with the
+ * headers each CDN requires and streams the bytes back to the client.
  *
  * The target URL is passed base64url-encoded as `?u=` so arbitrary CDN paths
  * (which include slashes) survive query-string encoding without ambiguity:
@@ -19,6 +23,8 @@ import { cors } from 'hono/cors';
 const cache = new Map<string, { at: number; type: string; buf: Buffer }>();
 const CACHE_TTL_MS = 60 * 60_000; // covers are stable once a gallery exists
 const CACHE_MAX = 200;
+/** MangaDex cover files can exceed 10 MB; don't pin those in RAM. */
+const CACHE_MAX_BYTES = 5 * 1024 * 1024;
 
 function getCached(key: string): { type: string; buf: Buffer } | null {
   const hit = cache.get(key);
@@ -31,8 +37,8 @@ function getCached(key: string): { type: string; buf: Buffer } | null {
 }
 
 function setCached(key: string, type: string, buf: Buffer): void {
+  if (buf.length > CACHE_MAX_BYTES) return;
   if (cache.size >= CACHE_MAX) {
-    // Evict the oldest entry (Map preserves insertion order).
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) cache.delete(oldest);
   }
@@ -48,6 +54,17 @@ function decodeUrlParam(value: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Per-host Referer policy for proxied fetches. `undefined` means send no
+ * Referer at all — required for MangaDex, whose CDN serves a placeholder card
+ * to any third-party Referer (including 127.0.0.1 / LAN origins).
+ */
+function refererForHost(hostname: string): string | undefined {
+  if (hostname === 'uploads.mangadex.org') return undefined;
+  // Hitomi's CDN requires a hitomi.la Referer; the header is harmless for other hosts.
+  return 'https://hitomi.la/';
 }
 
 export function mediaRouter(): Hono {
@@ -76,11 +93,10 @@ export function mediaRouter(): Hono {
       });
     }
 
-    // Hitomi's CDN needs a hitomi.la Referer; the header is harmless for other hosts.
     const res = await fetch(parsed, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0',
-        Referer: 'https://hitomi.la/',
+        ...(refererForHost(parsed.hostname) ? { Referer: refererForHost(parsed.hostname)! } : {}),
         Accept: 'image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8',
       },
       redirect: 'follow',
@@ -114,4 +130,12 @@ export function rewriteHitomiCover<T extends { source?: string; coverUrl?: strin
     return { ...r, coverUrl: mediaProxyUrl(r.coverUrl) };
   }
   return r;
+}
+
+/** Rewrite MangaDex CDN cover URLs to route through the proxy (other URLs untouched). */
+export function rewriteMangaDexCoverUrl(url?: string | null): string | undefined {
+  if (typeof url === 'string' && url.startsWith('https://uploads.mangadex.org/covers/')) {
+    return mediaProxyUrl(url);
+  }
+  return url ?? undefined;
 }

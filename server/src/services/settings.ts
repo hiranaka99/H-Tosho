@@ -19,6 +19,8 @@ export interface AggregationOptions {
   mergeTags: boolean;
   mergeGenres: boolean;
   replaceCover: boolean;
+  /** Push per-volume cover art (MangaDex) onto matching Kavita volumes. */
+  replaceVolumeCovers: boolean;
   lockCovers: boolean;
 }
 
@@ -26,6 +28,7 @@ export const DEFAULT_AGGREGATION: AggregationOptions = {
   mergeTags: true,
   mergeGenres: true,
   replaceCover: true,
+  replaceVolumeCovers: true,
   lockCovers: false,
 };
 

@@ -81,7 +81,7 @@ export interface ProviderInfo {
 
 export interface Settings {
   priorities: string[];
-  aggregation: { mergeTags: boolean; mergeGenres: boolean; replaceCover: boolean; lockCovers: boolean };
+  aggregation: { mergeTags: boolean; mergeGenres: boolean; replaceCover: boolean; replaceVolumeCovers: boolean; lockCovers: boolean };
   fieldConfig: Record<string, string | null>;
   fields: string[];
   notifications: {

@@ -7,6 +7,8 @@ import {
   type KavitaPersonDto,
   type KavitaSeries,
   type KavitaSeriesDto,
+  type KavitaVolume,
+  type KavitaVolumeDto,
   type KavitaSeriesMetadataDto,
   type KavitaServerInfo,
   type KavitaServerInfoDto,
@@ -337,6 +339,25 @@ export class KavitaClient {
   async updateSeriesCover(seriesId: number, image: Buffer, lockCover: boolean): Promise<void> {
     const body: KavitaUploadCoverFileDto = { id: seriesId, url: image.toString('base64'), lockCover };
     await this.postJson('/Upload/series', body, `Update series ${seriesId} cover`);
+  }
+
+  /** GET /api/Series/volumes?seriesId={seriesId} */
+  async getVolumes(seriesId: number): Promise<KavitaVolume[]> {
+    const path = `/Series/volumes?seriesId=${encodeURIComponent(seriesId)}`;
+    const volumes = await this.getJson<KavitaVolumeDto[]>(path, `Get series ${seriesId} volumes`);
+    return (volumes ?? []).map((volume) => ({
+      id: volume.id,
+      name: volume.name ?? undefined,
+      minNumber: volume.minNumber,
+      maxNumber: volume.maxNumber,
+      number: Number.isFinite(volume.minNumber) ? volume.minNumber : volume.number,
+    }));
+  }
+
+  /** POST /api/Upload/volume — same base64 payload shape as the series cover endpoint. */
+  async updateVolumeCover(volumeId: number, image: Buffer, lockCover: boolean): Promise<void> {
+    const body: KavitaUploadCoverFileDto = { id: volumeId, url: image.toString('base64'), lockCover };
+    await this.postJson('/Upload/volume', body, `Update volume ${volumeId} cover`);
   }
 
   /**
