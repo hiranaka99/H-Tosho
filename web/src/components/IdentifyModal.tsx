@@ -66,6 +66,20 @@ const tagNames = (tags: KavitaTag[] | null | undefined): string =>
 
 const peopleNames = (people: KavitaPerson[] | null | undefined): string =>
   (people ?? []).map((p) => p.name).filter(Boolean).join(', ');
+/** Mirrors the server's mergeTagLists (server/src/services/sync.ts) so the preview matches what Apply & Sync writes: union of existing + provider tags, deduped case-insensitively, existing spelling wins. */
+function mergeTagLists(existing: string[], incoming: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of [...existing, ...incoming]) {
+    const tag = raw.trim();
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+  }
+  return out;
+}
 
 /** Mirrors the server's releaseYear resolution (year, else releaseDate). */
 function candidateYear(meta: SeriesMetadata | undefined, fallbackYear?: number): string {
@@ -85,10 +99,14 @@ interface DiffRow {
   multiline?: boolean;
   /** Syncable field key (server EXCLUDABLE_FIELDS); rows without one are informational only. */
   field?: string;
+  /** Tags merge into Kavita's existing tags instead of replacing them (see server mergeTagLists). */
+  tagMerge?: { existing: string[]; incoming: string[] };
 }
 
 function FieldRow({ row, checked, onToggle }: { row: DiffRow; checked?: boolean; onToggle?: () => void }) {
+  const merge = row.tagMerge;
   const differs =
+    !merge &&
     row.current.trim() !== '' &&
     row.candidate.trim() !== '' &&
     row.current.trim().toLowerCase() !== row.candidate.trim().toLowerCase();
@@ -101,30 +119,64 @@ function FieldRow({ row, checked, onToggle }: { row: DiffRow; checked?: boolean;
           <input type="checkbox" checked={!!checked} onChange={onToggle} className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]" />
         )}
         <span className="w-20 shrink-0 text-muted">{row.label}</span>
-        <span className={cn('min-w-0 flex-1', clamp, differs && 'text-muted line-through')} title={row.current}>
-          {row.current || '—'}
-        </span>
+        {merge ? (
+          <span className={cn('min-w-0 flex-1', clamp)} title={row.current}>
+            {row.current || '—'}
+          </span>
+        ) : (
+          <span className={cn('min-w-0 flex-1', clamp, differs && 'text-muted line-through')} title={row.current}>
+            {row.current || '—'}
+          </span>
+        )}
       </div>
       <div className="flex min-w-0 items-start gap-1.5">
-        <span
-          className={cn('min-w-0 flex-1 font-medium', clamp, differs && 'text-primary', showCheckbox && !checked && 'text-muted line-through opacity-60')}
-          title={row.candidate}
-        >
-          {row.candidate || '—'}
-        </span>
+        {merge ? (
+          <MergedTags existing={merge.existing} incoming={merge.incoming} dimmed={!checked} />
+        ) : (
+          <span
+            className={cn('min-w-0 flex-1 font-medium', clamp, differs && 'text-primary', showCheckbox && !checked && 'text-muted line-through opacity-60')}
+            title={row.candidate}
+          >
+            {row.candidate || '—'}
+          </span>
+        )}
       </div>
     </div>
   );
 }
 
-function CoverThumb({ src, alt }: { src?: string | null; alt: string }) {
+/** Candidate column for tag rows: existing tags are kept, provider tags are added (highlighted). */
+function MergedTags({ existing, incoming, dimmed }: { existing: string[]; incoming: string[]; dimmed?: boolean }) {
+  if (incoming.length === 0) return <span className="text-muted">—</span>;
+  const merged = mergeTagLists(existing, incoming);
+  const kept = new Set(existing.map((t) => t.trim().toLowerCase()).filter(Boolean));
+  return (
+    <span className={cn('min-w-0 flex-1', dimmed && 'opacity-60')} title="Existing tags are kept; highlighted tags will be added">
+      {merged.map((tag, i) => (
+        <React.Fragment key={tag}>
+          {i > 0 ? ', ' : null}
+          <span className={kept.has(tag.toLowerCase()) ? undefined : 'font-medium text-primary'}>{tag}</span>
+        </React.Fragment>
+      ))}
+      {dimmed && <span className="text-muted"> · not synced</span>}
+    </span>
+  );
+}
+
+function CoverThumb({ src, alt, onZoom }: { src?: string | null; alt: string; onZoom?: (src: string, alt: string) => void }) {
   const [failed, setFailed] = React.useState(false);
   React.useEffect(() => {
     setFailed(false);
   }, [src]);
   if (!src || failed) return <span className="text-muted">—</span>;
+  const img = (
+    <img src={src} alt={alt} loading="lazy" onError={() => setFailed(true)} className="h-[427px] w-80 shrink-0 rounded object-cover" />
+  );
+  if (!onZoom) return img;
   return (
-    <img src={src} alt={alt} loading="lazy" onError={() => setFailed(true)} className="h-14 w-10 shrink-0 rounded object-cover" />
+    <button type="button" title="Click to enlarge" onClick={() => onZoom(src, alt)} className="shrink-0 cursor-zoom-in transition-opacity hover:opacity-90">
+      {img}
+    </button>
   );
 }
 
@@ -144,6 +196,7 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
   const [tab, setTab] = React.useState('all');
   const [excluded, setExcluded] = React.useState<ReadonlySet<string>>(new Set());
   const [coverEnabled, setCoverEnabled] = React.useState(true);
+  const [zoomCover, setZoomCover] = React.useState<{ src: string; alt: string } | null>(null);
 
   // A fresh selection starts with every syncable field opted in.
   React.useEffect(() => {
@@ -217,7 +270,7 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
         field: 'summary',
       },
       { label: 'Genres', current: tagNames(k?.genres), candidate: m ? m.genres.join(', ') : '', field: 'genres' },
-      { label: 'Tags', current: tagNames(k?.tags), candidate: m ? m.tags.join(', ') : '', field: 'tags' },
+      { label: 'Tags', current: tagNames(k?.tags), candidate: m ? m.tags.join(', ') : '', field: 'tags', tagMerge: { existing: (k?.tags ?? []).map((t) => t.title).filter((t): t is string => Boolean(t)), incoming: m?.tags ?? [] } },
       { label: 'Writers', current: peopleNames(k?.writers), candidate: m ? m.writers.join(', ') : '', field: 'writers' },
       // H-Tosho writes provider artists into Kavita's penciller role.
       { label: 'Artists', current: peopleNames(k?.pencillers), candidate: m ? m.artists.join(', ') : '', field: 'artists' },
@@ -247,6 +300,7 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
   };
 
   return (
+    <>
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-4xl">
         <div className="flex max-h-[90vh] flex-col gap-4 overflow-y-auto p-5">
@@ -378,11 +432,11 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
                     <div className="grid grid-cols-2 gap-2 py-2 text-xs">
                       <div className="flex items-center gap-1.5">
                         <span className="w-20 shrink-0 text-muted">Cover</span>
-                        <CoverThumb src={`/api/kavita/series/${seriesId}/cover`} alt="Current cover" />
+                        <CoverThumb src={`/api/kavita/series/${seriesId}/cover`} alt="Current cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
                       </div>
                       <div className="flex items-center gap-1.5">
                         <input type="checkbox" checked={coverEnabled} onChange={(e) => setCoverEnabled(e.target.checked)} className="h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]" />
-                        <CoverThumb src={diff.coverCandidate} alt="Candidate cover" />
+                        <CoverThumb src={diff.coverCandidate} alt="Candidate cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
                         {!coverEnabled && <span className="text-muted">not synced</span>}
                       </div>
                     </div>
@@ -413,5 +467,13 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
         </div>
       </DialogContent>
     </Dialog>
+    <Dialog open={!!zoomCover} onOpenChange={(o) => { if (!o) setZoomCover(null); }}>
+      {zoomCover && (
+        <DialogContent className="flex max-w-none items-center justify-center p-0">
+          <img src={zoomCover.src} alt={zoomCover.alt} className="max-h-[85vh] w-auto rounded-lg object-contain" />
+        </DialogContent>
+      )}
+    </Dialog>
+    </>
   );
 }
