@@ -26,9 +26,18 @@ class MangaUpdatesProvider extends BaseProvider {
 
   private async getHtml(path: string): Promise<string> {
     const url = this.baseUrl.replace(/\/+$/, '') + path;
-    const res = await fetch(url, { headers: this.headers(), redirect: 'follow' });
-    if (res.status >= 400) throw new Error(`MangaUpdates request failed (HTTP ${res.status})`);
-    return await res.text();
+    // MangaUpdates aggressively rate-limits (429). Retry with backoff so a
+    // burst of syncs doesn't fail the whole run.
+    const attempts = 3;
+    for (let i = 0; ; i++) {
+      const res = await fetch(url, { headers: this.headers(), redirect: 'follow' });
+      if (res.status === 429 && i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+        continue;
+      }
+      if (res.status >= 400) throw new Error(`MangaUpdates request failed (HTTP ${res.status})`);
+      return await res.text();
+    }
   }
 
   async testConnection(): Promise<void> {
@@ -71,8 +80,10 @@ function getMeta(html: string, name: string): string | undefined {
 
 export function parseSearchResults(html: string, providerId: string): SearchResult[] {
   const results: SearchResult[] = [];
-  const cardRe = /<a[^>]+href=["']\/series\/([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
   const seen = new Set<string>();
+
+  // Primary: full <a> cards (slug + inner title/cover). Tolerant of layout drift.
+  const cardRe = /<a[^>]+href=["']\/series\/([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
   let m: RegExpExecArray | null;
   while ((m = cardRe.exec(html)) !== null && results.length < 20) {
     const slug = m[1];
@@ -90,6 +101,23 @@ export function parseSearchResults(html: string, providerId: string): SearchResu
       coverUrl: cover,
     });
   }
+
+  // Fallback: if the card regex found nothing (markup drift), pull bare /series/ links.
+  if (results.length === 0) {
+    const linkRe = /href=["']\/series\/([a-z0-9][a-z0-9-]+)["']/gi;
+    while ((m = linkRe.exec(html)) !== null && results.length < 20) {
+      const slug = m[1];
+      if (seen.has(slug)) continue;
+      seen.add(slug);
+      results.push({
+        providerId,
+        providerSeriesId: slug,
+        title: slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+        type: 'MANGA',
+      });
+    }
+  }
+
   return results;
 }
 

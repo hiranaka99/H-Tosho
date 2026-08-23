@@ -25,8 +25,19 @@ class MyAnimeListProvider extends BaseProvider {
 
   async testConnection(): Promise<void> {
     if (!this.credentials?.['clientId']) throw new Error('MyAnimeList: missing Client ID');
-    const data = await this.get<{ data: any[] }>('/manga?limit=1', { headers: this.headers() });
+    // The /manga endpoint requires a `q` search term; use one to validate the key.
+    const data = await this.get<{ data: any[] }>('/manga?q=test&limit=1', { headers: this.headers() });
     if (!Array.isArray(data?.data)) throw new Error('MyAnimeList: bad response (check Client ID)');
+  }
+
+  /** Cover URL from either the approved-client `images.jpg` shape or the stub `main_picture` shape. */
+  private coverUrl(node: any): string | undefined {
+    return (
+      node?.images?.jpg?.large_image_url ??
+      node?.images?.jpg?.image_url ??
+      node?.main_picture?.large ??
+      node?.main_picture?.medium
+    );
   }
 
   async search(query: string, type?: string): Promise<SearchResult[]> {
@@ -45,11 +56,12 @@ class MyAnimeListProvider extends BaseProvider {
       };
       return {
         providerId: this.id,
-        providerSeriesId: String(a.mal_id),
+        // Approved clients expose `mal_id`; the public stub exposes `id`.
+        providerSeriesId: String(a.mal_id ?? a.id),
         title: a.title ?? 'Unknown',
         type: typeMap[a.type] ?? 'MANGA',
         year: a.start_date ? new Date(a.start_date).getFullYear() : undefined,
-        coverUrl: a.images?.jpg?.large_image_url ?? a.images?.jpg?.image_url,
+        coverUrl: this.coverUrl(a),
         summary: a.synopsis ?? undefined,
       } as SearchResult;
     });
@@ -59,8 +71,11 @@ class MyAnimeListProvider extends BaseProvider {
     const data = await this.get<{ data: any }>(`/manga/${providerSeriesId}`, {
       headers: this.headers(),
     });
-    const node = data.data;
-    if (!node) throw new Error(`MyAnimeList: manga ${providerSeriesId} not found`);
+    // Approved clients wrap the node in `data`; the public stub returns it directly.
+    const node = data?.data ?? data;
+    if (!node || (node.id == null && node.mal_id == null)) {
+      throw new Error(`MyAnimeList: manga ${providerSeriesId} not found`);
+    }
 
     let releaseDate: string | undefined;
     if (node.start_date) {
@@ -85,7 +100,7 @@ class MyAnimeListProvider extends BaseProvider {
       year: node.start_date ? new Date(node.start_date).getFullYear() : undefined,
       releaseDate,
       summary: node.synopsis?.trim(),
-      coverUrl: node.images?.jpg?.large_image_url ?? node.images?.jpg?.image_url,
+      coverUrl: this.coverUrl(node),
       genres: (node.genres ?? []).map((g: any) => g.name).filter(Boolean),
       tags: (node.tags ?? []).map((t: any) => t.name).filter(Boolean),
       writers: (node.authors ?? []).map((p: any) => p.name).filter(Boolean),

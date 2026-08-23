@@ -34,7 +34,6 @@ which is distinct from the Kavita *server* build number (e.g. `0.9.0.2`).
 | MangaUpdates | HTML | No official API; tolerant HTML parser |
 | MangaDex | REST | No credentials required |
 | MyAnimeList | REST | Requires Client ID |
-| Bangumi | REST | Optional Chinese/Japanese metadata source |
 
 ## Tech stack
 
@@ -116,7 +115,7 @@ server/src/
   index.ts            # Entrypoint: DB init, job queue, polling, HTTP server
   db/                 # Drizzle schema + SQLite bootstrap
   kavita/             # Kavita REST client (auth, libraries, metadata push)
-  providers/          # Provider interface, base class, 5 providers, registry
+  providers/          # Provider interface, base class, 4 providers, registry
   matching/           # Normalization + fuzzy matching engine
   services/           # Settings, aggregation/apply, notifications
   jobs/               # Queue + job executor

@@ -21,7 +21,6 @@ export const PROVIDER_COLORS: Record<string, string> = {
   mangaupdates: '#ff5555',
   mangadex: '#f4c145',
   myanimelist: '#3b82f6',
-  bangumi: '#a855f7',
 };
 
 export const PROVIDER_NAMES: Record<string, string> = {
@@ -29,7 +28,6 @@ export const PROVIDER_NAMES: Record<string, string> = {
   mangaupdates: 'MangaUpdates',
   mangadex: 'MangaDex',
   myanimelist: 'MyAnimeList',
-  bangumi: 'Bangumi',
 };
 
 export function timeAgo(iso: string | null | undefined): string {

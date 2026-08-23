@@ -3,7 +3,6 @@ import { anilistProvider } from './anilist.js';
 import { mangaUpdatesProvider } from './mangaupdates.js';
 import { mangaDexProvider } from './mangadex.js';
 import { myAnimeListProvider } from './myanimelist.js';
-import { bangumiProvider } from './bangumi.js';
 
 /**
  * Provider registry: the single source of truth for which metadata sources
@@ -15,7 +14,6 @@ export const PROVIDERS: MetadataProvider[] = [
   mangaUpdatesProvider,
   mangaDexProvider,
   myAnimeListProvider,
-  bangumiProvider,
 ];
 
 export function getProvider(id: string): MetadataProvider | undefined {

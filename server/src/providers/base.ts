@@ -35,11 +35,27 @@ export abstract class BaseProvider implements MetadataProvider {
 
   protected abstract baseUrl: string;
 
+  /** Extract a short human-readable error detail from an API response body. */
+  protected describeError(status: number, data: unknown): string {
+    let detail = '';
+    if (data && typeof data === 'object') {
+      const o = data as Record<string, any>;
+      detail =
+        o?.message ??
+        o?.detail ??
+        (Array.isArray(o?.errors) ? o.errors[0]?.message : undefined) ??
+        (o?.errors?.[0]?.detail ?? '');
+    } else if (typeof data === 'string') {
+      detail = data;
+    }
+    return `${this.name} request failed (HTTP ${status})${detail ? `: ${String(detail).slice(0, 240)}` : ''}`;
+  }
+
   protected async get<T>(path: string, init: RequestInit = {}, timeoutMs = 20_000): Promise<T> {
     const url = this.baseUrl.replace(/\/+$/, '') + path;
     const res = await fetchJson<T>(url, init, timeoutMs);
     if (res.status >= 400) {
-      throw new Error(`${this.name} request failed (HTTP ${res.status})`);
+      throw new Error(this.describeError(res.status, res.data));
     }
     return res.data;
   }
@@ -52,7 +68,7 @@ export abstract class BaseProvider implements MetadataProvider {
       body: JSON.stringify(body),
     });
     if (res.status >= 400) {
-      throw new Error(`${this.name} request failed (HTTP ${res.status})`);
+      throw new Error(this.describeError(res.status, res.data));
     }
     return res.data;
   }
