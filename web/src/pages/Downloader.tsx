@@ -28,7 +28,7 @@ import {
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
 import { useDownloads } from '../lib/DownloadsContext';
 import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent } from '../components/ui';
-import { cn, timeAgo } from '../lib/utils';
+import { cn, timeAgo, toIsoUtc } from '../lib/utils';
 
 const SOURCES: { id: DoujinSource; label: string }[] = [
   { id: 'hitomi', label: 'Hitomi.la' },
@@ -168,7 +168,7 @@ function formatBytes(bytes: number | null | undefined): string {
 /** Format an ISO 8601 date string for display, or undefined when absent/invalid. */
 function formatDate(iso?: string | null): string | undefined {
   if (!iso) return undefined;
-  const d = new Date(iso);
+  const d = new Date(toIsoUtc(iso));
   if (Number.isNaN(d.getTime())) return iso;
   return d.toISOString().slice(0, 10);
 }

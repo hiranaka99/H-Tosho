@@ -1,5 +1,6 @@
 import { serve } from '@hono/node-server';
-import { initDb } from './db/index.js';
+import { eq } from 'drizzle-orm';
+import { getDb, initDb, schema } from './db/index.js';
 import { createApp } from './app.js';
 import { jobQueue } from './jobs/queue.js';
 import { runJob } from './jobs/executor.js';
@@ -10,6 +11,14 @@ const HOST = process.env.HOST ?? '0.0.0.0';
 
 function main(): void {
   initDb();
+  // Jobs still marked 'running' were orphaned by a crash or restart (no process
+  // is executing them). Mark them failed so the UI doesn't show ghosts that can
+  // never be cancelled or completed.
+  getDb()
+    .update(schema.jobs)
+    .set({ status: 'failed', errorMessage: 'Interrupted by server restart', finishedAt: new Date().toISOString() })
+    .where(eq(schema.jobs.status, 'running'))
+    .run();
   jobQueue.registerHandler(runJob);
 
   let pollTimer: NodeJS.Timeout | null = null;

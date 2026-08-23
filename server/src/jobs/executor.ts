@@ -12,7 +12,7 @@ import {
 import { autoMatch, fetchAggregatedMetadata, type CandidateMatch } from '../match/autoMatcher.js';
 import { applyToKavita, fetchCover } from '../services/sync.js';
 import { notify } from '../notify/dispatcher.js';
-import { jobQueue, type Job, type LogFn } from './queue.js';
+import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
 
 interface Target {
   id: number;
@@ -210,6 +210,10 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       summary.libraries = libs.length;
       const known = new Set(getDb().select().from(schema.seriesMatches).all().map((r) => r.kavitaSeriesId));
       for (const lib of libs) {
+        // Libraries with auto-matching disabled are skipped by the scan; their
+        // series can still be matched manually via match-library / match-series.
+        if (getLibraryOverride(lib.id)?.autoMatch === false) continue;
+        if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled();
         const series = (await client.getSeries(lib.id)) as { id: number; name: string }[];
         for (const s of series) if (!known.has(s.id)) targets.push({ id: s.id, name: s.name, libraryId: lib.id });
       }
@@ -219,6 +223,7 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       const libs = await client.getLibraries();
       const rows = getDb().select().from(schema.seriesMatches).all();
       for (const lib of libs) {
+        if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled();
         const series = (await client.getSeries(lib.id)) as { id: number; name: string }[];
         for (const s of series) {
           const row = rows.find((r) => r.kavitaSeriesId === s.id);
@@ -275,6 +280,7 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
 
   const force = job.type === 'sync-series';
   for (let i = 0; i < targets.length; i++) {
+    if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled();
     const t = targets[i];
     const r = await matchAndApply(client, t, t.libraryId, force, log);
     summary.processed++;

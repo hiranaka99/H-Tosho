@@ -144,6 +144,8 @@ describe('MangaDexProvider cover URLs', () => {
       { number: 2, url: 'https://uploads.mangadex.org/covers/manga-1/vol2-ja.png' },
       { number: 3, url: 'https://uploads.mangadex.org/covers/manga-1/vol3-en-new.jpg' },
     ]);
+    // Series cover must be the Volume 1 cover, not the main cover_art.
+    assert.equal(meta.coverUrl, 'https://uploads.mangadex.org/covers/manga-1/vol1-en.jpg');
     assert.deepEqual(coverCollectionRequests, [
       'https://api.mangadex.org/cover?manga%5B%5D=manga-1&limit=100&offset=0&order%5Bvolume%5D=asc',
     ]);

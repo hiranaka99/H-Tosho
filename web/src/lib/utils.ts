@@ -30,9 +30,15 @@ export const PROVIDER_NAMES: Record<string, string> = {
   myanimelist: 'MyAnimeList',
 };
 
+/** SQLite's `CURRENT_TIMESTAMP` default stores UTC as 'YYYY-MM-DD HH:MM:SS' (no Z).
+ * JS parses that as local time; normalize to explicit UTC ISO before parsing. */
+export function toIsoUtc(iso: string): string {
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(iso) ? iso.replace(' ', 'T') + 'Z' : iso;
+}
+
 export function timeAgo(iso: string | null | undefined): string {
   if (!iso) return '—';
-  const then = new Date(iso).getTime();
+  const then = new Date(toIsoUtc(iso)).getTime();
   if (Number.isNaN(then)) return iso;
   const diff = Date.now() - then;
   const s = Math.floor(diff / 1000);
@@ -43,12 +49,12 @@ export function timeAgo(iso: string | null | undefined): string {
   if (h < 24) return h + 'h ago';
   const d = Math.floor(h / 24);
   if (d < 30) return d + 'd ago';
-  return new Date(iso).toLocaleDateString();
+  return new Date(toIsoUtc(iso)).toLocaleDateString();
 }
 
 export function shortDate(iso: string | null | undefined): string {
   if (!iso) return '—';
-  const d = new Date(iso);
+  const d = new Date(toIsoUtc(iso));
   if (Number.isNaN(d.getTime())) return iso;
   return d.toISOString().slice(0, 10);
 }

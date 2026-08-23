@@ -1,9 +1,9 @@
 import * as React from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Eraser, BookOpen, ArrowLeft, ChevronRight } from 'lucide-react';
+import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, Eraser, BookOpen, ArrowLeft, ChevronRight } from 'lucide-react';
 import { api, type SeriesRow } from '../lib/api';
-import { Button, Card, Input, Select, Badge, StatusBadge, ProviderBadge, Spinner, EmptyState } from '../components/ui';
+import { Button, Card, Input, Select, Badge, StatusBadge, ProviderBadge, Spinner, EmptyState, Switch } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
 import { cn, timeAgo } from '../lib/utils';
 
@@ -58,6 +58,11 @@ export function Libraries() {
     queryFn: () => api.series(identify!.id),
     enabled: identify !== null,
   });
+  const override = useQuery({
+    queryKey: ['library-override', selected],
+    queryFn: () => api.libraryOverride(selected!),
+    enabled: selected !== null,
+  });
 
   const rows = series.data ?? [];
   const filtered = rows.filter((r) => {
@@ -82,13 +87,17 @@ export function Libraries() {
   const matchSelected = () => enqueue('match-series', { seriesIds: [...checked] });
   const refreshSelected = () => enqueue('sync-series', { seriesIds: [...checked] });
   const clearOverrides = () => enqueue('clear-overrides', selected !== null ? { libraryId: selected } : {});
+  const setAutoMatch = (c: boolean) => {
+    if (selected === null) return;
+    void api.saveLibraryOverride(selected, { autoMatch: c }).then(() => qc.invalidateQueries({ queryKey: ['library-override', selected] }));
+  };
 
   const matchedInLib = rows.filter((r) => r.status === 'matched').length;
 
   return (
     <div className="flex h-full gap-4">
       <div className="w-60 shrink-0">
-        <Card className="h-full">
+        <Card className="flex h-full flex-col">
           <div className="flex items-center justify-between border-b border-border p-3">
             <span className="text-xs font-semibold text-muted">LIBRARIES</span>
             {selected !== null && (
@@ -97,7 +106,7 @@ export function Libraries() {
               </button>
             )}
           </div>
-          <div className="max-h-[calc(100vh-8rem)] overflow-y-auto p-2">
+          <div className="max-h-[calc(100vh-14rem)] overflow-y-auto p-2">
             {libs.isLoading && (
               <div className="flex justify-center p-6">
                 <Spinner />
@@ -123,6 +132,14 @@ export function Libraries() {
               <p className="p-4 text-center text-xs text-muted">No libraries — connect Kavita in Settings.</p>
             )}
           </div>
+        <div className="mt-auto flex flex-col gap-2 border-t border-border p-3">
+          <Button size="sm" variant="outline" onClick={() => enqueue('match-unmatched')}>
+            <Play className="h-3.5 w-3.5" /> Match all unmatched
+          </Button>
+          <Button size="sm" onClick={() => enqueue('scan-new')}>
+            <RefreshCw className="h-3.5 w-3.5" /> Scan for new series
+          </Button>
+        </div>
         </Card>
       </div>
 
@@ -141,6 +158,10 @@ export function Libraries() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                <label className="flex cursor-pointer select-none items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-xs font-medium text-muted" title="Automatically match new series in this library during scans">
+                  Auto-match
+                  <Switch checked={override.data?.autoMatch ?? true} onCheckedChange={setAutoMatch} />
+                </label>
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted" />
                   <Input placeholder="Filter series…" value={query} onChange={(e) => setQuery(e.target.value)} className="w-52 pl-8" />

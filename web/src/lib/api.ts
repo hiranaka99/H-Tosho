@@ -292,6 +292,10 @@ export const api = {
     }),
   libraries: () => request<KavitaLibrary[]>('/kavita/libraries'),
   librarySeries: (libraryId: number) => request<SeriesRow[]>(`/kavita/libraries/${libraryId}/series`),
+  libraryOverride: (id: number) =>
+    request<{ libraryId: number; priority: string[]; autoMatch: boolean; fieldConfig: Record<string, string | null> }>(`/libraries/${id}/override`),
+  saveLibraryOverride: (id: number, patch: Partial<Omit<{ priority: string[]; autoMatch: boolean; fieldConfig: Record<string, string | null> }, 'libraryId'>>) =>
+    request<{ ok: boolean }>(`/libraries/${id}/override`, { method: 'PUT', body: JSON.stringify(patch) }),
 
   series: (id: number) =>
     request<{
@@ -336,6 +340,7 @@ export const api = {
     request<{ id: number }>('/jobs', { method: 'POST', body: JSON.stringify({ type, ...payload }) }),
   jobs: () => request<Job[]>('/jobs'),
   job: (id: number) => request<{ job: Job; logs: JobLog[] }>(`/jobs/${id}`),
+  cancelJob: (id: number) => request<{ ok: boolean }>(`/jobs/${id}/cancel`, { method: 'POST' }),
   logs: () => request<JobLog[]>('/logs'),
   stats: () => request<Stats>('/stats'),
 

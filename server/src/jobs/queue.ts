@@ -16,7 +16,7 @@ export interface JobPayload {
   seriesIds?: number[];
 }
 
-export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface Job {
   id: number;
@@ -42,6 +42,14 @@ export interface JobLog {
 
 export type LogFn = (level: 'info' | 'warn' | 'error' | 'success', message: string) => void;
 export type JobHandler = (job: Job, log: LogFn) => Promise<unknown>;
+
+/** Thrown by the executor when a running job observes a cancellation request. */
+export class JobCancelled extends Error {
+  constructor() {
+    super('Job cancelled');
+    this.name = 'JobCancelled';
+  }
+}
 
 const CONCURRENCY = 2;
 
@@ -92,6 +100,7 @@ class JobQueue {
   private handler: JobHandler | null = null;
   private running = 0;
   private pumping = false;
+  private cancelRequested = new Set<number>();
 
   /** Register the function that actually performs each job. */
   registerHandler(h: JobHandler): void {
@@ -126,6 +135,32 @@ class JobQueue {
   active(): Job[] {
     const rows = getDb().select().from(schema.jobs).where(eq(schema.jobs.status, 'running')).all();
     return rows.map(rowToJob);
+  }
+
+  /**
+   * Request cancellation of an active job. Queued jobs are cancelled
+   * immediately; running jobs stop at their next checkpoint. Returns false if
+   * the job does not exist or is already finished.
+   */
+  cancel(id: number): boolean {
+    const job = this.get(id);
+    if (!job) return false;
+    if (job.status === 'queued') {
+      getDb().update(schema.jobs).set({ status: 'cancelled', finishedAt: new Date().toISOString() }).where(eq(schema.jobs.id, id)).run();
+      this.log(id, 'info', 'Job cancelled before start');
+      return true;
+    }
+    if (job.status === 'running') {
+      this.cancelRequested.add(id);
+      this.log(id, 'info', 'Cancellation requested; stopping at next checkpoint');
+      return true;
+    }
+    return false;
+  }
+
+  /** Whether cancellation has been requested for a running job. */
+  isCancelRequested(id: number): boolean {
+    return this.cancelRequested.has(id);
   }
 
   setProgress(jobId: number, current: number, total: number): void {
@@ -185,13 +220,19 @@ class JobQueue {
         .run();
       this.log(job.id, 'success', `Completed ${job.type}`);
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      db.update(schema.jobs)
-        .set({ status: 'failed', errorMessage: message, finishedAt: new Date().toISOString() })
-        .where(eq(schema.jobs.id, job.id))
-        .run();
-      this.log(job.id, 'error', message);
+      if (e instanceof JobCancelled) {
+        db.update(schema.jobs).set({ status: 'cancelled', finishedAt: new Date().toISOString() }).where(eq(schema.jobs.id, job.id)).run();
+        this.log(job.id, 'info', `Cancelled ${job.type}`);
+      } else {
+        const message = e instanceof Error ? e.message : String(e);
+        db.update(schema.jobs)
+          .set({ status: 'failed', errorMessage: message, finishedAt: new Date().toISOString() })
+          .where(eq(schema.jobs.id, job.id))
+          .run();
+        this.log(job.id, 'error', message);
+      }
     } finally {
+      this.cancelRequested.delete(job.id);
       this.running--;
       void this.pump();
     }

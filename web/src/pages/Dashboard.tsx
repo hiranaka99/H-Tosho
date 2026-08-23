@@ -3,16 +3,14 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
   Library as LibraryIcon,
-  RefreshCw,
   Server,
   ListChecks,
-  Play,
   AlertTriangle,
   CheckCircle2,
   HelpCircle,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { Button, Card, CardContent, CardHeader, CardTitle, Spinner, EmptyState, Badge, StatusBadge } from '../components/ui';
+import { Card, CardContent, CardHeader, CardTitle, Spinner, EmptyState, Badge, StatusBadge } from '../components/ui';
 import { pct, timeAgo } from '../lib/utils';
 
 export function Dashboard() {
@@ -23,13 +21,6 @@ export function Dashboard() {
     refetchInterval: 4000,
   });
   const { data: kavita } = useQuery({ queryKey: ['kavita-status'], queryFn: api.kavitaStatus, refetchInterval: 30_000 });
-
-  const scan = () => {
-    api.enqueue('scan-new').then(() => qc.invalidateQueries({ queryKey: ['jobs'] }));
-  };
-  const matchAll = () => {
-    api.enqueue('match-unmatched').then(() => qc.invalidateQueries({ queryKey: ['jobs'] }));
-  };
 
   const by = stats?.byStatus ?? {};
   const matched = by.matched ?? 0;
@@ -77,12 +68,6 @@ export function Dashboard() {
               <AlertTriangle className="h-3 w-3" /> {kavita.error}
             </Badge>
           )}
-          <Button variant="outline" size="sm" onClick={matchAll}>
-            <Play className="h-3.5 w-3.5" /> Match all unmatched
-          </Button>
-          <Button size="sm" onClick={scan}>
-            <RefreshCw className="h-3.5 w-3.5" /> Scan for new series
-          </Button>
         </div>
       </div>
 
@@ -118,7 +103,7 @@ export function Dashboard() {
         </CardHeader>
         <CardContent className="flex flex-col">
           {!stats?.recentJobs || stats.recentJobs.length === 0 ? (
-            <p className="py-6 text-center text-sm text-muted">No jobs yet. Trigger a scan or match to get started.</p>
+            <p className="py-6 text-center text-sm text-muted">No jobs yet. Trigger a scan or match from the Libraries tab.</p>
           ) : (
             stats.recentJobs.map((j) => (
               <div key={j.id} className="flex items-center gap-3 border-b border-border py-2 last:border-0">

@@ -536,8 +536,16 @@ api.get('/libraries/:id/override', (c) => {
 
 api.put('/libraries/:id/override', async (c) => {
   const id = Number(c.req.param('id'));
-  const body = (await c.req.json()) as { priority: string[]; autoMatch: boolean; fieldConfig: Record<string, string | null> };
-  setLibraryOverride({ libraryId: id, priority: body.priority, autoMatch: body.autoMatch, fieldConfig: body.fieldConfig });
+  // Partial merge: fields omitted from the body keep their current value, so a
+  // client can flip a single option without snapshotting the rest.
+  const body = (await c.req.json()) as Partial<{ priority: string[]; autoMatch: boolean; fieldConfig: Record<string, string | null> }>;
+  const cur = getLibraryOverride(id) ?? { libraryId: id, priority: getProviderPriorities(), autoMatch: true, fieldConfig: {} };
+  setLibraryOverride({
+    libraryId: id,
+    priority: body.priority ?? cur.priority,
+    autoMatch: body.autoMatch ?? cur.autoMatch,
+    fieldConfig: body.fieldConfig ?? cur.fieldConfig,
+  });
   return c.json({ ok: true });
 });
 
@@ -556,6 +564,12 @@ api.get('/jobs/:id', (c) => {
   const job = jobQueue.get(Number(c.req.param('id')));
   if (!job) return c.json({ error: 'Job not found' }, 404);
   return c.json({ job, logs: jobQueue.logs(job.id) });
+});
+
+api.post('/jobs/:id/cancel', (c) => {
+  const id = Number(c.req.param('id'));
+  if (!jobQueue.cancel(id)) return c.json({ error: 'Job is not active' }, 409);
+  return c.json({ ok: true });
 });
 
 api.get('/logs', (c) => c.json(jobQueue.recentLogs(300)));

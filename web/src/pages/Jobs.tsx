@@ -1,9 +1,9 @@
 import * as React from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Terminal, Activity, Circle, XCircle, CheckCircle2, ListChecks } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Terminal, Activity, Circle, XCircle, CheckCircle2, ListChecks, Ban, X } from 'lucide-react';
 import { api, type Job, type JobLog } from '../lib/api';
 import { Card, CardContent, CardHeader, CardTitle, Badge, Button, EmptyState, Spinner } from '../components/ui';
-import { cn, timeAgo, shortDate } from '../lib/utils';
+import { cn, timeAgo, shortDate, toIsoUtc } from '../lib/utils';
 
 function JobStatus({ status }: { status: string }) {
   if (status === 'running')
@@ -22,6 +22,12 @@ function JobStatus({ status }: { status: string }) {
     return (
       <Badge tone="success">
         <CheckCircle2 className="h-3 w-3" /> Done
+      </Badge>
+    );
+  if (status === 'cancelled')
+    return (
+      <Badge tone="muted">
+        <Ban className="h-3 w-3" /> Cancelled
       </Badge>
     );
   return (
@@ -69,7 +75,7 @@ function LogConsole({ logs }: { logs: JobLog[] }) {
       ) : (
         logs.map((l) => (
           <div key={l.id} className="flex gap-2 py-0.5">
-            <span className="shrink-0 text-muted/60">{new Date(l.createdAt).toLocaleTimeString()}</span>
+            <span className="shrink-0 text-muted/60">{new Date(toIsoUtc(l.createdAt)).toLocaleTimeString()}</span>
             <span className={cn('shrink-0 uppercase', LOG_COLOR[l.level] ?? 'text-muted')}>{l.level}</span>
             <span className="break-all">{l.message}</span>
           </div>
@@ -89,6 +95,13 @@ export function Jobs() {
     enabled: selected !== null,
     refetchInterval: 1500,
   });
+  const qc = useQueryClient();
+  const cancelJob = (id: number) => {
+    void api.cancelJob(id).then(() => {
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      qc.invalidateQueries({ queryKey: ['job', id] });
+    });
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -117,6 +130,7 @@ export function Jobs() {
                     <th className="p-2 text-left font-medium">Progress</th>
                     <th className="p-2 text-left font-medium">Result</th>
                     <th className="p-2 text-left font-medium">Created</th>
+                    <th className="p-2 text-right font-medium"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -142,6 +156,13 @@ export function Jobs() {
                       </td>
                       <td className="p-2 text-xs text-muted" title={shortDate(j.createdAt)}>
                         {timeAgo(j.createdAt)}
+                      </td>
+                      <td className="p-2 text-right">
+                        {(j.status === 'running' || j.status === 'queued') && (
+                          <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); cancelJob(j.id); }}>
+                            <X className="h-3.5 w-3.5" /> Cancel
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -193,7 +214,12 @@ export function Jobs() {
                   <div key={j.id} className="rounded-md border border-border p-3">
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-medium">{j.type}</span>
-                      <JobStatus status={j.status} />
+                      <div className="flex items-center gap-2">
+                        <JobStatus status={j.status} />
+                        <Button size="sm" variant="ghost" onClick={() => cancelJob(j.id)}>
+                          <X className="h-3.5 w-3.5" /> Cancel
+                        </Button>
+                      </div>
                     </div>
                     <div className="mt-2">
                       <ProgressBar current={j.progressCurrent} total={j.progressTotal} />

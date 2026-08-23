@@ -205,8 +205,6 @@ class MangaDexProvider extends BaseProvider {
         if (name && !people.includes(name)) people.push(name);
       }
     }
-    const coverUrl = await this.resolveCoverUrl(coverId, providerSeriesId);
-
     // Per-volume covers come from the /cover collection; a failure here must
     // not sink the whole metadata fetch (series-level data is still usable).
     let volumeCovers: VolumeCover[] | undefined;
@@ -215,6 +213,12 @@ class MangaDexProvider extends BaseProvider {
     } catch {
       volumeCovers = undefined;
     }
+
+    // The series cover is always the Volume 1 cover when one exists; otherwise
+    // fall back to the manga's main cover_art (which also skips the extra
+    // /cover/{id} lookup, since the collection already yielded the fileName).
+    const vol1Cover = volumeCovers?.find((v) => v.number === 1);
+    const coverUrl = vol1Cover?.url ?? (await this.resolveCoverUrl(coverId, providerSeriesId));
 
     const statusUpper = (a.status ?? '').toUpperCase();
     const status =
