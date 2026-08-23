@@ -172,7 +172,6 @@ export interface SeriesMetadata {
   providerSeriesId: string;
   title: string;
   sortTitle?: string;
-  type: string;
   year?: number;
   releaseDate?: string;
   summary?: string;
@@ -182,12 +181,14 @@ export interface SeriesMetadata {
   writers: string[];
   artists: string[];
   publishers: string[];
-  imprints: string[];
-  ageRating?: number;
-  rating?: number;
   language?: string;
   status?: string;
   url?: string;
+}
+
+/** A scored match candidate (mirrors the server's CandidateMatch). */
+export interface MatchCandidate extends SearchResult {
+  score: number;
 }
 
 export interface MatchOutcome {
@@ -198,7 +199,7 @@ export interface MatchOutcome {
     score: number;
     title: string;
   };
-  candidates: SearchResult[];
+  candidates: MatchCandidate[];
   /** Providers that were actually consulted, in evaluation order. */
   searchedProviders: string[];
 }
@@ -350,7 +351,7 @@ export const api = {
       kavita: KavitaSeriesMetadata | null;
     }>(`/series/${id}`),
   identify: (id: number) => request<MatchOutcome>(`/series/${id}/identify`),
-  apply: (id: number, providerId: string, providerSeriesId: string, opts?: { excludedFields?: string[]; cover?: boolean }) =>
+  apply: (id: number, providerId: string, providerSeriesId: string, opts?: { excludedFields?: string[]; cover?: boolean; score?: number }) =>
     request<{ pushed: string[]; errors: string[] }>(`/series/${id}/apply`, {
       method: 'POST',
       body: JSON.stringify({ providerId, providerSeriesId, ...opts }),

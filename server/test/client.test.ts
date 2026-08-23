@@ -180,7 +180,6 @@ describe('KavitaClient', () => {
       artists: ['New Artist'],
       releaseYear: 2024,
       publicationStatus: KavitaPublicationStatus.Completed,
-      rating: 4.5,
     });
 
     assert.deepEqual(requests.map((request) => new URL(request.url).pathname), [
@@ -188,7 +187,6 @@ describe('KavitaClient', () => {
       '/api/Series/update',
       '/api/Series/metadata',
       '/api/Series/metadata',
-      '/api/Rating/series',
     ]);
 
     const identity = JSON.parse(String(requests[1]?.init?.body));
@@ -210,11 +208,6 @@ describe('KavitaClient', () => {
     assert.equal(metadata.publicationStatusLocked, true);
     assert.deepEqual(metadata.coverArtists, [{ id: 4, name: 'Preserved Cover Artist' }]);
     assert.deepEqual(metadata.characters, [{ id: 5, name: 'Preserved Character' }]);
-    assert.deepEqual(JSON.parse(String(requests[4]?.init?.body)), {
-      seriesId: 42,
-      chapterId: null,
-      userRating: 4.5,
-    });
   });
 
   it('posts a base64 cover payload and forwards the cover lock state', async () => {

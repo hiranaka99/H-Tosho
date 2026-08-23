@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { KavitaAgeRating, KavitaPublicationStatus } from '../src/kavita/types.js';
+import { KavitaPublicationStatus } from '../src/kavita/types.js';
 import type { SeriesMetadata } from '../src/providers/types.js';
 import { buildSeriesPayload, matchVolumeCovers, mergeTagLists } from '../src/services/sync.js';
 
@@ -11,7 +11,6 @@ describe('Kavita metadata mapping', () => {
       providerSeriesId: '123',
       title: 'Example',
       sortTitle: 'Example, The',
-      type: 'MANGA',
       releaseDate: '2024-05-10',
       summary: 'Summary',
       genres: ['Action'],
@@ -19,9 +18,6 @@ describe('Kavita metadata mapping', () => {
       writers: ['Writer'],
       artists: ['Artist'],
       publishers: ['Publisher'],
-      imprints: ['Imprint'],
-      ageRating: KavitaAgeRating.Teen,
-      rating: 4,
       language: 'ja',
       status: 'COMPLETED',
       url: 'https://provider.example/series/123',
@@ -42,9 +38,6 @@ describe('Kavita metadata mapping', () => {
         writers: ['Writer'],
         artists: ['Artist'],
         publishers: ['Publisher'],
-        imprints: ['Imprint'],
-        ageRating: KavitaAgeRating.Teen,
-        rating: 4,
         releaseYear: 2024,
         language: 'ja',
         publicationStatus: KavitaPublicationStatus.Completed,
@@ -58,14 +51,11 @@ describe('Kavita metadata mapping', () => {
       providerId: 'anilist',
       providerSeriesId: '123',
       title: 'Example',
-      type: 'MANGA',
       genres: [],
       tags: [],
       writers: [],
       artists: [],
       publishers: [],
-      imprints: [],
-      ageRating: 99,
       status: 'UNKNOWN',
     };
 
@@ -74,7 +64,6 @@ describe('Kavita metadata mapping', () => {
         { mergeTags: true, mergeGenres: true, replaceCover: false, replaceVolumeCovers: false, lockCovers: false },
       {},
     );
-    assert.equal(payload.ageRating, undefined);
     assert.equal(payload.publicationStatus, undefined);
   });
 });

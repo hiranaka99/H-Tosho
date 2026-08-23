@@ -37,13 +37,11 @@ const metadata: SeriesMetadata = {
   providerId: 'mangadex',
   providerSeriesId: 'md-1',
   title: 'Test Series',
-  type: 'MANGA',
   genres: [],
   tags: ['Found family', 'New tag'],
   writers: [],
   artists: [],
   publishers: [],
-  imprints: [],
 };
 
 describe('applyToKavita tag merging', () => {

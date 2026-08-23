@@ -215,7 +215,6 @@ export async function fetchAggregatedMetadata(
         else if (field === 'artists' && meta.artists.length) base.artists = mergeLists(base.artists, meta.artists);
         else if (field === 'publishers' && meta.publishers.length) base.publishers = mergeLists(base.publishers, meta.publishers);
         else if (field === 'releaseDate' && meta.releaseDate) base.releaseDate = meta.releaseDate;
-        else if (field === 'rating' && meta.rating != null) base.rating = meta.rating;
         else if (field === 'status' && meta.status && meta.status !== 'UNKNOWN') base.status = meta.status;
       }
     } catch {

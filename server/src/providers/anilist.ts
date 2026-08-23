@@ -1,4 +1,4 @@
-import { BaseProvider, toKavitaRating } from './base.js';
+import { BaseProvider } from './base.js';
 import type { MediaType, SeriesMetadata, SearchResult } from './types.js';
 
 const API_URL = 'https://graphql.anilist.co';
@@ -26,7 +26,7 @@ interface GqlEnvelope<TData> {
 
 /**
  * AniList (GraphQL) — primary source for manga & light novel metadata:
- * summary, tags, studios/publishers, score, release date.
+ * summary, tags, studios/publishers, release date.
  */
 class AniListProvider extends BaseProvider {
   id = 'anilist';
@@ -37,7 +37,7 @@ class AniListProvider extends BaseProvider {
   requiresCredentials = false;
   providesFields = [
     'title', 'summary', 'genres', 'tags', 'writers', 'artists',
-    'rating', 'releaseDate', 'status', 'cover',
+    'releaseDate', 'status', 'cover',
   ];
   protected baseUrl = API_URL;
 
@@ -121,7 +121,6 @@ class AniListProvider extends BaseProvider {
       providerSeriesId: String(m.id),
       title: m.title.romaji || m.title.english || m.title.native || 'Unknown',
       sortTitle: m.title.romaji || m.title.english,
-      type: (m.format === 'NOVEL' ? 'NOVEL' : 'MANGA') as SeriesMetadata['type'],
       year: date?.year,
       releaseDate,
       summary: m.description?.replace(/<[^>]*>/g, '').trim(),
@@ -132,8 +131,6 @@ class AniListProvider extends BaseProvider {
       writers: [],
       artists: [],
       publishers: m.studios?.nodes.map((s) => s.name) ?? [],
-      imprints: [],
-      rating: toKavitaRating(m.averageScore),
       readingDirection: 'RTL',
       status: mapAniListStatus(m.status),
       url: `https://anilist.co/manga/${m.id}`,

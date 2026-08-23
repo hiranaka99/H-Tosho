@@ -14,26 +14,6 @@ import { PROVIDER_NAMES, cn } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { Button, Dialog, DialogContent, Label, ProviderBadge, Spinner } from './ui';
 
-/** Display labels for Kavita's numeric enums. */
-const AGE_RATING_LABELS: Record<number, string> = {
-  [-1]: 'Not applicable',
-  0: 'Unknown',
-  1: 'Pending',
-  2: 'Early childhood',
-  3: 'Everyone',
-  4: 'G',
-  5: '10+',
-  6: 'PG',
-  7: 'Kids to adults',
-  8: 'Teen',
-  9: '15+',
-  10: '17+',
-  11: 'Mature',
-  12: 'R18+',
-  13: 'Adults only',
-  14: 'X18+',
-};
-
 const STATUS_LABELS: Record<number, string> = {
   0: 'Ongoing',
   1: 'Hiatus',
@@ -114,7 +94,8 @@ function FieldRow({ row, checked, onToggle }: { row: DiffRow; checked?: boolean;
     row.current.trim() !== '' &&
     row.candidate.trim() !== '' &&
     row.current.trim().toLowerCase() !== row.candidate.trim().toLowerCase();
-  const clamp = row.multiline ? 'line-clamp-4' : 'line-clamp-2';
+  // Multiline fields (Summary) are never truncated: full text, wrapping, with an internal scroll for very long descriptions.
+  const clamp = row.multiline ? 'max-h-56 overflow-y-auto whitespace-pre-wrap break-words' : 'line-clamp-2';
   const showCheckbox = !!row.field && row.candidate.trim() !== '' && !!onToggle;
   return (
     <div className="grid grid-cols-2 gap-2 border-b border-border py-1.5 text-xs last:border-0">
@@ -126,7 +107,7 @@ function FieldRow({ row, checked, onToggle }: { row: DiffRow; checked?: boolean;
         )}
         <span className="w-20 shrink-0 text-muted">{row.label}</span>
         {merge ? (
-          <span className={cn('min-w-0 flex-1', clamp)} title={row.current}>
+          <span className="min-w-0 flex-1 break-words" title={row.current}>
             {row.current || '—'}
           </span>
         ) : (
@@ -217,8 +198,8 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
   });
 
   const apply = useMutation({
-    mutationFn: (p: { providerId: string; providerSeriesId: string; excludedFields?: string[]; cover?: boolean }) =>
-      api.apply(seriesId, p.providerId, p.providerSeriesId, { excludedFields: p.excludedFields, cover: p.cover }),
+    mutationFn: (p: { providerId: string; providerSeriesId: string; excludedFields?: string[]; cover?: boolean; score?: number }) =>
+      api.apply(seriesId, p.providerId, p.providerSeriesId, { excludedFields: p.excludedFields, cover: p.cover, score: p.score }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['series', seriesId] });
       qc.invalidateQueries({ queryKey: ['library-series'] });
@@ -273,7 +254,6 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     const rows: DiffRow[] = [
       { label: 'Title', current: current.name, candidate: m?.title ?? selected.title, field: 'title' },
       { label: 'Sort title', current: current.sortName ?? '', candidate: m?.sortTitle ?? '', field: 'sortTitle' },
-      { label: 'Type', current: '', candidate: selected.type },
       {
         label: 'Year',
         current: k && k.releaseYear > 0 ? String(k.releaseYear) : '',
@@ -293,14 +273,6 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
       // H-Tosho writes provider artists into Kavita's penciller role.
       { label: 'Artists', current: peopleNames(k?.pencillers), candidate: m ? m.artists.join(', ') : '', field: 'artists' },
       { label: 'Publishers', current: peopleNames(k?.publishers), candidate: m ? m.publishers.join(', ') : '', field: 'publishers' },
-      { label: 'Imprints', current: peopleNames(k?.imprints), candidate: m ? m.imprints.join(', ') : '', field: 'imprints' },
-      {
-        label: 'Age rating',
-        current: k ? (AGE_RATING_LABELS[k.ageRating] ?? String(k.ageRating)) : '',
-        candidate: m && m.ageRating != null ? (AGE_RATING_LABELS[m.ageRating] ?? String(m.ageRating)) : '',
-        field: 'ageRating',
-      },
-      { label: 'Rating', current: '', candidate: m && m.rating != null ? `${m.rating}/5` : '', field: 'rating' },
       { label: 'Language', current: k?.language ?? '', candidate: m?.language ?? '', field: 'language' },
       {
         label: 'Status',
@@ -313,7 +285,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     return { rows, coverCandidate: m?.coverUrl ?? selected.coverUrl };
   }, [selected, preview.data, current, k]);
 
-  const doApply = (ids: { providerId: string; providerSeriesId: string }, opts?: { excludedFields?: string[]; cover?: boolean }) => {
+  const doApply = (ids: { providerId: string; providerSeriesId: string }, opts?: { excludedFields?: string[]; cover?: boolean; score?: number }) => {
     apply.mutate({ ...ids, ...opts });
   };
 
@@ -371,7 +343,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                       <p className="text-xs text-muted">{autoBest.title}</p>
                     </div>
                   </div>
-                  <Button size="sm" onClick={() => doApply({ providerId: autoBest.providerId, providerSeriesId: autoBest.providerSeriesId })} disabled={apply.isPending}>
+                  <Button size="sm" onClick={() => doApply({ providerId: autoBest.providerId, providerSeriesId: autoBest.providerSeriesId }, { score: autoBest.score })} disabled={apply.isPending}>
                     {apply.isPending ? <Spinner /> : <ArrowRight className="h-3.5 w-3.5" />} Apply & Sync
                   </Button>
                 </div>
@@ -490,7 +462,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                   <X className="h-4 w-4" /> Cancel
                 </Button>
                 <Button
-                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { excludedFields: [...excluded], cover: coverEnabled })}
+                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { excludedFields: [...excluded], cover: coverEnabled, score: selected.score })}
                   disabled={!selected || apply.isPending}
                 >
                   {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} Apply & Sync to Kavita

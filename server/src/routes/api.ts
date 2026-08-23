@@ -52,12 +52,9 @@ const FIELD_NAMES = [
   'writers',
   'artists',
   'publishers',
-  'imprints',
   'releaseDate',
-  'ageRating',
   'language',
   'status',
-  'rating',
   'url',
   'cover',
   'volumeCovers',
@@ -242,6 +239,18 @@ api.get('/series/:id/identify', async (c) => {
       extraCandidates = catalogCandidates(series.name, isMatureAgeRating(meta?.ageRating));
     }
     const outcome = await autoMatch(series, { providerOrder, credentials, enabledProviders, extraCandidates });
+    // Scoring improves over time (e.g. title-variant matching), so a stored
+    // match can carry a stale confidence. Refresh it when the matched series
+    // still surfaces in this run's candidates.
+    const existingMatch = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
+    if (existingMatch) {
+      const current = outcome.candidates.find(
+        (cand) => cand.providerId === existingMatch.providerId && cand.providerSeriesId === existingMatch.providerSeriesId,
+      );
+      if (current && current.score !== existingMatch.matchScore) {
+        getDb().update(schema.seriesMatches).set({ matchScore: current.score }).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).run();
+      }
+    }
     // MangaDex search thumbnails resolve the main cover_art, but Apply & Sync
     // pushes the Volume 1 cover when one exists — swap the thumbnail so the
     // dialog previews exactly what will land in Kavita. Catalog entries carry
@@ -278,7 +287,7 @@ api.get('/series/:id/identify', async (c) => {
 api.post('/series/:id/apply', async (c) => {
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
-  const body = (await c.req.json()) as { providerId: string; providerSeriesId: string; excludedFields?: string[]; cover?: boolean };
+  const body = (await c.req.json()) as { providerId: string; providerSeriesId: string; excludedFields?: string[]; cover?: boolean; score?: number };
   if (!body.providerId || !body.providerSeriesId) return c.json({ error: 'providerId and providerSeriesId required' }, 400);
   try {
     const seriesId = intParam(c.req.param('id'));
@@ -304,12 +313,18 @@ api.post('/series/:id/apply', async (c) => {
       title: series.name,
     });
     const db = getDb();
+    // The dialog sends the applied candidate's current score; keep the stored
+    // value when absent (older clients).
+    const existingRow = db.select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
+    const sentScore = typeof body.score === 'number' && Number.isFinite(body.score) ? Math.min(1, Math.max(0, body.score)) : undefined;
+    const matchScore = sentScore ?? existingRow?.matchScore ?? null;
     db.insert(schema.seriesMatches)
       .values({
         kavitaSeriesId: seriesId,
         status: result.errors.length ? 'failed' : 'matched',
         providerId: body.providerId,
         providerSeriesId: body.providerSeriesId,
+        matchScore,
         metadataJson: JSON.stringify(meta),
         errorMessage: result.errors.length ? result.errors.join('; ') : null,
         lastSyncedAt: new Date().toISOString(),
@@ -320,6 +335,7 @@ api.post('/series/:id/apply', async (c) => {
           status: result.errors.length ? 'failed' : 'matched',
           providerId: body.providerId,
           providerSeriesId: body.providerSeriesId,
+          matchScore,
           metadataJson: JSON.stringify(meta),
           errorMessage: result.errors.length ? result.errors.join('; ') : null,
           lastSyncedAt: new Date().toISOString(),

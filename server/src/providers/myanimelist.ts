@@ -1,4 +1,4 @@
-import { BaseProvider, toKavitaRating } from './base.js';
+import { BaseProvider } from './base.js';
 import type { MediaType, SeriesMetadata, SearchResult } from './types.js';
 
 /**
@@ -14,7 +14,7 @@ class MyAnimeListProvider extends BaseProvider {
   requiresCredentials = true;
   providesFields = [
     'title', 'summary', 'genres', 'tags', 'writers', 'artists',
-    'publishers', 'releaseDate', 'status', 'cover', 'rating',
+    'publishers', 'releaseDate', 'status', 'cover',
   ];
   protected baseUrl = 'https://api.myanimelist.net/v2';
 
@@ -83,20 +83,11 @@ class MyAnimeListProvider extends BaseProvider {
       if (!Number.isNaN(d.getTime())) releaseDate = d.toISOString().slice(0, 10);
     }
 
-    const typeMap: Record<string, SeriesMetadata['type']> = {
-      manga: 'MANGA',
-      light_novel: 'NOVEL',
-      novel: 'NOVEL',
-      one_shot: 'MANGA',
-      doujinshi: 'COMIC',
-    };
-
     return {
       providerId: this.id,
       providerSeriesId,
       title: node.title ?? 'Unknown',
       sortTitle: node.title,
-      type: typeMap[node.type] ?? 'MANGA',
       year: node.start_date ? new Date(node.start_date).getFullYear() : undefined,
       releaseDate,
       summary: node.synopsis?.trim(),
@@ -106,8 +97,6 @@ class MyAnimeListProvider extends BaseProvider {
       writers: (node.authors ?? []).map((p: any) => p.name).filter(Boolean),
       artists: (node.authors ?? []).map((p: any) => p.name).filter(Boolean),
       publishers: (node.publishers ?? []).map((p: any) => p.name).filter(Boolean),
-      imprints: [],
-      rating: toKavitaRating(node.score),
       readingDirection: 'RTL',
       language: 'en',
       status: mapMalStatus(node.status),

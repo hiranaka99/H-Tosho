@@ -101,10 +101,4 @@ export function toMediaType(raw: string | undefined, fallback: MediaType = 'MANG
   return fallback;
 }
 
-/** Map a numeric rating (0-10) into Kavita's 0-5 star scale. */
-export function toKavitaRating(score: number | undefined): number | undefined {
-  if (score == null || Number.isNaN(score)) return undefined;
-  return Math.max(0, Math.min(5, Math.round(score / 2)));
-}
-
 export type { MetadataProvider, MediaType, ProviderCredentials, SeriesMetadata, SearchResult };

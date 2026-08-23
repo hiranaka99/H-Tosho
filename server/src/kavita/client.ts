@@ -233,14 +233,6 @@ export class KavitaClient {
       const body: KavitaUpdateSeriesMetadataDto = { seriesMetadata: metadata };
       await this.postJson('/Series/metadata', body, `Update series ${seriesId} metadata`);
     }
-
-    if (patch.rating !== undefined) {
-      await this.postJson(
-        '/Rating/series',
-        { seriesId, chapterId: null, userRating: Math.max(0, Math.min(5, patch.rating)) },
-        `Update series ${seriesId} rating`,
-      );
-    }
   }
 
   private hasMetadataPatch(patch: SeriesMetadataPayload): boolean {
@@ -251,8 +243,6 @@ export class KavitaClient {
       patch.writers,
       patch.artists,
       patch.publishers,
-      patch.imprints,
-      patch.ageRating,
       patch.releaseYear,
       patch.language,
       patch.publicationStatus,
@@ -316,14 +306,6 @@ export class KavitaClient {
     if (patch.publishers !== undefined) {
       metadata.publishers = people(patch.publishers);
       if (lock) metadata.publisherLocked = true;
-    }
-    if (patch.imprints !== undefined) {
-      metadata.imprints = people(patch.imprints);
-      if (lock) metadata.imprintLocked = true;
-    }
-    if (patch.ageRating !== undefined) {
-      metadata.ageRating = patch.ageRating;
-      if (lock) metadata.ageRatingLocked = true;
     }
     if (patch.releaseYear !== undefined) {
       metadata.releaseYear = patch.releaseYear;

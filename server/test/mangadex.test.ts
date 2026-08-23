@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
-import { mangaDexProvider, parseDescriptionTags } from '../src/providers/mangadex.js';
+import { mangaDexProvider, parseDescriptionTags, stripDescriptionTagLines } from '../src/providers/mangadex.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -325,6 +325,52 @@ describe('parseDescriptionTags', () => {
   });
 });
 
+describe('stripDescriptionTagLines', () => {
+  it('removes markdown-table tag blocks including header and separator rows (captured Aizome shape)', () => {
+    const desc = [
+      '1. Sleep Learning',
+      '2. All for Love',
+      '',
+      '| Namespace | Tags |',
+      '|:-|:-',
+      '|MALE| glasses, harem',
+      '|FEMALE| ahegao, big breasts',
+      '|OTHER| tankoubon',
+    ].join('\n');
+    assert.equal(stripDescriptionTagLines(desc), '1. Sleep Learning\n2. All for Love');
+  });
+
+  it('removes bold-label tag blocks including the bare TAGS header (captured KonoSuba parody shape)', () => {
+    const desc = [
+      "Instead of Kuzuma, we got a big ol'bald guy who got isekai.",
+      '',
+      '**TAGS**',
+      '**PARODY** kono subarashii sekai ni syukufuku o',
+      '**CHARACTER** aqua, megumin',
+      '**MALE** bald, muscle',
+    ].join('\n');
+    assert.equal(stripDescriptionTagLines(desc), "Instead of Kuzuma, we got a big ol'bald guy who got isekai.");
+  });
+
+  it('removes standalone Tags: lines and returns undefined when nothing remains or nothing matches', () => {
+    assert.equal(stripDescriptionTagLines('A story.\nTags: Cheating, Milf'), 'A story.');
+    assert.equal(stripDescriptionTagLines('Tags: Cheating, Milf'), undefined);
+    assert.equal(stripDescriptionTagLines('Just a plain description.'), undefined);
+    assert.equal(stripDescriptionTagLines(null), undefined);
+  });
+
+  it('keeps pipe tables and bold runs that contain no known namespace', () => {
+    const desc = [
+      '| Vol | Title |',
+      '|:-|:-|',
+      '|1| First |',
+      '',
+      '**Note:** not a tag block.',
+    ].join('\n');
+    assert.equal(stripDescriptionTagLines(desc), undefined);
+  });
+});
+
 describe('MangaDexProvider description tag merging', () => {
   it('appends parsed description tags after structured tags, deduped case-insensitively', async () => {
     globalThis.fetch = async (input) => {
@@ -345,6 +391,8 @@ describe('MangaDexProvider description tag merging', () => {
               ],
               description: {
                 en: [
+                  'A doujinshi about school life.',
+                  '',
                   '| Namespace | Tags |',
                   '|:-|:-',
                   '|MALE| glasses, harem',
@@ -369,5 +417,7 @@ describe('MangaDexProvider description tag merging', () => {
     // from the table is deduped against structured 'Incest'.
     assert.deepEqual(meta.tags, ['Loli', 'Incest', 'glasses', 'harem', 'group', 'mmf threesome', 'tankoubon']);
     assert.deepEqual(meta.genres, meta.tags);
+    // The tag table is stripped from the summary; prose survives.
+    assert.equal(meta.summary, 'A doujinshi about school life.');
   });
 });

@@ -1,4 +1,4 @@
-import { BaseProvider, toKavitaRating } from './base.js';
+import { BaseProvider } from './base.js';
 import type { MediaType, SeriesMetadata, SearchResult, VolumeCover } from './types.js';
 
 /** Max concurrent /cover/{id} lookups while resolving search-result thumbnails. */
@@ -40,19 +40,34 @@ const DESCRIPTION_TAG_NAMESPACES = new Set(['MALE', 'FEMALE', 'MIXED', 'OTHER', 
 const MAX_DESCRIPTION_TAGS = 60;
 
 /**
+ * The comma-separated value portion of a tag-list line, or null when the
+ * line is not one. Three observed formats: markdown table rows
+ * (`|MALE| glasses, harem`), bold labels (`**FEMALE** ahegao, big breasts`),
+ * and plain `Tags:` lines. Only lines with a known namespace parse as tags,
+ * so prose is never treated as tags. [ \t]* (not \s*) keeps each match on
+ * its own line so a bare label can't swallow the next one.
+ */
+function tagLineValue(line: string): string | null {
+  let m = line.match(/^[ \t]*\|[ \t]*([A-Za-z]+)[ \t]*\|[ \t]*(.+?)[ \t]*$/);
+  if (m) return DESCRIPTION_TAG_NAMESPACES.has(m[1].toUpperCase()) ? m[2] : null;
+  m = line.match(/^[ \t]*\*\*([A-Za-z]+)\*\*[ \t]*(.+?)[ \t]*$/);
+  if (m) return DESCRIPTION_TAG_NAMESPACES.has(m[1].toUpperCase()) ? m[2] : null;
+  m = line.match(/^[ \t]*tags?[ \t]*:[ \t]*(.+?)[ \t]*$/i);
+  return m ? m[1] : null;
+}
+
+/**
  * Extract tag lists that doujinshi uploaders embed in the description text
- * while leaving the structured `tags` array sparse. Three observed formats:
- * markdown table rows (`|MALE| glasses, harem`), bold labels
- * (`**FEMALE** ahegao, big breasts`), and plain `Tags:` lines. Only
- * line-anchored lines with a known namespace are parsed, so prose is never
- * treated as tags. Returns deduped (case-insensitive) tags in order of
- * appearance, capped at MAX_DESCRIPTION_TAGS.
+ * while leaving the structured `tags` array sparse. Returns deduped
+ * (case-insensitive) tags in document order, capped at MAX_DESCRIPTION_TAGS.
  */
 export function parseDescriptionTags(description: string | null | undefined): string[] {
   if (!description) return [];
   const out: string[] = [];
   const seen = new Set<string>();
-  const addLine = (value: string): void => {
+  for (const line of description.split('\n')) {
+    const value = tagLineValue(line);
+    if (!value) continue;
     for (const raw of value.split(',')) {
       // Strip stray pipes (hybrid entries like `**MALE** | shotacon`) and the
       // sentence-final punctuation uploaders leave on a Tags: line's last item.
@@ -63,21 +78,46 @@ export function parseDescriptionTags(description: string | null | undefined): st
       seen.add(key);
       out.push(tag);
     }
-  };
-  // Markdown table rows: |MALE| a, b — header/separator rows fail the namespace check.
-  // [ \t]* (not \s*) keeps each match on its own line so a bare label can't swallow the next one.
-  for (const m of description.matchAll(/^[ \t]*\|[ \t]*([A-Za-z]+)[ \t]*\|[ \t]*(.+?)[ \t]*$/gm)) {
-    if (DESCRIPTION_TAG_NAMESPACES.has(m[1].toUpperCase())) addLine(m[2]);
-  }
-  // Bold labels: **MALE** a, b — a bare `**TAGS**` header has no value on its line and won't match.
-  for (const m of description.matchAll(/^[ \t]*\*\*([A-Za-z]+)\*\*[ \t]*(.+?)[ \t]*$/gm)) {
-    if (DESCRIPTION_TAG_NAMESPACES.has(m[1].toUpperCase())) addLine(m[2]);
-  }
-  // Plain line: Tags: a, b
-  for (const m of description.matchAll(/^[ \t]*tags?[ \t]*:[ \t]*(.+?)[ \t]*$/gim)) {
-    addLine(m[1]);
   }
   return out.slice(0, MAX_DESCRIPTION_TAGS);
+}
+
+/**
+ * Remove the tag-list block(s) a description embeds, so the summary pushed
+ * to Kavita is clean prose (the tags themselves land in the Tags field via
+ * parseDescriptionTags). Drops whole contiguous table runs and bold-label
+ * runs that contain at least one known-namespace line — including their
+ * `| Namespace | Tags |` headers, separator rows, and bare `**TAGS**`
+ * headers — plus standalone `Tags:` lines. Returns the cleaned text, or
+ * undefined when no tag block was present (description stays untouched).
+ */
+export function stripDescriptionTagLines(description: string | null | undefined): string | undefined {
+  if (!description) return undefined;
+  const lines = description.split('\n');
+  const drop = new Array<boolean>(lines.length).fill(false);
+  const markRun = (isLine: (l: string) => boolean): void => {
+    let i = 0;
+    while (i < lines.length) {
+      if (!isLine(lines[i])) {
+        i++;
+        continue;
+      }
+      let j = i;
+      while (j < lines.length && isLine(lines[j])) j++;
+      if (lines.slice(i, j).some((l) => tagLineValue(l) !== null)) {
+        for (let k = i; k < j; k++) drop[k] = true;
+      }
+      i = j;
+    }
+  };
+  markRun((l) => /^[ \t]*\|/.test(l)); // markdown table runs
+  markRun((l) => /^[ \t]*\*\*[A-Za-z]+\*\*/.test(l)); // bold-label runs
+  for (let k = 0; k < lines.length; k++) {
+    if (/^[ \t]*tags?[ \t]*:[ \t]*\S/i.test(lines[k])) drop[k] = true;
+  }
+  if (!drop.some(Boolean)) return undefined;
+  const cleaned = lines.filter((_, i) => !drop[i]).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return cleaned || undefined;
 }
 /**
  * MangaDex — REST API v5. Excellent cover art + detailed metadata.
@@ -248,7 +288,7 @@ class MangaDexProvider extends BaseProvider {
         title,
         altTitles: this.titleVariants(attrs).filter((v) => v !== title),
         year: attrs.year ? Number(attrs.year) : undefined,
-        summary: typeof attrs.description?.en === 'string' ? attrs.description.en.slice(0, 300) : undefined,
+        summary: typeof attrs.description?.en === 'string' ? attrs.description.en : undefined,
         coverId: (m.relationships ?? []).find((r) => r.type === 'cover_art')?.id,
         coverUrl: undefined as string | undefined,
       };
@@ -291,18 +331,22 @@ class MangaDexProvider extends BaseProvider {
       if (!Number.isNaN(d.getTime())) releaseDate = d.toISOString().slice(0, 10);
     }
 
-    // Structured tags first, then tags extracted from the description text —
-    // doujinshi uploaders often leave `tags` sparse and put the real list in
-    // the summary. Existing spellings win on case-insensitive collisions so
-    // structured tags keep their canonical form.
+    // Doujinshi uploaders often leave `tags` sparse and put the real list in
+    // the description text. Extract it once: parsed tags are appended after
+    // the structured ones (existing spellings win on case-insensitive
+    // collisions), and the tag block itself is stripped from the summary so
+    // Kavita receives clean prose.
+    const rawDescription = typeof a.description?.en === 'string' ? a.description.en : undefined;
     const tags: string[] = (a.tags ?? []).map((t: any) => this.tagLabel(t)).filter(Boolean);
     const tagSeen = new Set(tags.map((t) => t.toLowerCase()));
-    for (const parsed of parseDescriptionTags(typeof a.description?.en === 'string' ? a.description.en : undefined)) {
+    for (const parsed of parseDescriptionTags(rawDescription)) {
       if (!tagSeen.has(parsed.toLowerCase())) {
         tagSeen.add(parsed.toLowerCase());
         tags.push(parsed);
       }
     }
+    const cleanedDescription = stripDescriptionTagLines(rawDescription);
+    const summaryText = (cleanedDescription ?? rawDescription)?.trim();
 
     // In the detail response, author/artist relationships are inlined with
     // attributes ({ id, type, attributes: { name } }); cover_art stays a stub,
@@ -346,18 +390,15 @@ class MangaDexProvider extends BaseProvider {
       providerSeriesId,
       title: typeof title === 'string' ? title : 'Unknown',
       sortTitle: typeof a.title?.original === 'string' ? a.title.original : undefined,
-      type: 'MANGA',
       year: a.year ? Number(a.year) : undefined,
       releaseDate,
-      summary: typeof a.description?.en === 'string' ? a.description.en.trim() : undefined,
+      summary: summaryText ? summaryText : undefined,
       coverUrl,
       genres: tags,
       tags,
       writers: people,
       artists: people,
       publishers: [],
-      imprints: [],
-      rating: undefined,
       readingDirection: a.originalLanguage === 'ja' ? 'RTL' : 'LTR',
       language: a.originalLanguage,
       status: status as SeriesMetadata['status'],

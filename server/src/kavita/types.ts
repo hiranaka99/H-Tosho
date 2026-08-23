@@ -257,12 +257,8 @@ export interface SeriesMetadataPayload {
   writers?: string[];
   artists?: string[];
   publishers?: string[];
-  imprints?: string[];
-  ageRating?: KavitaAgeRating;
   releaseYear?: number;
   language?: string;
   publicationStatus?: KavitaPublicationStatus;
   webLinks?: string;
-  /** Updates the authenticated user's series rating via /api/Rating/series. */
-  rating?: number;
 }

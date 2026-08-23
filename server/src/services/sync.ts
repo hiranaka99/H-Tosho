@@ -2,7 +2,6 @@ import { eq } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
 import {
-  KavitaAgeRating,
   KavitaPublicationStatus,
   type SeriesMetadataPayload,
 } from '../kavita/types.js';
@@ -51,11 +50,6 @@ function releaseYear(meta: SeriesMetadata): number | undefined {
   return year >= 1 && year <= 9999 ? year : undefined;
 }
 
-function ageRating(value: number | undefined): KavitaAgeRating | undefined {
-  if (value === undefined) return undefined;
-  return Object.values(KavitaAgeRating).includes(value) ? (value as KavitaAgeRating) : undefined;
-}
-
 /** Map a unified SeriesMetadata + config into a Kavita series metadata payload. */
 export function buildSeriesPayload(
   meta: SeriesMetadata,
@@ -75,10 +69,6 @@ export function buildSeriesPayload(
   if (meta.writers.length && fromPrimary('writers')) payload.writers = meta.writers;
   if (meta.artists.length && fromPrimary('artists')) payload.artists = meta.artists;
   if (meta.publishers.length && fromPrimary('publishers')) payload.publishers = meta.publishers;
-  if (meta.imprints.length && fromPrimary('imprints')) payload.imprints = meta.imprints;
-  const mappedAgeRating = ageRating(meta.ageRating);
-  if (mappedAgeRating !== undefined && fromPrimary('ageRating')) payload.ageRating = mappedAgeRating;
-  if (meta.rating != null && fromPrimary('rating')) payload.rating = meta.rating;
   const year = releaseYear(meta);
   if (year !== undefined && fromPrimary('releaseDate')) payload.releaseYear = year;
   if (meta.language && fromPrimary('language')) payload.language = meta.language;
@@ -117,9 +107,6 @@ const EXCLUDABLE_FIELDS: Record<string, string> = {
   writers: 'writers',
   artists: 'artists',
   publishers: 'publishers',
-  imprints: 'imprints',
-  ageRating: 'ageRating',
-  rating: 'rating',
   releaseDate: 'releaseYear',
   language: 'language',
   status: 'publicationStatus',

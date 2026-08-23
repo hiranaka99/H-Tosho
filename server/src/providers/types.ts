@@ -31,7 +31,6 @@ export interface SeriesMetadata {
   providerSeriesId: string;
   title: string;
   sortTitle?: string;
-  type: MediaType;
   year?: number;
   releaseDate?: string;
   summary?: string;
@@ -42,11 +41,6 @@ export interface SeriesMetadata {
   writers: string[];
   artists: string[];
   publishers: string[];
-  imprints: string[];
-  /** Kavita v0.9 AgeRating enum (-1 or 0-14). */
-  ageRating?: number;
-  /** 1-5 user rating, written through Kavita's Rating API. */
-  rating?: number;
   readingDirection?: 'LTR' | 'RTL' | 'TBR';
   language?: string;
   /** ONGOING | COMPLETED | HIATUS | CANCELLED | UNKNOWN */

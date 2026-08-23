@@ -307,7 +307,7 @@ describe('AniList provider fixes', () => {
 
     const meta = await anilistProvider.getSeriesMetadata('42');
     assert.ok(!capturedQuery.includes('type: MANGA'), 'query must not hardcode the MANGA type');
-    assert.equal(meta.type, 'NOVEL');
+    assert.equal(meta.title, 'Some Novel');
   });
 
   it('surfaces GraphQL errors instead of returning empty results', async () => {
