@@ -1,11 +1,12 @@
 import * as React from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, Eraser, BookOpen, ArrowLeft, ChevronRight } from 'lucide-react';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
+import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, Eraser, BookOpen, ArrowLeft, ChevronRight, Unlink } from 'lucide-react';
 import { api, type SeriesRow } from '../lib/api';
 import { Button, Card, Input, Select, Badge, StatusBadge, ProviderBadge, Spinner, EmptyState, Switch } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
 import { cn, timeAgo } from '../lib/utils';
+import { toast } from '../lib/toast';
 
 function Cover({ src, name, className }: { src?: string | null; name: string; className?: string }) {
   const [failed, setFailed] = React.useState(false);
@@ -91,6 +92,17 @@ export function Libraries() {
     if (selected === null) return;
     void api.saveLibraryOverride(selected, { autoMatch: c }).then(() => qc.invalidateQueries({ queryKey: ['library-override', selected] }));
   };
+
+  const unmatch = useMutation({
+    mutationFn: (row: SeriesRow) => api.unmatch(row.id),
+    onSuccess: (_res, row) => {
+      qc.invalidateQueries({ queryKey: ['library-series'] });
+      qc.invalidateQueries({ queryKey: ['stats'] });
+      qc.invalidateQueries({ queryKey: ['libraries'] });
+      toast({ tone: 'success', title: 'Unmatched', description: row.name });
+    },
+    onError: (e) => toast({ tone: 'danger', title: 'Unmatch failed', description: e instanceof Error ? e.message : String(e) }),
+  });
 
   const matchedInLib = rows.filter((r) => r.status === 'matched').length;
 
@@ -220,7 +232,6 @@ export function Libraries() {
                       'group relative animate-fade-up cursor-pointer overflow-hidden transition-all duration-200 hover:-translate-y-1 hover:border-primary/50 hover:shadow-xl hover:shadow-black/30',
                       checked.has(r.id) && 'border-primary/60 ring-1 ring-primary',
                     )}
-                    onClick={() => toggleCheck(r.id)}
                   >
                     <button
                       className="absolute inset-0 z-10"
@@ -232,9 +243,6 @@ export function Libraries() {
                     />
                     <div className="aspect-[3/4] w-full overflow-hidden">
                       <Cover src={r.cover} name={r.name} className="transition-transform duration-300 ease-out group-hover:scale-105" />
-                    </div>
-                    <div className={cn('absolute left-2 top-2 z-20 transition-opacity duration-150', checked.has(r.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')}>
-                      <input type="checkbox" checked={checked.has(r.id)} onChange={() => toggleCheck(r.id)} className="h-4 w-4 accent-[var(--color-primary)]" />
                     </div>
                     <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-1 bg-gradient-to-t from-black/90 to-transparent p-2 pt-6">
                       <p className="truncate text-xs font-medium text-white">{r.name}</p>
@@ -288,9 +296,16 @@ export function Libraries() {
                         <td className="p-2 text-muted">{r.matchScore ? Math.round(r.matchScore * 100) + '%' : '—'}</td>
                         <td className="p-2 text-xs text-muted">{timeAgo(r.lastSyncedAt)}</td>
                         <td className="p-2 text-right">
-                          <Button size="sm" variant="outline" onClick={() => setIdentify({ id: r.id, name: r.name })}>
-                            <Sparkles className="h-3.5 w-3.5" /> Identify
-                          </Button>
+                          <div className="flex items-center justify-end gap-1.5">
+                            {r.providerId && (
+                              <Button size="sm" variant="ghost" onClick={() => unmatch.mutate(r)} disabled={unmatch.isPending} title="Remove the match link; metadata already pushed to Kavita stays in place">
+                                <Unlink className="h-3.5 w-3.5" /> Unmatch
+                              </Button>
+                            )}
+                            <Button size="sm" variant="outline" onClick={() => setIdentify({ id: r.id, name: r.name })}>
+                              <Sparkles className="h-3.5 w-3.5" /> Identify
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -310,6 +325,7 @@ export function Libraries() {
             sortName: currentMeta.data?.series.sortName,
             metadata: currentMeta.data?.kavita ?? null,
           }}
+          match={currentMeta.data?.match ?? null}
           onClose={() => setIdentify(null)}
         />
       )}

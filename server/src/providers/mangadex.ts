@@ -134,6 +134,22 @@ class MangaDexProvider extends BaseProvider {
       .map(([number, entry]) => ({ number, url: `${this.imageBaseUrl}/covers/${mangaId}/${entry.fileName}` }));
   }
 
+  /**
+   * The Volume 1 cover when one exists — the image Apply & Sync pushes as the
+   * series cover (see getSeriesMetadata). Search thumbnails resolve only the
+   * main cover_art, so the identify dialog uses this to preview exactly what
+   * will land in Kavita. Returns undefined when there is no Volume 1 cover or
+   * the collection lookup fails; callers then keep their main-cover fallback.
+   */
+  async preferredSeriesCoverUrl(mangaId: string): Promise<string | undefined> {
+    try {
+      const volumeCovers = await this.fetchVolumeCovers(mangaId);
+      return volumeCovers.find((v) => v.number === 1)?.url;
+    } catch {
+      return undefined;
+    }
+  }
+
   async search(query: string, type?: string): Promise<SearchResult[]> {
     const params = new URLSearchParams({
       title: query,

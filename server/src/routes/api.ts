@@ -5,6 +5,7 @@ import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
 import { KAVITA_OPENAPI_VERSION, type KavitaLibrary, type KavitaSeries } from '../kavita/types.js';
 import { getProvider } from '../providers/registry.js';
+import { mangaDexProvider } from '../providers/mangadex.js';
 import {
   getAggregationOptions,
   getCredentialMap,
@@ -241,15 +242,22 @@ api.get('/series/:id/identify', async (c) => {
       extraCandidates = catalogCandidates(series.name, isMatureAgeRating(meta?.ageRating));
     }
     const outcome = await autoMatch(series, { providerOrder, credentials, enabledProviders, extraCandidates });
-    // Catalog entries carry no cover until resolved (the list endpoint only
-    // ships relationship stubs); fetch the primary cover once and cache it in
-    // the catalog. Live candidates whose thumbnail lookup failed get the same
-    // fallback.
+    // MangaDex search thumbnails resolve the main cover_art, but Apply & Sync
+    // pushes the Volume 1 cover when one exists — swap the thumbnail so the
+    // dialog previews exactly what will land in Kavita. Catalog entries carry
+    // no cover until resolved (the list endpoint only ships relationship
+    // stubs); fetch the primary cover once and cache it in the catalog. Live
+    // candidates whose thumbnail lookup failed get the same fallback.
     await Promise.all(
       outcome.candidates.map(async (cand) => {
-        if (cand.providerId !== 'mangadex' || cand.coverUrl) return;
-        const url = await resolveCatalogCover(cand.providerSeriesId);
-        if (url) cand.coverUrl = url;
+        if (cand.providerId !== 'mangadex') return;
+        const preferred = await mangaDexProvider.preferredSeriesCoverUrl(cand.providerSeriesId);
+        if (preferred) {
+          cand.coverUrl = preferred;
+        } else if (!cand.coverUrl) {
+          const url = await resolveCatalogCover(cand.providerSeriesId);
+          if (url) cand.coverUrl = url;
+        }
       }),
     );
     // MangaDex's cover CDN serves a placeholder card to third-party browser
@@ -319,6 +327,38 @@ api.post('/series/:id/apply', async (c) => {
       })
       .run();
     return c.json(result);
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
+/**
+ * Manually unmatch a series: drops the local match row so the series reports
+ * as unmatched again and scans will consider it for re-matching. Metadata
+ * already pushed to Kavita stays in place (Kavita has no revert API) — re-identify
+ * and apply a different candidate to overwrite it.
+ */
+api.delete('/series/:id/match', async (c) => {
+  const client = connectedClient();
+  if (!client) return c.json({ error: 'Kavita not configured' }, 503);
+  try {
+    const seriesId = intParam(c.req.param('id'));
+    if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
+    const series = await client.getSeriesById(seriesId);
+    const db = getDb();
+    const row = db.select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
+    if (row) {
+      db.delete(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).run();
+      db.insert(schema.syncHistory)
+        .values({
+          kavitaSeriesId: seriesId,
+          seriesTitle: series.name,
+          action: 'unmatched',
+          detailsJson: JSON.stringify({ providerId: row.providerId, matchScore: row.matchScore }),
+        })
+        .run();
+    }
+    return c.json({ ok: true, removed: !!row });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

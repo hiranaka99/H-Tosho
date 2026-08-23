@@ -192,4 +192,51 @@ describe('MangaDexProvider cover URLs', () => {
     assert.equal(meta.coverUrl, 'https://uploads.mangadex.org/covers/manga-1/file-one.jpg');
     assert.equal(meta.volumeCovers, undefined);
   });
+
+  it('preferredSeriesCoverUrl returns the Volume 1 cover for dialog previews', async () => {
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.startsWith('https://api.mangadex.org/cover?')) {
+        return Response.json({
+          result: 'ok',
+          response: 'collection',
+          data: [
+            // Main cover_art has no volume and must not be returned.
+            { id: 'c0', attributes: { volume: null, fileName: 'main.jpg', locale: 'ja', updatedAt: '2021-01-01T00:00:00+00:00' } },
+            // Vol 1 exists in two locales; English wins even though ja is newer.
+            { id: 'c1a', attributes: { volume: '1', fileName: 'vol1-en.jpg', locale: 'en', updatedAt: '2023-02-20T23:52:26+00:00' } },
+            { id: 'c1b', attributes: { volume: '1', fileName: 'vol1-ja.jpg', locale: 'ja', updatedAt: '2024-01-01T00:00:00+00:00' } },
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    assert.equal(
+      await mangaDexProvider.preferredSeriesCoverUrl('manga-1'),
+      'https://uploads.mangadex.org/covers/manga-1/vol1-en.jpg',
+    );
+  });
+
+  it('preferredSeriesCoverUrl returns undefined without a Volume 1 cover or when the collection fails', async () => {
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.startsWith('https://api.mangadex.org/cover?')) {
+        return Response.json({
+          result: 'ok',
+          response: 'collection',
+          data: [
+            { id: 'c0', attributes: { volume: null, fileName: 'main.jpg', locale: 'ja', updatedAt: '2021-01-01T00:00:00+00:00' } },
+            { id: 'c2', attributes: { volume: '2', fileName: 'vol2-ja.png', locale: 'ja', updatedAt: '2023-03-29T14:19:23+00:00' } },
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    assert.equal(await mangaDexProvider.preferredSeriesCoverUrl('manga-1'), undefined);
+
+    globalThis.fetch = async () => new Response('boom', { status: 500 });
+    assert.equal(await mangaDexProvider.preferredSeriesCoverUrl('manga-1'), undefined);
+  });
 });

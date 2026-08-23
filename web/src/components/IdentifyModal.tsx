@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, Sparkles, AlertTriangle, Check, X, ArrowRight } from 'lucide-react';
+import { Search, Sparkles, AlertTriangle, Check, X, ArrowRight, Link2, Unlink } from 'lucide-react';
 import {
   api,
   type MatchOutcome,
@@ -8,8 +8,10 @@ import {
   type KavitaSeriesMetadata,
   type KavitaTag,
   type KavitaPerson,
+  type SeriesMatch,
 } from '../lib/api';
 import { PROVIDER_NAMES, cn } from '../lib/utils';
+import { toast } from '../lib/toast';
 import { Button, Dialog, DialogContent, Label, ProviderBadge, Spinner } from './ui';
 
 /** Display labels for Kavita's numeric enums. */
@@ -58,6 +60,8 @@ interface CurrentKavita {
 interface IdentifyModalProps {
   seriesId: number;
   current: CurrentKavita;
+  /** Existing local match row (from GET /series/:id), if any. */
+  match: SeriesMatch | null;
   onClose: () => void;
 }
 
@@ -192,7 +196,7 @@ function CandidateCover({ src }: { src?: string }) {
   return <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} className="h-full w-full object-cover" />;
 }
 
-export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps) {
+export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyModalProps) {
   const qc = useQueryClient();
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [tab, setTab] = React.useState('all');
@@ -222,6 +226,18 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
       qc.invalidateQueries({ queryKey: ['libraries'] });
       onClose();
     },
+  });
+
+  const unmatch = useMutation({
+    mutationFn: () => api.unmatch(seriesId),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['series', seriesId] });
+      qc.invalidateQueries({ queryKey: ['library-series'] });
+      qc.invalidateQueries({ queryKey: ['stats'] });
+      qc.invalidateQueries({ queryKey: ['libraries'] });
+      toast({ tone: 'success', title: res.removed ? 'Unmatched' : 'No match to remove', description: current.name });
+    },
+    onError: (e) => toast({ tone: 'danger', title: 'Unmatch failed', description: e instanceof Error ? e.message : String(e) }),
   });
 
   const outcome: MatchOutcome | undefined = identify.data;
@@ -310,6 +326,24 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
             <Sparkles className="h-5 w-5 text-primary" />
             <h2 className="text-base font-semibold">Identify "{current.name}"</h2>
           </div>
+
+          {match?.providerId && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border-2 bg-surface-2 p-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <Link2 className="h-4 w-4 shrink-0 text-muted" />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">
+                    Matched to {PROVIDER_NAMES[match.providerId] ?? match.providerId}
+                    {typeof match.matchScore === 'number' && ` · ${Math.round(match.matchScore * 100)}%`}
+                  </p>
+                  <p className="text-xs text-muted">Unmatching removes the link only — metadata already pushed to Kavita stays in place.</p>
+                </div>
+              </div>
+              <Button size="sm" variant="secondary" onClick={() => unmatch.mutate()} disabled={unmatch.isPending}>
+                {unmatch.isPending ? <Spinner /> : <Unlink className="h-3.5 w-3.5" />} Unmatch
+              </Button>
+            </div>
+          )}
 
           {identify.isPending && (
             <div className="flex items-center gap-2 py-8 text-muted">

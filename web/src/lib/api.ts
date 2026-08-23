@@ -50,6 +50,20 @@ export interface SeriesRow {
   errorMessage?: string | null;
 }
 
+/** Local match row for a Kavita series (server `series_matches` table). */
+export interface SeriesMatch {
+  id?: number;
+  kavitaSeriesId: number;
+  /** unmatched | matched | syncing | failed */
+  status: string;
+  providerId?: string | null;
+  providerSeriesId?: string | null;
+  matchScore?: number | null;
+  metadataJson?: string | null;
+  errorMessage?: string | null;
+  lastSyncedAt?: string | null;
+}
+
 export interface KavitaTag {
   id: number;
   title: string | null;
@@ -331,7 +345,7 @@ export const api = {
   series: (id: number) =>
     request<{
       series: KavitaSeriesView;
-      match: Record<string, unknown> | null;
+      match: SeriesMatch | null;
       metadata: SeriesMetadata | null;
       kavita: KavitaSeriesMetadata | null;
     }>(`/series/${id}`),
@@ -341,6 +355,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ providerId, providerSeriesId, ...opts }),
     }),
+  /** Manually unmatch a series (drops the local match row). */
+  unmatch: (id: number) => request<{ ok: boolean; removed: boolean }>(`/series/${id}/match`, { method: 'DELETE' }),
 
   /** Aggregated metadata a candidate would sync — same path as apply. */
   providerMetadata: (providerId: string, providerSeriesId: string) =>

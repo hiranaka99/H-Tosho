@@ -109,7 +109,7 @@ export const syncHistory = sqliteTable('sync_history', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   kavitaSeriesId: integer('kavita_series_id').notNull(),
   seriesTitle: text('series_title'),
-  /** matched | updated | failed | cover | cleared */
+  /** matched | updated | failed | unmatched | cover | cleared */
   action: text('action').notNull(),
   detailsJson: text('details_json'),
   createdAt: text('created_at')
