@@ -9,7 +9,7 @@ type Agg = SettingsType['aggregation'];
 type Notif = SettingsType['notifications'];
 
 const AGG_LABELS: { key: keyof Agg; label: string; hint: string }[] = [
-  { key: 'mergeTags', label: 'Merge tags', hint: 'Combine tags from all contributing providers' },
+  { key: 'mergeTags', label: 'Merge tags', hint: 'Combine tags from all contributing providers; existing Kavita tags are always kept (duplicates dropped)' },
   { key: 'mergeGenres', label: 'Merge genres', hint: 'Combine genres from all contributing providers' },
   { key: 'replaceCover', label: 'Replace cover', hint: 'Download & push provider cover art to Kavita' },
   { key: 'replaceVolumeCovers', label: 'Replace volume covers', hint: 'Push per-volume cover art (MangaDex) onto matching Kavita volumes' },

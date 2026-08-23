@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { KavitaAgeRating, KavitaPublicationStatus } from '../src/kavita/types.js';
 import type { SeriesMetadata } from '../src/providers/types.js';
-import { buildSeriesPayload, matchVolumeCovers } from '../src/services/sync.js';
+import { buildSeriesPayload, matchVolumeCovers, mergeTagLists } from '../src/services/sync.js';
 
 describe('Kavita metadata mapping', () => {
   it('maps provider metadata onto Kavita v0.9 fields and enums', () => {
@@ -112,5 +112,31 @@ describe('matchVolumeCovers', () => {
     assert.deepEqual(matchVolumeCovers(volumes, covers), [
       { volumeId: 31, number: 1, url: 'https://cdn.example/vol1-en.jpg' },
     ]);
+  });
+});
+
+describe('mergeTagLists', () => {
+  it('keeps existing tags and appends new provider tags', () => {
+    assert.deepEqual(mergeTagLists(['User tag'], ['Provider tag']), ['User tag', 'Provider tag']);
+  });
+
+  it('drops duplicates case-insensitively, keeping the existing spelling', () => {
+    assert.deepEqual(mergeTagLists(['Found Family', 'Solo'], ['found family', 'solo', 'New']), [
+      'Found Family',
+      'Solo',
+      'New',
+    ]);
+  });
+
+  it('dedupes within the incoming list and drops blank entries', () => {
+    assert.deepEqual(mergeTagLists([], ['  ', '', 'Tag', 'tag']), ['Tag']);
+  });
+
+  it('returns a new list without mutating inputs', () => {
+    const existing = ['A'];
+    const incoming = ['B'];
+    mergeTagLists(existing, incoming);
+    assert.deepEqual(existing, ['A']);
+    assert.deepEqual(incoming, ['B']);
   });
 });

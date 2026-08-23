@@ -54,6 +54,7 @@ export function initDb(): Db {
   sqlite.pragma('foreign_keys = ON');
   sqlite.exec(SCHEMA_DDL);
   migrateDownloadQueueColumns(sqlite);
+  migrateCatalogColumns(sqlite);
   db = drizzle(sqlite, { schema });
   return db;
 }
@@ -80,6 +81,19 @@ function migrateDownloadQueueColumns(sqlite: Database.Database): void {
     } catch (err) {
       console.warn(`[h-tosho] failed to add download_queue column ${col}:`, err);
     }
+  }
+}
+
+/** Add the lazily-resolved catalog cover column to databases created before it existed. */
+function migrateCatalogColumns(sqlite: Database.Database): void {
+  const existing = new Set(
+    (sqlite.prepare('PRAGMA table_info(mangadex_catalog)').all() ?? []).map((c) => (c as { name: string }).name),
+  );
+  if (existing.size === 0 || existing.has('cover_file')) return;
+  try {
+    sqlite.exec('ALTER TABLE mangadex_catalog ADD COLUMN cover_file TEXT');
+  } catch (err) {
+    console.warn('[h-tosho] failed to add mangadex_catalog column cover_file:', err);
   }
 }
 
@@ -266,7 +280,8 @@ CREATE TABLE IF NOT EXISTS mangadex_catalog (
   al_id TEXT,
   mu_id TEXT,
   md_updated_at TEXT NOT NULL,
-  fetched_at TEXT NOT NULL
+  fetched_at TEXT NOT NULL,
+  cover_file TEXT
 );
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

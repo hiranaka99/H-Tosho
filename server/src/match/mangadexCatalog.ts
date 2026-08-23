@@ -22,6 +22,8 @@ import { retry, sleep } from '../lib/http.js';
  */
 
 const BASE_URL = 'https://api.mangadex.org';
+/** Cover image CDN (fileName resolved per title via GET /manga/{id}/cover). */
+const COVERS_BASE_URL = 'https://uploads.mangadex.org';
 const HEADERS: Record<string, string> = { 'Client-Agent': 'H-Tosho/1.0 (+https://github.com/h-tosho)' };
 
 /** MangaDex contentRating values indexed for mature matching. */
@@ -46,6 +48,8 @@ export interface CatalogEntry {
   altTitles: string[];
   descriptionEn?: string;
   year?: number;
+  /** Primary cover file name on uploads.mangadex.org (resolved lazily). */
+  coverFile?: string;
 }
 
 export interface RefreshContext {
@@ -533,6 +537,7 @@ function loadEntries(): CachedEntry[] {
       altTitles: safeParse(r.altTitlesJson),
       descriptionEn: r.descriptionEn ?? undefined,
       year: r.year ?? undefined,
+      coverFile: r.coverFile ?? undefined,
     };
     return { ...entry, scoredTitles: entryTitles(entry).map((raw) => ({ raw, canon: canonicalTitle(raw) })) };
   });
@@ -569,6 +574,7 @@ export function searchCatalog(kavitaTitle: string): CandidateMatch[] {
     .slice(0, MAX_CANDIDATES);
 
   return scored.map(({ entry, score, title }) => {
+    const coverUrl = entry.coverFile ? `${COVERS_BASE_URL}/covers/${entry.mangaId}/${entry.coverFile}` : undefined;
     const fromProvider: SearchResult = {
       providerId: 'mangadex',
       providerSeriesId: entry.mangaId,
@@ -576,6 +582,7 @@ export function searchCatalog(kavitaTitle: string): CandidateMatch[] {
       type: 'MANGA',
       year: entry.year,
       summary: entry.descriptionEn,
+      coverUrl,
     };
     return {
       providerId: 'mangadex',
@@ -584,6 +591,7 @@ export function searchCatalog(kavitaTitle: string): CandidateMatch[] {
       type: 'MANGA',
       year: entry.year,
       summary: entry.descriptionEn,
+      coverUrl,
       score,
       fromProvider,
     };
@@ -599,4 +607,45 @@ export function searchCatalog(kavitaTitle: string): CandidateMatch[] {
 export function catalogCandidates(kavitaTitle: string, mature: boolean): CandidateMatch[] {
   const all = searchCatalog(kavitaTitle);
   return mature ? all : all.filter((c) => c.score >= 1.0);
+}
+
+/**
+ * Resolve the primary cover of a catalog title and persist the file name so
+ * later lookups are free. Returns the CDN URL (routed through the media proxy
+ * for the frontend) or null when the title has no usable cover. The list
+ * endpoint only carries cover relationship stubs, so each title needs one
+ * extra request — hence resolution is lazy, at identify time.
+ */
+export async function resolveCatalogCover(mangaId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${BASE_URL}/cover?manga%5B%5D=${mangaId}&limit=100`, { headers: HEADERS });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { data?: Array<{ attributes?: { fileName?: string; volume?: number | null; updatedAt?: string } }> };
+    // Series-level covers have no volume; among re-uploads the newest wins.
+    let fileName: string | undefined;
+    let bestAt = '';
+    for (const item of data?.data ?? []) {
+      const attrs = item.attributes;
+      if (!attrs?.fileName || attrs.volume != null) continue;
+      const at = attrs.updatedAt ?? '';
+      if (at >= bestAt) {
+        fileName = attrs.fileName;
+        bestAt = at;
+      }
+    }
+    if (!fileName) return null;
+    getDb()
+      .update(schema.mangadexCatalog)
+      .set({ coverFile: fileName })
+      .where(eq(schema.mangadexCatalog.mangaId, mangaId))
+      .run();
+    // Keep the in-memory cache current without a full reload.
+    if (cache) {
+      const hit = cache.find((e) => e.mangaId === mangaId);
+      if (hit) hit.coverFile = fileName;
+    }
+    return `${COVERS_BASE_URL}/covers/${mangaId}/${fileName}`;
+  } catch {
+    return null;
+  }
 }

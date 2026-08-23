@@ -12,7 +12,7 @@ import { and, eq, sql } from 'drizzle-orm';
 process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-catalog-refresh-'));
 
 const { initDb, getDb, schema } = await import('../src/db/index.js');
-const { refreshCatalog, invalidateCatalogCache, catalogCandidates } = await import('../src/match/mangadexCatalog.js');
+const { refreshCatalog, invalidateCatalogCache, catalogCandidates, searchCatalog, resolveCatalogCover } = await import('../src/match/mangadexCatalog.js');
 
 initDb();
 
@@ -28,6 +28,8 @@ let datasets: Record<string, FakeItem[]> = {};
 const callCounts = new Map<string, number>();
 /** URLs whose first hit returns a truncated page (simulates transient partial pages). */
 const truncateOnce = new Set<string>();
+/** mangaId -> cover fileName served by the fake /cover?manga[] endpoint (absent = empty collection). */
+const coverFiles = new Map<string, string>();
 
 function mangaUrl(rating: string, extra: Record<string, string>, offset: number): string {
   const p = new URLSearchParams();
@@ -42,6 +44,12 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
   const url = new URL(String(input));
   const key = url.pathname + url.search;
   callCounts.set(key, (callCounts.get(key) ?? 0) + 1);
+  const mangaFilter = url.searchParams.get('manga[]');
+  if (url.pathname === '/cover' && mangaFilter) {
+    const file = coverFiles.get(mangaFilter);
+    if (!file) return Response.json({ total: 0, data: [] });
+    return Response.json({ total: 1, data: [{ attributes: { fileName: file, volume: null, updatedAt: '2026-08-01T00:00:00Z' } }] });
+  }
   const rating = url.searchParams.get('contentRating[]') ?? 'suggestive';
   const yearParam = url.searchParams.get('year');
   const orderYear = url.searchParams.get('order[year]');
@@ -93,6 +101,7 @@ function resetDb(): void {
   datasets = { suggestive: [], erotica: [], pornographic: [] };
   callCounts.clear();
   truncateOnce.clear();
+  coverFiles.clear();
   invalidateCatalogCache();
 }
 
@@ -197,5 +206,37 @@ describe('catalog candidate eligibility', () => {
     // Flagged series keep the fuzzy candidates.
     const fuzzy = catalogCandidates('Sisters', true);
     assert.ok(fuzzy.length >= 2, `expected fuzzy candidates, got ${fuzzy.length}`);
+  });
+});
+
+describe('catalog cover resolution', () => {
+  it('resolves the primary cover, persists it, and serves it to candidates', async () => {
+    resetDb();
+    getDb()
+      .insert(schema.mangadexCatalog)
+      .values({ mangaId: 'm1', titleEn: 'Covered Series', originalTitle: null, altTitlesJson: '[]', descriptionEn: null, year: 2024, status: null, contentRating: 'suggestive', malId: null, alId: null, muId: null, mdUpdatedAt: '2026-08-01T00:00:00Z', fetchedAt: '2026-08-01T00:00:00Z' })
+      .run();
+    invalidateCatalogCache();
+    coverFiles.set('m1', 'abc.jpg');
+
+    const url = await resolveCatalogCover('m1');
+    assert.equal(url, 'https://uploads.mangadex.org/covers/m1/abc.jpg');
+
+    // Persisted on the catalog row for future lookups.
+    const row = getDb()
+      .select({ coverFile: schema.mangadexCatalog.coverFile })
+      .from(schema.mangadexCatalog)
+      .where(eq(schema.mangadexCatalog.mangaId, 'm1'))
+      .get();
+    assert.equal(row?.coverFile, 'abc.jpg');
+
+    // Candidates now carry the CDN URL without another API round-trip.
+    const cands = searchCatalog('Covered Series');
+    assert.equal(cands[0]?.coverUrl, url);
+  });
+
+  it('returns null for titles without a usable cover', async () => {
+    resetDb();
+    assert.equal(await resolveCatalogCover('missing'), null); // 404 from the fake API
   });
 });

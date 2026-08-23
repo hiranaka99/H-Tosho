@@ -28,7 +28,7 @@ import {
 } from '../services/settings.js';
 import { jobQueue, type JobType } from '../jobs/queue.js';
 import { autoMatch, fetchAggregatedMetadata, type CandidateMatch } from '../match/autoMatcher.js';
-import { catalogCandidates, catalogStatus, isMatureAgeRating } from '../match/mangadexCatalog.js';
+import { catalogCandidates, catalogStatus, isMatureAgeRating, resolveCatalogCover } from '../match/mangadexCatalog.js';
 import { applyToKavita, fetchCover } from '../services/sync.js';
 import { testNotification } from '../notify/dispatcher.js';
 import { getDownloaderSettings, setDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
@@ -219,6 +219,17 @@ api.get('/series/:id/identify', async (c) => {
       extraCandidates = catalogCandidates(series.name, isMatureAgeRating(meta?.ageRating));
     }
     const outcome = await autoMatch(series, { providerOrder, credentials, enabledProviders, extraCandidates });
+    // Catalog entries carry no cover until resolved (the list endpoint only
+    // ships relationship stubs); fetch the primary cover once and cache it in
+    // the catalog. Live candidates whose thumbnail lookup failed get the same
+    // fallback.
+    await Promise.all(
+      outcome.candidates.map(async (cand) => {
+        if (cand.providerId !== 'mangadex' || cand.coverUrl) return;
+        const url = await resolveCatalogCover(cand.providerSeriesId);
+        if (url) cand.coverUrl = url;
+      }),
+    );
     // MangaDex's cover CDN serves a placeholder card to third-party browser
     // Referers (anything but mangadex.org / "localhost"), so route candidate
     // covers through the same-origin media proxy.

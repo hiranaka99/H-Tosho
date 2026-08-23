@@ -73,6 +73,8 @@ export const mangadexCatalog = sqliteTable('mangadex_catalog', {
   /** MangaDex updatedAt (ISO) — used for incremental refresh high-water mark. */
   mdUpdatedAt: text('md_updated_at').notNull(),
   fetchedAt: text('fetched_at').notNull(),
+  /** Primary cover file name on uploads.mangadex.org (resolved lazily, cached). */
+  coverFile: text('cover_file'),
 });
 
 export const jobs = sqliteTable('jobs', {

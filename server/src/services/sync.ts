@@ -85,6 +85,24 @@ export function buildSeriesPayload(
   if (meta.url && fromPrimary('url')) payload.webLinks = meta.url;
   return payload;
 }
+/**
+ * Union of the series' existing tags and incoming provider tags, deduplicated
+ * case-insensitively (the first spelling wins, so existing tags keep their
+ * casing). Whitespace-only entries are dropped.
+ */
+export function mergeTagLists(existing: string[], incoming: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of [...existing, ...incoming]) {
+    const tag = raw.trim();
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+  }
+  return out;
+}
 
 /**
  * Apply matched metadata to a Kavita series:
@@ -112,6 +130,16 @@ export async function applyToKavita(
   let locked = false;
 
   const payload = buildSeriesPayload(meta, opts.agg, opts.fieldConfig);
+  // Merge provider tags with the series' existing Kavita tags instead of
+  // replacing them (Kavita's metadata update is a full-field write).
+  if (payload.tags) {
+    try {
+      const current = await client.getSeriesMetadata(seriesId);
+      payload.tags = mergeTagLists((current.tags ?? []).map((t) => t.title).filter((t): t is string => Boolean(t)), payload.tags);
+    } catch {
+      /* series without a metadata row yet — push provider tags as-is */
+    }
+  }
   const fields = Object.keys(payload).filter((k) => (payload as Record<string, unknown>)[k] !== undefined);
   if (fields.length) {
     try {
