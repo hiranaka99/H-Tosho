@@ -87,6 +87,8 @@ interface DiffRow {
   tagMerge?: { existing: string[]; incoming: string[] };
   /** Comma-joined values compared as sets — order differences are not drift. */
   list?: boolean;
+  /** Render the value as clickable links (URL row). */
+  link?: boolean;
 }
 
 /** List fields compare order-insensitively, ignoring punctuation placement ("Girl's Love" vs "Girls' Love"). */
@@ -105,6 +107,24 @@ function computeDiffers(row: DiffRow): boolean {
     return !pb.every((p) => sa.has(p));
   }
   return a.toLowerCase() !== b.toLowerCase();
+}
+
+/** URL values render as clickable links (Kavita webLinks may hold several, newline/comma separated). */
+function UrlValue({ text, className }: { text: string; className?: string }) {
+  const urls = text.split(/[\n,]+/).map((s) => s.trim()).filter((s) => /^https?:\/\//i.test(s));
+  if (urls.length === 0) return <span>{text || '—'}</span>;
+  return (
+    <>
+      {urls.map((u, i) => (
+        <React.Fragment key={i}>
+          {i > 0 ? ', ' : null}
+          <a href={u} target="_blank" rel="noopener noreferrer" className={cn('underline decoration-dotted underline-offset-2 hover:decoration-solid', className)}>
+            {u}
+          </a>
+        </React.Fragment>
+      ))}
+    </>
+  );
 }
 
 /** Label column (fixed width) + two equal-width value columns: Kavita on the left, candidate on the right. */
@@ -128,11 +148,11 @@ function FieldRow({ row, providerName, checked, onToggle }: { row: DiffRow; prov
       </div>
       {merge ? (
         <div className={cn(valueCls, 'min-h-8 text-sm')} title={row.current}>
-          {row.current || '—'}
+          {row.link ? <UrlValue text={row.current} /> : row.current || '—'}
         </div>
       ) : (
         <div className={cn(valueCls, 'min-h-8 text-sm', differs && 'text-muted line-through')} title={row.current}>
-          {row.current || '—'}
+          {row.link ? <UrlValue text={row.current} /> : row.current || '—'}
         </div>
       )}
       {merge ? (
@@ -144,7 +164,7 @@ function FieldRow({ row, providerName, checked, onToggle }: { row: DiffRow; prov
           className={cn(valueCls, 'min-h-8 text-sm', differs && 'text-primary', showCheckbox && !checked && 'text-muted line-through opacity-60')}
           title={row.candidate}
         >
-          {row.candidate || '—'}
+          {row.link ? <UrlValue text={row.candidate} className="text-primary" /> : row.candidate || '—'}
         </div>
       )}
     </div>
@@ -303,7 +323,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
         candidate: candStatus != null ? (STATUS_LABELS[candStatus] ?? '') : '',
         field: 'status',
       },
-      { label: 'URL', current: k?.webLinks ?? '', candidate: m?.url ?? '', field: 'url' },
+      { label: 'URL', current: k?.webLinks ?? '', candidate: m?.url ?? '', field: 'url', link: true },
     ];
     return { rows, coverCandidate: m?.coverUrl ?? selected.coverUrl };
   }, [selected, preview.data, current, k]);

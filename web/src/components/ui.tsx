@@ -143,12 +143,12 @@ export function Badge({
   return <span className={cn(badgeVariants({ tone }), className)} {...props} />;
 }
 
-export function ProviderBadge({ id, className }: { id: string; className?: string }) {
+export function ProviderBadge({ id, className, solid = false }: { id: string; className?: string; solid?: boolean }) {
   const color = PROVIDER_COLORS[id] ?? '#888';
   return (
     <span
       className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium', className)}
-      style={{ backgroundColor: color + '22', color }}
+      style={solid ? { backgroundColor: 'rgba(0, 0, 0, 0.75)', color } : { backgroundColor: color + '22', color }}
     >
       <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
       {PROVIDER_NAMES[id] ?? id}

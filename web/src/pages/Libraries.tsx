@@ -230,6 +230,7 @@ export function Libraries() {
                     style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
                     className={cn(
                       'group relative animate-fade-up cursor-pointer overflow-hidden transition-all duration-200 hover:-translate-y-1 hover:border-primary/50 hover:shadow-xl hover:shadow-black/30',
+                      r.aligned && 'ring-2 ring-success',
                       checked.has(r.id) && 'border-primary/60 ring-1 ring-primary',
                     )}
                   >
@@ -241,15 +242,18 @@ export function Libraries() {
                       }}
                       aria-label="Identify"
                     />
+                    {r.providerId && (
+                      <div className="absolute left-1.5 top-1.5 z-20">
+                        <ProviderBadge id={r.providerId} solid />
+                      </div>
+                    )}
                     <div className="aspect-[3/4] w-full overflow-hidden">
                       <Cover src={r.cover} name={r.name} className="transition-transform duration-300 ease-out group-hover:scale-105" />
                     </div>
                     <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-1 bg-gradient-to-t from-black/90 to-transparent p-2 pt-6">
-                      <p className="truncate text-xs font-medium text-white">{r.name}</p>
+                      <p className="truncate text-xs font-semibold text-white [text-shadow:1px_0_0_rgba(0,0,0,0.85),-1px_0_0_rgba(0,0,0,0.85),0_1px_0_rgba(0,0,0,0.85),0_-1px_0_rgba(0,0,0,0.85),0_2px_3px_rgba(0,0,0,0.6)]">{r.name}</p>
                       <div className="flex items-center gap-1">
-                        <StatusBadge status={r.status} title={r.errorMessage ?? undefined} />
-                        {r.providerId && <ProviderBadge id={r.providerId} />}
-                        {r.aligned && <span className="rounded bg-success/20 px-1.5 py-0.5 text-[10px] font-medium text-success">Aligned</span>}
+                        <StatusBadge status={r.status} title={r.errorMessage ?? undefined} className="bg-black/70" />
                       </div>
                     </div>
                   </Card>
