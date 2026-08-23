@@ -7,9 +7,7 @@ import { KAVITA_OPENAPI_VERSION, type KavitaLibrary, type KavitaSeries } from '.
 import { getProvider } from '../providers/registry.js';
 import { mangaDexProvider } from '../providers/mangadex.js';
 import {
-  getAggregationOptions,
   getCredentialMap,
-  getGlobalFieldConfig,
   getKavitaConnection,
   getLibraryOverride,
   getNotificationSettings,
@@ -17,9 +15,6 @@ import {
   getProviderPriorities,
   parseNotificationSettings,
   getProviderSettings,
-  type AggregationOptions,
-  setAggregationOptions,
-  setGlobalFieldConfig,
   setKavitaConnection,
   setLibraryOverride,
   setNotificationSettings,
@@ -29,7 +24,7 @@ import {
   providerOrderFor,
 } from '../services/settings.js';
 import { jobQueue, type JobType } from '../jobs/queue.js';
-import { autoMatch, fetchAggregatedMetadata, type CandidateMatch } from '../match/autoMatcher.js';
+import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
 import { catalogCandidates, catalogStatus, isMatureAgeRating, resolveCatalogCover } from '../match/mangadexCatalog.js';
 import { applyToKavita, fetchCover } from '../services/sync.js';
 import { testNotification } from '../notify/dispatcher.js';
@@ -42,23 +37,6 @@ import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/
 const CREDENTIAL_FIELDS: Record<string, { key: string; label: string }[]> = {
   myanimelist: [{ key: 'clientId', label: 'Client ID' }],
 };
-
-const FIELD_NAMES = [
-  'title',
-  'sortTitle',
-  'summary',
-  'genres',
-  'tags',
-  'writers',
-  'artists',
-  'publishers',
-  'releaseDate',
-  'language',
-  'status',
-  'url',
-  'cover',
-  'volumeCovers',
-] as const;
 
 function connectedClient(): KavitaClient | null {
   const conn = getKavitaConnection();
@@ -293,22 +271,15 @@ api.post('/series/:id/apply', async (c) => {
     const seriesId = intParam(c.req.param('id'));
     if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
     const series = await client.getSeriesById(seriesId);
-    const { credentials, enabledProviders } = getCredentialMap();
-    const meta = await fetchAggregatedMetadata(
-      { providerId: body.providerId, providerSeriesId: body.providerSeriesId },
-      { providerOrder: getProviderPriorities(), credentials, enabledProviders },
-      getGlobalFieldConfig(),
-    );
-    const agg = getAggregationOptions();
+    const { credentials } = getCredentialMap();
+    const meta = await fetchProviderMetadata(body.providerId, body.providerSeriesId, credentials);
     // Per-request overrides from the identify dialog: deselected fields are
     // skipped, and unchecking Cover skips the series cover + volume covers.
-    const pushCovers = body.cover !== false && agg.replaceCover;
+    const pushCovers = body.cover !== false;
     const cover = pushCovers ? await fetchCover(client, meta.coverUrl) : null;
     const result = await applyToKavita(client, seriesId, meta, {
-      agg,
-      fieldConfig: getGlobalFieldConfig(),
       cover,
-      volumeCovers: body.cover !== false ? meta.volumeCovers : undefined,
+      volumeCovers: pushCovers ? meta.volumeCovers : undefined,
       excludedFields: body.excludedFields ?? [],
       title: series.name,
     });
@@ -381,20 +352,16 @@ api.delete('/series/:id/match', async (c) => {
 });
 
 /**
- * Fetch aggregated metadata for a specific provider series — the same
- * fetch/blend path Apply & Sync uses, so the identify dialog can preview
- * exactly what would be pushed to Kavita.
+ * Fetch full metadata for a specific provider series — the same path Apply &
+ * Sync uses, so the identify dialog can preview exactly what would be pushed
+ * to Kavita.
  */
 api.get('/providers/:id/series/:seriesId', async (c) => {
   const provider = getProvider(c.req.param('id'));
   if (!provider) return c.json({ error: 'Unknown provider' }, 404);
   try {
-    const { credentials, enabledProviders } = getCredentialMap();
-    const meta = await fetchAggregatedMetadata(
-      { providerId: provider.id, providerSeriesId: c.req.param('seriesId') },
-      { providerOrder: getProviderPriorities(), credentials, enabledProviders },
-      getGlobalFieldConfig(),
-    );
+    const { credentials } = getCredentialMap();
+    const meta = await fetchProviderMetadata(provider.id, c.req.param('seriesId'), credentials);
     return c.json({
       ...meta,
       coverUrl: rewriteMangaDexCoverUrl(meta.coverUrl),
@@ -458,9 +425,6 @@ api.get('/mangadex/catalog', (c) => {
 api.get('/settings', (c) => {
   return c.json({
     priorities: getProviderPriorities(),
-    aggregation: getAggregationOptions(),
-    fieldConfig: getGlobalFieldConfig(),
-    fields: FIELD_NAMES,
     notifications: getNotificationSettings(),
     pollInterval: getPollInterval(),
   });
@@ -469,18 +433,6 @@ api.get('/settings', (c) => {
 api.put('/settings/priorities', async (c) => {
   const body = (await c.req.json()) as { priorities: string[] };
   setProviderPriorities(body.priorities);
-  return c.json({ ok: true });
-});
-
-api.put('/settings/aggregation', async (c) => {
-  const body = (await c.req.json()) as { aggregation: AggregationOptions };
-  setAggregationOptions(body.aggregation);
-  return c.json({ ok: true });
-});
-
-api.put('/settings/field-config', async (c) => {
-  const body = (await c.req.json()) as { fieldConfig: Record<string, string | null> };
-  setGlobalFieldConfig(body.fieldConfig);
   return c.json({ ok: true });
 });
 
@@ -645,7 +597,7 @@ api.get('/libraries/:id/override', (c) => {
   const id = intParam(c.req.param('id'));
   if (id === null) return c.json({ error: 'Invalid library id' }, 400);
   const ov = getLibraryOverride(id);
-  return c.json(ov ?? { libraryId: id, priority: getProviderPriorities(), autoMatch: true, fieldConfig: {} });
+  return c.json(ov ?? { libraryId: id, priority: getProviderPriorities(), autoMatch: true });
 });
 
 api.put('/libraries/:id/override', async (c) => {
@@ -653,13 +605,12 @@ api.put('/libraries/:id/override', async (c) => {
   if (id === null) return c.json({ error: 'Invalid library id' }, 400);
   // Partial merge: fields omitted from the body keep their current value, so a
   // client can flip a single option without snapshotting the rest.
-  const body = (await c.req.json()) as Partial<{ priority: string[]; autoMatch: boolean; fieldConfig: Record<string, string | null> }>;
-  const cur = getLibraryOverride(id) ?? { libraryId: id, priority: getProviderPriorities(), autoMatch: true, fieldConfig: {} };
+  const body = (await c.req.json()) as Partial<{ priority: string[]; autoMatch: boolean }>;
+  const cur = getLibraryOverride(id) ?? { libraryId: id, priority: getProviderPriorities(), autoMatch: true };
   setLibraryOverride({
     libraryId: id,
     priority: body.priority ?? cur.priority,
     autoMatch: body.autoMatch ?? cur.autoMatch,
-    fieldConfig: body.fieldConfig ?? cur.fieldConfig,
   });
   return c.json({ ok: true });
 });

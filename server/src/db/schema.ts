@@ -18,20 +18,10 @@ export const providerPriorities = sqliteTable('provider_priorities', {
   position: integer('position').notNull(),
 });
 
-/** Field-level aggregation toggles. scope = 'global' or `library:<id>` */
-export const fieldConfigRows = sqliteTable('field_config', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  scope: text('scope').notNull(),
-  providerId: text('provider_id').notNull(),
-  field: text('field').notNull(),
-  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
-});
-
 export const libraryOverrides = sqliteTable('library_overrides', {
   libraryId: integer('library_id').primaryKey(),
   priorityJson: text('priority_json').notNull().default('[]'),
   autoMatch: integer('auto_match', { mode: 'boolean' }).notNull().default(true),
-  fieldConfigJson: text('field_config_json').notNull().default('{}'),
 });
 
 export const seriesMatches = sqliteTable('series_matches', {

@@ -24,11 +24,7 @@ describe('Kavita metadata mapping', () => {
     };
 
     assert.deepEqual(
-      buildSeriesPayload(
-        metadata,
-        { mergeTags: true, mergeGenres: true, replaceCover: true, replaceVolumeCovers: true, lockCovers: true },
-        {},
-      ),
+      buildSeriesPayload(metadata),
       {
         name: 'Example',
         sortName: 'Example, The',
@@ -59,11 +55,7 @@ describe('Kavita metadata mapping', () => {
       status: 'UNKNOWN',
     };
 
-    const payload = buildSeriesPayload(
-      metadata,
-        { mergeTags: true, mergeGenres: true, replaceCover: false, replaceVolumeCovers: false, lockCovers: false },
-      {},
-    );
+    const payload = buildSeriesPayload(metadata);
     assert.equal(payload.publicationStatus, undefined);
   });
 });

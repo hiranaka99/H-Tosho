@@ -5,27 +5,7 @@ import { api, getAuthToken, setAuthToken, type Settings as SettingsType, type Pr
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader } from '../components/ui';
 import { cn } from '../lib/utils';
 
-type Agg = SettingsType['aggregation'];
 type Notif = SettingsType['notifications'];
-
-const AGG_LABELS: { key: keyof Agg; label: string; hint: string }[] = [
-  { key: 'mergeTags', label: 'Merge tags', hint: 'Combine tags from all contributing providers; existing Kavita tags are always kept (duplicates dropped)' },
-  { key: 'mergeGenres', label: 'Merge genres', hint: 'Combine genres from all contributing providers' },
-  { key: 'replaceCover', label: 'Replace cover', hint: 'Download & push provider cover art to Kavita' },
-  { key: 'replaceVolumeCovers', label: 'Replace volume covers', hint: 'Push per-volume cover art (MangaDex) onto matching Kavita volumes' },
-  { key: 'lockCovers', label: 'Lock covers', hint: 'Lock replacement covers so Kavita does not overwrite them' },
-  { key: 'lockMetadata', label: 'Lock metadata', hint: 'Lock pushed metadata fields in Kavita so its own metadata sync does not overwrite them' },
-];
-
-async function saveFieldConfigRequest(fieldConfig: Record<string, string | null>): Promise<{ ok: boolean }> {
-  const res = await fetch('/api/settings/field-config', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fieldConfig }),
-  });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  return (await res.json()) as { ok: boolean };
-}
 
 function SectionHeader({ icon, title, children }: { icon: React.ReactNode; title: string; children?: React.ReactNode }) {
   return (
@@ -108,20 +88,6 @@ export function Settings() {
     });
   };
 
-  const [agg, setAgg] = React.useState<Agg>({ mergeTags: true, mergeGenres: true, replaceCover: true, replaceVolumeCovers: true, lockCovers: false, lockMetadata: true });
-  React.useEffect(() => {
-    if (s) setAgg(s.aggregation);
-  }, [s?.aggregation]);
-  const aggFlash = useFlash(invalidate('settings'));
-  const saveAgg = useMutation({ mutationFn: api.saveAggregation });
-
-  const [fieldConfig, setFieldConfig] = React.useState<Record<string, string | null>>({});
-  React.useEffect(() => {
-    if (s) setFieldConfig(s.fieldConfig);
-  }, [s?.fieldConfig]);
-  const fieldsFlash = useFlash(invalidate('settings'));
-  const saveFields = useMutation({ mutationFn: saveFieldConfigRequest });
-
   const [notif, setNotif] = React.useState<Notif>({ discord: { enabled: false, webhookUrl: '' } });
   React.useEffect(() => {
     if (s) setNotif(s.notifications);
@@ -148,7 +114,7 @@ export function Settings() {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader icon={<SlidersHorizontal className="h-5 w-5" />} title="Settings" subtitle="Connect Kavita, configure providers, aggregation and notifications." />
+      <PageHeader icon={<SlidersHorizontal className="h-5 w-5" />} title="Settings" subtitle="Connect Kavita, configure providers and notifications." />
 
       <Card className="animate-fade-up">
         <SectionHeader icon={<Server className="h-4 w-4" />} title="Kavita connection">
@@ -248,47 +214,6 @@ export function Settings() {
       </Card>
 
       <Card className="animate-fade-up" style={{ animationDelay: '180ms' }}>
-        <SectionHeader icon={<SlidersHorizontal className="h-4 w-4" />} title="Aggregation">
-          <SaveButton label={aggFlash.saved ? 'Saved' : 'Save'} onClick={() => { saveAgg.mutate(agg); aggFlash.flash(); }} disabled={saveAgg.isPending} />
-        </SectionHeader>
-        <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {AGG_LABELS.map((a) => (
-            <div key={a.key} className="flex items-center justify-between rounded-lg border border-border bg-surface-2 p-3 transition-colors hover:border-border-2">
-              <div>
-                <p className="text-sm">{a.label}</p>
-                <p className="text-xs text-muted">{a.hint}</p>
-              </div>
-              <Switch checked={agg[a.key]} onCheckedChange={(c) => setAgg((prev) => ({ ...prev, [a.key]: c }))} />
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-
-      <Card className="animate-fade-up" style={{ animationDelay: '240ms' }}>
-        <SectionHeader icon={<SlidersHorizontal className="h-4 w-4" />} title="Field sourcing">
-          <SaveButton label={fieldsFlash.saved ? 'Saved' : 'Save'} onClick={() => { saveFields.mutate(fieldConfig); fieldsFlash.flash(); }} disabled={saveFields.isPending} />
-        </SectionHeader>
-        <CardContent>
-          <p className="mb-3 text-xs text-muted">Choose which provider supplies each field. “Primary” uses the matching provider; blank leaves the field unchanged.</p>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {s.fields.map((field) => (
-              <div key={field} className="flex items-center gap-2">
-                <span className="w-32 text-sm capitalize">{field.replace(/_/g, ' ')}</span>
-                <Select value={fieldConfig[field] ?? ''} onChange={(e) => setFieldConfig((prev) => ({ ...prev, [field]: e.target.value || null }))} className="flex-1">
-                  <option value="">Primary</option>
-                  {provs.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </Select>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card className="animate-fade-up" style={{ animationDelay: '300ms' }}>
         <SectionHeader icon={<Bell className="h-4 w-4" />} title="Notifications">
           <div className="flex items-center gap-2">
             <SaveButton label={notifFlash.saved ? 'Saved' : 'Save'} onClick={() => { saveNotif.mutate(notif); notifFlash.flash(); }} disabled={saveNotif.isPending} />
@@ -313,7 +238,7 @@ export function Settings() {
         </CardContent>
       </Card>
 
-      <Card className="animate-fade-up" style={{ animationDelay: '360ms' }}>
+      <Card className="animate-fade-up" style={{ animationDelay: '240ms' }}>
         <SectionHeader icon={<Timer className="h-4 w-4" />} title="Auto-scan interval">
           <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => { savePoll.mutate(); pollFlash.flash(); }} disabled={savePoll.isPending || !poll || Number(poll) < 1} />
         </SectionHeader>
@@ -395,7 +320,7 @@ function DownloaderSettingsCard() {
   }
 
   return (
-    <Card className="animate-fade-up" style={{ animationDelay: '420ms' }}>
+    <Card className="animate-fade-up" style={{ animationDelay: '300ms' }}>
       <SectionHeader icon={<Download className="h-4 w-4" />} title="Doujinshi downloader">
         <SaveButton label={flash.saved ? 'Saved' : 'Save'} onClick={() => { save.mutate(dlSettings); flash.flash(); }} disabled={save.isPending} />
       </SectionHeader>

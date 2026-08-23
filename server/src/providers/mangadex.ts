@@ -335,13 +335,31 @@ class MangaDexProvider extends BaseProvider {
     // the description text. Extract it once: parsed tags are appended after
     // the structured ones (existing spellings win on case-insensitive
     // collisions), and the tag block itself is stripped from the summary so
-    // Kavita receives clean prose.
+    // Kavita receives clean prose. Only tags MangaDex classifies as `genre`
+    // feed the genres field — themes, format tags, and description-extracted
+    // tags land in tags only, mirroring the page's Genres/Themes/Format split.
     const rawDescription = typeof a.description?.en === 'string' ? a.description.en : undefined;
-    const tags: string[] = (a.tags ?? []).map((t: any) => this.tagLabel(t)).filter(Boolean);
-    const tagSeen = new Set(tags.map((t) => t.toLowerCase()));
+    const tags: string[] = [];
+    const genres: string[] = [];
+    const tagSeen = new Set<string>();
+    const genreSeen = new Set<string>();
+    for (const t of a.tags ?? []) {
+      const label = this.tagLabel(t);
+      if (!label) continue;
+      const key = label.toLowerCase();
+      if (!tagSeen.has(key)) {
+        tagSeen.add(key);
+        tags.push(label);
+      }
+      if (t?.attributes?.group === 'genre' && !genreSeen.has(key)) {
+        genreSeen.add(key);
+        genres.push(label);
+      }
+    }
     for (const parsed of parseDescriptionTags(rawDescription)) {
-      if (!tagSeen.has(parsed.toLowerCase())) {
-        tagSeen.add(parsed.toLowerCase());
+      const key = parsed.toLowerCase();
+      if (!tagSeen.has(key)) {
+        tagSeen.add(key);
         tags.push(parsed);
       }
     }
@@ -394,7 +412,7 @@ class MangaDexProvider extends BaseProvider {
       releaseDate,
       summary: summaryText ? summaryText : undefined,
       coverUrl,
-      genres: tags,
+      genres,
       tags,
       writers: people,
       artists: people,

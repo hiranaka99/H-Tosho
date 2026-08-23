@@ -2,15 +2,13 @@ import { eq } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
 import {
-  getAggregationOptions,
   getCredentialMap,
-  getGlobalFieldConfig,
   getKavitaConnection,
   getLibraryOverride,
   getProviderPriorities,
   providerOrderFor,
 } from '../services/settings.js';
-import { autoMatch, fetchAggregatedMetadata, type CandidateMatch } from '../match/autoMatcher.js';
+import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
 import { catalogCandidates, catalogNeedsRefresh, isMatureAgeRating, refreshCatalog } from '../match/mangadexCatalog.js';
 import { applyToKavita, fetchCover } from '../services/sync.js';
 import { notify } from '../notify/dispatcher.js';
@@ -125,17 +123,9 @@ async function matchAndApply(
 
   base.matched = true;
   try {
-    const fieldConfig = getGlobalFieldConfig();
-    const meta = await fetchAggregatedMetadata(
-      { providerId: best.providerId, providerSeriesId: best.providerSeriesId },
-      { providerOrder: order, credentials, enabledProviders },
-      fieldConfig,
-    );
-    const agg = getAggregationOptions();
-    const cover = agg.replaceCover ? await fetchCover(client, meta.coverUrl) : null;
+    const meta = await fetchProviderMetadata(best.providerId, best.providerSeriesId, credentials);
+    const cover = await fetchCover(client, meta.coverUrl);
     const result = await applyToKavita(client, series.id, meta, {
-      agg,
-      fieldConfig: getGlobalFieldConfig(),
       cover,
       volumeCovers: meta.volumeCovers,
       title: series.name,

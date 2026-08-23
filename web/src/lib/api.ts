@@ -118,9 +118,6 @@ export interface ProviderInfo {
 
 export interface Settings {
   priorities: string[];
-  aggregation: { mergeTags: boolean; mergeGenres: boolean; replaceCover: boolean; replaceVolumeCovers: boolean; lockCovers: boolean; lockMetadata: boolean };
-  fieldConfig: Record<string, string | null>;
-  fields: string[];
   notifications: {
     discord: { enabled: boolean; webhookUrl: string };
   };
@@ -339,8 +336,8 @@ export const api = {
   libraries: () => request<KavitaLibrary[]>('/kavita/libraries'),
   librarySeries: (libraryId: number) => request<SeriesRow[]>(`/kavita/libraries/${libraryId}/series`),
   libraryOverride: (id: number) =>
-    request<{ libraryId: number; priority: string[]; autoMatch: boolean; fieldConfig: Record<string, string | null> }>(`/libraries/${id}/override`),
-  saveLibraryOverride: (id: number, patch: Partial<Omit<{ priority: string[]; autoMatch: boolean; fieldConfig: Record<string, string | null> }, 'libraryId'>>) =>
+    request<{ libraryId: number; priority: string[]; autoMatch: boolean }>(`/libraries/${id}/override`),
+  saveLibraryOverride: (id: number, patch: Partial<Omit<{ priority: string[]; autoMatch: boolean }, 'libraryId'>>) =>
     request<{ ok: boolean }>(`/libraries/${id}/override`, { method: 'PUT', body: JSON.stringify(patch) }),
 
   series: (id: number) =>
@@ -372,8 +369,6 @@ export const api = {
   settings: () => request<Settings>('/settings'),
   savePriorities: (priorities: string[]) =>
     request<{ ok: boolean }>('/settings/priorities', { method: 'PUT', body: JSON.stringify({ priorities }) }),
-  saveAggregation: (aggregation: Settings['aggregation']) =>
-    request<{ ok: boolean }>('/settings/aggregation', { method: 'PUT', body: JSON.stringify({ aggregation }) }),
   saveNotifications: (notifications: Settings['notifications']) =>
     request<{ ok: boolean }>('/settings/notifications', {
       method: 'PUT',

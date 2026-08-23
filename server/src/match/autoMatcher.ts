@@ -174,65 +174,16 @@ export async function autoMatch(
 }
 
 /**
- * Fetch + aggregate metadata for a confirmed match: the primary provider
- * supplies the base record, then lower-priority providers are blended in
- * for specific fields according to `fieldConfig` (see aggregation service).
+ * Fetch full metadata from a single provider for a confirmed match. Matching
+ * and sync are 1:1 with providers, so no cross-provider blending happens.
  */
-export async function fetchAggregatedMetadata(
-  primary: { providerId: string; providerSeriesId: string },
-  options: AutoMatchOptions,
-  fieldConfig: Record<string, string | null>,
+export async function fetchProviderMetadata(
+  providerId: string,
+  providerSeriesId: string,
+  credentials: Record<string, Record<string, string>>,
 ): Promise<SeriesMetadata> {
-  const primaryProvider = getProvider(primary.providerId);
-  if (!primaryProvider) throw new Error(`Unknown provider: ${primary.providerId}`);
-  primaryProvider.setCredentials(options.credentials[primary.providerId] ?? {});
-  const base = await primaryProvider.getSeriesMetadata(primary.providerSeriesId);
-
-  // Blend in supplementary fields from other providers per fieldConfig.
-  const order = (options.providerOrder ?? []).filter(
-    (id) => id !== primary.providerId && options.enabledProviders.includes(id),
-  );
-  for (const providerId of order) {
-    const provider = getProvider(providerId);
-    if (!provider) continue;
-    // Determine if this provider should supply any field
-    const wanted = Object.entries(fieldConfig)
-      .filter(([field, pid]) => pid === providerId)
-      .map(([field]) => field);
-    if (wanted.length === 0) continue;
-    try {
-      provider.setCredentials(options.credentials[providerId] ?? {});
-      // Best-effort id resolution: use primary id string; providers with
-      // different id spaces may simply fail and be skipped.
-      const meta = await provider.getSeriesMetadata(primary.providerSeriesId);
-      for (const field of wanted) {
-        if (field === 'summary' && meta.summary) base.summary = meta.summary;
-        else if (field === 'cover' && meta.coverUrl) base.coverUrl = meta.coverUrl;
-        else if (field === 'volumeCovers' && meta.volumeCovers?.length) base.volumeCovers = meta.volumeCovers;
-        else if (field === 'genres' && meta.genres.length) base.genres = mergeLists(base.genres, meta.genres);
-        else if (field === 'tags' && meta.tags.length) base.tags = mergeLists(base.tags, meta.tags);
-        else if (field === 'writers' && meta.writers.length) base.writers = mergeLists(base.writers, meta.writers);
-        else if (field === 'artists' && meta.artists.length) base.artists = mergeLists(base.artists, meta.artists);
-        else if (field === 'publishers' && meta.publishers.length) base.publishers = mergeLists(base.publishers, meta.publishers);
-        else if (field === 'releaseDate' && meta.releaseDate) base.releaseDate = meta.releaseDate;
-        else if (field === 'status' && meta.status && meta.status !== 'UNKNOWN') base.status = meta.status;
-      }
-    } catch {
-      // supplementary fetch failed - keep primary data
-    }
-  }
-  return base;
-}
-
-function mergeLists(a: string[], b: string[]): string[] {
-  const seen = new Set(a.map((x) => x.toLowerCase()));
-  const out = [...a];
-  for (const item of b) {
-    const key = item.toLowerCase();
-    if (!seen.has(key)) {
-      seen.add(key);
-      out.push(item);
-    }
-  }
-  return out;
+  const provider = getProvider(providerId);
+  if (!provider) throw new Error(`Unknown provider: ${providerId}`);
+  provider.setCredentials(credentials[providerId] ?? {});
+  return provider.getSeriesMetadata(providerSeriesId);
 }

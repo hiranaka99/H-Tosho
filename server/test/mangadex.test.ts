@@ -386,8 +386,8 @@ describe('MangaDexProvider description tag merging', () => {
               status: 'completed',
               originalLanguage: 'ja',
               tags: [
-                { id: 't1', attributes: { name: { en: 'Loli' } } },
-                { id: 't2', attributes: { name: { en: 'Incest' } } },
+                { id: 't1', attributes: { name: { en: 'Loli' }, group: 'theme' } },
+                { id: 't2', attributes: { name: { en: 'Incest' }, group: 'genre' } },
               ],
               description: {
                 en: [
@@ -416,8 +416,50 @@ describe('MangaDexProvider description tag merging', () => {
     // Structured tags keep their position and canonical spelling; 'incest'
     // from the table is deduped against structured 'Incest'.
     assert.deepEqual(meta.tags, ['Loli', 'Incest', 'glasses', 'harem', 'group', 'mmf threesome', 'tankoubon']);
-    assert.deepEqual(meta.genres, meta.tags);
+    // Only the structured tag classified as a genre by MangaDex lands in genres;
+    // themes and description-extracted tags stay in tags only.
+    assert.deepEqual(meta.genres, ['Incest']);
     // The tag table is stripped from the summary; prose survives.
     assert.equal(meta.summary, 'A doujinshi about school life.');
+  });
+
+  it('splits structured tags into genres by MangaDex group (captured KonoSuba parody shape)', async () => {
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.startsWith('https://api.mangadex.org/manga/manga-1?')) {
+        return Response.json({
+          result: 'ok',
+          response: 'entity',
+          data: {
+            id: 'manga-1',
+            attributes: {
+              title: { en: 'Series One' },
+              status: 'ongoing',
+              originalLanguage: 'ja',
+              tags: [
+                { id: 't1', attributes: { name: { en: 'Loli' }, group: 'theme' } },
+                { id: 't2', attributes: { name: { en: 'Magic' }, group: 'theme' } },
+                { id: 't3', attributes: { name: { en: 'Harem' }, group: 'theme' } },
+                { id: 't4', attributes: { name: { en: 'Isekai' }, group: 'genre' } },
+                { id: 't5', attributes: { name: { en: 'Doujinshi' }, group: 'format' } },
+                { id: 't6', attributes: { name: { en: 'Fantasy' }, group: 'genre' } },
+              ],
+            },
+            relationships: [],
+          },
+        });
+      }
+      if (url.startsWith('https://api.mangadex.org/cover?')) {
+        return Response.json({ result: 'ok', response: 'collection', data: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    const meta = await mangaDexProvider.getSeriesMetadata('manga-1');
+
+    // Mirrors the MangaDex page: Genres shows Fantasy + Isekai only, while
+    // themes (Loli, Magic, Harem) and format (Doujinshi) are tags.
+    assert.deepEqual(meta.genres, ['Isekai', 'Fantasy']);
+    assert.deepEqual(meta.tags, ['Loli', 'Magic', 'Harem', 'Isekai', 'Doujinshi', 'Fantasy']);
   });
 });

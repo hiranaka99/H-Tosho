@@ -7,7 +7,6 @@ import {
 } from '../kavita/types.js';
 import type { SeriesMetadata, VolumeCover } from '../providers/types.js';
 import type { KavitaVolume } from '../kavita/types.js';
-import type { AggregationOptions } from './settings.js';
 import { getKavitaConnection, getNotificationSettings } from './settings.js';
 import { notify } from '../notify/dispatcher.js';
 import { jobQueue } from '../jobs/queue.js';
@@ -19,7 +18,6 @@ export interface ApplyResult {
   coverUpdated: boolean;
   /** Number of volume covers successfully pushed. */
   volumeCoversUpdated: number;
-  locked: boolean;
   errors: string[];
   /** Non-fatal notes, e.g. fields the server accepted but did not apply. */
   warnings: string[];
@@ -50,32 +48,24 @@ function releaseYear(meta: SeriesMetadata): number | undefined {
   return year >= 1 && year <= 9999 ? year : undefined;
 }
 
-/** Map a unified SeriesMetadata + config into a Kavita series metadata payload. */
-export function buildSeriesPayload(
-  meta: SeriesMetadata,
-  agg: AggregationOptions,
-  fieldConfig: Record<string, string | null>,
-): SeriesMetadataPayload {
+/** Map a unified SeriesMetadata onto a Kavita series metadata payload. */
+export function buildSeriesPayload(meta: SeriesMetadata): SeriesMetadataPayload {
   const payload: SeriesMetadataPayload = {};
-  const fromPrimary = (f: string) => (fieldConfig[f] ?? null) === null || fieldConfig[f] === meta.providerId;
-
-  if (meta.title && fromPrimary('title')) payload.name = meta.title;
-  if (meta.sortTitle && fromPrimary('sortTitle')) payload.sortName = meta.sortTitle;
-  if (meta.summary && fromPrimary('summary')) payload.summary = meta.summary;
-  const genres = agg.mergeGenres ? meta.genres : meta.genres.slice(0, 10);
-  if (genres.length && fromPrimary('genres')) payload.genres = genres;
-  const tags = agg.mergeTags ? meta.tags : meta.tags.slice(0, 10);
-  if (tags.length && fromPrimary('tags')) payload.tags = tags;
-  if (meta.writers.length && fromPrimary('writers')) payload.writers = meta.writers;
-  if (meta.artists.length && fromPrimary('artists')) payload.artists = meta.artists;
-  if (meta.publishers.length && fromPrimary('publishers')) payload.publishers = meta.publishers;
+  if (meta.title) payload.name = meta.title;
+  if (meta.sortTitle) payload.sortName = meta.sortTitle;
+  if (meta.summary) payload.summary = meta.summary;
+  if (meta.genres.length) payload.genres = meta.genres;
+  if (meta.tags.length) payload.tags = meta.tags;
+  if (meta.writers.length) payload.writers = meta.writers;
+  if (meta.artists.length) payload.artists = meta.artists;
+  if (meta.publishers.length) payload.publishers = meta.publishers;
   const year = releaseYear(meta);
-  if (year !== undefined && fromPrimary('releaseDate')) payload.releaseYear = year;
-  if (meta.language && fromPrimary('language')) payload.language = meta.language;
-  if (meta.status && PUBLICATION_STATUS[meta.status] !== undefined && fromPrimary('status')) {
+  if (year !== undefined) payload.releaseYear = year;
+  if (meta.language) payload.language = meta.language;
+  if (meta.status && PUBLICATION_STATUS[meta.status] !== undefined) {
     payload.publicationStatus = PUBLICATION_STATUS[meta.status];
   }
-  if (meta.url && fromPrimary('url')) payload.webLinks = meta.url;
+  if (meta.url) payload.webLinks = meta.url;
   return payload;
 }
 /**
@@ -125,8 +115,6 @@ export async function applyToKavita(
   seriesId: number,
   meta: SeriesMetadata,
   opts: {
-    agg: AggregationOptions;
-    fieldConfig: Record<string, string | null>;
     cover: Buffer | null;
     volumeCovers?: VolumeCover[];
     title: string;
@@ -139,9 +127,8 @@ export async function applyToKavita(
   const warnings: string[] = [];
   let coverUpdated = false;
   let volumeCoversUpdated = 0;
-  let locked = false;
 
-  const payload = buildSeriesPayload(meta, opts.agg, opts.fieldConfig);
+  const payload = buildSeriesPayload(meta);
   // Drop fields the user explicitly deselected for this sync.
   for (const f of opts.excludedFields ?? []) {
     const prop = EXCLUDABLE_FIELDS[f];
@@ -160,7 +147,7 @@ export async function applyToKavita(
   const fields = Object.keys(payload).filter((k) => (payload as Record<string, unknown>)[k] !== undefined);
   if (fields.length) {
     try {
-      await client.updateSeriesMetadata(seriesId, payload, { lockMetadata: opts.agg.lockMetadata });
+      await client.updateSeriesMetadata(seriesId, payload);
       pushed.push(...fields);
     } catch (err) {
       errors.push(`metadata: ${err instanceof Error ? err.message : String(err)}`);
@@ -185,20 +172,18 @@ export async function applyToKavita(
     }
   }
 
-  if (opts.agg.replaceCover && opts.cover && opts.cover.length > 0) {
+  if (opts.cover && opts.cover.length > 0) {
     try {
-      await client.updateSeriesCover(seriesId, opts.cover, opts.agg.lockCovers);
+      await client.updateSeriesCover(seriesId, opts.cover, false);
       coverUpdated = true;
-      locked = opts.agg.lockCovers;
       pushed.push('cover');
     } catch (err) {
       errors.push(`cover: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  const fromPrimary = (f: string) => (opts.fieldConfig[f] ?? null) === null || opts.fieldConfig[f] === meta.providerId;
-  if (opts.agg.replaceVolumeCovers && opts.volumeCovers?.length && fromPrimary('volumeCovers')) {
-    const volResult = await applyVolumeCovers(client, seriesId, opts.volumeCovers, opts.agg.lockCovers);
+  if (opts.volumeCovers?.length) {
+    const volResult = await applyVolumeCovers(client, seriesId, opts.volumeCovers);
     volumeCoversUpdated = volResult.updated;
     errors.push(...volResult.errors);
     if (volResult.updated > 0) pushed.push(`volumeCovers:${volResult.updated}`);
@@ -211,7 +196,7 @@ export async function applyToKavita(
       kavitaSeriesId: seriesId,
       seriesTitle: opts.title,
       action: errors.length ? 'failed' : 'updated',
-      detailsJson: JSON.stringify({ provider: meta.providerId, pushed, coverUpdated, volumeCoversUpdated, locked, errors, warnings }),
+      detailsJson: JSON.stringify({ provider: meta.providerId, pushed, coverUpdated, volumeCoversUpdated, errors, warnings }),
     })
     .run();
 
@@ -239,7 +224,7 @@ export async function applyToKavita(
       .run();
   }
 
-  return { seriesId, pushed, coverUpdated, volumeCoversUpdated, locked, errors, warnings };
+  return { seriesId, pushed, coverUpdated, volumeCoversUpdated, errors, warnings };
 }
 
 /** Download a cover from a provider URL, returning null on failure. */
@@ -261,7 +246,6 @@ export async function applyVolumeCovers(
   client: KavitaClient,
   seriesId: number,
   covers: VolumeCover[],
-  lockCover: boolean,
 ): Promise<{ updated: number; errors: string[] }> {
   let volumes: KavitaVolume[];
   try {
@@ -278,7 +262,7 @@ export async function applyVolumeCovers(
       continue;
     }
     try {
-      await client.updateVolumeCover(assignment.volumeId, image, lockCover);
+      await client.updateVolumeCover(assignment.volumeId, image, false);
       updated += 1;
     } catch (err) {
       errors.push(`vol ${assignment.number}: ${err instanceof Error ? err.message : String(err)}`);

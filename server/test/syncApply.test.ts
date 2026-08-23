@@ -13,7 +13,6 @@ process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-sync-apply
 import type { KavitaClient } from '../src/kavita/client.js';
 const { initDb } = await import('../src/db/index.js');
 const { applyToKavita } = await import('../src/services/sync.js');
-const { DEFAULT_AGGREGATION } = await import('../src/services/settings.js');
 initDb();
 
 interface CapturedPush {
@@ -48,8 +47,6 @@ describe('applyToKavita tag merging', () => {
   it('pushes existing + provider tags with duplicates dropped', async () => {
     const { client, captured } = stubClient(['Found Family', 'User tag']);
     await applyToKavita(client, 1, metadata, {
-      agg: DEFAULT_AGGREGATION,
-      fieldConfig: {},
       cover: null,
       title: 'Test Series',
     });
@@ -69,8 +66,6 @@ describe('applyToKavita tag merging', () => {
     } as unknown as KavitaClient;
 
     await applyToKavita(client, 2, metadata, {
-      agg: DEFAULT_AGGREGATION,
-      fieldConfig: {},
       cover: null,
       title: 'Test Series',
     });
@@ -83,8 +78,6 @@ describe('applyToKavita field exclusions', () => {
   it('drops excluded fields from the pushed payload', async () => {
     const { client, captured } = stubClient([]);
     await applyToKavita(client, 3, { ...metadata, summary: 'A test.' }, {
-      agg: DEFAULT_AGGREGATION,
-      fieldConfig: {},
       cover: null,
       title: 'Test Series',
       excludedFields: ['title', 'tags'],
@@ -97,8 +90,6 @@ describe('applyToKavita field exclusions', () => {
   it('still merges tags when only other fields are excluded', async () => {
     const { client, captured } = stubClient(['Found Family']);
     await applyToKavita(client, 4, metadata, {
-      agg: DEFAULT_AGGREGATION,
-      fieldConfig: {},
       cover: null,
       title: 'Test Series',
       excludedFields: ['title'],
@@ -113,8 +104,6 @@ describe('applyToKavita name verification', () => {
   it('drops name from pushed and warns when Kavita ignored the rename (v0.9)', async () => {
     const { client, captured } = stubClient([], 'A Fifth of Romance');
     const result = await applyToKavita(client, 1, metadata, {
-      agg: DEFAULT_AGGREGATION,
-      fieldConfig: {},
       cover: null,
       title: 'Test Series',
     });
@@ -128,8 +117,6 @@ describe('applyToKavita name verification', () => {
   it('keeps name in pushed when Kavita applied the rename', async () => {
     const { client } = stubClient([], 'Test Series');
     const result = await applyToKavita(client, 2, metadata, {
-      agg: DEFAULT_AGGREGATION,
-      fieldConfig: {},
       cover: null,
       title: 'Test Series',
     });

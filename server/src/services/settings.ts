@@ -14,33 +14,10 @@ export interface ProviderSetting {
   credentials: ProviderCredentials;
 }
 
-/** Global aggregation options. */
-export interface AggregationOptions {
-  mergeTags: boolean;
-  mergeGenres: boolean;
-  replaceCover: boolean;
-  /** Push per-volume cover art (MangaDex) onto matching Kavita volumes. */
-  replaceVolumeCovers: boolean;
-  lockCovers: boolean;
-  /** Lock pushed metadata fields in Kavita so its own sync does not overwrite them. */
-  lockMetadata: boolean;
-}
-
-export const DEFAULT_AGGREGATION: AggregationOptions = {
-  mergeTags: true,
-  mergeGenres: true,
-  replaceCover: true,
-  replaceVolumeCovers: true,
-  lockCovers: false,
-  lockMetadata: true,
-};
-
 export interface LibraryOverride {
   libraryId: number;
   priority: string[];
   autoMatch: boolean;
-  /** field -> providerId mapping */
-  fieldConfig: Record<string, string | null>;
 }
 
 /** Ordered global provider priorities. */
@@ -136,45 +113,6 @@ export function getCredentialMap(): {
   return { credentials, enabledProviders };
 }
 
-export function getAggregationOptions(): AggregationOptions {
-  const db = getDb();
-  const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'aggregation')).get();
-  if (!row) return { ...DEFAULT_AGGREGATION };
-  return { ...DEFAULT_AGGREGATION, ...(JSON.parse(row.valueJson) as Partial<AggregationOptions>) };
-}
-
-export function setAggregationOptions(opts: AggregationOptions): void {
-  const db = getDb();
-  db.insert(schema.keyValueStore)
-    .values({ key: 'aggregation', valueJson: JSON.stringify(opts) })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(opts) } })
-    .run();
-}
-
-/** Global default field config: field -> providerId (null = primary/match provider). */
-export function getGlobalFieldConfig(): Record<string, string | null> {
-  const db = getDb();
-  const rows = db.select().from(schema.fieldConfigRows).where(eq(schema.fieldConfigRows.scope, 'global')).all();
-  const out: Record<string, string | null> = {};
-  for (const r of rows) out[r.field] = r.enabled ? r.providerId : null;
-  return out;
-}
-
-export function setGlobalFieldConfig(config: Record<string, string | null>): void {
-  const db = getDb();
-  db.delete(schema.fieldConfigRows).where(eq(schema.fieldConfigRows.scope, 'global')).run();
-  for (const [field, providerId] of Object.entries(config)) {
-    db.insert(schema.fieldConfigRows)
-      .values({
-        scope: 'global',
-        providerId: providerId ?? 'primary',
-        field,
-        enabled: providerId !== null,
-      })
-      .run();
-  }
-}
-
 export function getLibraryOverride(libraryId: number): LibraryOverride | null {
   const db = getDb();
   const row = db.select().from(schema.libraryOverrides).where(eq(schema.libraryOverrides.libraryId, libraryId)).get();
@@ -183,7 +121,6 @@ export function getLibraryOverride(libraryId: number): LibraryOverride | null {
     libraryId,
     priority: JSON.parse(row.priorityJson),
     autoMatch: row.autoMatch,
-    fieldConfig: JSON.parse(row.fieldConfigJson),
   };
 }
 
@@ -194,14 +131,12 @@ export function setLibraryOverride(lib: LibraryOverride): void {
       libraryId: lib.libraryId,
       priorityJson: JSON.stringify(lib.priority),
       autoMatch: lib.autoMatch,
-      fieldConfigJson: JSON.stringify(lib.fieldConfig),
     })
     .onConflictDoUpdate({
       target: schema.libraryOverrides.libraryId,
       set: {
         priorityJson: JSON.stringify(lib.priority),
         autoMatch: lib.autoMatch,
-        fieldConfigJson: JSON.stringify(lib.fieldConfig),
       },
     })
     .run();
@@ -219,7 +154,6 @@ export function clearLibraryOverrides(libraryIds: number[]): void {
   const db = getDb();
   for (const id of libraryIds) {
     db.delete(schema.libraryOverrides).where(eq(schema.libraryOverrides.libraryId, id)).run();
-    db.delete(schema.fieldConfigRows).where(eq(schema.fieldConfigRows.scope, `library:${id}`)).run();
   }
 }
 
@@ -233,7 +167,6 @@ export function getAllLibraryOverrides(): LibraryOverride[] {
       libraryId: r.libraryId,
       priority: JSON.parse(r.priorityJson),
       autoMatch: r.autoMatch,
-      fieldConfig: JSON.parse(r.fieldConfigJson),
     }));
 }
 
