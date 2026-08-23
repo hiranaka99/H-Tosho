@@ -14,7 +14,7 @@ class MyAnimeListProvider extends BaseProvider {
   requiresCredentials = true;
   providesFields = [
     'title', 'summary', 'genres', 'tags', 'writers', 'artists',
-    'publishers', 'releaseDate', 'status', 'cover',
+    'releaseDate', 'status', 'cover',
   ];
   protected baseUrl = 'https://api.myanimelist.net/v2';
 
@@ -96,7 +96,6 @@ class MyAnimeListProvider extends BaseProvider {
       tags: (node.tags ?? []).map((t: any) => t.name).filter(Boolean),
       writers: (node.authors ?? []).map((p: any) => p.name).filter(Boolean),
       artists: (node.authors ?? []).map((p: any) => p.name).filter(Boolean),
-      publishers: (node.publishers ?? []).map((p: any) => p.name).filter(Boolean),
       readingDirection: 'RTL',
       language: 'en',
       status: mapMalStatus(node.status),

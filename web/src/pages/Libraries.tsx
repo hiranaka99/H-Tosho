@@ -249,6 +249,7 @@ export function Libraries() {
                       <div className="flex items-center gap-1">
                         <StatusBadge status={r.status} title={r.errorMessage ?? undefined} />
                         {r.providerId && <ProviderBadge id={r.providerId} />}
+                        {r.aligned && <span className="rounded bg-success/20 px-1.5 py-0.5 text-[10px] font-medium text-success">Aligned</span>}
                       </div>
                     </div>
                   </Card>
@@ -292,7 +293,16 @@ export function Libraries() {
                         <td className="p-2">
                           <StatusBadge status={r.status} title={r.errorMessage ?? undefined} />
                         </td>
-                        <td className="p-2">{r.providerId ? <ProviderBadge id={r.providerId} /> : <span className="text-muted">—</span>}</td>
+                        <td className="p-2">
+                          {r.providerId ? (
+                            <div className="flex items-center gap-1.5">
+                              <ProviderBadge id={r.providerId} />
+                              {r.aligned && <span className="rounded bg-success/15 px-1.5 py-0.5 text-[10px] font-medium text-success">Aligned</span>}
+                            </div>
+                          ) : (
+                            <span className="text-muted">—</span>
+                          )}
+                        </td>
                         <td className="p-2 text-muted">{r.matchScore ? Math.round(r.matchScore * 100) + '%' : '—'}</td>
                         <td className="p-2 text-xs text-muted">{timeAgo(r.lastSyncedAt)}</td>
                         <td className="p-2 text-right">

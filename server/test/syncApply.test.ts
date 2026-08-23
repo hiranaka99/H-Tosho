@@ -40,7 +40,6 @@ const metadata: SeriesMetadata = {
   tags: ['Found family', 'New tag'],
   writers: [],
   artists: [],
-  publishers: [],
 };
 
 describe('applyToKavita tag merging', () => {

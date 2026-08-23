@@ -17,7 +17,6 @@ describe('Kavita metadata mapping', () => {
       tags: ['Found family'],
       writers: ['Writer'],
       artists: ['Artist'],
-      publishers: ['Publisher'],
       language: 'ja',
       status: 'COMPLETED',
       url: 'https://provider.example/series/123',
@@ -33,7 +32,6 @@ describe('Kavita metadata mapping', () => {
         tags: ['Found family'],
         writers: ['Writer'],
         artists: ['Artist'],
-        publishers: ['Publisher'],
         releaseYear: 2024,
         language: 'ja',
         publicationStatus: KavitaPublicationStatus.Completed,
@@ -51,7 +49,6 @@ describe('Kavita metadata mapping', () => {
       tags: [],
       writers: [],
       artists: [],
-      publishers: [],
       status: 'UNKNOWN',
     };
 

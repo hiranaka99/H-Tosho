@@ -10,7 +10,7 @@ import {
 } from '../services/settings.js';
 import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
 import { catalogCandidates, catalogNeedsRefresh, isMatureAgeRating, refreshCatalog } from '../match/mangadexCatalog.js';
-import { applyToKavita, fetchCover } from '../services/sync.js';
+import { applyToKavita, checkAlignment, fetchCover } from '../services/sync.js';
 import { notify } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
 
@@ -39,6 +39,7 @@ function upsertMatch(r: {
   matchScore: number | null;
   metadataJson: string | null;
   errorMessage: string | null;
+  aligned?: boolean;
 }): void {
   getDb()
     .insert(schema.seriesMatches)
@@ -50,6 +51,7 @@ function upsertMatch(r: {
       matchScore: r.matchScore,
       metadataJson: r.metadataJson,
       errorMessage: r.errorMessage,
+      aligned: r.aligned ?? false,
       lastSyncedAt: new Date().toISOString(),
     })
     .onConflictDoUpdate({
@@ -61,6 +63,7 @@ function upsertMatch(r: {
         matchScore: r.matchScore,
         metadataJson: r.metadataJson,
         errorMessage: r.errorMessage,
+        aligned: r.aligned ?? false,
         lastSyncedAt: new Date().toISOString(),
       },
     })
@@ -130,6 +133,16 @@ async function matchAndApply(
       volumeCovers: meta.volumeCovers,
       title: series.name,
     });
+    // Verify the push against Kavita's live state and record whether every
+    // provider-managed field now matches (the "Aligned" flag).
+    let aligned = false;
+    try {
+      const full = await client.getSeriesById(series.id);
+      const kavitaMeta = await client.getSeriesMetadata(series.id);
+      aligned = checkAlignment({ name: full.name, sortName: full.sortName, metadata: kavitaMeta }, meta).aligned;
+    } catch {
+      /* series without a metadata row yet — stays unaligned */
+    }
 
     const status = result.errors.length ? 'failed' : 'matched';
     upsertMatch({
@@ -140,6 +153,7 @@ async function matchAndApply(
       matchScore: best.score,
       metadataJson: JSON.stringify(meta),
       errorMessage: result.errors.length ? result.errors.join('; ') : null,
+      aligned,
     });
     recordHistory(series.id, series.name, result.errors.length ? 'failed' : force ? 'updated' : 'matched', {
       providerId: best.providerId,

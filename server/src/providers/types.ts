@@ -40,7 +40,6 @@ export interface SeriesMetadata {
   /** Person roles: Writer / Artist / Illustrator / etc. */
   writers: string[];
   artists: string[];
-  publishers: string[];
   readingDirection?: 'LTR' | 'RTL' | 'TBR';
   language?: string;
   /** ONGOING | COMPLETED | HIATUS | CANCELLED | UNKNOWN */

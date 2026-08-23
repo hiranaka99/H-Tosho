@@ -242,7 +242,6 @@ export class KavitaClient {
       patch.tags,
       patch.writers,
       patch.artists,
-      patch.publishers,
       patch.releaseYear,
       patch.language,
       patch.publicationStatus,
@@ -302,10 +301,6 @@ export class KavitaClient {
       // editable from cover artist, inker, and colorist roles.
       metadata.pencillers = people(patch.artists);
       if (lock) metadata.pencillerLocked = true;
-    }
-    if (patch.publishers !== undefined) {
-      metadata.publishers = people(patch.publishers);
-      if (lock) metadata.publisherLocked = true;
     }
     if (patch.releaseYear !== undefined) {
       metadata.releaseYear = patch.releaseYear;

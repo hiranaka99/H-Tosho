@@ -85,49 +85,68 @@ interface DiffRow {
   field?: string;
   /** Tags merge into Kavita's existing tags instead of replacing them (see server mergeTagLists). */
   tagMerge?: { existing: string[]; incoming: string[] };
+  /** Comma-joined values compared as sets — order differences are not drift. */
+  list?: boolean;
 }
 
-function FieldRow({ row, checked, onToggle }: { row: DiffRow; checked?: boolean; onToggle?: () => void }) {
+/** List fields compare order-insensitively, ignoring punctuation placement ("Girl's Love" vs "Girls' Love"). */
+const listKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+const listParts = (s: string) => s.split(',').map(listKey).filter(Boolean);
+
+function computeDiffers(row: DiffRow): boolean {
+  const a = row.current.trim();
+  const b = row.candidate.trim();
+  if (!a || !b) return false;
+  if (row.list) {
+    const pa = listParts(a);
+    const pb = listParts(b);
+    if (pa.length !== pb.length) return true;
+    const sa = new Set(pa);
+    return !pb.every((p) => sa.has(p));
+  }
+  return a.toLowerCase() !== b.toLowerCase();
+}
+
+/** Label column (fixed width) + two equal-width value columns: Kavita on the left, candidate on the right. */
+const ROW_GRID = 'grid grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)] items-start gap-x-3';
+
+function FieldRow({ row, providerName, checked, onToggle }: { row: DiffRow; providerName: string; checked?: boolean; onToggle?: () => void }) {
   const merge = row.tagMerge;
-  const differs =
-    !merge &&
-    row.current.trim() !== '' &&
-    row.candidate.trim() !== '' &&
-    row.current.trim().toLowerCase() !== row.candidate.trim().toLowerCase();
+  const differs = !merge && computeDiffers(row);
   // Multiline fields (Summary) are never truncated: full text, wrapping, with an internal scroll for very long descriptions.
-  const clamp = row.multiline ? 'max-h-56 overflow-y-auto whitespace-pre-wrap break-words' : 'line-clamp-2';
+  const valueCls = row.multiline ? 'min-w-0 max-h-56 overflow-y-auto whitespace-pre-wrap break-words' : 'min-w-0 whitespace-pre-wrap break-words';
   const showCheckbox = !!row.field && row.candidate.trim() !== '' && !!onToggle;
   return (
-    <div className="grid grid-cols-2 gap-2 border-b border-border py-1.5 text-xs last:border-0">
+    <div className={cn(ROW_GRID, 'border-b border-border py-2 last:border-0', differs ? 'bg-warning/5' : 'transition-colors hover:bg-surface-2/40')}>
       <div className="flex min-w-0 items-start gap-1.5">
         {showCheckbox ? (
-          <input type="checkbox" checked={!!checked} onChange={onToggle} className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]" />
+          <input type="checkbox" checked={!!checked} onChange={onToggle} className="mt-1 h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]" />
         ) : (
           <span className="w-3.5 shrink-0" />
         )}
-        <span className="w-20 shrink-0 text-muted">{row.label}</span>
-        {merge ? (
-          <span className="min-w-0 flex-1 break-words" title={row.current}>
-            {row.current || '—'}
-          </span>
-        ) : (
-          <span className={cn('min-w-0 flex-1', clamp, differs && 'text-muted line-through')} title={row.current}>
-            {row.current || '—'}
-          </span>
-        )}
+        <span className="text-[11px] font-medium uppercase tracking-wider text-muted">{row.label}</span>
       </div>
-      <div className="flex min-w-0 items-start gap-1.5">
-        {merge ? (
+      {merge ? (
+        <div className={cn(valueCls, 'min-h-8 text-sm')} title={row.current}>
+          {row.current || '—'}
+        </div>
+      ) : (
+        <div className={cn(valueCls, 'min-h-8 text-sm', differs && 'text-muted line-through')} title={row.current}>
+          {row.current || '—'}
+        </div>
+      )}
+      {merge ? (
+        <div className="min-w-0 text-sm">
           <MergedTags existing={merge.existing} incoming={merge.incoming} dimmed={!checked} />
-        ) : (
-          <span
-            className={cn('min-w-0 flex-1 font-medium', clamp, differs && 'text-primary', showCheckbox && !checked && 'text-muted line-through opacity-60')}
-            title={row.candidate}
-          >
-            {row.candidate || '—'}
-          </span>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div
+          className={cn(valueCls, 'min-h-8 text-sm', differs && 'text-primary', showCheckbox && !checked && 'text-muted line-through opacity-60')}
+          title={row.candidate}
+        >
+          {row.candidate || '—'}
+        </div>
+      )}
     </div>
   );
 }
@@ -196,6 +215,11 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     queryFn: () => api.identify(seriesId),
     staleTime: 60_000,
   });
+
+  // The identify run may refresh the stored alignment flag on the server — refetch the series row so the match banner shows current state.
+  React.useEffect(() => {
+    if (identify.data) qc.invalidateQueries({ queryKey: ['series', seriesId] });
+  }, [identify.data, qc, seriesId]);
 
   const apply = useMutation({
     mutationFn: (p: { providerId: string; providerSeriesId: string; excludedFields?: string[]; cover?: boolean; score?: number }) =>
@@ -267,12 +291,11 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
         multiline: true,
         field: 'summary',
       },
-      { label: 'Genres', current: tagNames(k?.genres), candidate: m ? m.genres.join(', ') : '', field: 'genres' },
+      { label: 'Genres', current: tagNames(k?.genres), candidate: m ? m.genres.join(', ') : '', field: 'genres', list: true },
       { label: 'Tags', current: tagNames(k?.tags), candidate: m ? m.tags.join(', ') : '', field: 'tags', tagMerge: { existing: (k?.tags ?? []).map((t) => t.title).filter((t): t is string => Boolean(t)), incoming: m?.tags ?? [] } },
-      { label: 'Writers', current: peopleNames(k?.writers), candidate: m ? m.writers.join(', ') : '', field: 'writers' },
+      { label: 'Writers', current: peopleNames(k?.writers), candidate: m ? m.writers.join(', ') : '', field: 'writers', list: true },
       // H-Tosho writes provider artists into Kavita's penciller role.
-      { label: 'Artists', current: peopleNames(k?.pencillers), candidate: m ? m.artists.join(', ') : '', field: 'artists' },
-      { label: 'Publishers', current: peopleNames(k?.publishers), candidate: m ? m.publishers.join(', ') : '', field: 'publishers' },
+      { label: 'Artists', current: peopleNames(k?.pencillers), candidate: m ? m.artists.join(', ') : '', field: 'artists', list: true },
       { label: 'Language', current: k?.language ?? '', candidate: m?.language ?? '', field: 'language' },
       {
         label: 'Status',
@@ -292,21 +315,26 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
   return (
     <>
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-4xl">
+      <DialogContent className="max-w-[min(96vw,1440px)]">
         <div className="flex max-h-[90vh] flex-col gap-4 overflow-y-auto p-5">
           <div className="flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-primary" />
             <h2 className="text-base font-semibold">Identify "{current.name}"</h2>
           </div>
 
-          {match?.providerId && (
+          {!selected && match?.providerId && (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border-2 bg-surface-2 p-3">
               <div className="flex min-w-0 items-center gap-3">
                 <Link2 className="h-4 w-4 shrink-0 text-muted" />
                 <div className="min-w-0">
-                  <p className="text-sm font-medium">
+                  <p className="flex flex-wrap items-center gap-1.5 text-sm font-medium">
                     Matched to {PROVIDER_NAMES[match.providerId] ?? match.providerId}
                     {typeof match.matchScore === 'number' && ` · ${Math.round(match.matchScore * 100)}%`}
+                    {match.aligned ? (
+                      <span className="rounded bg-success/15 px-1.5 py-0.5 text-[10px] font-medium text-success">Aligned</span>
+                    ) : (
+                      <span className="rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">Not aligned</span>
+                    )}
                   </p>
                   <p className="text-xs text-muted">Unmatching removes the link only — metadata already pushed to Kavita stays in place.</p>
                 </div>
@@ -317,13 +345,13 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
             </div>
           )}
 
-          {identify.isPending && (
+          {!selected && identify.isPending && (
             <div className="flex items-center gap-2 py-8 text-muted">
               <Spinner /> Searching providers…
             </div>
           )}
 
-          {identify.isError && (
+          {!selected && identify.isError && (
             <div className="flex items-center gap-2 rounded-md bg-danger/10 p-3 text-sm text-danger">
               <AlertTriangle className="h-4 w-4" />
               {identify.error instanceof Error ? identify.error.message : String(identify.error)}
@@ -332,7 +360,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
 
           {outcome && (
             <>
-              {outcome.matched && autoBest && (
+              {!selected && outcome.matched && autoBest && (
                 <div className="flex animate-fade-up flex-wrap items-center justify-between gap-3 rounded-lg border border-success/30 bg-success/10 p-3">
                   <div className="flex items-center gap-3">
                     <Check className="h-4 w-4 text-success" />
@@ -349,6 +377,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                 </div>
               )}
 
+              {!selected && (
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   onClick={() => setTab('all')}
@@ -365,8 +394,9 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                     {PROVIDER_NAMES[id] ?? id} ({outcome.candidates.filter((c) => c.providerId === id).length})
                   </button>
                 ))}
-              </div>
+              </div>)}
 
+              {!selected && (
               <div className="max-h-[38vh] overflow-y-auto rounded-md border border-border">
                 {visibleCandidates.length === 0 && (
                   <p className="p-4 text-sm text-muted">{tab === 'all' ? 'No candidates found across providers.' : `No candidates from ${PROVIDER_NAMES[tab] ?? tab}.`}</p>
@@ -400,21 +430,24 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                     </button>
                   );
                 })}
-              </div>
+              </div>)}
 
               {selected && diff && (
-                <div className="rounded-md border border-border">
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2 text-sm">
+                    <ProviderBadge id={selected.providerId} />
+                    <span className="font-medium">{selected.title}</span>
+                    <span className="text-xs text-muted">{Math.round(selected.score * 100)}% match</span>
+                  </div>
+                  <div className="rounded-md border border-border">
                   {/* Mirrors the row grid so each header label sits above its column. */}
-                  <div className="grid grid-cols-2 gap-2 border-b border-border px-3 py-2 text-xs">
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      <span className="w-3.5 shrink-0" />
-                      <span className="w-20 shrink-0" />
-                      <span className="font-semibold text-muted">Current (Kavita)</span>
-                    </div>
-                    <div className="flex min-w-0 items-center gap-2 font-semibold text-primary">
+                  <div className={cn(ROW_GRID, 'border-b border-border px-3 py-2 text-xs')}>
+                    <span />
+                    <span className="font-semibold text-muted">Current (Kavita)</span>
+                    <span className="flex items-center gap-2 font-semibold text-primary">
                       {PROVIDER_NAMES[selected.providerId] ?? selected.providerId} (candidate)
                       {preview.isPending && <Spinner />}
-                    </div>
+                    </span>
                   </div>
                   {preview.isError && (
                     <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs text-danger">
@@ -422,11 +455,12 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                       Couldn't load candidate metadata: {preview.error instanceof Error ? preview.error.message : String(preview.error)}
                     </div>
                   )}
-                  <div className="max-h-[40vh] overflow-y-auto px-3">
+                  <div className="px-3 pb-1">
                     {diff.rows.map((row) => (
                       <FieldRow
                         key={row.label}
                         row={row}
+                        providerName={PROVIDER_NAMES[selected.providerId] ?? selected.providerId}
                         checked={!excluded.has(row.field ?? '')}
                         onToggle={
                           row.field
@@ -441,22 +475,25 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                         }
                       />
                     ))}
-                    <div className="grid grid-cols-2 gap-2 py-2 text-xs">
+                    <div className={cn(ROW_GRID, 'items-center py-2')}>
                       <div className="flex items-center gap-1.5">
-                        <span className="w-3.5 shrink-0" />
-                        <span className="w-20 shrink-0 text-muted">Cover</span>
+                        <input type="checkbox" checked={coverEnabled} onChange={(e) => setCoverEnabled(e.target.checked)} className="h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]" />
+                        <span className="text-[11px] font-medium uppercase tracking-wider text-muted">Cover</span>
+                      </div>
+                      <div>
                         <CoverThumb src={`/api/kavita/series/${seriesId}/cover`} alt="Current cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
                       </div>
                       <div className="flex items-center gap-1.5">
-                        <input type="checkbox" checked={coverEnabled} onChange={(e) => setCoverEnabled(e.target.checked)} className="h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]" />
                         <CoverThumb src={diff.coverCandidate} alt="Candidate cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
-                        {!coverEnabled && <span className="text-muted">not synced</span>}
+                        {!coverEnabled && <span className="text-sm text-muted">not synced</span>}
                       </div>
                     </div>
                   </div>
                 </div>
+                </div>
               )}
 
+              {selected && (
               <div className="flex items-center justify-end gap-2">
                 <Button variant="ghost" onClick={onClose}>
                   <X className="h-4 w-4" /> Cancel
@@ -467,7 +504,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                 >
                   {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} Apply & Sync to Kavita
                 </Button>
-              </div>
+              </div>)}
 
               {apply.isError && (
                 <div className="flex items-center gap-2 rounded-md bg-danger/10 p-3 text-sm text-danger">

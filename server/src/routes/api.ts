@@ -26,7 +26,7 @@ import {
 import { jobQueue, type JobType } from '../jobs/queue.js';
 import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
 import { catalogCandidates, catalogStatus, isMatureAgeRating, resolveCatalogCover } from '../match/mangadexCatalog.js';
-import { applyToKavita, fetchCover } from '../services/sync.js';
+import { applyToKavita, checkAlignment, fetchCover } from '../services/sync.js';
 import { testNotification } from '../notify/dispatcher.js';
 import { getDownloaderSettings, setDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
 import { downloadQueue } from '../downloader/engine.js';
@@ -142,6 +142,7 @@ api.get('/kavita/libraries/:id/series', async (c) => {
           status: m?.status ?? 'unmatched',
           providerId: m?.providerId ?? null,
           matchScore: m?.matchScore ?? null,
+          aligned: m?.aligned ?? false,
           lastSyncedAt: m?.lastSyncedAt ?? null,
           errorMessage: m?.errorMessage ?? null,
         };
@@ -218,15 +219,27 @@ api.get('/series/:id/identify', async (c) => {
     }
     const outcome = await autoMatch(series, { providerOrder, credentials, enabledProviders, extraCandidates });
     // Scoring improves over time (e.g. title-variant matching), so a stored
-    // match can carry a stale confidence. Refresh it when the matched series
-    // still surfaces in this run's candidates.
+    // match can carry a stale confidence — and Kavita data drifts after
+    // manual edits. Refresh both when the matched series still surfaces in
+    // this run's candidates.
     const existingMatch = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
     if (existingMatch) {
       const current = outcome.candidates.find(
         (cand) => cand.providerId === existingMatch.providerId && cand.providerSeriesId === existingMatch.providerSeriesId,
       );
-      if (current && current.score !== existingMatch.matchScore) {
-        getDb().update(schema.seriesMatches).set({ matchScore: current.score }).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).run();
+      const updates: { matchScore?: number; aligned?: boolean } = {};
+      if (current && current.score !== existingMatch.matchScore) updates.matchScore = current.score;
+      if (current && existingMatch.providerId && existingMatch.providerSeriesId) {
+        try {
+          const providerMeta = await fetchProviderMetadata(existingMatch.providerId, existingMatch.providerSeriesId, credentials);
+          const kavitaMeta = await client.getSeriesMetadata(seriesId).catch(() => null);
+          updates.aligned = checkAlignment({ name: series.name, sortName: series.sortName, metadata: kavitaMeta }, providerMeta).aligned;
+        } catch {
+          /* provider fetch failed — keep the stored flag */
+        }
+      }
+      if (Object.keys(updates).length) {
+        getDb().update(schema.seriesMatches).set(updates).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).run();
       }
     }
     // MangaDex search thumbnails resolve the main cover_art, but Apply & Sync
@@ -283,6 +296,15 @@ api.post('/series/:id/apply', async (c) => {
       excludedFields: body.excludedFields ?? [],
       title: series.name,
     });
+    // Verify the push against Kavita's live state and record whether every
+    // provider-managed field now matches (the "Aligned" flag).
+    let aligned = false;
+    try {
+      const kavitaMeta = await client.getSeriesMetadata(seriesId);
+      aligned = checkAlignment({ name: series.name, sortName: series.sortName, metadata: kavitaMeta }, meta).aligned;
+    } catch {
+      /* series without a metadata row yet — stays unaligned */
+    }
     const db = getDb();
     // The dialog sends the applied candidate's current score; keep the stored
     // value when absent (older clients).
@@ -296,6 +318,7 @@ api.post('/series/:id/apply', async (c) => {
         providerId: body.providerId,
         providerSeriesId: body.providerSeriesId,
         matchScore,
+        aligned,
         metadataJson: JSON.stringify(meta),
         errorMessage: result.errors.length ? result.errors.join('; ') : null,
         lastSyncedAt: new Date().toISOString(),
@@ -307,6 +330,7 @@ api.post('/series/:id/apply', async (c) => {
           providerId: body.providerId,
           providerSeriesId: body.providerSeriesId,
           matchScore,
+          aligned,
           metadataJson: JSON.stringify(meta),
           errorMessage: result.errors.length ? result.errors.join('; ') : null,
           lastSyncedAt: new Date().toISOString(),

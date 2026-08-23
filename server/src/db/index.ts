@@ -57,6 +57,7 @@ export function initDb(): Db {
   sqlite.exec(SCHEMA_DDL);
   migrateDownloadQueueColumns(sqlite);
   migrateCatalogColumns(sqlite);
+  migrateSeriesMatchColumns(sqlite);
   pruneOldData(sqlite);
   db = drizzle(sqlite, { schema });
   return db;
@@ -118,6 +119,19 @@ function migrateCatalogColumns(sqlite: Database.Database): void {
     console.warn('[h-tosho] failed to add mangadex_catalog column cover_file:', err);
   }
 }
+/** Add the alignment flag column to databases created before it existed. */
+function migrateSeriesMatchColumns(sqlite: Database.Database): void {
+  const existing = new Set(
+    (sqlite.prepare('PRAGMA table_info(series_matches)').all() ?? []).map((c) => (c as { name: string }).name),
+  );
+  if (existing.size === 0 || existing.has('aligned')) return;
+  try {
+    sqlite.exec('ALTER TABLE series_matches ADD COLUMN aligned INTEGER NOT NULL DEFAULT 0');
+  } catch (err) {
+    console.warn('[h-tosho] failed to add series_matches column aligned:', err);
+  }
+}
+
 
 /**
  * Consolidate data from any legacy database files into the canonical file.
@@ -283,6 +297,7 @@ CREATE TABLE IF NOT EXISTS series_matches (
   provider_id TEXT,
   provider_series_id TEXT,
   match_score REAL,
+  aligned INTEGER NOT NULL DEFAULT 0,
   metadata_json TEXT,
   error_message TEXT,
   last_synced_at TEXT,

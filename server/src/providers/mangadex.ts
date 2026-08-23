@@ -130,7 +130,7 @@ class MangaDexProvider extends BaseProvider {
   helpUrl = 'https://api.mangadex.org/docs';
   supportedTypes: MediaType[] = ['MANGA', 'WEBTOON'];
   requiresCredentials = false;
-  providesFields = ['title', 'summary', 'genres', 'tags', 'publishers', 'releaseDate', 'status', 'cover', 'volumeCovers'];
+  providesFields = ['title', 'summary', 'genres', 'tags', 'releaseDate', 'status', 'cover', 'volumeCovers'];
   protected baseUrl = 'https://api.mangadex.org';
   private imageBaseUrl = 'https://uploads.mangadex.org';
 
@@ -416,7 +416,6 @@ class MangaDexProvider extends BaseProvider {
       tags,
       writers: people,
       artists: people,
-      publishers: [],
       readingDirection: a.originalLanguage === 'ja' ? 'RTL' : 'LTR',
       language: a.originalLanguage,
       status: status as SeriesMetadata['status'],

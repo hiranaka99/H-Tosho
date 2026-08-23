@@ -256,7 +256,6 @@ export interface SeriesMetadataPayload {
   tags?: string[];
   writers?: string[];
   artists?: string[];
-  publishers?: string[];
   releaseYear?: number;
   language?: string;
   publicationStatus?: KavitaPublicationStatus;

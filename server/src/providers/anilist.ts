@@ -26,7 +26,7 @@ interface GqlEnvelope<TData> {
 
 /**
  * AniList (GraphQL) — primary source for manga & light novel metadata:
- * summary, tags, studios/publishers, release date.
+ * summary, tags, release date.
  */
 class AniListProvider extends BaseProvider {
   id = 'anilist';
@@ -130,7 +130,6 @@ class AniListProvider extends BaseProvider {
       // AniList no longer exposes author/artist data for media, so these are empty.
       writers: [],
       artists: [],
-      publishers: m.studios?.nodes.map((s) => s.name) ?? [],
       readingDirection: 'RTL',
       status: mapAniListStatus(m.status),
       url: `https://anilist.co/manga/${m.id}`,

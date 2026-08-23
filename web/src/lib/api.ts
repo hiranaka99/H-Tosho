@@ -46,6 +46,8 @@ export interface SeriesRow {
   status: string;
   providerId?: string | null;
   matchScore?: number | null;
+  /** All provider-managed metadata fields match Kavita's current values. */
+  aligned?: boolean;
   lastSyncedAt?: string | null;
   errorMessage?: string | null;
 }
@@ -59,6 +61,8 @@ export interface SeriesMatch {
   providerId?: string | null;
   providerSeriesId?: string | null;
   matchScore?: number | null;
+  /** All provider-managed metadata fields match Kavita's current values. */
+  aligned?: boolean;
   metadataJson?: string | null;
   errorMessage?: string | null;
   lastSyncedAt?: string | null;
@@ -177,7 +181,6 @@ export interface SeriesMetadata {
   tags: string[];
   writers: string[];
   artists: string[];
-  publishers: string[];
   language?: string;
   status?: string;
   url?: string;

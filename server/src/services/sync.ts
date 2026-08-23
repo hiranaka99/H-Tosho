@@ -6,7 +6,7 @@ import {
   type SeriesMetadataPayload,
 } from '../kavita/types.js';
 import type { SeriesMetadata, VolumeCover } from '../providers/types.js';
-import type { KavitaVolume } from '../kavita/types.js';
+import type { KavitaVolume, KavitaSeriesMetadataDto } from '../kavita/types.js';
 import { getKavitaConnection, getNotificationSettings } from './settings.js';
 import { notify } from '../notify/dispatcher.js';
 import { jobQueue } from '../jobs/queue.js';
@@ -58,7 +58,6 @@ export function buildSeriesPayload(meta: SeriesMetadata): SeriesMetadataPayload 
   if (meta.tags.length) payload.tags = meta.tags;
   if (meta.writers.length) payload.writers = meta.writers;
   if (meta.artists.length) payload.artists = meta.artists;
-  if (meta.publishers.length) payload.publishers = meta.publishers;
   const year = releaseYear(meta);
   if (year !== undefined) payload.releaseYear = year;
   if (meta.language) payload.language = meta.language;
@@ -86,6 +85,51 @@ export function mergeTagLists(existing: string[], incoming: string[]): string[] 
   }
   return out;
 }
+/**
+ * Alignment check: a matched series is "aligned" when every metadata field
+ * its provider supplies matches Kavita's current values. List fields compare
+ * order-insensitively and ignore punctuation placement ("Girl's Love" vs
+ * "Girls' Love"); tags use subset semantics because sync merges instead of
+ * replacing; fields the provider does not supply are skipped.
+ */
+export function checkAlignment(
+  kavita: { name: string; sortName?: string | null; metadata: KavitaSeriesMetadataDto | null },
+  meta: SeriesMetadata,
+): { aligned: boolean; mismatched: string[] } {
+  const k = kavita.metadata;
+  const mismatched: string[] = [];
+  const norm = (s?: string | null) => (s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+  // List items are compared after stripping non-alphanumerics, so apostrophe
+  // placement and punctuation variants do not count as drift.
+  const listKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const sameSet = (a: Array<string | null>, b: string[]) => {
+    const sa = new Set(a.map((x) => listKey(x ?? '')).filter(Boolean));
+    const sb = b.map(listKey).filter(Boolean);
+    return sa.size === sb.length && sb.every((x) => sa.has(x));
+  };
+
+  if (meta.title && norm(kavita.name) !== norm(meta.title)) mismatched.push('title');
+  if (meta.sortTitle && norm(kavita.sortName) !== norm(meta.sortTitle)) mismatched.push('sortTitle');
+  if (meta.summary && norm(k?.summary) !== norm(meta.summary)) mismatched.push('summary');
+  if (meta.genres.length && !sameSet((k?.genres ?? []).map((g) => g.title), meta.genres)) mismatched.push('genres');
+  if (meta.tags.length) {
+    const have = new Set((k?.tags ?? []).map((t) => listKey(t.title ?? '')).filter(Boolean));
+    if (!meta.tags.every((t) => have.has(listKey(t)))) mismatched.push('tags');
+  }
+  if (meta.writers.length && !sameSet((k?.writers ?? []).map((p) => p.name), meta.writers)) mismatched.push('writers');
+  // H-Tosho writes provider artists into Kavita's penciller role.
+  if (meta.artists.length && !sameSet((k?.pencillers ?? []).map((p) => p.name), meta.artists)) mismatched.push('artists');
+  const year = releaseYear(meta);
+  if (year !== undefined && (k?.releaseYear ?? 0) !== year) mismatched.push('releaseDate');
+  if (meta.language && norm(k?.language) !== norm(meta.language)) mismatched.push('language');
+  if (meta.status) {
+    const status = PUBLICATION_STATUS[meta.status];
+    if (status !== undefined && (k?.publicationStatus ?? -1) !== status) mismatched.push('status');
+  }
+  if (meta.url && norm(k?.webLinks) !== norm(meta.url)) mismatched.push('url');
+
+  return { aligned: mismatched.length === 0, mismatched };
+}
 
 /** User-selectable sync fields (identify dialog checkboxes) -> payload property names. */
 const EXCLUDABLE_FIELDS: Record<string, string> = {
@@ -96,7 +140,6 @@ const EXCLUDABLE_FIELDS: Record<string, string> = {
   tags: 'tags',
   writers: 'writers',
   artists: 'artists',
-  publishers: 'publishers',
   releaseDate: 'releaseYear',
   language: 'language',
   status: 'publicationStatus',
