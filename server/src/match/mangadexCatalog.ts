@@ -10,15 +10,16 @@ import { retry, sleep } from '../lib/http.js';
 /**
  * Local index of MangaDex adult-rated titles.
  *
- * MangaDex's title search only covers manga that have at least one chapter,
- * but most adult titles on the site are metadata-only (never scanlated) and
- * therefore unsearchable. To make mature series matchable, this module keeps
- * a cached copy of every reachable suggestive/erotica/pornographic title
- * (fetched via paginated GET /manga?contentRating[]=...) and scores series
- * names against it with the same titleScore machinery as live provider
- * searches. Titles without year metadata sort past the API's 10k pagination
- * window in every year-ordered query; they are indexed only while they sit
- * inside the most-recently-updated window.
+ * Live title search requests every contentRating, so adult titles with at
+ * least one chapter are directly searchable; most adult titles on the site
+ * are nonetheless metadata-only (never scanlated) and invisible to that
+ * search. To make mature series matchable, this module keeps a cached copy of
+ * every reachable suggestive/erotica/pornographic title (fetched via paginated
+ * GET /manga?contentRating[]=...) and scores series names against it with the
+ * same titleScore machinery as live provider searches. Titles without year
+ * metadata sort past the API's 10k pagination window in every year-ordered
+ * query; they are indexed only while they sit inside the most-recently-updated
+ * window.
  */
 
 const BASE_URL = 'https://api.mangadex.org';

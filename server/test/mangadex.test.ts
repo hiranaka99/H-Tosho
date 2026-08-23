@@ -11,9 +11,11 @@ afterEach(() => {
 describe('MangaDexProvider cover URLs', () => {
   it('resolves search candidate covers via /cover/{id} fileName, not the relationship id', async () => {
     const coverRequests: string[] = [];
+    const searchUrls: string[] = [];
     globalThis.fetch = async (input) => {
       const url = String(input);
       if (url.startsWith('https://api.mangadex.org/manga?')) {
+        searchUrls.push(url);
         return Response.json({
           result: 'ok',
           response: 'collection',
@@ -52,6 +54,16 @@ describe('MangaDexProvider cover URLs', () => {
     const results = await mangaDexProvider.search('test');
 
     assert.equal(results.length, 3);
+    // MangaDex's default search scope hides pornographic-rated titles; without
+    // requesting every rating explicitly, adult series are invisible to live
+    // search and can never be identified.
+    const searchParams = new URL(searchUrls[0]).searchParams;
+    for (const rating of ['safe', 'suggestive', 'erotica', 'pornographic']) {
+      assert.ok(
+        searchParams.getAll('contentRating[]').includes(rating),
+        `missing contentRating[]=${rating}`,
+      );
+    }
     // The CDN path must use the fileName served by /cover/{id}; using the raw
     // cover relationship id as the file name 404s on uploads.mangadex.org.
     assert.equal(results[0].coverUrl, 'https://uploads.mangadex.org/covers/manga-1/file-one.jpg');

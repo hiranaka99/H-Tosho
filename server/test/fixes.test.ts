@@ -192,6 +192,32 @@ describe('autoMatch candidate dedup', () => {
     // Ties keep the live result (pushed before the catalog merge).
     assert.equal(outcome.best?.summary, 'live desc');
   });
+
+  it('breaks exact score ties by token overlap with the series name', async () => {
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.startsWith('https://api.mangadex.org/manga?')) {
+        return Response.json({
+          result: 'ok',
+          response: 'collection',
+          data: [
+            // Lower overlap listed first: must not win the 0.92 tie by position.
+            { id: 'low-1', attributes: { title: { en: 'Romance 101' }, year: 2018, description: { en: 'd' } }, relationships: [] },
+            { id: 'high-1', attributes: { title: { en: 'The Quintessential Quintuplets - A Fifth of Romance (Doujinshi)' }, year: 2024, description: { en: 'd' } }, relationships: [] },
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const outcome = await autoMatch({ id: 1, name: 'A Fifth of Romance' }, {
+      providerOrder: ['mangadex'],
+      credentials: {},
+      enabledProviders: ['mangadex'],
+    });
+
+    assert.equal(outcome.best?.providerSeriesId, 'high-1');
+  });
 });
 
 describe('AniList provider fixes', () => {

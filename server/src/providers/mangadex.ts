@@ -4,6 +4,13 @@ import type { MediaType, SeriesMetadata, SearchResult, VolumeCover } from './typ
 /** Max concurrent /cover/{id} lookups while resolving search-result thumbnails. */
 const COVER_RESOLVE_BATCH_SIZE = 6;
 
+/**
+ * Every contentRating value in MangaDex's current enum. The API's default
+ * search scope hides pornographic-rated titles, so identify must request all
+ * ratings explicitly or adult series are invisible to live title search.
+ */
+const CONTENT_RATINGS = ['safe', 'suggestive', 'erotica', 'pornographic'] as const;
+
 /** Raw cover item as returned by the GET /cover collection (only consumed fields). */
 interface CoverListItem {
   id: string;
@@ -133,6 +140,7 @@ class MangaDexProvider extends BaseProvider {
       limit: '20',
       'order[relevance]': 'desc',
     });
+    for (const rating of CONTENT_RATINGS) params.append('contentRating[]', rating);
     const data = await this.get<{ data?: MangaListItem[] }>(`/manga?${params.toString()}`, {
       headers: this.headers(),
     });

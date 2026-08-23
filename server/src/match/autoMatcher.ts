@@ -1,5 +1,5 @@
 import { getProvider } from '../providers/registry.js';
-import { AUTO_MATCH_THRESHOLD, titleScore } from './normalize.js';
+import { AUTO_MATCH_THRESHOLD, canonicalTitle, titleScore } from './normalize.js';
 import type { SearchResult, SeriesMetadata, MediaType } from '../providers/types.js';
 import type { KavitaSeries } from '../kavita/types.js';
 
@@ -106,7 +106,22 @@ export async function autoMatch(
     if (!prev || c.score > prev.score) deduped.set(key, c);
   }
   const merged = [...deduped.values()];
-  merged.sort((a, b) => b.score - a.score);
+  // Exact score ties (e.g. two containment matches at 0.92) are broken by
+  // token overlap with the series name, so a title sharing more of the query
+  // wins regardless of provider priority or catalog merge order.
+  const queryTokens = new Set(canonicalTitle(query).split(' '));
+  const sharedTokenCount = new Map<string, number>();
+  const sharedTokens = (c: CandidateMatch): number => {
+    let n = sharedTokenCount.get(c.title);
+    if (n === undefined) {
+      const tokens = new Set(canonicalTitle(c.title).split(' '));
+      n = 0;
+      for (const w of queryTokens) if (tokens.has(w)) n++;
+      sharedTokenCount.set(c.title, n);
+    }
+    return n;
+  };
+  merged.sort((a, b) => b.score - a.score || sharedTokens(b) - sharedTokens(a));
   const best = merged[0] ?? null;
   return {
     matched: !!best && best.score >= threshold,
