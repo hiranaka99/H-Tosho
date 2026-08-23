@@ -22,6 +22,8 @@ export interface ApplyResult {
   volumeCoversUpdated: number;
   locked: boolean;
   errors: string[];
+  /** Non-fatal notes, e.g. fields the server accepted but did not apply. */
+  warnings: string[];
 }
 
 /** A provider volume cover paired with the Kavita volume it maps onto. */
@@ -147,6 +149,7 @@ export async function applyToKavita(
 ): Promise<ApplyResult> {
   const errors: string[] = [];
   const pushed: string[] = [];
+  const warnings: string[] = [];
   let coverUpdated = false;
   let volumeCoversUpdated = 0;
   let locked = false;
@@ -177,6 +180,24 @@ export async function applyToKavita(
     }
   }
 
+  // Kavita v0.9 silently ignores series name updates — the name follows the
+  // folder path and only 0.10+ applies renames via /Series/update. Verify the
+  // write landed so sync history never claims a rename that didn't happen.
+  if (payload.name !== undefined) {
+    try {
+      const current = await client.getSeriesById(seriesId);
+      if ((current.name ?? '').trim() !== String(payload.name).trim()) {
+        const i = pushed.indexOf('name');
+        if (i !== -1) pushed.splice(i, 1);
+        warnings.push(
+          'Kavita did not apply the series name (v0.9 derives it from the folder path; renaming via API requires 0.10+)',
+        );
+      }
+    } catch {
+      /* verification is best-effort; keep the reported push */
+    }
+  }
+
   if (opts.agg.replaceCover && opts.cover && opts.cover.length > 0) {
     try {
       await client.updateSeriesCover(seriesId, opts.cover, opts.agg.lockCovers);
@@ -203,7 +224,7 @@ export async function applyToKavita(
       kavitaSeriesId: seriesId,
       seriesTitle: opts.title,
       action: errors.length ? 'failed' : 'updated',
-      detailsJson: JSON.stringify({ provider: meta.providerId, pushed, coverUpdated, volumeCoversUpdated, locked, errors }),
+      detailsJson: JSON.stringify({ provider: meta.providerId, pushed, coverUpdated, volumeCoversUpdated, locked, errors, warnings }),
     })
     .run();
 
@@ -231,7 +252,7 @@ export async function applyToKavita(
       .run();
   }
 
-  return { seriesId, pushed, coverUpdated, volumeCoversUpdated, locked, errors };
+  return { seriesId, pushed, coverUpdated, volumeCoversUpdated, locked, errors, warnings };
 }
 
 /** Download a cover from a provider URL, returning null on failure. */
