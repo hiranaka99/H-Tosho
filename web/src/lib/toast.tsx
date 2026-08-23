@@ -58,7 +58,7 @@ export function Toaster() {
         <div
           key={t.id}
           className={cn(
-            'pointer-events-auto flex items-start gap-3 rounded-md border border-border bg-surface p-3 shadow-xl',
+            'pointer-events-auto relative flex animate-slide-in-right items-start gap-3 overflow-hidden rounded-lg border border-border bg-surface/95 p-3 shadow-xl shadow-black/30 backdrop-blur',
             'border-l-4',
             TONE_STYLE[t.tone].border,
           )}
@@ -70,11 +70,13 @@ export function Toaster() {
           </div>
           <button
             onClick={() => setItems((prev) => prev.filter((x) => x.id !== t.id))}
-            className="shrink-0 rounded p-0.5 text-muted hover:bg-surface-2 hover:text-foreground"
+            className="shrink-0 rounded p-0.5 text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
             title="Dismiss"
           >
             <X className="h-3.5 w-3.5" />
           </button>
+          {/* Auto-dismiss countdown (matches the 5s timeout above). */}
+          <div className={cn('absolute bottom-0 left-0 h-0.5 w-full origin-left animate-toast-progress', t.tone === 'success' ? 'bg-success/50' : t.tone === 'danger' ? 'bg-danger/50' : 'bg-primary/40')} />
         </div>
       ))}
     </div>

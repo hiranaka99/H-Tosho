@@ -325,7 +325,7 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
           {outcome && (
             <>
               {outcome.matched && autoBest && (
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-success/30 bg-success/10 p-3">
+                <div className="flex animate-fade-up flex-wrap items-center justify-between gap-3 rounded-lg border border-success/30 bg-success/10 p-3">
                   <div className="flex items-center gap-3">
                     <Check className="h-4 w-4 text-success" />
                     <div>

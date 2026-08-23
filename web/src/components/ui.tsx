@@ -7,13 +7,13 @@ import { X, Loader2 } from 'lucide-react';
 import { cn, PROVIDER_COLORS, PROVIDER_NAMES } from '../lib/utils';
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium transition-colors ' +
+  'inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-all duration-150 ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:pointer-events-none ' +
-    'disabled:opacity-50 h-9 px-4',
+    'disabled:opacity-50 h-9 px-4 active:scale-[0.97]',
   {
     variants: {
       variant: {
-        default: 'bg-primary text-white hover:bg-primary-hover',
+        default: 'bg-primary text-white shadow-md shadow-primary/20 hover:bg-primary-hover',
         outline: 'border border-border-2 bg-transparent hover:bg-surface-2',
         ghost: 'bg-transparent hover:bg-surface-2',
         danger: 'bg-danger text-white hover:opacity-90',
@@ -45,7 +45,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 Button.displayName = 'Button';
 
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('rounded-lg border border-border bg-surface', className)} {...props} />;
+  return <div className={cn('rounded-xl border border-border bg-surface transition-colors', className)} {...props} />;
 }
 
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
@@ -65,8 +65,8 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
     <input
       ref={ref}
       className={cn(
-        'flex h-9 w-full rounded-md border border-border-2 bg-surface-2 px-3 py-1 text-sm placeholder:text-muted',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50',
+        'flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 py-1 text-sm placeholder:text-muted',
+        'transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50',
         className,
       )}
       {...props}
@@ -84,8 +84,8 @@ export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttrib
     <select
       ref={ref}
       className={cn(
-        'flex h-9 w-full rounded-md border border-border-2 bg-surface-2 px-3 text-sm',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
+        'flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-sm',
+        'transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
         className,
       )}
       {...props}
@@ -173,11 +173,13 @@ export function StatusBadge({ status, className, title }: { status: string; clas
   );
 }
 
-export function ProgressBar({ value, max, className }: { value: number; max: number; className?: string }) {
+export function ProgressBar({ value, max, className, active = false }: { value: number; max: number; className?: string; active?: boolean }) {
   const p = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0;
   return (
     <div className={cn('h-2 w-full overflow-hidden rounded-full bg-surface-2', className)}>
-      <div className="h-full rounded-full bg-primary transition-all" style={{ width: p + '%' }} />
+      <div className="relative h-full rounded-full bg-primary transition-[width] duration-500 ease-out" style={{ width: p + '%' }}>
+        {active && p > 0 && p < 100 && <div className="progress-stripes absolute inset-0" />}
+      </div>
     </div>
   );
 }
@@ -205,11 +207,11 @@ export function Dialog({
 export function DialogContent({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <DialogPrimitive.Portal>
-      <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
+      <DialogPrimitive.Overlay className="dialog-overlay fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
       <DialogPrimitive.Content
         className={cn(
-          'fixed left-1/2 top-1/2 z-50 w-full max-w-5xl -translate-x-1/2 -translate-y-1/2',
-          'rounded-lg border border-border bg-surface shadow-2xl',
+          'dialog-content fixed left-1/2 top-1/2 z-50 w-full max-w-5xl -translate-x-1/2 -translate-y-1/2',
+          'rounded-xl border border-border bg-surface shadow-2xl shadow-black/40',
           className,
         )}
         {...props}
@@ -225,10 +227,46 @@ export function DialogContent({ children, className, ...props }: React.HTMLAttri
 
 export function EmptyState({ icon, title, description }: { icon?: React.ReactNode; title: string; description?: string }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+    <div className="flex animate-fade-in flex-col items-center justify-center gap-2 py-16 text-center">
       {icon && <div className="text-muted">{icon}</div>}
       <p className="font-medium">{title}</p>
       {description && <p className="max-w-sm text-sm text-muted">{description}</p>}
+    </div>
+  );
+}
+/** Shimmering placeholder block for loading content. */
+export function Skeleton({ className }: { className?: string }) {
+  return <div className={cn('skeleton', className)} />;
+}
+
+/** Standard page heading: icon chip, title, subtitle, and an optional right-side action slot. */
+export function PageHeader({
+  icon,
+  title,
+  subtitle,
+  children,
+  className,
+}: {
+  icon?: React.ReactNode;
+  title: string;
+  subtitle?: string;
+  children?: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn('flex flex-wrap items-center justify-between gap-3', className)}>
+      <div className="flex items-center gap-3">
+        {icon && (
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border bg-gradient-to-br from-primary/25 to-transparent text-primary shadow-md shadow-black/20">
+            {icon}
+          </div>
+        )}
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
+          {subtitle && <p className="text-sm text-muted">{subtitle}</p>}
+        </div>
+      </div>
+      {children ? <div className="flex flex-wrap items-center gap-2">{children}</div> : null}
     </div>
   );
 }

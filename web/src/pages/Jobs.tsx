@@ -2,7 +2,7 @@ import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Terminal, Activity, Circle, XCircle, CheckCircle2, ListChecks, Ban, X } from 'lucide-react';
 import { api, type Job, type JobLog } from '../lib/api';
-import { Card, CardContent, CardHeader, CardTitle, Badge, Button, EmptyState, Spinner } from '../components/ui';
+import { Card, CardContent, CardHeader, CardTitle, Badge, Button, EmptyState, Spinner, ProgressBar } from '../components/ui';
 import { cn, timeAgo, shortDate, toIsoUtc } from '../lib/utils';
 
 function JobStatus({ status }: { status: string }) {
@@ -37,15 +37,6 @@ function JobStatus({ status }: { status: string }) {
   );
 }
 
-function ProgressBar({ current, total }: { current: number; total: number }) {
-  if (!total) return <div className="h-1.5 w-full rounded-full bg-surface-2" />;
-  const p = Math.min(100, Math.round((current / total) * 100));
-  return (
-    <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
-      <div className="h-full rounded-full bg-primary transition-all" style={{ width: p + '%' }} />
-    </div>
-  );
-}
 
 const LOG_COLOR: Record<string, string> = {
   info: 'text-muted',
@@ -74,7 +65,7 @@ function LogConsole({ logs }: { logs: JobLog[] }) {
         <p className="text-muted">No logs yet.</p>
       ) : (
         logs.map((l) => (
-          <div key={l.id} className="flex gap-2 py-0.5">
+          <div key={l.id} className="flex animate-fade-in gap-2 py-0.5">
             <span className="shrink-0 text-muted/60">{new Date(toIsoUtc(l.createdAt)).toLocaleTimeString()}</span>
             <span className={cn('shrink-0 uppercase', LOG_COLOR[l.level] ?? 'text-muted')}>{l.level}</span>
             <span className="break-all">{l.message}</span>
@@ -135,7 +126,7 @@ export function Jobs() {
                 </thead>
                 <tbody>
                   {jobs.map((j) => (
-                    <tr key={j.id} className="cursor-pointer border-b border-border last:border-0 hover:bg-surface-2/50" onClick={() => setSelected(j)}>
+                    <tr key={j.id} className="animate-fade-in cursor-pointer border-b border-border transition-colors duration-150 last:border-0 hover:bg-surface-2/50" onClick={() => setSelected(j)}>
                       <td className="p-2 text-muted">#{j.id}</td>
                       <td className="p-2 font-medium">{j.type}</td>
                       <td className="p-2">
@@ -144,9 +135,9 @@ export function Jobs() {
                       <td className="p-2">
                         <div className="flex items-center gap-2">
                           <div className="w-32">
-                            <ProgressBar current={j.progressCurrent} total={j.progressTotal} />
+                            <ProgressBar value={j.progressCurrent} max={j.progressTotal} className="h-1.5" active={j.status === 'running' || j.status === 'queued'} />
                           </div>
-                          <span className="text-xs text-muted">
+                          <span className="text-xs tabular-nums text-muted">
                             {j.progressTotal ? `${j.progressCurrent}/${j.progressTotal}` : '—'}
                           </span>
                         </div>
@@ -211,7 +202,7 @@ export function Jobs() {
                 </div>
               ) : (
                 active.map((j) => (
-                  <div key={j.id} className="rounded-md border border-border p-3">
+                  <div key={j.id} className={cn('animate-fade-up rounded-lg border p-3 transition-colors', j.status === 'running' ? 'border-primary/40 bg-primary/5' : 'border-border')}>
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-medium">{j.type}</span>
                       <div className="flex items-center gap-2">
@@ -222,7 +213,7 @@ export function Jobs() {
                       </div>
                     </div>
                     <div className="mt-2">
-                      <ProgressBar current={j.progressCurrent} total={j.progressTotal} />
+                      <ProgressBar value={j.progressCurrent} max={j.progressTotal} active />
                     </div>
                     <p className="mt-1 text-xs text-muted">
                       {j.progressTotal ? `${j.progressCurrent} of ${j.progressTotal} series` : 'starting…'}

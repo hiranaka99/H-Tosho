@@ -186,7 +186,7 @@ function DownloadStatusBadge({ status }: { status: string }) {
 
 // ---------------- Gallery card ----------------
 
-function GalleryCard({ item, onOpen, onDownload, downloading }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean }) {
+function GalleryCard({ item, onOpen, onDownload, downloading, index = 0 }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean; index?: number }) {
   const tags = [...item.artists, ...item.tags].slice(0, 6);
   return (
     <div
@@ -199,10 +199,11 @@ function GalleryCard({ item, onOpen, onDownload, downloading }: { item: DoujinSe
           onOpen();
         }
       }}
-      className="group flex cursor-pointer flex-col overflow-hidden rounded-lg border border-border bg-surface transition-all hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+      style={{ animationDelay: `${Math.min(index, 15) * 40}ms` }}
+      className="group flex animate-fade-up cursor-pointer flex-col overflow-hidden rounded-xl border border-border bg-surface transition-all duration-200 hover:-translate-y-1 hover:border-primary/50 hover:shadow-xl hover:shadow-black/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
     >
-      <div className="relative">
-        <Cover url={item.coverUrl} title={item.title} className="aspect-[3/4] w-full" />
+      <div className="relative overflow-hidden">
+        <Cover url={item.coverUrl} title={item.title} className="aspect-[3/4] w-full transition-transform duration-300 ease-out group-hover:scale-105" />
         {/* Show the gallery's language badge (e.g. "english", "japanese"). */}
         {item.language && (
           <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">
@@ -405,7 +406,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
 function QueueRow({ task, onAction }: { task: DownloadTask; onAction: (a: 'pause' | 'resume' | 'cancel' | 'retry') => void }) {
   const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : 0;
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-border p-3">
+    <div className="flex animate-fade-up flex-col gap-2 rounded-lg border border-border p-3 transition-colors">
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <DownloadStatusBadge status={task.status} />
@@ -429,7 +430,7 @@ function QueueRow({ task, onAction }: { task: DownloadTask; onAction: (a: 'pause
 
       {task.status === 'downloading' && (
         <>
-          <ProgressBar value={task.progressCurrent} max={task.progressTotal} />
+          <ProgressBar value={task.progressCurrent} max={task.progressTotal} active={task.status === 'downloading'} />
           {typeof task.bytesTotal === 'number' && task.bytesTotal > 0 && (
             <ProgressBar value={Math.min(task.bytesCurrent ?? 0, task.bytesTotal)} max={task.bytesTotal} className="h-1" />
           )}
@@ -710,7 +711,7 @@ export function Downloader() {
               )}
 
               {showDropdown && (
-                <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-border bg-surface shadow-xl">
+                <div className="absolute left-0 right-0 top-full z-50 mt-1 origin-top animate-scale-in overflow-hidden rounded-lg border border-border bg-surface shadow-xl shadow-black/30">
                   {suggLoading && suggestions.length === 0 ? (
                     <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted">
                       <Spinner /> Searching tags…
@@ -782,10 +783,11 @@ export function Downloader() {
                 {results.length} {results.length === 1 ? 'gallery' : 'galleries'} found on {SOURCE_LABELS[source]}
               </p>
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
-                {results.map((item) => (
+                {results.map((item, i) => (
                   <GalleryCard
                     key={item.source + item.galleryId}
                     item={item}
+                    index={i}
                     onOpen={() => setSelected(item)}
                     downloading={pendingKey === `${item.source}:${item.galleryId}`}
                     onDownload={() => doStartDownload(item)}

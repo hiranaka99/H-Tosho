@@ -119,12 +119,12 @@ export function Libraries() {
                   key={lib.id}
                   onClick={() => pickLibrary(lib.id)}
                   className={cn(
-                    'flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm transition-colors',
-                    active ? 'bg-primary/15 text-primary' : 'hover:bg-surface-2',
+                    'flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition-all duration-150 hover:translate-x-0.5',
+                    active ? 'bg-gradient-to-r from-primary/20 to-primary/5 font-medium text-primary' : 'hover:bg-surface-2',
                   )}
                 >
                   <span className="truncate">{lib.name}</span>
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                  <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 transition-all duration-150', active ? 'translate-x-0.5 text-primary' : 'opacity-60')} />
                 </button>
               );
             })}
@@ -185,7 +185,7 @@ export function Libraries() {
             </div>
 
             {checked.size > 0 && (
-              <div className="flex flex-wrap items-center gap-2 rounded-md border border-border-2 bg-surface-2 p-2">
+              <div className="flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border border-border-2 bg-surface-2 p-2 shadow-lg shadow-black/20">
                 <span className="px-2 text-xs text-muted">{checked.size} selected</span>
                 <Button size="sm" onClick={matchSelected}>
                   <Sparkles className="h-3.5 w-3.5" /> Match selected
@@ -212,10 +212,14 @@ export function Libraries() {
               </Card>
             ) : view === 'grid' ? (
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-                {filtered.map((r) => (
+                {filtered.map((r, i) => (
                   <Card
                     key={r.id}
-                    className={cn('group relative cursor-pointer overflow-hidden transition-colors hover:border-primary/50', checked.has(r.id) && 'ring-1 ring-primary')}
+                    style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
+                    className={cn(
+                      'group relative animate-fade-up cursor-pointer overflow-hidden transition-all duration-200 hover:-translate-y-1 hover:border-primary/50 hover:shadow-xl hover:shadow-black/30',
+                      checked.has(r.id) && 'border-primary/60 ring-1 ring-primary',
+                    )}
                     onClick={() => toggleCheck(r.id)}
                   >
                     <button
@@ -226,10 +230,10 @@ export function Libraries() {
                       }}
                       aria-label="Identify"
                     />
-                    <div className="aspect-[3/4] w-full">
-                      <Cover src={r.cover} name={r.name} />
+                    <div className="aspect-[3/4] w-full overflow-hidden">
+                      <Cover src={r.cover} name={r.name} className="transition-transform duration-300 ease-out group-hover:scale-105" />
                     </div>
-                    <div className="absolute left-2 top-2 z-20">
+                    <div className={cn('absolute left-2 top-2 z-20 transition-opacity duration-150', checked.has(r.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')}>
                       <input type="checkbox" checked={checked.has(r.id)} onChange={() => toggleCheck(r.id)} className="h-4 w-4 accent-[var(--color-primary)]" />
                     </div>
                     <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-1 bg-gradient-to-t from-black/90 to-transparent p-2 pt-6">

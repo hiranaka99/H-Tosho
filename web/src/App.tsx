@@ -51,14 +51,14 @@ export default function App() {
 
   return (
     <div className="flex h-full">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-surface">
-        <div className="flex h-14 items-center gap-2 border-b border-border px-4">
-          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary/15 text-primary">
-            <BookOpenText className="h-4 w-4" />
+      <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-surface/80 backdrop-blur-sm">
+        <div className="flex h-14 items-center gap-2.5 border-b border-border px-4">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-primary-hover text-white shadow-lg shadow-primary/30">
+            <BookOpenText className="h-4.5 w-4.5" />
           </div>
-          <div>
-            <div className="text-sm font-semibold leading-tight">H-Tosho</div>
-            <div className="text-[10px] text-muted leading-tight">Kavita metadata manager</div>
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold leading-tight tracking-tight">H-Tosho</div>
+            <div className="truncate text-[10px] leading-tight text-muted">Kavita metadata manager</div>
           </div>
         </div>
         <nav className="flex flex-1 flex-col gap-1 p-3">
@@ -69,30 +69,39 @@ export default function App() {
               end={item.end}
               className={({ isActive }) =>
                 cn(
-                  'flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
-                  isActive ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground',
+                  'group flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-all duration-150 hover:translate-x-0.5',
+                  isActive
+                    ? 'bg-gradient-to-r from-primary/20 to-primary/5 font-medium text-primary'
+                    : 'text-muted hover:bg-surface-2 hover:text-foreground',
                 )
               }
             >
-              <item.icon className="h-4 w-4" />
-              {item.label}
+              {({ isActive }) => (
+                <>
+                  <item.icon className={cn('h-4 w-4 shrink-0 transition-transform duration-150', isActive ? 'scale-110' : 'group-hover:scale-105')} />
+                  {item.label}
+                  {isActive && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_8px] shadow-primary/70" />}
+                </>
+              )}
             </NavLink>
           ))}
         </nav>
         <SidebarStatus />
       </aside>
-      <main className={cn('flex-1 overflow-y-auto', inLibrary ? 'p-6' : 'p-8')}>
-        <PageErrorBoundary key={location.pathname}>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/libraries" element={<Libraries />} />
-            <Route path="/libraries/:libraryId" element={<Libraries />} />
-            <Route path="/downloader" element={<Downloader />} />
-            <Route path="/jobs" element={<Jobs />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="*" element={<Dashboard />} />
-          </Routes>
-        </PageErrorBoundary>
+      <main className={cn('min-w-0 flex-1 overflow-y-auto', inLibrary ? 'p-6' : 'p-8')}>
+        <div key={location.pathname} className="animate-fade-up">
+          <PageErrorBoundary>
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/libraries" element={<Libraries />} />
+              <Route path="/libraries/:libraryId" element={<Libraries />} />
+              <Route path="/downloader" element={<Downloader />} />
+              <Route path="/jobs" element={<Jobs />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="*" element={<Dashboard />} />
+            </Routes>
+          </PageErrorBoundary>
+        </div>
       </main>
     </div>
   );

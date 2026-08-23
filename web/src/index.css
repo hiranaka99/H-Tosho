@@ -17,6 +17,52 @@
 
   --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+
+  /* Motion — one easing curve for entrances, short durations, fill both so
+     staggered items stay hidden until their delay elapses. */
+  --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --animate-fade-up: fade-up 0.5s var(--ease-out-soft) both;
+  --animate-fade-in: fade-in 0.4s ease both;
+  --animate-scale-in: scale-in 0.22s var(--ease-out-soft) both;
+  --animate-slide-in-right: slide-in-right 0.35s var(--ease-out-soft) both;
+  --animate-shimmer: shimmer 1.8s ease-in-out infinite;
+  --animate-toast-progress: toast-progress 5s linear both;
+  --animate-pulse-soft: pulse-soft 1.6s ease-in-out infinite;
+  --animate-indeterminate: indeterminate 1.4s ease-in-out infinite;
+
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes scale-in {
+    from { opacity: 0; transform: translateY(-4px) scale(0.97); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes slide-in-right {
+    from { opacity: 0; transform: translateX(24px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  @keyframes toast-progress {
+    from { transform: scaleX(1); }
+    to { transform: scaleX(0); }
+  }
+  @keyframes pulse-soft {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  @keyframes indeterminate {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+  }
 }
 
 html,
@@ -31,6 +77,22 @@ body {
   font-family: var(--font-sans);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Ambient glow behind everything — warm primary top-right, cool accent bottom-left. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(56rem 38rem at 88% -12%, rgb(249 115 22 / 0.07), transparent 62%),
+    radial-gradient(48rem 34rem at -12% 112%, rgb(59 130 246 / 0.05), transparent 62%);
+}
+
+::selection {
+  background: rgb(249 115 22 / 0.35);
 }
 
 * {
@@ -50,17 +112,49 @@ body {
   background: transparent;
 }
 
-@keyframes pulse-soft {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+/* Shimmering placeholder for loading content. */
+.skeleton {
+  border-radius: 0.5rem;
+  background: linear-gradient(100deg, var(--color-surface-2) 40%, #242a34 50%, var(--color-surface-2) 60%);
+  background-size: 200% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
 }
-.animate-pulse-soft {
-  animation: pulse-soft 1.6s ease-in-out infinite;
+
+/* Moving highlight stripe for in-progress bars. */
+.progress-stripes {
+  background-image: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.22), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s linear infinite;
 }
-@keyframes indeterminate {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(400%); }
+
+/* Radix dialog open/close — driven by data-state on the portal elements. */
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
-.animate-indeterminate {
-  animation: indeterminate 1.4s ease-in-out infinite;
+@keyframes dialog-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(6px) scale(0.98); }
+}
+.dialog-overlay[data-state="open"] {
+  animation: fade-in 0.2s ease both;
+}
+.dialog-overlay[data-state="closed"] {
+  animation: fade-in 0.15s ease reverse both;
+}
+.dialog-content[data-state="open"] {
+  animation: dialog-in 0.28s var(--ease-out-soft) both;
+}
+.dialog-content[data-state="closed"] {
+  animation: dialog-out 0.16s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

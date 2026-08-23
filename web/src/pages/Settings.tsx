@@ -2,7 +2,7 @@ import * as React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, KeyRound } from 'lucide-react';
 import { api, getAuthToken, setAuthToken, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings } from '../lib/api';
-import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader } from '../components/ui';
 import { cn } from '../lib/utils';
 
 type Agg = SettingsType['aggregation'];
@@ -143,12 +143,9 @@ export function Settings() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="text-xl font-semibold">Settings</h1>
-        <p className="text-sm text-muted">Connect Kavita, configure providers, aggregation and notifications.</p>
-      </div>
+      <PageHeader icon={<SlidersHorizontal className="h-5 w-5" />} title="Settings" subtitle="Connect Kavita, configure providers, aggregation and notifications." />
 
-      <Card>
+      <Card className="animate-fade-up">
         <SectionHeader icon={<Server className="h-4 w-4" />} title="Kavita connection">
           <Badge tone={kavita?.data?.configured && !kavita.data.error ? 'success' : kavita?.data?.configured ? 'danger' : 'muted'}>
             {kavita?.data?.configured
@@ -182,7 +179,7 @@ export function Settings() {
           </div>
         </CardContent>
       </Card>
-      <Card>
+      <Card className="animate-fade-up" style={{ animationDelay: '60ms' }}>
         <SectionHeader icon={<KeyRound className="h-4 w-4" />} title="API access token">
           <SaveButton label="Save token" onClick={saveToken} disabled={!tokenInput.trim()} />
         </SectionHeader>
@@ -195,7 +192,7 @@ export function Settings() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="animate-fade-up" style={{ animationDelay: '120ms' }}>
         <SectionHeader icon={<SlidersHorizontal className="h-4 w-4" />} title="Metadata providers">
           <SaveButton label="Save priority" onClick={() => savePriorities.mutate(order)} disabled={savePriorities.isPending} />
         </SectionHeader>
@@ -212,9 +209,9 @@ export function Settings() {
                   onDragStart={() => (dragIndex.current = idx)}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={() => onDrop(idx)}
-                  className="flex items-center gap-3 rounded-md border border-border bg-surface-2 p-2"
+                  className="flex items-center gap-3 rounded-lg border border-border bg-surface-2 p-2 transition-colors hover:border-border-2"
                 >
-                  <GripVertical className="h-4 w-4 cursor-grab text-muted" />
+                  <GripVertical className="h-4 w-4 shrink-0 cursor-grab text-muted active:cursor-grabbing" />
                   <span className="w-6 text-center text-xs text-muted">{idx + 1}</span>
                   <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: p.color }} />
                   <span className="flex-1 text-sm font-medium">{p.name}</span>
@@ -245,13 +242,13 @@ export function Settings() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="animate-fade-up" style={{ animationDelay: '180ms' }}>
         <SectionHeader icon={<SlidersHorizontal className="h-4 w-4" />} title="Aggregation">
           <SaveButton label={aggFlash.saved ? 'Saved' : 'Save'} onClick={() => { saveAgg.mutate(agg); aggFlash.flash(); }} disabled={saveAgg.isPending} />
         </SectionHeader>
         <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {AGG_LABELS.map((a) => (
-            <div key={a.key} className="flex items-center justify-between rounded-md border border-border bg-surface-2 p-3">
+            <div key={a.key} className="flex items-center justify-between rounded-lg border border-border bg-surface-2 p-3 transition-colors hover:border-border-2">
               <div>
                 <p className="text-sm">{a.label}</p>
                 <p className="text-xs text-muted">{a.hint}</p>
@@ -262,7 +259,7 @@ export function Settings() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="animate-fade-up" style={{ animationDelay: '240ms' }}>
         <SectionHeader icon={<SlidersHorizontal className="h-4 w-4" />} title="Field sourcing">
           <SaveButton label={fieldsFlash.saved ? 'Saved' : 'Save'} onClick={() => { saveFields.mutate(fieldConfig); fieldsFlash.flash(); }} disabled={saveFields.isPending} />
         </SectionHeader>
@@ -286,7 +283,7 @@ export function Settings() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="animate-fade-up" style={{ animationDelay: '300ms' }}>
         <SectionHeader icon={<Bell className="h-4 w-4" />} title="Notifications">
           <div className="flex items-center gap-2">
             <SaveButton label={notifFlash.saved ? 'Saved' : 'Save'} onClick={() => { saveNotif.mutate(notif); notifFlash.flash(); }} disabled={saveNotif.isPending} />
@@ -319,7 +316,7 @@ export function Settings() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="animate-fade-up" style={{ animationDelay: '360ms' }}>
         <SectionHeader icon={<Timer className="h-4 w-4" />} title="Auto-scan interval">
           <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => { savePoll.mutate(); pollFlash.flash(); }} disabled={savePoll.isPending || !poll || Number(poll) < 1} />
         </SectionHeader>
@@ -401,7 +398,7 @@ function DownloaderSettingsCard() {
   }
 
   return (
-    <Card>
+    <Card className="animate-fade-up" style={{ animationDelay: '420ms' }}>
       <SectionHeader icon={<Download className="h-4 w-4" />} title="Doujinshi downloader">
         <SaveButton label={flash.saved ? 'Saved' : 'Save'} onClick={() => { save.mutate(dlSettings); flash.flash(); }} disabled={save.isPending} />
       </SectionHeader>
