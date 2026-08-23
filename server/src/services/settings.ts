@@ -204,6 +204,14 @@ export function setLibraryOverride(lib: LibraryOverride): void {
     .run();
 }
 
+/** Effective provider order for a library (override-aware, enabled providers only). */
+export function providerOrderFor(libraryId?: number): string[] {
+  const { enabledProviders } = getCredentialMap();
+  const base =
+    libraryId !== undefined ? getLibraryOverride(libraryId)?.priority ?? getProviderPriorities() : getProviderPriorities();
+  return base.filter((id) => enabledProviders.includes(id));
+}
+
 export function clearLibraryOverrides(libraryIds: number[]): void {
   const db = getDb();
   for (const id of libraryIds) {

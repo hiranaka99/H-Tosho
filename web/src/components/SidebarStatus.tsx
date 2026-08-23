@@ -14,6 +14,7 @@ const JOB_LABEL: Record<string, string> = {
   'match-series': 'Match series',
   'sync-series': 'Sync series',
   'clear-overrides': 'Clear overrides',
+  'mangadex-catalog': 'MangaDex catalog',
 };
 
 function jobLabel(job: Job): string {

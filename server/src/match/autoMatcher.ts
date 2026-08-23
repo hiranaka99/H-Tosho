@@ -35,6 +35,12 @@ export interface AutoMatchOptions {
   /** Credentials map: providerId -> Record<string,string>. */
   credentials: Record<string, Record<string, string>>;
   enabledProviders: string[];
+  /**
+   * Pre-scored candidates from non-live sources (e.g. the local MangaDex adult
+   * catalog). Merged into the candidate pool after provider searches; scored
+   * with the same titleScore machinery so selection logic is unchanged.
+   */
+  extraCandidates?: CandidateMatch[];
 }
 
 /**
@@ -87,6 +93,8 @@ export async function autoMatch(
     }
   }
 
+  // Merge pre-scored local candidates (e.g. MangaDex adult catalog) into the pool.
+  if (options.extraCandidates?.length) candidates.push(...options.extraCandidates);
   candidates.sort((a, b) => b.score - a.score);
   const best = candidates[0] ?? null;
   return {

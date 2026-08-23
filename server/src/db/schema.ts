@@ -53,6 +53,27 @@ export const seriesMatches = sqliteTable('series_matches', {
     .notNull()
     .default(sql`(current_timestamp)`),
 });
+/**
+ * Local index of MangaDex adult-rated titles (suggestive/erotica/pornographic).
+ * Chapterless manga are absent from MangaDex's title search index, so mature
+ * series are matched against this cached catalog instead.
+ */
+export const mangadexCatalog = sqliteTable('mangadex_catalog', {
+  mangaId: text('manga_id').primaryKey(),
+  titleEn: text('title_en'),
+  originalTitle: text('original_title'),
+  altTitlesJson: text('alt_titles_json').notNull().default('[]'),
+  descriptionEn: text('description_en'),
+  year: integer('year'),
+  status: text('status'),
+  contentRating: text('content_rating'),
+  malId: text('mal_id'),
+  alId: text('al_id'),
+  muId: text('mu_id'),
+  /** MangaDex updatedAt (ISO) — used for incremental refresh high-water mark. */
+  mdUpdatedAt: text('md_updated_at').notNull(),
+  fetchedAt: text('fetched_at').notNull(),
+});
 
 export const jobs = sqliteTable('jobs', {
   id: integer('id').primaryKey({ autoIncrement: true }),

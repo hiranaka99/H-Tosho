@@ -60,6 +60,7 @@ export function Settings() {
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const providers = useQuery({ queryKey: ['providers'], queryFn: api.providers });
   const kavita = useQuery({ queryKey: ['kavita-status'], queryFn: api.kavitaStatus });
+  const catalog = useQuery({ queryKey: ['mangadex-catalog'], queryFn: api.mangadexCatalog, refetchInterval: 30_000 });
   const s = settings.data;
   const provs = providers.data ?? [];
 
@@ -80,6 +81,10 @@ export function Settings() {
     if (s) setOrder(s.priorities);
   }, [s?.priorities]);
   const savePriorities = useMutation({ mutationFn: api.savePriorities, onSuccess: invalidate('settings') });
+  const buildCatalog = useMutation({
+    mutationFn: () => api.enqueue('mangadex-catalog'),
+    onSuccess: () => { invalidate('jobs')(); },
+  });
   const onDrop = (to: number) => {
     const from = dragIndex.current;
     dragIndex.current = null;
@@ -205,6 +210,19 @@ export function Settings() {
             {provs.map((p) => (
               <ProviderCreds key={p.id} provider={p} onChanged={invalidate('providers')} />
             ))}
+          </div>
+          <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
+            <div>
+              <p className="text-xs font-semibold text-muted">MangaDex adult catalog</p>
+              <p className="text-xs text-muted">
+                {catalog.data && catalog.data.count > 0
+                  ? `${catalog.data.count.toLocaleString()} titles · last refreshed ${new Date(catalog.data.lastRefreshedAt ?? Date.now()).toLocaleString()}`
+                  : 'Not built yet — adult-catalog matching is unavailable until it is.'}
+              </p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => buildCatalog.mutate()} disabled={buildCatalog.isPending}>
+              {buildCatalog.isPending ? 'Queued…' : 'Build / refresh'}
+            </Button>
           </div>
         </CardContent>
       </Card>

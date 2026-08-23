@@ -76,6 +76,39 @@ export function similarity(a: string, b: string): number {
 }
 
 /**
+ * Strip volume markers, normalize and canonicalize a title into its
+ * comparable form.
+ */
+export function canonicalTitle(raw: string): string {
+  return canonicalize(normalizeTitle(stripVolumeMarkers(raw)));
+}
+
+/** Score two already-canonicalized titles (see canonicalTitle). */
+export function scoreCanonical(a: string, b: string): number {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+
+  const ta = new Set(a.split(' '));
+  const tb = new Set(b.split(' '));
+
+  // Token containment: every token of the shorter title appears in the other.
+  // (Substring containment is unsafe: titles that normalize to fragments like
+  // "re" would match inside unrelated words such as "harem".)
+  const [small, large] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
+  let contained = true;
+  for (const w of small) {
+    if (!large.has(w)) { contained = false; break; }
+  }
+  if (contained) return 0.92;
+
+  let inter = 0;
+  ta.forEach((w) => { if (tb.has(w)) inter++; });
+  const jaccard = inter / (ta.size + tb.size - inter || 1);
+  const lev = similarity(a, b);
+  return Math.max(0.5 * lev + 0.5 * jaccard, Math.min(lev, jaccard) * 0.95);
+}
+
+/**
  * Combined title score combining:
  *  - exact canonical match (1.0)
  *  - containment (one title contained in the other)
@@ -83,19 +116,7 @@ export function similarity(a: string, b: string): number {
  *  - Levenshtein similarity
  */
 export function titleScore(kavitaTitle: string, candidateTitle: string): number {
-  const a = canonicalize(normalizeTitle(stripVolumeMarkers(kavitaTitle)));
-  const b = canonicalize(normalizeTitle(stripVolumeMarkers(candidateTitle)));
-  if (!a || !b) return 0;
-  if (a === b) return 1;
-  if (a.includes(b) || b.includes(a)) return 0.92;
-
-  const ta = new Set(a.split(' '));
-  const tb = new Set(b.split(' '));
-  let inter = 0;
-  ta.forEach((w) => { if (tb.has(w)) inter++; });
-  const jaccard = inter / (ta.size + tb.size - inter || 1);
-  const lev = similarity(a, b);
-  return Math.max(0.5 * lev + 0.5 * jaccard, Math.min(lev, jaccard) * 0.95);
+  return scoreCanonical(canonicalTitle(kavitaTitle), canonicalTitle(candidateTitle));
 }
 
 /** Year bonus/penalty for candidate matches. */

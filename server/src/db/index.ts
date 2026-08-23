@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,7 +40,7 @@ export function getTmpDir(): string {
   return TMP_DIR;
 }
 
-type Db = ReturnType<typeof drizzle<typeof schema>>;
+export type Db = BetterSQLite3Database<typeof schema>;
 
 let db: Db | null = null;
 
@@ -252,6 +252,21 @@ CREATE TABLE IF NOT EXISTS series_matches (
   last_synced_at TEXT,
   created_at TEXT NOT NULL DEFAULT (current_timestamp),
   updated_at TEXT NOT NULL DEFAULT (current_timestamp)
+);
+CREATE TABLE IF NOT EXISTS mangadex_catalog (
+  manga_id TEXT PRIMARY KEY,
+  title_en TEXT,
+  original_title TEXT,
+  alt_titles_json TEXT NOT NULL DEFAULT '[]',
+  description_en TEXT,
+  year INTEGER,
+  status TEXT,
+  content_rating TEXT,
+  mal_id TEXT,
+  al_id TEXT,
+  mu_id TEXT,
+  md_updated_at TEXT NOT NULL,
+  fetched_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

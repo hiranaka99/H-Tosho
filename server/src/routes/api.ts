@@ -24,9 +24,11 @@ import {
   setPollInterval,
   setProviderPriorities,
   setProviderSetting,
+  providerOrderFor,
 } from '../services/settings.js';
 import { jobQueue, type JobType } from '../jobs/queue.js';
-import { autoMatch, fetchAggregatedMetadata } from '../match/autoMatcher.js';
+import { autoMatch, fetchAggregatedMetadata, type CandidateMatch } from '../match/autoMatcher.js';
+import { catalogCandidates, catalogStatus, isMatureAgeRating } from '../match/mangadexCatalog.js';
 import { applyToKavita, fetchCover } from '../services/sync.js';
 import { testNotification } from '../notify/dispatcher.js';
 import { getDownloaderSettings, setDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
@@ -207,11 +209,16 @@ api.get('/series/:id/identify', async (c) => {
     const seriesId = Number(c.req.param('id'));
     const series = await client.getSeriesById(seriesId);
     const { credentials, enabledProviders } = getCredentialMap();
-    const outcome = await autoMatch(series, {
-      providerOrder: getProviderPriorities().filter((id) => enabledProviders.includes(id)),
-      credentials,
-      enabledProviders,
-    });
+    const providerOrder = providerOrderFor(series.libraryId);
+    // The local MangaDex adult catalog covers chapterless titles that are
+    // invisible to live title search. Flagged-mature series match fuzzily;
+    // others only on exact title match (see catalogCandidates).
+    let extraCandidates: CandidateMatch[] = [];
+    if (providerOrder.includes('mangadex')) {
+      const meta = await client.getSeriesMetadata(seriesId).catch(() => null);
+      extraCandidates = catalogCandidates(series.name, isMatureAgeRating(meta?.ageRating));
+    }
+    const outcome = await autoMatch(series, { providerOrder, credentials, enabledProviders, extraCandidates });
     // MangaDex's cover CDN serves a placeholder card to third-party browser
     // Referers (anything but mangadex.org / "localhost"), so route candidate
     // covers through the same-origin media proxy.
@@ -346,6 +353,11 @@ api.post('/providers/:id/test', async (c) => {
   } catch (e) {
     return c.json({ ok: false, error: errMsg(e) });
   }
+});
+
+/** Status of the local MangaDex adult-title catalog (used by Settings UI). */
+api.get('/mangadex/catalog', (c) => {
+  return c.json(catalogStatus());
 });
 
 api.get('/settings', (c) => {
