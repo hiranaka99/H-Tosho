@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { eq } from 'drizzle-orm';
+import type { CandidateMatch } from '../src/match/autoMatcher.js';
 
 // Isolated DB before the db module loads.
 process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-fixes-'));
@@ -23,6 +24,8 @@ const { setNotificationSettings, getNotificationSettings, parseNotificationSetti
 const { anilistProvider } = await import('../src/providers/anilist.js');
 const { mediaRouter, mediaProxyUrl } = await import('../src/routes/media.js');
 const { searchCatalog, invalidateCatalogCache } = await import('../src/match/mangadexCatalog.js');
+const { enqueueMatchForNewSeries } = await import('../src/services/sync.js');
+const { autoMatch } = await import('../src/match/autoMatcher.js');
 
 describe('fetchJson error contract', () => {
   it('throws on non-2xx by default', async () => {
@@ -54,29 +57,28 @@ describe('notification settings validation', () => {
       .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: '{"discord":{"enabled":true}}' } })
       .run();
     const s = getNotificationSettings();
-    assert.deepEqual(s, { discord: { enabled: false, webhookUrl: '' }, apprise: { enabled: false, url: '' } });
+    assert.deepEqual(s, { discord: { enabled: false, webhookUrl: '' } });
   });
 
   it('rejects wrong shapes in parseNotificationSettings', () => {
     assert.equal(parseNotificationSettings(null), null);
     assert.equal(parseNotificationSettings({}), null);
-    assert.equal(parseNotificationSettings({ discord: { enabled: true }, apprise: { enabled: false, url: '' } }), null);
-    const ok = parseNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://x' }, apprise: { enabled: false, url: '' } });
+    assert.equal(parseNotificationSettings({ discord: { enabled: true } }), null);
+    const ok = parseNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://x' } });
     assert.ok(ok);
   });
 });
 
 describe('dispatcher status handling', () => {
   it('reports a bad Discord webhook as a failure, not ok', async () => {
-    setNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://discord.com/api/webhooks/bad' }, apprise: { enabled: false, url: '' } });
+    setNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://discord.com/api/webhooks/bad' } });
     globalThis.fetch = (async () => new Response('forbidden', { status: 403 })) as typeof fetch;
     const out = await testNotification();
     assert.match(out.discord, /HTTP 403/);
-    assert.equal(out.apprise, 'disabled');
   });
 
   it('retries once after Retry-After on 429', async () => {
-    setNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://discord.com/api/webhooks/rate' }, apprise: { enabled: false, url: '' } });
+    setNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://discord.com/api/webhooks/rate' } });
     let calls = 0;
     globalThis.fetch = (async () => {
       calls++;
@@ -88,14 +90,6 @@ describe('dispatcher status handling', () => {
     assert.equal(calls, 2);
   });
 
-  it('reports an unreachable Apprise endpoint', async () => {
-    setNotificationSettings({ discord: { enabled: false, webhookUrl: '' }, apprise: { enabled: true, url: 'http://127.0.0.1:1/apprise' } });
-    globalThis.fetch = (async () => {
-      throw new Error('fetch failed');
-    }) as unknown as typeof fetch;
-    const out = await testNotification();
-    assert.match(out.apprise, /unreachable/);
-  });
 });
 
 describe('job queue fixes', () => {
@@ -127,6 +121,76 @@ describe('job queue fixes', () => {
   it('cancel of a finished job returns false', () => {
     const id = insertJob('completed');
     assert.equal(jobQueue.cancel(id), false);
+  });
+});
+
+describe('new-series matching trigger', () => {
+  // No real handler is needed; a stub keeps enqueued jobs from failing.
+  jobQueue.registerHandler(async () => ({}));
+
+  const seriesList = (ids: number[]) =>
+    ids.map((id) => ({ id, libraryId: 7, name: `S${id}`, slug: String(id), bookCount: 0 }));
+
+  it('enqueues a match job only for series new to Kavita and H-Tosho', async () => {
+    // 101 was already processed (row exists); 102 was in the pre-rescan snapshot; 103 is brand new.
+    getDb().insert(schema.seriesMatches).values({ kavitaSeriesId: 101, status: 'matched' }).run();
+    const fresh = await enqueueMatchForNewSeries({ getSeries: async () => seriesList([101, 102, 103]) }, 7, new Set([102]));
+    assert.deepEqual(fresh, [103]);
+    const job = jobQueue.list().find((j) => j.type === 'match-series' && (j.payload.seriesIds ?? []).includes(103));
+    assert.ok(job);
+    assert.deepEqual(job!.payload.seriesIds, [103]);
+  });
+
+  it('enqueues nothing when the rescan adds no unknown series', async () => {
+    const fresh = await enqueueMatchForNewSeries({ getSeries: async () => seriesList([201]) }, 7, new Set([201]));
+    assert.deepEqual(fresh, []);
+  });
+});
+
+describe('autoMatch candidate dedup', () => {
+  it('collapses a title found in both live search and the local catalog', async () => {
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.startsWith('https://api.mangadex.org/manga?')) {
+        return Response.json({
+          result: 'ok',
+          response: 'collection',
+          data: [
+            { id: 'dup-1', attributes: { title: { en: '#Gal x Gal Yuri' }, year: 2025, description: { en: 'live desc' } }, relationships: [] },
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const catalogDup: CandidateMatch = {
+      providerId: 'mangadex',
+      providerSeriesId: 'dup-1',
+      title: '#Gal x Gal Yuri',
+      type: 'MANGA',
+      year: 2025,
+      summary: 'catalog desc',
+      score: 1.0,
+      fromProvider: {
+        providerId: 'mangadex',
+        providerSeriesId: 'dup-1',
+        title: '#Gal x Gal Yuri',
+        type: 'MANGA',
+        year: 2025,
+        summary: 'catalog desc',
+      },
+    };
+
+    const outcome = await autoMatch({ id: 1, name: '#Gal x Gal Yuri' }, {
+      providerOrder: ['mangadex'],
+      credentials: {},
+      enabledProviders: ['mangadex'],
+      extraCandidates: [catalogDup],
+    });
+
+    assert.equal(outcome.candidates.filter((c) => c.providerSeriesId === 'dup-1').length, 1);
+    // Ties keep the live result (pushed before the catalog merge).
+    assert.equal(outcome.best?.summary, 'live desc');
   });
 });
 

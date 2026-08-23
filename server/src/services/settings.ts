@@ -255,12 +255,10 @@ export function setPollInterval(minutes: number): void {
 /** Notification delivery configuration. */
 export interface NotificationSettings {
   discord: { enabled: boolean; webhookUrl: string };
-  apprise: { enabled: boolean; url: string };
 }
 
 export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   discord: { enabled: false, webhookUrl: '' },
-  apprise: { enabled: false, url: '' },
 };
 
 /**
@@ -272,12 +270,9 @@ export function parseNotificationSettings(v: unknown): NotificationSettings | nu
   if (!v || typeof v !== 'object') return null;
   const o = v as Record<string, unknown>;
   const discord = o.discord as Record<string, unknown> | undefined;
-  const apprise = o.apprise as Record<string, unknown> | undefined;
   if (!discord || typeof discord.enabled !== 'boolean' || typeof discord.webhookUrl !== 'string') return null;
-  if (!apprise || typeof apprise.enabled !== 'boolean' || typeof apprise.url !== 'string') return null;
   return {
     discord: { enabled: discord.enabled, webhookUrl: discord.webhookUrl },
-    apprise: { enabled: apprise.enabled, url: apprise.url },
   };
 }
 

@@ -67,6 +67,11 @@ export function Settings() {
 
   const invalidate = (key: string) => () => qc.invalidateQueries({ queryKey: [key] });
   const conn = React.useState({ baseUrl: '', apiKey: '' });
+  // Hydrate the stored base URL on load / after save. The auth key is never
+  // returned by the server — a set key is shown as "Set" in the placeholder.
+  React.useEffect(() => {
+    if (kavita?.data) conn[1]((prev) => ({ ...prev, baseUrl: kavita.data.baseUrl ?? '' }));
+  }, [kavita?.data]);
   const [kavitaMsg, setKavitaMsg] = React.useState<{ ok: boolean; text: string } | null>(null);
   const kavitaSave = useMutation({
     mutationFn: api.saveConnection,
@@ -117,13 +122,13 @@ export function Settings() {
   const fieldsFlash = useFlash(invalidate('settings'));
   const saveFields = useMutation({ mutationFn: saveFieldConfigRequest });
 
-  const [notif, setNotif] = React.useState<Notif>({ discord: { enabled: false, webhookUrl: '' }, apprise: { enabled: false, url: '' } });
+  const [notif, setNotif] = React.useState<Notif>({ discord: { enabled: false, webhookUrl: '' } });
   React.useEffect(() => {
     if (s) setNotif(s.notifications);
   }, [s?.notifications]);
   const notifFlash = useFlash(invalidate('settings'));
   const saveNotif = useMutation({ mutationFn: api.saveNotifications });
-  const [notifMsg, setNotifMsg] = React.useState<{ discord: string; apprise: string } | null>(null);
+  const [notifMsg, setNotifMsg] = React.useState<{ discord: string } | null>(null);
   const testNotif = useMutation({ mutationFn: api.testNotifications, onSuccess: (r) => setNotifMsg(r) });
 
   const [poll, setPoll] = React.useState('30');
@@ -163,11 +168,11 @@ export function Settings() {
             </div>
             <div className="flex flex-col gap-1">
               <Label>Auth Key</Label>
-              <Input type="password" value={conn[0].apiKey} onChange={(e) => conn[1]({ ...conn[0], apiKey: e.target.value })} placeholder="your Kavita Auth Key" />
+              <Input type="password" value={conn[0].apiKey} onChange={(e) => conn[1]({ ...conn[0], apiKey: e.target.value })} placeholder={kavita?.data?.hasApiKey ? 'Set' : 'your Kavita Auth Key'} />
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <Button onClick={() => kavitaSave.mutate(conn[0])} disabled={kavitaSave.isPending || !conn[0].baseUrl || !conn[0].apiKey}>
+            <Button onClick={() => kavitaSave.mutate(conn[0])} disabled={kavitaSave.isPending || !conn[0].baseUrl}>
               {kavitaSave.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Server className="h-3.5 w-3.5" />} Save & test connection
             </Button>
             {kavitaMsg && (
@@ -300,17 +305,9 @@ export function Settings() {
             </div>
             <Input value={notif.discord.webhookUrl} onChange={(e) => setNotif((n) => ({ ...n, discord: { ...n.discord, webhookUrl: e.target.value } }))} placeholder="https://discord.com/api/webhooks/…" />
           </div>
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <p className="text-sm">Apprise</p>
-              <Switch checked={notif.apprise.enabled} onCheckedChange={(c) => setNotif((n) => ({ ...n, apprise: { ...n.apprise, enabled: c } }))} />
-            </div>
-            <Input value={notif.apprise.url} onChange={(e) => setNotif((n) => ({ ...n, apprise: { ...n.apprise, url: e.target.value } }))} placeholder="ntfy://, gotify://, discord://, telegram://…" />
-          </div>
           {notifMsg && (
             <div className="flex flex-col gap-1 rounded-md border border-border bg-surface-2 p-3 text-xs">
-              <span className={notifMsg.discord.startsWith('OK') ? 'text-success' : 'text-danger'}>Discord: {notifMsg.discord}</span>
-              <span className={notifMsg.apprise.startsWith('OK') ? 'text-success' : 'text-danger'}>Apprise: {notifMsg.apprise}</span>
+              <span className={notifMsg.discord === 'ok' ? 'text-success' : 'text-danger'}>Discord: {notifMsg.discord}</span>
             </div>
           )}
         </CardContent>
@@ -452,7 +449,7 @@ function DownloaderSettingsCard() {
 }
 
 function ProviderCreds({ provider, onChanged }: { provider: ProviderInfo; onChanged: () => void }) {
-  const [creds, setCreds] = React.useState<Record<string, string>>({});
+  const [creds, setCreds] = React.useState<Record<string, string>>(provider.credentials ?? {});
   const test = useMutation({ mutationFn: () => api.testProvider(provider.id), onSuccess: (r) => setTestMsg(r) });
   const [testMsg, setTestMsg] = React.useState<{ ok: boolean; error?: string } | null>(null);
   const [saved, setSaved] = React.useState(false);

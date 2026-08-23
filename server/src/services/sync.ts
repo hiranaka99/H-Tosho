@@ -11,6 +11,7 @@ import type { KavitaVolume } from '../kavita/types.js';
 import type { AggregationOptions } from './settings.js';
 import { getKavitaConnection, getNotificationSettings } from './settings.js';
 import { notify } from '../notify/dispatcher.js';
+import { jobQueue } from '../jobs/queue.js';
 
 /** Fields H-Tosho can push to a Kavita series. */
 export interface ApplyResult {
@@ -208,7 +209,7 @@ export async function applyToKavita(
 
   // Notifications (fire-and-forget)
   const notif = getNotificationSettings();
-  if (notif.discord.enabled || notif.apprise.enabled) {
+  if (notif.discord.enabled) {
     notify({
       title: errors.length ? `Sync failed: ${opts.title}` : `Updated: ${opts.title}`,
       body: `${meta.providerId} - ${pushed.join(', ') || 'no fields'}`,
@@ -301,4 +302,22 @@ export function getConnectedClient(): KavitaClient | null {
   const conn = getKavitaConnection();
   if (!conn.baseUrl || !conn.apiKey) return null;
   return new KavitaClient(conn.baseUrl, conn.apiKey);
+}
+
+/**
+ * Diff a library's current series against a pre-rescan snapshot and enqueue a
+ * match-series job for exactly the titles that appeared — new to Kavita AND
+ * never processed by H-Tosho before. Existing series are never re-matched.
+ * Returns the enqueued series IDs (empty when nothing is new).
+ */
+export async function enqueueMatchForNewSeries(
+  client: Pick<KavitaClient, 'getSeries'>,
+  libraryId: number,
+  seenIds: ReadonlySet<number>,
+): Promise<number[]> {
+  const series = await client.getSeries(libraryId);
+  const known = new Set(getDb().select().from(schema.seriesMatches).all().map((r) => r.kavitaSeriesId));
+  const fresh = series.filter((s) => !seenIds.has(s.id) && !known.has(s.id)).map((s) => s.id);
+  if (fresh.length > 0) jobQueue.enqueue('match-series', { seriesIds: fresh });
+  return fresh;
 }

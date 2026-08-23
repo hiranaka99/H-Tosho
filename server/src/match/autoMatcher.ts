@@ -95,12 +95,23 @@ export async function autoMatch(
 
   // Merge pre-scored local candidates (e.g. MangaDex adult catalog) into the pool.
   if (options.extraCandidates?.length) candidates.push(...options.extraCandidates);
-  candidates.sort((a, b) => b.score - a.score);
-  const best = candidates[0] ?? null;
+  // The same title can surface from both live search and a local catalog
+  // (adult titles are indexed in both). Collapse duplicates by provider +
+  // series id, keeping the higher score; ties keep the live result, which
+  // was pushed before the catalog merge.
+  const deduped = new Map<string, CandidateMatch>();
+  for (const c of candidates) {
+    const key = `${c.providerId}:${c.providerSeriesId}`;
+    const prev = deduped.get(key);
+    if (!prev || c.score > prev.score) deduped.set(key, c);
+  }
+  const merged = [...deduped.values()];
+  merged.sort((a, b) => b.score - a.score);
+  const best = merged[0] ?? null;
   return {
     matched: !!best && best.score >= threshold,
     best,
-    candidates: candidates.slice(0, 10),
+    candidates: merged.slice(0, 10),
     searchedProviders,
     errors,
   };

@@ -671,8 +671,11 @@ class DownloadQueue {
     return file;
   }
 
-  /** Best-effort Kavita rescan so newly written media appears immediately. */
-  private async triggerKavitaScan(_outputPath: string): Promise<void> {
+  /**
+   * Best-effort Kavita rescan so newly written media appears immediately, then
+   * match exactly the series the rescan registered (existing ones untouched).
+   */
+  private async triggerKavitaScan(outputPath: string): Promise<void> {
     try {
       const { getKavitaConnection } = await import('../services/settings.js');
       const conn = getKavitaConnection();
@@ -683,9 +686,17 @@ class DownloadQueue {
       // Normalize separators first — Kavita reports '/' while Windows paths use '\\'.
       const norm = (p: string): string => path.normalize(p).replace(/\\/g, '/');
       const libraries = await client.getLibraries();
-      const matched = libraries.find((l) => l.path && norm(_outputPath).startsWith(norm(l.path)));
-      if (matched) await client.scanLibrary(matched.id);
-      else await client.scanAllLibraries();
+      const matched = libraries.find((l) => l.path && norm(outputPath).startsWith(norm(l.path)));
+      if (!matched) {
+        await client.scanAllLibraries();
+        return; // Library unknown — the periodic scan picks up whatever appears.
+      }
+      // Snapshot current series so only what this rescan adds gets matched.
+      const seen = new Set((await client.getSeries(matched.id)).map((s) => s.id));
+      await client.scanLibrary(matched.id);
+      const { enqueueMatchForNewSeries } = await import('../services/sync.js');
+      const fresh = await enqueueMatchForNewSeries(client, matched.id, seen);
+      if (fresh.length > 0) console.log(`[h-tosho] auto-matching ${fresh.length} new series in "${matched.name}"`);
     } catch {
       // Auto-sync is best-effort; never fail the download over it.
     }

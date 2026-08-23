@@ -115,8 +115,10 @@ function FieldRow({ row, checked, onToggle }: { row: DiffRow; checked?: boolean;
   return (
     <div className="grid grid-cols-2 gap-2 border-b border-border py-1.5 text-xs last:border-0">
       <div className="flex min-w-0 items-start gap-1.5">
-        {showCheckbox && (
+        {showCheckbox ? (
           <input type="checkbox" checked={!!checked} onChange={onToggle} className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]" />
+        ) : (
+          <span className="w-3.5 shrink-0" />
         )}
         <span className="w-20 shrink-0 text-muted">{row.label}</span>
         {merge ? (
@@ -396,10 +398,14 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
 
               {selected && diff && (
                 <div className="rounded-md border border-border">
-                  <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-                    <div className="w-24" />
-                    <div className="text-xs font-semibold text-muted">Current (Kavita)</div>
-                    <div className="flex flex-1 items-center gap-2 text-xs font-semibold text-primary">
+                  {/* Mirrors the row grid so each header label sits above its column. */}
+                  <div className="grid grid-cols-2 gap-2 border-b border-border px-3 py-2 text-xs">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="w-3.5 shrink-0" />
+                      <span className="w-20 shrink-0" />
+                      <span className="font-semibold text-muted">Current (Kavita)</span>
+                    </div>
+                    <div className="flex min-w-0 items-center gap-2 font-semibold text-primary">
                       {PROVIDER_NAMES[selected.providerId] ?? selected.providerId} (candidate)
                       {preview.isPending && <Spinner />}
                     </div>
@@ -431,6 +437,7 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
                     ))}
                     <div className="grid grid-cols-2 gap-2 py-2 text-xs">
                       <div className="flex items-center gap-1.5">
+                        <span className="w-3.5 shrink-0" />
                         <span className="w-20 shrink-0 text-muted">Cover</span>
                         <CoverThumb src={`/api/kavita/series/${seriesId}/cover`} alt="Current cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
                       </div>

@@ -23,8 +23,8 @@ which is distinct from the Kavita *server* build number (e.g. `0.9.0.2`).
   evaluated in configurable provider order, with library-level overrides.
 - **Modern dark-mode dashboard** — live job monitoring, side-by-side metadata
   diff, and drag-and-drop provider prioritization.
-- **Discord + Apprise notifications** — push formatted updates (with cover
-  art) when items are matched/updated.
+- **Discord notifications** — push formatted updates (with cover art) when
+  items are matched/updated.
 
 ## Supported providers
 

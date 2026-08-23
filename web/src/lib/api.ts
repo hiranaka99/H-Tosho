@@ -99,6 +99,7 @@ export interface ProviderInfo {
   credentialFields: { key: string; label: string }[];
   enabled: boolean;
   hasCredentials: boolean;
+  credentials: Record<string, string>;
 }
 
 export interface Settings {
@@ -108,7 +109,6 @@ export interface Settings {
   fields: string[];
   notifications: {
     discord: { enabled: boolean; webhookUrl: string };
-    apprise: { enabled: boolean; url: string };
   };
   pollInterval: number;
 }
@@ -310,6 +310,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const api = {
   kavitaStatus: () => request<{
     configured: boolean;
+    baseUrl?: string;
+    hasApiKey?: boolean;
     version?: string | null;
     apiVersion?: string;
     error?: string | null;
@@ -360,7 +362,7 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ notifications }),
     }),
-  testNotifications: () => request<{ discord: string; apprise: string }>('/settings/notifications/test', {
+  testNotifications: () => request<{ discord: string }>('/settings/notifications/test', {
     method: 'PUT',
   }),
   savePollInterval: (minutes: number) =>

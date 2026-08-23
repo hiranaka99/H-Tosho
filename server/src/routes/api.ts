@@ -90,23 +90,28 @@ api.get('/health', (c) => c.json({ ok: true, name: 'h-tosho', time: new Date().t
 
 api.get('/kavita/status', async (c) => {
   const conn = getKavitaConnection();
-  if (!conn.baseUrl || !conn.apiKey) return c.json({ configured: false });
+  // The API key itself is never returned; the UI only needs to know it exists.
+  if (!conn.baseUrl || !conn.apiKey) return c.json({ configured: false, baseUrl: conn.baseUrl, hasApiKey: Boolean(conn.apiKey) });
   try {
     const info = await new KavitaClient(conn.baseUrl, conn.apiKey).testConnection();
-    return c.json({ configured: true, version: info.version, apiVersion: KAVITA_OPENAPI_VERSION, error: null });
+    return c.json({ configured: true, baseUrl: conn.baseUrl, hasApiKey: true, version: info.version, apiVersion: KAVITA_OPENAPI_VERSION, error: null });
   } catch (e) {
-    return c.json({ configured: true, version: null, apiVersion: KAVITA_OPENAPI_VERSION, error: errMsg(e) });
+    return c.json({ configured: true, baseUrl: conn.baseUrl, hasApiKey: true, version: null, apiVersion: KAVITA_OPENAPI_VERSION, error: errMsg(e) });
   }
 });
 
 api.post('/kavita/connection', async (c) => {
-  const body = (await c.req.json()) as { baseUrl: string; apiKey: string };
-  if (!body.baseUrl || !body.apiKey) return c.json({ error: 'baseUrl and apiKey are required' }, 400);
-  setKavitaConnection(body);
+  const body = (await c.req.json()) as { baseUrl: string; apiKey?: string };
+  if (!body.baseUrl) return c.json({ error: 'baseUrl is required' }, 400);
+  // A blank key keeps the stored one, so the UI can change the URL without
+  // re-entering the secret (the server never returns it).
+  const apiKey = body.apiKey?.trim() ? body.apiKey.trim() : getKavitaConnection().apiKey;
+  if (!apiKey) return c.json({ error: 'apiKey is required' }, 400);
+  setKavitaConnection({ baseUrl: body.baseUrl, apiKey });
   let test: string;
   let connected: boolean;
   try {
-    const info = await new KavitaClient(body.baseUrl, body.apiKey).testConnection();
+    const info = await new KavitaClient(body.baseUrl, apiKey).testConnection();
     test = `Connected (Kavita ${info.version})`;
     connected = true;
   } catch (e) {
@@ -361,6 +366,7 @@ api.get('/providers', (c) => {
       credentialFields: CREDENTIAL_FIELDS[id] ?? [],
       enabled: s.enabled,
       hasCredentials: Object.values(s.credentials).some((v) => v && v.length > 0),
+      credentials: s.credentials,
     };
   });
   return c.json(out);
@@ -426,7 +432,7 @@ api.put('/settings/notifications', async (c) => {
   const body = (await c.req.json().catch(() => null)) as { notifications?: unknown } | null;
   const parsed = parseNotificationSettings(body?.notifications);
   if (!parsed) {
-    return c.json({ error: 'Invalid notification settings: expected { discord: { enabled, webhookUrl }, apprise: { enabled, url } }' }, 400);
+    return c.json({ error: 'Invalid notification settings: expected { discord: { enabled, webhookUrl } }' }, 400);
   }
   setNotificationSettings(parsed);
   return c.json({ ok: true });

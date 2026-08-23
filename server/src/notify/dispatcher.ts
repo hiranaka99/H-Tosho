@@ -21,14 +21,9 @@ function truncate(s: string, max: number): string {
 
 export async function notify(n: Notification): Promise<void> {
   const settings = getNotificationSettings();
-  const tasks: Promise<unknown>[] = [];
   if (settings.discord.enabled && settings.discord.webhookUrl) {
-    tasks.push(sendDiscord(n, settings.discord.webhookUrl));
+    await sendDiscord(n, settings.discord.webhookUrl);
   }
-  if (settings.apprise.enabled && settings.apprise.url) {
-    tasks.push(sendApprise(n, settings.apprise.url));
-  }
-  await Promise.allSettled(tasks);
 }
 
 /**
@@ -75,30 +70,10 @@ async function sendDiscord(n: Notification, webhookUrl: string): Promise<void> {
   await postDiscord(webhookUrl, embed);
 }
 
-async function sendApprise(n: Notification, appriseUrl: string): Promise<void> {
-  const form = new URLSearchParams();
-  form.set('url', appriseUrl);
-  form.set('title', n.title);
-  form.set('body', n.body);
-  const base = appriseUrl.startsWith('http') ? appriseUrl.replace(/\/+$/, '') : appriseUrl;
-  const endpoint = base.includes('/notify') ? base : base + '/notify';
-  let res: Response;
-  try {
-    res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: form.toString(),
-      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
-    });
-  } catch (e) {
-    throw new Error(`Apprise unreachable: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (!res.ok) throw new Error('Apprise HTTP ' + res.status);
-}
 
-export async function testNotification(): Promise<{ discord: string; apprise: string }> {
+export async function testNotification(): Promise<{ discord: string }> {
   const settings = getNotificationSettings();
-  const out = { discord: 'disabled', apprise: 'disabled' };
+  const out = { discord: 'disabled' };
   if (settings.discord.enabled && settings.discord.webhookUrl) {
     try {
       await sendDiscord(
@@ -108,17 +83,6 @@ export async function testNotification(): Promise<{ discord: string; apprise: st
       out.discord = 'ok';
     } catch (e) {
       out.discord = e instanceof Error ? e.message : 'failed';
-    }
-  }
-  if (settings.apprise.enabled && settings.apprise.url) {
-    try {
-      await sendApprise(
-        { title: 'H-Tosho test', body: 'Apprise works.', success: true },
-        settings.apprise.url,
-      );
-      out.apprise = 'ok';
-    } catch (e) {
-      out.apprise = e instanceof Error ? e.message : 'failed';
     }
   }
   return out;
