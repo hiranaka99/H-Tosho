@@ -278,7 +278,15 @@ export function Libraries() {
       </div>
 
       {identify && (
-        <IdentifyModal seriesId={identify.id} seriesName={identify.name} currentMetadata={currentMeta.data?.metadata ?? null} onClose={() => setIdentify(null)} />
+        <IdentifyModal
+          seriesId={identify.id}
+          current={{
+            name: currentMeta.data?.series.name ?? identify.name,
+            sortName: currentMeta.data?.series.sortName,
+            metadata: currentMeta.data?.kavita ?? null,
+          }}
+          onClose={() => setIdentify(null)}
+        />
       )}
     </div>
   );

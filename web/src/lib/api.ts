@@ -28,6 +28,44 @@ export interface SeriesRow {
   errorMessage?: string | null;
 }
 
+export interface KavitaTag {
+  id: number;
+  title: string | null;
+}
+
+export interface KavitaPerson {
+  id: number;
+  name: string | null;
+}
+
+/** Subset of Kavita's series metadata DTO that H-Tosho displays and edits. */
+export interface KavitaSeriesMetadata {
+  summary: string | null;
+  genres: KavitaTag[] | null;
+  tags: KavitaTag[] | null;
+  writers: KavitaPerson[] | null;
+  coverArtists: KavitaPerson[] | null;
+  publishers: KavitaPerson[] | null;
+  /** H-Tosho writes provider "artists" into Kavita's penciller role. */
+  pencillers: KavitaPerson[] | null;
+  imprints: KavitaPerson[] | null;
+  ageRating: number;
+  releaseYear: number;
+  language: string | null;
+  publicationStatus: number;
+  webLinks: string | null;
+}
+
+export interface KavitaSeriesView {
+  id: number;
+  libraryId: number;
+  name: string;
+  sortName?: string;
+  slug: string;
+  bookCount: number;
+  cover?: string;
+}
+
 export interface ProviderInfo {
   id: string;
   name: string;
@@ -111,6 +149,7 @@ export interface SeriesMetadata {
   imprints: string[];
   ageRating?: number;
   rating?: number;
+  language?: string;
   status?: string;
   url?: string;
 }
@@ -256,9 +295,10 @@ export const api = {
 
   series: (id: number) =>
     request<{
-      series: Record<string, unknown>;
+      series: KavitaSeriesView;
       match: Record<string, unknown> | null;
       metadata: SeriesMetadata | null;
+      kavita: KavitaSeriesMetadata | null;
     }>(`/series/${id}`),
   identify: (id: number) => request<MatchOutcome>(`/series/${id}/identify`),
   apply: (id: number, providerId: string, providerSeriesId: string) =>
@@ -266,6 +306,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ providerId, providerSeriesId }),
     }),
+
+  /** Aggregated metadata a candidate would sync — same path as apply. */
+  providerMetadata: (providerId: string, providerSeriesId: string) =>
+    request<SeriesMetadata>(`/providers/${providerId}/series/${providerSeriesId}`),
 
   providers: () => request<ProviderInfo[]>('/providers'),
   saveProvider: (id: string, setting: { enabled?: boolean; credentials?: Record<string, string> }) =>

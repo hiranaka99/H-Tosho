@@ -186,7 +186,14 @@ api.get('/series/:id', async (c) => {
         metadata = null;
       }
     }
-    return c.json({ series, match: row ?? null, metadata });
+    // Live Kavita metadata for the identify diff ("current" column).
+    let kavita = null;
+    try {
+      kavita = await client.getSeriesMetadata(seriesId);
+    } catch {
+      /* series may not have a metadata row yet */
+    }
+    return c.json({ series, match: row ?? null, metadata, kavita });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }
@@ -256,6 +263,27 @@ api.post('/series/:id/apply', async (c) => {
       })
       .run();
     return c.json(result);
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
+/**
+ * Fetch aggregated metadata for a specific provider series — the same
+ * fetch/blend path Apply & Sync uses, so the identify dialog can preview
+ * exactly what would be pushed to Kavita.
+ */
+api.get('/providers/:id/series/:seriesId', async (c) => {
+  const provider = getProvider(c.req.param('id'));
+  if (!provider) return c.json({ error: 'Unknown provider' }, 404);
+  try {
+    const { credentials, enabledProviders } = getCredentialMap();
+    const meta = await fetchAggregatedMetadata(
+      { providerId: provider.id, providerSeriesId: c.req.param('seriesId') },
+      { providerOrder: getProviderPriorities(), credentials, enabledProviders },
+      getGlobalFieldConfig(),
+    );
+    return c.json(meta);
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

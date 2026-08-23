@@ -1,37 +1,125 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Search, Sparkles, AlertTriangle, Check, X, ArrowRight } from 'lucide-react';
-import { api, type MatchOutcome, type SeriesMetadata } from '../lib/api';
+import {
+  api,
+  type MatchOutcome,
+  type SeriesMetadata,
+  type KavitaSeriesMetadata,
+  type KavitaTag,
+  type KavitaPerson,
+} from '../lib/api';
 import { PROVIDER_NAMES, cn } from '../lib/utils';
 import { Button, Dialog, DialogContent, Label, ProviderBadge, Spinner } from './ui';
 
+/** Display labels for Kavita's numeric enums. */
+const AGE_RATING_LABELS: Record<number, string> = {
+  [-1]: 'Not applicable',
+  0: 'Unknown',
+  1: 'Pending',
+  2: 'Early childhood',
+  3: 'Everyone',
+  4: 'G',
+  5: '10+',
+  6: 'PG',
+  7: 'Kids to adults',
+  8: 'Teen',
+  9: '15+',
+  10: '17+',
+  11: 'Mature',
+  12: 'R18+',
+  13: 'Adults only',
+  14: 'X18+',
+};
+
+const STATUS_LABELS: Record<number, string> = {
+  0: 'Ongoing',
+  1: 'Hiatus',
+  2: 'Completed',
+  3: 'Cancelled',
+  4: 'Ended',
+};
+
+/** Maps the unified provider status onto Kavita's publicationStatus value. */
+const CANDIDATE_STATUS: Record<string, number | null> = {
+  ONGOING: 0,
+  HIATUS: 1,
+  COMPLETED: 2,
+  CANCELLED: 3,
+  UNKNOWN: null,
+};
+
+interface CurrentKavita {
+  name: string;
+  sortName?: string;
+  metadata: KavitaSeriesMetadata | null;
+}
+
 interface IdentifyModalProps {
   seriesId: number;
-  seriesName: string;
-  currentMetadata: SeriesMetadata | null;
+  current: CurrentKavita;
   onClose: () => void;
 }
 
-function FieldRow({ label, current, candidate }: { label: string; current: string; candidate: string }) {
-  const differs = current.trim().toLowerCase() !== candidate.trim().toLowerCase();
+const tagNames = (tags: KavitaTag[] | null | undefined): string =>
+  (tags ?? []).map((t) => t.title).filter(Boolean).join(', ');
+
+const peopleNames = (people: KavitaPerson[] | null | undefined): string =>
+  (people ?? []).map((p) => p.name).filter(Boolean).join(', ');
+
+/** Mirrors the server's releaseYear resolution (year, else releaseDate). */
+function candidateYear(meta: SeriesMetadata | undefined, fallbackYear?: number): string {
+  if (meta?.year && meta.year >= 1 && meta.year <= 9999) return String(meta.year);
+  if (meta?.releaseDate) {
+    const y = Number(meta.releaseDate.slice(0, 4));
+    if (y >= 1 && y <= 9999) return String(y);
+  }
+  return fallbackYear ? String(fallbackYear) : '';
+}
+
+interface DiffRow {
+  label: string;
+  current: string;
+  candidate: string;
+  /** Render the summary with more breathing room. */
+  multiline?: boolean;
+}
+
+function FieldRow({ row }: { row: DiffRow }) {
+  const differs =
+    row.current.trim() !== '' &&
+    row.candidate.trim() !== '' &&
+    row.current.trim().toLowerCase() !== row.candidate.trim().toLowerCase();
+  const clamp = row.multiline ? 'line-clamp-4' : 'line-clamp-2';
   return (
     <div className="grid grid-cols-2 gap-2 border-b border-border py-1.5 text-xs last:border-0">
-      <div className="flex items-center gap-1.5">
-        <span className="w-20 shrink-0 text-muted">{label}</span>
-        <span className={cn('truncate', differs && 'text-muted line-through')} title={current}>
-          {current || '—'}
+      <div className="flex min-w-0 items-start gap-1.5">
+        <span className="w-20 shrink-0 text-muted">{row.label}</span>
+        <span className={cn('min-w-0 flex-1', clamp, differs && 'text-muted line-through')} title={row.current}>
+          {row.current || '—'}
         </span>
       </div>
-      <div className="flex items-center gap-1.5">
-        <span className={cn('truncate font-medium', differs && 'text-primary')} title={candidate}>
-          {candidate || '—'}
+      <div className="flex min-w-0 items-start gap-1.5">
+        <span className={cn('min-w-0 flex-1 font-medium', clamp, differs && 'text-primary')} title={row.candidate}>
+          {row.candidate || '—'}
         </span>
       </div>
     </div>
   );
 }
 
-export function IdentifyModal({ seriesId, seriesName, currentMetadata, onClose }: IdentifyModalProps) {
+function CoverThumb({ src, alt }: { src?: string | null; alt: string }) {
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => {
+    setFailed(false);
+  }, [src]);
+  if (!src || failed) return <span className="text-muted">—</span>;
+  return (
+    <img src={src} alt={alt} loading="lazy" onError={() => setFailed(true)} className="h-14 w-10 shrink-0 rounded object-cover" />
+  );
+}
+
+export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps) {
   const qc = useQueryClient();
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
 
@@ -56,16 +144,58 @@ export function IdentifyModal({ seriesId, seriesName, currentMetadata, onClose }
   const selected = outcome?.candidates.find((c) => c.providerId + ':' + c.providerSeriesId === selectedId);
   const autoBest = outcome?.best;
 
+  // Full aggregated metadata for the selected candidate — fetched through the
+  // same path Apply & Sync uses, so the diff previews exactly what will push.
+  const preview = useQuery({
+    queryKey: ['identify-preview', selected?.providerId, selected?.providerSeriesId],
+    queryFn: () => api.providerMetadata(selected!.providerId, selected!.providerSeriesId),
+    enabled: !!selected,
+  });
+
+  const k = current.metadata;
+
   const diff = React.useMemo(() => {
     if (!selected) return null;
-    const cur = currentMetadata;
-    return {
-      title: { current: cur?.title ?? seriesName, candidate: selected.title },
-      type: { current: cur?.type ?? '', candidate: selected.type },
-      year: { current: cur?.year ? String(cur.year) : '', candidate: selected.year ? String(selected.year) : '' },
-      summary: { current: cur?.summary ?? '', candidate: selected.summary ?? '' },
-    };
-  }, [selected, currentMetadata, seriesName]);
+    const m = preview.data;
+    const candStatus = m?.status != null ? (CANDIDATE_STATUS[m.status] ?? null) : null;
+    const rows: DiffRow[] = [
+      { label: 'Title', current: current.name, candidate: m?.title ?? selected.title },
+      { label: 'Sort title', current: current.sortName ?? '', candidate: m?.sortTitle ?? '' },
+      { label: 'Type', current: '', candidate: selected.type },
+      {
+        label: 'Year',
+        current: k && k.releaseYear > 0 ? String(k.releaseYear) : '',
+        candidate: candidateYear(m, selected.year),
+      },
+      {
+        label: 'Summary',
+        current: k?.summary ?? '',
+        candidate: m?.summary ?? selected.summary ?? '',
+        multiline: true,
+      },
+      { label: 'Genres', current: tagNames(k?.genres), candidate: m ? m.genres.join(', ') : '' },
+      { label: 'Tags', current: tagNames(k?.tags), candidate: m ? m.tags.join(', ') : '' },
+      { label: 'Writers', current: peopleNames(k?.writers), candidate: m ? m.writers.join(', ') : '' },
+      // H-Tosho writes provider artists into Kavita's penciller role.
+      { label: 'Artists', current: peopleNames(k?.pencillers), candidate: m ? m.artists.join(', ') : '' },
+      { label: 'Publishers', current: peopleNames(k?.publishers), candidate: m ? m.publishers.join(', ') : '' },
+      { label: 'Imprints', current: peopleNames(k?.imprints), candidate: m ? m.imprints.join(', ') : '' },
+      {
+        label: 'Age rating',
+        current: k ? (AGE_RATING_LABELS[k.ageRating] ?? String(k.ageRating)) : '',
+        candidate: m && m.ageRating != null ? (AGE_RATING_LABELS[m.ageRating] ?? String(m.ageRating)) : '',
+      },
+      { label: 'Rating', current: '', candidate: m && m.rating != null ? `${m.rating}/5` : '' },
+      { label: 'Language', current: k?.language ?? '', candidate: m?.language ?? '' },
+      {
+        label: 'Status',
+        current: k ? (STATUS_LABELS[k.publicationStatus] ?? '') : '',
+        candidate: candStatus != null ? (STATUS_LABELS[candStatus] ?? '') : '',
+      },
+      { label: 'URL', current: k?.webLinks ?? '', candidate: m?.url ?? '' },
+    ];
+    return { rows, coverCandidate: m?.coverUrl ?? selected.coverUrl };
+  }, [selected, preview.data, current, k]);
 
   const doApply = (ids: { providerId: string; providerSeriesId: string }) => {
     apply.mutate(ids);
@@ -74,10 +204,10 @@ export function IdentifyModal({ seriesId, seriesName, currentMetadata, onClose }
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-4xl">
-        <div className="flex flex-col gap-4 p-5">
+        <div className="flex max-h-[90vh] flex-col gap-4 overflow-y-auto p-5">
           <div className="flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-primary" />
-            <h2 className="text-base font-semibold">Identify "{seriesName}"</h2>
+            <h2 className="text-base font-semibold">Identify "{current.name}"</h2>
           </div>
 
           {identify.isPending && (
@@ -117,7 +247,7 @@ export function IdentifyModal({ seriesId, seriesName, currentMetadata, onClose }
                 <div className="text-xs text-muted">{outcome.candidates.length} found</div>
               </div>
 
-              <div className="max-h-[46vh] overflow-y-auto rounded-md border border-border">
+              <div className="max-h-[38vh] overflow-y-auto rounded-md border border-border">
                 {outcome.candidates.length === 0 && <p className="p-4 text-sm text-muted">No candidates found across providers.</p>}
                 {outcome.candidates.map((c) => {
                   const key = c.providerId + ':' + c.providerSeriesId;
@@ -133,7 +263,7 @@ export function IdentifyModal({ seriesId, seriesName, currentMetadata, onClose }
                         className="flex h-14 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-surface-2"
                         style={{ border: isSelected ? '1px solid var(--color-primary)' : '1px solid var(--color-border)' }}
                       >
-                        {c.coverUrl ? <img src={c.coverUrl} alt="" className="h-full w-full object-cover" loading="lazy" /> : <Search className="h-4 w-4 text-muted" />}
+                        {c.coverUrl ? <img src={c.coverUrl} alt="" className="h-full w-full object-cover" loading="lazy" /> : <Search className="h-4 text-muted" />}
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
@@ -155,15 +285,30 @@ export function IdentifyModal({ seriesId, seriesName, currentMetadata, onClose }
                   <div className="flex items-center gap-2 border-b border-border px-3 py-2">
                     <div className="w-24" />
                     <div className="text-xs font-semibold text-muted">Current (Kavita)</div>
-                    <div className="flex-1 text-xs font-semibold text-primary">
+                    <div className="flex flex-1 items-center gap-2 text-xs font-semibold text-primary">
                       {PROVIDER_NAMES[selected.providerId] ?? selected.providerId} (candidate)
+                      {preview.isPending && <Spinner />}
                     </div>
                   </div>
-                  <div className="px-3">
-                    <FieldRow label="Title" current={diff.title.current} candidate={diff.title.candidate} />
-                    <FieldRow label="Type" current={diff.type.current} candidate={diff.type.candidate} />
-                    <FieldRow label="Year" current={diff.year.current} candidate={diff.year.candidate} />
-                    <FieldRow label="Summary" current={diff.summary.current} candidate={diff.summary.candidate} />
+                  {preview.isError && (
+                    <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs text-danger">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      Couldn't load candidate metadata: {preview.error instanceof Error ? preview.error.message : String(preview.error)}
+                    </div>
+                  )}
+                  <div className="max-h-[40vh] overflow-y-auto px-3">
+                    {diff.rows.map((row) => (
+                      <FieldRow key={row.label} row={row} />
+                    ))}
+                    <div className="grid grid-cols-2 gap-2 py-2 text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-20 shrink-0 text-muted">Cover</span>
+                        <CoverThumb src={`/api/kavita/series/${seriesId}/cover`} alt="Current cover" />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <CoverThumb src={diff.coverCandidate} alt="Candidate cover" />
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}

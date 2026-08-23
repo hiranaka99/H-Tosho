@@ -10,6 +10,7 @@ export interface CandidateMatch {
   type: string;
   year?: number;
   coverUrl?: string;
+  summary?: string;
   score: number;
   fromProvider: SearchResult;
 }
@@ -71,6 +72,7 @@ export async function autoMatch(
           type: r.type,
           year: r.year,
           coverUrl: r.coverUrl,
+          summary: r.summary,
           score,
           fromProvider: r,
         });
