@@ -17,7 +17,7 @@ which is distinct from the Kavita *server* build number (e.g. `0.9.0.2`).
 - **Extensible provider engine** — a unified `MetadataProvider` interface plus
   a registry makes adding/removing metadata sources trivial.
 - **Field-level aggregation** — blend fields across providers (e.g. summary
-  from MangaUpdates, tags from AniList, cover from MangaDex) with per-field
+  from AniList, cover and volume covers from MangaDex) with per-field
   sourcing overrides.
 - **Priority-driven matching** — fuzzy, normalization-aware title matching
   evaluated in configurable provider order, with library-level overrides.
@@ -31,7 +31,6 @@ which is distinct from the Kavita *server* build number (e.g. `0.9.0.2`).
 | Provider | API | Notes |
 | --- | --- | --- |
 | AniList | GraphQL | Primary source for manga & light novels |
-| MangaUpdates | HTML | No official API; tolerant HTML parser |
 | MangaDex | REST | No credentials required |
 | MyAnimeList | REST | Requires Client ID |
 

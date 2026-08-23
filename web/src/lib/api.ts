@@ -163,6 +163,8 @@ export interface MatchOutcome {
     title: string;
   };
   candidates: SearchResult[];
+  /** Providers that were actually consulted, in evaluation order. */
+  searchedProviders: string[];
 }
 
 // ---------------- Doujinshi downloader types ----------------
@@ -305,10 +307,10 @@ export const api = {
       kavita: KavitaSeriesMetadata | null;
     }>(`/series/${id}`),
   identify: (id: number) => request<MatchOutcome>(`/series/${id}/identify`),
-  apply: (id: number, providerId: string, providerSeriesId: string) =>
+  apply: (id: number, providerId: string, providerSeriesId: string, opts?: { excludedFields?: string[]; cover?: boolean }) =>
     request<{ pushed: string[]; errors: string[] }>(`/series/${id}/apply`, {
       method: 'POST',
-      body: JSON.stringify({ providerId, providerSeriesId }),
+      body: JSON.stringify({ providerId, providerSeriesId, ...opts }),
     }),
 
   /** Aggregated metadata a candidate would sync — same path as apply. */

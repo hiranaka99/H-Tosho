@@ -18,14 +18,12 @@ export const STATUS_LABEL: Record<MatchStatus, string> = {
 /** Provider accent colors (mirrors backend provider.color). */
 export const PROVIDER_COLORS: Record<string, string> = {
   anilist: '#02b968',
-  mangaupdates: '#ff5555',
   mangadex: '#f4c145',
   myanimelist: '#3b82f6',
 };
 
 export const PROVIDER_NAMES: Record<string, string> = {
   anilist: 'AniList',
-  mangaupdates: 'MangaUpdates',
   mangadex: 'MangaDex',
   myanimelist: 'MyAnimeList',
 };

@@ -83,24 +83,33 @@ interface DiffRow {
   candidate: string;
   /** Render the summary with more breathing room. */
   multiline?: boolean;
+  /** Syncable field key (server EXCLUDABLE_FIELDS); rows without one are informational only. */
+  field?: string;
 }
 
-function FieldRow({ row }: { row: DiffRow }) {
+function FieldRow({ row, checked, onToggle }: { row: DiffRow; checked?: boolean; onToggle?: () => void }) {
   const differs =
     row.current.trim() !== '' &&
     row.candidate.trim() !== '' &&
     row.current.trim().toLowerCase() !== row.candidate.trim().toLowerCase();
   const clamp = row.multiline ? 'line-clamp-4' : 'line-clamp-2';
+  const showCheckbox = !!row.field && row.candidate.trim() !== '' && !!onToggle;
   return (
     <div className="grid grid-cols-2 gap-2 border-b border-border py-1.5 text-xs last:border-0">
       <div className="flex min-w-0 items-start gap-1.5">
+        {showCheckbox && (
+          <input type="checkbox" checked={!!checked} onChange={onToggle} className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]" />
+        )}
         <span className="w-20 shrink-0 text-muted">{row.label}</span>
         <span className={cn('min-w-0 flex-1', clamp, differs && 'text-muted line-through')} title={row.current}>
           {row.current || '—'}
         </span>
       </div>
       <div className="flex min-w-0 items-start gap-1.5">
-        <span className={cn('min-w-0 flex-1 font-medium', clamp, differs && 'text-primary')} title={row.candidate}>
+        <span
+          className={cn('min-w-0 flex-1 font-medium', clamp, differs && 'text-primary', showCheckbox && !checked && 'text-muted line-through opacity-60')}
+          title={row.candidate}
+        >
           {row.candidate || '—'}
         </span>
       </div>
@@ -132,6 +141,15 @@ function CandidateCover({ src }: { src?: string }) {
 export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps) {
   const qc = useQueryClient();
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [tab, setTab] = React.useState('all');
+  const [excluded, setExcluded] = React.useState<ReadonlySet<string>>(new Set());
+  const [coverEnabled, setCoverEnabled] = React.useState(true);
+
+  // A fresh selection starts with every syncable field opted in.
+  React.useEffect(() => {
+    setExcluded(new Set());
+    setCoverEnabled(true);
+  }, [selectedId]);
 
   const identify = useQuery({
     queryKey: ['identify', seriesId],
@@ -140,7 +158,8 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
   });
 
   const apply = useMutation({
-    mutationFn: (ids: { providerId: string; providerSeriesId: string }) => api.apply(seriesId, ids.providerId, ids.providerSeriesId),
+    mutationFn: (p: { providerId: string; providerSeriesId: string; excludedFields?: string[]; cover?: boolean }) =>
+      api.apply(seriesId, p.providerId, p.providerSeriesId, { excludedFields: p.excludedFields, cover: p.cover }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['series', seriesId] });
       qc.invalidateQueries({ queryKey: ['library-series'] });
@@ -153,6 +172,18 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
   const outcome: MatchOutcome | undefined = identify.data;
   const selected = outcome?.candidates.find((c) => c.providerId + ':' + c.providerSeriesId === selectedId);
   const autoBest = outcome?.best;
+
+  // One tab per provider that was searched or returned candidates (search order).
+  const tabProviders = React.useMemo(() => {
+    if (!outcome) return [] as string[];
+    const ids = [...outcome.searchedProviders];
+    for (const c of outcome.candidates) if (!ids.includes(c.providerId)) ids.push(c.providerId);
+    return ids;
+  }, [outcome]);
+  const visibleCandidates = React.useMemo(() => {
+    if (!outcome) return [];
+    return tab === 'all' ? outcome.candidates : outcome.candidates.filter((c) => c.providerId === tab);
+  }, [outcome, tab]);
 
   // Full aggregated metadata for the selected candidate — fetched through the
   // same path Apply & Sync uses, so the diff previews exactly what will push.
@@ -169,46 +200,50 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
     const m = preview.data;
     const candStatus = m?.status != null ? (CANDIDATE_STATUS[m.status] ?? null) : null;
     const rows: DiffRow[] = [
-      { label: 'Title', current: current.name, candidate: m?.title ?? selected.title },
-      { label: 'Sort title', current: current.sortName ?? '', candidate: m?.sortTitle ?? '' },
+      { label: 'Title', current: current.name, candidate: m?.title ?? selected.title, field: 'title' },
+      { label: 'Sort title', current: current.sortName ?? '', candidate: m?.sortTitle ?? '', field: 'sortTitle' },
       { label: 'Type', current: '', candidate: selected.type },
       {
         label: 'Year',
         current: k && k.releaseYear > 0 ? String(k.releaseYear) : '',
         candidate: candidateYear(m, selected.year),
+        field: 'releaseDate',
       },
       {
         label: 'Summary',
         current: k?.summary ?? '',
         candidate: m?.summary ?? selected.summary ?? '',
         multiline: true,
+        field: 'summary',
       },
-      { label: 'Genres', current: tagNames(k?.genres), candidate: m ? m.genres.join(', ') : '' },
-      { label: 'Tags', current: tagNames(k?.tags), candidate: m ? m.tags.join(', ') : '' },
-      { label: 'Writers', current: peopleNames(k?.writers), candidate: m ? m.writers.join(', ') : '' },
+      { label: 'Genres', current: tagNames(k?.genres), candidate: m ? m.genres.join(', ') : '', field: 'genres' },
+      { label: 'Tags', current: tagNames(k?.tags), candidate: m ? m.tags.join(', ') : '', field: 'tags' },
+      { label: 'Writers', current: peopleNames(k?.writers), candidate: m ? m.writers.join(', ') : '', field: 'writers' },
       // H-Tosho writes provider artists into Kavita's penciller role.
-      { label: 'Artists', current: peopleNames(k?.pencillers), candidate: m ? m.artists.join(', ') : '' },
-      { label: 'Publishers', current: peopleNames(k?.publishers), candidate: m ? m.publishers.join(', ') : '' },
-      { label: 'Imprints', current: peopleNames(k?.imprints), candidate: m ? m.imprints.join(', ') : '' },
+      { label: 'Artists', current: peopleNames(k?.pencillers), candidate: m ? m.artists.join(', ') : '', field: 'artists' },
+      { label: 'Publishers', current: peopleNames(k?.publishers), candidate: m ? m.publishers.join(', ') : '', field: 'publishers' },
+      { label: 'Imprints', current: peopleNames(k?.imprints), candidate: m ? m.imprints.join(', ') : '', field: 'imprints' },
       {
         label: 'Age rating',
         current: k ? (AGE_RATING_LABELS[k.ageRating] ?? String(k.ageRating)) : '',
         candidate: m && m.ageRating != null ? (AGE_RATING_LABELS[m.ageRating] ?? String(m.ageRating)) : '',
+        field: 'ageRating',
       },
-      { label: 'Rating', current: '', candidate: m && m.rating != null ? `${m.rating}/5` : '' },
-      { label: 'Language', current: k?.language ?? '', candidate: m?.language ?? '' },
+      { label: 'Rating', current: '', candidate: m && m.rating != null ? `${m.rating}/5` : '', field: 'rating' },
+      { label: 'Language', current: k?.language ?? '', candidate: m?.language ?? '', field: 'language' },
       {
         label: 'Status',
         current: k ? (STATUS_LABELS[k.publicationStatus] ?? '') : '',
         candidate: candStatus != null ? (STATUS_LABELS[candStatus] ?? '') : '',
+        field: 'status',
       },
-      { label: 'URL', current: k?.webLinks ?? '', candidate: m?.url ?? '' },
+      { label: 'URL', current: k?.webLinks ?? '', candidate: m?.url ?? '', field: 'url' },
     ];
     return { rows, coverCandidate: m?.coverUrl ?? selected.coverUrl };
   }, [selected, preview.data, current, k]);
 
-  const doApply = (ids: { providerId: string; providerSeriesId: string }) => {
-    apply.mutate(ids);
+  const doApply = (ids: { providerId: string; providerSeriesId: string }, opts?: { excludedFields?: string[]; cover?: boolean }) => {
+    apply.mutate({ ...ids, ...opts });
   };
 
   return (
@@ -252,14 +287,29 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
                 </div>
               )}
 
-              <div className="flex items-center gap-3">
-                <Label className="text-sm">All candidates</Label>
-                <div className="text-xs text-muted">{outcome.candidates.length} found</div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  onClick={() => setTab('all')}
+                  className={cn('rounded-full border px-2.5 py-1 text-xs transition-colors', tab === 'all' ? 'border-primary bg-primary/15 font-medium text-primary' : 'border-border text-muted hover:bg-surface-2')}
+                >
+                  All ({outcome.candidates.length})
+                </button>
+                {tabProviders.map((id) => (
+                  <button
+                    key={id}
+                    onClick={() => setTab(id)}
+                    className={cn('rounded-full border px-2.5 py-1 text-xs transition-colors', tab === id ? 'border-primary bg-primary/15 font-medium text-primary' : 'border-border text-muted hover:bg-surface-2')}
+                  >
+                    {PROVIDER_NAMES[id] ?? id} ({outcome.candidates.filter((c) => c.providerId === id).length})
+                  </button>
+                ))}
               </div>
 
               <div className="max-h-[38vh] overflow-y-auto rounded-md border border-border">
-                {outcome.candidates.length === 0 && <p className="p-4 text-sm text-muted">No candidates found across providers.</p>}
-                {outcome.candidates.map((c) => {
+                {visibleCandidates.length === 0 && (
+                  <p className="p-4 text-sm text-muted">{tab === 'all' ? 'No candidates found across providers.' : `No candidates from ${PROVIDER_NAMES[tab] ?? tab}.`}</p>
+                )}
+                {visibleCandidates.map((c) => {
                   const key = c.providerId + ':' + c.providerSeriesId;
                   const isSelected = selectedId === key;
                   const isBest = autoBest?.providerId === c.providerId && autoBest?.providerSeriesId === c.providerSeriesId;
@@ -308,7 +358,22 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
                   )}
                   <div className="max-h-[40vh] overflow-y-auto px-3">
                     {diff.rows.map((row) => (
-                      <FieldRow key={row.label} row={row} />
+                      <FieldRow
+                        key={row.label}
+                        row={row}
+                        checked={!excluded.has(row.field ?? '')}
+                        onToggle={
+                          row.field
+                            ? () =>
+                                setExcluded((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(row.field!)) next.delete(row.field!);
+                                  else next.add(row.field!);
+                                  return next;
+                                })
+                            : undefined
+                        }
+                      />
                     ))}
                     <div className="grid grid-cols-2 gap-2 py-2 text-xs">
                       <div className="flex items-center gap-1.5">
@@ -316,7 +381,9 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
                         <CoverThumb src={`/api/kavita/series/${seriesId}/cover`} alt="Current cover" />
                       </div>
                       <div className="flex items-center gap-1.5">
+                        <input type="checkbox" checked={coverEnabled} onChange={(e) => setCoverEnabled(e.target.checked)} className="h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]" />
                         <CoverThumb src={diff.coverCandidate} alt="Candidate cover" />
+                        {!coverEnabled && <span className="text-muted">not synced</span>}
                       </div>
                     </div>
                   </div>
@@ -328,7 +395,7 @@ export function IdentifyModal({ seriesId, current, onClose }: IdentifyModalProps
                   <X className="h-4 w-4" /> Cancel
                 </Button>
                 <Button
-                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId })}
+                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { excludedFields: [...excluded], cover: coverEnabled })}
                   disabled={!selected || apply.isPending}
                 >
                   {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} Apply & Sync to Kavita

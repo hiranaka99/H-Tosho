@@ -1,6 +1,5 @@
 import type { MetadataProvider, MediaType } from './types.js';
 import { anilistProvider } from './anilist.js';
-import { mangaUpdatesProvider } from './mangaupdates.js';
 import { mangaDexProvider } from './mangadex.js';
 import { myAnimeListProvider } from './myanimelist.js';
 
@@ -11,7 +10,6 @@ import { myAnimeListProvider } from './myanimelist.js';
  */
 export const PROVIDERS: MetadataProvider[] = [
   anilistProvider,
-  mangaUpdatesProvider,
   mangaDexProvider,
   myAnimeListProvider,
 ];

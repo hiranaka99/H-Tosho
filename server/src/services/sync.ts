@@ -104,6 +104,25 @@ export function mergeTagLists(existing: string[], incoming: string[]): string[] 
   return out;
 }
 
+/** User-selectable sync fields (identify dialog checkboxes) -> payload property names. */
+const EXCLUDABLE_FIELDS: Record<string, string> = {
+  title: 'name',
+  sortTitle: 'sortName',
+  summary: 'summary',
+  genres: 'genres',
+  tags: 'tags',
+  writers: 'writers',
+  artists: 'artists',
+  publishers: 'publishers',
+  imprints: 'imprints',
+  ageRating: 'ageRating',
+  rating: 'rating',
+  releaseDate: 'releaseYear',
+  language: 'language',
+  status: 'publicationStatus',
+  url: 'webLinks',
+};
+
 /**
  * Apply matched metadata to a Kavita series:
  * 1. Read/merge/write identity and metadata fields
@@ -121,6 +140,8 @@ export async function applyToKavita(
     cover: Buffer | null;
     volumeCovers?: VolumeCover[];
     title: string;
+    /** Fields the user deselected in the identify dialog (EXCLUDABLE_FIELDS keys). */
+    excludedFields?: string[];
   },
 ): Promise<ApplyResult> {
   const errors: string[] = [];
@@ -130,6 +151,11 @@ export async function applyToKavita(
   let locked = false;
 
   const payload = buildSeriesPayload(meta, opts.agg, opts.fieldConfig);
+  // Drop fields the user explicitly deselected for this sync.
+  for (const f of opts.excludedFields ?? []) {
+    const prop = EXCLUDABLE_FIELDS[f];
+    if (prop) delete payload[prop as keyof typeof payload];
+  }
   // Merge provider tags with the series' existing Kavita tags instead of
   // replacing them (Kavita's metadata update is a full-field write).
   if (payload.tags) {

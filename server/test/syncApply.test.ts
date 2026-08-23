@@ -17,7 +17,7 @@ const { DEFAULT_AGGREGATION } = await import('../src/services/settings.js');
 initDb();
 
 interface CapturedPush {
-  patch: { tags?: string[] };
+  patch: { tags?: string[]; name?: string; summary?: string };
 }
 
 /** Stub client exposing only what applyToKavita touches; captures the pushed payload. */
@@ -77,5 +77,35 @@ describe('applyToKavita tag merging', () => {
     });
 
     assert.deepEqual(captured.patch.tags, ['Found family', 'New tag']);
+  });
+});
+
+describe('applyToKavita field exclusions', () => {
+  it('drops excluded fields from the pushed payload', async () => {
+    const { client, captured } = stubClient([]);
+    await applyToKavita(client, 3, { ...metadata, summary: 'A test.' }, {
+      agg: DEFAULT_AGGREGATION,
+      fieldConfig: {},
+      cover: null,
+      title: 'Test Series',
+      excludedFields: ['title', 'tags'],
+    });
+
+    assert.equal(captured.patch?.name, undefined);
+    assert.equal(captured.patch?.tags, undefined);
+    assert.equal(captured.patch?.summary, 'A test.');
+  });
+  it('still merges tags when only other fields are excluded', async () => {
+    const { client, captured } = stubClient(['Found Family']);
+    await applyToKavita(client, 4, metadata, {
+      agg: DEFAULT_AGGREGATION,
+      fieldConfig: {},
+      cover: null,
+      title: 'Test Series',
+      excludedFields: ['title'],
+    });
+
+    assert.equal(captured.patch.name, undefined);
+    assert.deepEqual(captured.patch.tags, ['Found Family', 'New tag']);
   });
 });

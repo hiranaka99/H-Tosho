@@ -248,7 +248,7 @@ api.get('/series/:id/identify', async (c) => {
 api.post('/series/:id/apply', async (c) => {
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
-  const body = (await c.req.json()) as { providerId: string; providerSeriesId: string };
+  const body = (await c.req.json()) as { providerId: string; providerSeriesId: string; excludedFields?: string[]; cover?: boolean };
   if (!body.providerId || !body.providerSeriesId) return c.json({ error: 'providerId and providerSeriesId required' }, 400);
   try {
     const seriesId = Number(c.req.param('id'));
@@ -260,12 +260,16 @@ api.post('/series/:id/apply', async (c) => {
       getGlobalFieldConfig(),
     );
     const agg = getAggregationOptions();
-    const cover = agg.replaceCover ? await fetchCover(client, meta.coverUrl) : null;
+    // Per-request overrides from the identify dialog: deselected fields are
+    // skipped, and unchecking Cover skips the series cover + volume covers.
+    const pushCovers = body.cover !== false && agg.replaceCover;
+    const cover = pushCovers ? await fetchCover(client, meta.coverUrl) : null;
     const result = await applyToKavita(client, seriesId, meta, {
       agg,
       fieldConfig: getGlobalFieldConfig(),
       cover,
-      volumeCovers: meta.volumeCovers,
+      volumeCovers: body.cover !== false ? meta.volumeCovers : undefined,
+      excludedFields: body.excludedFields ?? [],
       title: series.name,
     });
     const db = getDb();
