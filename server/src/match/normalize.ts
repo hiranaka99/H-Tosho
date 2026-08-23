@@ -83,6 +83,22 @@ export function canonicalTitle(raw: string): string {
   return canonicalize(normalizeTitle(stripVolumeMarkers(raw)));
 }
 
+/**
+ * Separator-delimited parts of a series name, for fallback provider searches.
+ * Kavita names often concatenate title + subtitle ("Aizome - Fill With LOVE")
+ * and provider title search matches per title field — the compound string
+ * matches nothing while each part does. Returns trimmed unique parts (>= 3
+ * chars, max 3); empty when the name has no separator to split on.
+ */
+export function titleSearchParts(raw: string): string[] {
+  const stripped = stripVolumeMarkers(raw).trim();
+  const parts = stripped
+    .split(/\s+[-–—]+\s*|\s*:\s*/)
+    .map((p) => p.trim())
+    .filter((p) => p.length >= 3);
+  return [...new Set(parts)].slice(0, 3);
+}
+
 /** Score two already-canonicalized titles (see canonicalTitle). */
 export function scoreCanonical(a: string, b: string): number {
   if (!a || !b) return 0;

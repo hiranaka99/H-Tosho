@@ -10,6 +10,8 @@ export interface SearchResult {
   providerId: string;
   providerSeriesId: string;
   title: string;
+  /** Alternate/romanized titles for matching — the display title may miss the one a folder name uses. */
+  altTitles?: string[];
   type: MediaType;
   year?: number;
   coverUrl?: string;

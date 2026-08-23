@@ -26,6 +26,7 @@ const { mediaRouter, mediaProxyUrl } = await import('../src/routes/media.js');
 const { searchCatalog, invalidateCatalogCache } = await import('../src/match/mangadexCatalog.js');
 const { enqueueMatchForNewSeries } = await import('../src/services/sync.js');
 const { autoMatch } = await import('../src/match/autoMatcher.js');
+const { titleSearchParts } = await import('../src/match/normalize.js');
 
 describe('fetchJson error contract', () => {
   it('throws on non-2xx by default', async () => {
@@ -217,6 +218,65 @@ describe('autoMatch candidate dedup', () => {
     });
 
     assert.equal(outcome.best?.providerSeriesId, 'high-1');
+  });
+});
+
+describe('autoMatch fallback search for compound names', () => {
+  it('retries separator-delimited parts when the full name matches nothing, scoring title variants', async () => {
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      if (!url.startsWith('https://api.mangadex.org/manga?')) throw new Error(`Unexpected fetch: ${url}`);
+      // The fallback part "Aizome" surfaces the real title: no English main
+      // title, only a romanized one plus an English altTitle.
+      if (url.includes('title=Aizome&')) {
+        return Response.json({
+          result: 'ok',
+          response: 'collection',
+          data: [
+            {
+              id: 'aizome-1',
+              attributes: {
+                title: { 'ja-ro': 'Aizome' },
+                altTitles: [{ en: 'Filled with LOVE' }],
+                year: 2020,
+                description: { en: 'd' },
+              },
+              relationships: [],
+            },
+          ],
+        });
+      }
+      // Full name and the other parts return only unrelated titles.
+      return Response.json({
+        result: 'ok',
+        response: 'collection',
+        data: [
+          { id: 'noise-1', attributes: { title: { en: 'A Picky Eater Wants to Fill Her Stomach with Love' }, year: 2016, description: { en: 'd' } }, relationships: [] },
+        ],
+      });
+    }) as typeof fetch;
+
+    const outcome = await autoMatch({ id: 1, name: 'Aizome - Fill With LOVE' }, {
+      providerOrder: ['mangadex'],
+      credentials: {},
+      enabledProviders: ['mangadex'],
+    });
+
+    assert.equal(outcome.matched, true);
+    assert.equal(outcome.best?.providerSeriesId, 'aizome-1');
+    // The displayed title is the variant matching the folder name (romanized),
+    // not the picked English altTitle ("Filled with LOVE", which alone scores
+    // below threshold).
+    assert.equal(outcome.best?.title, 'Aizome');
+  });
+
+  it('splits compound names into search parts', () => {
+    assert.deepEqual(titleSearchParts('Aizome - Fill With LOVE'), ['Aizome', 'Fill With LOVE']);
+    assert.deepEqual(titleSearchParts('Title: Subtitle'), ['Title', 'Subtitle']);
+    assert.deepEqual(titleSearchParts('Plain Title'), ['Plain Title']);
+    // Short parts are dropped; the list is capped at three.
+    assert.deepEqual(titleSearchParts('x - Aizome'), ['Aizome']);
+    assert.deepEqual(titleSearchParts('Alpha - Beta - Gamma - Delta'), ['Alpha', 'Beta', 'Gamma']);
   });
 });
 

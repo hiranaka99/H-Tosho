@@ -1,6 +1,6 @@
 import { getProvider } from '../providers/registry.js';
-import { AUTO_MATCH_THRESHOLD, canonicalTitle, titleScore } from './normalize.js';
 import type { SearchResult, SeriesMetadata, MediaType } from '../providers/types.js';
+import { AUTO_MATCH_THRESHOLD, canonicalTitle, titleScore, titleSearchParts } from './normalize.js';
 import type { KavitaSeries } from '../kavita/types.js';
 
 export interface CandidateMatch {
@@ -44,8 +44,30 @@ export interface AutoMatchOptions {
 }
 
 /**
+ * Score a search result against the series name across every known title
+ * variant (display title + provider alternates). Returns the best score and
+ * the variant that achieved it, so candidates display the name the folder
+ * actually matches. Ties keep the display title.
+ */
+function bestVariant(seriesName: string, r: SearchResult): { score: number; title: string } {
+  let score = titleScore(seriesName, r.title);
+  let title = r.title;
+  for (const alt of r.altTitles ?? []) {
+    const s = titleScore(seriesName, alt);
+    if (s > score) {
+      score = s;
+      title = alt;
+    }
+  }
+  return { score, title };
+}
+
+/**
  * Auto-matcher: evaluates providers in priority order and returns the best
  * candidate above threshold. Stops early on a high-confidence exact match.
+ * When the full series name scores nothing usable, retries each
+ * separator-delimited part of the name (see titleSearchParts) so compound
+ * Kavita names like "Aizome - Fill With LOVE" still find their bare title.
  */
 export async function autoMatch(
   series: Pick<KavitaSeries, 'name' | 'id'>,
@@ -60,41 +82,60 @@ export async function autoMatch(
   const searchedProviders: string[] = [];
   const errors: Record<string, string> = {};
 
-  for (const providerId of order) {
-    const provider = getProvider(providerId);
-    if (!provider) continue;
-    if (options.type && !provider.supportedTypes.includes(options.type)) continue;
-    try {
-      provider.setCredentials(options.credentials[providerId] ?? {});
-      const results = await provider.search(query, options.type);
-      searchedProviders.push(providerId);
-      for (const r of results) {
-        if (!r.title) continue;
-        const score = titleScore(series.name, r.title);
-        candidates.push({
-          providerId: provider.id,
-          providerSeriesId: r.providerSeriesId,
-          title: r.title,
-          type: r.type,
-          year: r.year,
-          coverUrl: r.coverUrl,
-          summary: r.summary,
-          score,
-          fromProvider: r,
-        });
+  const searchProviders = async (searchQuery: string): Promise<void> => {
+    for (const providerId of order) {
+      const provider = getProvider(providerId);
+      if (!provider) continue;
+      if (options.type && !provider.supportedTypes.includes(options.type)) continue;
+      try {
+        provider.setCredentials(options.credentials[providerId] ?? {});
+        const results = await provider.search(searchQuery, options.type);
+        if (!searchedProviders.includes(providerId)) searchedProviders.push(providerId);
+        for (const r of results) {
+          if (!r.title) continue;
+          // Score against every known title variant: folder names often match
+          // a romanized or alternate title the display title misses. The best
+          // scoring variant becomes the candidate's displayed title.
+          const { score, title } = bestVariant(series.name, r);
+          candidates.push({
+            providerId: provider.id,
+            providerSeriesId: r.providerSeriesId,
+            title,
+            type: r.type,
+            year: r.year,
+            coverUrl: r.coverUrl,
+            summary: r.summary,
+            score,
+            fromProvider: r,
+          });
+        }
+        // Early exit: a confident exact/near-exact match from the top provider.
+        const top = candidates
+          .filter((c) => c.providerId === providerId)
+          .sort((a, b) => b.score - a.score)[0];
+        if (top && top.score >= 0.97) break;
+      } catch (err) {
+        errors[providerId] = err instanceof Error ? err.message : String(err);
       }
-      // Early exit: a confident exact/near-exact match from the top provider.
-      const top = candidates
-        .filter((c) => c.providerId === providerId)
-        .sort((a, b) => b.score - a.score)[0];
-      if (top && top.score >= 0.97) break;
-    } catch (err) {
-      errors[providerId] = err instanceof Error ? err.message : String(err);
     }
-  }
+  };
+
+  await searchProviders(query);
 
   // Merge pre-scored local candidates (e.g. MangaDex adult catalog) into the pool.
   if (options.extraCandidates?.length) candidates.push(...options.extraCandidates);
+
+  // No confident match with the full series name? Kavita names often concatenate
+  // title + subtitle ("Aizome - Fill With LOVE") and provider title search can't
+  // see through the compound string — retry each separator-delimited part so bare
+  // titles still surface. Only runs when the first pass found nothing usable.
+  const topScore = candidates.reduce((m, c) => Math.max(m, c.score), 0);
+  if (topScore < threshold) {
+    for (const part of titleSearchParts(query)) {
+      if (part === query) continue;
+      await searchProviders(part);
+    }
+  }
   // The same title can surface from both live search and a local catalog
   // (adult titles are indexed in both). Collapse duplicates by provider +
   // series id, keeping the higher score; ties keep the live result, which

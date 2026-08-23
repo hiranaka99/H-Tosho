@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
-import { mangaDexProvider } from '../src/providers/mangadex.js';
+import { mangaDexProvider, parseDescriptionTags } from '../src/providers/mangadex.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -238,5 +238,136 @@ describe('MangaDexProvider cover URLs', () => {
 
     globalThis.fetch = async () => new Response('boom', { status: 500 });
     assert.equal(await mangaDexProvider.preferredSeriesCoverUrl('manga-1'), undefined);
+  });
+});
+
+describe('parseDescriptionTags', () => {
+  it('extracts markdown-table tag rows (captured Aizome description)', () => {
+    const desc = [
+      '1. Sleep Learning',
+      '2. All for Love',
+      '',
+      '| Namespace | Tags |',
+      '|:-|:-',
+      '|MALE| glasses, harem, schoolboy uniform, sleeping, virginity',
+      '|FEMALE| ahegao, big breasts, blowjob, cunnilingus',
+      '|MIXED| group, incest, mmf threesome',
+      '|OTHER| tankoubon',
+    ].join('\n');
+    assert.deepEqual(parseDescriptionTags(desc), [
+      'glasses', 'harem', 'schoolboy uniform', 'sleeping', 'virginity',
+      'ahegao', 'big breasts', 'blowjob', 'cunnilingus',
+      'group', 'incest', 'mmf threesome', 'tankoubon',
+    ]);
+  });
+
+  it('extracts bold-label tag lines (captured KonoSuba parody description)', () => {
+    const desc = [
+      "Instead of Kuzuma, we got a big ol'bald guy who got isekai and chose the power of Hypnosis\\",
+      'With it, he makes Megumin his \u25efna\u25efle',
+      '',
+      '**TAGS**',
+      '**PARODY** kono subarashii sekai ni syukufuku o',
+      '**CHARACTER** aqua, megumin',
+      '**MALE** bald, big penis, muscle',
+      '**FEMALE** asphyxiation, bandages, bikini',
+      '**MIXED** ffm threesome, group',
+      '**OTHER** multi-work series',
+    ].join('\n');
+    assert.deepEqual(parseDescriptionTags(desc), [
+      'kono subarashii sekai ni syukufuku o', 'aqua', 'megumin',
+      'bald', 'big penis', 'muscle',
+      'asphyxiation', 'bandages', 'bikini',
+      'ffm threesome', 'group', 'multi-work series',
+    ]);
+  });
+
+  it('handles the hybrid table-header + bold-rows format with stray pipes', () => {
+    const desc = [
+      '| NAMESPACE | TAGS |',
+      '| :- | :- |',
+      '**MALE** | shotacon',
+      '**FEMALE** | anal, cheating',
+    ].join('\n');
+    assert.deepEqual(parseDescriptionTags(desc), ['shotacon', 'anal', 'cheating']);
+  });
+
+  it('extracts plain Tags: lines case-insensitively', () => {
+    assert.deepEqual(
+      parseDescriptionTags("Oolong did what every 90's kid wanted to do.\nTags: Mind break, Mind control, Rape."),
+      ['Mind break', 'Mind control', 'Rape'],
+    );
+    assert.deepEqual(parseDescriptionTags('tags: bunny girl, cheating'), ['bunny girl', 'cheating']);
+  });
+
+  it('dedupes case-insensitively across formats and keeps first spelling', () => {
+    const desc = '|MALE| glasses, harem\n**FEMALE** Glasses, Harem, bikini';
+    assert.deepEqual(parseDescriptionTags(desc), ['glasses', 'harem', 'bikini']);
+  });
+
+  it('ignores prose, unknown namespaces, and header-only lines', () => {
+    const desc = [
+      'The tags on this volume are wrong.',
+      'A story about a witch and her friends. **Note:** not a tag line.',
+      '|MALE|', // no value
+      '**TAGS**', // header, no value
+      '| NAMESPACE | TAGS |',
+    ].join('\n');
+    assert.deepEqual(parseDescriptionTags(desc), []);
+  });
+
+  it('caps the result at 60 tags and accepts null/empty input', () => {
+    const many = Array.from({ length: 70 }, (_, i) => `tag${i}`).join(', ');
+    assert.equal(parseDescriptionTags(`|MALE| ${many}`).length, 60);
+    assert.deepEqual(parseDescriptionTags(null), []);
+    assert.deepEqual(parseDescriptionTags(undefined), []);
+    assert.deepEqual(parseDescriptionTags(''), []);
+  });
+});
+
+describe('MangaDexProvider description tag merging', () => {
+  it('appends parsed description tags after structured tags, deduped case-insensitively', async () => {
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.startsWith('https://api.mangadex.org/manga/manga-1?')) {
+        return Response.json({
+          result: 'ok',
+          response: 'entity',
+          data: {
+            id: 'manga-1',
+            attributes: {
+              title: { en: 'Series One' },
+              status: 'completed',
+              originalLanguage: 'ja',
+              tags: [
+                { id: 't1', attributes: { name: { en: 'Loli' } } },
+                { id: 't2', attributes: { name: { en: 'Incest' } } },
+              ],
+              description: {
+                en: [
+                  '| Namespace | Tags |',
+                  '|:-|:-',
+                  '|MALE| glasses, harem',
+                  '|MIXED| group, incest, mmf threesome',
+                  '|OTHER| tankoubon',
+                ].join('\n'),
+              },
+            },
+            relationships: [],
+          },
+        });
+      }
+      if (url.startsWith('https://api.mangadex.org/cover?')) {
+        return Response.json({ result: 'ok', response: 'collection', data: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    const meta = await mangaDexProvider.getSeriesMetadata('manga-1');
+
+    // Structured tags keep their position and canonical spelling; 'incest'
+    // from the table is deduped against structured 'Incest'.
+    assert.deepEqual(meta.tags, ['Loli', 'Incest', 'glasses', 'harem', 'group', 'mmf threesome', 'tankoubon']);
+    assert.deepEqual(meta.genres, meta.tags);
   });
 });

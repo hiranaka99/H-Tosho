@@ -27,9 +27,57 @@ interface MangaListItem {
   id: string;
   attributes?: {
     year?: number | string;
+    title?: Record<string, unknown>;
+    altTitles?: Array<Record<string, unknown>>;
     description?: { en?: string };
   };
   relationships?: Array<{ id?: string; type?: string }>;
+}
+/** Namespaces whose description lines carry tag lists (MangaDex's tag taxonomy). */
+const DESCRIPTION_TAG_NAMESPACES = new Set(['MALE', 'FEMALE', 'MIXED', 'OTHER', 'PARODY', 'CHARACTER']);
+
+/** Cap on tags extracted from one description so pathological lists stay bounded (real doujinshi lists run to ~40). */
+const MAX_DESCRIPTION_TAGS = 60;
+
+/**
+ * Extract tag lists that doujinshi uploaders embed in the description text
+ * while leaving the structured `tags` array sparse. Three observed formats:
+ * markdown table rows (`|MALE| glasses, harem`), bold labels
+ * (`**FEMALE** ahegao, big breasts`), and plain `Tags:` lines. Only
+ * line-anchored lines with a known namespace are parsed, so prose is never
+ * treated as tags. Returns deduped (case-insensitive) tags in order of
+ * appearance, capped at MAX_DESCRIPTION_TAGS.
+ */
+export function parseDescriptionTags(description: string | null | undefined): string[] {
+  if (!description) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const addLine = (value: string): void => {
+    for (const raw of value.split(',')) {
+      // Strip stray pipes (hybrid entries like `**MALE** | shotacon`) and the
+      // sentence-final punctuation uploaders leave on a Tags: line's last item.
+      const tag = raw.replace(/^\|+|\|+$/g, '').trim().replace(/[.,;]+$/, '');
+      if (!tag) continue;
+      const key = tag.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(tag);
+    }
+  };
+  // Markdown table rows: |MALE| a, b — header/separator rows fail the namespace check.
+  // [ \t]* (not \s*) keeps each match on its own line so a bare label can't swallow the next one.
+  for (const m of description.matchAll(/^[ \t]*\|[ \t]*([A-Za-z]+)[ \t]*\|[ \t]*(.+?)[ \t]*$/gm)) {
+    if (DESCRIPTION_TAG_NAMESPACES.has(m[1].toUpperCase())) addLine(m[2]);
+  }
+  // Bold labels: **MALE** a, b — a bare `**TAGS**` header has no value on its line and won't match.
+  for (const m of description.matchAll(/^[ \t]*\*\*([A-Za-z]+)\*\*[ \t]*(.+?)[ \t]*$/gm)) {
+    if (DESCRIPTION_TAG_NAMESPACES.has(m[1].toUpperCase())) addLine(m[2]);
+  }
+  // Plain line: Tags: a, b
+  for (const m of description.matchAll(/^[ \t]*tags?[ \t]*:[ \t]*(.+?)[ \t]*$/gim)) {
+    addLine(m[1]);
+  }
+  return out.slice(0, MAX_DESCRIPTION_TAGS);
 }
 /**
  * MangaDex — REST API v5. Excellent cover art + detailed metadata.
@@ -61,6 +109,33 @@ class MangaDexProvider extends BaseProvider {
     const alt: any[] = Array.isArray(a?.altTitles) ? a.altTitles : [];
     const en = t.en || t.english || alt.find((x) => x?.en)?.en;
     return en || t.original || t['ja-ro'] || t.romaji || alt[0]?.original || 'Unknown';
+  }
+
+  /**
+   * Every known title of a manga (main + alternates, all languages) as plain
+   * strings — the matcher scores the series name against each so a folder
+   * named after a romanized or alternate title still matches. The display
+   * title from pickTitle is only one of these.
+   */
+  private titleVariants(a: any): string[] {
+    const t = a?.title ?? {};
+    const alts: any[] = Array.isArray(a?.altTitles) ? a.altTitles : [];
+    const out: string[] = [];
+    const push = (v: unknown) => {
+      if (typeof v === 'string' && v.trim()) out.push(v.trim());
+    };
+    push(t.en);
+    push(t.english);
+    push(t.original);
+    push(t['ja-ro']);
+    push(t.romaji);
+    for (const alt of alts) {
+      push(alt?.en);
+      push(alt?.original);
+      push(alt?.['ja-ro']);
+      push(alt?.ja);
+    }
+    return [...new Set(out)];
   }
 
   /** MangaDex tag labels may be a plain string or a localized object ({en, ja, ...}). */
@@ -167,9 +242,11 @@ class MangaDexProvider extends BaseProvider {
     // simply leaves that candidate without a thumbnail.
     const items = (data.data ?? []).map((m) => {
       const attrs = m.attributes ?? {};
+      const title = this.pickTitle(attrs);
       return {
         mangaId: m.id,
-        title: this.pickTitle(attrs),
+        title,
+        altTitles: this.titleVariants(attrs).filter((v) => v !== title),
         year: attrs.year ? Number(attrs.year) : undefined,
         summary: typeof attrs.description?.en === 'string' ? attrs.description.en.slice(0, 300) : undefined,
         coverId: (m.relationships ?? []).find((r) => r.type === 'cover_art')?.id,
@@ -189,6 +266,7 @@ class MangaDexProvider extends BaseProvider {
       providerId: this.id,
       providerSeriesId: item.mangaId,
       title: typeof item.title === 'string' ? item.title : 'Unknown',
+      altTitles: item.altTitles.length ? item.altTitles : undefined,
       type: 'MANGA' as SearchResult['type'],
       year: item.year,
       coverUrl: item.coverUrl,
@@ -213,7 +291,18 @@ class MangaDexProvider extends BaseProvider {
       if (!Number.isNaN(d.getTime())) releaseDate = d.toISOString().slice(0, 10);
     }
 
+    // Structured tags first, then tags extracted from the description text —
+    // doujinshi uploaders often leave `tags` sparse and put the real list in
+    // the summary. Existing spellings win on case-insensitive collisions so
+    // structured tags keep their canonical form.
     const tags: string[] = (a.tags ?? []).map((t: any) => this.tagLabel(t)).filter(Boolean);
+    const tagSeen = new Set(tags.map((t) => t.toLowerCase()));
+    for (const parsed of parseDescriptionTags(typeof a.description?.en === 'string' ? a.description.en : undefined)) {
+      if (!tagSeen.has(parsed.toLowerCase())) {
+        tagSeen.add(parsed.toLowerCase());
+        tags.push(parsed);
+      }
+    }
 
     // In the detail response, author/artist relationships are inlined with
     // attributes ({ id, type, attributes: { name } }); cover_art stays a stub,
