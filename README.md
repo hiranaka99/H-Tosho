@@ -1,9 +1,10 @@
 # H-Tosho
 
 A modern metadata fetcher & manager for **Kavita**. H-Tosho automatically or
-manually fetches, aggregates, and syncs rich metadata and
-cover art from multiple manga/novel providers directly into a Kavita media
-server instance.
+manually fetches and syncs rich metadata and cover art from multiple
+manga/novel providers directly into a Kavita media server instance — and can
+download doujinshi galleries from Hitomi.la and nHentai straight into your
+libraries.
 
 The Kavita integration supports **Kavita server v0.9.x or newer** and uses Auth
 Keys through the `x-api-key` header. The DTOs are generated from the official
@@ -16,23 +17,32 @@ which is distinct from the Kavita *server* build number (e.g. `0.9.0.2`).
   abstraction layer.
 - **Extensible provider engine** — a unified `MetadataProvider` interface plus
   a registry makes adding/removing metadata sources trivial.
-- **Field-level aggregation** — blend fields across providers (e.g. summary
-  from AniList, cover and volume covers from MangaDex) with per-field
-  sourcing overrides.
 - **Priority-driven matching** — fuzzy, normalization-aware title matching
-  evaluated in configurable provider order, with library-level overrides.
-- **Modern dark-mode dashboard** — live job monitoring, side-by-side metadata
-  diff, and drag-and-drop provider prioritization.
+  evaluated in configurable provider order (global plus per-library overrides);
+  the first confident match wins.
+- **Per-field control** — preview exactly what will be pushed as a side-by-side
+  diff and deselect individual fields before applying a match.
+- **Doujinshi downloader** — search Hitomi.la & nHentai, download galleries as
+  `.cbz` archives or image folders through a live queue with pause/resume/
+  cancel/retry, and optionally trigger a Kavita library scan on completion.
+- **Watched searches** — save doujinshi queries to re-run on every auto-scan
+  cycle; new results ping Discord.
+- **MangaDex adult catalog** — a local catalog of mature MangaDex titles lets
+  chapterless series invisible to live search still match.
+- **Modern dark-mode dashboard** — Libraries, Downloader, Jobs and Settings
+  pages with live job monitoring and drag-and-drop provider prioritization.
 - **Discord notifications** — push formatted updates (with cover art) when
-  items are matched/updated.
+  items are matched/updated or watched searches find new galleries.
 
 ## Supported providers
 
 | Provider | API | Notes |
 | --- | --- | --- |
 | AniList | GraphQL | Primary source for manga & light novels |
-| MangaDex | REST | No credentials required |
+| MangaDex | REST | No credentials required; also backs the local adult-title catalog |
 | MyAnimeList | REST | Requires Client ID |
+
+Doujinshi sources: **Hitomi.la** and **nHentai** (optional API key).
 
 ## Tech stack
 
@@ -88,14 +98,20 @@ This exposes port `8787` and persists the SQLite database in the
 1. In Kavita, open **User Settings → Manage Auth Keys** and create an Auth Key
    for an admin account. H-Tosho needs admin access because Kavita protects
    metadata and cover updates with its admin policy.
-2. Open **Settings → Kavita connection**, enter the Kavita server root (for
-   example `http://kavita:5000`, without `/api`) and the Auth Key, then click
-   **Save & test connection**.
-3. Optionally add provider credentials (e.g. MyAnimeList Client ID) and test
-   each provider.
-4. Reorder provider priorities (drag-and-drop) and configure aggregation and
-   per-field sourcing.
-5. In **Libraries**, trigger matching or the scan for newly ingested series;
+2. Open **Settings → General → Kavita connection**, enter the Kavita server
+   root (for example `http://kavita:5000`, without `/api`) and the Auth Key,
+   then click **Save & test connection**.
+3. In **Settings → Providers**, add provider credentials (e.g. MyAnimeList
+   Client ID), test each provider, and drag to reorder the search priority.
+   Build/refresh the MangaDex adult catalog here as well if you need matching
+   for mature chapterless titles.
+4. Tune per-library behavior in **Libraries** (auto-match toggle and clearing
+   overrides); deselect individual fields in the identify dialog when applying a match.
+5. In **Settings → Notifications**, configure and test the Discord webhook.
+6. Optional: in **Settings → Downloader**, set the output folder, format,
+   concurrency limits, nHentai API key and banned tags; add watched searches
+   from the Downloader page or the same tab.
+7. In **Libraries**, trigger matching or the scan for newly ingested series;
    monitor progress in **Jobs**.
 
 ### Environment variables
@@ -103,26 +119,30 @@ This exposes port `8787` and persists the SQLite database in the
 | Variable | Default | Description |
 | --- | --- | --- |
 | `PORT` | `8787` | API/server port |
-| `HOST` | `0.0.0.0` | Bind address |
+| `HOST` | `127.0.0.1` | Bind address — local-only by default; set `0.0.0.0` (plus `HTOSHO_TOKEN`) for deliberate remote access |
 | `HTOSHO_DATA_DIR` | `server/data` | SQLite data directory |
+| `HTOSHO_TOKEN` | *(unset)* | Optional shared token protecting `/api` and `/media`; enter it in Settings → General → API access token so the UI keeps working |
+| `NHENTAI_API_KEY` | *(unset)* | Optional nHentai API key fallback; a key set in Settings takes precedence |
 
 ## Project layout
 
 ```
 server/src/
-  app.ts              # Hono app: API + static SPA serving
+  app.ts              # Hono app: API + static SPA serving, CORS, token auth
   index.ts            # Entrypoint: DB init, job queue, polling, HTTP server
   db/                 # Drizzle schema + SQLite bootstrap
   kavita/             # Kavita REST client (auth, libraries, metadata push)
-  providers/          # Provider interface, base class, 4 providers, registry
-  matching/           # Normalization + fuzzy matching engine
-  services/           # Settings, aggregation/apply, notifications
+  providers/          # Provider interface, base class, 3 providers, registry
+  match/              # Normalization, fuzzy matching, MangaDex adult catalog
+  downloader/         # Hitomi/nHentai sources, download engine, .cbz writer
+  services/           # Settings, sync/apply, watched searches, series artists
+  notify/             # Discord notification dispatcher
   jobs/               # Queue + job executor
-  routes/             # REST API routes
+  routes/             # REST API routes + media proxy (cover Referer handling)
 web/src/
-  components/         # UI primitives + identification modal
+  components/         # UI primitives, identification modal, sidebar status
   pages/              # Libraries, Downloader, Jobs, Settings
-  lib/                # API client + utils
+  lib/                # API client, download events context, utils
 Dockerfile
 docker-compose.yml
 ```
@@ -133,3 +153,7 @@ docker-compose.yml
 2. Implement `id`, `name`, `color`, `supportedTypes`, `requiresCredentials`,
    `providesFields`, `baseUrl`, `search()`, and `getSeriesMetadata()`.
 3. Export a singleton and register it in `server/src/providers/registry.ts`.
+
+Doujinshi sources follow the same pattern: implement the `DoujinProvider`
+interface in `server/src/downloader/` and register it in
+`downloader/providers.ts`.
