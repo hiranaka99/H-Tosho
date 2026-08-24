@@ -136,6 +136,35 @@ export const downloadQueue = sqliteTable('download_queue', {
   finishedAt: text('finished_at'),
 });
 
+/**
+ * Saved doujin searches that are re-run periodically; new results trigger a
+ * Discord notification. `source` + `query` mirror the Downloader's search box
+ * (e.g. source=hitomi, query="artist:konboi language:english").
+ */
+export const watchedSearches = sqliteTable('watched_searches', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  /** hitomi | nhentai */
+  source: text('source').notNull(),
+  query: text('query').notNull(),
+  lastCheckedAt: text('last_checked_at'),
+  lastResultCount: integer('last_result_count'),
+  createdAt: text('created_at')
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});
+
+/** Galleries already reported for a watched search (dedupe across checks). */
+export const watchedSearchSeen = sqliteTable('watched_search_seen', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  searchId: integer('search_id').notNull(),
+  /** Redundant with the parent row so a deleted search's history stays queryable. */
+  source: text('source').notNull(),
+  galleryId: text('gallery_id').notNull(),
+  firstSeenAt: text('first_seen_at')
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});
+
 export const keyValueStore = sqliteTable('key_value_store', {
   key: text('key').primaryKey(),
   valueJson: text('value_json').notNull(),

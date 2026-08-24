@@ -27,11 +27,13 @@ import { jobQueue, type JobType } from '../jobs/queue.js';
 import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
 import { catalogCandidates, catalogStatus, isMatureAgeRating, resolveCatalogCover } from '../match/mangadexCatalog.js';
 import { applyToKavita, checkAlignment, fetchCover } from '../services/sync.js';
+import { invalidateSeriesArtists, kavitaSeriesArtists } from '../services/seriesArtists.js';
 import { testNotification } from '../notify/dispatcher.js';
 import { getDownloaderSettings, setDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
 import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
 import { rewriteHitomiCover, rewriteMangaDexCoverUrl } from './media.js';
+import { addWatchedSearch, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
 
 const CREDENTIAL_FIELDS: Record<string, { key: string; label: string }[]> = {
@@ -56,6 +58,24 @@ function intParam(raw: string | undefined): number | null {
   if (!raw || !/^-?\d+$/.test(raw)) return null;
   const n = Number(raw);
   return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
+ * Extract provider artist names from a stored match row's metadata JSON.
+ * Matched series carry the provider metadata (including `artists`) locally,
+ * so library lists can surface artists without extra Kavita round-trips.
+ */
+function artistsFromMetadata(metadataJson: string | null | undefined): string[] {
+  if (!metadataJson) return [];
+  try {
+    const meta: unknown = JSON.parse(metadataJson);
+    if (meta && typeof meta === 'object' && 'artists' in meta && Array.isArray(meta.artists)) {
+      return meta.artists.filter((a): a is string => typeof a === 'string' && a.trim().length > 0);
+    }
+  } catch {
+    /* corrupt metadata JSON — treat as no artists */
+  }
+  return [];
 }
 
 export const api = new Hono();
@@ -136,9 +156,14 @@ api.get('/kavita/libraries/:id/series', async (c) => {
     const series = (await client.getSeries(libraryId)) as KavitaSeries[];
     const rows = getDb().select().from(schema.seriesMatches).all();
     const byId = new Map(rows.map((r) => [r.kavitaSeriesId, r]));
+    // Series without match-derived artists fall back to Kavita's own people
+    // (pencillers/inkers/writers), so unmatched entries can also be searched by artist.
+    const needIds = series.filter((s) => artistsFromMetadata(byId.get(s.id)?.metadataJson).length === 0).map((s) => s.id);
+    const kavitaArtists = await kavitaSeriesArtists(client, needIds);
     return c.json(
       series.map((s) => {
         const m = byId.get(s.id);
+        const matchArtists = artistsFromMetadata(m?.metadataJson);
         return {
           id: s.id,
           name: s.name,
@@ -151,6 +176,7 @@ api.get('/kavita/libraries/:id/series', async (c) => {
           aligned: m?.aligned ?? false,
           lastSyncedAt: m?.lastSyncedAt ?? null,
           errorMessage: m?.errorMessage ?? null,
+          artists: matchArtists.length > 0 ? matchArtists : (kavitaArtists.get(s.id) ?? []),
         };
       }),
     );
@@ -176,6 +202,14 @@ api.get('/kavita/series/:id/cover', async (c) => {
 });
 
 // ---------------- Series detail / identify / apply ----------------
+
+/** Matched series whose confidence is below the review threshold (local DB only). */
+const LOW_CONFIDENCE_THRESHOLD = 0.8;
+api.get('/series/low-confidence', (c) => {
+  const rows = getDb().select().from(schema.seriesMatches).all();
+  const count = rows.filter((r) => r.status === 'matched' && r.matchScore !== null && r.matchScore < LOW_CONFIDENCE_THRESHOLD).length;
+  return c.json({ count, threshold: LOW_CONFIDENCE_THRESHOLD });
+});
 
 api.get('/series/:id', async (c) => {
   const client = connectedClient();
@@ -302,6 +336,7 @@ api.post('/series/:id/apply', async (c) => {
       excludedFields: body.excludedFields ?? [],
       title: series.name,
     });
+    invalidateSeriesArtists(seriesId);
     // Verify the push against Kavita's live state and record whether every
     // provider-managed field now matches (the "Aligned" flag).
     let aligned = false;
@@ -379,6 +414,32 @@ api.delete('/series/:id/match', async (c) => {
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }
+});
+
+/** Parse a history row's details JSON into an object (null when absent/corrupt). */
+function parseHistoryDetails(json: string | null): Record<string, unknown> | null {
+  if (!json) return null;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+  } catch {
+    /* corrupt details — surface the action only */
+  }
+  return null;
+}
+
+/** Recent sync/match history for one series (newest first, capped at 100). */
+api.get('/series/:id/history', (c) => {
+  const seriesId = intParam(c.req.param('id'));
+  if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
+  const rows = getDb()
+    .select()
+    .from(schema.syncHistory)
+    .where(eq(schema.syncHistory.kavitaSeriesId, seriesId))
+    .orderBy(desc(schema.syncHistory.id))
+    .limit(100)
+    .all();
+  return c.json(rows.map((r) => ({ id: r.id, action: r.action, details: parseHistoryDetails(r.detailsJson), createdAt: r.createdAt })));
 });
 
 /**
@@ -555,11 +616,18 @@ api.post('/downloads', async (c) => {
   const body = (await c.req.json()) as { source: string; galleryId: string; title?: string; format?: 'cbz' | 'folder' };
   if (!body.source || !body.galleryId) return c.json({ error: 'source and galleryId are required' }, 400);
   if (!getDoujinProvider(body.source)) return c.json({ error: `Unknown source: ${body.source}` }, 400);
+  // Duplicate guard: a completed task for this gallery already exists. Re-downloading
+  // is possible via the queue's Retry action, which re-runs the stored task.
+  const done = downloadQueue.findCompleted(body.source as DoujinSource, body.galleryId);
+  if (done) return c.json({ error: 'already-downloaded', finishedAt: done.finishedAt ?? null }, 409);
   const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, body.title ?? null, body.format);
   return c.json({ id, status: 'queued' }, 202);
 });
 
 api.get('/downloads', (c) => c.json(downloadQueue.list(100)));
+
+/** Completed galleries (source + galleryId + finish time) for duplicate badges. */
+api.get('/downloads/completed', (c) => c.json(downloadQueue.completedGalleries()));
 
 /**
  * Server-Sent Events stream of live download-task updates. The client receives
@@ -645,6 +713,33 @@ api.put('/libraries/:id/override', async (c) => {
   return c.json({ ok: true });
 });
 
+// ---------------- Watched searches ----------------
+
+api.get('/watched-searches', (c) => c.json(listWatchedSearches()));
+
+api.post('/watched-searches', async (c) => {
+  const body = (await c.req.json()) as { source?: string; query?: string };
+  if (!body.source || !getDoujinProvider(body.source)) return c.json({ error: `Unknown source: ${body.source ?? ''}` }, 400);
+  const query = body.query?.trim();
+  if (!query) return c.json({ error: 'query is required' }, 400);
+  const added = addWatchedSearch(body.source as DoujinSource, query);
+  return c.json(added, 201);
+});
+
+api.delete('/watched-searches/:id', (c) => {
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid watched search id' }, 400);
+  const removed = removeWatchedSearch(id);
+  if (!removed) return c.json({ error: 'Watched search not found' }, 404);
+  return c.json({ ok: true });
+});
+
+/** Run all watches now (manual trigger; the poll timer also runs this). */
+api.post('/watched-searches/check', (c) => {
+  const id = jobQueue.enqueue('check-watched-searches', {});
+  return c.json({ id }, 202);
+});
+
 // ---------------- Jobs ----------------
 
 api.post('/jobs', async (c) => {
@@ -672,19 +767,6 @@ api.post('/jobs/:id/cancel', (c) => {
 });
 
 api.get('/logs', (c) => c.json(jobQueue.recentLogs(300)));
-
-api.get('/stats', (c) => {
-  const rows = getDb().select().from(schema.seriesMatches).all();
-  const byStatus: Record<string, number> = {};
-  for (const r of rows) byStatus[r.status] = (byStatus[r.status] ?? 0) + 1;
-  const jobs = jobQueue.list(100);
-  return c.json({
-    totalSeries: rows.length,
-    byStatus,
-    activeJobs: jobs.filter((j) => j.status === 'running' || j.status === 'queued').length,
-    recentJobs: jobs.slice(0, 8),
-  });
-});
 
 api.get('/history', (c) => {
   const rows = getDb().select().from(schema.syncHistory).orderBy(desc(schema.syncHistory.id)).limit(200).all();

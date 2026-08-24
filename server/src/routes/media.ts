@@ -1,5 +1,9 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { DATA_DIR } from '../db/index.js';
 
 /**
  * Media proxy for CDN cover images that browsers cannot load directly.
@@ -35,6 +39,12 @@ const CACHE_MAX_BYTES = 2 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 /** Max redirect hops followed (each hop is re-validated against the allowlist). */
 const MAX_REDIRECTS = 5;
+// Disk layer under the data dir so cover bytes survive restarts and hold far
+// more entries than memory. Covers are immutable once a gallery exists, so
+// the TTL is long; eviction is by mtime when the file count exceeds the cap.
+const MEDIA_CACHE_DIR = path.join(DATA_DIR, 'media-cache');
+const DISK_TTL_MS = 7 * 24 * 60 * 60_000;
+const DISK_MAX_FILES = 400;
 
 /**
  * Hosts allowed as /media targets. A target host matches when it equals an
@@ -70,6 +80,60 @@ function setCached(key: string, type: string, buf: Buffer): void {
     if (oldest !== undefined) cache.delete(oldest);
   }
   cache.set(key, { at: Date.now(), type, buf });
+}
+
+function diskFile(key: string): string {
+  return path.join(MEDIA_CACHE_DIR, createHash('sha256').update(key, 'utf8').digest('hex'));
+}
+
+/** L2 lookup: read a cached cover from disk (missing/expired → null). */
+async function getFromDisk(key: string): Promise<{ type: string; buf: Buffer } | null> {
+  const file = diskFile(key);
+  try {
+    const st = await fs.stat(file);
+    if (Date.now() - st.mtimeMs > DISK_TTL_MS) {
+      await fs.rm(file, { force: true });
+      await fs.rm(file + '.type', { force: true });
+      return null;
+    }
+    const [buf, typeRaw] = await Promise.all([
+      fs.readFile(file),
+      fs.readFile(file + '.type', 'utf8').catch(() => ''),
+    ]);
+    return { type: typeRaw.trim() || 'image/jpeg', buf };
+  } catch {
+    return null;
+  }
+}
+
+/** L2 store (best-effort): write bytes + content-type, evict oldest beyond the cap. */
+async function setDisk(key: string, type: string, buf: Buffer): Promise<void> {
+  if (buf.length > CACHE_MAX_BYTES) return;
+  try {
+    await fs.mkdir(MEDIA_CACHE_DIR, { recursive: true });
+    const file = diskFile(key);
+    await fs.writeFile(file, buf);
+    await fs.writeFile(file + '.type', type);
+    const entries = await fs.readdir(MEDIA_CACHE_DIR);
+    const dataFiles = entries.filter((e) => !e.endsWith('.type'));
+    if (dataFiles.length <= DISK_MAX_FILES) return;
+    const stamped: { name: string; mtime: number }[] = [];
+    for (const name of dataFiles) {
+      try {
+        const st = await fs.stat(path.join(MEDIA_CACHE_DIR, name));
+        stamped.push({ name, mtime: st.mtimeMs });
+      } catch {
+        /* raced away — skip */
+      }
+    }
+    stamped.sort((a, b) => a.mtime - b.mtime);
+    for (const old of stamped.slice(0, dataFiles.length - DISK_MAX_FILES)) {
+      await fs.rm(path.join(MEDIA_CACHE_DIR, old.name), { force: true });
+      await fs.rm(path.join(MEDIA_CACHE_DIR, old.name + '.type'), { force: true });
+    }
+  } catch {
+    /* disk cache is best-effort; never fail a proxied request over it */
+  }
 }
 
 /** Decode a base64url query value back to a string. */
@@ -175,6 +239,15 @@ export function mediaRouter(): Hono {
       });
     }
 
+    const onDisk = await getFromDisk(target as string);
+    if (onDisk) {
+      setCached(target as string, onDisk.type, onDisk.buf); // promote to L1
+      return c.body(new Uint8Array(onDisk.buf), 200, {
+        'Content-Type': onDisk.type,
+        'Cache-Control': 'private, max-age=3600',
+      });
+    }
+
     let res: Response;
     try {
       res = await fetchWithValidatedRedirects(parsed);
@@ -195,6 +268,7 @@ export function mediaRouter(): Hono {
 
     const type = res.headers.get('content-type') || 'image/jpeg';
     setCached(target as string, type, buf);
+    void setDisk(target as string, type, buf);
     return c.body(new Uint8Array(buf), 200, {
       'Content-Type': type,
       'Cache-Control': 'private, max-age=3600',

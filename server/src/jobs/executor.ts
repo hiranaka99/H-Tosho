@@ -11,6 +11,7 @@ import {
 import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
 import { catalogCandidates, catalogNeedsRefresh, isMatureAgeRating, refreshCatalog } from '../match/mangadexCatalog.js';
 import { applyToKavita, checkAlignment, fetchCover } from '../services/sync.js';
+import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
 
@@ -213,6 +214,16 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       isCancelled: () => jobQueue.isCancelRequested(job.id),
     });
     return { processed: 0, matched: 0, failed: 0, added: r.added, updated: r.updated, indexed: r.total };
+  }
+
+  // Watched-search checks talk to doujin sources only — no Kavita needed.
+  if (job.type === 'check-watched-searches') {
+    const r = await checkWatchedSearches(
+      log,
+      () => jobQueue.isCancelRequested(job.id),
+      (current, total) => jobQueue.setProgress(job.id, current, total),
+    );
+    return { processed: r.checked, matched: 0, failed: 0, notified: r.notified, newGalleries: r.newGalleries };
   }
 
   const client = connectedClientOrNull();

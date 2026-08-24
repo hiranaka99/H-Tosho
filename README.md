@@ -121,7 +121,7 @@ server/src/
   routes/             # REST API routes
 web/src/
   components/         # UI primitives + identification modal
-  pages/              # Dashboard, Libraries, Jobs, Settings
+  pages/              # Libraries, Downloader, Jobs, Settings
   lib/                # API client + utils
 Dockerfile
 docker-compose.yml

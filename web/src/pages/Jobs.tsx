@@ -2,8 +2,8 @@ import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Terminal, Activity, Circle, XCircle, CheckCircle2, ListChecks, Ban, X } from 'lucide-react';
 import { api, type Job, type JobLog } from '../lib/api';
-import { Card, CardContent, CardHeader, CardTitle, Badge, Button, EmptyState, Spinner, ProgressBar } from '../components/ui';
-import { cn, timeAgo, shortDate, toIsoUtc } from '../lib/utils';
+import { Card, CardContent, CardHeader, CardTitle, Badge, Button, EmptyState, Spinner, ProgressBar, PageHeader } from '../components/ui';
+import { cn, timeAgo, shortDate, toIsoUtc, jobLabel } from '../lib/utils';
 
 function JobStatus({ status }: { status: string }) {
   if (status === 'running')
@@ -94,22 +94,43 @@ export function Jobs() {
     });
   };
 
+  type JobFilter = 'all' | 'active' | 'failed' | 'done';
+  const [filter, setFilter] = React.useState<JobFilter>('all');
+  const visibleJobs = jobs.filter((j) => {
+    if (filter === 'all') return true;
+    if (filter === 'active') return j.status === 'running' || j.status === 'queued';
+    if (filter === 'failed') return j.status === 'failed';
+    return j.status === 'completed' || j.status === 'cancelled';
+  });
+
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="flex items-center gap-2 text-xl font-semibold">
-          <ListChecks className="h-5 w-5" /> Activity & Jobs
-        </h1>
-        <p className="text-sm text-muted">Background task queue and real-time logging console.</p>
-      </div>
+      <PageHeader
+        icon={<ListChecks className="h-5 w-5" />}
+        title="Activity & Jobs"
+        subtitle="Background task queue and real-time logging console."
+      />
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex-row items-center justify-between">
           <CardTitle>Task queue</CardTitle>
+          <div className="flex overflow-hidden rounded-md border border-border-2">
+            {(['all', 'active', 'failed', 'done'] as const).map((f) => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                className={cn('px-3 py-1.5 text-xs font-medium capitalize transition-colors', filter === f ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
         </CardHeader>
         <CardContent>
           {jobs.length === 0 ? (
             <EmptyState icon={<ListChecks className="h-8 w-8" />} title="No jobs" description="Jobs appear here when you run a scan or match." />
+          ) : visibleJobs.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted">No {filter} jobs.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -125,10 +146,10 @@ export function Jobs() {
                   </tr>
                 </thead>
                 <tbody>
-                  {jobs.map((j) => (
+                  {visibleJobs.map((j) => (
                     <tr key={j.id} className="animate-fade-in cursor-pointer border-b border-border transition-colors duration-150 last:border-0 hover:bg-surface-2/50" onClick={() => setSelected(j)}>
                       <td className="p-2 text-muted">#{j.id}</td>
-                      <td className="p-2 font-medium">{j.type}</td>
+                      <td className="p-2 font-medium">{jobLabel(j.type)}</td>
                       <td className="p-2">
                         <JobStatus status={j.status} />
                       </td>
@@ -204,7 +225,7 @@ export function Jobs() {
                 active.map((j) => (
                   <div key={j.id} className={cn('animate-fade-up rounded-lg border p-3 transition-colors', j.status === 'running' ? 'border-primary/40 bg-primary/5' : 'border-border')}>
                     <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium">{j.type}</span>
+                      <span className="text-sm font-medium">{jobLabel(j.type)}</span>
                       <div className="flex items-center gap-2">
                         <JobStatus status={j.status} />
                         <Button size="sm" variant="ghost" onClick={() => cancelJob(j.id)}>

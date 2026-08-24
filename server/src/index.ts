@@ -5,6 +5,7 @@ import { createApp } from './app.js';
 import { jobQueue } from './jobs/queue.js';
 import { runJob } from './jobs/executor.js';
 import { getKavitaConnection, getPollInterval } from './services/settings.js';
+import { countWatchedSearches } from './services/watchedSearches.js';
 
 const PORT = Number(process.env.PORT ?? 8787);
 // Local-only by default: the API has no per-user auth, so binding to all
@@ -34,6 +35,10 @@ function main(): void {
         if (conn.baseUrl && conn.apiKey) {
           const active = jobQueue.active().some((j) => j.type === 'scan-new');
           if (!active) jobQueue.enqueue('scan-new', {});
+        }
+        // Watched doujin searches run on the same cadence; they need no Kavita.
+        if (countWatchedSearches() > 0 && !jobQueue.active().some((j) => j.type === 'check-watched-searches')) {
+          jobQueue.enqueue('check-watched-searches', {});
         }
         scheduleScan();
       }, interval * 60_000);

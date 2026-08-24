@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
-import { mediaRouter, rewriteMangaDexCoverUrl } from '../src/routes/media.js';
+
+// The disk cache layer writes under DATA_DIR, so point the DB at a throwaway
+// directory before the media module loads (it imports db/index.js at module
+// level) — otherwise cached test covers leak into the real data dir.
+process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-media-'));
+
+const { mediaRouter, rewriteMangaDexCoverUrl } = await import('../src/routes/media.js');
 
 const originalFetch = globalThis.fetch;
 

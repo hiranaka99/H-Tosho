@@ -2,11 +2,14 @@ import * as React from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, Eraser, BookOpen, ArrowLeft, ChevronRight, Unlink } from 'lucide-react';
-import { api, type SeriesRow } from '../lib/api';
+import { api, type SeriesRow, type DoujinSource } from '../lib/api';
 import { Button, Card, Input, Select, Badge, StatusBadge, ProviderBadge, Spinner, EmptyState, Switch } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
+import { buildTagSearchFragment } from './Downloader';
 import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
+/** Matches below this score are surfaced for review (mirrors the server's threshold). */
+const LOW_CONFIDENCE = 0.8;
 
 function Cover({ src, name, className }: { src?: string | null; name: string; className?: string }) {
   const [failed, setFailed] = React.useState(false);
@@ -22,6 +25,35 @@ function Cover({ src, name, className }: { src?: string | null; name: string; cl
     <div className={cn('flex h-full w-full items-center justify-center bg-surface-2 text-2xl font-semibold text-muted', className)}>
       {name.charAt(0).toUpperCase()}
     </div>
+  );
+}
+const ARTIST_SOURCE_META: Record<DoujinSource, { label: string; color: string }> = {
+  hitomi: { label: 'Hitomi.la', color: '#ff5722' },
+  nhentai: { label: 'nHentai', color: '#e91e63' },
+};
+
+/**
+ * One-click deep link into the Downloader with an artist search pre-filled for
+ * this series. Uses the first artist (doujin titles are usually a single
+ * circle); the tooltip lists every known artist.
+ */
+function ArtistSearchButton({ source, artists }: { source: DoujinSource; artists: string[] }) {
+  const navigate = useNavigate();
+  const primary = artists[0];
+  const fragment = buildTagSearchFragment(primary, 'artist', source);
+  if (!fragment) return null;
+  const meta = ARTIST_SOURCE_META[source];
+  const target = artists.length > 1 ? `${artists.join(', ')} (first: ${primary})` : `“${primary}”`;
+  return (
+    <button
+      type="button"
+      onClick={() => navigate(`/downloader?source=${source}&q=${encodeURIComponent(fragment)}`)}
+      title={`Search artist ${target} on ${meta.label}`}
+      className="inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-all hover:brightness-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+      style={{ backgroundColor: meta.color + '22', color: meta.color }}
+    >
+      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: meta.color }} /> {meta.label}
+    </button>
   );
 }
 
@@ -67,10 +99,14 @@ export function Libraries() {
 
   const rows = series.data ?? [];
   const filtered = rows.filter((r) => {
-    const okStatus = statusFilter === 'all' ? true : r.status === statusFilter;
+    const okStatus =
+      statusFilter === 'all' ? true :
+      statusFilter === 'low-score' ? (r.status === 'matched' && typeof r.matchScore === 'number' && r.matchScore < LOW_CONFIDENCE) :
+      r.status === statusFilter;
     const okQuery = query ? r.name.toLowerCase().includes(query.toLowerCase()) : true;
     return okStatus && okQuery;
   });
+  const isFiltering = statusFilter !== 'all' || query.trim() !== '';
 
   const toggleCheck = (id: number) => {
     setChecked((prev) => {
@@ -97,7 +133,6 @@ export function Libraries() {
     mutationFn: (row: SeriesRow) => api.unmatch(row.id),
     onSuccess: (_res, row) => {
       qc.invalidateQueries({ queryKey: ['library-series'] });
-      qc.invalidateQueries({ queryKey: ['stats'] });
       qc.invalidateQueries({ queryKey: ['libraries'] });
       toast({ tone: 'success', title: 'Unmatched', description: row.name });
     },
@@ -164,7 +199,7 @@ export function Libraries() {
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h1 className="text-lg font-semibold">{series.data ? `${rows.length} series` : 'Loading…'}</h1>
+                <h1 className="text-lg font-semibold">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h1>
                 <p className="text-xs text-muted">
                   {matchedInLib} matched · {rows.length - matchedInLib} pending
                 </p>
@@ -178,12 +213,13 @@ export function Libraries() {
                   <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted" />
                   <Input placeholder="Filter series…" value={query} onChange={(e) => setQuery(e.target.value)} className="w-52 pl-8" />
                 </div>
-                <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-32">
+                <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-40">
                   <option value="all">All</option>
                   <option value="matched">Matched</option>
                   <option value="unmatched">Unmatched</option>
                   <option value="syncing">Syncing</option>
                   <option value="failed">Failed</option>
+                  <option value="low-score">Low confidence (&lt;80%)</option>
                 </Select>
                 <div className="flex overflow-hidden rounded-md border border-border-2">
                   <button onClick={() => setView('grid')} className={cn('p-2', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
@@ -235,7 +271,7 @@ export function Libraries() {
                     )}
                   >
                     <button
-                      className="absolute inset-0 z-10"
+                      className="absolute inset-0 z-10 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                       onClick={(e) => {
                         e.stopPropagation();
                         setIdentify({ id: r.id, name: r.name });
@@ -252,8 +288,14 @@ export function Libraries() {
                     </div>
                     <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-1 bg-gradient-to-t from-black/90 to-transparent p-2 pt-6">
                       <p className="truncate text-xs font-semibold text-white [text-shadow:1px_0_0_rgba(0,0,0,0.85),-1px_0_0_rgba(0,0,0,0.85),0_1px_0_rgba(0,0,0,0.85),0_-1px_0_rgba(0,0,0,0.85),0_2px_3px_rgba(0,0,0,0.6)]">{r.name}</p>
-                      <div className="flex items-center gap-1">
+                      <div className="flex flex-wrap items-center gap-1">
                         <StatusBadge status={r.status} title={r.errorMessage ?? undefined} className="bg-black/70" />
+                        {r.artists?.length ? (
+                          <>
+                            <ArtistSearchButton source="hitomi" artists={r.artists} />
+                            <ArtistSearchButton source="nhentai" artists={r.artists} />
+                          </>
+                        ) : null}
                       </div>
                     </div>
                   </Card>
@@ -277,7 +319,7 @@ export function Libraries() {
                       <th className="p-2 text-left font-medium">Provider</th>
                       <th className="p-2 text-left font-medium">Score</th>
                       <th className="p-2 text-left font-medium">Synced</th>
-                      <th className="p-2 text-right font-medium">Actions</th>
+                      <th className="min-w-56 p-2 text-right font-medium">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -307,10 +349,27 @@ export function Libraries() {
                             <span className="text-muted">—</span>
                           )}
                         </td>
-                        <td className="p-2 text-muted">{r.matchScore ? Math.round(r.matchScore * 100) + '%' : '—'}</td>
+                        <td className="p-2 text-muted">
+                          {r.matchScore ? (
+                            <span
+                              className={cn('tabular-nums', r.status === 'matched' && r.matchScore < LOW_CONFIDENCE && 'font-medium text-warning')}
+                              title={r.status === 'matched' && r.matchScore < LOW_CONFIDENCE ? `Low confidence (${Math.round(r.matchScore * 100)}%) — review via the “Low confidence” filter` : undefined}
+                            >
+                              {Math.round(r.matchScore * 100)}%
+                            </span>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
                         <td className="p-2 text-xs text-muted">{timeAgo(r.lastSyncedAt)}</td>
                         <td className="p-2 text-right">
-                          <div className="flex items-center justify-end gap-1.5">
+                          <div className="flex flex-wrap items-center justify-end gap-1.5">
+                            {r.artists?.length ? (
+                              <>
+                                <ArtistSearchButton source="hitomi" artists={r.artists} />
+                                <ArtistSearchButton source="nhentai" artists={r.artists} />
+                              </>
+                            ) : null}
                             {r.providerId && (
                               <Button size="sm" variant="ghost" onClick={() => unmatch.mutate(r)} disabled={unmatch.isPending} title="Remove the match link; metadata already pushed to Kavita stays in place">
                                 <Unlink className="h-3.5 w-3.5" /> Unmatch

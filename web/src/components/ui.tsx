@@ -217,7 +217,7 @@ export function DialogContent({ children, className, ...props }: React.HTMLAttri
         {...props}
       >
         {children}
-        <DialogPrimitive.Close className="absolute right-3 top-3 rounded-md p-1 text-muted hover:bg-surface-2 hover:text-foreground">
+        <DialogPrimitive.Close className="absolute right-3 top-3 rounded-md bg-surface/80 p-1 text-muted hover:bg-surface-2 hover:text-foreground">
           <X className="h-4 w-4" />
         </DialogPrimitive.Close>
       </DialogPrimitive.Content>

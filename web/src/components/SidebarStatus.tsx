@@ -5,21 +5,8 @@ import { Loader2, Clock, Download, Pause, Play, XCircle, Ban } from 'lucide-reac
 import { api, type Job, type DownloadTask } from '../lib/api';
 import { useDownloads } from '../lib/DownloadsContext';
 import { formatBytes, formatSpeed } from '../lib/format';
+import { jobLabel } from '../lib/utils';
 import { ProgressBar } from './ui';
-
-const JOB_LABEL: Record<string, string> = {
-  'scan-new': 'Scan new series',
-  'match-unmatched': 'Match unmatched',
-  'match-library': 'Match library',
-  'match-series': 'Match series',
-  'sync-series': 'Sync series',
-  'clear-overrides': 'Clear overrides',
-  'mangadex-catalog': 'MangaDex catalog',
-};
-
-function jobLabel(job: Job): string {
-  return JOB_LABEL[job.type] ?? job.type;
-}
 
 function JobRow({ job }: { job: Job }) {
   const qc = useQueryClient();
@@ -32,8 +19,8 @@ function JobRow({ job }: { job: Job }) {
         ) : (
           <Clock className="h-3.5 w-3.5 shrink-0 text-muted" />
         )}
-        <span className="min-w-0 flex-1 truncate text-xs font-medium" title={jobLabel(job)}>
-          {jobLabel(job)}
+        <span className="min-w-0 flex-1 truncate text-xs font-medium" title={jobLabel(job.type)}>
+          {jobLabel(job.type)}
         </span>
         {running && (
           <button

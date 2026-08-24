@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, Sparkles, AlertTriangle, Check, X, ArrowRight, Link2, Unlink } from 'lucide-react';
+import { Search, Sparkles, AlertTriangle, Check, X, ArrowRight, Link2, Unlink, History } from 'lucide-react';
 import {
   api,
   type MatchOutcome,
@@ -10,7 +10,7 @@ import {
   type KavitaPerson,
   type SeriesMatch,
 } from '../lib/api';
-import { PROVIDER_NAMES, cn } from '../lib/utils';
+import { PROVIDER_NAMES, cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { Button, Dialog, DialogContent, Label, ProviderBadge, Spinner } from './ui';
 
@@ -30,6 +30,27 @@ const CANDIDATE_STATUS: Record<string, number | null> = {
   CANCELLED: 3,
   UNKNOWN: null,
 };
+
+const HISTORY_TONE: Record<string, string> = {
+  matched: 'bg-success/15 text-success',
+  updated: 'bg-info/15 text-info',
+  failed: 'bg-danger/15 text-danger',
+  unmatched: 'bg-surface-2 text-muted',
+  cleared: 'bg-surface-2 text-muted',
+  cover: 'bg-warning/15 text-warning',
+};
+
+/** Flatten a history row's details object into a short readable line. */
+function detailsText(details: Record<string, unknown> | null): string {
+  if (!details) return '';
+  return Object.entries(details)
+    .map(([k, v]) => {
+      const val = Array.isArray(v) ? v.join(', ') : typeof v === 'number' && k === 'score' ? Math.round(v * 100) + '%' : String(v);
+      return val === '' || val === 'undefined' || val === 'null' ? null : `${k}: ${val}`;
+    })
+    .filter((s): s is string => s !== null)
+    .join(' · ');
+}
 
 interface CurrentKavita {
   name: string;
@@ -247,7 +268,6 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['series', seriesId] });
       qc.invalidateQueries({ queryKey: ['library-series'] });
-      qc.invalidateQueries({ queryKey: ['stats'] });
       qc.invalidateQueries({ queryKey: ['libraries'] });
       onClose();
     },
@@ -258,7 +278,6 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['series', seriesId] });
       qc.invalidateQueries({ queryKey: ['library-series'] });
-      qc.invalidateQueries({ queryKey: ['stats'] });
       qc.invalidateQueries({ queryKey: ['libraries'] });
       toast({ tone: 'success', title: res.removed ? 'Unmatched' : 'No match to remove', description: current.name });
     },
@@ -287,6 +306,12 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     queryKey: ['identify-preview', selected?.providerId, selected?.providerSeriesId],
     queryFn: () => api.providerMetadata(selected!.providerId, selected!.providerSeriesId),
     enabled: !!selected,
+  });
+
+  const history = useQuery({
+    queryKey: ['series-history', seriesId],
+    queryFn: () => api.seriesHistory(seriesId),
+    staleTime: 60_000,
   });
 
   const k = current.metadata;
@@ -337,7 +362,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-[min(96vw,1440px)]">
         <div className="flex max-h-[90vh] flex-col gap-4 overflow-y-auto p-5">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 pr-6">
             <Sparkles className="h-5 w-5 text-primary" />
             <h2 className="text-base font-semibold">Identify "{current.name}"</h2>
           </div>
@@ -362,6 +387,23 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
               <Button size="sm" variant="secondary" onClick={() => unmatch.mutate()} disabled={unmatch.isPending}>
                 {unmatch.isPending ? <Spinner /> : <Unlink className="h-3.5 w-3.5" />} Unmatch
               </Button>
+            </div>
+          )}
+
+          {history.data && history.data.length > 0 && (
+            <div className="rounded-lg border border-border-2 bg-surface-2 p-3">
+              <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+                <History className="h-3.5 w-3.5" /> History
+              </p>
+              <div className="flex max-h-48 flex-col gap-1 overflow-y-auto">
+                {history.data.map((h) => (
+                  <div key={h.id} className="flex items-baseline gap-2 text-xs">
+                    <span className={cn('shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium', HISTORY_TONE[h.action] ?? 'bg-surface-2 text-muted')}>{h.action}</span>
+                    <span className="min-w-0 flex-1 truncate text-muted" title={detailsText(h.details)}>{detailsText(h.details)}</span>
+                    <span className="shrink-0 text-[10px] text-muted">{timeAgo(h.createdAt)}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

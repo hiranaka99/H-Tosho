@@ -1,4 +1,4 @@
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, getTmpDir, schema } from '../db/index.js';
@@ -391,6 +391,29 @@ class DownloadQueue {
     const db = getDb();
     const res = db.delete(schema.downloadQueue).where(eq(schema.downloadQueue.status, 'completed')).run();
     return Number(res.changes ?? 0);
+  }
+
+  /** Most recent completed task for a gallery (duplicate-download guard). */
+  findCompleted(source: DoujinSource, galleryId: string): DownloadTask | null {
+    const row = getDb()
+      .select()
+      .from(schema.downloadQueue)
+      .where(and(eq(schema.downloadQueue.source, source), eq(schema.downloadQueue.galleryId, galleryId), eq(schema.downloadQueue.status, 'completed')))
+      .orderBy(desc(schema.downloadQueue.id))
+      .limit(1)
+      .get();
+    return row ? this.get(row.id) : null;
+  }
+
+  /** Every completed gallery (newest first) — powers the "already downloaded" badges. */
+  completedGalleries(): { source: string; galleryId: string; title: string | null; finishedAt: string | null }[] {
+    return getDb()
+      .select()
+      .from(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.status, 'completed'))
+      .orderBy(desc(schema.downloadQueue.id))
+      .all()
+      .map((r) => ({ source: r.source, galleryId: r.galleryId, title: r.title, finishedAt: r.finishedAt }));
   }
 
   // ---------------- Pump / concurrency ----------------

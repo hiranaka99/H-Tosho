@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import {
   Search,
   Download as DownloadIcon,
@@ -20,6 +21,8 @@ import {
   ArrowRight,
   ExternalLink,
   BookOpen,
+  ChevronLeft,
+  ChevronRight,
   Users,
   Layers,
   Star,
@@ -94,7 +97,7 @@ function translateQuery(query: string, from: DoujinSource, to: DoujinSource): st
  * (e.g. `artist:charu_lee`); nHentai wraps values in quotes (e.g. `artist:"Charu Lee"`).
  * An empty namespace yields a plain keyword search on the raw value.
  */
-function buildTagSearchFragment(value: string, ns: string | undefined, source: DoujinSource): string {
+export function buildTagSearchFragment(value: string, ns: string | undefined, source: DoujinSource): string {
   const v = value.trim();
   if (!v) return '';
   if (source === 'nhentai') {
@@ -148,6 +151,25 @@ function Cover({ url, title, className }: { url?: string | null; title: string; 
   );
 }
 
+/** Gallaries per results page — the provider returns up to ~1000 in one shot. */
+const RESULTS_PAGE_SIZE = 25;
+
+/** Finished tasks shown before the History section collapses (rest via "Show all"). */
+const HISTORY_PREVIEW = 5;
+
+/** Page numbers with ellipses: [1 … 4 5 6 … 42] style, capped to a sane width. */
+function pageList(page: number, count: number): (number | '…')[] {
+  if (count <= 7) return Array.from({ length: count }, (_, i) => i + 1);
+  const pages: (number | '…')[] = [1];
+  const lo = Math.max(2, page - 1);
+  const hi = Math.min(count - 1, page + 1);
+  if (lo > 2) pages.push('…');
+  for (let p = lo; p <= hi; p++) pages.push(p);
+  if (hi < count - 1) pages.push('…');
+  pages.push(count);
+  return pages;
+}
+
 function formatSpeed(bps: number | null): string {
   if (!bps || bps <= 0) return '';
   const mb = bps / (1024 * 1024);
@@ -186,8 +208,7 @@ function DownloadStatusBadge({ status }: { status: string }) {
 }
 
 // ---------------- Gallery card ----------------
-
-function GalleryCard({ item, onOpen, onDownload, downloading, index = 0 }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean; index?: number }) {
+function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloadedAt }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean; index?: number; downloadedAt?: string | null }) {
   const tags = [...item.artists, ...item.tags].slice(0, 6);
   return (
     <div
@@ -231,8 +252,19 @@ function GalleryCard({ item, onOpen, onDownload, downloading, index = 0 }: { ite
         )}
         <div className="mt-auto flex items-center justify-between pt-1">
           <SourceBadge source={item.source} />
-          <Button size="sm" onClick={(e) => { e.stopPropagation(); onDownload(); }} disabled={downloading}>
-            {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <DownloadIcon className="h-3.5 w-3.5" />} Download
+          <Button
+            size="sm"
+            onClick={(e) => { e.stopPropagation(); onDownload(); }}
+            disabled={downloading || !!downloadedAt}
+            title={downloadedAt ? `Already downloaded ${formatDate(downloadedAt)} — use Retry in the Download Manager to re-download` : undefined}
+          >
+            {downloading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : downloadedAt ? (
+              <CheckCircle2 className="h-3.5 w-3.5" />
+            ) : (
+              <DownloadIcon className="h-3.5 w-3.5" />
+            )} {downloadedAt ? 'Downloaded' : 'Download'}
           </Button>
         </div>
       </div>
@@ -420,7 +452,7 @@ function QueueRow({ task, onAction }: { task: DownloadTask; onAction: (a: 'pause
           {(task.status === 'paused' || task.status === 'failed') && (
             <Button size="icon" variant="ghost" title="Resume" onClick={() => onAction('resume')}><Play className="h-4 w-4" /></Button>
           )}
-          {task.status === 'failed' && (
+          {(task.status === 'failed' || task.status === 'completed') && (
             <Button size="icon" variant="ghost" title="Retry" onClick={() => onAction('retry')}><RotateCcw className="h-4 w-4" /></Button>
           )}
           {(task.status === 'downloading' || task.status === 'queued') && (
@@ -472,9 +504,16 @@ function QueueRow({ task, onAction }: { task: DownloadTask; onAction: (a: 'pause
 export function Downloader() {
   // Shared app-wide download state (live via SSE + polling fallback) and actions.
   const { tasks, active, liveConnected, startDownload, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
-  const [source, setSource] = React.useState<DoujinSource>('hitomi');
-  const [query, setQuery] = React.useState('');
-  const [searchKey, setSearchKey] = React.useState<string | null>(null);
+  // Deep links from the Libraries page prefill the source and an artist search
+  // (`/downloader?source=nhentai&q=artist%3A...`). App remounts this page on
+  // path changes, so reading the params once at mount covers every entry.
+  const [searchParams] = useSearchParams();
+  const [source, setSource] = React.useState<DoujinSource>(() => (searchParams.get('source') === 'nhentai' ? 'nhentai' : 'hitomi'));
+  const [query, setQuery] = React.useState(() => searchParams.get('q') ?? '');
+  const [searchKey, setSearchKey] = React.useState<string | null>(() => {
+    const q = searchParams.get('q');
+    return q && q.trim() ? q.trim() : null;
+  });
   // Result ordering for nHentai searches (ignored by other sources). Persisted
   // across source switches so it applies the next time nHentai is searched.
   const [sort, setSort] = React.useState<DoujinSort>('default');
@@ -542,8 +581,55 @@ export function Downloader() {
     enabled: searchKey !== null && searchKey.trim().length > 0,
   });
 
+  // Galleries with a completed download task — powers the duplicate badges.
+  const { data: completed } = useQuery({
+    queryKey: ['downloads-completed'],
+    queryFn: api.downloadsCompleted,
+    refetchInterval: 15_000,
+  });
+  const downloadedAt = React.useMemo(
+    () => new Map((completed ?? []).map((k) => [`${k.source}:${k.galleryId}`, k.finishedAt])),
+    [completed],
+  );
+
+  // Saved watches so the star button reflects the current search's state.
+  const { data: watches, refetch: refetchWatches } = useQuery({
+    queryKey: ['watched-searches'],
+    queryFn: api.watchedSearches,
+    refetchInterval: 30_000,
+  });
+  const currentWatch = (watches ?? []).find((w) => w.source === source && w.query === query.trim());
+
+  async function toggleWatch() {
+    const q = query.trim();
+    if (!q) return;
+    try {
+      if (currentWatch) {
+        await api.removeWatchedSearch(currentWatch.id);
+        toast({ tone: 'info', title: 'Unwatched', description: `“${q}” on ${SOURCE_LABELS[source]} will no longer be checked.` });
+      } else {
+        await api.addWatchedSearch(source, q);
+        toast({ tone: 'success', title: 'Watching search', description: `You'll get a Discord ping when “${q}” finds new results on ${SOURCE_LABELS[source]}.` });
+      }
+      await refetchWatches();
+    } catch (e) {
+      toast({ tone: 'danger', title: 'Could not update watches', description: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   // Tracks which gallery a start-download is in flight for (for button spinners).
   const [pendingKey, setPendingKey] = React.useState<string | null>(null);
+
+  // Results are fetched in full (up to ~1000 galleries) and paged client-side —
+  // rendering every card at once is the heaviest thing this page can do.
+  const [page, setPage] = React.useState(1);
+  const [showAllHistory, setShowAllHistory] = React.useState(false);
+
+  // Top-of-page view tabs: search results vs. the download manager queue.
+  const [tab, setTab] = React.useState<'search' | 'manager'>('search');
+  React.useEffect(() => {
+    setPage(1);
+  }, [searchKey]);
 
   async function doStartDownload(item: DoujinSearchResult) {
     const key = `${item.source}:${item.galleryId}`;
@@ -551,7 +637,12 @@ export function Downloader() {
     try {
       await startDownload({ source: item.source, galleryId: item.galleryId, title: item.title ?? undefined });
     } catch (e) {
-      toast({ tone: 'danger', title: 'Could not start download', description: e instanceof Error ? e.message : String(e) });
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg === 'already-downloaded') {
+        toast({ tone: 'info', title: 'Already downloaded', description: 'This gallery has a completed task — use Retry in the Download Manager to re-download it.' });
+      } else {
+        toast({ tone: 'danger', title: 'Could not start download', description: msg });
+      }
     } finally {
       setPendingKey(null);
     }
@@ -656,6 +747,9 @@ export function Downloader() {
   };
 
   const finished = tasks.filter((t) => t.status !== 'downloading' && t.status !== 'queued');
+  const pageCount = Math.max(1, Math.ceil((results?.length ?? 0) / RESULTS_PAGE_SIZE));
+  const curPage = Math.min(page, pageCount);
+  const pageItems = results ? results.slice((curPage - 1) * RESULTS_PAGE_SIZE, curPage * RESULTS_PAGE_SIZE) : [];
 
   return (
     <div className="flex flex-col gap-4">
@@ -665,6 +759,32 @@ export function Downloader() {
         </h1>
         <p className="text-sm text-muted">Search Hitomi.la & nHentai (nhentai.net) and download galleries straight into your Kavita library.</p>
       </div>
+
+      {/* View tabs */}
+      <div className="flex gap-4 self-start border-b border-border-2">
+        <button
+          type="button"
+          onClick={() => setTab('search')}
+          className={cn(
+            '-mb-px border-b-2 px-1 pb-2 text-sm font-medium transition-colors',
+            tab === 'search' ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
+          )}
+        >
+          Search
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('manager')}
+          className={cn(
+            '-mb-px border-b-2 px-1 pb-2 text-sm font-medium transition-colors',
+            tab === 'manager' ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
+          )}
+        >
+          Manager
+        </button>
+      </div>
+
+      {tab === 'search' && (<>
 
       {/* Search bar */}
       <Card>
@@ -767,6 +887,15 @@ export function Downloader() {
             <Button type="submit" disabled={isFetching || !query.trim()}>
               {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
             </Button>
+            <Button
+              type="button"
+              variant={currentWatch ? 'secondary' : 'outline'}
+              onClick={() => void toggleWatch()}
+              disabled={!query.trim()}
+              title={currentWatch ? `Stop watching “${query.trim()}”` : 'Watch this search — get a Discord ping when it finds new results'}
+            >
+              <Star className={cn('h-4 w-4', currentWatch && 'fill-current')} /> Watch
+            </Button>
           </form>
         </CardContent>
       </Card>
@@ -782,19 +911,40 @@ export function Downloader() {
             <>
               <p className="mb-3 text-xs text-muted">
                 {results.length} {results.length === 1 ? 'gallery' : 'galleries'} found on {SOURCE_LABELS[source]}
+                {pageCount > 1 && ` — showing ${(curPage - 1) * RESULTS_PAGE_SIZE + 1}–${Math.min(curPage * RESULTS_PAGE_SIZE, results.length)}`}
               </p>
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
-                {results.map((item, i) => (
+                {pageItems.map((item, i) => (
                   <GalleryCard
                     key={item.source + item.galleryId}
                     item={item}
                     index={i}
                     onOpen={() => setSelected(item)}
                     downloading={pendingKey === `${item.source}:${item.galleryId}`}
+                    downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
                     onDownload={() => doStartDownload(item)}
                   />
                 ))}
               </div>
+              {pageCount > 1 && (
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-1">
+                  <Button size="sm" variant="outline" disabled={curPage <= 1} onClick={() => setPage(curPage - 1)}>
+                    <ChevronLeft className="h-3.5 w-3.5" /> Prev
+                  </Button>
+                  {pageList(curPage, pageCount).map((p, i) =>
+                    p === '…' ? (
+                      <span key={`e${i}`} className="px-1 text-xs text-muted">…</span>
+                    ) : (
+                      <Button key={p} size="sm" variant={p === curPage ? 'default' : 'outline'} onClick={() => setPage(p)} aria-current={p === curPage ? 'page' : undefined}>
+                        {p}
+                      </Button>
+                    ),
+                  )}
+                  <Button size="sm" variant="outline" disabled={curPage >= pageCount} onClick={() => setPage(curPage + 1)}>
+                    Next <ChevronRight className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              )}
             </>
           ) : (
             <EmptyState icon={<Search className="h-8 w-8" />} title="No results" description={`No galleries found for “${searchKey}” on ${SOURCE_LABELS[source]}.`} />
@@ -812,9 +962,12 @@ export function Downloader() {
           onSearchTag={searchTagFragment}
         />
       )}
+      </>)
+      }
 
       {/* Download manager */}
-      <Card>
+      {tab === 'manager' && (
+        <Card>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle className="flex items-center gap-2">
             <DownloadIcon className="h-4 w-4" /> Download Manager
@@ -845,8 +998,15 @@ export function Downloader() {
               )}
               {finished.length > 0 && (
                 <div className="flex flex-col gap-2">
-                  <p className="text-xs font-semibold text-muted">History</p>
-                  {finished.map((t) => (
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-muted">History</p>
+                    {finished.length > HISTORY_PREVIEW && (
+                      <Button size="sm" variant="ghost" onClick={() => setShowAllHistory((v) => !v)}>
+                        {showAllHistory ? 'Show less' : `Show all (${finished.length})`}
+                      </Button>
+                    )}
+                  </div>
+                  {(showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW)).map((t) => (
                     <div key={t.id} className="relative">
                       <QueueRow task={t} onAction={(a) => act(t.id, a)} />
                       <button
@@ -863,7 +1023,8 @@ export function Downloader() {
             </>
           )}
         </CardContent>
-      </Card>
+        </Card>
+      )}
     </div>
   );
 }

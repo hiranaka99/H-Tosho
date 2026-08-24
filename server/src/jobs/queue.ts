@@ -9,7 +9,8 @@ export type JobType =
   | 'match-series'
   | 'sync-series'
   | 'clear-overrides'
-  | 'mangadex-catalog';
+  | 'mangadex-catalog'
+  | 'check-watched-searches';
 
 export interface JobPayload {
   libraryId?: number;

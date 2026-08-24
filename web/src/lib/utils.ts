@@ -28,6 +28,22 @@ export const PROVIDER_NAMES: Record<string, string> = {
   myanimelist: 'MyAnimeList',
 };
 
+/** Human-facing names for background job types (raw types are snake_case). */
+export const JOB_LABELS: Record<string, string> = {
+  'scan-new': 'Scan new series',
+  'match-unmatched': 'Match unmatched',
+  'match-library': 'Match library',
+  'match-series': 'Match series',
+  'sync-series': 'Sync series',
+  'clear-overrides': 'Clear overrides',
+  'mangadex-catalog': 'MangaDex catalog',
+  'check-watched-searches': 'Check watched searches',
+};
+
+export function jobLabel(type: string): string {
+  return JOB_LABELS[type] ?? type;
+}
+
 /** SQLite's `CURRENT_TIMESTAMP` default stores UTC as 'YYYY-MM-DD HH:MM:SS' (no Z).
  * JS parses that as local time; normalize to explicit UTC ISO before parsing. */
 export function toIsoUtc(iso: string): string {
@@ -55,9 +71,4 @@ export function shortDate(iso: string | null | undefined): string {
   const d = new Date(toIsoUtc(iso));
   if (Number.isNaN(d.getTime())) return iso;
   return d.toISOString().slice(0, 10);
-}
-
-export function pct(part: number, whole: number): number {
-  if (!whole) return 0;
-  return Math.round((part / whole) * 100);
 }

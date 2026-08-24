@@ -50,6 +50,8 @@ export interface SeriesRow {
   aligned?: boolean;
   lastSyncedAt?: string | null;
   errorMessage?: string | null;
+  /** Provider artist names from the stored match metadata (empty when unmatched or unknown). */
+  artists?: string[];
 }
 
 /** Local match row for a Kavita series (server `series_matches` table). */
@@ -149,13 +151,6 @@ export interface JobLog {
   level: string;
   message: string;
   createdAt: string;
-}
-
-export interface Stats {
-  totalSeries: number;
-  byStatus: Record<string, number>;
-  activeJobs: number;
-  recentJobs: Job[];
 }
 
 export interface SearchResult {
@@ -299,6 +294,32 @@ export type DownloadEvent =
   | { type: 'snapshot'; tasks: DownloadTask[] }
   | { type: 'task'; task: DownloadTask };
 
+/** A gallery with a completed download task (duplicate-download guard). */
+export interface DownloadedGallery {
+  source: DoujinSource;
+  galleryId: string;
+  title: string | null;
+  finishedAt: string | null;
+}
+
+/** One row of a series' sync/match history (newest first). */
+export interface SyncHistoryEntry {
+  id: number;
+  action: string;
+  details: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+/** A saved doujin search that pings Discord when it finds new results. */
+export interface WatchedSearch {
+  id: number;
+  source: DoujinSource;
+  query: string;
+  lastCheckedAt: string | null;
+  lastResultCount: number | null;
+  seenCount: number;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getAuthToken();
   const res = await fetch('/api' + path, {
@@ -358,6 +379,17 @@ export const api = {
     }),
   /** Manually unmatch a series (drops the local match row). */
   unmatch: (id: number) => request<{ ok: boolean; removed: boolean }>(`/series/${id}/match`, { method: 'DELETE' }),
+  /** Matched series whose confidence is below the review threshold (local DB only). */
+  lowConfidenceCount: () => request<{ count: number; threshold: number }>('/series/low-confidence'),
+  /** Recent sync/match history for one series (newest first). */
+  seriesHistory: (id: number) => request<SyncHistoryEntry[]>(`/series/${id}/history`),
+
+  // ---------------- Watched searches ----------------
+  watchedSearches: () => request<WatchedSearch[]>('/watched-searches'),
+  addWatchedSearch: (source: DoujinSource, query: string) =>
+    request<WatchedSearch>('/watched-searches', { method: 'POST', body: JSON.stringify({ source, query }) }),
+  removeWatchedSearch: (id: number) => request<{ ok: boolean }>(`/watched-searches/${id}`, { method: 'DELETE' }),
+  checkWatchedSearches: () => request<{ id: number }>('/watched-searches/check', { method: 'POST' }),
 
   /** Aggregated metadata a candidate would sync — same path as apply. */
   providerMetadata: (providerId: string, providerSeriesId: string) =>
@@ -389,13 +421,11 @@ export const api = {
   job: (id: number) => request<{ job: Job; logs: JobLog[] }>(`/jobs/${id}`),
   cancelJob: (id: number) => request<{ ok: boolean }>(`/jobs/${id}/cancel`, { method: 'POST' }),
   logs: () => request<JobLog[]>('/logs'),
-  stats: () => request<Stats>('/stats'),
 
   // ---------------- Doujinshi downloader ----------------
   downloaderSettings: () => request<DownloaderSettings>('/settings/downloader'),
   saveDownloaderSettings: (s: DownloaderSettings) =>
     request<{ ok: boolean; settings: DownloaderSettings }>('/settings/downloader', {
-      method: 'PUT',
       body: JSON.stringify(s),
     }),
   doujinProviders: () => request<DoujinProvider[]>('/doujin/providers'),
@@ -417,6 +447,8 @@ export const api = {
   startDownload: (body: { source: DoujinSource; galleryId: string; title?: string; format?: 'cbz' | 'folder' }) =>
     request<{ id: number; status: string }>('/downloads', { method: 'POST', body: JSON.stringify(body) }),
   downloads: () => request<DownloadTask[]>('/downloads'),
+  /** Completed galleries for the duplicate-download badges. */
+  downloadsCompleted: () => request<DownloadedGallery[]>('/downloads/completed'),
   download: (id: number) => request<DownloadTask>(`/downloads/${id}`),
   downloadAction: (id: number, action: 'pause' | 'resume' | 'cancel' | 'retry') =>
     request<{ ok: boolean }>(`/downloads/${id}/${action}`, { method: 'POST' }),

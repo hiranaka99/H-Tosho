@@ -372,6 +372,21 @@ CREATE TABLE IF NOT EXISTS download_queue (
   started_at TEXT,
   finished_at TEXT
 );
+CREATE TABLE IF NOT EXISTS watched_searches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT NOT NULL,
+  query TEXT NOT NULL,
+  last_checked_at TEXT,
+  last_result_count INTEGER,
+  created_at TEXT NOT NULL DEFAULT (current_timestamp)
+);
+CREATE TABLE IF NOT EXISTS watched_search_seen (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  search_id INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  gallery_id TEXT NOT NULL,
+  first_seen_at TEXT NOT NULL DEFAULT (current_timestamp)
+);
 CREATE TABLE IF NOT EXISTS key_value_store (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL
@@ -379,6 +394,7 @@ CREATE TABLE IF NOT EXISTS key_value_store (
 CREATE INDEX IF NOT EXISTS idx_job_logs_job_id ON job_logs(job_id);
 CREATE INDEX IF NOT EXISTS idx_sync_history_series ON sync_history(kavita_series_id);
 CREATE INDEX IF NOT EXISTS idx_download_queue_gallery ON download_queue(source, gallery_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_watched_search_seen_unique ON watched_search_seen(search_id, source, gallery_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 `;
 

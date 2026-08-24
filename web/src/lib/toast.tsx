@@ -34,6 +34,9 @@ const TONE_STYLE: Record<ToastTone, { border: string; icon: React.ReactNode }> =
   info: { border: 'border-l-primary', icon: <Info className="h-4 w-4 shrink-0 text-primary" /> },
 };
 
+/** Danger toasts carry error details people need time to read — keep them up longer. */
+const TONE_LIFETIME_MS: Record<ToastTone, number> = { success: 5000, info: 5000, danger: 10000 };
+
 export function Toaster() {
   const [items, setItems] = React.useState<ToastItem[]>([]);
 
@@ -42,7 +45,7 @@ export function Toaster() {
       setItems((prev) => [...prev.slice(-4), t]); // keep at most ~5 visible
       window.setTimeout(() => {
         setItems((prev) => prev.filter((x) => x.id !== t.id));
-      }, 5000);
+      }, TONE_LIFETIME_MS[t.tone]);
     };
     listeners.push(on);
     return () => {
@@ -66,7 +69,7 @@ export function Toaster() {
           {TONE_STYLE[t.tone].icon}
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium">{t.title}</p>
-            {t.description && <p className="mt-0.5 truncate text-xs text-muted" title={t.description}>{t.description}</p>}
+            {t.description && <p className={cn('mt-0.5 text-xs text-muted', t.tone === 'danger' ? 'line-clamp-4' : 'truncate')} title={t.description}>{t.description}</p>}
           </div>
           <button
             onClick={() => setItems((prev) => prev.filter((x) => x.id !== t.id))}
@@ -75,8 +78,8 @@ export function Toaster() {
           >
             <X className="h-3.5 w-3.5" />
           </button>
-          {/* Auto-dismiss countdown (matches the 5s timeout above). */}
-          <div className={cn('absolute bottom-0 left-0 h-0.5 w-full origin-left animate-toast-progress', t.tone === 'success' ? 'bg-success/50' : t.tone === 'danger' ? 'bg-danger/50' : 'bg-primary/40')} />
+          {/* Auto-dismiss countdown (matches the per-tone timeout above). */}
+          <div className={cn('absolute bottom-0 left-0 h-0.5 w-full origin-left animate-toast-progress', t.tone === 'success' ? 'bg-success/50' : t.tone === 'danger' ? 'bg-danger/50' : 'bg-primary/40')} style={{ animationDuration: TONE_LIFETIME_MS[t.tone] + 'ms' }} />
         </div>
       ))}
     </div>
