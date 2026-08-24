@@ -367,17 +367,22 @@ export interface MergeCbzOutcome {
 
 /**
  * Move a set of .cbz files into one folder and stamp the given chapter numbers
- * into their ComicInfo.Number — the core of series merging. Kavita groups
- * archives by folder, so once everything shares a folder with per-file chapter
- * numbers it appears as a single series with ordered chapters.
+ * into their ComicInfo.Number and the merged series name into ComicInfo.Series —
+ * the core of series merging. Kavita groups archives by folder, but a file whose
+ * Series value differs splits the folder into separate series, so every moved
+ * file must share both the folder and the Series name to appear as one series
+ * with ordered chapters.
  *
  * `chapters` is keyed by the original source path; name collisions inside the
  * target are resolved by appending " (2)", " (3)", … before the extension.
+ * A source folder left empty by the move is removed, so a merge leaves no
+ * litter behind; folders that still hold other content survive.
  */
 export async function mergeCbzFiles(
   sourceFiles: string[],
   targetDir: string,
   chapters?: Record<string, string>,
+  seriesName?: string,
 ): Promise<MergeCbzOutcome> {
   if (!path.isAbsolute(targetDir)) throw new Error('targetDir must be an absolute path');
   const out: MergeCbzOutcome = { moved: [], skipped: [], chaptered: [], failed: [] };
@@ -406,19 +411,45 @@ export async function mergeCbzFiles(
           }
         }
       }
-      if (!alreadyThere) await moveFileAcross(file, dest);
+      if (!alreadyThere) {
+        await moveFileAcross(file, dest);
+        removeEmptiedSourceDir(file, targetDir);
+      }
       out.moved.push(dest);
 
       const chapter = chapters?.[src];
-      if (chapter && chapter.trim()) {
-        await setComicInfoNumber(dest, chapter.trim());
-        out.chaptered.push(dest);
+      const wantNumber = chapter && chapter.trim() ? chapter.trim() : undefined;
+      const wantSeries = seriesName && seriesName.trim() ? seriesName.trim() : undefined;
+      if (wantNumber || wantSeries) {
+        const existing = await readComicInfo(dest);
+        const doc = existing ? parseComicInfo(existing) : null;
+        const fields: Record<string, string> = {};
+        if (wantNumber && doc?.fields.Number !== wantNumber) fields.Number = wantNumber;
+        if (wantSeries && doc?.fields.Series !== wantSeries) fields.Series = wantSeries;
+        // Skip the rewrite when nothing changed — rewriting rewrites the whole archive.
+        if (Object.keys(fields).length > 0) await setComicInfoFields(dest, fields);
+        if (wantNumber) out.chaptered.push(dest);
       }
     } catch (e) {
       out.failed.push({ file: src, error: e instanceof Error ? e.message : String(e) });
     }
   }
   return out;
+}
+
+/**
+ * Remove `file`'s parent folder if a move just left it empty. rmdirSync throws
+ * ENOTEMPTY on non-empty folders, so anything still holding content — or the
+ * target itself — survives untouched.
+ */
+function removeEmptiedSourceDir(file: string, targetDir: string): void {
+  const dir = path.dirname(file);
+  if (path.resolve(dir) === path.resolve(targetDir)) return;
+  try {
+    fs.rmdirSync(dir);
+  } catch {
+    /* non-empty or in use — keep it */
+  }
 }
 
 /** rename with a copy+delete fallback for cross-device moves. */
@@ -432,21 +463,24 @@ async function moveFileAcross(src: string, dest: string): Promise<void> {
   }
 }
 
-/** Write ComicInfo.Number into a CBZ, preserving the other fields of any existing entry. */
-async function setComicInfoNumber(file: string, number: string): Promise<void> {
+/** Write the given ComicInfo fields into a CBZ, preserving the other fields of any existing entry. */
+async function setComicInfoFields(file: string, fields: Record<string, string>): Promise<void> {
   const existing = await readComicInfo(file);
   let xml: string;
   if (existing) {
     const doc = parseComicInfo(existing);
     xml = renderComicInfoXml({
-      values: { ...doc.fields, Number: number },
+      values: { ...doc.fields, ...fields },
       order: doc.order,
       rawInner: doc.rawInner,
-      edited: ['Number'],
+      edited: Object.keys(fields),
     });
   } else {
-    // No metadata yet — create a minimal document so Kavita can order the chapter.
-    xml = '<?xml version="1.0" encoding="UTF-8"?>\n<ComicInfo>\n  <Number>' + number + '</Number>\n</ComicInfo>\n';
+    // No metadata yet — create a minimal document so Kavita can group and order the chapter.
+    const body = Object.entries(fields)
+      .map(([k, v]) => `  <${k}>${v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</${k}>`)
+      .join('\n');
+    xml = '<?xml version="1.0" encoding="UTF-8"?>\n<ComicInfo>\n' + body + '\n</ComicInfo>\n';
   }
   await rewriteZipEntry(file, 'ComicInfo.xml', Buffer.from(xml, 'utf8'));
 }

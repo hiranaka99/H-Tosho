@@ -27,8 +27,13 @@ import { getDownloaderSettings, type DownloaderSettings } from '../services/sett
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0';
 
+/** How many times a transiently-failed download is re-queued automatically. */
+const MAX_AUTO_RETRIES = 3;
+/** Cooldown before an automatic retry starts, giving the CDN time to recover. */
+const AUTO_RETRY_DELAY_MS = 60_000;
+
 /** True when a fetch error is transient (worth retrying with backoff). */
-function isTransientError(err: unknown): boolean {
+export function isTransientError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const m = /HTTP (\d{3})/.exec(err.message);
   if (m) {
@@ -41,11 +46,14 @@ function isTransientError(err: unknown): boolean {
 
 /**
  * Stream a URL into a Buffer, retrying transient failures (429/5xx/network)
- * with exponential backoff. Non-transient errors are rethrown immediately so the
+ * with growing backoff. Non-transient errors are rethrown immediately so the
  * caller can fall through to a per-page fallback without needless retries.
+ * The schedule (~63s of waiting total) is long enough to ride out typical CDN
+ * 503 storms, which clear within seconds to a couple of minutes.
  */
 async function fetchPageWithRetry(url: string, headers: Record<string, string>, handlers: StreamProgressHandlers): Promise<Buffer> {
-  const attempts = 3;
+  const attempts = 5;
+  const delays = [2000, 6000, 15000, 40000];
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
@@ -53,7 +61,26 @@ async function fetchPageWithRetry(url: string, headers: Record<string, string>, 
     } catch (err) {
       lastErr = err;
       if (!isTransientError(err)) throw err;
-      if (i < attempts - 1) await sleep(600 * 2 ** i);
+      if (i < attempts - 1) await sleep(delays[i] ?? delays[delays.length - 1]);
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Run an async operation, retrying transient failures with the given delays.
+ * Non-transient errors are rethrown immediately. Used for gallery resolution
+ * and anywhere a single request can hit a CDN blip.
+ */
+export async function retryTransient<T>(fn: () => Promise<T>, attempts: number, delays: number[]): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < Math.max(1, attempts); i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientError(err) || i >= attempts - 1) throw err;
+      await sleep(delays[i] ?? delays[delays.length - 1]);
     }
   }
   throw lastErr;
@@ -181,6 +208,10 @@ class DownloadQueue {
   private lastBroadcast = new Map<number, number>();
   /** id -> last DB persist timestamp (ms) for throttling. */
   private lastWrite = new Map<number, number>();
+  /** id -> number of automatic retries scheduled for a transient failure. */
+  private autoRetries = new Map<number, number>();
+  /** id -> pending cooldown timer that will re-queue the task. */
+  private retryTimers = new Map<number, NodeJS.Timeout>();
   private listeners = new Set<(task: DownloadTask) => void>();
   private settingsProvider: () => DownloaderSettings;
 
@@ -382,11 +413,52 @@ class DownloadQueue {
     return false;
   }
 
+  /**
+   * Re-queue a task that failed on a transient error (CDN 503/timeout) after a
+   * cooldown, up to MAX_AUTO_RETRIES times. The row stays visible as "failed"
+   * with an auto-retry note until the timer flips it back to "queued"; a manual
+   * retry or delete supersedes the pending timer via status guards.
+   */
+  private scheduleAutoRetry(id: number, message: string): void {
+    const count = (this.autoRetries.get(id) ?? 0) + 1;
+    if (count > MAX_AUTO_RETRIES) {
+      this.setStatus(id, 'failed');
+      return;
+    }
+    this.autoRetries.set(id, count);
+    getDb()
+      .update(schema.downloadQueue)
+      .set({ status: 'failed', finishedAt: new Date().toISOString(), errorMessage: `${message} (auto-retry ${count}/${MAX_AUTO_RETRIES} in ~1 min)` })
+      .where(eq(schema.downloadQueue.id, id))
+      .run();
+    this.syncLive(id);
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(id);
+      const t = this.readRow(id);
+      if (!t || t.status !== 'failed') return; // user retried or deleted meanwhile
+      getDb()
+        .update(schema.downloadQueue)
+        .set({ status: 'queued', progressCurrent: 0, speed: null, currentFile: null, bytesCurrent: 0, bytesTotal: 0, errorMessage: null, startedAt: null, finishedAt: null })
+        .where(eq(schema.downloadQueue.id, id))
+        .run();
+      this.syncLive(id);
+      void this.pump();
+    }, AUTO_RETRY_DELAY_MS);
+    timer.unref();
+    this.retryTimers.set(id, timer);
+  }
+
   /** Re-run a failed/completed task from scratch. */
   retry(id: number): boolean {
     const task = this.get(id);
     if (!task) return false;
     if (task.status !== 'failed' && task.status !== 'completed') return false;
+    this.autoRetries.delete(id);
+    const pending = this.retryTimers.get(id);
+    if (pending) {
+      clearTimeout(pending);
+      this.retryTimers.delete(id);
+    }
     this.live.delete(id);
     getDb()
       .update(schema.downloadQueue)
@@ -400,6 +472,12 @@ class DownloadQueue {
   remove(id: number): boolean {
     getDb().delete(schema.downloadQueue).where(eq(schema.downloadQueue.id, id)).run();
     this.live.delete(id);
+    this.autoRetries.delete(id);
+    const pending = this.retryTimers.get(id);
+    if (pending) {
+      clearTimeout(pending);
+      this.retryTimers.delete(id);
+    }
     return true;
   }
 
@@ -495,7 +573,7 @@ class DownloadQueue {
 
       // Resolve the full gallery (metadata + image list).
       this.updateProgress(row.id, { progressCurrent: 0, progressTotal: 0, speed: 0, currentFile: 'Resolving gallery…', bytesCurrent: 0, bytesTotal: 0 }, { force: true });
-      const gallery = await provider.getGallery(row.galleryId);
+      const gallery = await retryTransient(() => provider.getGallery(row.galleryId), 4, [2000, 10000, 30000]);
       const total = gallery.pages.length;
       if (!total) throw new Error('Gallery has no downloadable pages.');
       this.updateProgress(row.id, { progressCurrent: 0, progressTotal: total, speed: 0, currentFile: null, bytesCurrent: 0, bytesTotal: 0 }, { force: true });
@@ -516,7 +594,10 @@ class DownloadQueue {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       getDb().update(schema.downloadQueue).set({ errorMessage: message, speed: 0 }).where(eq(schema.downloadQueue.id, row.id)).run();
-      if (!ctx.cancelled) this.setStatus(row.id, 'failed');
+      if (!ctx.cancelled) {
+        if (isTransientError(e)) this.scheduleAutoRetry(row.id, message);
+        else this.setStatus(row.id, 'failed');
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
       // Drop the in-memory snapshot so subsequent reads reflect the authoritative DB state.
@@ -656,6 +737,7 @@ class DownloadQueue {
         let usedUrl: string | null = null;
         let lastErr: unknown = null;
         for (const force of [false, true]) {
+          if (force) await sleep(30_000); // let a CDN storm clear before re-resolving URLs
           const candidates = await resolvePageCandidates(gallery, i, force);
           for (const url of candidates) {
             try {

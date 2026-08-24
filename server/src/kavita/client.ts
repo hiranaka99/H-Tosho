@@ -104,6 +104,13 @@ export class KavitaClient {
     return res.data;
   }
 
+  private async deleteJson(path: string, action: string): Promise<void> {
+    const res = await fetchJson<unknown>(this.url(path), { method: 'DELETE', headers: this.headers }, 15_000, { raw: true });
+    if (res.status < 200 || res.status >= 300) {
+      throw this.requestError(action, path, res.status, res.data);
+    }
+  }
+
   /** GET /api/Server/server-info-slim */
   async getServerInfo(): Promise<KavitaServerInfo> {
     const path = '/Server/server-info-slim';
@@ -375,6 +382,11 @@ export class KavitaClient {
   /** POST /api/Library/scan?libraryId={id} - rescan a single library for new media. */
   async scanLibrary(libraryId: number): Promise<void> {
     await this.postJson(`/Library/scan?libraryId=${encodeURIComponent(libraryId)}`, {}, `Scan library ${libraryId}`);
+  }
+
+  /** DELETE /api/Series/{seriesId} — removes the series record; files on disk are untouched. */
+  async deleteSeries(seriesId: number): Promise<void> {
+    await this.deleteJson(`/Series/${seriesId}`, `Delete series ${seriesId}`);
   }
 
   /** POST /api/Library/scan-all - rescan all libraries for new media. */

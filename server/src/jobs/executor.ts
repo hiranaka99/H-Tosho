@@ -1,9 +1,11 @@
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import path from 'node:path';
+import fs from 'node:fs';
 import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
 import {
   getCredentialMap,
+  getDownloaderSettings,
   getKavitaConnection,
   getLibraryOverride,
   getProviderPriorities,
@@ -15,7 +17,7 @@ import { applyToKavita, checkAlignment, fetchCover } from '../services/sync.js';
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
-import { mergeCbzFiles, readComicInfo, resolveExistingFile, rewriteZipEntry } from '../lib/cbz.js';
+import { listCbzFiles, mergeCbzFiles, readComicInfo, resolveExistingFile, resolveSeriesHostDir, rewriteZipEntry } from '../lib/cbz.js';
 import { parseComicInfo, renderComicInfoXml } from '../downloader/comicinfo.js';
 
 interface Target {
@@ -269,6 +271,86 @@ async function rescanLibraryContainingDir(dir: string, log: LogFn): Promise<void
   }
 }
 
+/**
+ * After a merge, delete the Kavita series that belonged to the pre-merge source folders.
+ * Kavita's scan reattaches moved files to their original series records instead of
+ * consolidating them into the target folder's series, so without this step one stale
+ * series would linger per source folder. The target folder itself is exempt — its
+ * series becomes the merged series. Best-effort: a dead/unconfigured Kavita just means
+ * the stale series stays until it is removed manually.
+ */
+async function removeSourceSeriesFromKavita(sourceFiles: string[], targetDir: string, log: LogFn): Promise<void> {
+  try {
+    const conn = getKavitaConnection();
+    if (!conn.baseUrl || !conn.apiKey) return;
+    const client = new KavitaClient(conn.baseUrl, conn.apiKey);
+    // Distinct source folders that are neither the merge target nor an ancestor of it.
+    const norm = (p: string): string => path.normalize(p).replace(/\\/g, '/');
+    const target = norm(targetDir);
+    const sourceDirs = new Set<string>();
+    for (const f of sourceFiles) {
+      const d = norm(path.dirname(f));
+      if (d === target || target.startsWith(d + '/')) continue;
+      sourceDirs.add(d);
+    }
+    if (sourceDirs.size === 0) return;
+    const names = new Set([...sourceDirs].map((d) => lastSegment(d).toLowerCase()));
+    const libraries = await client.getLibraries();
+    const deleted: number[] = [];
+    for (const lib of libraries) {
+      let series;
+      try {
+        series = await client.getSeries(lib.id);
+      } catch {
+        continue; // one unreachable library must not block the rest
+      }
+      for (const s of series) {
+        if (!s.folderPath || !names.has(lastSegment(s.folderPath).toLowerCase())) continue;
+        try {
+          await client.deleteSeries(s.id);
+          deleted.push(s.id);
+          log('info', `Removed stale Kavita series "${s.name}" (id ${s.id}) — its files now live in the merged folder`);
+        } catch (e) {
+          log('warn', `Could not delete Kavita series ${s.id}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
+    if (deleted.length > 0) {
+      getDb().delete(schema.seriesMatches).where(inArray(schema.seriesMatches.kavitaSeriesId, deleted)).run();
+    }
+  } catch (e) {
+    log('warn', `Kavita series cleanup failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * The ComicInfo.Series value Kavita uses to group a series' files. When the
+ * series' existing archives all agree on one value, new files must carry the
+ * same value or Kavita splits the folder into separate series; otherwise fall
+ * back to null so the caller can use the series name. Files being merged are
+ * excluded — their current values are what we are about to overwrite.
+ */
+async function pickSeriesStampName(dir: string, exclude: Set<string>): Promise<string | null> {
+  let files: string[];
+  try {
+    files = listCbzFiles(dir);
+  } catch {
+    return null;
+  }
+  const values = new Set<string>();
+  for (const f of files) {
+    if (exclude.has(path.resolve(f))) continue;
+    try {
+      const xml = await readComicInfo(f);
+      const v = xml ? parseComicInfo(xml).fields.Series?.trim() : '';
+      if (v) values.add(v);
+    } catch {
+      /* unreadable archive — ignore */
+    }
+  }
+  return values.size === 1 ? [...values][0] : null;
+}
+
 /** Run a queued job. Returns a small summary stored on the job row. */
 export async function runJob(job: Job, log: LogFn): Promise<Record<string, number>> {
   // The MangaDex catalog refresh talks to MangaDex only — no Kavita needed.
@@ -319,18 +401,51 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
     return { processed: 1, matched: 0, failed: 0 };
   }
 
-  // Series merge moves local archives into one folder and stamps chapter numbers —
-  // no Kavita connection needed for the move itself; the rescan below is best-effort.
+  // Series merge moves local archives into one folder, stamps the shared series
+  // name + chapter numbers, and deletes the stale source-folder Kavita series —
+  // Kavita's scan reattaches moved files to their original series records instead
+  // of consolidating, and differing ComicInfo.Series values split a folder into
+  // multiple series. The rescan below then folds everything into one series.
+  // The target is either an explicit folder (targetDir) or an existing Kavita
+  // series ("library item", seriesId) whose folder the files are moved into.
   if (job.type === 'merge-series') {
     const sourceFiles = job.payload.sourceFiles ?? [];
-    if (!job.payload.targetDir) throw new Error('targetDir required');
     if (sourceFiles.length < 1) throw new Error('At least one .cbz file is required');
-    log('info', `Merging ${sourceFiles.length} file(s) into ${job.payload.targetDir}`);
-    const r = await mergeCbzFiles(sourceFiles, job.payload.targetDir, job.payload.chapters);
+    let targetDir = job.payload.targetDir;
+    let stampName: string | undefined;
+    if (job.payload.seriesId != null) {
+      const client = connectedClientOrNull();
+      if (!client) throw new Error('Kavita is not configured');
+      let s: { id: number; name: string; libraryId: number; folderPath?: string };
+      try {
+        s = await client.getSeriesById(job.payload.seriesId);
+      } catch {
+        throw new Error(`Kavita series ${job.payload.seriesId} not found`);
+      }
+      const libraries = await client.getLibraries();
+      const lib = libraries.find((l) => l.id === s.libraryId);
+      const dl = getDownloaderSettings();
+      const dir = resolveSeriesHostDir({
+        libraryPath: lib?.path ?? null,
+        folderPath: s.folderPath ?? null,
+        anchors: dl.downloadDirectory ? [path.resolve(dl.downloadDirectory)] : [],
+      });
+      if (!dir || !fs.existsSync(dir)) {
+        throw new Error(`Could not locate the series folder for "${s.name}" on this machine`);
+      }
+      targetDir = dir;
+      // Match the Series value the existing files carry so Kavita groups the
+      // merged files with them; fall back to the series name when unknown.
+      stampName = (await pickSeriesStampName(dir, new Set(sourceFiles.map((f) => path.resolve(f))))) ?? s.name;
+    }
+    if (!targetDir) throw new Error('targetDir required');
+    log('info', `Merging ${sourceFiles.length} file(s) into ${targetDir}`);
+    const r = await mergeCbzFiles(sourceFiles, targetDir, job.payload.chapters, stampName ?? lastSegment(targetDir));
     for (const f of r.failed) log('warn', `Skipped ${f.file}: ${f.error}`);
     if (r.moved.length === 0) throw new Error('No files could be moved — check the source paths');
-    log('success', `Moved ${r.moved.length} file(s) into one folder; stamped chapter numbers on ${r.chaptered.length}`);
-    await rescanLibraryContainingDir(job.payload.targetDir, log);
+    log('success', `Moved ${r.moved.length} file(s) into one folder as "${stampName ?? lastSegment(targetDir)}"; stamped chapter numbers on ${r.chaptered.length}`);
+    await removeSourceSeriesFromKavita(sourceFiles, targetDir, log);
+    await rescanLibraryContainingDir(targetDir, log);
     return { processed: r.moved.length, matched: 0, failed: r.failed.length };
   }
 

@@ -317,4 +317,42 @@ describe('mergeCbzFiles', () => {
   it('rejects a relative target directory', async () => {
     await assert.rejects(() => mergeCbzFiles([], 'relative/dir'), /absolute/);
   });
+
+  it('removes source folders left empty by the move but keeps folders with other content', async () => {
+    const vol1 = path.join(base, 'Series A', 'vol1');
+    const vol2 = path.join(base, 'Series B', 'vol2');
+    fs.mkdirSync(vol1, { recursive: true });
+    fs.mkdirSync(vol2, { recursive: true });
+    makeCbz(path.join(vol1, 'a.cbz'));
+    makeCbz(path.join(vol2, 'b.cbz'));
+    writeFileSync(path.join(vol2, 'keep.txt'), 'stay'); // vol2 must survive
+    const target = path.join(base, 'Merged Cleanup');
+
+    const r = await mergeCbzFiles([path.join(vol1, 'a.cbz'), path.join(vol2, 'b.cbz')], target);
+
+    assert.equal(r.failed.length, 0);
+    assert.equal(r.moved.length, 2);
+    assert.ok(!fs.existsSync(vol1), 'emptied source folder should be removed');
+    assert.ok(fs.existsSync(path.join(vol2, 'keep.txt')), 'non-empty source folder must survive');
+    assert.ok(fs.existsSync(target));
+  });
+
+  it('stamps the merged series name into ComicInfo.Series so Kavita keeps one series', async () => {
+    const vol1 = path.join(base, 'Series C', 'vol1');
+    const vol2 = path.join(base, 'Series C', 'vol2');
+    fs.mkdirSync(vol1, { recursive: true });
+    fs.mkdirSync(vol2, { recursive: true });
+    makeCbz(path.join(vol1, 'a.cbz'), '<ComicInfo><Series>Old Name A</Series></ComicInfo>');
+    makeCbz(path.join(vol2, 'b.cbz')); // no metadata at all
+    const target = path.join(base, 'Merged Series C');
+
+    const r = await mergeCbzFiles([path.join(vol1, 'a.cbz'), path.join(vol2, 'b.cbz')], target, {}, 'Merged Series C');
+
+    assert.equal(r.failed.length, 0);
+    assert.equal(r.moved.length, 2);
+    const f1 = parseComicInfo(readComicInfoSync(path.join(target, 'a.cbz'))!).fields;
+    assert.equal(f1.Series, 'Merged Series C');
+    const f2 = parseComicInfo(readComicInfoSync(path.join(target, 'b.cbz'))!).fields;
+    assert.equal(f2.Series, 'Merged Series C');
+  });
 });

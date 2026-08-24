@@ -30,6 +30,7 @@ import {
   Tags,
   Check,
   Combine,
+  FolderInput,
 } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
 import { useDownloads } from '../lib/DownloadsContext';
@@ -38,6 +39,7 @@ import { cn, timeAgo, toIsoUtc } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeDownloadModal } from '../components/MergeDownloadModal';
+import { MergeIntoSeriesModal } from '../components/MergeIntoSeriesModal';
 
 const SOURCES: { id: DoujinSource; label: string }[] = [
   { id: 'hitomi', label: 'Hitomi.la' },
@@ -456,12 +458,26 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
 
 // ---------------- Queue row ----------------
 
-function QueueRow({ task, onAction, onEditComicInfo }: { task: DownloadTask; onAction: (a: 'pause' | 'resume' | 'cancel' | 'retry') => void; onEditComicInfo?: (path: string) => void }) {
+function QueueRow({ task, onAction, onEditComicInfo, mergeChecked = false, onToggleMerge }: { task: DownloadTask; onAction: (a: 'pause' | 'resume' | 'cancel' | 'retry') => void; onEditComicInfo?: (path: string) => void; mergeChecked?: boolean; onToggleMerge?: () => void }) {
   const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : 0;
   return (
     <div className="flex animate-fade-up flex-col gap-2 rounded-lg border border-border p-3 transition-colors">
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
+          {onToggleMerge && (
+            <button
+              type="button"
+              onClick={onToggleMerge}
+              title={mergeChecked ? 'Remove from merge selection' : 'Select for merge'}
+              aria-pressed={mergeChecked}
+              className={cn(
+                'flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-all duration-150',
+                mergeChecked ? 'border-primary bg-primary text-white' : 'border-border bg-surface-2 text-transparent hover:border-primary hover:text-primary/70',
+              )}
+            >
+              <Check className="h-3.5 w-3.5" />
+            </button>
+          )}
           <DownloadStatusBadge status={task.status} />
           <span className="truncate text-sm font-medium" title={task.title ?? ''}>{task.title ?? `Gallery ${task.galleryId}`}</span>
         </div>
@@ -545,6 +561,10 @@ export function Downloader() {
   // Multi-select for merging several chapters of one series into a single download batch.
   const [mergeSelected, setMergeSelected] = React.useState<Set<string>>(new Set());
   const [mergeOpen, setMergeOpen] = React.useState(false);
+  const [mergeMode, setMergeMode] = React.useState<'new' | 'existing'>('new');
+  // Multi-select of completed downloads for merging into an existing Kavita series.
+  const [queueMergeSelected, setQueueMergeSelected] = React.useState<Set<number>>(new Set());
+  const [mergeIntoOpen, setMergeIntoOpen] = React.useState(false);
 
   // Autocomplete dropdown state (nHentai tag/artist suggestions).
   const [suggestions, setSuggestions] = React.useState<DoujinSuggestion[]>([]);
@@ -953,8 +973,11 @@ export function Downloader() {
               {mergeSelected.size > 0 && (
                 <div className="mb-3 flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border border-border-2 bg-surface-2 p-2 shadow-lg shadow-black/20">
                   <span className="px-2 text-xs text-muted">{mergeSelected.size} selected</span>
-                  <Button size="sm" onClick={() => setMergeOpen(true)} disabled={mergeSelected.size < 2}>
+                  <Button size="sm" onClick={() => { setMergeMode('new'); setMergeOpen(true); }} disabled={mergeSelected.size < 2}>
                     <Combine className="h-3.5 w-3.5" /> Merge &amp; download
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => { setMergeMode('existing'); setMergeOpen(true); }}>
+                    <FolderInput className="h-3.5 w-3.5" /> Merge into series…
                   </Button>
                   <Button size="sm" variant="ghost" onClick={() => setMergeSelected(new Set())}>
                     Clear selection
@@ -1039,6 +1062,17 @@ export function Downloader() {
             <EmptyState icon={<DownloadIcon className="h-8 w-8" />} title="No downloads yet" description="Click Download on a gallery to queue it. Set the output folder in Settings first." />
           ) : (
             <>
+              {queueMergeSelected.size > 0 && (
+                <div className="flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border border-border-2 bg-surface-2 p-2 shadow-lg shadow-black/20">
+                  <span className="px-2 text-xs text-muted">{queueMergeSelected.size} selected</span>
+                  <Button size="sm" onClick={() => setMergeIntoOpen(true)}>
+                    <Combine className="h-3.5 w-3.5" /> Merge into series…
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setQueueMergeSelected(new Set())}>
+                    Clear selection
+                  </Button>
+                </div>
+              )}
               {active.length > 0 && (
                 <div className="flex flex-col gap-2">
                   {active.map((t) => (
@@ -1056,18 +1090,34 @@ export function Downloader() {
                       </Button>
                     )}
                   </div>
-                  {(showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW)).map((t) => (
-                    <div key={t.id} className="relative">
-                      <QueueRow task={t} onAction={(a) => act(t.id, a)} onEditComicInfo={(p) => setComicInfo({ path: p })} />
-                      <button
-                        onClick={() => removeTask(t.id)}
-                        title="Remove from list"
-                        className="absolute right-2 top-2 rounded-md p-1 text-muted hover:bg-surface-2 hover:text-danger"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  ))}
+                  {(showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW)).map((t) => {
+                    const mergeable = t.status === 'completed' && (t.outputFormat ?? 'cbz') === 'cbz' && !!t.outputPath;
+                    return (
+                      <div key={t.id} className="relative">
+                        <QueueRow
+                          task={t}
+                          onAction={(a) => act(t.id, a)}
+                          onEditComicInfo={(p) => setComicInfo({ path: p })}
+                          mergeChecked={mergeable ? queueMergeSelected.has(t.id) : false}
+                          onToggleMerge={mergeable ? () => {
+                            setQueueMergeSelected((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(t.id)) next.delete(t.id);
+                              else next.add(t.id);
+                              return next;
+                            });
+                          } : undefined}
+                        />
+                        <button
+                          onClick={() => removeTask(t.id)}
+                          title="Remove from list"
+                          className="absolute right-2 top-2 rounded-md p-1 text-muted hover:bg-surface-2 hover:text-danger"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </>
@@ -1083,7 +1133,15 @@ export function Downloader() {
       {mergeOpen && (
         <MergeDownloadModal
           items={(results ?? []).filter((it) => mergeSelected.has(`${it.source}:${it.galleryId}`))}
+          initialMode={mergeMode}
           onClose={() => setMergeOpen(false)}
+        />
+      )}
+
+      {mergeIntoOpen && (
+        <MergeIntoSeriesModal
+          tasks={tasks.filter((t) => queueMergeSelected.has(t.id))}
+          onClose={() => setMergeIntoOpen(false)}
         />
       )}
     </div>
