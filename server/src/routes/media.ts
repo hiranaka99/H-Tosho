@@ -278,16 +278,10 @@ export function mediaRouter(): Hono {
   return r;
 }
 
-/** Query token for <img>/EventSource consumers when shared-secret auth is on. */
-function proxyTokenParam(): string {
-  const token = process.env.HTOSHO_TOKEN;
-  return token ? `&token=${encodeURIComponent(token)}` : '';
-}
-
 /** Wrap an absolute image URL in a same-origin `/media` proxy URL (base64url-encoded). */
 export function mediaProxyUrl(url: string): string {
   const b64 = Buffer.from(url, 'utf8').toString('base64url');
-  return `/media?u=${b64}${proxyTokenParam()}`;
+  return `/media?u=${b64}`;
 }
 
 /** Rewrite hitomi cover URLs to route through the proxy (other sources are untouched). */

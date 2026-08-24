@@ -239,7 +239,10 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
 
   switch (job.type) {
     case 'scan-new': {
-      const libs = await client.getLibraries();
+      const allLibs = await client.getLibraries();
+      // An explicit libraryId (from the Libraries page) scopes the scan to one
+      // library; the scheduled auto-scan enqueues without a payload and stays global.
+      const libs = job.payload.libraryId !== undefined ? allLibs.filter((l) => l.id === job.payload.libraryId) : allLibs;
       summary.libraries = libs.length;
       const known = new Set(getDb().select().from(schema.seriesMatches).all().map((r) => r.kavitaSeriesId));
       for (const lib of libs) {
@@ -253,7 +256,9 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       break;
     }
     case 'match-unmatched': {
-      const libs = await client.getLibraries();
+      const allLibs = await client.getLibraries();
+      // Same scoping as scan-new: explicit libraryId targets one library.
+      const libs = job.payload.libraryId !== undefined ? allLibs.filter((l) => l.id === job.payload.libraryId) : allLibs;
       const rows = getDb().select().from(schema.seriesMatches).all();
       const statusBySeries = new Map(rows.map((r) => [r.kavitaSeriesId, r.status]));
       for (const lib of libs) {

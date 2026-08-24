@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, KeyRound, Star } from 'lucide-react';
-import { api, getAuthToken, setAuthToken, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type DoujinSource } from '../lib/api';
+import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, Star } from 'lucide-react';
+import { api, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type DoujinSource } from '../lib/api';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader } from '../components/ui';
 import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
@@ -68,11 +68,6 @@ export function Settings() {
       setKavitaMsg({ ok: res.connected, text: res.test });
     },
   });
-  const [tokenInput, setTokenInput] = React.useState('');
-  React.useEffect(() => {
-    setTokenInput(getAuthToken());
-  }, []);
-  const saveToken = () => setAuthToken(tokenInput.trim());
 
   const [order, setOrder] = React.useState<string[]>([]);
   const dragIndex = React.useRef<number | null>(null);
@@ -177,19 +172,6 @@ export function Settings() {
         </CardContent>
       </Card>
       <Card className="animate-fade-up" style={{ animationDelay: '60ms' }}>
-        <SectionHeader icon={<KeyRound className="h-4 w-4" />} title="API access token">
-          <SaveButton label="Save token" onClick={saveToken} disabled={!tokenInput.trim()} />
-        </SectionHeader>
-        <CardContent className="flex flex-col gap-2">
-          <div className="flex flex-col gap-1">
-            <Label>Token</Label>
-            <Input type="password" value={tokenInput} onChange={(e) => setTokenInput(e.target.value)} placeholder="Only needed if the server is started with HTOSHO_TOKEN" />
-          </div>
-          <p className="text-xs text-muted">Stored in this browser only. Sent with every API and media request so the UI keeps working when the server requires a shared token.</p>
-        </CardContent>
-      </Card>
-
-      <Card className="animate-fade-up" style={{ animationDelay: '120ms' }}>
         <SectionHeader icon={<Timer className="h-4 w-4" />} title="Auto-scan interval">
           <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => { savePoll.mutate(); pollFlash.flash(); }} disabled={savePoll.isPending || poll === '' || Number(poll) < 0} />
         </SectionHeader>

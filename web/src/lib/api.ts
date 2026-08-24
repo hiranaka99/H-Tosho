@@ -1,27 +1,5 @@
 // Typed client for the H-Tosho REST API.
 
-// ---------------- Shared-secret auth (server env HTOSHO_TOKEN) ----------------
-// When the server is started with HTOSHO_TOKEN, every /api and /media request
-// must present it. The token lives in localStorage only — it is never sent to
-// the server for storage. Empty = auth disabled on the server side.
-const TOKEN_KEY = 'htosho_token';
-
-export function getAuthToken(): string {
-  try {
-    return localStorage.getItem(TOKEN_KEY) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-export function setAuthToken(token: string): void {
-  try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // storage unavailable — requests will simply be unauthenticated
-  }
-}
 export interface KavitaConnection {
   baseUrl: string;
   apiKey: string;
@@ -321,12 +299,10 @@ export interface WatchedSearch {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = getAuthToken();
   const res = await fetch('/api' + path, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init.headers || {}),
     },
   });

@@ -119,9 +119,8 @@ This exposes port `8787` and persists the SQLite database in the
 | Variable | Default | Description |
 | --- | --- | --- |
 | `PORT` | `8787` | API/server port |
-| `HOST` | `127.0.0.1` | Bind address — local-only by default; set `0.0.0.0` (plus `HTOSHO_TOKEN`) for deliberate remote access |
+| `HOST` | `127.0.0.1` | Bind address — local-only by default; the API has no auth, so set `0.0.0.0` only if you accept LAN exposure |
 | `HTOSHO_DATA_DIR` | `server/data` | SQLite data directory |
-| `HTOSHO_TOKEN` | *(unset)* | Optional shared token protecting `/api` and `/media`; enter it in Settings → General → API access token so the UI keeps working |
 | `NHENTAI_API_KEY` | *(unset)* | Optional nHentai API key fallback; a key set in Settings takes precedence |
 
 ## Project layout

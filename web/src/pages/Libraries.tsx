@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, Eraser, BookOpen, ArrowLeft, ChevronRight, Unlink } from 'lucide-react';
+import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, Eraser, BookOpen, Unlink } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource } from '../lib/api';
 import { Button, Card, Input, Select, Badge, StatusBadge, ProviderBadge, Spinner, EmptyState, Switch } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
@@ -73,10 +73,10 @@ export function Libraries() {
     if (libraryId) setSelected(Number(libraryId));
   }, [libraryId]);
 
-  const pickLibrary = (id: number | null) => {
+  const pickLibrary = (id: number) => {
     setSelected(id);
     setChecked(new Set());
-    navigate(id === null ? '/libraries' : `/libraries/${id}`);
+    navigate(`/libraries/${id}`);
   };
 
   const libs = useQuery({ queryKey: ['libraries'], queryFn: api.libraries, enabled: selected === null || true });
@@ -96,6 +96,13 @@ export function Libraries() {
     queryFn: () => api.libraryOverride(selected!),
     enabled: selected !== null,
   });
+
+  // /libraries no longer has an "all" view — land on the first library once loaded.
+  React.useEffect(() => {
+    if (selected === null && libs.data && libs.data.length > 0) {
+      navigate(`/libraries/${libs.data[0].id}`, { replace: true });
+    }
+  }, [libs.data, selected, navigate]);
 
   const rows = series.data ?? [];
   const filtered = rows.filter((r) => {
@@ -142,58 +149,42 @@ export function Libraries() {
   const matchedInLib = rows.filter((r) => r.status === 'matched').length;
 
   return (
-    <div className="flex h-full gap-4">
-      <div className="w-60 shrink-0">
-        <Card className="flex h-full flex-col">
-          <div className="flex items-center justify-between border-b border-border p-3">
-            <span className="text-xs font-semibold text-muted">LIBRARIES</span>
-            {selected !== null && (
-              <button onClick={() => pickLibrary(null)} className="flex items-center gap-1 text-xs text-muted hover:text-foreground">
-                <ArrowLeft className="h-3 w-3" /> All
-              </button>
-            )}
+    <div className="flex h-full flex-col gap-4">
+      {/* View tabs — one per Kavita library, same treatment as Settings/Downloader */}
+      {libs.data && libs.data.length > 0 ? (
+        <div className="flex items-end gap-4 self-start border-b border-border-2">
+          {libs.data.map((lib) => (
+            <button
+              key={lib.id}
+              type="button"
+              onClick={() => pickLibrary(lib.id)}
+              className={cn(
+                '-mb-px border-b-2 px-1 pb-2 text-sm font-medium transition-colors',
+                selected === lib.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
+              )}
+            >
+              {lib.name}
+            </button>
+          ))}
+          <div className="ml-auto flex items-center gap-2 pb-1.5">
+            <Button size="sm" variant="outline" onClick={() => enqueue('match-unmatched', { libraryId: selected })} disabled={selected === null}>
+              <Play className="h-3.5 w-3.5" /> Match all unmatched
+            </Button>
+            <Button size="sm" onClick={() => enqueue('scan-new', { libraryId: selected })} disabled={selected === null}>
+              <RefreshCw className="h-3.5 w-3.5" /> Scan for new series
+            </Button>
           </div>
-          <div className="max-h-[calc(100vh-14rem)] overflow-y-auto p-2">
-            {libs.isLoading && (
-              <div className="flex justify-center p-6">
-                <Spinner />
-              </div>
-            )}
-            {libs.data?.map((lib) => {
-              const active = selected === lib.id;
-              return (
-                <button
-                  key={lib.id}
-                  onClick={() => pickLibrary(lib.id)}
-                  className={cn(
-                    'flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition-all duration-150 hover:translate-x-0.5',
-                    active ? 'bg-gradient-to-r from-primary/20 to-primary/5 font-medium text-primary' : 'hover:bg-surface-2',
-                  )}
-                >
-                  <span className="truncate">{lib.name}</span>
-                  <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 transition-all duration-150', active ? 'translate-x-0.5 text-primary' : 'opacity-60')} />
-                </button>
-              );
-            })}
-            {!libs.isLoading && (libs.data?.length ?? 0) === 0 && (
-              <p className="p-4 text-center text-xs text-muted">No libraries — connect Kavita in Settings.</p>
-            )}
-          </div>
-        <div className="mt-auto flex flex-col gap-2 border-t border-border p-3">
-          <Button size="sm" variant="outline" onClick={() => enqueue('match-unmatched')}>
-            <Play className="h-3.5 w-3.5" /> Match all unmatched
-          </Button>
-          <Button size="sm" onClick={() => enqueue('scan-new')}>
-            <RefreshCw className="h-3.5 w-3.5" /> Scan for new series
-          </Button>
         </div>
-        </Card>
-      </div>
+      ) : (
+        <div className="self-start border-b border-border-2 pb-2 text-sm text-muted">
+          {libs.isLoading ? 'Loading libraries…' : 'No libraries — connect Kavita in Settings.'}
+        </div>
+      )}
 
       <div className="flex min-w-0 flex-1 flex-col gap-3">
         {selected === null ? (
           <Card className="flex flex-1 items-center justify-center">
-            <EmptyState icon={<BookOpen className="h-8 w-8" />} title="Select a library" description="Pick a Kavita library from the left to browse and identify its series." />
+            <EmptyState icon={<BookOpen className="h-8 w-8" />} title="Select a library" description="Pick a Kavita library above to browse and identify its series." />
           </Card>
         ) : (
           <>
