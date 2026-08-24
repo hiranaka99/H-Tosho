@@ -198,6 +198,16 @@ function tagValue(t: any): string {
   return '';
 }
 
+/**
+ * Canonical human-facing page URL for a gallery, e.g.
+ * `/doujinshi/nozokare-roshutsu-shoujo-ii-english-4114741.html`. The bare
+ * `/{id}` path 404s on the live site, so prefer the API's `galleryurl` field.
+ */
+function galleryUrlFor(info: { galleryurl?: unknown }, id: string): string {
+  const path = typeof info.galleryurl === 'string' && info.galleryurl ? info.galleryurl : `/${id}`;
+  return `${BASE}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
 function coverUrlFor(gg: GG, files: HitomiFile[]): string | undefined {
   const f = files?.[0];
   if (!f) return undefined;
@@ -574,7 +584,7 @@ export const hitomiProvider: DoujinProvider = {
               tags: (info.tags ?? []).map(tagValue).filter(Boolean).slice(0, 24),
               artists: (info.artists ?? []).map(tagValue).filter(Boolean).slice(0, 8),
               pageCount: files.length || undefined,
-              url: `${BASE}/${id}`,
+              url: galleryUrlFor(info, String(id)),
               uploadedAt: toIsoDate(info.date),
             });
           } catch {
@@ -697,7 +707,7 @@ export const hitomiProvider: DoujinProvider = {
       uploadedAt,
       // The image CDN rejects requests that lack a hitomi.la Referer.
       requestHeaders: { Referer: `${BASE}/` },
-      url: `${BASE}/${id}`,
+      url: galleryUrlFor(info, id),
       // Re-resolve a page's URL against the *current* gg.js routing table so the
       // engine can build it moments before the request (and force-refresh after a
       // 404, in case the CDN base path rotated mid-download).
