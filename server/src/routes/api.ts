@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import fs from 'node:fs';
+import path from 'node:path';
 import { desc, eq } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
@@ -35,6 +37,8 @@ import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.
 import { rewriteHitomiCover, rewriteMangaDexCoverUrl } from './media.js';
 import { addWatchedSearch, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
+import { listCbzFiles, readComicInfo, resolveExistingFile, resolveSeriesHostDir } from '../lib/cbz.js';
+import { parseComicInfo } from '../downloader/comicinfo.js';
 
 const CREDENTIAL_FIELDS: Record<string, { key: string; label: string }[]> = {
   myanimelist: [{ key: 'clientId', label: 'Client ID' }],
@@ -613,14 +617,19 @@ api.post('/doujin/gallery', async (c) => {
 
 /** Enqueue a gallery download. */
 api.post('/downloads', async (c) => {
-  const body = (await c.req.json()) as { source: string; galleryId: string; title?: string; format?: 'cbz' | 'folder' };
+  const body = (await c.req.json()) as { source: string; galleryId: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number };
   if (!body.source || !body.galleryId) return c.json({ error: 'source and galleryId are required' }, 400);
   if (!getDoujinProvider(body.source)) return c.json({ error: `Unknown source: ${body.source}` }, 400);
+  // Merge options: all chapters of one series land in a shared folder so Kavita
+  // groups them together. mergeFolder is a plain folder name, never a path.
+  const mergeFolder = body.mergeFolder?.trim() || undefined;
+  if (mergeFolder && /[\\/]/.test(mergeFolder)) return c.json({ error: 'mergeFolder must be a plain folder name' }, 400);
+  const chapter = typeof body.chapter === 'number' && Number.isFinite(body.chapter) ? body.chapter : undefined;
   // Duplicate guard: a completed task for this gallery already exists. Re-downloading
   // is possible via the queue's Retry action, which re-runs the stored task.
   const done = downloadQueue.findCompleted(body.source as DoujinSource, body.galleryId);
   if (done) return c.json({ error: 'already-downloaded', finishedAt: done.finishedAt ?? null }, 409);
-  const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, body.title ?? null, body.format);
+  const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, body.title ?? null, body.format, mergeFolder, chapter);
   return c.json({ id, status: 'queued' }, 202);
 });
 
@@ -740,12 +749,122 @@ api.post('/watched-searches/check', (c) => {
   return c.json({ id }, 202);
 });
 
+
+// ---------------- ComicInfo editor ----------------
+
+/** Browse roots for the file picker: the configured download directory plus Kavita library paths. */
+api.get('/cbz/roots', async (c) => {
+  const roots: string[] = [];
+  const dl = getDownloaderSettings();
+  if (dl.downloadDirectory) roots.push(path.resolve(dl.downloadDirectory));
+  const client = connectedClient();
+  if (client) {
+    try {
+      for (const lib of await client.getLibraries()) {
+        if (lib.path) roots.push(lib.path);
+      }
+    } catch {
+      /* Kavita unreachable — the download directory is still a valid root */
+    }
+  }
+  const existing = [...new Set(roots)].filter((r) => {
+    try {
+      return fs.statSync(r).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+  return c.json({ roots: existing });
+});
+
+/** List subdirectories and .cbz files of a directory for the file browser. */
+api.get('/cbz/browse', (c) => {
+  const dir = c.req.query('path');
+  if (!dir || !path.isAbsolute(dir)) return c.json({ error: 'Absolute directory path required' }, 400);
+  const full = path.resolve(dir);
+  let entries;
+  try {
+    entries = fs.readdirSync(full, { withFileTypes: true });
+  } catch {
+    return c.json({ error: 'Directory not found or not readable' }, 404);
+  }
+  const dirs = entries
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort((a, b) => a.localeCompare(b));
+  const files = entries
+    .filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.cbz'))
+    .map((e) => e.name)
+    .sort((a, b) => a.localeCompare(b));
+  const parent = path.dirname(full);
+  return c.json({ path: full, parent: parent === full ? null : parent, dirs, files });
+});
+
+/** Read and parse the ComicInfo.xml embedded in a .cbz (null entry when absent). */
+api.get('/cbz/comicinfo', async (c) => {
+  const file = c.req.query('path');
+  const full = file ? resolveExistingFile(file) : null;
+  if (!full || !full.toLowerCase().endsWith('.cbz')) {
+    return c.json({ error: 'Path must point to an existing .cbz file' }, 400);
+  }
+  let xml: string | null;
+  try {
+    xml = await readComicInfo(full);
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 500);
+  }
+  if (!xml) return c.json({ path: full, hasEntry: false, fields: {}, order: [], raw: null });
+  const doc = parseComicInfo(xml);
+  return c.json({ path: full, hasEntry: true, fields: doc.fields, order: doc.order, raw: xml });
+});
+
+/** List the .cbz archives on disk for a Kavita series (host-side path resolution). */
+api.get('/cbz/series/:id', async (c) => {
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid series id' }, 400);
+  const client = connectedClient();
+  if (!client) return c.json({ error: 'Kavita not configured' }, 503);
+  let s;
+  try {
+    s = await client.getSeriesById(id);
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 404);
+  }
+  const libraries = await client.getLibraries();
+  const lib = libraries.find((l) => l.id === s.libraryId);
+  const dl = getDownloaderSettings();
+  const dir = resolveSeriesHostDir({
+    libraryPath: lib?.path,
+    folderPath: s.folderPath,
+    anchors: dl.downloadDirectory ? [path.resolve(dl.downloadDirectory)] : [],
+  });
+  if (!dir || !fs.existsSync(dir)) {
+    return c.json({ seriesId: id, name: s.name, dir: null, reason: 'Could not locate this series on this machine — type a path manually.', files: [] });
+  }
+  const files = listCbzFiles(dir);
+  // Prefill chapter numbers (merge dialog) from the archives' existing metadata.
+  const chapterNumbers: Record<string, string> = {};
+  await Promise.all(
+    files.map(async (f) => {
+      try {
+        const xml = await readComicInfo(f);
+        if (xml) {
+          const n = parseComicInfo(xml).fields.Number;
+          if (n && n.trim()) chapterNumbers[f] = n.trim();
+        }
+      } catch {
+        // unreadable archive — leave the prefill empty
+      }
+    }),
+  );
+  return c.json({ seriesId: id, name: s.name, dir, reason: null, files, chapterNumbers });
+});
 // ---------------- Jobs ----------------
 
 api.post('/jobs', async (c) => {
-  const body = (await c.req.json()) as { type: JobType; libraryId?: number; seriesId?: number; seriesIds?: number[] };
+  const body = (await c.req.json()) as { type: JobType; libraryId?: number; seriesId?: number; seriesIds?: number[]; path?: string; xml?: string; fields?: Record<string, string>; sourceFiles?: string[]; targetDir?: string; chapters?: Record<string, string> };
   if (!body.type) return c.json({ error: 'type is required' }, 400);
-  const id = jobQueue.enqueue(body.type, { libraryId: body.libraryId, seriesId: body.seriesId, seriesIds: body.seriesIds });
+  const id = jobQueue.enqueue(body.type, { libraryId: body.libraryId, seriesId: body.seriesId, seriesIds: body.seriesIds, path: body.path, xml: body.xml, fields: body.fields, sourceFiles: body.sourceFiles, targetDir: body.targetDir, chapters: body.chapters });
   return c.json({ id }, 202);
 });
 

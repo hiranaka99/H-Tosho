@@ -9,6 +9,10 @@ export interface StartDownloadInput {
   galleryId: string;
   title?: string;
   format?: 'cbz' | 'folder';
+  /** Merged download: shared folder name so all chapters land in one Kavita series. */
+  mergeFolder?: string;
+  /** Merged download: manual chapter number written to ComicInfo.Number. */
+  chapter?: number;
 }
 
 type StartResult = { id: number; status: string };

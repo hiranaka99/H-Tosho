@@ -38,6 +38,8 @@ export const JOB_LABELS: Record<string, string> = {
   'clear-overrides': 'Clear overrides',
   'mangadex-catalog': 'MangaDex catalog',
   'check-watched-searches': 'Check watched searches',
+  'edit-comicinfo': 'Edit ComicInfo',
+  'merge-series': 'Merge series',
 };
 
 export function jobLabel(type: string): string {

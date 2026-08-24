@@ -17,6 +17,7 @@ import {
   Languages,
   FileArchive,
   FolderOpen,
+  FileText,
   X,
   ArrowRight,
   ExternalLink,
@@ -27,12 +28,16 @@ import {
   Layers,
   Star,
   Tags,
+  Check,
+  Combine,
 } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
 import { useDownloads } from '../lib/DownloadsContext';
 import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent } from '../components/ui';
 import { cn, timeAgo, toIsoUtc } from '../lib/utils';
 import { toast } from '../lib/toast';
+import { ComicInfoModal } from '../components/ComicInfoModal';
+import { MergeDownloadModal } from '../components/MergeDownloadModal';
 
 const SOURCES: { id: DoujinSource; label: string }[] = [
   { id: 'hitomi', label: 'Hitomi.la' },
@@ -208,7 +213,7 @@ function DownloadStatusBadge({ status }: { status: string }) {
 }
 
 // ---------------- Gallery card ----------------
-function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloadedAt }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean; index?: number; downloadedAt?: string | null }) {
+function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloadedAt, mergeChecked = false, onToggleMerge }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean; index?: number; downloadedAt?: string | null; mergeChecked?: boolean; onToggleMerge?: () => void }) {
   const tags = [...item.artists, ...item.tags].slice(0, 6);
   return (
     <div
@@ -235,6 +240,21 @@ function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloa
         {item.pageCount ? (
           <span className="absolute right-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">{item.pageCount}p</span>
         ) : null}
+        {onToggleMerge && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onToggleMerge(); }}
+            onKeyDown={(e) => e.stopPropagation()}
+            title={mergeChecked ? 'Remove from merge selection' : 'Select for merge'}
+            aria-pressed={mergeChecked}
+            className={cn(
+              'absolute bottom-2 left-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border transition-all duration-150',
+              mergeChecked ? 'border-primary bg-primary text-white' : 'border-white/50 bg-black/50 text-transparent hover:border-primary hover:text-primary/70',
+            )}
+          >
+            <Check className="h-3.5 w-3.5" />
+          </button>
+        )}
         <div className="pointer-events-none absolute inset-0 flex items-end justify-center bg-gradient-to-t from-black/80 via-black/10 to-transparent opacity-0 transition-opacity group-hover:opacity-100">
           <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-white">
             <Search className="h-3 w-3" /> Details
@@ -436,7 +456,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
 
 // ---------------- Queue row ----------------
 
-function QueueRow({ task, onAction }: { task: DownloadTask; onAction: (a: 'pause' | 'resume' | 'cancel' | 'retry') => void }) {
+function QueueRow({ task, onAction, onEditComicInfo }: { task: DownloadTask; onAction: (a: 'pause' | 'resume' | 'cancel' | 'retry') => void; onEditComicInfo?: (path: string) => void }) {
   const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : 0;
   return (
     <div className="flex animate-fade-up flex-col gap-2 rounded-lg border border-border p-3 transition-colors">
@@ -464,9 +484,6 @@ function QueueRow({ task, onAction }: { task: DownloadTask; onAction: (a: 'pause
       {task.status === 'downloading' && (
         <>
           <ProgressBar value={task.progressCurrent} max={task.progressTotal} active={task.status === 'downloading'} />
-          {typeof task.bytesTotal === 'number' && task.bytesTotal > 0 && (
-            <ProgressBar value={Math.min(task.bytesCurrent ?? 0, task.bytesTotal)} max={task.bytesTotal} className="h-1" />
-          )}
           <div className="flex items-center justify-between gap-2 text-xs text-muted">
             <span className="truncate">{task.currentFile ? `Saving ${task.currentFile}` : 'Starting…'}</span>
             <span className="shrink-0">
@@ -484,6 +501,11 @@ function QueueRow({ task, onAction }: { task: DownloadTask; onAction: (a: 'pause
         <div className="flex items-center gap-2 text-xs">
           {task.outputFormat === 'cbz' ? <FileArchive className="h-3.5 w-3.5 text-success" /> : <FolderOpen className="h-3.5 w-3.5 text-success" />}
           <span className="truncate text-muted" title={task.outputPath}>{task.outputPath}</span>
+          {task.outputFormat === 'cbz' && onEditComicInfo && (
+            <Button size="icon" variant="ghost" className="ml-auto h-7 w-7 shrink-0" title="Edit ComicInfo.xml" onClick={() => onEditComicInfo(task.outputPath!)}>
+              <FileText className="h-3.5 w-3.5" />
+            </Button>
+          )}
         </div>
       )}
 
@@ -518,6 +540,11 @@ export function Downloader() {
   // across source switches so it applies the next time nHentai is searched.
   const [sort, setSort] = React.useState<DoujinSort>('default');
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
+  // ComicInfo editor: null = closed; { path? } = open (path from a completed row, or none to browse).
+  const [comicInfo, setComicInfo] = React.useState<{ path?: string } | null>(null);
+  // Multi-select for merging several chapters of one series into a single download batch.
+  const [mergeSelected, setMergeSelected] = React.useState<Set<string>>(new Set());
+  const [mergeOpen, setMergeOpen] = React.useState(false);
 
   // Autocomplete dropdown state (nHentai tag/artist suggestions).
   const [suggestions, setSuggestions] = React.useState<DoujinSuggestion[]>([]);
@@ -629,7 +656,17 @@ export function Downloader() {
   const [tab, setTab] = React.useState<'search' | 'manager'>('search');
   React.useEffect(() => {
     setPage(1);
-  }, [searchKey]);
+    setMergeSelected(new Set());
+  }, [searchKey, source]);
+
+  const toggleMerge = (key: string) => {
+    setMergeSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   async function doStartDownload(item: DoujinSearchResult) {
     const key = `${item.source}:${item.galleryId}`;
@@ -913,6 +950,17 @@ export function Downloader() {
                 {results.length} {results.length === 1 ? 'gallery' : 'galleries'} found on {SOURCE_LABELS[source]}
                 {pageCount > 1 && ` — showing ${(curPage - 1) * RESULTS_PAGE_SIZE + 1}–${Math.min(curPage * RESULTS_PAGE_SIZE, results.length)}`}
               </p>
+              {mergeSelected.size > 0 && (
+                <div className="mb-3 flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border border-border-2 bg-surface-2 p-2 shadow-lg shadow-black/20">
+                  <span className="px-2 text-xs text-muted">{mergeSelected.size} selected</span>
+                  <Button size="sm" onClick={() => setMergeOpen(true)} disabled={mergeSelected.size < 2}>
+                    <Combine className="h-3.5 w-3.5" /> Merge &amp; download
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setMergeSelected(new Set())}>
+                    Clear selection
+                  </Button>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
                 {pageItems.map((item, i) => (
                   <GalleryCard
@@ -923,6 +971,8 @@ export function Downloader() {
                     downloading={pendingKey === `${item.source}:${item.galleryId}`}
                     downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
                     onDownload={() => doStartDownload(item)}
+                    mergeChecked={mergeSelected.has(`${item.source}:${item.galleryId}`)}
+                    onToggleMerge={() => toggleMerge(`${item.source}:${item.galleryId}`)}
                   />
                 ))}
               </div>
@@ -992,7 +1042,7 @@ export function Downloader() {
               {active.length > 0 && (
                 <div className="flex flex-col gap-2">
                   {active.map((t) => (
-                    <QueueRow key={t.id} task={t} onAction={(a) => act(t.id, a)} />
+                    <QueueRow key={t.id} task={t} onAction={(a) => act(t.id, a)} onEditComicInfo={(p) => setComicInfo({ path: p })} />
                   ))}
                 </div>
               )}
@@ -1008,7 +1058,7 @@ export function Downloader() {
                   </div>
                   {(showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW)).map((t) => (
                     <div key={t.id} className="relative">
-                      <QueueRow task={t} onAction={(a) => act(t.id, a)} />
+                      <QueueRow task={t} onAction={(a) => act(t.id, a)} onEditComicInfo={(p) => setComicInfo({ path: p })} />
                       <button
                         onClick={() => removeTask(t.id)}
                         title="Remove from list"
@@ -1024,6 +1074,17 @@ export function Downloader() {
           )}
         </CardContent>
         </Card>
+      )}
+
+      {comicInfo && (
+        <ComicInfoModal initialPath={comicInfo.path} onClose={() => setComicInfo(null)} />
+      )}
+
+      {mergeOpen && (
+        <MergeDownloadModal
+          items={(results ?? []).filter((it) => mergeSelected.has(`${it.source}:${it.galleryId}`))}
+          onClose={() => setMergeOpen(false)}
+        />
       )}
     </div>
   );

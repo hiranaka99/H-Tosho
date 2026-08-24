@@ -420,7 +420,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ source, idOrUrl }),
     }),
-  startDownload: (body: { source: DoujinSource; galleryId: string; title?: string; format?: 'cbz' | 'folder' }) =>
+  startDownload: (body: { source: DoujinSource; galleryId: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number }) =>
     request<{ id: number; status: string }>('/downloads', { method: 'POST', body: JSON.stringify(body) }),
   downloads: () => request<DownloadTask[]>('/downloads'),
   /** Completed galleries for the duplicate-download badges. */
@@ -430,4 +430,19 @@ export const api = {
     request<{ ok: boolean }>(`/downloads/${id}/${action}`, { method: 'POST' }),
   deleteDownload: (id: number) => request<{ ok: boolean }>(`/downloads/${id}`, { method: 'DELETE' }),
   clearCompletedDownloads: () => request<{ ok: boolean; removed: number }>('/downloads/clear-completed', { method: 'POST' }),
+
+  // ---------------- ComicInfo editor ----------------
+  /** Browse roots for the file picker (download dir + Kavita library paths). */
+  cbzRoots: () => request<{ roots: string[] }>('/cbz/roots'),
+  /** List a directory's subdirectories and .cbz files. */
+  cbzBrowse: (dir: string) =>
+    request<{ path: string; parent: string | null; dirs: string[]; files: string[] }>(`/cbz/browse?path=${encodeURIComponent(dir)}`),
+  /** Read + parse the ComicInfo.xml embedded in a .cbz. */
+  cbzComicInfo: (file: string) =>
+    request<{ path: string; hasEntry: boolean; fields: Record<string, string>; order: string[]; raw: string | null }>(
+      `/cbz/comicinfo?path=${encodeURIComponent(file)}`,
+    ),
+  /** .cbz archives on disk for a Kavita series (resolved host-side). */
+  cbzSeriesFiles: (seriesId: number) =>
+    request<{ seriesId: number; name: string; dir: string | null; reason: string | null; files: string[]; chapterNumbers: Record<string, string> }>(`/cbz/series/${seriesId}`),
 };

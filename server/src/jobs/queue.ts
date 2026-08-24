@@ -10,12 +10,26 @@ export type JobType =
   | 'sync-series'
   | 'clear-overrides'
   | 'mangadex-catalog'
-  | 'check-watched-searches';
+  | 'check-watched-searches'
+  | 'edit-comicinfo'
+  | 'merge-series';
 
 export interface JobPayload {
   libraryId?: number;
   seriesId?: number;
   seriesIds?: number[];
+  /** edit-comicinfo: absolute path of the .cbz to rewrite. */
+  path?: string;
+  /** edit-comicinfo: pre-rendered ComicInfo.xml (raw-XML mode) — used verbatim. */
+  xml?: string;
+  /** edit-comicinfo: edited field values (merged over the file's current entry). */
+  fields?: Record<string, string>;
+  /** merge-series: absolute paths of the .cbz files to move together. */
+  sourceFiles?: string[];
+  /** merge-series: absolute target folder (becomes the Kavita series name). */
+  targetDir?: string;
+  /** merge-series: chapter numbers keyed by source path, written to ComicInfo.Number. */
+  chapters?: Record<string, string>;
 }
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';

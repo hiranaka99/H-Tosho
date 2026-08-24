@@ -100,6 +100,8 @@ export interface KavitaSeriesDto {
   comicVineId?: string | null;
   mangaBakaId?: number | null;
   cbrId?: number | null;
+  /** Series folder as seen by Kavita (container path under Docker). */
+  folderPath?: string | null;
 }
 
 export interface KavitaTagDto {
@@ -225,6 +227,8 @@ export interface KavitaSeries {
   totalChapterCount?: number;
   lastAdded?: string;
   cover?: string;
+  /** Series folder as seen by Kavita (container path under Docker). */
+  folderPath?: string;
 }
 /** Volume as returned by GET /api/Series/volumes (only consumed fields). */
 export interface KavitaVolumeDto {

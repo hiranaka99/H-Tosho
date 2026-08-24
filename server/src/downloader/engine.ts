@@ -104,6 +104,10 @@ export interface DownloadTask {
   bytesTotal: number;
   outputFormat: 'cbz' | 'folder';
   outputPath: string | null;
+  /** When set, the task writes into this shared folder (series merge) instead of its own per-gallery folder. */
+  mergeFolder: string | null;
+  /** Manual chapter number written to ComicInfo.Number for merged downloads. */
+  chapterNumber: number | null;
   errorMessage: string | null;
   createdAt: string;
   startedAt: string | null;
@@ -124,6 +128,8 @@ interface DownloadRow {
   bytesTotal: number;
   outputFormat: string;
   outputPath: string | null;
+  mergeFolder: string | null;
+  chapterNumber: number | null;
   errorMessage: string | null;
   createdAt: string;
   startedAt: string | null;
@@ -145,6 +151,8 @@ function rowToTask(row: DownloadRow): DownloadTask {
     bytesTotal: row.bytesTotal ?? 0,
     outputFormat: (row.outputFormat as 'cbz' | 'folder') ?? 'cbz',
     outputPath: row.outputPath,
+    mergeFolder: row.mergeFolder ?? null,
+    chapterNumber: row.chapterNumber ?? null,
     errorMessage: row.errorMessage,
     createdAt: row.createdAt,
     startedAt: row.startedAt,
@@ -201,7 +209,14 @@ class DownloadQueue {
 
   // ---------------- CRUD / state machine ----------------
 
-  enqueue(source: DoujinSource, galleryId: string, title: string | null, outputFormat?: 'cbz' | 'folder'): number {
+  enqueue(
+    source: DoujinSource,
+    galleryId: string,
+    title: string | null,
+    outputFormat?: 'cbz' | 'folder',
+    mergeFolder?: string,
+    chapterNumber?: number,
+  ): number {
     const db = getDb();
     const res = db
       .insert(schema.downloadQueue)
@@ -213,6 +228,8 @@ class DownloadQueue {
         progressCurrent: 0,
         progressTotal: 0,
         outputFormat: outputFormat ?? this.settingsProvider().format,
+        mergeFolder: mergeFolder ?? null,
+        chapterNumber: chapterNumber ?? null,
       })
       .run();
     const id = Number(res.lastInsertRowid);
@@ -488,7 +505,7 @@ class DownloadQueue {
 
       // Write to disk (cbz or folder) and record the output path.
       this.updateProgress(row.id, { currentFile: 'Packing archive…' }, { force: true });
-      const outputPath = await this.writeOutput(row.id, gallery, images, settings);
+      const outputPath = await this.writeOutput(row, gallery, images, settings);
       getDb().update(schema.downloadQueue).set({ outputPath }).where(eq(schema.downloadQueue.id, row.id)).run();
 
       this.setStatus(row.id, 'completed');
@@ -664,34 +681,49 @@ class DownloadQueue {
   }
 
   /**
-   * Write the finished gallery into a subfolder named after the doujin under the
-   * configured download location. Both output formats live inside that folder:
+   * Write the finished gallery under the configured download location. By default
+   * each gallery gets its own subfolder; merged downloads (mergeFolder set) share
+   * one folder so Kavita groups them into a single series:
    *   <downloadLocation>/<Doujin Name>/Doujin Name.cbz      (cbz)
+   *   <downloadLocation>/<Merged Series>/ch01 <Chapter>.cbz  (merged cbz)
    *   <downloadLocation>/<Doujin Name>/001.jpg, …           (folder)
    */
   private async writeOutput(
-    taskId: number,
+    row: DownloadRow,
     gallery: DoujinGallery,
     images: { name: string; path: string }[],
     settings: DownloaderSettings,
   ): Promise<string> {
     const base = path.resolve(settings.downloadDirectory);
-    const folderName = sanitizeFilename(gallery.title || `Gallery ${gallery.galleryId}`, `Gallery-${gallery.galleryId}`);
-    const dir = path.join(base, folderName);
+    const galleryName = sanitizeFilename(gallery.title || `Gallery ${gallery.galleryId}`, `Gallery-${gallery.galleryId}`);
+    const dir = row.mergeFolder
+      ? path.join(base, sanitizeFilename(row.mergeFolder, 'merged'))
+      : path.join(base, galleryName);
     fs.mkdirSync(dir, { recursive: true });
+    const comicInfo = generateComicInfoXml(gallery, this.mergeOptions(row));
 
     if (settings.format === 'folder') {
       for (const img of images) {
         await moveIntoPlace(img.path, path.join(dir, img.name));
       }
-      fs.writeFileSync(path.join(dir, 'ComicInfo.xml'), generateComicInfoXml(gallery));
+      fs.writeFileSync(path.join(dir, 'ComicInfo.xml'), comicInfo);
       return dir;
     }
 
     // cbz: stream all pages + ComicInfo.xml into a single archive inside the folder.
-    const file = path.join(dir, `${folderName}.cbz`);
-    await buildZipFromFiles(images, file, [{ name: 'ComicInfo.xml', data: Buffer.from(generateComicInfoXml(gallery), 'utf8') }]);
+    const chapterPrefix = row.chapterNumber != null ? `ch${String(row.chapterNumber).padStart(2, '0')} ` : '';
+    const file = path.join(dir, `${chapterPrefix}${galleryName}.cbz`);
+    await buildZipFromFiles(images, file, [{ name: 'ComicInfo.xml', data: Buffer.from(comicInfo, 'utf8') }]);
     return file;
+  }
+
+  /** ComicInfo overrides for merged downloads: shared series name + manual chapter number. */
+  private mergeOptions(row: DownloadRow): { seriesName?: string; number?: string } | undefined {
+    if (!row.mergeFolder && row.chapterNumber == null) return undefined;
+    return {
+      ...(row.mergeFolder ? { seriesName: row.mergeFolder } : {}),
+      ...(row.chapterNumber != null ? { number: String(row.chapterNumber) } : {}),
+    };
   }
 
   /**

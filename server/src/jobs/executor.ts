@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import path from 'node:path';
 import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
 import {
@@ -14,6 +15,8 @@ import { applyToKavita, checkAlignment, fetchCover } from '../services/sync.js';
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
+import { mergeCbzFiles, readComicInfo, resolveExistingFile, rewriteZipEntry } from '../lib/cbz.js';
+import { parseComicInfo, renderComicInfoXml } from '../downloader/comicinfo.js';
 
 interface Target {
   id: number;
@@ -204,6 +207,68 @@ function connectedClientOrNull(): KavitaClient | null {
   return new KavitaClient(conn.baseUrl, conn.apiKey);
 }
 
+/** Last path segment, tolerant of both separator styles (works cross-platform). */
+function lastSegment(p: string): string {
+  return p.split(/[\\/]+/).filter(Boolean).pop() ?? '';
+}
+
+/**
+ * Best-effort targeted Kavita rescan so changes under a folder show up. Never fails
+ * the job — a dead/unconfigured Kavita or an unknown library just means the periodic
+ * scan picks the change up later.
+ */
+async function rescanLibraryContainingDir(dir: string, log: LogFn): Promise<void> {
+  try {
+    const conn = getKavitaConnection();
+    if (!conn.baseUrl || !conn.apiKey) return;
+    const client = new KavitaClient(conn.baseUrl, conn.apiKey);
+    // Normalize separators — Kavita reports '/' while Windows paths use '\\'.
+    const norm = (p: string): string => path.normalize(p).replace(/\\/g, '/');
+    const libraries = await client.getLibraries();
+    // 1) Direct prefix match — works when H-Tosho and Kavita share one filesystem view.
+    const byPath = libraries.find((l) => l.path && norm(dir).startsWith(norm(l.path)));
+    if (byPath) {
+      await client.scanLibrary(byPath.id);
+      log('info', `Requested Kavita rescan of "${byPath.name}"`);
+      return;
+    }
+    // 2) Docker setups: Kavita sees container paths (/media/Doujins) while the host
+    // sees drive letters (Z:\Doujins), so prefix matching can never succeed. Fall
+    // back to name matching — the folder itself may be a series folder, or one of
+    // its ancestors may be a library root (a freshly merged folder has no Kavita
+    // series yet, so only ancestor names are knowable).
+    const candidates = new Set<string>();
+    let d = dir;
+    for (let i = 0; i < 3; i++) {
+      const seg = lastSegment(d);
+      if (!seg) break;
+      candidates.add(seg.toLowerCase());
+      const parent = path.dirname(d);
+      if (parent === d) break;
+      d = parent;
+    }
+    for (const lib of libraries) {
+      let series;
+      try {
+        series = await client.getSeries(lib.id);
+      } catch {
+        continue; // one unreachable library must not block the rest
+      }
+      const libRootName = lib.path ? lastSegment(lib.path).toLowerCase() : '';
+      const isLibRoot = Boolean(libRootName && candidates.has(libRootName));
+      const hit = series.find((s) => s.folderPath && candidates.has(lastSegment(s.folderPath).toLowerCase()));
+      if (isLibRoot || hit) {
+        await client.scanLibrary(lib.id);
+        log('info', `Requested Kavita rescan of "${lib.name}" (${isLibRoot ? 'library root' : 'series folder'})`);
+        return;
+      }
+    }
+    log('warn', 'No Kavita library contains this folder — rescan skipped, the periodic scan will pick it up');
+  } catch (e) {
+    log('warn', `Kavita rescan failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 /** Run a queued job. Returns a small summary stored on the job row. */
 export async function runJob(job: Job, log: LogFn): Promise<Record<string, number>> {
   // The MangaDex catalog refresh talks to MangaDex only — no Kavita needed.
@@ -224,6 +289,49 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       (current, total) => jobQueue.setProgress(job.id, current, total),
     );
     return { processed: r.checked, matched: 0, failed: 0, notified: r.notified, newGalleries: r.newGalleries };
+  }
+
+  // ComicInfo edits rewrite a local archive — no Kavita connection needed for
+  // the write itself; the rescan below is best-effort.
+  if (job.type === 'edit-comicinfo') {
+    const p = job.payload.path;
+    if (!p) throw new Error('path required');
+    const file = resolveExistingFile(p);
+    if (!file) throw new Error(`File not found: ${p}`);
+    const existing = await readComicInfo(file);
+    let xml: string;
+    if (typeof job.payload.xml === 'string' && job.payload.xml.trim()) {
+      // Raw-XML mode — the client rendered the document, use it verbatim.
+      xml = job.payload.xml;
+    } else {
+      const doc = existing ? parseComicInfo(existing) : { order: [], fields: {}, rawInner: {} };
+      const edited = Object.keys(job.payload.fields ?? {});
+      xml = renderComicInfoXml({
+        values: { ...doc.fields, ...(job.payload.fields ?? {}) },
+        order: doc.order,
+        rawInner: doc.rawInner,
+        edited,
+      });
+    }
+    await rewriteZipEntry(file, 'ComicInfo.xml', Buffer.from(xml, 'utf8'));
+    log('info', `Wrote ComicInfo.xml into ${file}`);
+    await rescanLibraryContainingDir(path.dirname(file), log);
+    return { processed: 1, matched: 0, failed: 0 };
+  }
+
+  // Series merge moves local archives into one folder and stamps chapter numbers —
+  // no Kavita connection needed for the move itself; the rescan below is best-effort.
+  if (job.type === 'merge-series') {
+    const sourceFiles = job.payload.sourceFiles ?? [];
+    if (!job.payload.targetDir) throw new Error('targetDir required');
+    if (sourceFiles.length < 1) throw new Error('At least one .cbz file is required');
+    log('info', `Merging ${sourceFiles.length} file(s) into ${job.payload.targetDir}`);
+    const r = await mergeCbzFiles(sourceFiles, job.payload.targetDir, job.payload.chapters);
+    for (const f of r.failed) log('warn', `Skipped ${f.file}: ${f.error}`);
+    if (r.moved.length === 0) throw new Error('No files could be moved — check the source paths');
+    log('success', `Moved ${r.moved.length} file(s) into one folder; stamped chapter numbers on ${r.chaptered.length}`);
+    await rescanLibraryContainingDir(job.payload.targetDir, log);
+    return { processed: r.moved.length, matched: 0, failed: r.failed.length };
   }
 
   const client = connectedClientOrNull();

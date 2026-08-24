@@ -181,6 +181,7 @@ export class KavitaClient {
       lastAdded: series.lastChapterAddedUtc ?? series.lastChapterAdded,
       // The filename is not a public URL; its presence enables our proxy.
       cover: series.coverImage ?? undefined,
+      folderPath: series.folderPath ?? undefined,
     };
   }
 

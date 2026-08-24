@@ -1,0 +1,182 @@
+import * as React from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Combine, FolderInput } from 'lucide-react';
+import { api, type SeriesRow } from '../lib/api';
+import { Button, Dialog, DialogContent, Input, Label, Spinner, EmptyState } from './ui';
+import { toast } from '../lib/toast';
+
+interface MergeSeriesModalProps {
+  /** The selected Kavita series (two or more) whose files will be merged. */
+  selected: SeriesRow[];
+  onClose: () => void;
+}
+
+/** One .cbz collected from the selected series, with an editable chapter number. */
+interface MergeFile {
+  path: string;
+  name: string;
+  /** Name of the series this file currently belongs to (display only). */
+  fromSeries: string;
+  /** Chapter number written to ComicInfo.Number on merge ('' = leave as-is). */
+  chapter: string;
+}
+
+/** Per-series resolution result shown in the dialog. */
+interface SeriesFiles {
+  series: SeriesRow;
+  files: string[];
+  chapterNumbers: Record<string, string>;
+  reason: string | null;
+}
+
+export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
+  const qc = useQueryClient();
+  const [seriesName, setSeriesName] = React.useState(selected[0]?.name ?? '');
+  const [targetOverride, setTargetOverride] = React.useState('');
+  const [files, setFiles] = React.useState<MergeFile[] | null>(null);
+
+  const roots = useQuery({ queryKey: ['cbz-roots'], queryFn: api.cbzRoots });
+  const perSeries = useQuery({
+    queryKey: ['cbz-series-files', 'merge', selected.map((s) => s.id).join(',')],
+    queryFn: async (): Promise<SeriesFiles[]> => {
+      const results = await Promise.all(
+        selected.map(async (s) => {
+          try {
+            const data = await api.cbzSeriesFiles(s.id);
+            return { series: s, files: data.files, chapterNumbers: data.chapterNumbers ?? {}, reason: data.reason };
+          } catch (e) {
+            return { series: s, files: [], chapterNumbers: {}, reason: e instanceof Error ? e.message : String(e) };
+          }
+        }),
+      );
+      return results;
+    },
+  });
+
+  // Flatten the collected files (deduped by path) into editable rows.
+  React.useEffect(() => {
+    if (!perSeries.data) return;
+    const seen = new Set<string>();
+    const list: MergeFile[] = [];
+    for (const entry of perSeries.data) {
+      for (const f of entry.files) {
+        if (seen.has(f)) continue;
+        seen.add(f);
+        list.push({ path: f, name: f.split(/[\\/]/).pop() ?? f, fromSeries: entry.series.name, chapter: entry.chapterNumbers[f] ?? '' });
+      }
+    }
+    setFiles(list);
+  }, [perSeries.data]);
+
+  // Default target = the download directory (first root) + the merged series name.
+  const defaultTarget = React.useMemo(() => {
+    const root = roots.data?.roots[0];
+    if (!root || !seriesName.trim()) return '';
+    const sep = root.includes('\\') ? '\\' : '/';
+    return `${root}${sep}${seriesName.trim()}`;
+  }, [roots.data, seriesName]);
+
+  const targetDir = targetOverride.trim() || defaultTarget;
+
+  const setChapter = (path: string, chapter: string) => {
+    setFiles((prev) => prev?.map((f) => (f.path === path ? { ...f, chapter } : f)) ?? null);
+  };
+
+  const canSave = !!seriesName.trim() && !!targetDir && (files?.length ?? 0) > 0;
+
+  const save = useMutation({
+    mutationFn: () => {
+      const chapters: Record<string, string> = {};
+      for (const f of files ?? []) if (f.chapter.trim()) chapters[f.path] = f.chapter.trim();
+      return api.enqueue('merge-series', {
+        sourceFiles: (files ?? []).map((f) => f.path),
+        targetDir,
+        chapters,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      toast({ tone: 'success', title: 'Merge queued', description: `${files?.length ?? 0} file(s) → ${targetDir}` });
+      onClose();
+    },
+    onError: (e) => toast({ tone: 'danger', title: 'Could not queue merge', description: e instanceof Error ? e.message : String(e) }),
+  });
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-2xl">
+        <div className="flex max-h-[85vh] flex-col gap-4 overflow-y-auto p-5">
+          <div className="flex items-center gap-2 pr-6">
+            <Combine className="h-5 w-5 text-primary" />
+            <h2 className="text-base font-semibold">Merge series</h2>
+          </div>
+
+          {/* Series name + target folder */}
+          <div className="flex flex-col gap-3 rounded-lg border border-border-2 bg-surface-2 p-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="merge-name">Merged series name</Label>
+              <Input id="merge-name" value={seriesName} onChange={(e) => setSeriesName(e.target.value)} placeholder="e.g. A Fifth of Romance" />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="merge-target">Target folder</Label>
+              <Input id="merge-target" value={targetOverride} onChange={(e) => setTargetOverride(e.target.value)} placeholder={defaultTarget || 'Select a series name first'} />
+              <p className="text-[11px] text-muted">
+                All files move into this folder — Kavita shows one series per folder, so the folder name becomes the series name.
+              </p>
+            </div>
+          </div>
+
+          {/* File list with chapter numbers */}
+          <div className="flex flex-col gap-2 rounded-lg border border-border-2 bg-surface-2 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted">Files to merge</span>
+              {files && <span className="text-xs text-muted">{files.length} file{files.length === 1 ? '' : 's'}</span>}
+            </div>
+
+            {perSeries.isLoading ? (
+              <div className="flex items-center gap-2 py-4 text-sm text-muted"><Spinner /> Collecting files…</div>
+            ) : !files || files.length === 0 ? (
+              <EmptyState icon={<FolderInput className="h-8 w-8" />} title="No .cbz files found" description={perSeries.data?.find((e) => e.reason)?.reason ?? 'The selected series have no archives on this machine.'} />
+            ) : (
+              <div className="flex max-h-64 flex-col gap-1 overflow-y-auto pr-1">
+                {files.map((f) => (
+                  <div key={f.path} className="flex items-center gap-2 rounded-md border border-border-2 bg-surface px-2 py-1.5">
+                    <span className="min-w-0 flex-1 truncate text-xs" title={`${f.path}\n(from ${f.fromSeries})`}>
+                      {f.name}
+                    </span>
+                    <span className="hidden max-w-32 shrink-0 truncate text-[10px] text-muted sm:block" title={f.fromSeries}>{f.fromSeries}</span>
+                    <Input
+                      value={f.chapter}
+                      onChange={(e) => setChapter(f.path, e.target.value)}
+                      placeholder="Ch #"
+                      inputMode="decimal"
+                      className="h-7 w-20 shrink-0 px-2 text-xs"
+                      aria-label={`Chapter number for ${f.name}`}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {perSeries.data?.filter((e) => e.reason).map((e) => (
+              <p key={e.series.id} className="text-[11px] text-warning">{e.series.name}: {e.reason}</p>
+            ))}
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-between gap-2 border-t border-border pt-3">
+            <p className="min-w-0 flex-1 truncate text-[11px] text-muted">
+              After the merge, Kavita shows these files as one series. Empty leftover series may remain — delete them in Kavita.
+            </p>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
+              <Button size="sm" onClick={() => save.mutate()} disabled={!canSave || save.isPending || perSeries.isLoading}>
+                {save.isPending ? <Spinner /> : <Combine className="h-3.5 w-3.5" />} Queue merge
+              </Button>
+            </div>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}

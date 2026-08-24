@@ -1,10 +1,12 @@
 import * as React from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, Eraser, BookOpen, Unlink } from 'lucide-react';
+import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, Eraser, BookOpen, Unlink, ArrowUpRight, FileText, Combine, Check } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource } from '../lib/api';
 import { Button, Card, Input, Select, Badge, StatusBadge, ProviderBadge, Spinner, EmptyState, Switch } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
+import { ComicInfoModal } from '../components/ComicInfoModal';
+import { MergeSeriesModal } from '../components/MergeSeriesModal';
 import { buildTagSearchFragment } from './Downloader';
 import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
@@ -36,23 +38,44 @@ const ARTIST_SOURCE_META: Record<DoujinSource, { label: string; color: string }>
  * One-click deep link into the Downloader with an artist search pre-filled for
  * this series. Uses the first artist (doujin titles are usually a single
  * circle); the tooltip lists every known artist.
+ *
+ * variant "pill" — always-visible bordered pill (table view).
+ * variant "bar"  — dark button for the grid card's hover action bar.
  */
-function ArtistSearchButton({ source, artists }: { source: DoujinSource; artists: string[] }) {
+function ArtistSearchButton({ source, artists, variant = 'pill' }: { source: DoujinSource; artists: string[]; variant?: 'pill' | 'bar' }) {
   const navigate = useNavigate();
   const primary = artists[0];
   const fragment = buildTagSearchFragment(primary, 'artist', source);
   if (!fragment) return null;
   const meta = ARTIST_SOURCE_META[source];
   const target = artists.length > 1 ? `${artists.join(', ')} (first: ${primary})` : `“${primary}”`;
+  const title = `Search artist ${target} on ${meta.label}`;
+  if (variant === 'bar') {
+    return (
+      <button
+        type="button"
+        onClick={() => navigate(`/downloader?source=${source}&q=${encodeURIComponent(fragment)}`)}
+        title={title}
+        className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-black/70 px-2 py-1 text-[10px] font-semibold text-white backdrop-blur-sm transition-all duration-150 hover:border-primary hover:bg-primary"
+      >
+        <Search className="h-3 w-3" />
+        <span className="max-w-28 truncate">“{primary}”</span>
+        <span className="font-normal text-white/60">· {meta.label}</span>
+      </button>
+    );
+  }
   return (
     <button
       type="button"
       onClick={() => navigate(`/downloader?source=${source}&q=${encodeURIComponent(fragment)}`)}
-      title={`Search artist ${target} on ${meta.label}`}
-      className="inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-all hover:brightness-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-      style={{ backgroundColor: meta.color + '22', color: meta.color }}
+      title={title}
+      className="group/artist inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition-all duration-150 hover:-translate-y-px hover:brightness-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+      style={{ borderColor: meta.color + '8c', backgroundColor: meta.color + '33' }}
     >
-      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: meta.color }} /> {meta.label}
+      <Search className="h-3 w-3" />
+      <span className="max-w-24 truncate">{primary}</span>
+      <span style={{ color: meta.color }}>{meta.label}</span>
+      <ArrowUpRight className="h-3 w-3 opacity-0 transition-opacity duration-150 group-hover/artist:opacity-100" style={{ color: meta.color }} />
     </button>
   );
 }
@@ -68,6 +91,8 @@ export function Libraries() {
   const [view, setView] = React.useState<'grid' | 'table'>('grid');
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
   const [identify, setIdentify] = React.useState<{ id: number; name: string } | null>(null);
+  const [comicInfo, setComicInfo] = React.useState<{ id: number; name: string } | null>(null);
+  const [mergeOpen, setMergeOpen] = React.useState(false);
 
   React.useEffect(() => {
     if (libraryId) setSelected(Number(libraryId));
@@ -229,6 +254,9 @@ export function Libraries() {
                 <Button size="sm" onClick={matchSelected}>
                   <Sparkles className="h-3.5 w-3.5" /> Match selected
                 </Button>
+                <Button size="sm" variant="secondary" onClick={() => setMergeOpen(true)} disabled={checked.size < 2} title={checked.size < 2 ? 'Select at least two series' : undefined}>
+                  <Combine className="h-3.5 w-3.5" /> Merge selected
+                </Button>
                 <Button size="sm" variant="secondary" onClick={refreshSelected}>
                   <RefreshCw className="h-3.5 w-3.5" /> Force refresh
                 </Button>
@@ -269,25 +297,50 @@ export function Libraries() {
                       }}
                       aria-label="Identify"
                     />
-                    {r.providerId && (
-                      <div className="absolute left-1.5 top-1.5 z-20">
-                        <ProviderBadge id={r.providerId} solid />
-                      </div>
-                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleCheck(r.id);
+                      }}
+                      title={checked.has(r.id) ? 'Deselect series' : 'Select series'}
+                      aria-pressed={checked.has(r.id)}
+                      className={cn(
+                        'card-check-btn absolute bottom-2 left-2 z-30 flex h-6 w-6 items-center justify-center rounded-full border transition-all duration-150',
+                        checked.has(r.id)
+                          ? 'card-check-btn-checked border-primary bg-primary text-white'
+                          : 'border-white/50 bg-black/50 text-transparent hover:border-primary hover:text-primary/70',
+                      )}
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setComicInfo({ id: r.id, name: r.name });
+                      }}
+                      title="Edit ComicInfo.xml"
+                      className="card-cbz-btn absolute right-1.5 top-1.5 z-30 rounded-lg border border-white/15 bg-black/70 p-1.5 text-white backdrop-blur-sm transition-all duration-150 hover:border-primary hover:bg-primary"
+                    >
+                      <FileText className="h-3.5 w-3.5" />
+                    </button>
                     <div className="aspect-[3/4] w-full overflow-hidden">
                       <Cover src={r.cover} name={r.name} className="transition-transform duration-300 ease-out group-hover:scale-105" />
                     </div>
                     <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-1 bg-gradient-to-t from-black/90 to-transparent p-2 pt-6">
                       <p className="truncate text-xs font-semibold text-white [text-shadow:1px_0_0_rgba(0,0,0,0.85),-1px_0_0_rgba(0,0,0,0.85),0_1px_0_rgba(0,0,0,0.85),0_-1px_0_rgba(0,0,0,0.85),0_2px_3px_rgba(0,0,0,0.6)]">{r.name}</p>
-                      <div className="flex flex-wrap items-center gap-1">
+                      <div className="flex flex-wrap items-center gap-1 pl-7">
+                        {r.providerId && <ProviderBadge id={r.providerId} solid />}
                         <StatusBadge status={r.status} title={r.errorMessage ?? undefined} className="bg-black/70" />
-                        {r.artists?.length ? (
-                          <>
-                            <ArtistSearchButton source="hitomi" artists={r.artists} />
-                            <ArtistSearchButton source="nhentai" artists={r.artists} />
-                          </>
-                        ) : null}
                       </div>
+                      {r.artists?.length ? (
+                        // Action bar revealed on hover/focus: explicit buttons instead of badge-like pills.
+                        <div className="artist-action-bar flex max-h-0 flex-wrap gap-1 overflow-hidden pl-7 opacity-0 transition-all duration-200 group-hover:max-h-16 group-hover:opacity-100">
+                          <ArtistSearchButton source="hitomi" artists={r.artists} variant="bar" />
+                          <ArtistSearchButton source="nhentai" artists={r.artists} variant="bar" />
+                        </div>
+                      ) : null}
                     </div>
                   </Card>
                 ))}
@@ -366,6 +419,9 @@ export function Libraries() {
                                 <Unlink className="h-3.5 w-3.5" /> Unmatch
                               </Button>
                             )}
+                            <Button size="sm" variant="ghost" onClick={() => setComicInfo({ id: r.id, name: r.name })} title="Edit the ComicInfo.xml of this series' .cbz files">
+                              <FileText className="h-3.5 w-3.5" /> ComicInfo
+                            </Button>
                             <Button size="sm" variant="outline" onClick={() => setIdentify({ id: r.id, name: r.name })}>
                               <Sparkles className="h-3.5 w-3.5" /> Identify
                             </Button>
@@ -391,6 +447,17 @@ export function Libraries() {
           }}
           match={currentMeta.data?.match ?? null}
           onClose={() => setIdentify(null)}
+        />
+      )}
+
+      {comicInfo && (
+        <ComicInfoModal seriesId={comicInfo.id} onClose={() => setComicInfo(null)} />
+      )}
+
+      {mergeOpen && (
+        <MergeSeriesModal
+          selected={(series.data ?? []).filter((r) => checked.has(r.id))}
+          onClose={() => setMergeOpen(false)}
         />
       )}
     </div>

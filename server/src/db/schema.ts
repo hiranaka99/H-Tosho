@@ -128,6 +128,10 @@ export const downloadQueue = sqliteTable('download_queue', {
   /** cbz | folder */
   outputFormat: text('output_format').notNull().default('cbz'),
   outputPath: text('output_path'),
+  /** When set, the task writes into this shared folder (series merge) instead of its own per-gallery folder. */
+  mergeFolder: text('merge_folder'),
+  /** Manual chapter number written to ComicInfo.Number for merged downloads. */
+  chapterNumber: integer('chapter_number'),
   errorMessage: text('error_message'),
   createdAt: text('created_at')
     .notNull()

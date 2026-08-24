@@ -32,12 +32,23 @@ export function createApp(): Hono {
 
   if (webDist) {
     app.use('/*', serveStatic({ root: webDist }));
-    // Read the SPA shell once at startup; the fallback used to hit the disk
-    // on every unmatched navigation.
-    const indexHtml = fs.readFileSync(path.join(webDist, 'index.html'), 'utf-8');
+    // SPA shell for unmatched routes (client-side navigation). The file is
+    // re-read when its mtime changes, so a frontend rebuild is picked up
+    // without restarting the server (a startup-cached shell goes stale as soon
+    // as vite swaps the hashed assets it references).
+    const indexPath = path.join(webDist, 'index.html');
+    let shellCache: { mtimeMs: number; html: string } | null = null;
     app.get('*', (c) => {
       if (c.req.path.startsWith('/api/')) return c.notFound();
-      return c.html(indexHtml);
+      try {
+        const st = fs.statSync(indexPath);
+        if (!shellCache || shellCache.mtimeMs !== st.mtimeMs) {
+          shellCache = { mtimeMs: st.mtimeMs, html: fs.readFileSync(indexPath, 'utf-8') };
+        }
+      } catch {
+        return c.text('Frontend build not found — run npm start', 503);
+      }
+      return c.html(shellCache.html);
     });
   }
 
