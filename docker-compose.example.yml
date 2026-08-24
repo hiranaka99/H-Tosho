@@ -1,0 +1,33 @@
+# Example: run H-Tosho with bind mounts instead of named volumes.
+#
+# Use this when Kavita runs on the host (or in a sibling container) and you
+# want downloaded galleries to land directly in a folder Kavita can see:
+#
+#   docker compose -f docker-compose.example.yml up -d --build
+#
+# After first start, open Settings -> Downloader and set the download
+# directory to /mnt/downloads (the container-side path of the second mount
+# below). Point your Kavita library at the host folder ./downloads.
+
+services:
+  h-tosho:
+    build: .
+    image: h-tosho:latest
+    container_name: h-tosho
+    ports:
+      - "8787:8787"
+    environment:
+      - PORT=8787
+      - HOST=0.0.0.0
+      - HTOSHO_DATA_DIR=/data
+      # Optional nHentai API key; a key set in Settings takes precedence.
+      # - NHENTAI_API_KEY=your-key
+    volumes:
+      # SQLite state (database, download staging, media cache) on the host.
+      - ./data:/data
+      # Download output. The container-side path must match the "Download
+      # directory" you set in Settings -> Downloader. To write straight into
+      # an existing Kavita library instead, bind that folder at the same
+      # absolute path, e.g. - /srv/manga/doujin:/srv/manga/doujin
+      - ./downloads:/mnt/downloads
+    restart: unless-stopped

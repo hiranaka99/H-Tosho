@@ -93,6 +93,17 @@ docker compose up -d --build
 This exposes port `8787` and persists the SQLite database in the
 `h-tosho-data` volume.
 
+To keep state and downloaded galleries on the host instead of in named
+volumes, use the bind-mount example:
+
+```bash
+docker compose -f docker-compose.example.yml up -d --build
+```
+
+It mounts `./data` for the SQLite database and `./downloads` as
+`/mnt/downloads`. Set the download directory in **Settings → Downloader** to
+`/mnt/downloads`, and point your Kavita library at the host's `./downloads`.
+
 ## Configuration
 
 1. In Kavita, open **User Settings → Manage Auth Keys** and create an Auth Key
