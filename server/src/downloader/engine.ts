@@ -594,7 +594,16 @@ class DownloadQueue {
     };
 
     let lastFileName: string | null = null;
+    // Pages download concurrently, so the raw "last network event" would make
+    // the label bounce backwards within the in-flight window (e.g. a late chunk
+    // from page 83 after page 87). Track the frontier — the highest page index
+    // touched so far — which only ever moves forward.
+    let frontier = 0;
     let lastReport = 0;
+    const touchPage = (i: number): void => {
+      if (i + 1 > frontier) frontier = i + 1;
+      lastFileName = `Page ${frontier}/${total}`;
+    };
     const report = (force: boolean): void => {
       const now = Date.now();
       if (!force && now - lastReport < 100) return;
@@ -616,7 +625,7 @@ class DownloadQueue {
     const onChunk = (i: number, received: number, totalBytes: number | null): void => {
       if (totalBytes && totalBytes > 0) bs.known.set(i, totalBytes);
       bs.inflight.set(i, received);
-      lastFileName = `Page ${i + 1}/${total}`;
+      touchPage(i);
       report(false);
     };
 
@@ -624,7 +633,7 @@ class DownloadQueue {
       bs.actual.set(i, size);
       bs.completed.add(i);
       bs.inflight.delete(i);
-      lastFileName = `Page ${i + 1}/${total}`;
+      touchPage(i);
       report(true);
     };
 

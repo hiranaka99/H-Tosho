@@ -32,17 +32,51 @@ export interface DownloadsApi {
 
 const Ctx = React.createContext<DownloadsApi | null>(null);
 
+const PAGE_LABEL = /^Page (\d+)\/(\d+)$/;
+
+/** Rank of a "Page X/Y" label for monotonic comparison (0 for phase markers). */
+function pageRank(label: string | null | undefined): number {
+  const m = PAGE_LABEL.exec(label ?? '');
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+/**
+ * A poll reads the DB, which lags the live SSE snapshot by up to ~250ms. While
+ * both sides show a task as downloading, progress fields only ever move forward —
+ * keep the higher value so a stale poll can't make the UI jump backwards.
+ */
+function mergePolledTask(prevList: DownloadTask[], fresh: DownloadTask): DownloadTask {
+  const p = prevList.find((t) => t.id === fresh.id);
+  if (!p || p.status !== 'downloading' || fresh.status !== 'downloading') return fresh;
+  return {
+    ...fresh,
+    progressCurrent: Math.max(p.progressCurrent, fresh.progressCurrent),
+    bytesCurrent: Math.max(p.bytesCurrent ?? 0, fresh.bytesCurrent ?? 0),
+    currentFile: pageRank(p.currentFile) > 0 && pageRank(p.currentFile) >= pageRank(fresh.currentFile) ? p.currentFile : fresh.currentFile,
+  };
+}
+
 /**
  * App-wide download state. Lifts the downloads query + SSE subscription out of
  * the Downloader page so progress is live on every screen, and surfaces
  * completion/failure toasts as tasks change status.
  */
 export function DownloadsProvider({ children }: { children: React.ReactNode }) {
+
   const qc = useQueryClient();
   const liveConnected = useDownloadEvents();
 
   // Polling is a lightweight fallback; the SSE stream above drives live updates.
-  const { data } = useQuery({ queryKey: ['downloads'], queryFn: api.downloads, refetchInterval: 5000 });
+  const { data } = useQuery({
+    queryKey: ['downloads'],
+    queryFn: async () => {
+      const fresh = await api.downloads();
+      const prev = qc.getQueryData<DownloadTask[]>(['downloads']);
+      if (!prev) return fresh;
+      return fresh.map((f) => mergePolledTask(prev, f));
+    },
+    refetchInterval: 5000,
+  });
   const tasks = React.useMemo(() => (Array.isArray(data) ? data : []), [data]);
 
   const invalidate = React.useCallback(() => qc.invalidateQueries({ queryKey: ['downloads'] }), [qc]);
