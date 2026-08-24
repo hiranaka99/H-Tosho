@@ -7,6 +7,13 @@ import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
 
 type Notif = SettingsType['notifications'];
+const SETTINGS_TABS = [
+  { id: 'general', label: 'General' },
+  { id: 'providers', label: 'Providers' },
+  { id: 'notifications', label: 'Notifications' },
+  { id: 'downloader', label: 'Downloader' },
+] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number]['id'];
 
 function SectionHeader({ icon, title, children }: { icon: React.ReactNode; title: string; children?: React.ReactNode }) {
   return (
@@ -104,6 +111,7 @@ export function Settings() {
   }, [s?.pollInterval]);
   const pollFlash = useFlash(invalidate('settings'));
   const savePoll = useMutation({ mutationFn: () => api.savePollInterval(Number(poll)) });
+  const [tab, setTab] = React.useState<SettingsTab>('general');
 
   if (!s) {
     return (
@@ -116,7 +124,24 @@ export function Settings() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader icon={<SlidersHorizontal className="h-5 w-5" />} title="Settings" subtitle="Connect Kavita, configure providers and notifications." />
+      {/* View tabs */}
+      <div className="flex gap-4 self-start border-b border-border-2">
+        {SETTINGS_TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            className={cn(
+              '-mb-px border-b-2 px-1 pb-2 text-sm font-medium transition-colors',
+              tab === t.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
 
+      {tab === 'general' && (<>
       <Card className="animate-fade-up">
         <SectionHeader icon={<Server className="h-4 w-4" />} title="Kavita connection">
           <Badge tone={kavita?.data?.configured && !kavita.data.error ? 'success' : kavita?.data?.configured ? 'danger' : 'muted'}>
@@ -165,6 +190,19 @@ export function Settings() {
       </Card>
 
       <Card className="animate-fade-up" style={{ animationDelay: '120ms' }}>
+        <SectionHeader icon={<Timer className="h-4 w-4" />} title="Auto-scan interval">
+          <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => { savePoll.mutate(); pollFlash.flash(); }} disabled={savePoll.isPending || poll === '' || Number(poll) < 0} />
+        </SectionHeader>
+        <CardContent className="flex items-center gap-3">
+          <Input type="number" min={0} value={poll} onChange={(e) => setPoll(e.target.value)} className="w-28" />
+          <span className="text-sm text-muted">minutes between background scans for newly ingested series (0 disables)</span>
+        </CardContent>
+      </Card>
+      </>)
+      }
+
+      {tab === 'providers' && (
+      <Card className="animate-fade-up">
         <SectionHeader icon={<SlidersHorizontal className="h-4 w-4" />} title="Metadata providers">
           <SaveButton label="Save priority" onClick={() => savePriorities.mutate(order)} disabled={savePriorities.isPending} />
         </SectionHeader>
@@ -213,8 +251,11 @@ export function Settings() {
           </div>
         </CardContent>
       </Card>
+      )}
 
-      <Card className="animate-fade-up" style={{ animationDelay: '180ms' }}>
+      {tab === 'notifications' && (
+
+      <Card className="animate-fade-up">
         <SectionHeader icon={<Bell className="h-4 w-4" />} title="Notifications">
           <div className="flex items-center gap-2">
             <SaveButton label={notifFlash.saved ? 'Saved' : 'Save'} onClick={() => { saveNotif.mutate(notif); notifFlash.flash(); }} disabled={saveNotif.isPending} />
@@ -238,19 +279,14 @@ export function Settings() {
           )}
         </CardContent>
       </Card>
+      )}
 
-      <Card className="animate-fade-up" style={{ animationDelay: '240ms' }}>
-        <SectionHeader icon={<Timer className="h-4 w-4" />} title="Auto-scan interval">
-          <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => { savePoll.mutate(); pollFlash.flash(); }} disabled={savePoll.isPending || poll === '' || Number(poll) < 0} />
-        </SectionHeader>
-        <CardContent className="flex items-center gap-3">
-          <Input type="number" min={0} value={poll} onChange={(e) => setPoll(e.target.value)} className="w-28" />
-          <span className="text-sm text-muted">minutes between background scans for newly ingested series (0 disables)</span>
-        </CardContent>
-      </Card>
-
-      <DownloaderSettingsCard />
-      <WatchedSearchesCard />
+      {tab === 'downloader' && (
+        <>
+          <DownloaderSettingsCard />
+          <WatchedSearchesCard />
+        </>
+      )}
     </div>
   );
 }
@@ -322,7 +358,7 @@ function DownloaderSettingsCard() {
   }
 
   return (
-    <Card className="animate-fade-up" style={{ animationDelay: '300ms' }}>
+    <Card className="animate-fade-up">
       <SectionHeader icon={<Download className="h-4 w-4" />} title="Doujinshi downloader">
         <SaveButton label={flash.saved ? 'Saved' : 'Save'} onClick={() => { save.mutate(dlSettings); flash.flash(); }} disabled={save.isPending} />
       </SectionHeader>
@@ -422,7 +458,7 @@ function WatchedSearchesCard() {
   }
 
   return (
-    <Card className="animate-fade-up" style={{ animationDelay: '360ms' }}>
+    <Card className="animate-fade-up" style={{ animationDelay: '60ms' }}>
       <SectionHeader icon={<Star className="h-4 w-4" />} title="Watched searches">
         <Button size="sm" variant="outline" onClick={checkNow} disabled={checking}>
           {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Star className="h-3.5 w-3.5" />} Check now
