@@ -25,8 +25,9 @@ ENV NODE_ENV=production
 ENV HTOSHO_DATA_DIR=/data
 
 # curl is used by the NHentai tag-autocomplete provider (Cloudflare lets curl
-# through where Node's fetch gets challenged).
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
+# through where Node's fetch gets challenged). ca-certificates provides the
+# system trust store curl verifies against (node:slim ships none at its path).
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # npm workspaces hoist all runtime dependencies to the root node_modules.
