@@ -298,7 +298,10 @@ async function getGalleryIdsForTerm(term: string, version: string): Promise<numb
     if (!node.keys.length) return [];
 
     let there = false;
-    let where = 0;
+    // Default to the final subnode slot: when the key is greater than every
+    // key in this node, locate_key falls off the end of the loop (mirrors the
+    // live client), so the descent must target keys.length, not 0.
+    let where = node.keys.length;
     for (let i = 0; i < node.keys.length; i++) {
       const c = cmp(key, node.keys[i]);
       if (c <= 0) {
@@ -383,20 +386,6 @@ function nozomiFilterFromTerm(term: string): NozomiFilter | null {
   return { area, tag: val, language: 'all' };
 }
 
-/** Union a list of id sets, preserving first-seen (newest-first) order. */
-function unionIds(sets: number[][]): number[] {
-  const merged: number[] = [];
-  const seen = new Set<number>();
-  for (const set of sets) {
-    for (const id of set) {
-      if (!seen.has(id)) {
-        seen.add(id);
-        merged.push(id);
-      }
-    }
-  }
-  return merged;
-}
 
 /** AND-intersect a list of id sets (empty result if any set is empty). */
 function intersectIds(sets: number[][]): number[] {
@@ -449,10 +438,13 @@ async function searchGalleryIds(query: string, version: string): Promise<number[
 
   let ids: number[];
   if (!terms.some((t) => t.ns)) {
-    // No namespaced term → plain keyword search (union of per-term lookups, so
-    // "one piece" returns galleries matching either word).
+    // No namespaced term → plain keyword search. The live site AND-intersects
+    // every word (results.js filters the running result set by each positive
+    // term), so "aoi kajitsu to shiroi hada" returns only galleries matching
+    // all of those words — not the union, which would surface hundreds of
+    // unrelated galleries sharing any single common word.
     const sets = await Promise.all(terms.map(btreeTerm));
-    ids = unionIds(sets);
+    ids = intersectIds(sets);
   } else {
     // Filtered search: AND-intersect every term (nozomi for namespaced terms,
     // B-tree for bare keywords).
