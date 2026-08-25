@@ -6,7 +6,7 @@ import path from 'node:path';
 import { crc32 } from 'node:zlib';
 import { describe, it } from 'node:test';
 
-import { readComicInfo, readZipEntries, readZipEntry, rewriteZipEntry, mergeCbzFiles } from '../src/lib/cbz.js';
+import { readComicInfo, readZipEntries, readZipEntry, rewriteZipEntry, mergeCbzFiles, resolveSeriesHostDir } from '../src/lib/cbz.js';
 import { buildZip } from '../src/downloader/zip.js';
 import { parseComicInfo, renderComicInfoXml } from '../src/downloader/comicinfo.js';
 
@@ -354,5 +354,88 @@ describe('mergeCbzFiles', () => {
     assert.equal(f1.Series, 'Merged Series C');
     const f2 = parseComicInfo(readComicInfoSync(path.join(target, 'b.cbz'))!).fields;
     assert.equal(f2.Series, 'Merged Series C');
+  });
+});
+
+describe('resolveSeriesHostDir', () => {
+  const base = mkdtempSync(path.join(tmpdir(), 'htosho-resolve-'));
+  // Local anchor stands in for the container download directory (/mnt/downloads).
+  const anchor = path.join(base, 'downloads');
+  fs.mkdirSync(path.join(anchor, 'Series A'), { recursive: true });
+  fs.mkdirSync(path.join(anchor, 'Genre', 'Series B'), { recursive: true });
+  // A library folder that exists locally (native install or identical mount point).
+  const nativeLib = path.join(base, 'media', 'Doujins');
+  fs.mkdirSync(path.join(nativeLib, 'Series C'), { recursive: true });
+  fs.mkdirSync(path.join(nativeLib, 'Solo'), { recursive: true });
+  // An anchor whose folder name matches a remote library path (Z:\Doujins style).
+  const zMount = path.join(base, 'Z', 'Doujins');
+  fs.mkdirSync(path.join(zMount, 'Series A'), { recursive: true });
+
+  it('uses the library path directly when it exists locally', () => {
+    const got = resolveSeriesHostDir({
+      libraryPath: nativeLib,
+      folderPath: `${nativeLib}/Series C`,
+      anchors: [anchor],
+    });
+    assert.equal(got, path.join(nativeLib, 'Series C'));
+  });
+
+  it('matches an anchor by folder name when the library path is foreign', () => {
+    const got = resolveSeriesHostDir({
+      libraryPath: path.join(base, 'remote', 'Doujins'), // does not exist locally
+      folderPath: `${base}/remote/Doujins/Series A`,
+      anchors: [zMount],
+    });
+    assert.equal(got, path.join(zMount, 'Series A'));
+  });
+
+  it('falls back to the series folder name under the anchor when mount points differ (Docker)', () => {
+    const got = resolveSeriesHostDir({
+      libraryPath: '/media/Doujins',
+      folderPath: '/media/Doujins/Series A',
+      anchors: [anchor],
+    });
+    assert.equal(got, path.join(anchor, 'Series A'));
+  });
+
+  it('prefers deeper trailing segments over bare name matches', () => {
+    const got = resolveSeriesHostDir({
+      libraryPath: '/media/Doujins',
+      folderPath: '/media/Doujins/Genre/Series B',
+      anchors: [anchor],
+    });
+    assert.equal(got, path.join(anchor, 'Genre', 'Series B'));
+  });
+
+  it('returns null when no anchor contains the series folder', () => {
+    const got = resolveSeriesHostDir({
+      libraryPath: '/media/Doujins',
+      folderPath: '/media/Doujins/Ghost Series',
+      anchors: [anchor],
+    });
+    assert.equal(got, null);
+  });
+
+  it('returns the library root for a series stored at the library root', () => {
+    const got = resolveSeriesHostDir({
+      libraryPath: nativeLib,
+      folderPath: nativeLib,
+      anchors: [anchor],
+    });
+    assert.equal(got, nativeLib);
+  });
+
+  it('recovers a stale Kavita subpath from the trailing segments that still exist', () => {
+    const got = resolveSeriesHostDir({
+      libraryPath: nativeLib,
+      folderPath: `${nativeLib}/Old/Solo`, // Old/ no longer exists locally
+      anchors: [],
+    });
+    assert.equal(got, path.join(nativeLib, 'Solo'));
+  });
+
+  it('returns null when required inputs are missing', () => {
+    assert.equal(resolveSeriesHostDir({ libraryPath: nativeLib, folderPath: null, anchors: [anchor] }), null);
+    assert.equal(resolveSeriesHostDir({ libraryPath: null, folderPath: '/x/y', anchors: [anchor] }), null);
   });
 });

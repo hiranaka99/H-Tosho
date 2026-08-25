@@ -329,30 +329,55 @@ export function listCbzFiles(dir: string, maxDepth = 3): string[] {
 /**
  * Resolve the on-disk folder for a Kavita series. Kavita reports paths from its
  * own filesystem view — under Docker that is container paths (/media/Doujins)
- * while this host sees drive letters (Z:\Doujins). Strategy:
- *  1. Use the library path directly when it exists locally (native installs).
- *  2. Otherwise match a known local anchor (e.g. the download directory) by folder name.
- * Returns null when no host-side location can be determined.
+ * while this host sees drive letters (Z:\Doujins) or another mount point
+ * (/mnt/downloads). Strategy:
+ *  1. Use the library path directly when it exists locally (native installs, or
+ *     identical mount points in both containers).
+ *  2. Otherwise match a known local anchor (e.g. the download directory) by
+ *     folder name.
+ *  3. When the mount point names differ entirely, match by content: the series'
+ *     own subpath — or its trailing segments — under each anchor. The same
+ *     physical folder is bind-mounted under different names per container, so
+ *     the series folder exists verbatim below the local anchor.
+ * Every candidate is verified to exist before being returned; null means no
+ * host-side location could be determined.
  */
 export function resolveSeriesHostDir(opts: { libraryPath?: string | null; folderPath?: string | null; anchors: string[] }): string | null {
   const { libraryPath, folderPath, anchors } = opts;
   if (!libraryPath || !folderPath) return null;
-  let hostRoot: string | null = null;
-  if (fs.existsSync(libraryPath)) {
-    hostRoot = libraryPath;
-  } else {
-    const want = lastSegment(libraryPath);
-    hostRoot = anchors.find((a) => lastSegment(a) === want) ?? null;
-  }
-  if (!hostRoot) return null;
   // Series subpath = folderPath with the library prefix stripped (Kavita-side paths).
   const norm = (p: string): string => p.replace(/\\/g, '/');
   const lib = norm(libraryPath).replace(/\/+$/, '');
   let rel = norm(folderPath);
   if (rel.startsWith(lib + '/')) rel = rel.slice(lib.length + 1);
   else if (rel === lib) rel = '';
-  if (!rel) return hostRoot;
-  return path.join(hostRoot, ...rel.split('/'));
+
+  // Candidate roots, most specific first: the library path itself when it exists
+  // locally, then anchors whose folder name matches the library's.
+  const roots: string[] = [];
+  if (fs.existsSync(libraryPath)) roots.push(libraryPath);
+  const want = lastSegment(libraryPath);
+  for (const a of anchors) if (lastSegment(a) === want) roots.push(a);
+
+  for (const root of roots) {
+    if (!rel) return root;
+    const candidate = path.join(root, ...rel.split('/'));
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  // Mount point names differ (e.g. /media/Doujins vs /mnt/downloads): fall back
+  // to the series folder's own trailing segments under every anchor. Deeper
+  // matches are tried first so a nested layout wins over a bare name collision.
+  if (!rel) return null;
+  const tail = rel.split('/');
+  const fallbackAnchors = [libraryPath, ...anchors];
+  for (let depth = Math.min(3, tail.length); depth >= 1; depth--) {
+    for (const a of fallbackAnchors) {
+      const candidate = path.join(a, ...tail.slice(-depth));
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
 }
 
 export interface MergeCbzOutcome {
