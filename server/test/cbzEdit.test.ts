@@ -12,7 +12,7 @@ process.env.HTOSHO_DATA_DIR = dataDir;
 const { initDb } = await import('../src/db/index.js');
 const { buildZip } = await import('../src/downloader/zip.js');
 const { parseComicInfo } = await import('../src/downloader/comicinfo.js');
-const { readComicInfo } = await import('../src/lib/cbz.js');
+const { readComicInfo, setSeriesTitleInCbzFiles } = await import('../src/lib/cbz.js');
 const { runJob } = await import('../src/jobs/executor.js');
 const { setKavitaConnection } = await import('../src/services/settings.js');
 
@@ -65,4 +65,24 @@ test('editing ComicInfo.Series updates Kavita and forces a targeted series scan'
     forceUpdate: true,
     forceColorscape: false,
   });
+});
+
+test('rewrites ComicInfo.Series in every CBZ while preserving chapter metadata', async () => {
+  const files = ['Chapter 1.cbz', 'Chapter 2.cbz'].map((name, index) => {
+    const file = path.join(dataDir, name);
+    fs.writeFileSync(file, buildZip([
+      { name: '001.jpg', data: Buffer.from(`image-${index}`) },
+      { name: 'ComicInfo.xml', data: Buffer.from(`<ComicInfo><Title>Chapter ${index + 1}</Title><Series>Old Name</Series><Number>${index + 1}</Number></ComicInfo>`) },
+    ]));
+    return file;
+  });
+
+  assert.equal(await setSeriesTitleInCbzFiles(files, 'Live!: Soto de Koubi Shiyou!'), 2);
+  for (const [index, file] of files.entries()) {
+    const fields = parseComicInfo((await readComicInfo(file))!).fields;
+    assert.equal(fields.Series, 'Live!: Soto de Koubi Shiyou!');
+    assert.equal(fields.Title, `Chapter ${index + 1}`);
+    assert.equal(fields.Number, String(index + 1));
+  }
+  assert.equal(await setSeriesTitleInCbzFiles(files, 'Live!: Soto de Koubi Shiyou!'), 0);
 });

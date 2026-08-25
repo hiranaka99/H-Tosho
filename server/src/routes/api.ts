@@ -40,7 +40,7 @@ import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.
 import { rewriteHitomiCover, rewriteMangaDexCoverUrl } from './media.js';
 import { addWatchedSearch, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
-import { listCbzFiles, readComicInfo, resolveExistingFile, resolveSeriesHostDir } from '../lib/cbz.js';
+import { listCbzFiles, readComicInfo, resolveExistingFile, resolveSeriesHostDir, setSeriesTitleInCbzFiles } from '../lib/cbz.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
 
 const CREDENTIAL_FIELDS: Record<string, { key: string; label: string }[]> = {
@@ -348,7 +348,7 @@ api.post('/series/:id/manual-match', async (c) => {
 api.post('/series/:id/apply', async (c) => {
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
-  const body = (await c.req.json()) as { providerId: string; providerSeriesId: string; excludedFields?: string[]; cover?: boolean; score?: number };
+  const body = (await c.req.json()) as { providerId: string; providerSeriesId: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number };
   if (!body.providerId || !body.providerSeriesId) return c.json({ error: 'providerId and providerSeriesId required' }, 400);
   try {
     const seriesId = intParam(c.req.param('id'));
@@ -356,6 +356,29 @@ api.post('/series/:id/apply', async (c) => {
     const series = await client.getSeriesById(seriesId);
     const { credentials } = getCredentialMap();
     const meta = await fetchProviderMetadata(body.providerId, body.providerSeriesId, credentials);
+    const selectedTitle = body.selectedTitle?.trim();
+    if (selectedTitle) {
+      const allowedTitles = meta.titleOptions ?? [meta.title];
+      if (!allowedTitles.includes(selectedTitle)) return c.json({ error: 'selectedTitle is not provided by this metadata source' }, 400);
+      meta.title = selectedTitle;
+    }
+    let titleFilesUpdated = 0;
+    if (selectedTitle && !(body.excludedFields ?? []).includes('title')) {
+      const libraries = await client.getLibraries();
+      const library = libraries.find((entry) => entry.id === series.libraryId);
+      const dl = getDownloaderSettings();
+      const dir = resolveSeriesHostDir({
+        libraryPath: library?.path,
+        folderPath: series.folderPath,
+        anchors: dl.downloadDirectory ? [path.resolve(dl.downloadDirectory)] : [],
+      });
+      if (!dir) throw new Error(`Could not locate the series folder for "${series.name}" on this machine`);
+      const files = listCbzFiles(dir);
+      if (files.length === 0) throw new Error(`No CBZ chapters found for "${series.name}"`);
+      titleFilesUpdated = await setSeriesTitleInCbzFiles(files, selectedTitle);
+      await client.scanSeries(series.libraryId, seriesId);
+      if (!body.excludedFields?.includes('title')) body.excludedFields = [...(body.excludedFields ?? []), 'title'];
+    }
     // Per-request overrides from the identify dialog: deselected fields are
     // skipped, and unchecking Cover skips the series cover + volume covers.
     const pushCovers = body.cover !== false;
@@ -364,7 +387,7 @@ api.post('/series/:id/apply', async (c) => {
       cover,
       volumeCovers: pushCovers ? meta.volumeCovers : undefined,
       excludedFields: body.excludedFields ?? [],
-      title: series.name,
+      title: selectedTitle ?? series.name,
     });
     invalidateSeriesArtists(seriesId);
     // Verify the push against Kavita's live state and record whether every
@@ -408,7 +431,7 @@ api.post('/series/:id/apply', async (c) => {
         },
       })
       .run();
-    return c.json(result);
+    return c.json({ ...result, titleFilesUpdated });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

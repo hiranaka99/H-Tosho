@@ -326,6 +326,8 @@ class MangaDexProvider extends BaseProvider {
     if (!m) throw new Error(`MangaDex: manga ${providerSeriesId} not found`);
     const a = m.attributes ?? {};
     const title = this.pickTitle(a);
+    const primaryTitle = a.title?.original || a.title?.['ja-ro'] || a.title?.romaji;
+    const titleOptions = [...new Set([title, primaryTitle].filter((v): v is string => typeof v === 'string' && v.trim().length > 0))];
 
     let releaseDate: string | undefined;
     const published = a.published as string | undefined;
@@ -410,7 +412,8 @@ class MangaDexProvider extends BaseProvider {
       providerId: this.id,
       providerSeriesId,
       title: typeof title === 'string' ? title : 'Unknown',
-      sortTitle: typeof a.title?.original === 'string' ? a.title.original : undefined,
+      titleOptions,
+      sortTitle: typeof primaryTitle === 'string' ? primaryTitle : undefined,
       year: a.year ? Number(a.year) : undefined,
       releaseDate,
       summary: summaryText ? summaryText : undefined,

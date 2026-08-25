@@ -489,7 +489,7 @@ async function moveFileAcross(src: string, dest: string): Promise<void> {
 }
 
 /** Write the given ComicInfo fields into a CBZ, preserving the other fields of any existing entry. */
-async function setComicInfoFields(file: string, fields: Record<string, string>): Promise<void> {
+export async function setComicInfoFields(file: string, fields: Record<string, string>): Promise<void> {
   const existing = await readComicInfo(file);
   let xml: string;
   if (existing) {
@@ -508,4 +508,29 @@ async function setComicInfoFields(file: string, fields: Record<string, string>):
     xml = '<?xml version="1.0" encoding="UTF-8"?>\n<ComicInfo>\n' + body + '\n</ComicInfo>\n';
   }
   await rewriteZipEntry(file, 'ComicInfo.xml', Buffer.from(xml, 'utf8'));
+}
+
+/** Rewrite ComicInfo.Series across every CBZ, restoring earlier archives if any rewrite fails. */
+export async function setSeriesTitleInCbzFiles(files: string[], seriesTitle: string): Promise<number> {
+  const originals = new Map<string, string | null>();
+  for (const file of files) originals.set(file, await readComicInfo(file));
+
+  const changed: string[] = [];
+  try {
+    for (const file of files) {
+      const existing = originals.get(file);
+      if (existing && parseComicInfo(existing).fields.Series?.trim() === seriesTitle) continue;
+      await setComicInfoFields(file, { Series: seriesTitle });
+      changed.push(file);
+    }
+  } catch (error) {
+    for (const file of changed.reverse()) {
+      const original = originals.get(file);
+      if (original !== undefined && original !== null) {
+        await rewriteZipEntry(file, 'ComicInfo.xml', Buffer.from(original, 'utf8'));
+      }
+    }
+    throw error;
+  }
+  return changed.length;
 }

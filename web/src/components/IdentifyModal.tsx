@@ -243,6 +243,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [manualUrl, setManualUrl] = React.useState('');
   const [manualCandidate, setManualCandidate] = React.useState<MatchCandidate | null>(null);
+  const [selectedTitle, setSelectedTitle] = React.useState<string | null>(null);
   const [tab, setTab] = React.useState('all');
   const [excluded, setExcluded] = React.useState<ReadonlySet<string>>(new Set());
   const [coverEnabled, setCoverEnabled] = React.useState(true);
@@ -252,6 +253,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
   React.useEffect(() => {
     setExcluded(new Set());
     setCoverEnabled(true);
+    setSelectedTitle(null);
   }, [selectedId]);
 
   const identify = useQuery({
@@ -266,8 +268,8 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
   }, [identify.data, qc, seriesId]);
 
   const apply = useMutation({
-    mutationFn: (p: { providerId: string; providerSeriesId: string; excludedFields?: string[]; cover?: boolean; score?: number }) =>
-      api.apply(seriesId, p.providerId, p.providerSeriesId, { excludedFields: p.excludedFields, cover: p.cover, score: p.score }),
+    mutationFn: (p: { providerId: string; providerSeriesId: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) =>
+      api.apply(seriesId, p.providerId, p.providerSeriesId, { selectedTitle: p.selectedTitle, excludedFields: p.excludedFields, cover: p.cover, score: p.score }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['series', seriesId] });
       qc.invalidateQueries({ queryKey: ['library-series'] });
@@ -325,6 +327,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     queryFn: () => api.providerMetadata(selected!.providerId, selected!.providerSeriesId),
     enabled: !!selected,
   });
+  const resolvedTitle = selectedTitle ?? selected?.title ?? preview.data?.title ?? '';
 
   const history = useQuery({
     queryKey: ['series-history', seriesId],
@@ -339,7 +342,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     const m = preview.data;
     const candStatus = m?.status != null ? (CANDIDATE_STATUS[m.status] ?? null) : null;
     const rows: DiffRow[] = [
-      { label: 'Title', current: current.name, candidate: m?.title ?? selected.title, field: 'title' },
+      { label: 'Title', current: current.name, candidate: resolvedTitle, field: 'title' },
       { label: 'Sort title', current: current.sortName ?? '', candidate: m?.sortTitle ?? '', field: 'sortTitle' },
       {
         label: 'Year',
@@ -369,9 +372,9 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
       { label: 'URL', current: k?.webLinks ?? '', candidate: m?.url ?? '', field: 'url', link: true },
     ];
     return { rows, coverCandidate: m?.coverUrl ?? selected.coverUrl };
-  }, [selected, preview.data, current, k]);
+  }, [selected, preview.data, resolvedTitle, current, k]);
 
-  const doApply = (ids: { providerId: string; providerSeriesId: string }, opts?: { excludedFields?: string[]; cover?: boolean; score?: number }) => {
+  const doApply = (ids: { providerId: string; providerSeriesId: string }, opts?: { selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) => {
     apply.mutate({ ...ids, ...opts });
   };
 
@@ -458,8 +461,14 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                       <p className="text-xs text-muted">{autoBest.title}</p>
                     </div>
                   </div>
-                  <Button size="sm" onClick={() => doApply({ providerId: autoBest.providerId, providerSeriesId: autoBest.providerSeriesId }, { score: autoBest.score })} disabled={apply.isPending}>
-                    {apply.isPending ? <Spinner /> : <ArrowRight className="h-3.5 w-3.5" />} Apply & Sync
+                  <Button
+                    size="sm"
+                    onClick={() => autoBest.providerId === 'mangadex'
+                      ? setSelectedId(autoBest.providerId + ':' + autoBest.providerSeriesId)
+                      : doApply({ providerId: autoBest.providerId, providerSeriesId: autoBest.providerSeriesId }, { score: autoBest.score })}
+                    disabled={apply.isPending}
+                  >
+                    {apply.isPending ? <Spinner /> : <ArrowRight className="h-3.5 w-3.5" />} {autoBest.providerId === 'mangadex' ? 'Choose Title & Sync' : 'Apply & Sync'}
                   </Button>
                 </div>
               )}
@@ -558,6 +567,20 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                     <span className="font-medium">{selected.title}</span>
                     <span className="text-xs text-muted">{Math.round(selected.score * 100)}% match</span>
                   </div>
+                  {selected.providerId === 'mangadex' && (preview.data?.titleOptions?.length ?? 0) > 1 && (
+                    <div className="rounded-md border border-border bg-surface-2 p-3">
+                      <Label htmlFor="provider-title-choice">Series name written to every chapter's ComicInfo.xml</Label>
+                      <select
+                        id="provider-title-choice"
+                        value={resolvedTitle}
+                        onChange={(e) => setSelectedTitle(e.target.value)}
+                        className="mt-2 flex h-9 w-full rounded-lg border border-border-2 bg-surface px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                      >
+                        {preview.data!.titleOptions!.map((title) => <option key={title} value={title}>{title}</option>)}
+                      </select>
+                      <p className="mt-1 text-xs text-muted">Applying the title rewrites the Series field in every CBZ, then requests a Kavita rescan.</p>
+                    </div>
+                  )}
                   <div className="rounded-md border border-border">
                   {/* Mirrors the row grid so each header label sits above its column. */}
                   <div className={cn(ROW_GRID, 'border-b border-border px-3 py-2 text-xs')}>
@@ -618,7 +641,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                   <X className="h-4 w-4" /> Cancel
                 </Button>
                 <Button
-                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { excludedFields: [...excluded], cover: coverEnabled, score: selected.score })}
+                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: selected.providerId === 'mangadex' ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: selected.score })}
                   disabled={!selected || apply.isPending}
                 >
                   {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} Apply & Sync to Kavita

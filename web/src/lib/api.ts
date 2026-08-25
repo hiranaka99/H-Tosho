@@ -146,6 +146,7 @@ export interface SeriesMetadata {
   providerSeriesId: string;
   title: string;
   sortTitle?: string;
+  titleOptions?: string[];
   year?: number;
   releaseDate?: string;
   summary?: string;
@@ -356,8 +357,8 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ url }),
   }),
-  apply: (id: number, providerId: string, providerSeriesId: string, opts?: { excludedFields?: string[]; cover?: boolean; score?: number }) =>
-    request<{ pushed: string[]; errors: string[] }>(`/series/${id}/apply`, {
+  apply: (id: number, providerId: string, providerSeriesId: string, opts?: { selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) =>
+    request<{ pushed: string[]; errors: string[]; titleFilesUpdated: number }>(`/series/${id}/apply`, {
       method: 'POST',
       body: JSON.stringify({ providerId, providerSeriesId, ...opts }),
     }),
