@@ -8,7 +8,7 @@ import {
 import type { SeriesMetadata, VolumeCover } from '../providers/types.js';
 import type { KavitaVolume, KavitaSeriesMetadataDto } from '../kavita/types.js';
 import { getKavitaConnection, getNotificationSettings } from './settings.js';
-import { notify } from '../notify/dispatcher.js';
+import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue } from '../jobs/queue.js';
 
 /** Fields H-Tosho can push to a Kavita series. */
@@ -243,9 +243,15 @@ export async function applyToKavita(
   // Notifications (fire-and-forget)
   const notif = getNotificationSettings();
   if (notif.discord.enabled) {
+    const name = providerName(meta.providerId);
     notify({
-      title: errors.length ? `Sync failed: ${opts.title}` : `Updated: ${opts.title}`,
-      body: `${meta.providerId} - ${pushed.join(', ') || 'no fields'}`,
+      title: errors.length ? `Sync failed — ${opts.title}` : opts.title,
+      description: meta.url ? `Metadata synced to Kavita from [${name}](${meta.url})` : `Metadata synced to Kavita from ${name}`,
+      fields: [
+        ...(pushed.length ? [{ name: 'Updated', value: formatPushedFields(pushed) }] : []),
+        ...(warnings.length ? [{ name: 'Notes', value: warnings.join('\n') }] : []),
+        ...(errors.length ? [{ name: 'Errors', value: errors.join('\n') }] : []),
+      ],
       coverUrl: meta.coverUrl ?? undefined,
       success: errors.length === 0,
     }).catch(() => {});

@@ -14,7 +14,7 @@ import {
 import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
 import { applyToKavita, checkAlignment, fetchCover } from '../services/sync.js';
 import { checkWatchedSearches } from '../services/watchedSearches.js';
-import { notify } from '../notify/dispatcher.js';
+import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
 import { listCbzFiles, mergeCbzFiles, readComicInfo, resolveExistingFile, resolveSeriesHostDir, rewriteZipEntry } from '../lib/cbz.js';
 import { sleep } from '../lib/http.js';
@@ -169,11 +169,14 @@ async function matchAndApply(
     // Notification failures must not flip an already-applied match to failed —
     // the metadata push succeeded by the time we get here.
     try {
+      const name = providerName(best.providerId);
       await notify({
-        title: `${force ? 'Updated' : 'Matched'}: ${series.name}`,
-        body: `Matched to ${best.providerId} (${Math.round(best.score * 100)}%). Pushed: ${
-          result.pushed.length ? result.pushed.join(', ') : 'none'
-        }${result.errors.length ? ' — errors: ' + result.errors.join('; ') : ''}`,
+        title: result.errors.length ? `Sync failed — ${series.name}` : series.name,
+        description: `${force ? 'Re-synced' : 'Matched'} to ${meta.url ? `[${name}](${meta.url})` : name} · ${Math.round(best.score * 100)}% confidence`,
+        fields: [
+          ...(result.pushed.length ? [{ name: 'Updated', value: formatPushedFields(result.pushed) }] : []),
+          ...(result.errors.length ? [{ name: 'Errors', value: result.errors.join('\n') }] : []),
+        ],
         coverUrl: meta.coverUrl ?? best.coverUrl,
         success: result.errors.length === 0,
       });

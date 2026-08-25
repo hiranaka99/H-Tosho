@@ -1,7 +1,7 @@
 import { asc, eq, inArray } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
-import type { DoujinSource } from '../downloader/types.js';
+import type { DoujinSearchResult, DoujinSource } from '../downloader/types.js';
 import type { LogFn } from '../jobs/queue.js';
 import { notify } from '../notify/dispatcher.js';
 
@@ -111,7 +111,7 @@ export async function checkWatchedSearches(
       log('warn', `Watch ${s.id} (${s.source}) has no such source; skipped`);
       continue;
     }
-    let results: { galleryId: string; title?: string | null; url?: string | null }[];
+    let results: DoujinSearchResult[];
     try {
       results = await provider.search(s.query, SEARCH_LIMIT);
     } catch (e) {
@@ -143,15 +143,19 @@ export async function checkWatchedSearches(
 
     if (!firstRun && newIds.length > 0) {
       const label = SOURCE_LABELS[s.source] ?? s.source;
+      // Markdown links render as clean clickable titles in Discord; raw URLs cluttered the embed.
       const lines = newIds.slice(0, NOTIFY_MAX_LISTED).map((id) => {
         const r = results.find((x) => x.galleryId === id);
-        return `• ${r?.title || id}${r?.url ? ` — ${r.url}` : ''}`;
+        const title = r?.title || id;
+        return r?.url ? `**[${title}](${r.url})**` : `**${title}**`;
       });
-      if (newIds.length > NOTIFY_MAX_LISTED) lines.push(`+${newIds.length - NOTIFY_MAX_LISTED} more`);
+      if (newIds.length > NOTIFY_MAX_LISTED) lines.push(`*+${newIds.length - NOTIFY_MAX_LISTED} more*`);
+      const cover = results.find((x) => newIds.includes(x.galleryId))?.coverUrl;
       try {
         await notify({
-          title: `New doujinshi: ${s.query} (${label})`,
-          body: `${newIds.length} new result(s) on ${label}\n\n${lines.join('\n')}`,
+          title: `New on ${label}`,
+          description: `${newIds.length} new result(s) for \`${s.query}\`\n\n${lines.join('\n')}`,
+          coverUrl: cover,
           success: true,
         });
         result.notified++;
