@@ -61,17 +61,47 @@ const NHENTAI_SORTS: { value: DoujinSort; label: string }[] = [
 const SOURCE_LABELS: Record<DoujinSource, string> = { hitomi: 'Hitomi.la', nhentai: 'nHentai' };
 
 /**
+ * Split a query into terms, keeping quoted values (nHentai style) intact so
+ * `tag:"big breasts"` stays one term instead of breaking at the space.
+ */
+function splitTerms(query: string): string[] {
+  const terms: string[] = [];
+  let cur = '';
+  let quote: string | null = null;
+  for (const ch of query) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      cur += ch;
+    } else if (/\s/.test(ch)) {
+      if (cur) terms.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur) terms.push(cur);
+  return terms;
+}
+
+/**
  * Translate a search query from one doujin source's syntax to the other's so a
  * search can be re-run against the new source. nHentai uses quoted values and
  * supports negation (`-term`); Hitomi uses underscores for multi-word tag values
  * and has no negation, so excluded terms are dropped when heading to Hitomi.
+ * Gender tags map between the sources too: Hitomi files them under the
+ * `female:`/`male:` areas while nHentai has a single ungendered `tag:` type, so
+ * `tag:"gyaru"` becomes `female:gyaru` heading to Hitomi (its primary tag area)
+ * and `female:gyaru`/`male:bald` become `tag:"…"` heading to nHentai.
  */
 function translateQuery(query: string, from: DoujinSource, to: DoujinSource): string {
   if (from === to) return query;
   const trimmed = query.trim();
   if (!trimmed) return query;
   const out: string[] = [];
-  for (const rawTerm of trimmed.split(/\s+/)) {
+  for (const rawTerm of splitTerms(trimmed)) {
     let negated = false;
     let term = rawTerm;
     if (term.startsWith('-')) {
@@ -93,7 +123,11 @@ function translateQuery(query: string, from: DoujinSource, to: DoujinSource): st
       // nHentai: tag values are always quoted (multi-word values keep spaces).
       val = `"${val.replace(/_/g, ' ')}"`;
     }
-    out.push(ns ? `${ns}:${val}` : val);
+    // Remap the namespace where the two sources name the same concept differently.
+    let area = ns;
+    if (to === 'hitomi' && ns === 'tag') area = 'female';
+    else if (to === 'nhentai' && (ns === 'female' || ns === 'male')) area = 'tag';
+    out.push(area ? `${area}:${val}` : val);
   }
   return out.join(' ');
 }
