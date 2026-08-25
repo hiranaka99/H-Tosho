@@ -26,6 +26,28 @@ const EMPTY_DOC = `<?xml version="1.0" encoding="UTF-8"?>
 <ComicInfo xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 </ComicInfo>
 `;
+/** Per-file editor state so switching files never loses pending changes. */
+interface Draft {
+  values: Record<string, string>;
+  order: string[];
+  rawText: string;
+  mode: 'form' | 'raw';
+  /** Field values as loaded from the file (baseline for change detection). */
+  orig: Record<string, string>;
+  origRaw: string;
+}
+
+const emptyValues = (): Record<string, string> => Object.fromEntries(EDITOR_FIELDS.map((f) => [f, '']));
+
+/** Field keys whose value differs from the file's loaded baseline. */
+function changedFieldKeys(d: Draft): string[] {
+  return Object.keys(d.values).filter((k) => (d.values[k] ?? '') !== (d.orig[k] ?? ''));
+}
+
+function draftHasChanges(d: Draft): boolean {
+  if (d.mode === 'raw') return d.rawText.trim() !== '' && d.rawText !== d.origRaw;
+  return changedFieldKeys(d).length > 0;
+}
 
 /** Join a directory + child using the separator the server's paths actually use. */
 const joinPath = (dir: string, name: string): string => `${dir}${dir.includes('\\') ? '\\' : '/'}${name}`;
@@ -45,10 +67,18 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
   const [browseOpen, setBrowseOpen] = React.useState(!initialPath && seriesId === undefined);
   const [file, setFile] = React.useState<string | null>(initialPath ?? null);
   const [dir, setDir] = React.useState<string | null>(null);
-  const [mode, setMode] = React.useState<'form' | 'raw'>('form');
-  const [values, setValues] = React.useState<Record<string, string>>({});
-  const [order, setOrder] = React.useState<string[]>([]);
-  const [rawText, setRawText] = React.useState(EMPTY_DOC);
+  const [drafts, setDrafts] = React.useState<Record<string, Draft>>({});
+  const draft = file ? drafts[file] : undefined;
+  const mode = draft?.mode ?? 'form';
+  const values = draft?.values ?? {};
+  const order = draft?.order ?? [];
+  const rawText = draft?.rawText ?? EMPTY_DOC;
+
+  /** Patch the current file's draft (no-op until its document has loaded). */
+  const patchDraft = (patch: Partial<Draft>) => {
+    if (!file) return;
+    setDrafts((prev) => (prev[file] ? { ...prev, [file]: { ...prev[file], ...patch } } : prev));
+  };
 
   const roots = useQuery({ queryKey: ['cbz-roots'], queryFn: () => api.cbzRoots(), enabled: browseOpen });
   const dirData = useQuery({
@@ -66,16 +96,43 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
     queryFn: () => api.cbzSeriesFiles(seriesId!),
     enabled: !!seriesId,
   });
+  // Natural reading order: numeric ComicInfo Number first, then plain filename order.
+  const sortedFiles = React.useMemo(() => {
+    const files = seriesFiles.data?.files ?? [];
+    const nums = seriesFiles.data?.chapterNumbers ?? {};
+    const numOf = (f: string): number | null => {
+      const n = Number(nums[f]);
+      return nums[f] !== undefined && nums[f].trim() !== '' && !Number.isNaN(n) ? n : null;
+    };
+    return [...files].sort((a, b) => {
+      const na = numOf(a);
+      const nb = numOf(b);
+      if (na !== null && nb !== null) return na - nb || a.localeCompare(b);
+      if (na !== null) return -1;
+      if (nb !== null) return 1;
+      return a.localeCompare(b);
+    });
+  }, [seriesFiles.data]);
 
-  // Load the parsed document into form + raw state.
+  // Initialize the file's draft when its parsed document arrives. An existing
+  // draft is kept so pending edits survive refetches and file switches.
   React.useEffect(() => {
-    if (!doc.data) return;
-    const base: Record<string, string> = Object.fromEntries(EDITOR_FIELDS.map((f) => [f, '']));
-    setValues({ ...base, ...doc.data.fields });
-    setOrder(doc.data.order);
-    setRawText(doc.data.raw ?? EMPTY_DOC);
-    setMode('form');
-  }, [doc.data]);
+    if (!doc.data || !file) return;
+    setDrafts((prev) => {
+      if (prev[file]) return prev;
+      return {
+        ...prev,
+        [file]: {
+          values: { ...emptyValues(), ...doc.data.fields },
+          order: doc.data.order,
+          rawText: doc.data.raw ?? EMPTY_DOC,
+          mode: 'form',
+          orig: { ...doc.data.fields },
+          origRaw: doc.data.raw ?? EMPTY_DOC,
+        },
+      };
+    });
+  }, [doc.data, file]);
 
   const openFile = (p: string) => {
     const trimmed = p.trim();
@@ -86,10 +143,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
   };
 
   /** Only fields that actually changed are sent — the server merges them over the file's current entry. */
-  const changedFields = React.useMemo(() => {
-    const orig = doc.data?.fields ?? {};
-    return Object.keys(values).filter((k) => (values[k] ?? '') !== (orig[k] ?? ''));
-  }, [values, doc.data]);
+  const changedFields = React.useMemo(() => (draft && draft.mode === 'form' ? changedFieldKeys(draft) : []), [draft]);
 
   const save = useMutation({
     mutationFn: () =>
@@ -98,13 +152,17 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
         : api.enqueue('edit-comicinfo', { path: file!, fields: Object.fromEntries(changedFields.map((k) => [k, values[k]])), ...(seriesId !== undefined ? { seriesId } : {}) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['jobs'] });
-      toast({ tone: 'success', title: 'ComicInfo save queued', description: `${file} — check the Jobs page` });
-      onClose?.();
+      const savedPath = file!;
+      // Advance the draft's baseline so its pending indicator clears while the
+      // just-saved values stay displayed. The modal stays open so other files
+      // in the series can be edited next.
+      setDrafts((prev) => (prev[savedPath] ? { ...prev, [savedPath]: { ...prev[savedPath], orig: { ...prev[savedPath].values }, origRaw: prev[savedPath].rawText } } : prev));
+      toast({ tone: 'success', title: 'ComicInfo save queued', description: `${savedPath.split(/[\\/]/).pop()} — check the Jobs page` });
     },
     onError: (e) => toast({ tone: 'danger', title: 'Could not queue save', description: e instanceof Error ? e.message : String(e) }),
   });
 
-  const canSave = !!file && !doc.isLoading && (mode === 'raw' ? rawText.trim() !== '' : changedFields.length > 0);
+  const canSave = !!file && !!draft && !doc.isLoading && draftHasChanges(draft);
 
   // Extra tags present in the file but not in the standard editor set.
   const extraTags = order.filter((t) => !(EDITOR_FIELDS as readonly string[]).includes(t));
@@ -144,16 +202,25 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                     <span className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-muted" title={seriesFiles.data.dir ?? undefined}>
                       <FileArchive className="h-3 w-3" /> {seriesFiles.data.name}
                     </span>
-                    <div className="grid max-h-40 grid-cols-1 gap-1 overflow-y-auto">
-                      {seriesFiles.data.files.map((f) => (
-                        <button key={f} type="button" onClick={() => openFile(f)} title={f}
-                          className={cn(
-                            'flex min-w-0 items-center gap-1.5 truncate rounded border px-2 py-1 text-left text-xs transition-colors',
-                            f === file ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border-2 hover:border-primary/50',
-                          )}>
-                          <FileArchive className="h-3.5 w-3.5 shrink-0 text-success" /> {f.split(/[\\/]/).pop()}
-                        </button>
-                      ))}
+                    <div className="flex max-h-56 flex-col gap-1 overflow-y-auto pr-1">
+                      {sortedFiles.map((f) => {
+                        const num = seriesFiles.data?.chapterNumbers[f];
+                        const pending = drafts[f] ? draftHasChanges(drafts[f]) : false;
+                        return (
+                          <button key={f} type="button" onClick={() => openFile(f)} title={f}
+                            className={cn(
+                              'flex min-w-0 shrink-0 items-center gap-2 rounded border px-2 py-1.5 text-left text-xs transition-colors',
+                              f === file ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border-2 hover:border-primary/50',
+                            )}>
+                            <FileArchive className="h-3.5 w-3.5 shrink-0 text-success" />
+                            {num && num.trim() !== '' && (
+                              <span className="shrink-0 rounded bg-surface px-1.5 py-px font-mono text-[10px] tabular-nums text-muted">{num}</span>
+                            )}
+                            <span className="min-w-0 flex-1 truncate">{f.split(/[\\/]/).pop()}</span>
+                            {pending && <span className="shrink-0 rounded-full bg-warning/20 px-1.5 py-px text-[10px] font-medium text-warning">unsaved</span>}
+                          </button>
+                        );
+                      })}
                     </div>
                   </>
                 ) : seriesFiles.data ? (
@@ -245,14 +312,14 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
               <div className="flex items-center gap-1 self-start rounded-lg border border-border-2 p-0.5">
                 <button
                   type="button"
-                  onClick={() => setMode('form')}
+                  onClick={() => patchDraft({ mode: 'form' })}
                   className={cn('flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors', mode === 'form' ? 'bg-primary/10 text-primary' : 'text-muted hover:text-foreground')}
                 >
                   <PencilLine className="h-3.5 w-3.5" /> Fields
                 </button>
                 <button
                   type="button"
-                  onClick={() => setMode('raw')}
+                  onClick={() => patchDraft({ mode: 'raw' })}
                   className={cn('flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors', mode === 'raw' ? 'bg-primary/10 text-primary' : 'text-muted hover:text-foreground')}
                 >
                   <Code2 className="h-3.5 w-3.5" /> Raw XML
@@ -263,37 +330,41 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                 <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
                   {EDITOR_FIELDS.map((f) => {
                     const id = fieldId(f);
+                    const isChanged = draft ? (values[f] ?? '') !== (draft.orig[f] ?? '') : false;
                     return (
                       <div key={f} className={cn('flex flex-col gap-1', f === 'Summary' && 'sm:col-span-2')}>
-                        <Label htmlFor={id}>{f}</Label>
+                        <Label htmlFor={id} className={isChanged ? 'text-warning' : undefined}>{f}</Label>
                         {f === 'Summary' ? (
                           <textarea
                             id={id}
                             value={values[f] ?? ''}
-                            onChange={(e) => setValues((v) => ({ ...v, [f]: e.target.value }))}
+                            onChange={(e) => patchDraft({ values: { ...values, [f]: e.target.value } })}
                             rows={4}
-                            className="w-full rounded-md border border-border-2 bg-surface px-3 py-2 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/50"
+                            className={cn('w-full rounded-md border bg-surface px-3 py-2 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/50', isChanged ? 'border-warning/60' : 'border-border-2')}
                           />
                         ) : (
-                          <Input id={id} value={values[f] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [f]: e.target.value }))} />
+                          <Input id={id} value={values[f] ?? ''} onChange={(e) => patchDraft({ values: { ...values, [f]: e.target.value } })} className={isChanged ? 'border-warning/60 bg-warning/10' : undefined} />
                         )}
                       </div>
                     );
                   })}
-                  {extraTags.map((t) => (
-                    <div key={t} className="flex flex-col gap-1">
-                      <Label htmlFor={fieldId(t)}>{t}</Label>
-                      <Input id={fieldId(t)} value={values[t] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [t]: e.target.value }))} />
-                    </div>
-                  ))}
+                  {extraTags.map((t) => {
+                    const isChanged = draft ? (values[t] ?? '') !== (draft.orig[t] ?? '') : false;
+                    return (
+                      <div key={t} className="flex flex-col gap-1">
+                        <Label htmlFor={fieldId(t)} className={isChanged ? 'text-warning' : undefined}>{t}</Label>
+                        <Input id={fieldId(t)} value={values[t] ?? ''} onChange={(e) => patchDraft({ values: { ...values, [t]: e.target.value } })} className={isChanged ? 'border-warning/60 bg-warning/10' : undefined} />
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
                 <textarea
                   value={rawText}
-                  onChange={(e) => setRawText(e.target.value)}
+                  onChange={(e) => patchDraft({ rawText: e.target.value })}
                   rows={14}
                   spellCheck={false}
-                  className="w-full rounded-md border border-border-2 bg-surface px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-colors focus:border-primary"
+                  className={cn('w-full rounded-md border bg-surface px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-colors focus:border-primary', draft && rawText !== draft.origRaw ? 'border-warning/60' : 'border-border-2')}
                 />
               )}
             </>

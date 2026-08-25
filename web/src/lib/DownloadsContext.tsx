@@ -85,7 +85,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   const invalidate = React.useCallback(() => qc.invalidateQueries({ queryKey: ['downloads'] }), [qc]);
 
   const mutationError = (title: string) => (error: unknown) => toast({ tone: 'danger', title, description: error instanceof Error ? error.message : String(error) });
-  const start = useMutation({ mutationFn: (input: StartDownloadInput) => api.startDownload(input), onSuccess: invalidate, onError: mutationError('Could not start download') });
+  const start = useMutation({ mutationFn: (input: StartDownloadInput) => api.startDownload(input), onSuccess: invalidate, onError: (error) => { const msg = error instanceof Error ? error.message : String(error); if (msg !== 'already-downloaded') toast({ tone: 'danger', title: 'Could not start download', description: msg }); } });
   const action = useMutation({
     mutationFn: ({ id, op }: { id: number; op: 'pause' | 'resume' | 'cancel' | 'retry' }) => api.downloadAction(id, op),
     onSuccess: invalidate,

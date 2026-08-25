@@ -28,6 +28,8 @@ import {
   Layers,
   Star,
   Tags,
+  CheckSquare,
+  Combine,
 } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
 import { useDownloads } from '../lib/DownloadsContext';
@@ -244,14 +246,17 @@ function DownloadStatusBadge({ status }: { status: string }) {
 }
 
 // ---------------- Gallery card ----------------
-function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloadedAt }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean; index?: number; downloadedAt?: string | null }) {
+function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloadedAt, selectMode = false, selected = false, onToggleSelect }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean; index?: number; downloadedAt?: string | null; selectMode?: boolean; selected?: boolean; onToggleSelect?: () => void }) {
   const tags = [...item.artists, ...item.tags].slice(0, 6);
   return (
     <article
       style={{ animationDelay: `${Math.min(index, 15) * 40}ms` }}
-      className="group flex animate-fade-up flex-col overflow-hidden rounded-xl border border-border bg-surface transition-all duration-200 hover:-translate-y-1 hover:border-primary/50 hover:shadow-xl hover:shadow-black/30"
+      className={cn(
+        'group flex animate-fade-up flex-col overflow-hidden rounded-xl border bg-surface transition-all duration-200 hover:-translate-y-1 hover:border-primary/50 hover:shadow-xl hover:shadow-black/30',
+        selected ? 'border-primary/60 ring-2 ring-primary' : 'border-border',
+      )}
     >
-      <button type="button" onClick={onOpen} className="text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60" aria-label={`View details for ${item.title}`}>
+      <button type="button" onClick={selectMode ? onToggleSelect : onOpen} className="text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60" aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
         <div className="relative overflow-hidden">
           <Cover url={item.coverUrl} title={item.title} className="aspect-[3/4] w-full transition-transform duration-300 ease-out group-hover:scale-105" />
           {item.language && (
@@ -260,8 +265,15 @@ function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloa
             </span>
           )}
           {item.pageCount ? <span className="absolute right-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">{item.pageCount}p</span> : null}
+          {selectMode && selected && (
+            <span className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white shadow-md">
+              <CheckSquare className="h-3.5 w-3.5" />
+            </span>
+          )}
           <div className="pointer-events-none absolute inset-0 flex items-end justify-center bg-gradient-to-t from-black/80 via-black/10 to-transparent opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-            <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-white"><Search className="h-3 w-3" /> Details</span>
+            <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-white">
+              {selectMode ? (<><CheckSquare className="h-3 w-3" /> {selected ? 'Selected' : 'Select'}</>) : (<><Search className="h-3 w-3" /> Details</>)}
+            </span>
           </div>
         </div>
         <div className="flex flex-col gap-2 p-3 pb-0">
@@ -510,6 +522,80 @@ function QueueRow({ task, onAction, onEditComicInfo, onDelete }: { task: Downloa
   );
 }
 
+// ---------------- Merged download dialog ----------------
+
+/** Sanitize a gallery title into a usable folder name. */
+function folderNameFrom(title: string): string {
+  return title.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Confirm dialog for queued merged downloads: all selected galleries land in one
+ * shared folder (one Kavita series). Chapter numbers are prefilled with the
+ * selection order but editable by hand; an empty field skips numbering that file.
+ */
+function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm }: {
+  items: DoujinSearchResult[];
+  defaultFolder: string;
+  onClose: () => void;
+  onConfirm: (folder: string, numbers: (number | null)[]) => void;
+}) {
+  const [folder, setFolder] = React.useState(defaultFolder);
+  const [numbered, setNumbered] = React.useState(true);
+  // Per-gallery chapter numbers as editable strings, prefilled with selection order.
+  const [numbers, setNumbers] = React.useState<string[]>(() => items.map((_, i) => String(i + 1)));
+  const setNumber = (i: number, v: string) => {
+    if (!/^\d*$/.test(v)) return; // digits only
+    setNumbers((prev) => prev.map((n, j) => (j === i ? v : n)));
+  };
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="sm:max-w-lg">
+        <div className="flex max-h-[calc(100vh-9rem)] flex-col gap-3 overflow-y-auto p-5 pr-12">
+          <div>
+            <DialogTitle>Merged download</DialogTitle>
+            <DialogDescription className="mt-1">
+              Download {items.length} {items.length === 1 ? 'gallery' : 'galleries'} into one folder so Kavita groups them as a single series.
+            </DialogDescription>
+          </div>
+          <div className="flex flex-col gap-1">
+            <span id="merge-folder-label" className="text-xs font-medium text-muted">Folder name (becomes the Kavita series name)</span>
+            <Input id="merge-folder" aria-labelledby="merge-folder-label" value={folder} onChange={(e) => setFolder(e.target.value)} placeholder="Series folder" autoFocus />
+          </div>
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-muted">
+            <input type="checkbox" checked={numbered} onChange={(e) => setNumbered(e.target.checked)} className="h-3.5 w-3.5 accent-[var(--color-primary)]" />
+            Number chapters (ComicInfo.Number) — edit any value by hand, leave empty to skip
+          </label>
+          {numbered && (
+            <div className="flex max-h-56 flex-col gap-1 overflow-y-auto pr-1">
+              {items.map((item, i) => (
+                <div key={`${item.source}:${item.galleryId}`} className="flex shrink-0 items-center gap-2 rounded-md border border-border-2 bg-surface-2 px-2 py-1.5">
+                  <span className="min-w-0 flex-1 truncate text-xs" title={item.title}>{item.title}</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    inputMode="numeric"
+                    aria-label={`Chapter number for ${item.title}`}
+                    value={numbers[i]}
+                    onChange={(e) => setNumber(i, e.target.value)}
+                    className="h-7 w-20 px-2 text-right text-xs"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="flex justify-end gap-2 border-t border-border p-4">
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button disabled={!folder.trim()} onClick={() => onConfirm(folder.trim(), numbered ? numbers.map((n) => (n === '' ? null : Number(n))) : items.map(() => null))}>
+            <Combine className="h-4 w-4" /> Download {items.length} {items.length === 1 ? 'gallery' : 'galleries'}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ---------------- Page ----------------
 
 export function Downloader() {
@@ -531,6 +617,13 @@ export function Downloader() {
   // ComicInfo editor: null = closed; { path? } = open (path from a completed row, or none to browse).
   const [comicInfo, setComicInfo] = React.useState<{ path?: string } | null>(null);
   const [confirmClear, setConfirmClear] = React.useState(false);
+
+  // Multi-select mode for merged downloads (mirrors the Libraries page). Selection
+  // is keyed `${source}:${galleryId}` and persists across result pages; a fresh
+  // search resets it. Click order defines chapter numbering for merges.
+  const [selectMode, setSelectMode] = React.useState(false);
+  const [selectedGalleries, setSelectedGalleries] = React.useState<Set<string>>(new Set());
+  const [mergeOpen, setMergeOpen] = React.useState(false);
 
   const { tasks, active, liveConnected, error: downloadsError, refetch: refetchDownloads, startDownload, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
   const [suggestions, setSuggestions] = React.useState<DoujinSuggestion[]>([]);
@@ -640,6 +733,8 @@ export function Downloader() {
   const [tab, setTab] = React.useState<'search' | 'manager'>('search');
   React.useEffect(() => {
     setPage(1);
+    setSelectedGalleries(new Set());
+    setSelectMode(false);
   }, [searchKey, source]);
 
 
@@ -658,6 +753,46 @@ export function Downloader() {
     } finally {
       setPendingKey(null);
     }
+  }
+
+  function toggleGallerySelect(key: string) {
+    setSelectedGalleries((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  // Selected galleries in click order — the order chapter numbers are assigned.
+  const selectedItems = React.useMemo(() => {
+    if (!results) return [];
+    const byKey = new Map(results.map((r) => [`${r.source}:${r.galleryId}`, r]));
+    return [...selectedGalleries].map((k) => byKey.get(k)).filter((r): r is DoujinSearchResult => !!r);
+  }, [results, selectedGalleries]);
+
+  /** Queue every selected gallery into one shared folder (one Kavita series). */
+  async function doMergedDownload(folder: string, numbers: (number | null)[]) {
+    const items = selectedItems;
+    if (items.length === 0) return;
+    let queued = 0;
+    let skipped = 0;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      try {
+        await startDownload({ source: item.source, galleryId: item.galleryId, title: item.title ?? undefined, mergeFolder: folder, chapter: numbers[i] ?? undefined });
+        queued++;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg === 'already-downloaded') skipped++;
+        else toast({ tone: 'danger', title: `Could not queue ${item.title}`, description: msg });
+      }
+    }
+    if (queued > 0) toast({ tone: 'success', title: 'Merged downloads queued', description: `${queued} ${queued === 1 ? 'gallery' : 'galleries'} → “${folder}”` });
+    if (skipped > 0) toast({ tone: 'info', title: 'Already downloaded', description: `${skipped} ${skipped === 1 ? 'gallery has' : 'galleries have'} completed tasks — skipped.` });
+    setSelectedGalleries(new Set());
+    setSelectMode(false);
+    setMergeOpen(false);
   }
 
   const act = (id: number, a: 'pause' | 'resume' | 'cancel' | 'retry') => {
@@ -909,16 +1044,43 @@ export function Downloader() {
             </div>
           ) : results && results.length > 0 ? (
             <>
-              <p className="mb-3 text-xs text-muted">
-                {results.length} {results.length === 1 ? 'gallery' : 'galleries'} found on {SOURCE_LABELS[source]}
-                {pageCount > 1 && ` — showing ${(curPage - 1) * RESULTS_PAGE_SIZE + 1}–${Math.min(curPage * RESULTS_PAGE_SIZE, results.length)}`}
-              </p>
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <p className="text-xs text-muted">
+                  {results.length} {results.length === 1 ? 'gallery' : 'galleries'} found on {SOURCE_LABELS[source]}
+                  {pageCount > 1 && ` — showing ${(curPage - 1) * RESULTS_PAGE_SIZE + 1}–${Math.min(curPage * RESULTS_PAGE_SIZE, results.length)}`}
+                </p>
+                <Button size="sm" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit selection mode' : 'Select multiple galleries for a merged download'}>
+                  <CheckSquare className="h-3.5 w-3.5" /> Select
+                </Button>
+              </div>
+              {(selectMode || selectedGalleries.size > 0) && (
+                <div className={cn('mb-4 flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border p-2', selectMode ? 'border-primary/50 bg-primary/10' : 'border-border-2 bg-surface-2')}>
+                  {selectMode ? (
+                    <>
+                      <CheckSquare className="h-4 w-4 shrink-0 text-primary" />
+                      <span className="text-xs font-medium text-primary">Selection mode — click cards to select or deselect</span>
+                    </>
+                  ) : (
+                    <span className="px-1 text-xs text-muted">Merged download ready</span>
+                  )}
+                  {selectedGalleries.size > 0 && <Badge tone="info">{selectedGalleries.size} selected</Badge>}
+                  <div className="ml-auto flex items-center gap-2">
+                    <Button size="sm" disabled={selectedGalleries.size === 0} onClick={() => setMergeOpen(true)} title="Download all selected galleries into one folder — one Kavita series">
+                      <Combine className="h-3.5 w-3.5" /> Download merged
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled={selectedGalleries.size === 0} onClick={() => setSelectedGalleries(new Set())}>Clear</Button>
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
                 {pageItems.map((item, i) => (
                   <GalleryCard
                     key={item.source + item.galleryId}
                     item={item}
                     index={i}
+                    selectMode={selectMode}
+                    selected={selectedGalleries.has(`${item.source}:${item.galleryId}`)}
+                    onToggleSelect={() => toggleGallerySelect(`${item.source}:${item.galleryId}`)}
                     onOpen={() => setSelected(item)}
                     downloading={pendingKey === `${item.source}:${item.galleryId}`}
                     downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
@@ -960,6 +1122,16 @@ export function Downloader() {
           downloading={pendingKey === `${selected.source}:${selected.galleryId}`}
           onDownload={() => doStartDownload(selected)}
           onSearchTag={searchTagFragment}
+        />
+      )}
+
+      {/* Merged download confirm */}
+      {mergeOpen && selectedItems.length > 0 && (
+        <MergeDownloadDialog
+          items={selectedItems}
+          defaultFolder={folderNameFrom(selectedItems[0].title ?? '')}
+          onClose={() => setMergeOpen(false)}
+          onConfirm={(folder, numbers) => void doMergedDownload(folder, numbers)}
         />
       )}
       </>)

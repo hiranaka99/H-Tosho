@@ -20,6 +20,8 @@ export interface SeriesRow {
   name: string;
   slug?: string;
   bookCount?: number;
+  /** Total page count across the series' chapters (Kavita-tracked). */
+  pageCount?: number | null;
   cover?: string | null;
   status: string;
   providerId?: string | null;

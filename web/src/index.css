@@ -162,19 +162,6 @@ select {
   pointer-events: auto;
 }
 
-/* Library grid cards reveal the selection checkbox on pointer hover / keyboard focus.
-   A checked box stays visible so multi-select state is always apparent. */
-.card-check-btn {
-  opacity: 0;
-  pointer-events: none;
-}
-.group:hover .card-check-btn,
-.group:focus-within .card-check-btn,
-.card-check-btn-checked {
-  opacity: 1;
-  pointer-events: auto;
-}
-
 /* Shimmering placeholder for loading content. */
 .skeleton {
   border-radius: 0.5rem;

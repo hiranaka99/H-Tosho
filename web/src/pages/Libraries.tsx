@@ -139,7 +139,7 @@ export function Libraries() {
       statusFilter === 'all' ? true :
       statusFilter === 'low-score' ? (r.status === 'matched' && typeof r.matchScore === 'number' && r.matchScore < LOW_CONFIDENCE) :
       r.status === statusFilter;
-    const okQuery = query ? r.name.toLowerCase().includes(query.toLowerCase()) : true;
+    const okQuery = query ? r.name.toLowerCase().includes(query.toLowerCase()) || (r.artists ?? []).some((a) => a.toLowerCase().includes(query.toLowerCase())) : true;
     return okStatus && okQuery;
   });
   const pageCount = Math.max(1, Math.ceil(filtered.length / SERIES_PAGE_SIZE));
@@ -232,7 +232,7 @@ export function Libraries() {
                 </p>
               </div>
               <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:justify-end">
-                <Button variant={selectMode ? 'secondary' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit multi-select mode' : 'Multi-select — click cards to select them'}>
+                <Button variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit multi-select mode' : 'Multi-select — click cards to select them'}>
                   <CheckSquare className="h-4 w-4" /> Select
                 </Button>
                 <label className="flex cursor-pointer select-none items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-xs font-medium text-muted">
@@ -241,7 +241,7 @@ export function Libraries() {
                 </label>
                 <div className="relative min-w-44 flex-1 sm:flex-none">
                   <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted" />
-                  <Input aria-label="Filter series" placeholder="Filter series…" value={query} onChange={(e) => setQuery(e.target.value)} className="w-full pl-8 sm:w-52" />
+                  <Input aria-label="Filter series or artists" placeholder="Filter series or artist…" value={query} onChange={(e) => setQuery(e.target.value)} className="w-full pl-8 sm:w-52" />
                 </div>
                 <Select aria-label="Filter by match status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-full sm:w-44">
                   <option value="all">All</option>
@@ -262,15 +262,27 @@ export function Libraries() {
               </div>
             </div>
 
-            {checked.size > 0 && (
-              <div className="flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border border-border-2 bg-surface-2 p-2 shadow-lg shadow-black/20">
-                <span className="px-2 text-xs text-muted">{checked.size} selected</span>
-                <Button size="sm" variant="secondary" onClick={() => setMergeOpen(true)} disabled={checked.size < 2} title={checked.size < 2 ? 'Select at least two series' : undefined}>
-                  <Combine className="h-3.5 w-3.5" /> Merge selected
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setChecked(new Set())}>
-                  Clear selection
-                </Button>
+            {(selectMode || checked.size > 0) && (
+              <div className={cn('flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border p-2 shadow-lg shadow-black/20', selectMode ? 'border-primary/50 bg-primary/10' : 'border-border-2 bg-surface-2')}>
+                {selectMode && (
+                  <>
+                    <CheckSquare className="h-4 w-4 shrink-0 text-primary" />
+                    <span className="text-xs font-medium text-primary">Selection mode — click cards to select or deselect</span>
+                  </>
+                )}
+                {checked.size > 0 && (
+                  <>
+                    <Badge tone="info">{checked.size} selected</Badge>
+                    <Button size="sm" onClick={() => setMergeOpen(true)} disabled={checked.size < 2} title={checked.size < 2 ? 'Select at least two series' : undefined}>
+                      <Combine className="h-3.5 w-3.5" /> Merge selected
+                    </Button>
+                  </>
+                )}
+                <div className="ml-auto flex items-center gap-2">
+                  <Button size="sm" variant="ghost" disabled={checked.size === 0} onClick={() => setChecked(new Set())}>
+                    Clear selection
+                  </Button>
+                </div>
               </div>
             )}
 
@@ -330,6 +342,9 @@ export function Libraries() {
                       <div className="flex flex-wrap items-center gap-1">
                         {r.providerId && <ProviderBadge id={r.providerId} solid />}
                         <StatusBadge status={r.status} title={r.errorMessage ?? undefined} className="bg-black/70" />
+                        {typeof r.pageCount === 'number' && r.pageCount > 0 && (
+                          <span className="rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white/80">{r.pageCount} pages</span>
+                        )}
                       </div>
                       {!selectMode && r.artists?.length ? (
                         // Action bar revealed on hover/focus: explicit buttons instead of badge-like pills.
@@ -360,6 +375,7 @@ export function Libraries() {
                       <th className="p-2 text-left font-medium">Status</th>
                       <th className="p-2 text-left font-medium">Provider</th>
                       <th className="p-2 text-left font-medium">Score</th>
+                      <th className="p-2 text-left font-medium">Pages</th>
                       <th className="p-2 text-left font-medium">Synced</th>
                       <th className="min-w-56 p-2 text-right font-medium">Actions</th>
                     </tr>
@@ -403,6 +419,7 @@ export function Libraries() {
                             '—'
                           )}
                         </td>
+                        <td className="p-2 tabular-nums text-muted">{typeof r.pageCount === 'number' && r.pageCount > 0 ? `${r.pageCount}` : '—'}</td>
                         <td className="p-2 text-xs text-muted">{timeAgo(r.lastSyncedAt)}</td>
                         <td className="p-2 text-right">
                           <div className="flex flex-wrap items-center justify-end gap-1.5">

@@ -223,6 +223,8 @@ export interface KavitaSeries {
   name: string;
   slug: string;
   bookCount: number;
+  /** Total page count across the series' chapters, as tracked by Kavita. */
+  pages?: number;
   totalChapterCount?: number;
   lastAdded?: string;
   cover?: string;

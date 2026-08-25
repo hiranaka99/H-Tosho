@@ -183,6 +183,7 @@ export class KavitaClient {
       name: series.name?.trim() || `Series ${series.id}`,
       slug: String(series.id),
       bookCount: 0,
+      pages: series.pages ?? undefined,
       totalChapterCount: 0,
       lastAdded: series.lastChapterAddedUtc ?? series.lastChapterAdded,
       // The filename is not a public URL; its presence enables our proxy.

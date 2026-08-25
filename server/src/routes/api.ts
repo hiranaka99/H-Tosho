@@ -176,6 +176,7 @@ api.get('/kavita/libraries/:id/series', async (c) => {
           name: s.name,
           slug: s.slug,
           bookCount: s.bookCount,
+          pageCount: s.pages ?? null,
           cover: s.cover ? `/api/kavita/series/${s.id}/cover` : null,
           status: m?.status ?? 'unmatched',
           providerId: m?.providerId ?? null,
