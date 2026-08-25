@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, BookOpen, Unlink, ArrowUpRight, FileText, Combine, Check, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, BookOpen, Unlink, ArrowUpRight, FileText, Combine, Check, CheckSquare, ChevronLeft, ChevronRight } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource } from '../lib/api';
 import { Button, Card, Input, Select, Badge, StatusBadge, ProviderBadge, Spinner, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
@@ -94,6 +94,7 @@ export function Libraries() {
   const [identify, setIdentify] = React.useState<{ id: number; name: string } | null>(null);
   const [comicInfo, setComicInfo] = React.useState<{ id: number; name: string } | null>(null);
   const [mergeOpen, setMergeOpen] = React.useState(false);
+  const [selectMode, setSelectMode] = React.useState(false);
   const [page, setPage] = React.useState(1);
   const [unmatchTarget, setUnmatchTarget] = React.useState<SeriesRow | null>(null);
 
@@ -231,6 +232,9 @@ export function Libraries() {
                 </p>
               </div>
               <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:justify-end">
+                <Button variant={selectMode ? 'secondary' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit multi-select mode' : 'Multi-select — click cards to select them'}>
+                  <CheckSquare className="h-4 w-4" /> Select
+                </Button>
                 <label className="flex cursor-pointer select-none items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-xs font-medium text-muted">
                   Auto-match
                   <Switch aria-label="Automatically match new series" checked={override.data?.autoMatch ?? true} onCheckedChange={setAutoMatch} />
@@ -293,30 +297,20 @@ export function Libraries() {
                     )}
                   >
                     <button
-                      className="absolute inset-0 z-10 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                      className={cn('absolute inset-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', selectMode ? 'z-30' : 'z-10')}
                       onClick={(e) => {
                         e.stopPropagation();
-                        setIdentify({ id: r.id, name: r.name });
+                        if (selectMode) toggleCheck(r.id);
+                        else setIdentify({ id: r.id, name: r.name });
                       }}
-                      aria-label="Identify"
+                      title={selectMode ? (checked.has(r.id) ? 'Deselect series' : 'Select series') : undefined}
+                      aria-label={selectMode ? (checked.has(r.id) ? `Deselect ${r.name}` : `Select ${r.name}`) : 'Identify'}
                     />
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleCheck(r.id);
-                      }}
-                      title={checked.has(r.id) ? 'Deselect series' : 'Select series'}
-                      aria-pressed={checked.has(r.id)}
-                      className={cn(
-                        'absolute bottom-2 left-2 z-30 flex h-8 w-8 items-center justify-center rounded-full border bg-black/60 transition-all duration-150',
-                        checked.has(r.id)
-                          ? 'card-check-btn-checked border-primary bg-primary text-white'
-                          : 'border-white/50 text-white/70 hover:border-primary hover:text-primary',
-                      )}
-                    >
-                      <Check className="h-3.5 w-3.5" />
-                    </button>
+                    {checked.has(r.id) && (
+                      <div className="pointer-events-none absolute bottom-2 left-2 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-primary bg-primary text-white shadow-md" aria-hidden>
+                        <Check className="h-3.5 w-3.5" />
+                      </div>
+                    )}
                     <button
                       type="button"
                       onClick={(e) => {
@@ -333,13 +327,13 @@ export function Libraries() {
                     </div>
                     <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-1 bg-gradient-to-t from-black/90 to-transparent p-2 pt-6">
                       <p className="truncate text-xs font-semibold text-white [text-shadow:1px_0_0_rgba(0,0,0,0.85),-1px_0_0_rgba(0,0,0,0.85),0_1px_0_rgba(0,0,0,0.85),0_-1px_0_rgba(0,0,0,0.85),0_2px_3px_rgba(0,0,0,0.6)]">{r.name}</p>
-                      <div className="flex flex-wrap items-center gap-1 pl-7">
+                      <div className="flex flex-wrap items-center gap-1">
                         {r.providerId && <ProviderBadge id={r.providerId} solid />}
                         <StatusBadge status={r.status} title={r.errorMessage ?? undefined} className="bg-black/70" />
                       </div>
-                      {r.artists?.length ? (
+                      {!selectMode && r.artists?.length ? (
                         // Action bar revealed on hover/focus: explicit buttons instead of badge-like pills.
-                        <div className="artist-action-bar flex max-h-0 flex-wrap gap-1 overflow-hidden pl-7 opacity-0 transition-all duration-200 group-hover:max-h-16 group-hover:opacity-100">
+                        <div className="artist-action-bar flex max-h-0 flex-wrap gap-1 overflow-hidden opacity-0 transition-all duration-200 group-hover:max-h-16 group-hover:opacity-100">
                           <ArtistSearchButton source="hitomi" artists={r.artists} variant="bar" />
                           <ArtistSearchButton source="nhentai" artists={r.artists} variant="bar" />
                         </div>
