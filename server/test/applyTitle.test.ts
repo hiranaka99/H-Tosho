@@ -61,7 +61,9 @@ test('selected MangaDex title rewrites every chapter and requests a series scan'
   });
 
   assert.equal(res.status, 200);
-  assert.equal((await res.json()).titleFilesUpdated, 2);
+  const result = await res.json();
+  assert.equal(result.titleFilesUpdated, 2);
+  assert.equal(result.titleFilesVerified, 2);
   for (const file of files) assert.equal(parseComicInfo((await readComicInfo(file))!).fields.Series, 'Live!: Soto de Koubi Shiyou!');
   assert.equal(requests.filter((request) => request.url.endsWith('/api/Series/scan')).length, 1);
   assert.equal(requests.filter((request) => request.url.endsWith('/api/Series/update')).length, 0);

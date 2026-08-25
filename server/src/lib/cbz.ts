@@ -510,8 +510,13 @@ export async function setComicInfoFields(file: string, fields: Record<string, st
   await rewriteZipEntry(file, 'ComicInfo.xml', Buffer.from(xml, 'utf8'));
 }
 
-/** Rewrite ComicInfo.Series across every CBZ, restoring earlier archives if any rewrite fails. */
-export async function setSeriesTitleInCbzFiles(files: string[], seriesTitle: string): Promise<number> {
+export interface SeriesTitleRewriteResult {
+  changed: number;
+  verified: number;
+}
+
+/** Rewrite ComicInfo.Series across every CBZ, restoring earlier archives if any rewrite or verification fails. */
+export async function setSeriesTitleInCbzFiles(files: string[], seriesTitle: string): Promise<SeriesTitleRewriteResult> {
   const originals = new Map<string, string | null>();
   for (const file of files) originals.set(file, await readComicInfo(file));
 
@@ -519,9 +524,14 @@ export async function setSeriesTitleInCbzFiles(files: string[], seriesTitle: str
   try {
     for (const file of files) {
       const existing = originals.get(file);
-      if (existing && parseComicInfo(existing).fields.Series?.trim() === seriesTitle) continue;
-      await setComicInfoFields(file, { Series: seriesTitle });
-      changed.push(file);
+      if (!existing || parseComicInfo(existing).fields.Series?.trim() !== seriesTitle) {
+        await setComicInfoFields(file, { Series: seriesTitle });
+        changed.push(file);
+      }
+      const written = await readComicInfo(file);
+      if (!written || parseComicInfo(written).fields.Series?.trim() !== seriesTitle) {
+        throw new Error(`ComicInfo.Series verification failed for ${file}`);
+      }
     }
   } catch (error) {
     for (const file of changed.reverse()) {
@@ -532,5 +542,5 @@ export async function setSeriesTitleInCbzFiles(files: string[], seriesTitle: str
     }
     throw error;
   }
-  return changed.length;
+  return { changed: changed.length, verified: files.length };
 }

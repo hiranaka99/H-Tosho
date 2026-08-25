@@ -85,7 +85,7 @@ describe('MangaDexProvider cover URLs', () => {
           response: 'entity',
           data: {
             id: 'manga-1',
-            attributes: { title: { 'ja-ro': 'Series Ichi' }, altTitles: [{ en: 'Series One' }], year: 2025, status: 'ongoing', originalLanguage: 'ja' },
+            attributes: { title: { en: 'When Mama and Papa Aren\'t Home' }, altTitles: [{ 'ja-ro': 'Papa to Mama ga Inai Aida ni...' }, { ja: 'パパとママがいない間に…' }], year: 2020, status: 'completed', originalLanguage: 'ja' },
             relationships: [
               { id: 'cover-uuid-1', type: 'cover_art' },
               { id: 'user-1', type: 'author', attributes: { name: 'Author One' } },
@@ -106,8 +106,8 @@ describe('MangaDexProvider cover URLs', () => {
 
     assert.equal(meta.coverUrl, 'https://uploads.mangadex.org/covers/manga-1/file-one.jpg');
     assert.deepEqual(meta.artists, ['Author One']);
-    assert.deepEqual(meta.titleOptions, ['Series One', 'Series Ichi']);
-    assert.equal(meta.sortTitle, 'Series Ichi');
+    assert.deepEqual(meta.titleOptions, ["When Mama and Papa Aren't Home", 'Papa to Mama ga Inai Aida ni...']);
+    assert.equal(meta.sortTitle, 'Papa to Mama ga Inai Aida ni...');
   });
   it('selects one cover per volume with English preferred over Japanese and newest upload winning within a locale', async () => {
     const coverCollectionRequests: string[] = [];

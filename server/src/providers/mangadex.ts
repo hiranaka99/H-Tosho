@@ -326,8 +326,11 @@ class MangaDexProvider extends BaseProvider {
     if (!m) throw new Error(`MangaDex: manga ${providerSeriesId} not found`);
     const a = m.attributes ?? {};
     const title = this.pickTitle(a);
-    const primaryTitle = a.title?.original || a.title?.['ja-ro'] || a.title?.romaji;
-    const titleOptions = [...new Set([title, primaryTitle].filter((v): v is string => typeof v === 'string' && v.trim().length > 0))];
+    const altTitles: Array<Record<string, unknown>> = Array.isArray(a.altTitles) ? a.altTitles : [];
+    const romanizedTitle = a.title?.original || a.title?.['ja-ro'] || a.title?.romaji
+      || altTitles.find((entry) => typeof entry?.['ja-ro'] === 'string')?.['ja-ro']
+      || altTitles.find((entry) => typeof entry?.original === 'string')?.original;
+    const titleOptions = [...new Set([title, romanizedTitle].filter((value): value is string => typeof value === 'string' && value.trim().length > 0))];
 
     let releaseDate: string | undefined;
     const published = a.published as string | undefined;
@@ -413,7 +416,7 @@ class MangaDexProvider extends BaseProvider {
       providerSeriesId,
       title: typeof title === 'string' ? title : 'Unknown',
       titleOptions,
-      sortTitle: typeof primaryTitle === 'string' ? primaryTitle : undefined,
+      sortTitle: typeof romanizedTitle === 'string' ? romanizedTitle : undefined,
       year: a.year ? Number(a.year) : undefined,
       releaseDate,
       summary: summaryText ? summaryText : undefined,

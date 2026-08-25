@@ -363,6 +363,7 @@ api.post('/series/:id/apply', async (c) => {
       meta.title = selectedTitle;
     }
     let titleFilesUpdated = 0;
+    let titleFilesVerified = 0;
     if (selectedTitle && !(body.excludedFields ?? []).includes('title')) {
       const libraries = await client.getLibraries();
       const library = libraries.find((entry) => entry.id === series.libraryId);
@@ -375,7 +376,9 @@ api.post('/series/:id/apply', async (c) => {
       if (!dir) throw new Error(`Could not locate the series folder for "${series.name}" on this machine`);
       const files = listCbzFiles(dir);
       if (files.length === 0) throw new Error(`No CBZ chapters found for "${series.name}"`);
-      titleFilesUpdated = await setSeriesTitleInCbzFiles(files, selectedTitle);
+      const rewrite = await setSeriesTitleInCbzFiles(files, selectedTitle);
+      titleFilesUpdated = rewrite.changed;
+      titleFilesVerified = rewrite.verified;
       await client.scanSeries(series.libraryId, seriesId);
       if (!body.excludedFields?.includes('title')) body.excludedFields = [...(body.excludedFields ?? []), 'title'];
     }
@@ -431,7 +434,7 @@ api.post('/series/:id/apply', async (c) => {
         },
       })
       .run();
-    return c.json({ ...result, titleFilesUpdated });
+    return c.json({ ...result, titleFilesUpdated, titleFilesVerified });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

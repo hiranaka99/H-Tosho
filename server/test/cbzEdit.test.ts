@@ -77,12 +77,12 @@ test('rewrites ComicInfo.Series in every CBZ while preserving chapter metadata',
     return file;
   });
 
-  assert.equal(await setSeriesTitleInCbzFiles(files, 'Live!: Soto de Koubi Shiyou!'), 2);
+  assert.deepEqual(await setSeriesTitleInCbzFiles(files, 'Live!: Soto de Koubi Shiyou!'), { changed: 2, verified: 2 });
   for (const [index, file] of files.entries()) {
     const fields = parseComicInfo((await readComicInfo(file))!).fields;
     assert.equal(fields.Series, 'Live!: Soto de Koubi Shiyou!');
     assert.equal(fields.Title, `Chapter ${index + 1}`);
     assert.equal(fields.Number, String(index + 1));
   }
-  assert.equal(await setSeriesTitleInCbzFiles(files, 'Live!: Soto de Koubi Shiyou!'), 0);
+  assert.deepEqual(await setSeriesTitleInCbzFiles(files, 'Live!: Soto de Koubi Shiyou!'), { changed: 0, verified: 2 });
 });
