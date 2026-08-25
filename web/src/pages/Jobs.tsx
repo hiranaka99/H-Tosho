@@ -1,9 +1,10 @@
 import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Terminal, Activity, Circle, XCircle, CheckCircle2, ListChecks, Ban, X } from 'lucide-react';
+import { Terminal, Activity, Circle, XCircle, CheckCircle2, ListChecks, Ban, X, Inbox } from 'lucide-react';
 import { api, type Job, type JobLog } from '../lib/api';
-import { Card, CardContent, CardHeader, CardTitle, Badge, Button, EmptyState, Spinner, ProgressBar, PageHeader } from '../components/ui';
+import { Card, CardContent, CardHeader, CardTitle, Badge, Button, EmptyState, ProgressBar, PageHeader, ErrorState, SegmentedTabs } from '../components/ui';
 import { cn, timeAgo, shortDate, toIsoUtc, jobLabel } from '../lib/utils';
+import { toast } from '../lib/toast';
 
 function JobStatus({ status }: { status: string }) {
   if (status === 'running')
@@ -45,12 +46,15 @@ const LOG_COLOR: Record<string, string> = {
   success: 'text-success',
 };
 
-/** Render a job's stored result (arbitrary JSON from the server) as displayable text. */
+/** Render a job's result as compact human-facing metrics; raw details remain in logs. */
 function jobResultText(j: Job): string {
-  if (j.result != null) {
-    return typeof j.result === 'string' ? j.result : JSON.stringify(j.result);
-  }
-  return j.errorMessage ?? '';
+  if (j.result == null) return j.errorMessage ?? '';
+  if (typeof j.result === 'string') return j.result;
+  if (typeof j.result !== 'object' || Array.isArray(j.result)) return String(j.result);
+  return Object.entries(j.result as Record<string, unknown>)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([key, value]) => `${key.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())}: ${String(value)}`)
+    .join(' · ');
 }
 
 function LogConsole({ logs }: { logs: JobLog[] }) {
@@ -77,8 +81,10 @@ function LogConsole({ logs }: { logs: JobLog[] }) {
 }
 
 export function Jobs() {
-  const { data: jobs = [] } = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, refetchInterval: 2500 });
-  const { data: recentLogs = [] } = useQuery({ queryKey: ['logs'], queryFn: api.logs, refetchInterval: 2500 });
+  const jobsQuery = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, refetchInterval: 2500 });
+  const logsQuery = useQuery({ queryKey: ['logs'], queryFn: api.logs, refetchInterval: 2500 });
+  const jobs = jobsQuery.data ?? [];
+  const recentLogs = logsQuery.data ?? [];
   const [selected, setSelected] = React.useState<Job | null>(null);
   const { data: jobDetail } = useQuery({
     queryKey: ['job', selected?.id],
@@ -91,11 +97,17 @@ export function Jobs() {
     void api.cancelJob(id).then(() => {
       qc.invalidateQueries({ queryKey: ['jobs'] });
       qc.invalidateQueries({ queryKey: ['job', id] });
-    });
+    }).catch((error) => toast({ tone: 'danger', title: 'Could not cancel job', description: error instanceof Error ? error.message : String(error) }));
   };
 
   type JobFilter = 'all' | 'active' | 'failed' | 'done';
   const [filter, setFilter] = React.useState<JobFilter>('all');
+  const filters: readonly { id: JobFilter; label: string }[] = [
+    { id: 'all', label: 'All' },
+    { id: 'active', label: 'Active' },
+    { id: 'failed', label: 'Failed' },
+    { id: 'done', label: 'Done' },
+  ];
   const visibleJobs = jobs.filter((j) => {
     if (filter === 'all') return true;
     if (filter === 'active') return j.status === 'running' || j.status === 'queued';
@@ -103,6 +115,9 @@ export function Jobs() {
     return j.status === 'completed' || j.status === 'cancelled';
   });
 
+  if (jobsQuery.isError) {
+    return <ErrorState title="Could not load jobs" description={jobsQuery.error instanceof Error ? jobsQuery.error.message : String(jobsQuery.error)} onRetry={() => void jobsQuery.refetch()} />;
+  }
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
@@ -112,19 +127,9 @@ export function Jobs() {
       />
 
       <Card>
-        <CardHeader className="flex-row items-center justify-between">
+        <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
           <CardTitle>Task queue</CardTitle>
-          <div className="flex overflow-hidden rounded-md border border-border-2">
-            {(['all', 'active', 'failed', 'done'] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={cn('px-3 py-1.5 text-xs font-medium capitalize transition-colors', filter === f ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}
-              >
-                {f}
-              </button>
-            ))}
-          </div>
+          <SegmentedTabs items={filters} value={filter} onChange={setFilter} label="Filter jobs" className="border-0" />
         </CardHeader>
         <CardContent>
           {jobs.length === 0 ? (
@@ -132,60 +137,35 @@ export function Jobs() {
           ) : visibleJobs.length === 0 ? (
             <p className="py-8 text-center text-sm text-muted">No {filter} jobs.</p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="border-b border-border text-xs text-muted">
-                  <tr>
-                    <th className="p-2 text-left font-medium">ID</th>
-                    <th className="p-2 text-left font-medium">Type</th>
-                    <th className="p-2 text-left font-medium">Status</th>
-                    <th className="p-2 text-left font-medium">Progress</th>
-                    <th className="p-2 text-left font-medium">Result</th>
-                    <th className="p-2 text-left font-medium">Created</th>
-                    <th className="p-2 text-right font-medium"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleJobs.map((j) => (
-                    <tr key={j.id} className="animate-fade-in cursor-pointer border-b border-border transition-colors duration-150 last:border-0 hover:bg-surface-2/50" onClick={() => setSelected(j)}>
-                      <td className="p-2 text-muted">#{j.id}</td>
-                      <td className="p-2 font-medium">{jobLabel(j.type, j.payload)}</td>
-                      <td className="p-2">
-                        <JobStatus status={j.status} />
-                      </td>
-                      <td className="p-2">
-                        <div className="flex items-center gap-2">
-                          <div className="w-32">
-                            <ProgressBar value={j.progressCurrent} max={j.progressTotal} className="h-1.5" active={j.status === 'running' || j.status === 'queued'} />
-                          </div>
-                          <span className="text-xs tabular-nums text-muted">
-                            {j.progressTotal ? `${j.progressCurrent}/${j.progressTotal}` : '—'}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="max-w-[28%] truncate p-2 text-xs text-muted" title={jobResultText(j)}>
-                        {jobResultText(j)}
-                      </td>
-                      <td className="p-2 text-xs text-muted" title={shortDate(j.createdAt)}>
-                        {timeAgo(j.createdAt)}
-                      </td>
-                      <td className="p-2 text-right">
-                        {(j.status === 'running' || j.status === 'queued') && (
-                          <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); cancelJob(j.id); }}>
-                            <X className="h-3.5 w-3.5" /> Cancel
-                          </Button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              <div className="flex flex-col gap-2 md:hidden">
+                {visibleJobs.map((job) => (
+                  <button key={job.id} type="button" onClick={() => setSelected(job)} className="rounded-lg border border-border p-3 text-left hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+                    <div className="flex items-start justify-between gap-2"><div><span className="text-xs text-muted">#{job.id}</span><p className="font-medium">{jobLabel(job.type, job.payload)}</p></div><JobStatus status={job.status} /></div>
+                    <div className="mt-2"><ProgressBar label={`${jobLabel(job.type, job.payload)} progress`} value={job.progressCurrent} max={job.progressTotal} className="h-1.5" /></div>
+                    {jobResultText(job) && <p className="mt-2 line-clamp-2 text-xs text-muted">{jobResultText(job)}</p>}
+                    <p className="mt-2 text-xs text-muted">{timeAgo(job.createdAt)}</p>
+                  </button>
+                ))}
+              </div>
+              <div className="hidden overflow-x-auto md:block">
+                <table className="min-w-[760px] w-full text-sm">
+                  <thead className="border-b border-border text-xs text-muted"><tr><th className="p-2 text-left font-medium">ID</th><th className="p-2 text-left font-medium">Type</th><th className="p-2 text-left font-medium">Status</th><th className="p-2 text-left font-medium">Progress</th><th className="p-2 text-left font-medium">Result</th><th className="p-2 text-left font-medium">Created</th><th className="p-2"><span className="sr-only">Actions</span></th></tr></thead>
+                  <tbody>
+                    {visibleJobs.map((j) => (
+                      <tr key={j.id} tabIndex={0} className="cursor-pointer border-b border-border last:border-0 hover:bg-surface-2/50" onClick={() => setSelected(j)} onKeyDown={(e) => { if (e.key === 'Enter') setSelected(j); }}>
+                        <td className="p-2 text-muted">#{j.id}</td><td className="p-2 font-medium">{jobLabel(j.type, j.payload)}</td><td className="p-2"><JobStatus status={j.status} /></td><td className="p-2"><ProgressBar label={`${jobLabel(j.type, j.payload)} progress`} value={j.progressCurrent} max={j.progressTotal} className="h-1.5" /></td><td className="max-w-xs truncate p-2 text-xs text-muted">{jobResultText(j)}</td><td className="p-2 text-xs text-muted">{timeAgo(j.createdAt)}</td><td className="p-2">{(j.status === 'running' || j.status === 'queued') && <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); cancelJob(j.id); }}>Cancel</Button>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <Card>
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle className="flex items-center gap-2">
@@ -201,9 +181,7 @@ export function Jobs() {
             )}
             {jobDetail && (
               <div className="mt-2 flex items-center gap-2">
-                <Button size="sm" variant="ghost" onClick={() => setSelected(null)}>
-                  Back to all logs
-                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setSelected(null)}>Back to all logs</Button>
               </div>
             )}
           </CardContent>
@@ -217,10 +195,7 @@ export function Jobs() {
             {(() => {
               const active = jobs.filter((j) => j.status === 'running' || j.status === 'queued');
               return active.length === 0 ? (
-                <div className="flex flex-col items-center gap-2 py-8 text-muted">
-                  <Spinner />
-                  No active jobs
-                </div>
+                <EmptyState icon={<Inbox className="h-7 w-7" />} title="No active jobs" description="Queued and running work appears here." />
               ) : (
                 active.map((j) => (
                   <div key={j.id} className={cn('animate-fade-up rounded-lg border p-3 transition-colors', j.status === 'running' ? 'border-primary/40 bg-primary/5' : 'border-border')}>

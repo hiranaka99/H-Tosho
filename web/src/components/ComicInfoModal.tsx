@@ -4,7 +4,7 @@ import { FileText, FolderOpen, FileArchive, ArrowUp, Save, Code2, PencilLine, Ha
 import { api } from '../lib/api';
 import { cn } from '../lib/utils';
 import { toast } from '../lib/toast';
-import { Button, Dialog, DialogContent, Input, Label, Spinner, EmptyState } from './ui';
+import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, EmptyState } from './ui';
 
 /** Fields offered in the form editor, mirroring the server's COMICINFO_EDITOR_FIELDS. */
 const EDITOR_FIELDS = [
@@ -109,25 +109,28 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
   // Extra tags present in the file but not in the standard editor set.
   const extraTags = order.filter((t) => !(EDITOR_FIELDS as readonly string[]).includes(t));
 
+  const fieldId = (field: string): string => `comicinfo-${field.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+
   return (
     <div className="flex flex-col gap-4">
 
           {/* File picker */}
           <div className="flex flex-col gap-2 rounded-lg border border-border-2 bg-surface-2 p-3">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <Input
+                aria-label="CBZ file path"
                 value={pathInput}
                 onChange={(e) => setPathInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') openFile(pathInput); }}
                 placeholder="Absolute path to a .cbz file…"
                 className="flex-1 font-mono text-xs"
               />
-              <Button size="sm" variant="secondary" onClick={() => openFile(pathInput)} disabled={!pathInput.trim()}>
-                Load
-              </Button>
-              <Button size="sm" variant={browseOpen ? 'default' : 'outline'} onClick={() => setBrowseOpen((v) => !v)}>
-                <FolderOpen className="h-3.5 w-3.5" /> Browse
-              </Button>
+              <div className="flex gap-2">
+                <Button size="sm" variant="secondary" onClick={() => openFile(pathInput)} disabled={!pathInput.trim()} className="flex-1 sm:flex-none">Load</Button>
+                <Button size="sm" variant={browseOpen ? 'default' : 'outline'} onClick={() => setBrowseOpen((v) => !v)} className="flex-1 sm:flex-none">
+                  <FolderOpen className="h-3.5 w-3.5" /> Browse
+                </Button>
+              </div>
             </div>
 
             {seriesId !== undefined && (
@@ -202,7 +205,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                       <span className="truncate font-mono text-[11px] text-muted" title={dirData.data.path}>{dirData.data.path}</span>
                     </div>
                     {dirData.data.dirs.length > 0 || dirData.data.files.length > 0 ? (
-                      <div className="grid max-h-48 grid-cols-2 gap-1 overflow-y-auto">
+                      <div className="grid max-h-48 grid-cols-1 gap-1 overflow-y-auto sm:grid-cols-2">
                         {dirData.data.dirs.map((d) => (
                           <button key={d} type="button" onClick={() => setDir(joinPath(dirData.data.path, d))} title={d}
                             className="flex min-w-0 items-center gap-1.5 truncate rounded border border-border-2 px-2 py-1 text-left text-xs transition-colors hover:border-primary/50">
@@ -257,26 +260,30 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
               </div>
 
               {mode === 'form' ? (
-                <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-                  {EDITOR_FIELDS.map((f) => (
-                    <div key={f} className={cn('flex flex-col gap-1', f === 'Summary' && 'col-span-2')}>
-                      <Label>{f}</Label>
-                      {f === 'Summary' ? (
-                        <textarea
-                          value={values[f] ?? ''}
-                          onChange={(e) => setValues((v) => ({ ...v, [f]: e.target.value }))}
-                          rows={4}
-                          className="w-full rounded-md border border-border-2 bg-surface px-3 py-2 text-sm outline-none transition-colors focus:border-primary"
-                        />
-                      ) : (
-                        <Input value={values[f] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [f]: e.target.value }))} />
-                      )}
-                    </div>
-                  ))}
+                <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+                  {EDITOR_FIELDS.map((f) => {
+                    const id = fieldId(f);
+                    return (
+                      <div key={f} className={cn('flex flex-col gap-1', f === 'Summary' && 'sm:col-span-2')}>
+                        <Label htmlFor={id}>{f}</Label>
+                        {f === 'Summary' ? (
+                          <textarea
+                            id={id}
+                            value={values[f] ?? ''}
+                            onChange={(e) => setValues((v) => ({ ...v, [f]: e.target.value }))}
+                            rows={4}
+                            className="w-full rounded-md border border-border-2 bg-surface px-3 py-2 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/50"
+                          />
+                        ) : (
+                          <Input id={id} value={values[f] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [f]: e.target.value }))} />
+                        )}
+                      </div>
+                    );
+                  })}
                   {extraTags.map((t) => (
                     <div key={t} className="flex flex-col gap-1">
-                      <Label>{t}</Label>
-                      <Input value={values[t] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [t]: e.target.value }))} />
+                      <Label htmlFor={fieldId(t)}>{t}</Label>
+                      <Input id={fieldId(t)} value={values[t] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [t]: e.target.value }))} />
                     </div>
                   ))}
                 </div>
@@ -297,11 +304,11 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
           )}
 
           {/* Footer */}
-          <div className="flex items-center justify-between gap-2 border-t border-border pt-3">
-            <p className="min-w-0 truncate text-[11px] text-muted">
+          <div className="flex flex-col gap-3 border-t border-border pt-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="min-w-0 text-sm text-muted">
               {mode === 'raw' ? 'Raw XML is written to the archive verbatim.' : `${changedFields.length} changed field${changedFields.length === 1 ? '' : 's'} will be merged into the file's ComicInfo.xml.`}
             </p>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 justify-end gap-2">
               {onClose && <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>}
               <Button size="sm" onClick={() => save.mutate()} disabled={!canSave || save.isPending}>
                 {save.isPending ? <Spinner /> : <Save className="h-3.5 w-3.5" />} Save
@@ -318,9 +325,12 @@ export function ComicInfoModal({ initialPath, seriesId, onClose }: ComicInfoModa
     <Dialog open onOpenChange={(o) => { if (!o) onClose?.(); }}>
       <DialogContent className="max-w-2xl">
         <div className="flex max-h-[85vh] flex-col gap-4 overflow-y-auto p-5">
-          <div className="flex items-center gap-2 pr-6">
-            <FileText className="h-5 w-5 text-primary" />
-            <h2 className="text-base font-semibold">Edit ComicInfo</h2>
+          <div className="flex items-start gap-2 pr-10">
+            <FileText className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+            <div>
+              <DialogTitle>Edit ComicInfo</DialogTitle>
+              <DialogDescription>Edit metadata stored inside the selected CBZ archive.</DialogDescription>
+            </div>
           </div>
           <ComicInfoEditor initialPath={initialPath} seriesId={seriesId} onClose={onClose} />
         </div>

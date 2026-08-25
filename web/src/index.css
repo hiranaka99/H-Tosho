@@ -127,6 +127,10 @@ body::before {
 *::-webkit-scrollbar-track {
   background: transparent;
 }
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 65%, transparent);
+  outline-offset: 2px;
+}
 
 /* Native selects get a custom chevron so the closed control matches the design language
    (the open dropdown stays OS-native on purpose — no custom listbox to maintain). */

@@ -56,7 +56,7 @@ export function Toaster() {
   if (items.length === 0) return null;
 
   return (
-    <div className="pointer-events-none fixed right-4 top-4 z-[60] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
+    <div aria-live="polite" aria-atomic="false" className="pointer-events-none fixed right-4 top-4 z-[60] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
       {items.map((t) => (
         <div
           key={t.id}
@@ -65,6 +65,7 @@ export function Toaster() {
             'border-l-4',
             TONE_STYLE[t.tone].border,
           )}
+          role={t.tone === 'danger' ? 'alert' : 'status'}
         >
           {TONE_STYLE[t.tone].icon}
           <div className="min-w-0 flex-1">

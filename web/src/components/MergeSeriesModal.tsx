@@ -2,7 +2,7 @@ import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Combine, FolderInput } from 'lucide-react';
 import { api, type SeriesRow } from '../lib/api';
-import { Button, Dialog, DialogContent, Input, Label, Spinner, EmptyState } from './ui';
+import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, EmptyState } from './ui';
 import { toast } from '../lib/toast';
 
 interface MergeSeriesModalProps {
@@ -106,9 +106,12 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-2xl">
         <div className="flex max-h-[85vh] flex-col gap-4 overflow-y-auto p-5">
-          <div className="flex items-center gap-2 pr-6">
-            <Combine className="h-5 w-5 text-primary" />
-            <h2 className="text-base font-semibold">Merge series</h2>
+          <div className="flex items-start gap-2 pr-10">
+            <Combine className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+            <div>
+              <DialogTitle>Merge series</DialogTitle>
+              <DialogDescription>Move the selected archives into one Kavita series folder.</DialogDescription>
+            </div>
           </div>
 
           {/* Series name + target folder */}
@@ -140,19 +143,10 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
             ) : (
               <div className="flex max-h-64 flex-col gap-1 overflow-y-auto pr-1">
                 {files.map((f) => (
-                  <div key={f.path} className="flex items-center gap-2 rounded-md border border-border-2 bg-surface px-2 py-1.5">
-                    <span className="min-w-0 flex-1 truncate text-xs" title={`${f.path}\n(from ${f.fromSeries})`}>
-                      {f.name}
-                    </span>
-                    <span className="hidden max-w-32 shrink-0 truncate text-[10px] text-muted sm:block" title={f.fromSeries}>{f.fromSeries}</span>
-                    <Input
-                      value={f.chapter}
-                      onChange={(e) => setChapter(f.path, e.target.value)}
-                      placeholder="Ch #"
-                      inputMode="decimal"
-                      className="h-7 w-20 shrink-0 px-2 text-xs"
-                      aria-label={`Chapter number for ${f.name}`}
-                    />
+                  <div key={f.path} className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 rounded-md border border-border-2 bg-surface px-2 py-1.5 sm:grid-cols-[minmax(0,1fr)_8rem_5rem]">
+                    <span className="min-w-0 truncate text-xs" title={`${f.path}\n(from ${f.fromSeries})`}>{f.name}</span>
+                    <span className="hidden truncate text-xs text-muted sm:block" title={f.fromSeries}>{f.fromSeries}</span>
+                    <Input value={f.chapter} onChange={(e) => setChapter(f.path, e.target.value)} placeholder="Ch #" inputMode="decimal" className="h-8 w-full px-2 text-xs" aria-label={`Chapter number for ${f.name}`} />
                   </div>
                 ))}
               </div>
@@ -163,12 +157,11 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
             ))}
           </div>
 
-          {/* Footer */}
-          <div className="flex items-center justify-between gap-2 border-t border-border pt-3">
-            <p className="min-w-0 flex-1 truncate text-[11px] text-muted">
+          <div className="flex flex-col gap-3 border-t border-border pt-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="min-w-0 flex-1 text-sm text-muted">
               After the merge, Kavita shows these files as one series. Empty leftover series may remain — delete them in Kavita.
             </p>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 justify-end gap-2">
               <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
               <Button size="sm" onClick={() => save.mutate()} disabled={!canSave || save.isPending || perSeries.isLoading}>
                 {save.isPending ? <Spinner /> : <Combine className="h-3.5 w-3.5" />} Queue merge

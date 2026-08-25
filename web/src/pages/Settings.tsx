@@ -1,8 +1,8 @@
 import * as React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, Star } from 'lucide-react';
+import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, Star, ArrowUp, ArrowDown } from 'lucide-react';
 import { api, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type DoujinSource } from '../lib/api';
-import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader, ErrorState, SegmentedTabs } from '../components/ui';
 import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
 
@@ -34,12 +34,12 @@ function SaveButton({ label = 'Save', ...props }: { label?: string } & React.But
   );
 }
 
-function useFlash(on: () => void) {
+function useFlash(on?: () => void) {
   const [saved, setSaved] = React.useState(false);
   const flash = React.useCallback(() => {
-    on();
+    on?.();
     setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
+    window.setTimeout(() => setSaved(false), 1500);
   }, [on]);
   return { saved, flash };
 }
@@ -66,6 +66,7 @@ export function Settings() {
       invalidate('kavita-status')();
       setKavitaMsg({ ok: res.connected, text: res.test });
     },
+    onError: (error) => setKavitaMsg({ ok: false, text: error instanceof Error ? error.message : String(error) }),
   });
 
   const [order, setOrder] = React.useState<string[]>([]);
@@ -73,11 +74,20 @@ export function Settings() {
   React.useEffect(() => {
     if (s) setOrder(s.priorities);
   }, [s?.priorities]);
-  const savePriorities = useMutation({ mutationFn: api.savePriorities, onSuccess: invalidate('settings') });
+  const savePriorities = useMutation({ mutationFn: api.savePriorities, onSuccess: invalidate('settings'), onError: (error) => toast({ tone: 'danger', title: 'Could not save provider priority', description: error instanceof Error ? error.message : String(error) }) });
   const onDrop = (to: number) => {
     const from = dragIndex.current;
     dragIndex.current = null;
     if (from === null || from === to) return;
+    setOrder((prev) => {
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  };
+  const moveProvider = (from: number, to: number) => {
+    if (to < 0 || to >= order.length || from === to) return;
     setOrder((prev) => {
       const next = [...prev];
       const [moved] = next.splice(from, 1);
@@ -91,18 +101,21 @@ export function Settings() {
     if (s) setNotif(s.notifications);
   }, [s?.notifications]);
   const notifFlash = useFlash(invalidate('settings'));
-  const saveNotif = useMutation({ mutationFn: api.saveNotifications });
+  const saveNotif = useMutation({ mutationFn: api.saveNotifications, onSuccess: notifFlash.flash, onError: (error) => toast({ tone: 'danger', title: 'Could not save notifications', description: error instanceof Error ? error.message : String(error) }) });
   const [notifMsg, setNotifMsg] = React.useState<{ discord: string } | null>(null);
-  const testNotif = useMutation({ mutationFn: api.testNotifications, onSuccess: (r) => setNotifMsg(r) });
+  const testNotif = useMutation({ mutationFn: api.testNotifications, onSuccess: (r) => setNotifMsg(r), onError: (error) => toast({ tone: 'danger', title: 'Notification test failed', description: error instanceof Error ? error.message : String(error) }) });
 
   const [poll, setPoll] = React.useState('12');
   React.useEffect(() => {
     if (s) setPoll(String(s.pollIntervalHours));
   }, [s?.pollIntervalHours]);
   const pollFlash = useFlash(invalidate('settings'));
-  const savePoll = useMutation({ mutationFn: () => api.savePollInterval(Number(poll)) });
+  const savePoll = useMutation({ mutationFn: () => api.savePollInterval(Number(poll)), onSuccess: pollFlash.flash, onError: (error) => toast({ tone: 'danger', title: 'Could not save scan interval', description: error instanceof Error ? error.message : String(error) }) });
   const [tab, setTab] = React.useState<SettingsTab>('general');
 
+  if (settings.isError) {
+    return <ErrorState title="Could not load settings" description={settings.error instanceof Error ? settings.error.message : String(settings.error)} onRetry={() => void settings.refetch()} />;
+  }
   if (!s) {
     return (
       <div className="flex items-center justify-center gap-2 py-24 text-muted">
@@ -114,22 +127,7 @@ export function Settings() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader icon={<SlidersHorizontal className="h-5 w-5" />} title="Settings" subtitle="Connect Kavita, configure providers and notifications." />
-      {/* View tabs */}
-      <div className="flex gap-4 self-start border-b border-border-2">
-        {SETTINGS_TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            className={cn(
-              '-mb-px border-b-2 px-1 pb-2 text-sm font-medium transition-colors',
-              tab === t.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <SegmentedTabs items={SETTINGS_TABS} value={tab} onChange={setTab} label="Settings sections" className="self-start" />
 
       {tab === 'general' && (<>
       <Card className="animate-fade-up">
@@ -145,22 +143,21 @@ export function Settings() {
         <CardContent className="flex flex-col gap-3">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="flex flex-col gap-1">
-              <Label>Base URL</Label>
-              <Input value={conn[0].baseUrl} onChange={(e) => conn[1]({ ...conn[0], baseUrl: e.target.value })} placeholder="http://kavita:5000" />
+              <Label htmlFor="kavita-base-url">Base URL</Label>
+              <Input id="kavita-base-url" value={conn[0].baseUrl} onChange={(e) => conn[1]({ ...conn[0], baseUrl: e.target.value })} placeholder="http://kavita:5000" />
             </div>
             <div className="flex flex-col gap-1">
-              <Label>Auth Key</Label>
-              <Input type="password" value={conn[0].apiKey} onChange={(e) => conn[1]({ ...conn[0], apiKey: e.target.value })} placeholder={kavita?.data?.hasApiKey ? 'Set' : 'your Kavita Auth Key'} />
+              <Label htmlFor="kavita-auth-key">Auth Key</Label>
+              <Input id="kavita-auth-key" type="password" value={conn[0].apiKey} onChange={(e) => conn[1]({ ...conn[0], apiKey: e.target.value })} placeholder={kavita?.data?.hasApiKey ? 'Set' : 'your Kavita Auth Key'} />
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
             <Button onClick={() => kavitaSave.mutate(conn[0])} disabled={kavitaSave.isPending || !conn[0].baseUrl}>
               {kavitaSave.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Server className="h-3.5 w-3.5" />} Save & test connection
             </Button>
             {kavitaMsg && (
-              <span className={cn('flex items-center gap-1 text-sm', kavitaMsg.ok ? 'text-success' : 'text-danger')}>
-                {kavitaMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
-                {kavitaMsg.text}
+              <span role="status" className={cn('flex items-center gap-1 text-sm', kavitaMsg.ok ? 'text-success' : 'text-danger')}>
+                {kavitaMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}{kavitaMsg.text}
               </span>
             )}
           </div>
@@ -168,10 +165,10 @@ export function Settings() {
       </Card>
       <Card className="animate-fade-up" style={{ animationDelay: '60ms' }}>
         <SectionHeader icon={<Timer className="h-4 w-4" />} title="Auto-scan interval">
-          <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => { savePoll.mutate(); pollFlash.flash(); }} disabled={savePoll.isPending || poll === '' || Number(poll) < 0} />
+          <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => savePoll.mutate()} disabled={savePoll.isPending || poll === '' || Number(poll) < 0} />
         </SectionHeader>
-        <CardContent className="flex items-center gap-3">
-          <Input type="number" min={0} value={poll} onChange={(e) => setPoll(e.target.value)} className="w-28" />
+        <CardContent className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <Input id="scan-interval" aria-label="Auto-scan interval in hours" type="number" min={0} value={poll} onChange={(e) => setPoll(e.target.value)} className="w-full sm:w-28" />
           <span className="text-sm text-muted">hours between background scans for newly ingested series (0 disables)</span>
         </CardContent>
       </Card>
@@ -184,7 +181,7 @@ export function Settings() {
           <SaveButton label="Save priority" onClick={() => savePriorities.mutate(order)} disabled={savePriorities.isPending} />
         </SectionHeader>
         <CardContent className="flex flex-col gap-4">
-          <p className="text-xs text-muted">Drag to reorder. Providers are searched top-to-bottom; the first confident match wins. Toggle a provider off to skip it.</p>
+          <p className="text-sm text-muted">Drag to reorder or use the arrow buttons. Providers are searched top-to-bottom; the first confident match wins.</p>
           <div className="flex flex-col gap-2">
             {order.map((id, idx) => {
               const p = provs.find((x) => x.id === id);
@@ -198,11 +195,15 @@ export function Settings() {
                   onDrop={() => onDrop(idx)}
                   className="flex items-center gap-3 rounded-lg border border-border bg-surface-2 p-2 transition-colors hover:border-border-2"
                 >
-                  <GripVertical className="h-4 w-4 shrink-0 cursor-grab text-muted active:cursor-grabbing" />
+                  <GripVertical className="hidden h-4 w-4 shrink-0 cursor-grab text-muted active:cursor-grabbing sm:block" aria-hidden="true" />
                   <span className="w-6 text-center text-xs text-muted">{idx + 1}</span>
                   <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: p.color }} />
-                  <span className="flex-1 text-sm font-medium">{p.name}</span>
-                  <Switch checked={p.enabled} onCheckedChange={(c) => api.saveProvider(p.id, { enabled: c }).then(invalidate('providers'))} />
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">{p.name}</span>
+                  <div className="flex items-center gap-1">
+                    <Button size="icon" variant="ghost" className="h-8 w-8" aria-label={`Move ${p.name} up`} disabled={idx === 0} onClick={() => moveProvider(idx, idx - 1)}><ArrowUp className="h-3.5 w-3.5" /></Button>
+                    <Button size="icon" variant="ghost" className="h-8 w-8" aria-label={`Move ${p.name} down`} disabled={idx === order.length - 1} onClick={() => moveProvider(idx, idx + 1)}><ArrowDown className="h-3.5 w-3.5" /></Button>
+                    <Switch aria-label={`Enable ${p.name}`} checked={p.enabled} onCheckedChange={(c) => api.saveProvider(p.id, { enabled: c }).then(invalidate('providers')).catch((error) => toast({ tone: 'danger', title: `Could not update ${p.name}`, description: error instanceof Error ? error.message : String(error) }))} />
+                  </div>
                 </div>
               );
             })}
@@ -222,7 +223,7 @@ export function Settings() {
       <Card className="animate-fade-up">
         <SectionHeader icon={<Bell className="h-4 w-4" />} title="Notifications">
           <div className="flex items-center gap-2">
-            <SaveButton label={notifFlash.saved ? 'Saved' : 'Save'} onClick={() => { saveNotif.mutate(notif); notifFlash.flash(); }} disabled={saveNotif.isPending} />
+            <SaveButton label={notifFlash.saved ? 'Saved' : 'Save'} onClick={() => saveNotif.mutate(notif)} disabled={saveNotif.isPending} />
             <Button size="sm" variant="outline" onClick={() => testNotif.mutate()} disabled={testNotif.isPending}>
               Test
             </Button>
@@ -231,10 +232,10 @@ export function Settings() {
         <CardContent className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
-              <p className="text-sm">Discord webhook</p>
-              <Switch checked={notif.discord.enabled} onCheckedChange={(c) => setNotif((n) => ({ ...n, discord: { ...n.discord, enabled: c } }))} />
+              <Label htmlFor="discord-webhook">Discord webhook</Label>
+              <Switch aria-label="Enable Discord notifications" checked={notif.discord.enabled} onCheckedChange={(c) => setNotif((n) => ({ ...n, discord: { ...n.discord, enabled: c } }))} />
             </div>
-            <Input value={notif.discord.webhookUrl} onChange={(e) => setNotif((n) => ({ ...n, discord: { ...n.discord, webhookUrl: e.target.value } }))} placeholder="https://discord.com/api/webhooks/…" />
+            <Input id="discord-webhook" value={notif.discord.webhookUrl} onChange={(e) => setNotif((n) => ({ ...n, discord: { ...n.discord, webhookUrl: e.target.value } }))} placeholder="https://discord.com/api/webhooks/…" />
           </div>
           {notifMsg && (
             <div className="flex flex-col gap-1 rounded-md border border-border bg-surface-2 p-3 text-xs">
@@ -262,39 +263,27 @@ function BannedTagsEditor({ value, onChange }: { value: string[]; onChange: (tag
     const parts = draft.split(',').map((s) => s.trim().replace(/^"+|"+$/g, '')).filter(Boolean);
     if (!parts.length) return;
     const next = [...value];
-    for (const p of parts) {
-      if (!next.some((v) => v.toLowerCase() === p.toLowerCase())) next.push(p);
-    }
+    for (const part of parts) if (!next.some((value) => value.toLowerCase() === part.toLowerCase())) next.push(part);
     onChange(next);
     setDraft('');
   };
   return (
     <div className="flex flex-col gap-1">
-      <Label>nHentai banned tags</Label>
-      <p className="text-xs text-muted">Galleries carrying any of these tags never appear in nHentai searches. Separate multiple tags with commas.</p>
+      <Label htmlFor="banned-tags">nHentai banned tags</Label>
+      <p className="text-sm text-muted">Galleries carrying any of these tags never appear in nHentai searches. Separate multiple tags with commas.</p>
       {value.length > 0 && (
         <div className="flex flex-wrap gap-1.5 py-1">
           {value.map((tag) => (
             <span key={tag} className="inline-flex items-center gap-1 rounded-full bg-danger/15 px-2 py-0.5 text-xs font-medium text-danger">
               {tag}
-              <button type="button" onClick={() => onChange(value.filter((t) => t !== tag))} className="rounded p-0.5 hover:bg-danger/30" aria-label={`Remove ${tag}`}>
-                <X className="h-3 w-3" />
-              </button>
+              <button type="button" onClick={() => onChange(value.filter((value) => value !== tag))} className="flex h-6 w-6 items-center justify-center rounded hover:bg-danger/30" aria-label={`Remove ${tag}`}><X className="h-3 w-3" /></button>
             </span>
           ))}
         </div>
       )}
-      <div className="flex items-center gap-2">
-        <Input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }}
-          placeholder="e.g. loli, big breasts, nsfw"
-          className="flex-1"
-        />
-        <Button size="sm" variant="outline" onClick={addTag} disabled={!draft.trim()}>
-          <Plus className="h-3.5 w-3.5" /> Add
-        </Button>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <Input id="banned-tags" value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }} placeholder="e.g. loli, big breasts, nsfw" className="flex-1" />
+        <Button size="sm" variant="outline" onClick={addTag} disabled={!draft.trim()}><Plus className="h-3.5 w-3.5" /> Add</Button>
       </div>
     </div>
   );
@@ -304,29 +293,16 @@ function DownloaderSettingsCard() {
   const qc = useQueryClient();
   const dl = useQuery({ queryKey: ['downloader-settings'], queryFn: api.downloaderSettings });
   const [dlSettings, setDlSettings] = React.useState<DownloaderSettings | null>(null);
-  React.useEffect(() => {
-    if (dl.data) setDlSettings(dl.data);
-  }, [dl.data]);
+  React.useEffect(() => { if (dl.data) setDlSettings(dl.data); }, [dl.data]);
   const flash = useFlash(() => qc.invalidateQueries({ queryKey: ['downloader-settings'] }));
   const save = useMutation({
-    mutationFn: (s: DownloaderSettings) => api.saveDownloaderSettings(s),
-    onSuccess: (result) => {
-      setDlSettings(result.settings);
-      flash.flash();
-    },
+    mutationFn: (settings: DownloaderSettings) => api.saveDownloaderSettings(settings),
+    onSuccess: (result) => { setDlSettings(result.settings); flash.flash(); },
     onError: (error) => toast({ title: 'Failed to save downloader settings', description: error instanceof Error ? error.message : String(error), tone: 'danger' }),
   });
 
-  if (!dlSettings) {
-    return (
-      <Card>
-        <SectionHeader icon={<Download className="h-4 w-4" />} title="Doujinshi downloader" />
-        <CardContent className="flex items-center gap-2 text-muted">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading…
-        </CardContent>
-      </Card>
-    );
-  }
+  if (dl.isError) return <Card><ErrorState title="Could not load downloader settings" description={dl.error instanceof Error ? dl.error.message : String(dl.error)} onRetry={() => void dl.refetch()} /></Card>;
+  if (!dlSettings) return <Card><SectionHeader icon={<Download className="h-4 w-4" />} title="Doujinshi downloader" /><CardContent className="flex items-center gap-2 text-muted"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</CardContent></Card>;
 
   return (
     <Card className="animate-fade-up">
@@ -334,49 +310,16 @@ function DownloaderSettingsCard() {
         <SaveButton label={flash.saved ? 'Saved' : 'Save'} onClick={() => save.mutate(dlSettings)} disabled={save.isPending} />
       </SectionHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="flex flex-col gap-1">
-          <Label>Output folder</Label>
-          <Input value={dlSettings.downloadDirectory} onChange={(e) => setDlSettings({ ...dlSettings, downloadDirectory: e.target.value })} placeholder="/path/to/kavita/library or /downloads" />
-          <p className="text-xs text-muted">Absolute path on this machine. Point it at a Kavita library folder to have new media picked up automatically.</p>
-        </div>
-
+        <div className="flex flex-col gap-1"><Label htmlFor="download-directory">Output folder</Label><Input id="download-directory" value={dlSettings.downloadDirectory} onChange={(e) => setDlSettings({ ...dlSettings, downloadDirectory: e.target.value })} placeholder="/path/to/kavita/library or /downloads" /><p className="text-sm text-muted">Absolute path on this machine. Point it at a Kavita library folder to have new media picked up automatically.</p></div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div className="flex flex-col gap-1">
-            <Label>Output format</Label>
-            <Select value={dlSettings.format} onChange={(e) => setDlSettings({ ...dlSettings, format: e.target.value as 'cbz' | 'folder' })}>
-              <option value="cbz">Compressed .cbz archive (recommended)</option>
-              <option value="folder">Raw image folder</option>
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label>Max concurrent downloads</Label>
-            <Input type="number" min={1} max={10} value={dlSettings.maxConcurrentDownloads} onChange={(e) => setDlSettings({ ...dlSettings, maxConcurrentDownloads: Math.max(1, Number(e.target.value) || 1) })} />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label>Max image concurrency</Label>
-            <Input type="number" min={1} max={20} value={dlSettings.maxImageConcurrency} onChange={(e) => setDlSettings({ ...dlSettings, maxImageConcurrency: Math.max(1, Number(e.target.value) || 1) })} />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label>Request delay (ms)</Label>
-            <Input type="number" min={0} step={50} value={dlSettings.requestDelayMs} onChange={(e) => setDlSettings({ ...dlSettings, requestDelayMs: Math.max(0, Number(e.target.value) || 0) })} />
-          </div>
+          <div className="flex flex-col gap-1"><Label htmlFor="download-format">Output format</Label><Select id="download-format" value={dlSettings.format} onChange={(e) => setDlSettings({ ...dlSettings, format: e.target.value as 'cbz' | 'folder' })}><option value="cbz">Compressed .cbz archive (recommended)</option><option value="folder">Raw image folder</option></Select></div>
+          <div className="flex flex-col gap-1"><Label htmlFor="download-concurrency">Max concurrent downloads</Label><Input id="download-concurrency" type="number" min={1} max={10} value={dlSettings.maxConcurrentDownloads} onChange={(e) => setDlSettings({ ...dlSettings, maxConcurrentDownloads: Math.max(1, Number(e.target.value) || 1) })} /></div>
+          <div className="flex flex-col gap-1"><Label htmlFor="image-concurrency">Max image concurrency</Label><Input id="image-concurrency" type="number" min={1} max={20} value={dlSettings.maxImageConcurrency} onChange={(e) => setDlSettings({ ...dlSettings, maxImageConcurrency: Math.max(1, Number(e.target.value) || 1) })} /></div>
+          <div className="flex flex-col gap-1"><Label htmlFor="request-delay">Request delay (ms)</Label><Input id="request-delay" type="number" min={0} step={50} value={dlSettings.requestDelayMs} onChange={(e) => setDlSettings({ ...dlSettings, requestDelayMs: Math.max(0, Number(e.target.value) || 0) })} /></div>
         </div>
-
-        <div className="flex flex-col gap-1">
-          <Label>nHentai API key</Label>
-          <Input type="password" value={dlSettings.nhentaiApiKey} onChange={(e) => setDlSettings({ ...dlSettings, nhentaiApiKey: e.target.value })} placeholder="optional — NHENTAI_API_KEY env var is used as a fallback" autoComplete="off" />
-          <p className="text-xs text-muted">Optional key from nhentai.net for higher API rate limits. Leave blank to use the NHENTAI_API_KEY environment variable, if set.</p>
-        </div>
-
+        <div className="flex flex-col gap-1"><Label htmlFor="nhentai-api-key">nHentai API key</Label><Input id="nhentai-api-key" type="password" value={dlSettings.nhentaiApiKey} onChange={(e) => setDlSettings({ ...dlSettings, nhentaiApiKey: e.target.value })} placeholder="optional — NHENTAI_API_KEY env var is used as a fallback" autoComplete="off" /><p className="text-sm text-muted">Optional key from nhentai.net for higher API rate limits. Leave blank to use the NHENTAI_API_KEY environment variable, if set.</p></div>
         <BannedTagsEditor value={dlSettings.nhentaiBannedTags ?? []} onChange={(tags) => setDlSettings({ ...dlSettings, nhentaiBannedTags: tags })} />
-
-        <div className="flex items-center justify-between rounded-md border border-border bg-surface-2 p-3">
-          <div>
-            <p className="text-sm">Auto-sync Kavita</p>
-            <p className="text-xs text-muted">Trigger a library scan in Kavita after each download completes.</p>
-          </div>
-          <Switch checked={dlSettings.autoSyncKavita} onCheckedChange={(c) => setDlSettings({ ...dlSettings, autoSyncKavita: c })} />
-        </div>
+        <div className="flex items-center justify-between rounded-md border border-border bg-surface-2 p-3"><div><p className="text-sm">Auto-sync Kavita</p><p className="text-sm text-muted">Trigger a library scan in Kavita after each download completes.</p></div><Switch aria-label="Auto-sync Kavita after downloads" checked={dlSettings.autoSyncKavita} onCheckedChange={(checked) => setDlSettings({ ...dlSettings, autoSyncKavita: checked })} /></div>
       </CardContent>
     </Card>
   );
@@ -386,7 +329,8 @@ const WATCH_SOURCE_LABELS: Record<DoujinSource, string> = { hitomi: 'Hitomi', nh
 
 function WatchedSearchesCard() {
   const qc = useQueryClient();
-  const { data: watches } = useQuery({ queryKey: ['watched-searches'], queryFn: api.watchedSearches, refetchInterval: 30_000 });
+  const watchesQuery = useQuery({ queryKey: ['watched-searches'], queryFn: api.watchedSearches, refetchInterval: 30_000 });
+  const watches = watchesQuery.data;
   const [source, setSource] = React.useState<DoujinSource>('hitomi');
   const [query, setQuery] = React.useState('');
   const [adding, setAdding] = React.useState(false);
@@ -415,7 +359,6 @@ function WatchedSearchesCard() {
       toast({ tone: 'danger', title: 'Could not remove watch', description: e instanceof Error ? e.message : String(e) });
     }
   }
-
   async function checkNow() {
     setChecking(true);
     try {
@@ -436,32 +379,26 @@ function WatchedSearchesCard() {
         </Button>
       </SectionHeader>
       <CardContent className="flex flex-col gap-3">
-        <p className="text-xs text-muted">Saved doujinshi searches re-run on every auto-scan cycle. New results ping Discord — the first run just records what already exists.</p>
+        {watchesQuery.isError && <ErrorState title="Could not load watched searches" description={watchesQuery.error instanceof Error ? watchesQuery.error.message : String(watchesQuery.error)} onRetry={() => void watchesQuery.refetch()} />}
+        <p className="text-sm text-muted">Saved doujinshi searches re-run on every auto-scan cycle. New results ping Discord — the first run just records what already exists.</p>
         {watches && watches.length > 0 ? (
           <div className="flex flex-col gap-1.5">
             {watches.map((w) => (
-              <div key={w.id} className="flex items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-xs">
+              <div key={w.id} className="flex flex-wrap items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-xs">
                 <Badge tone="muted">{WATCH_SOURCE_LABELS[w.source] ?? w.source}</Badge>
                 <span className="min-w-0 flex-1 truncate font-medium" title={w.query}>{w.query}</span>
-                <span className="shrink-0 text-muted">
-                  {w.lastCheckedAt ? `checked ${timeAgo(w.lastCheckedAt)}` : 'not checked yet'} · {w.seenCount} seen
-                </span>
-                <Button size="icon" variant="ghost" title="Remove watch" onClick={() => void remove(w.id)}><X className="h-3.5 w-3.5" /></Button>
+                <span className="w-full text-muted sm:w-auto sm:shrink-0">{w.lastCheckedAt ? `checked ${timeAgo(w.lastCheckedAt)}` : 'not checked yet'} · {w.seenCount} seen</span>
+                <Button size="icon" variant="ghost" aria-label={`Remove watch ${w.query}`} onClick={() => void remove(w.id)}><X className="h-3.5 w-3.5" /></Button>
               </div>
             ))}
           </div>
         ) : (
-          watches && <p className="text-xs text-muted">No watched searches yet — add one below, or use the Watch button in the Downloader.</p>
+          watches && <p className="text-sm text-muted">No watched searches yet — add one below, or use the Watch button in the Downloader.</p>
         )}
-        <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); void add(); }}>
-          <Select value={source} onChange={(e) => setSource(e.target.value as DoujinSource)} className="w-32 shrink-0">
-            <option value="hitomi">Hitomi</option>
-            <option value="nhentai">nHentai</option>
-          </Select>
-          <Input placeholder="Search query, e.g. artist:konboi" value={query} onChange={(e) => setQuery(e.target.value)} className="flex-1" />
-          <Button size="sm" type="submit" disabled={adding || !query.trim()}>
-            {adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add
-          </Button>
+        <form className="flex flex-col gap-2 sm:flex-row sm:items-center" onSubmit={(e) => { e.preventDefault(); void add(); }}>
+          <Select aria-label="Watched search source" value={source} onChange={(e) => setSource(e.target.value as DoujinSource)} className="sm:w-32 sm:shrink-0"><option value="hitomi">Hitomi</option><option value="nhentai">nHentai</option></Select>
+          <Input aria-label="Watched search query" placeholder="Search query, e.g. artist:konboi" value={query} onChange={(e) => setQuery(e.target.value)} className="flex-1" />
+          <Button size="sm" type="submit" disabled={adding || !query.trim()}>{adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add</Button>
         </form>
       </CardContent>
     </Card>
@@ -487,10 +424,14 @@ function ProviderCreds({ provider, onChanged }: { provider: ProviderInfo; onChan
             size="sm"
             variant="outline"
             onClick={async () => {
-              await api.saveProvider(provider.id, { credentials: creds });
-              onChanged();
-              setSaved(true);
-              setTimeout(() => setSaved(false), 1500);
+              try {
+                await api.saveProvider(provider.id, { credentials: creds });
+                onChanged();
+                setSaved(true);
+                window.setTimeout(() => setSaved(false), 1500);
+              } catch (error) {
+                toast({ tone: 'danger', title: `Could not save ${provider.name} credentials`, description: error instanceof Error ? error.message : String(error) });
+              }
             }}
           >
             {saved ? 'Saved' : 'Save creds'}
@@ -510,8 +451,8 @@ function ProviderCreds({ provider, onChanged }: { provider: ProviderInfo; onChan
         <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
           {provider.credentialFields.map((cf) => (
             <div key={cf.key} className="flex flex-col gap-1">
-              <Label>{cf.label}</Label>
-              <Input value={creds[cf.key] ?? ''} onChange={(e) => setCreds((prev) => ({ ...prev, [cf.key]: e.target.value }))} placeholder={cf.label} />
+              <Label htmlFor={`provider-${provider.id}-${cf.key}`}>{cf.label}</Label>
+              <Input id={`provider-${provider.id}-${cf.key}`} value={creds[cf.key] ?? ''} onChange={(e) => setCreds((prev) => ({ ...prev, [cf.key]: e.target.value }))} placeholder={cf.label} />
             </div>
           ))}
         </div>

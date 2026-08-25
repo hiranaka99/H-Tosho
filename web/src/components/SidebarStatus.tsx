@@ -24,11 +24,12 @@ function JobRow({ job }: { job: Job }) {
         </span>
         {running && (
           <button
+            type="button"
             onClick={() => void api.cancelJob(job.id).then(() => qc.invalidateQueries({ queryKey: ['jobs'] }))}
-            title="Cancel job"
-            className="shrink-0 rounded p-0.5 text-muted hover:bg-surface-2 hover:text-danger"
+            aria-label={`Cancel ${jobLabel(job.type, job.payload)}`}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
           >
-            <Ban className="h-3 w-3" />
+            <Ban className="h-3.5 w-3.5" />
           </button>
         )}
       </div>
@@ -36,7 +37,7 @@ function JobRow({ job }: { job: Job }) {
         (job.progressTotal > 0 ? (
           <>
             <ProgressBar value={job.progressCurrent} max={job.progressTotal} className="h-1.5" />
-            <span className="text-[10px] leading-none text-muted">
+            <span className="text-xs leading-none text-muted">
               {job.progressCurrent}/{job.progressTotal}
             </span>
           </>
@@ -67,25 +68,25 @@ function DownloadRow({ task, onAction }: { task: DownloadTask; onAction: (op: 'p
           {task.title ?? `Gallery ${task.galleryId}`}
         </span>
         {busy && (
-          <button onClick={() => onAction('pause', task.id)} title="Pause" className="shrink-0 rounded p-0.5 text-muted hover:bg-surface-2 hover:text-foreground">
-            <Pause className="h-3 w-3" />
+          <button type="button" onClick={() => onAction('pause', task.id)} aria-label={`Pause ${task.title ?? `Gallery ${task.galleryId}`}`} className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+            <Pause className="h-3.5 w-3.5" />
           </button>
         )}
         {task.status === 'paused' && (
-          <button onClick={() => onAction('resume', task.id)} title="Resume" className="shrink-0 rounded p-0.5 text-muted hover:bg-surface-2 hover:text-foreground">
-            <Play className="h-3 w-3" />
+          <button type="button" onClick={() => onAction('resume', task.id)} aria-label={`Resume ${task.title ?? `Gallery ${task.galleryId}`}`} className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+            <Play className="h-3.5 w-3.5" />
           </button>
         )}
         {(busy || task.status === 'queued') && (
-          <button onClick={() => onAction('cancel', task.id)} title="Cancel" className="shrink-0 rounded p-0.5 text-muted hover:bg-surface-2 hover:text-danger">
-            <XCircle className="h-3 w-3" />
+          <button type="button" onClick={() => onAction('cancel', task.id)} aria-label={`Cancel ${task.title ?? `Gallery ${task.galleryId}`}`} className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+            <XCircle className="h-3.5 w-3.5" />
           </button>
         )}
       </div>
       {busy && (
         <>
           <ProgressBar value={task.progressCurrent} max={task.progressTotal} className="h-1.5" />
-          <span className="text-[10px] leading-none text-muted">
+          <span className="text-xs leading-none text-muted">
             {pct !== null ? `${pct}%` : ''}
             {typeof task.bytesCurrent === 'number' && (task.bytesCurrent > 0 || (task.bytesTotal ?? 0) > 0) && ` · ${formatBytes(task.bytesCurrent)}`}
             {formatSpeed(task.speed) && ` · ${formatSpeed(task.speed)}`}
@@ -131,7 +132,7 @@ export function SidebarStatus() {
     <div className="flex max-h-1/2 min-h-0 flex-col gap-3 overflow-y-auto border-t border-border p-3">
       {activeJobs.length > 0 && (
         <div className="flex flex-col gap-2">
-          <span className="text-[10px] font-medium uppercase tracking-wide text-muted">Jobs</span>
+          <span className="text-xs font-medium uppercase tracking-wide text-muted">Jobs</span>
           {activeJobs.map((j) => (
             <JobRow key={j.id} job={j} />
           ))}
@@ -146,10 +147,10 @@ export function SidebarStatus() {
             ) : (
               <Download className="h-3.5 w-3.5 shrink-0 text-muted" />
             )}
-            <span className="min-w-0 flex-1 truncate text-[10px] font-medium uppercase tracking-wide text-muted group-hover:text-foreground">
+            <span className="min-w-0 flex-1 truncate text-xs font-medium uppercase tracking-wide text-muted group-hover:text-foreground">
               Downloads{shownTasks.length > 1 ? ` · ${shownTasks.length}` : ''}
             </span>
-            {aggregatePct !== null && <span className="shrink-0 text-[10px] text-muted">{aggregatePct}%</span>}
+            {aggregatePct !== null && <span className="shrink-0 text-xs text-muted">{aggregatePct}%</span>}
           </button>
           {aggregatePct !== null && <ProgressBar value={aggregatePct} max={100} className="h-1.5" />}
           {shownTasks.slice(0, 6).map((t) => (

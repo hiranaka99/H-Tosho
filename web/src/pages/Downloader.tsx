@@ -28,18 +28,13 @@ import {
   Layers,
   Star,
   Tags,
-  Check,
-  Combine,
-  FolderInput,
 } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
 import { useDownloads } from '../lib/DownloadsContext';
-import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent } from '../components/ui';
 import { cn, timeAgo, toIsoUtc } from '../lib/utils';
 import { toast } from '../lib/toast';
+import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, ErrorState, ConfirmDialog } from '../components/ui';
 import { ComicInfoModal } from '../components/ComicInfoModal';
-import { MergeDownloadModal } from '../components/MergeDownloadModal';
-import { MergeIntoSeriesModal } from '../components/MergeIntoSeriesModal';
 
 const SOURCES: { id: DoujinSource; label: string }[] = [
   { id: 'hitomi', label: 'Hitomi.la' },
@@ -249,82 +244,39 @@ function DownloadStatusBadge({ status }: { status: string }) {
 }
 
 // ---------------- Gallery card ----------------
-function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloadedAt, mergeChecked = false, onToggleMerge }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean; index?: number; downloadedAt?: string | null; mergeChecked?: boolean; onToggleMerge?: () => void }) {
+function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloadedAt }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean; index?: number; downloadedAt?: string | null }) {
   const tags = [...item.artists, ...item.tags].slice(0, 6);
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onOpen();
-        }
-      }}
+    <article
       style={{ animationDelay: `${Math.min(index, 15) * 40}ms` }}
-      className="group flex animate-fade-up cursor-pointer flex-col overflow-hidden rounded-xl border border-border bg-surface transition-all duration-200 hover:-translate-y-1 hover:border-primary/50 hover:shadow-xl hover:shadow-black/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+      className="group flex animate-fade-up flex-col overflow-hidden rounded-xl border border-border bg-surface transition-all duration-200 hover:-translate-y-1 hover:border-primary/50 hover:shadow-xl hover:shadow-black/30"
     >
-      <div className="relative overflow-hidden">
-        <Cover url={item.coverUrl} title={item.title} className="aspect-[3/4] w-full transition-transform duration-300 ease-out group-hover:scale-105" />
-        {/* Show the gallery's language badge (e.g. "english", "japanese"). */}
-        {item.language && (
-          <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">
-            <Languages className="h-3 w-3" /> {item.language}
-          </span>
-        )}
-        {item.pageCount ? (
-          <span className="absolute right-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">{item.pageCount}p</span>
-        ) : null}
-        {onToggleMerge && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onToggleMerge(); }}
-            onKeyDown={(e) => e.stopPropagation()}
-            title={mergeChecked ? 'Remove from merge selection' : 'Select for merge'}
-            aria-pressed={mergeChecked}
-            className={cn(
-              'absolute bottom-2 left-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border transition-all duration-150',
-              mergeChecked ? 'border-primary bg-primary text-white' : 'border-white/50 bg-black/50 text-transparent hover:border-primary hover:text-primary/70',
-            )}
-          >
-            <Check className="h-3.5 w-3.5" />
-          </button>
-        )}
-        <div className="pointer-events-none absolute inset-0 flex items-end justify-center bg-gradient-to-t from-black/80 via-black/10 to-transparent opacity-0 transition-opacity group-hover:opacity-100">
-          <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-white">
-            <Search className="h-3 w-3" /> Details
-          </span>
-        </div>
-      </div>
-      <div className="flex flex-1 flex-col gap-2 p-3">
-        <p className="line-clamp-2 text-sm font-medium" title={item.title}>{item.title}</p>
-        {tags.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {tags.map((t, i) => (
-              <span key={i} className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] text-muted">{t}</span>
-            ))}
+      <button type="button" onClick={onOpen} className="text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60" aria-label={`View details for ${item.title}`}>
+        <div className="relative overflow-hidden">
+          <Cover url={item.coverUrl} title={item.title} className="aspect-[3/4] w-full transition-transform duration-300 ease-out group-hover:scale-105" />
+          {item.language && (
+            <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">
+              <Languages className="h-3 w-3" /> {item.language}
+            </span>
+          )}
+          {item.pageCount ? <span className="absolute right-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">{item.pageCount}p</span> : null}
+          <div className="pointer-events-none absolute inset-0 flex items-end justify-center bg-gradient-to-t from-black/80 via-black/10 to-transparent opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+            <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-white"><Search className="h-3 w-3" /> Details</span>
           </div>
-        )}
-        <div className="mt-auto flex items-center justify-between pt-1">
-          <SourceBadge source={item.source} />
-          <Button
-            size="sm"
-            onClick={(e) => { e.stopPropagation(); onDownload(); }}
-            disabled={downloading || !!downloadedAt}
-            title={downloadedAt ? `Already downloaded ${formatDate(downloadedAt)} — use Retry in the Download Manager to re-download` : undefined}
-          >
-            {downloading ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : downloadedAt ? (
-              <CheckCircle2 className="h-3.5 w-3.5" />
-            ) : (
-              <DownloadIcon className="h-3.5 w-3.5" />
-            )} {downloadedAt ? 'Downloaded' : 'Download'}
-          </Button>
         </div>
+        <div className="flex flex-col gap-2 p-3 pb-0">
+          <p className="line-clamp-2 text-sm font-medium" title={item.title}>{item.title}</p>
+          {tags.length > 0 && <div className="flex flex-wrap gap-1">{tags.map((t, i) => <span key={i} className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{t}</span>)}</div>}
+        </div>
+      </button>
+      <div className="mt-auto flex items-center justify-between gap-2 p-3 pt-2">
+        <SourceBadge source={item.source} />
+        <Button size="sm" onClick={onDownload} disabled={downloading || !!downloadedAt} aria-label={downloadedAt ? `${item.title} already downloaded` : `Download ${item.title}`}>
+          {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : downloadedAt ? <CheckCircle2 className="h-3.5 w-3.5" /> : <DownloadIcon className="h-3.5 w-3.5" />}
+          {downloadedAt ? 'Downloaded' : 'Download'}
+        </Button>
       </div>
-    </div>
+    </article>
   );
 }
 
@@ -411,32 +363,24 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-2xl">
-        <div className="flex max-h-[85vh] gap-5 overflow-y-auto p-5">
-          {/* Cover */}
-          <div className="w-40 shrink-0 sm:w-48">
-            <Cover url={g?.coverUrl ?? item.coverUrl} title={item.title} className="aspect-[3/4] w-full rounded-md border border-border" />
+        <div className="flex max-h-[85vh] flex-col gap-5 overflow-y-auto p-5 sm:flex-row">
+          <div className="w-full shrink-0 sm:w-48">
+            <Cover url={g?.coverUrl ?? item.coverUrl} title={item.title} className="mx-auto aspect-[3/4] w-40 rounded-md border border-border sm:w-full" />
             {g?.url && (
-              <a
-                href={g.url}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-2 inline-flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-primary"
-              >
+              <a href={g.url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-primary">
                 <ExternalLink className="h-3 w-3" /> View on {SOURCE_LABELS[item.source]}
               </a>
             )}
           </div>
 
-          {/* Details */}
           <div className="flex min-w-0 flex-1 flex-col gap-4">
-            <div className="min-w-0 pr-6">
+            <div className="min-w-0 pr-10">
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <SourceBadge source={item.source} />
-                {g?.language && (
-                  <Badge tone="info"><Languages className="h-3 w-3" /> {g.language}</Badge>
-                )}
+                {g?.language && <Badge tone="info"><Languages className="h-3 w-3" /> {g.language}</Badge>}
               </div>
-              <h2 className="text-lg font-semibold leading-snug">{g?.title ?? item.title}</h2>
+              <DialogTitle className="text-lg leading-snug">{g?.title ?? item.title}</DialogTitle>
+              <DialogDescription>Gallery details and download options.</DialogDescription>
             </div>
 
             {isPending && (
@@ -509,55 +453,33 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
 
 // ---------------- Queue row ----------------
 
-function QueueRow({ task, onAction, onEditComicInfo, mergeChecked = false, onToggleMerge }: { task: DownloadTask; onAction: (a: 'pause' | 'resume' | 'cancel' | 'retry') => void; onEditComicInfo?: (path: string) => void; mergeChecked?: boolean; onToggleMerge?: () => void }) {
+function QueueRow({ task, onAction, onEditComicInfo, onDelete }: { task: DownloadTask; onAction: (a: 'pause' | 'resume' | 'cancel' | 'retry') => void; onEditComicInfo?: (path: string) => void; onDelete?: () => void }) {
   const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : 0;
   return (
     <div className="flex animate-fade-up flex-col gap-2 rounded-lg border border-border p-3 transition-colors">
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
-          {onToggleMerge && (
-            <button
-              type="button"
-              onClick={onToggleMerge}
-              title={mergeChecked ? 'Remove from merge selection' : 'Select for merge'}
-              aria-pressed={mergeChecked}
-              className={cn(
-                'flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-all duration-150',
-                mergeChecked ? 'border-primary bg-primary text-white' : 'border-border bg-surface-2 text-transparent hover:border-primary hover:text-primary/70',
-              )}
-            >
-              <Check className="h-3.5 w-3.5" />
-            </button>
-          )}
           <DownloadStatusBadge status={task.status} />
           <span className="truncate text-sm font-medium" title={task.title ?? ''}>{task.title ?? `Gallery ${task.galleryId}`}</span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {task.status === 'downloading' && (
-            <Button size="icon" variant="ghost" title="Pause" onClick={() => onAction('pause')}><Pause className="h-4 w-4" /></Button>
-          )}
-          {(task.status === 'paused' || task.status === 'failed') && (
-            <Button size="icon" variant="ghost" title="Resume" onClick={() => onAction('resume')}><Play className="h-4 w-4" /></Button>
-          )}
-          {(task.status === 'failed' || task.status === 'completed') && (
-            <Button size="icon" variant="ghost" title="Retry" onClick={() => onAction('retry')}><RotateCcw className="h-4 w-4" /></Button>
-          )}
-          {(task.status === 'downloading' || task.status === 'queued') && (
-            <Button size="icon" variant="ghost" title="Cancel" onClick={() => onAction('cancel')}><XCircle className="h-4 w-4" /></Button>
-          )}
+          {task.status === 'downloading' && <Button size="icon" variant="ghost" aria-label="Pause download" onClick={() => onAction('pause')}><Pause className="h-4 w-4" /></Button>}
+          {task.status === 'paused' && <Button size="icon" variant="ghost" aria-label="Resume download" onClick={() => onAction('resume')}><Play className="h-4 w-4" /></Button>}
+          {task.status === 'failed' && <Button size="icon" variant="ghost" aria-label="Retry download" onClick={() => onAction('retry')}><RotateCcw className="h-4 w-4" /></Button>}
+          {task.status === 'completed' && <Button size="icon" variant="ghost" aria-label="Download again" onClick={() => onAction('retry')}><RotateCcw className="h-4 w-4" /></Button>}
+          {(task.status === 'downloading' || task.status === 'queued') && <Button size="icon" variant="ghost" aria-label="Cancel download" onClick={() => onAction('cancel')}><XCircle className="h-4 w-4" /></Button>}
+          {onDelete && <Button size="icon" variant="danger" aria-label="Remove download from history" onClick={onDelete}><Trash2 className="h-4 w-4" /></Button>}
         </div>
       </div>
 
       {task.status === 'downloading' && (
         <>
           <ProgressBar value={task.progressCurrent} max={task.progressTotal} active={task.status === 'downloading'} />
-          <div className="flex items-center justify-between gap-2 text-xs text-muted">
+          <div className="flex flex-col gap-1 text-sm text-muted sm:flex-row sm:items-center sm:justify-between">
             <span className="truncate">{task.currentFile ? `Saving ${task.currentFile}` : 'Starting…'}</span>
             <span className="shrink-0">
               {task.progressTotal > 0 ? `${task.progressCurrent}/${task.progressTotal} pages (${pct}%)` : 'Resolving gallery…'}
-              {typeof task.bytesCurrent === 'number' && (task.bytesCurrent > 0 || (task.bytesTotal ?? 0) > 0) && (
-                ` · ${formatBytes(task.bytesCurrent)}${(task.bytesTotal ?? 0) > 0 ? ` / ${formatBytes(task.bytesTotal)}` : ''}`
-              )}
+              {typeof task.bytesCurrent === 'number' && (task.bytesCurrent > 0 || (task.bytesTotal ?? 0) > 0) && (` · ${formatBytes(task.bytesCurrent)}${(task.bytesTotal ?? 0) > 0 ? ` / ${formatBytes(task.bytesTotal)}` : ''}`)}
               {formatSpeed(task.speed) && ` · ${formatSpeed(task.speed)}`}
             </span>
           </div>
@@ -569,7 +491,7 @@ function QueueRow({ task, onAction, onEditComicInfo, mergeChecked = false, onTog
           {task.outputFormat === 'cbz' ? <FileArchive className="h-3.5 w-3.5 text-success" /> : <FolderOpen className="h-3.5 w-3.5 text-success" />}
           <span className="truncate text-muted" title={task.outputPath}>{task.outputPath}</span>
           {task.outputFormat === 'cbz' && onEditComicInfo && (
-            <Button size="icon" variant="ghost" className="ml-auto h-7 w-7 shrink-0" title="Edit ComicInfo.xml" onClick={() => onEditComicInfo(task.outputPath!)}>
+            <Button size="icon" variant="ghost" className="ml-auto h-9 w-9 shrink-0" aria-label="Edit ComicInfo.xml" onClick={() => onEditComicInfo(task.outputPath!)}>
               <FileText className="h-3.5 w-3.5" />
             </Button>
           )}
@@ -580,9 +502,9 @@ function QueueRow({ task, onAction, onEditComicInfo, mergeChecked = false, onTog
         <p className="text-xs text-danger">{task.errorMessage}</p>
       )}
 
-      <div className="flex items-center justify-between text-[10px] text-muted">
+      <div className="flex items-center justify-between text-xs text-muted">
         <span>{timeAgo(task.createdAt)}</span>
-        <Badge tone={task.outputFormat === 'cbz' ? 'default' : 'info'} className="text-[10px]">{task.outputFormat.toUpperCase()}</Badge>
+        <Badge tone={task.outputFormat === 'cbz' ? 'default' : 'info'}>{task.outputFormat.toUpperCase()}</Badge>
       </div>
     </div>
   );
@@ -592,7 +514,6 @@ function QueueRow({ task, onAction, onEditComicInfo, mergeChecked = false, onTog
 
 export function Downloader() {
   // Shared app-wide download state (live via SSE + polling fallback) and actions.
-  const { tasks, active, liveConnected, startDownload, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
   // Deep links from the Libraries page prefill the source and an artist search
   // (`/downloader?source=nhentai&q=artist%3A...`). App remounts this page on
   // path changes, so reading the params once at mount covers every entry.
@@ -609,15 +530,9 @@ export function Downloader() {
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
   // ComicInfo editor: null = closed; { path? } = open (path from a completed row, or none to browse).
   const [comicInfo, setComicInfo] = React.useState<{ path?: string } | null>(null);
-  // Multi-select for merging several chapters of one series into a single download batch.
-  const [mergeSelected, setMergeSelected] = React.useState<Set<string>>(new Set());
-  const [mergeOpen, setMergeOpen] = React.useState(false);
-  const [mergeMode, setMergeMode] = React.useState<'new' | 'existing'>('new');
-  // Multi-select of completed downloads for merging into an existing Kavita series.
-  const [queueMergeSelected, setQueueMergeSelected] = React.useState<Set<number>>(new Set());
-  const [mergeIntoOpen, setMergeIntoOpen] = React.useState(false);
+  const [confirmClear, setConfirmClear] = React.useState(false);
 
-  // Autocomplete dropdown state (nHentai tag/artist suggestions).
+  const { tasks, active, liveConnected, error: downloadsError, refetch: refetchDownloads, startDownload, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
   const [suggestions, setSuggestions] = React.useState<DoujinSuggestion[]>([]);
   const [suggLoading, setSuggLoading] = React.useState(false);
   const [inputFocused, setInputFocused] = React.useState(false);
@@ -671,9 +586,7 @@ export function Downloader() {
     };
   }, [query, source]);
 
-  const { data: results, isFetching } = useQuery({
-    // `sort` is part of the key so changing it re-runs an already-committed
-    // search immediately (nHentai only; other sources ignore the value).
+  const { data: results, isFetching, isError: searchFailed, error: searchError, refetch: retrySearch } = useQuery({
     queryKey: ['doujin-search', source, searchKey, sort],
     queryFn: () => api.doujinSearch(source, searchKey!, sort),
     enabled: searchKey !== null && searchKey.trim().length > 0,
@@ -727,17 +640,8 @@ export function Downloader() {
   const [tab, setTab] = React.useState<'search' | 'manager'>('search');
   React.useEffect(() => {
     setPage(1);
-    setMergeSelected(new Set());
   }, [searchKey, source]);
 
-  const toggleMerge = (key: string) => {
-    setMergeSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
 
   async function doStartDownload(item: DoujinSearchResult) {
     const key = `${item.source}:${item.galleryId}`;
@@ -854,56 +758,37 @@ export function Downloader() {
     commitQuery(query);
   };
 
-  const finished = tasks.filter((t) => t.status !== 'downloading' && t.status !== 'queued');
+  const currentTasks = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
+  const finished = tasks.filter((t) => t.status === 'completed' || t.status === 'failed');
   const pageCount = Math.max(1, Math.ceil((results?.length ?? 0) / RESULTS_PAGE_SIZE));
   const curPage = Math.min(page, pageCount);
   const pageItems = results ? results.slice((curPage - 1) * RESULTS_PAGE_SIZE, curPage * RESULTS_PAGE_SIZE) : [];
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="flex items-center gap-2 text-xl font-semibold">
-          <ListVideo className="h-5 w-5" /> Doujinshi Downloader
-        </h1>
-        <p className="text-sm text-muted">Search Hitomi.la & nHentai (nhentai.net) and download galleries straight into your Kavita library.</p>
-      </div>
+      <PageHeader icon={<ListVideo className="h-5 w-5" />} title="Doujinshi Downloader" subtitle="Search Hitomi.la and nHentai, then download galleries into your Kavita library." />
 
-      {/* View tabs */}
-      <div className="flex gap-4 self-start border-b border-border-2">
-        <button
-          type="button"
-          onClick={() => setTab('search')}
-          className={cn(
-            '-mb-px border-b-2 px-1 pb-2 text-sm font-medium transition-colors',
-            tab === 'search' ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
-          )}
-        >
-          Search
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('manager')}
-          className={cn(
-            '-mb-px border-b-2 px-1 pb-2 text-sm font-medium transition-colors',
-            tab === 'manager' ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
-          )}
-        >
-          Manager
-        </button>
-      </div>
+      <SegmentedTabs
+        items={[{ id: 'search' as const, label: 'Search' }, { id: 'manager' as const, label: 'Manager' }]}
+        value={tab}
+        onChange={setTab}
+        label="Downloader sections"
+        className="self-start"
+      />
 
       {tab === 'search' && (<>
 
       {/* Search bar */}
       <Card>
         <CardContent className="flex flex-col gap-3">
-          <form onSubmit={runSearch} className="flex flex-col gap-2 sm:flex-row">
-            <div className="flex overflow-hidden rounded-md border border-border-2">
+          <form onSubmit={runSearch} className="flex flex-col gap-2 lg:flex-row">
+            <div role="group" aria-label="Download source" className="flex overflow-hidden rounded-md border border-border-2">
               {SOURCES.map((s) => (
                 <button
                   key={s.id}
                   type="button"
                   onClick={() => switchSource(s.id)}
+                  aria-pressed={source === s.id}
                   className={cn(
                     'px-4 py-2 text-sm font-medium transition-colors',
                     source === s.id ? 'bg-primary text-white' : 'bg-surface-2 text-muted hover:text-foreground',
@@ -917,14 +802,16 @@ export function Downloader() {
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
               <Input
                 ref={inputRef}
+                role="combobox"
+                aria-label="Search galleries"
+                aria-expanded={showDropdown}
+                aria-controls="doujin-suggestions"
+                aria-activedescendant={highlight >= 0 ? `doujin-suggestion-${highlight}` : undefined}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={onInputKeyDown}
                 onFocus={() => setInputFocused(true)}
-                onBlur={() => {
-                  setInputFocused(false);
-                  setHighlight(-1);
-                }}
+                onBlur={() => { setInputFocused(false); setHighlight(-1); }}
                 placeholder="Search by keyword, tag, artist, gallery ID or URL…"
                 className="pl-9 pr-8"
               />
@@ -940,7 +827,7 @@ export function Downloader() {
               )}
 
               {showDropdown && (
-                <div className="absolute left-0 right-0 top-full z-50 mt-1 origin-top animate-scale-in overflow-hidden rounded-lg border border-border bg-surface shadow-xl shadow-black/30">
+                <div id="doujin-suggestions" role="listbox" className="absolute left-0 right-0 top-full z-50 mt-1 origin-top animate-scale-in overflow-hidden rounded-lg border border-border bg-surface shadow-xl shadow-black/30">
                   {suggLoading && suggestions.length === 0 ? (
                     <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted">
                       <Spinner /> Searching tags…
@@ -951,6 +838,9 @@ export function Downloader() {
                         <button
                           key={`${s.type}-${s.name}`}
                           type="button"
+                          id={`doujin-suggestion-${i}`}
+                          role="option"
+                          aria-selected={i === highlight}
                           onMouseDown={(e) => {
                             e.preventDefault();
                             selectSuggestion(s);
@@ -1011,7 +901,9 @@ export function Downloader() {
       {/* Results grid */}
       {searchKey !== null && (
         <div>
-          {isFetching ? (
+          {searchFailed ? (
+            <ErrorState title="Search failed" description={searchError instanceof Error ? searchError.message : String(searchError)} onRetry={() => void retrySearch()} />
+          ) : isFetching ? (
             <div className="flex items-center justify-center gap-2 py-16 text-muted">
               <Spinner /> Searching {SOURCE_LABELS[source]}…
             </div>
@@ -1021,20 +913,6 @@ export function Downloader() {
                 {results.length} {results.length === 1 ? 'gallery' : 'galleries'} found on {SOURCE_LABELS[source]}
                 {pageCount > 1 && ` — showing ${(curPage - 1) * RESULTS_PAGE_SIZE + 1}–${Math.min(curPage * RESULTS_PAGE_SIZE, results.length)}`}
               </p>
-              {mergeSelected.size > 0 && (
-                <div className="mb-3 flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border border-border-2 bg-surface-2 p-2 shadow-lg shadow-black/20">
-                  <span className="px-2 text-xs text-muted">{mergeSelected.size} selected</span>
-                  <Button size="sm" onClick={() => { setMergeMode('new'); setMergeOpen(true); }} disabled={mergeSelected.size < 2}>
-                    <Combine className="h-3.5 w-3.5" /> Merge &amp; download
-                  </Button>
-                  <Button size="sm" variant="secondary" onClick={() => { setMergeMode('existing'); setMergeOpen(true); }}>
-                    <FolderInput className="h-3.5 w-3.5" /> Merge into series…
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setMergeSelected(new Set())}>
-                    Clear selection
-                  </Button>
-                </div>
-              )}
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
                 {pageItems.map((item, i) => (
                   <GalleryCard
@@ -1045,8 +923,6 @@ export function Downloader() {
                     downloading={pendingKey === `${item.source}:${item.galleryId}`}
                     downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
                     onDownload={() => doStartDownload(item)}
-                    mergeChecked={mergeSelected.has(`${item.source}:${item.galleryId}`)}
-                    onToggleMerge={() => toggleMerge(`${item.source}:${item.galleryId}`)}
                   />
                 ))}
               </div>
@@ -1092,109 +968,55 @@ export function Downloader() {
       {/* Download manager */}
       {tab === 'manager' && (
         <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle className="flex items-center gap-2">
-            <DownloadIcon className="h-4 w-4" /> Download Manager
-            {liveConnected && (
-              <span title="Real-time updates connected" className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" /> Live
-              </span>
+          <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
+            <CardTitle className="flex items-center gap-2">
+              <DownloadIcon className="h-4 w-4" /> Download Manager
+              {liveConnected && <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" /> Live</span>}
+              {currentTasks.length > 0 && <Badge tone="info">{currentTasks.length} current</Badge>}
+            </CardTitle>
+            {finished.some((task) => task.status === 'completed') && <Button size="sm" variant="danger" onClick={() => setConfirmClear(true)}><Trash2 className="h-3.5 w-3.5" /> Clear completed</Button>}
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            {downloadsError ? (
+              <ErrorState title="Could not load downloads" description={downloadsError.message} onRetry={() => void refetchDownloads()} />
+            ) : tasks.length === 0 ? (
+              <EmptyState icon={<DownloadIcon className="h-8 w-8" />} title="No downloads yet" description="Click Download on a gallery to queue it. Set the output folder in Settings first." />
+            ) : (
+              <>
+                {currentTasks.length > 0 && (
+                  <section className="flex flex-col gap-2" aria-labelledby="current-downloads">
+                    <p id="current-downloads" className="text-xs font-semibold uppercase tracking-wide text-muted">Current</p>
+                    {currentTasks.map((task) => <QueueRow key={task.id} task={task} onAction={(action) => act(task.id, action)} onEditComicInfo={(path) => setComicInfo({ path })} />)}
+                  </section>
+                )}
+                {finished.length > 0 && (
+                  <section className="flex flex-col gap-2" aria-labelledby="download-history">
+                    <div className="flex items-center justify-between">
+                      <p id="download-history" className="text-xs font-semibold uppercase tracking-wide text-muted">History</p>
+                      {finished.length > HISTORY_PREVIEW && <Button size="sm" variant="ghost" onClick={() => setShowAllHistory((value) => !value)}>{showAllHistory ? 'Show less' : `Show all (${finished.length})`}</Button>}
+                    </div>
+                    {(showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW)).map((task) => <QueueRow key={task.id} task={task} onAction={(action) => act(task.id, action)} onEditComicInfo={(path) => setComicInfo({ path })} onDelete={() => removeTask(task.id)} />)}
+                  </section>
+                )}
+              </>
             )}
-            {active.length > 0 && <Badge tone="info">{active.length} active</Badge>}
-          </CardTitle>
-          {finished.some((t) => t.status === 'completed') && (
-            <Button size="sm" variant="outline" onClick={() => clearCompleted()}>
-              <Trash2 className="h-3.5 w-3.5" /> Clear completed
-            </Button>
-          )}
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          {tasks.length === 0 ? (
-            <EmptyState icon={<DownloadIcon className="h-8 w-8" />} title="No downloads yet" description="Click Download on a gallery to queue it. Set the output folder in Settings first." />
-          ) : (
-            <>
-              {queueMergeSelected.size > 0 && (
-                <div className="flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border border-border-2 bg-surface-2 p-2 shadow-lg shadow-black/20">
-                  <span className="px-2 text-xs text-muted">{queueMergeSelected.size} selected</span>
-                  <Button size="sm" onClick={() => setMergeIntoOpen(true)}>
-                    <Combine className="h-3.5 w-3.5" /> Merge into series…
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setQueueMergeSelected(new Set())}>
-                    Clear selection
-                  </Button>
-                </div>
-              )}
-              {active.length > 0 && (
-                <div className="flex flex-col gap-2">
-                  {active.map((t) => (
-                    <QueueRow key={t.id} task={t} onAction={(a) => act(t.id, a)} onEditComicInfo={(p) => setComicInfo({ path: p })} />
-                  ))}
-                </div>
-              )}
-              {finished.length > 0 && (
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-semibold text-muted">History</p>
-                    {finished.length > HISTORY_PREVIEW && (
-                      <Button size="sm" variant="ghost" onClick={() => setShowAllHistory((v) => !v)}>
-                        {showAllHistory ? 'Show less' : `Show all (${finished.length})`}
-                      </Button>
-                    )}
-                  </div>
-                  {(showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW)).map((t) => {
-                    const mergeable = t.status === 'completed' && (t.outputFormat ?? 'cbz') === 'cbz' && !!t.outputPath;
-                    return (
-                      <div key={t.id} className="relative">
-                        <QueueRow
-                          task={t}
-                          onAction={(a) => act(t.id, a)}
-                          onEditComicInfo={(p) => setComicInfo({ path: p })}
-                          mergeChecked={mergeable ? queueMergeSelected.has(t.id) : false}
-                          onToggleMerge={mergeable ? () => {
-                            setQueueMergeSelected((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(t.id)) next.delete(t.id);
-                              else next.add(t.id);
-                              return next;
-                            });
-                          } : undefined}
-                        />
-                        <button
-                          onClick={() => removeTask(t.id)}
-                          title="Remove from list"
-                          className="absolute right-2 top-2 rounded-md p-1 text-muted hover:bg-surface-2 hover:text-danger"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </>
-          )}
-        </CardContent>
+          </CardContent>
         </Card>
       )}
 
       {comicInfo && (
         <ComicInfoModal initialPath={comicInfo.path} onClose={() => setComicInfo(null)} />
       )}
+      <ConfirmDialog
+        open={confirmClear}
+        title="Clear completed downloads?"
+        description="This removes every completed download from the manager history. Downloaded files are not deleted."
+        confirmLabel="Clear completed"
+        danger
+        onOpenChange={setConfirmClear}
+        onConfirm={() => { clearCompleted(); setConfirmClear(false); }}
+      />
 
-      {mergeOpen && (
-        <MergeDownloadModal
-          items={(results ?? []).filter((it) => mergeSelected.has(`${it.source}:${it.galleryId}`))}
-          initialMode={mergeMode}
-          onClose={() => setMergeOpen(false)}
-        />
-      )}
-
-      {mergeIntoOpen && (
-        <MergeIntoSeriesModal
-          tasks={tasks.filter((t) => queueMergeSelected.has(t.id))}
-          onClose={() => setMergeIntoOpen(false)}
-        />
-      )}
     </div>
   );
 }

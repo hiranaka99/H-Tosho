@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { Library, Settings as SettingsIcon, ListChecks, BookOpenText, Download } from 'lucide-react';
+import { Library, Settings as SettingsIcon, ListChecks, BookOpenText, Download, Menu, X } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './lib/api';
 import { Libraries } from './pages/Libraries';
@@ -13,7 +13,7 @@ function LowConfidenceBadge() {
   const { data } = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, refetchInterval: 60_000 });
   if (!data || data.count === 0) return null;
   return (
-    <span className="ml-auto rounded-full bg-warning/20 px-1.5 py-0.5 text-[10px] font-semibold text-warning" title={`${data.count} matched series below ${Math.round(data.threshold * 100)}% confidence — review them in Libraries (filter: Low confidence)`}>
+    <span className="ml-auto rounded-full bg-warning/20 px-1.5 py-0.5 text-xs font-semibold text-warning" title={`${data.count} matched series below ${Math.round(data.threshold * 100)}% confidence — review them in Libraries (filter: Low confidence)`}>
       {data.count}
     </span>
   );
@@ -28,7 +28,7 @@ function KavitaIndicator() {
   return (
     <div className="flex items-center gap-2 border-t border-border px-4 py-2" title={state === 'error' ? data.error ?? undefined : label}>
       <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', state === 'ok' ? 'bg-success' : state === 'error' ? 'animate-pulse-soft bg-danger' : 'bg-border-2')} />
-      <span className="min-w-0 flex-1 truncate text-[10px] text-muted">{label}</span>
+      <span className="min-w-0 flex-1 truncate text-xs text-muted">{label}</span>
     </div>
   );
 }
@@ -72,31 +72,47 @@ export default function App() {
   const location = useLocation();
   const inLibrary = location.pathname.startsWith('/libraries');
 
+  const [navOpen, setNavOpen] = React.useState(false);
+  React.useEffect(() => setNavOpen(false), [location.pathname]);
   return (
-    <div className="flex h-full">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-surface/80 backdrop-blur-sm">
-        <div className="flex h-14 items-center gap-2.5 border-b border-border px-4">
+    <div className="flex h-full flex-col lg:flex-row">
+      <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-surface/90 px-4 backdrop-blur-sm lg:hidden">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-primary-hover text-white shadow-lg shadow-primary/30">
+            <BookOpenText className="h-4.5 w-4.5" />
+          </div>
+          <div>
+            <div className="text-sm font-semibold leading-tight">H-Tosho</div>
+            <div className="text-xs leading-tight text-muted">Kavita metadata manager</div>
+          </div>
+        </div>
+        <button type="button" aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} onClick={() => setNavOpen((v) => !v)} className="flex h-10 w-10 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+          {navOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+        </button>
+      </header>
+      {navOpen && <button type="button" aria-label="Close navigation" className="fixed inset-0 top-14 z-30 bg-black/60 lg:hidden" onClick={() => setNavOpen(false)} />}
+      <aside className={cn(
+        'fixed inset-y-14 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-border bg-surface/95 backdrop-blur-sm transition-transform lg:static lg:inset-auto lg:w-56 lg:translate-x-0 lg:bg-surface/80',
+        navOpen ? 'translate-x-0' : '-translate-x-full',
+      )}>
+        <div className="hidden h-14 items-center gap-2.5 border-b border-border px-4 lg:flex">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-primary-hover text-white shadow-lg shadow-primary/30">
             <BookOpenText className="h-4.5 w-4.5" />
           </div>
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold leading-tight tracking-tight">H-Tosho</div>
-            <div className="truncate text-[10px] leading-tight text-muted">Kavita metadata manager</div>
+            <div className="truncate text-xs leading-tight text-muted">Kavita metadata manager</div>
           </div>
         </div>
-        <nav className="flex flex-1 flex-col gap-1 p-3">
+        <nav aria-label="Primary navigation" className="flex flex-1 flex-col gap-1 p-3">
           {NAV.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
-              className={({ isActive }) =>
-                cn(
-                  'group flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-all duration-150 hover:translate-x-0.5',
-                  isActive
-                    ? 'bg-gradient-to-r from-primary/20 to-primary/5 font-medium text-primary'
-                    : 'text-muted hover:bg-surface-2 hover:text-foreground',
-                )
-              }
+              className={({ isActive }) => cn(
+                'group flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all duration-150',
+                isActive ? 'bg-gradient-to-r from-primary/20 to-primary/5 font-medium text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground',
+              )}
             >
               {({ isActive }) => (
                 <>
@@ -111,7 +127,7 @@ export default function App() {
         <KavitaIndicator />
         <SidebarStatus />
       </aside>
-      <main className={cn('min-w-0 flex-1 overflow-y-auto', inLibrary ? 'p-6' : 'p-8')}>
+      <main className="min-w-0 flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
         <div key={location.pathname} className="animate-fade-up">
           <PageErrorBoundary>
             <Routes>

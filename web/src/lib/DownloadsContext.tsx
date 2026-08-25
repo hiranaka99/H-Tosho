@@ -20,6 +20,8 @@ type StartResult = { id: number; status: string };
 export interface DownloadsApi {
   tasks: DownloadTask[];
   active: DownloadTask[];
+  error: Error | null;
+  refetch: () => Promise<unknown>;
   liveConnected: boolean;
   startDownload: (input: StartDownloadInput) => Promise<StartResult>;
   pause: (id: number) => void;
@@ -67,7 +69,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   const liveConnected = useDownloadEvents();
 
   // Polling is a lightweight fallback; the SSE stream above drives live updates.
-  const { data } = useQuery({
+  const downloadsQuery = useQuery({
     queryKey: ['downloads'],
     queryFn: async () => {
       const fresh = await api.downloads();
@@ -77,17 +79,20 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
     },
     refetchInterval: 5000,
   });
+  const data = downloadsQuery.data;
   const tasks = React.useMemo(() => (Array.isArray(data) ? data : []), [data]);
 
   const invalidate = React.useCallback(() => qc.invalidateQueries({ queryKey: ['downloads'] }), [qc]);
 
-  const start = useMutation({ mutationFn: (input: StartDownloadInput) => api.startDownload(input), onSuccess: invalidate });
+  const mutationError = (title: string) => (error: unknown) => toast({ tone: 'danger', title, description: error instanceof Error ? error.message : String(error) });
+  const start = useMutation({ mutationFn: (input: StartDownloadInput) => api.startDownload(input), onSuccess: invalidate, onError: mutationError('Could not start download') });
   const action = useMutation({
     mutationFn: ({ id, op }: { id: number; op: 'pause' | 'resume' | 'cancel' | 'retry' }) => api.downloadAction(id, op),
     onSuccess: invalidate,
+    onError: mutationError('Download action failed'),
   });
-  const remove = useMutation({ mutationFn: (id: number) => api.deleteDownload(id), onSuccess: invalidate });
-  const clear = useMutation({ mutationFn: api.clearCompletedDownloads, onSuccess: invalidate });
+  const remove = useMutation({ mutationFn: (id: number) => api.deleteDownload(id), onSuccess: invalidate, onError: mutationError('Could not remove download') });
+  const clear = useMutation({ mutationFn: api.clearCompletedDownloads, onSuccess: invalidate, onError: mutationError('Could not clear completed downloads') });
 
   // Toast on status transitions to completed/failed.
   const prevStatuses = React.useRef<Map<number, string>>(new Map());
@@ -114,6 +119,8 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
 
   const value = React.useMemo<DownloadsApi>(
     () => ({
+      error: downloadsQuery.error instanceof Error ? downloadsQuery.error : null,
+      refetch: downloadsQuery.refetch,
       tasks,
       active: tasks.filter((t) => t.status === 'downloading' || t.status === 'queued'),
       liveConnected,
@@ -125,7 +132,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
       removeTask: (id) => remove.mutate(id),
       clearCompleted: () => clear.mutate(),
     }),
-    [tasks, liveConnected, start, action, remove, clear],
+    [tasks, liveConnected, downloadsQuery.error, downloadsQuery.refetch, start, action, remove, clear],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

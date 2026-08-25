@@ -3,7 +3,7 @@ import { Slot } from '@radix-ui/react-slot';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import * as SwitchPrimitive from '@radix-ui/react-switch';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { X, Loader2 } from 'lucide-react';
+import { X, Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { cn, PROVIDER_COLORS, PROVIDER_NAMES } from '../lib/utils';
 
 const buttonVariants = cva(
@@ -109,6 +109,7 @@ export function Switch({
     <SwitchPrimitive.Root
       checked={checked}
       onCheckedChange={onCheckedChange}
+      aria-label={props['aria-label'] ?? 'Toggle'}
       className={cn(
         'inline-flex h-5 w-9 items-center rounded-full transition-colors focus-visible:outline-none',
         'focus-visible:ring-2 focus-visible:ring-primary/50 data-[state=checked]:bg-primary data-[state=unchecked]:bg-border-2',
@@ -173,10 +174,19 @@ export function StatusBadge({ status, className, title }: { status: string; clas
   );
 }
 
-export function ProgressBar({ value, max, className, active = false }: { value: number; max: number; className?: string; active?: boolean }) {
-  const p = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0;
+export function ProgressBar({ value, max, className, active = false, label = 'Progress' }: { value: number; max: number; className?: string; active?: boolean; label?: string }) {
+  const determinate = max > 0;
+  const p = determinate ? Math.min(100, Math.round((value / max) * 100)) : 0;
   return (
-    <div className={cn('h-2 w-full overflow-hidden rounded-full bg-surface-2', className)}>
+    <div
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={determinate ? max : undefined}
+      aria-valuenow={determinate ? Math.min(max, value) : undefined}
+      aria-valuetext={determinate ? `${p}%` : 'In progress'}
+      className={cn('h-2 w-full overflow-hidden rounded-full bg-surface-2', className)}
+    >
       <div className="relative h-full rounded-full bg-primary transition-[width] duration-500 ease-out" style={{ width: p + '%' }}>
         {active && p > 0 && p < 100 && <div className="progress-stripes absolute inset-0" />}
       </div>
@@ -204,27 +214,112 @@ export function Dialog({
   );
 }
 
-export function DialogContent({ children, className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+export function DialogContent({ children, className, ...props }: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>) {
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="dialog-overlay fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
       <DialogPrimitive.Content
         className={cn(
-          'dialog-content fixed left-1/2 top-1/2 z-50 w-full max-w-5xl -translate-x-1/2 -translate-y-1/2',
-          'rounded-xl border border-border bg-surface shadow-2xl shadow-black/40',
+          'dialog-content fixed left-1/2 top-1/2 z-50 w-[calc(100vw-1.5rem)] max-w-5xl -translate-x-1/2 -translate-y-1/2',
+          'max-h-[calc(100vh-1.5rem)] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl shadow-black/40',
           className,
         )}
         {...props}
       >
         {children}
-        <DialogPrimitive.Close className="absolute right-3 top-3 rounded-md bg-surface/80 p-1 text-muted hover:bg-surface-2 hover:text-foreground">
+        <DialogPrimitive.Close aria-label="Close dialog" className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-md bg-surface/90 text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
           <X className="h-4 w-4" />
         </DialogPrimitive.Close>
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
   );
 }
+export const DialogTitle = React.forwardRef<
+  React.ElementRef<typeof DialogPrimitive.Title>,
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
+>(({ className, ...props }, ref) => (
+  <DialogPrimitive.Title ref={ref} className={cn('text-base font-semibold', className)} {...props} />
+));
+DialogTitle.displayName = DialogPrimitive.Title.displayName;
 
+export const DialogDescription = React.forwardRef<
+  React.ElementRef<typeof DialogPrimitive.Description>,
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>
+>(({ className, ...props }, ref) => (
+  <DialogPrimitive.Description ref={ref} className={cn('text-sm text-muted', className)} {...props} />
+));
+DialogDescription.displayName = DialogPrimitive.Description.displayName;
+
+export function ErrorState({ title = 'Something went wrong', description, onRetry }: { title?: string; description?: string; onRetry?: () => void }) {
+  return (
+    <div role="alert" className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+      <AlertTriangle className="h-7 w-7 text-danger" />
+      <div>
+        <p className="font-medium">{title}</p>
+        {description && <p className="mt-1 max-w-lg break-words text-sm text-muted">{description}</p>}
+      </div>
+      {onRetry && <Button size="sm" variant="outline" onClick={onRetry}>Retry</Button>}
+    </div>
+  );
+}
+
+export function SegmentedTabs<T extends string>({ items, value, onChange, label, className }: { items: readonly { id: T; label: string }[]; value: T; onChange: (id: T) => void; label: string; className?: string }) {
+  return (
+    <div role="tablist" aria-label={label} className={cn('flex max-w-full gap-4 overflow-x-auto border-b border-border-2', className)}>
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          role="tab"
+          aria-selected={value === item.id}
+          tabIndex={value === item.id ? 0 : -1}
+          onClick={() => onChange(item.id)}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return;
+            event.preventDefault();
+            const index = items.findIndex((candidate) => candidate.id === value);
+            const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : event.key === 'ArrowRight' ? (index + 1) % items.length : (index - 1 + items.length) % items.length;
+            const tabs = event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('[role="tab"]');
+            onChange(items[nextIndex].id);
+            requestAnimationFrame(() => tabs?.[nextIndex]?.focus());
+          }}
+          className={cn(
+            '-mb-px shrink-0 border-b-2 px-1 pb-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+            value === item.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
+          )}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function ConfirmDialog({ open, title, description, confirmLabel, danger = false, pending = false, onConfirm, onOpenChange }: { open: boolean; title: string; description: string; confirmLabel: string; danger?: boolean; pending?: boolean; onConfirm: () => void; onOpenChange: (open: boolean) => void }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <div className="flex flex-col gap-4 p-5 pr-14">
+          <div className="flex items-start gap-3">
+            <div className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-full', danger ? 'bg-danger/15 text-danger' : 'bg-primary/15 text-primary')}>
+              {danger ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+            </div>
+            <div>
+              <DialogTitle>{title}</DialogTitle>
+              <DialogDescription className="mt-1">{description}</DialogDescription>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
+            <Button variant={danger ? 'danger' : 'default'} onClick={onConfirm} disabled={pending}>
+              {pending && <Spinner />} {confirmLabel}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 export function EmptyState({ icon, title, description }: { icon?: React.ReactNode; title: string; description?: string }) {
   return (
     <div className="flex animate-fade-in flex-col items-center justify-center gap-2 py-16 text-center">

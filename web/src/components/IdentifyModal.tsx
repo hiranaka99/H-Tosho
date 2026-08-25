@@ -13,7 +13,7 @@ import {
 } from '../lib/api';
 import { PROVIDER_NAMES, cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
-import { Button, Dialog, DialogContent, Input, Label, ProviderBadge, Spinner } from './ui';
+import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, ProviderBadge, Spinner, ConfirmDialog } from './ui';
 
 const STATUS_LABELS: Record<number, string> = {
   0: 'Ongoing',
@@ -149,7 +149,7 @@ function UrlValue({ text, className }: { text: string; className?: string }) {
 }
 
 /** Label column (fixed width) + two equal-width value columns: Kavita on the left, candidate on the right. */
-const ROW_GRID = 'grid grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)] items-start gap-x-3';
+const ROW_GRID = 'grid grid-cols-1 items-start gap-1 sm:grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)] sm:gap-x-3';
 
 function FieldRow({ row, providerName, checked, onToggle }: { row: DiffRow; providerName: string; checked?: boolean; onToggle?: () => void }) {
   const merge = row.tagMerge;
@@ -217,11 +217,11 @@ function CoverThumb({ src, alt, onZoom }: { src?: string | null; alt: string; on
   }, [src]);
   if (!src || failed) return <span className="text-muted">—</span>;
   const img = (
-    <img src={src} alt={alt} loading="lazy" onError={() => setFailed(true)} className="h-[427px] w-80 shrink-0 rounded object-cover" />
+    <img src={src} alt={alt} loading="lazy" onError={() => setFailed(true)} className="max-h-[55vh] w-full max-w-80 shrink-0 rounded object-cover sm:h-[427px]" />
   );
   if (!onZoom) return img;
   return (
-    <button type="button" title="Click to enlarge" onClick={() => onZoom(src, alt)} className="shrink-0 cursor-zoom-in transition-opacity hover:opacity-90">
+    <button type="button" aria-label={`Enlarge ${alt}`} onClick={() => onZoom(src, alt)} className="shrink-0 cursor-zoom-in transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
       {img}
     </button>
   );
@@ -248,6 +248,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
   const [coverEnabled, setCoverEnabled] = React.useState(true);
   const [zoomCover, setZoomCover] = React.useState<{ src: string; alt: string } | null>(null);
 
+  const [confirmUnmatch, setConfirmUnmatch] = React.useState(false);
   // A fresh selection starts with every syncable field opted in.
   React.useEffect(() => {
     setExcluded(new Set());
@@ -293,6 +294,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
       qc.invalidateQueries({ queryKey: ['series', seriesId] });
       qc.invalidateQueries({ queryKey: ['library-series'] });
       qc.invalidateQueries({ queryKey: ['libraries'] });
+      setConfirmUnmatch(false);
       toast({ tone: 'success', title: res.removed ? 'Unmatched' : 'No match to remove', description: current.name });
     },
     onError: (e) => toast({ tone: 'danger', title: 'Unmatch failed', description: e instanceof Error ? e.message : String(e) }),
@@ -381,9 +383,12 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-[min(96vw,1440px)]">
         <div className="flex max-h-[90vh] flex-col gap-4 overflow-y-auto p-5">
-          <div className="flex items-center gap-2 pr-6">
-            <Sparkles className="h-5 w-5 text-primary" />
-            <h2 className="text-base font-semibold">Identify "{current.name}"</h2>
+          <div className="flex items-start gap-2 pr-10">
+            <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+            <div>
+              <DialogTitle>Identify “{current.name}”</DialogTitle>
+              <DialogDescription>Choose a metadata match and review exactly what will be synced to Kavita.</DialogDescription>
+            </div>
           </div>
 
           {!selected && match?.providerId && (
@@ -400,7 +405,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                       <span className="rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">Not aligned</span>
                     )}
                   </p>
-                  <p className="text-xs text-muted">Unmatching removes the link only — metadata already pushed to Kavita stays in place.</p>
+                  <p className="text-sm text-muted">Unmatching removes the link and removes metadata and covers previously applied by H-Tosho.</p>
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -409,8 +414,8 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                     {apply.isPending ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />} Sync
                   </Button>
                 )}
-                <Button size="sm" variant="secondary" onClick={() => unmatch.mutate()} disabled={unmatch.isPending}>
-                  {unmatch.isPending ? <Spinner /> : <Unlink className="h-3.5 w-3.5" />} Unmatch
+                <Button size="sm" variant="danger" onClick={() => setConfirmUnmatch(true)} disabled={unmatch.isPending}>
+                  <Unlink className="h-3.5 w-3.5" /> Unmatch
                 </Button>
               </div>
             </div>
@@ -480,7 +485,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                   }}
                 >
                   <Label htmlFor="manual-provider-url">Match by provider URL</Label>
-                  <div className="mt-2 flex gap-2">
+                  <div className="mt-2 flex flex-col gap-2 sm:flex-row">
                     <Input
                       id="manual-provider-url"
                       type="url"
@@ -634,7 +639,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
               )}
 
               {selected && (
-              <div className="flex items-center justify-end gap-2">
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
                 <Button variant="ghost" onClick={onClose}>
                   <X className="h-4 w-4" /> Cancel
                 </Button>
@@ -659,11 +664,21 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     </Dialog>
     <Dialog open={!!zoomCover} onOpenChange={(o) => { if (!o) setZoomCover(null); }}>
       {zoomCover && (
-        <DialogContent className="flex max-w-none items-center justify-center p-0">
-          <img src={zoomCover.src} alt={zoomCover.alt} className="max-h-[85vh] w-auto rounded-lg object-contain" />
+        <DialogContent aria-label={zoomCover.alt} className="flex max-w-none items-center justify-center bg-transparent p-0 shadow-none">
+          <img src={zoomCover.src} alt={zoomCover.alt} className="max-h-[85vh] max-w-[90vw] rounded-lg object-contain" />
         </DialogContent>
       )}
     </Dialog>
+    <ConfirmDialog
+      open={confirmUnmatch}
+      title="Unmatch series?"
+      description={`This removes the match and removes metadata and covers previously applied by H-Tosho from “${current.name}”.`}
+      confirmLabel="Unmatch"
+      danger
+      pending={unmatch.isPending}
+      onOpenChange={setConfirmUnmatch}
+      onConfirm={() => unmatch.mutate()}
+    />
     </>
   );
 }

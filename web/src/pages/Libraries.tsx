@@ -1,9 +1,9 @@
 import * as React from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, Eraser, BookOpen, Unlink, ArrowUpRight, FileText, Combine, Check } from 'lucide-react';
+import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, BookOpen, Unlink, ArrowUpRight, FileText, Combine, Check, ChevronLeft, ChevronRight } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource } from '../lib/api';
-import { Button, Card, Input, Select, Badge, StatusBadge, ProviderBadge, Spinner, EmptyState, Switch } from '../components/ui';
+import { Button, Card, Input, Select, Badge, StatusBadge, ProviderBadge, Spinner, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeSeriesModal } from '../components/MergeSeriesModal';
@@ -12,6 +12,7 @@ import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
 /** Matches below this score are surfaced for review (mirrors the server's threshold). */
 const LOW_CONFIDENCE = 0.8;
+const SERIES_PAGE_SIZE = 40;
 
 function Cover({ src, name, className }: { src?: string | null; name: string; className?: string }) {
   const [failed, setFailed] = React.useState(false);
@@ -93,6 +94,8 @@ export function Libraries() {
   const [identify, setIdentify] = React.useState<{ id: number; name: string } | null>(null);
   const [comicInfo, setComicInfo] = React.useState<{ id: number; name: string } | null>(null);
   const [mergeOpen, setMergeOpen] = React.useState(false);
+  const [page, setPage] = React.useState(1);
+  const [unmatchTarget, setUnmatchTarget] = React.useState<SeriesRow | null>(null);
 
   React.useEffect(() => {
     if (libraryId) setSelected(Number(libraryId));
@@ -138,6 +141,10 @@ export function Libraries() {
     const okQuery = query ? r.name.toLowerCase().includes(query.toLowerCase()) : true;
     return okStatus && okQuery;
   });
+  const pageCount = Math.max(1, Math.ceil(filtered.length / SERIES_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const visibleRows = filtered.slice((currentPage - 1) * SERIES_PAGE_SIZE, currentPage * SERIES_PAGE_SIZE);
+  React.useEffect(() => setPage(1), [query, statusFilter, selected]);
   const isFiltering = statusFilter !== 'all' || query.trim() !== '';
 
   const toggleCheck = (id: number) => {
@@ -148,17 +155,18 @@ export function Libraries() {
       return next;
     });
   };
-  const allChecked = filtered.length > 0 && filtered.every((r) => checked.has(r.id));
+  const allChecked = visibleRows.length > 0 && visibleRows.every((r) => checked.has(r.id));
 
   const enqueue = (type: string, payload: Record<string, unknown> = {}) => {
-    return api.enqueue(type, payload).then(() => qc.invalidateQueries({ queryKey: ['jobs'] }));
+    return api.enqueue(type, payload)
+      .then(() => qc.invalidateQueries({ queryKey: ['jobs'] }))
+      .catch((error) => toast({ tone: 'danger', title: 'Could not queue job', description: error instanceof Error ? error.message : String(error) }));
   };
-  const matchSelected = () => enqueue('match-series', { seriesIds: [...checked] });
-  const refreshSelected = () => enqueue('sync-series', { seriesIds: [...checked] });
-  const clearOverrides = () => enqueue('clear-overrides', selected !== null ? { libraryId: selected } : {});
   const setAutoMatch = (c: boolean) => {
     if (selected === null) return;
-    void api.saveLibraryOverride(selected, { autoMatch: c }).then(() => qc.invalidateQueries({ queryKey: ['library-override', selected] }));
+    void api.saveLibraryOverride(selected, { autoMatch: c })
+      .then(() => qc.invalidateQueries({ queryKey: ['library-override', selected] }))
+      .catch((error) => toast({ tone: 'danger', title: 'Could not update auto-match', description: error instanceof Error ? error.message : String(error) }));
   };
 
   const unmatch = useMutation({
@@ -166,6 +174,7 @@ export function Libraries() {
     onSuccess: (_res, row) => {
       qc.invalidateQueries({ queryKey: ['library-series'] });
       qc.invalidateQueries({ queryKey: ['libraries'] });
+      setUnmatchTarget(null);
       toast({ tone: 'success', title: 'Unmatched', description: row.name });
     },
     onError: (e) => toast({ tone: 'danger', title: 'Unmatch failed', description: e instanceof Error ? e.message : String(e) }),
@@ -174,30 +183,31 @@ export function Libraries() {
   const matchedInLib = rows.filter((r) => r.status === 'matched').length;
 
   return (
-    <div className="flex h-full flex-col gap-4">
-      {/* View tabs — one per Kavita library, same treatment as Settings/Downloader */}
-      {libs.data && libs.data.length > 0 ? (
-        <div className="flex items-end gap-4 self-start border-b border-border-2">
-          {libs.data.map((lib) => (
-            <button
-              key={lib.id}
-              type="button"
-              onClick={() => pickLibrary(lib.id)}
-              className={cn(
-                '-mb-px border-b-2 px-1 pb-2 text-sm font-medium transition-colors',
-                selected === lib.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
-              )}
-            >
-              {lib.name}
-            </button>
-          ))}
-          <div className="ml-auto flex items-center gap-2 pb-1.5">
-            <Button size="sm" variant="outline" onClick={() => enqueue('match-unmatched', { libraryId: selected })} disabled={selected === null}>
-              <Play className="h-3.5 w-3.5" /> Match all unmatched
-            </Button>
-            <Button size="sm" onClick={() => enqueue('scan-new', { libraryId: selected })} disabled={selected === null}>
-              <RefreshCw className="h-3.5 w-3.5" /> Refresh Kavita Library
-            </Button>
+    <div className="flex min-w-0 flex-col gap-4">
+      <PageHeader icon={<BookOpen className="h-5 w-5" />} title="Libraries" subtitle="Review matches and manage Kavita metadata." />
+      {/* View tabs — one per Kavita library. */}
+      {libs.isError ? (
+        <Card><ErrorState title="Could not load libraries" description={libs.error instanceof Error ? libs.error.message : String(libs.error)} onRetry={() => void libs.refetch()} /></Card>
+      ) : libs.data && libs.data.length > 0 ? (
+        <div className="flex flex-col gap-2 border-b border-border-2 lg:flex-row lg:items-end">
+          <div role="tablist" aria-label="Kavita libraries" className="flex max-w-full gap-4 overflow-x-auto">
+            {libs.data.map((lib) => (
+              <button
+                key={lib.id}
+                type="button"
+                role="tab"
+                aria-selected={selected === lib.id}
+                tabIndex={selected === lib.id ? 0 : -1}
+                onClick={() => pickLibrary(lib.id)}
+                className={cn('-mb-px shrink-0 border-b-2 px-1 pb-2 text-sm font-medium transition-colors', selected === lib.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground')}
+              >
+                {lib.name}
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 pb-2 lg:ml-auto lg:flex-nowrap">
+            <Button size="sm" variant="outline" className="flex-1 sm:flex-none" onClick={() => enqueue('match-unmatched', { libraryId: selected })} disabled={selected === null}><Play className="h-3.5 w-3.5" /> Match all unmatched</Button>
+            <Button size="sm" className="flex-1 sm:flex-none" onClick={() => enqueue('scan-new', { libraryId: selected })} disabled={selected === null}><RefreshCw className="h-3.5 w-3.5" /> Refresh library</Button>
           </div>
         </div>
       ) : (
@@ -213,23 +223,23 @@ export function Libraries() {
           </Card>
         ) : (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h1 className="text-lg font-semibold">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h1>
-                <p className="text-xs text-muted">
+                <h2 className="text-lg font-semibold">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h2>
+                <p className="text-sm text-muted">
                   {matchedInLib} matched · {rows.length - matchedInLib} pending
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                <label className="flex cursor-pointer select-none items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-xs font-medium text-muted" title="Automatically match new series in this library during scans">
+              <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:justify-end">
+                <label className="flex cursor-pointer select-none items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-xs font-medium text-muted">
                   Auto-match
-                  <Switch checked={override.data?.autoMatch ?? true} onCheckedChange={setAutoMatch} />
+                  <Switch aria-label="Automatically match new series" checked={override.data?.autoMatch ?? true} onCheckedChange={setAutoMatch} />
                 </label>
-                <div className="relative">
+                <div className="relative min-w-44 flex-1 sm:flex-none">
                   <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted" />
-                  <Input placeholder="Filter series…" value={query} onChange={(e) => setQuery(e.target.value)} className="w-52 pl-8" />
+                  <Input aria-label="Filter series" placeholder="Filter series…" value={query} onChange={(e) => setQuery(e.target.value)} className="w-full pl-8 sm:w-52" />
                 </div>
-                <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-40">
+                <Select aria-label="Filter by match status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-full sm:w-44">
                   <option value="all">All</option>
                   <option value="matched">Matched</option>
                   <option value="unmatched">Unmatched</option>
@@ -238,10 +248,10 @@ export function Libraries() {
                   <option value="low-score">Low confidence (&lt;80%)</option>
                 </Select>
                 <div className="flex overflow-hidden rounded-md border border-border-2">
-                  <button onClick={() => setView('grid')} className={cn('p-2', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
+                  <button type="button" aria-label="Grid view" aria-pressed={view === 'grid'} onClick={() => setView('grid')} className={cn('flex h-9 w-9 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
                     <LayoutGrid className="h-4 w-4" />
                   </button>
-                  <button onClick={() => setView('table')} className={cn('p-2', view === 'table' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
+                  <button type="button" aria-label="Table view" aria-pressed={view === 'table'} onClick={() => setView('table')} className={cn('flex h-9 w-9 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', view === 'table' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
                     <Table2 className="h-4 w-4" />
                   </button>
                 </div>
@@ -251,17 +261,8 @@ export function Libraries() {
             {checked.size > 0 && (
               <div className="flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border border-border-2 bg-surface-2 p-2 shadow-lg shadow-black/20">
                 <span className="px-2 text-xs text-muted">{checked.size} selected</span>
-                <Button size="sm" onClick={matchSelected}>
-                  <Sparkles className="h-3.5 w-3.5" /> Match selected
-                </Button>
                 <Button size="sm" variant="secondary" onClick={() => setMergeOpen(true)} disabled={checked.size < 2} title={checked.size < 2 ? 'Select at least two series' : undefined}>
                   <Combine className="h-3.5 w-3.5" /> Merge selected
-                </Button>
-                <Button size="sm" variant="secondary" onClick={refreshSelected}>
-                  <RefreshCw className="h-3.5 w-3.5" /> Force refresh
-                </Button>
-                <Button size="sm" variant="ghost" onClick={clearOverrides}>
-                  <Eraser className="h-3.5 w-3.5" /> Clear overrides
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => setChecked(new Set())}>
                   Clear selection
@@ -269,7 +270,9 @@ export function Libraries() {
               </div>
             )}
 
-            {series.isLoading ? (
+            {series.isError ? (
+              <Card><ErrorState title="Could not load series" description={series.error instanceof Error ? series.error.message : String(series.error)} onRetry={() => void series.refetch()} /></Card>
+            ) : series.isLoading ? (
               <div className="flex flex-1 items-center justify-center gap-2 py-16 text-muted">
                 <Spinner /> Loading series…
               </div>
@@ -278,8 +281,8 @@ export function Libraries() {
                 <EmptyState title="No series" description="No series match the current filters." />
               </Card>
             ) : view === 'grid' ? (
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-                {filtered.map((r, i) => (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+                {visibleRows.map((r, i) => (
                   <Card
                     key={r.id}
                     style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
@@ -306,10 +309,10 @@ export function Libraries() {
                       title={checked.has(r.id) ? 'Deselect series' : 'Select series'}
                       aria-pressed={checked.has(r.id)}
                       className={cn(
-                        'card-check-btn absolute bottom-2 left-2 z-30 flex h-6 w-6 items-center justify-center rounded-full border transition-all duration-150',
+                        'absolute bottom-2 left-2 z-30 flex h-8 w-8 items-center justify-center rounded-full border bg-black/60 transition-all duration-150',
                         checked.has(r.id)
                           ? 'card-check-btn-checked border-primary bg-primary text-white'
-                          : 'border-white/50 bg-black/50 text-transparent hover:border-primary hover:text-primary/70',
+                          : 'border-white/50 text-white/70 hover:border-primary hover:text-primary',
                       )}
                     >
                       <Check className="h-3.5 w-3.5" />
@@ -346,15 +349,16 @@ export function Libraries() {
                 ))}
               </div>
             ) : (
-              <Card className="overflow-hidden">
-                <table className="w-full text-sm">
+              <Card className="overflow-x-auto">
+                <table className="min-w-[760px] w-full text-sm">
                   <thead className="border-b border-border text-xs text-muted">
                     <tr>
                       <th className="w-10 p-2">
                         <input
                           type="checkbox"
                           checked={allChecked}
-                          onChange={() => setChecked(allChecked ? new Set() : new Set(filtered.map((r) => r.id)))}
+                          onChange={() => setChecked(allChecked ? new Set([...checked].filter((id) => !visibleRows.some((r) => r.id === id))) : new Set([...checked, ...visibleRows.map((r) => r.id)]))}
+                          aria-label="Select all series on this page"
                           className="h-4 w-4 accent-[var(--color-primary)]"
                         />
                       </th>
@@ -367,10 +371,10 @@ export function Libraries() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.map((r) => (
+                    {visibleRows.map((r) => (
                       <tr key={r.id} className="border-b border-border last:border-0 hover:bg-surface-2/50">
                         <td className="p-2">
-                          <input type="checkbox" checked={checked.has(r.id)} onChange={() => toggleCheck(r.id)} className="h-4 w-4 accent-[var(--color-primary)]" />
+                          <input type="checkbox" aria-label={`Select ${r.name}`} checked={checked.has(r.id)} onChange={() => toggleCheck(r.id)} className="h-4 w-4 accent-[var(--color-primary)]" />
                         </td>
                         <td className="p-2">
                           <div className="flex items-center gap-2">
@@ -394,7 +398,7 @@ export function Libraries() {
                           )}
                         </td>
                         <td className="p-2 text-muted">
-                          {r.matchScore ? (
+                          {typeof r.matchScore === 'number' ? (
                             <span
                               className={cn('tabular-nums', r.status === 'matched' && r.matchScore < LOW_CONFIDENCE && 'font-medium text-warning')}
                               title={r.status === 'matched' && r.matchScore < LOW_CONFIDENCE ? `Low confidence (${Math.round(r.matchScore * 100)}%) — review via the “Low confidence” filter` : undefined}
@@ -415,7 +419,7 @@ export function Libraries() {
                               </>
                             ) : null}
                             {r.providerId && (
-                              <Button size="sm" variant="ghost" onClick={() => unmatch.mutate(r)} disabled={unmatch.isPending} title="Remove the match and clear metadata and covers previously applied by H-Tosho from Kavita">
+                              <Button size="sm" variant="ghost" onClick={() => setUnmatchTarget(r)} title="Remove this match and remove metadata and covers previously applied by H-Tosho from Kavita">
                                 <Unlink className="h-3.5 w-3.5" /> Unmatch
                               </Button>
                             )}
@@ -433,10 +437,31 @@ export function Libraries() {
                 </table>
               </Card>
             )}
+            {filtered.length > SERIES_PAGE_SIZE && (
+              <nav aria-label="Series pages" className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                <Button size="sm" variant="outline" disabled={currentPage === 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+                  <ChevronLeft className="h-3.5 w-3.5" /> Previous
+                </Button>
+                <span className="text-sm tabular-nums text-muted">Page {currentPage} of {pageCount}</span>
+                <Button size="sm" variant="outline" disabled={currentPage === pageCount} onClick={() => setPage((p) => Math.min(pageCount, p + 1))}>
+                  Next <ChevronRight className="h-3.5 w-3.5" />
+                </Button>
+              </nav>
+            )}
           </>
         )}
       </div>
 
+      <ConfirmDialog
+        open={unmatchTarget !== null}
+        title="Unmatch series?"
+        description={unmatchTarget ? `This removes the match and removes metadata and covers previously applied by H-Tosho from “${unmatchTarget.name}”.` : ''}
+        confirmLabel="Unmatch"
+        danger
+        pending={unmatch.isPending}
+        onOpenChange={(open) => { if (!open && !unmatch.isPending) setUnmatchTarget(null); }}
+        onConfirm={() => { if (unmatchTarget) unmatch.mutate(unmatchTarget); }}
+      />
       {identify && (
         <IdentifyModal
           seriesId={identify.id}
