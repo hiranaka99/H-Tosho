@@ -94,8 +94,8 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
   const save = useMutation({
     mutationFn: () =>
       mode === 'raw'
-        ? api.enqueue('edit-comicinfo', { path: file!, xml: rawText })
-        : api.enqueue('edit-comicinfo', { path: file!, fields: Object.fromEntries(changedFields.map((k) => [k, values[k]])) }),
+        ? api.enqueue('edit-comicinfo', { path: file!, xml: rawText, ...(seriesId !== undefined ? { seriesId } : {}) })
+        : api.enqueue('edit-comicinfo', { path: file!, fields: Object.fromEntries(changedFields.map((k) => [k, values[k]])), ...(seriesId !== undefined ? { seriesId } : {}) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['jobs'] });
       toast({ tone: 'success', title: 'ComicInfo save queued', description: `${file} — check the Jobs page` });

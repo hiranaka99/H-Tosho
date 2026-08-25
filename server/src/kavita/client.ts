@@ -325,6 +325,72 @@ export class KavitaClient {
     if (patch.webLinks !== undefined) metadata.webLinks = patch.webLinks;
   }
 
+  /** Remove fields previously applied by H-Tosho while preserving unrelated user metadata. */
+  async removeSeriesMetadata(seriesId: number, applied: SeriesMetadataPayload, fields: readonly string[]): Promise<void> {
+    const remove = new Set(fields);
+    if ((remove.has('name') && applied.name !== undefined) || (remove.has('sortName') && applied.sortName !== undefined)) {
+      const current = await this.getSeriesDto(seriesId);
+      const same = (left: string | null | undefined, right: string | undefined): boolean =>
+        right !== undefined && (left ?? '').trim().toLowerCase() === right.trim().toLowerCase();
+      const update: KavitaUpdateSeriesDto = {
+        id: seriesId,
+        name: current.name ?? null,
+        localizedName: current.localizedName ?? null,
+        sortName: current.sortName ?? null,
+        coverImageLocked: current.coverImageLocked ?? false,
+        nameLocked: false,
+        sortNameLocked: false,
+        localizedNameLocked: current.localizedNameLocked ?? false,
+        metadataProviderOverride: current.metadataProviderOverride ?? null,
+        aniListId: current.aniListId ?? null,
+        malId: current.malId ?? null,
+        hardcoverId: current.hardcoverId ?? null,
+        metronId: current.metronId ?? null,
+        comicVineId: current.comicVineId ?? null,
+        mangaBakaId: current.mangaBakaId ?? null,
+        cbrId: current.cbrId ?? null,
+      };
+      await this.postJson('/Series/update', update, `Clear series ${seriesId} identity metadata`);
+    }
+
+    if ([...remove].some((field) => field !== 'name' && field !== 'sortName')) {
+      const metadata = this.normalizeMetadata(await this.getSeriesMetadata(seriesId), seriesId);
+      const removeTags = (current: KavitaTagDto[], values?: string[]): KavitaTagDto[] => {
+        const removed = new Set((values ?? []).map((value) => value.trim().toLowerCase()));
+        return current.filter((item) => !removed.has((item.title ?? '').trim().toLowerCase()));
+      };
+      const removePeople = (current: KavitaPersonDto[], values?: string[]): KavitaPersonDto[] => {
+        const removed = new Set((values ?? []).map((value) => value.trim().toLowerCase()));
+        return current.filter((item) => !removed.has((item.name ?? '').trim().toLowerCase()));
+      };
+      const same = (left: string | null | undefined, right: string | undefined): boolean =>
+        right !== undefined && (left ?? '').trim().toLowerCase() === right.trim().toLowerCase();
+      if (remove.has('summary') && same(metadata.summary, applied.summary)) metadata.summary = '';
+      if (remove.has('genres')) metadata.genres = removeTags(metadata.genres ?? [], applied.genres);
+      if (remove.has('tags')) metadata.tags = removeTags(metadata.tags ?? [], applied.tags);
+      if (remove.has('writers')) metadata.writers = removePeople(metadata.writers ?? [], applied.writers);
+      if (remove.has('artists')) metadata.pencillers = removePeople(metadata.pencillers ?? [], applied.artists);
+      if (remove.has('releaseYear') && metadata.releaseYear === applied.releaseYear) metadata.releaseYear = 0;
+      if (remove.has('language') && same(metadata.language, applied.language)) metadata.language = '';
+      if (remove.has('publicationStatus') && metadata.publicationStatus === applied.publicationStatus) metadata.publicationStatus = 0;
+      if (remove.has('webLinks') && same(metadata.webLinks, applied.webLinks)) metadata.webLinks = '';
+      if (remove.has('summary')) metadata.summaryLocked = false;
+      if (remove.has('genres')) metadata.genresLocked = false;
+      if (remove.has('tags')) metadata.tagsLocked = false;
+      if (remove.has('writers')) metadata.writerLocked = false;
+      if (remove.has('artists')) metadata.pencillerLocked = false;
+      if (remove.has('releaseYear')) metadata.releaseYearLocked = false;
+      if (remove.has('language')) metadata.languageLocked = false;
+      if (remove.has('publicationStatus')) metadata.publicationStatusLocked = false;
+      await this.postJson('/Series/metadata', { seriesMetadata: metadata } satisfies KavitaUpdateSeriesMetadataDto, `Clear series ${seriesId} metadata`);
+    }
+  }
+
+  /** Clear H-Tosho's custom series cover and unlock Kavita's cover selection. */
+  async resetSeriesCover(seriesId: number): Promise<void> {
+    await this.postJson('/Upload/series', { id: seriesId, url: '', lockCover: false } satisfies KavitaUploadCoverFileDto, `Reset series ${seriesId} cover`);
+  }
+
   /**
    * POST /api/Upload/series with a base64 image payload. This is the cover
    * replacement shape accepted across Kavita v0.9 builds; newer versions also
@@ -382,6 +448,16 @@ export class KavitaClient {
   /** POST /api/Library/scan?libraryId={id} - rescan a single library for new media. */
   async scanLibrary(libraryId: number): Promise<void> {
     await this.postJson(`/Library/scan?libraryId=${encodeURIComponent(libraryId)}`, {}, `Scan library ${libraryId}`);
+  }
+
+  /** POST /api/Series/scan — force Kavita to re-read this series' files. */
+  async scanSeries(libraryId: number, seriesId: number): Promise<void> {
+    await this.postJson('/Series/scan', { libraryId, seriesId, forceUpdate: true, forceColorscape: false }, `Scan series ${seriesId}`);
+  }
+
+  /** Clear a custom volume cover and unlock Kavita's generated cover. */
+  async resetVolumeCover(volumeId: number): Promise<void> {
+    await this.postJson('/Upload/volume', { id: volumeId, url: '', lockCover: false } satisfies KavitaUploadCoverFileDto, `Reset volume ${volumeId} cover`);
   }
 
   /** DELETE /api/Series/{seriesId} — removes the series record; files on disk are untouched. */

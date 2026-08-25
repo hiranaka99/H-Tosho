@@ -20,13 +20,21 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-/** Stub the single Kavita call the endpoint makes (GET /api/Series/{id}). */
-function stubKavita(): void {
-  globalThis.fetch = (async (input: unknown) => {
+function stubKavita(requests: Array<{ url: string; init?: RequestInit }> = []): void {
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
     const url = String(input);
+    requests.push({ url, init });
     const m = url.match(/\/api\/Series\/(\d+)$/);
-    if (!m) throw new Error('unexpected fetch in unmatch test: ' + url);
-    return Response.json({ id: Number(m[1]), libraryId: 1, name: `Series ${m[1]}` });
+    if (m) return Response.json({ id: Number(m[1]), libraryId: 1, name: `Series ${m[1]}`, sortName: `Series ${m[1]}` });
+    if (url.includes('/api/Series/metadata?')) return Response.json({
+      id: 1, seriesId: 7, summary: 'Provider summary', genres: [{ id: 1, title: 'Action' }], tags: [{ id: 2, title: 'Provider tag' }, { id: 3, title: 'User tag' }],
+      writers: [{ id: 4, name: 'Provider Writer' }], coverArtists: [], publishers: [], characters: [], pencillers: [{ id: 5, name: 'Provider Artist' }], inkers: [], imprints: [], colorists: [], letterers: [], editors: [], translators: [], teams: [], locations: [],
+      ageRating: 0, releaseYear: 2024, language: 'en', maxCount: 0, totalCount: 0, publicationStatus: 2, webLinks: 'https://provider.example',
+      languageLocked: true, summaryLocked: true, ageRatingLocked: false, publicationStatusLocked: true, genresLocked: true, tagsLocked: true, writerLocked: true, characterLocked: false, coloristLocked: false, editorLocked: false, inkerLocked: false, imprintLocked: false, lettererLocked: false, pencillerLocked: true, publisherLocked: false, translatorLocked: false, teamLocked: false, locationLocked: false, coverArtistLocked: false, releaseYearLocked: true,
+    });
+    if (url.includes('/api/Series/volumes?')) return Response.json([{ id: 71, minNumber: 1, maxNumber: 1 }]);
+    if (init?.method === 'POST') return Response.json({ ok: true });
+    throw new Error('unexpected fetch in unmatch test: ' + url);
   }) as typeof fetch;
 }
 
@@ -36,29 +44,59 @@ describe('DELETE /series/:id/match (manual unmatch)', () => {
     assert.equal(res.status, 503);
   });
 
-  it('drops the match row and records an unmatched history entry', async () => {
-    stubKavita();
+  it('removes H-Tosho metadata and covers before dropping the match', async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    stubKavita(requests);
     setKavitaConnection({ baseUrl: 'http://kavita.test', apiKey: 'test-key' });
     getDb()
       .insert(schema.seriesMatches)
-      .values({ kavitaSeriesId: 7, status: 'matched', providerId: 'mangadex', providerSeriesId: 'md-1', matchScore: 0.9 })
+      .values({
+        kavitaSeriesId: 7,
+        status: 'matched',
+        providerId: 'mangadex',
+        providerSeriesId: 'md-1',
+        matchScore: 0.9,
+        metadataJson: JSON.stringify({
+          providerId: 'mangadex', providerSeriesId: 'md-1', title: 'Provider title', summary: 'Provider summary',
+          genres: ['Action'], tags: ['Provider tag'], writers: ['Provider Writer'], artists: ['Provider Artist'],
+          year: 2024, language: 'en', status: 'COMPLETED', url: 'https://provider.example', volumeCovers: [{ number: 1, url: 'https://covers.example/1.jpg' }],
+        }),
+      })
       .run();
+    getDb().insert(schema.syncHistory).values({
+      kavitaSeriesId: 7,
+      seriesTitle: 'Series 7',
+      action: 'matched',
+      detailsJson: JSON.stringify({ pushed: ['name', 'summary', 'genres', 'tags', 'writers', 'artists', 'releaseYear', 'language', 'publicationStatus', 'webLinks'], coverUpdated: true, volumeCoversUpdated: 1 }),
+    }).run();
 
     const res = await api.request('/series/7/match', { method: 'DELETE' });
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, removed: true });
+    assert.equal(getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, 7)).get(), undefined);
 
-    const row = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, 7)).get();
-    assert.equal(row, undefined);
+    const identity = requests.find((request) => request.url.endsWith('/api/Series/update'));
+    assert.equal(JSON.parse(String(identity?.init?.body)).nameLocked, false);
+    const metadataRequest = requests.find((request) => request.url.endsWith('/api/Series/metadata') && request.init?.method === 'POST');
+    const metadata = JSON.parse(String(metadataRequest?.init?.body)).seriesMetadata;
+    assert.equal(metadata.summary, '');
+    assert.deepEqual(metadata.genres, []);
+    assert.deepEqual(metadata.tags, [{ id: 3, title: 'User tag' }]);
+    assert.deepEqual(metadata.writers, []);
+    assert.deepEqual(metadata.pencillers, []);
+    assert.equal(metadata.releaseYear, 0);
+    assert.equal(metadata.language, '');
+    assert.equal(metadata.publicationStatus, 0);
+    assert.equal(metadata.webLinks, '');
+    const coverResets = requests.filter((request) => request.url.includes('/api/Upload/'));
+    assert.deepEqual(coverResets.map((request) => JSON.parse(String(request.init?.body))), [
+      { id: 7, url: '', lockCover: false },
+      { id: 71, url: '', lockCover: false },
+    ]);
+    assert.ok(requests.some((request) => request.url.endsWith('/api/Series/scan')));
 
-    const history = getDb().select().from(schema.syncHistory).all();
-    assert.equal(history.length, 1);
-    assert.equal(history[0].kavitaSeriesId, 7);
-    assert.equal(history[0].seriesTitle, 'Series 7');
-    assert.equal(history[0].action, 'unmatched');
-    const details = JSON.parse(history[0].detailsJson ?? '{}') as { providerId: string; matchScore: number };
-    assert.equal(details.providerId, 'mangadex');
-    assert.equal(details.matchScore, 0.9);
+    const history = getDb().select().from(schema.syncHistory).where(eq(schema.syncHistory.kavitaSeriesId, 7)).all();
+    assert.equal(history.at(-1)?.action, 'unmatched');
   });
 
   it('is a no-op when the series has no match row', async () => {
@@ -66,9 +104,8 @@ describe('DELETE /series/:id/match (manual unmatch)', () => {
 
     const res = await api.request('/series/8/match', { method: 'DELETE' });
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { ok: true, removed: false });
-    // Only the history entry from the previous test exists.
-    assert.equal(getDb().select().from(schema.syncHistory).all().length, 1);
+    // Only the successful unmatch above added history.
+    assert.equal(getDb().select().from(schema.syncHistory).all().filter((entry) => entry.action === 'unmatched').length, 1);
   });
 
   it('rejects invalid series ids', async () => {

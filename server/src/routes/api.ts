@@ -8,6 +8,7 @@ import { KavitaClient } from '../kavita/client.js';
 import { KAVITA_OPENAPI_VERSION, type KavitaLibrary, type KavitaSeries } from '../kavita/types.js';
 import { getProvider } from '../providers/registry.js';
 import { mangaDexProvider } from '../providers/mangadex.js';
+import type { SeriesMetadata } from '../providers/types.js';
 import {
   getCredentialMap,
   getKavitaConnection,
@@ -28,7 +29,7 @@ import {
 import { jobQueue, type JobType } from '../jobs/queue.js';
 import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
 import { catalogCandidates, catalogStatus, isMatureAgeRating, resolveCatalogCover } from '../match/mangadexCatalog.js';
-import { applyToKavita, checkAlignment, fetchCover } from '../services/sync.js';
+import { applyToKavita, buildSeriesPayload, checkAlignment, fetchCover } from '../services/sync.js';
 import { invalidateSeriesArtists, kavitaSeriesArtists } from '../services/seriesArtists.js';
 import { testNotification } from '../notify/dispatcher.js';
 import { getDownloaderSettings, setDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
@@ -388,12 +389,7 @@ api.post('/series/:id/apply', async (c) => {
   }
 });
 
-/**
- * Manually unmatch a series: drops the local match row so the series reports
- * as unmatched again and scans will consider it for re-matching. Metadata
- * already pushed to Kavita stays in place (Kavita has no revert API) — re-identify
- * and apply a different candidate to overwrite it.
- */
+/** Remove the local match and metadata/cover that its latest successful sync applied. */
 api.delete('/series/:id/match', async (c) => {
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
@@ -404,13 +400,33 @@ api.delete('/series/:id/match', async (c) => {
     const db = getDb();
     const row = db.select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
     if (row) {
+      const history = db
+        .select()
+        .from(schema.syncHistory)
+        .where(eq(schema.syncHistory.kavitaSeriesId, seriesId))
+        .orderBy(desc(schema.syncHistory.id))
+        .all();
+      const details = history.map((entry) => parseHistoryDetails(entry.detailsJson));
+      const pushed = [...new Set(details.flatMap((entry) =>
+        Array.isArray(entry?.pushed) ? entry.pushed.filter((field): field is string => typeof field === 'string') : [],
+      ))];
+      const metadata = row.metadataJson ? JSON.parse(row.metadataJson) as SeriesMetadata : null;
+      if (metadata && pushed.length > 0) await client.removeSeriesMetadata(seriesId, buildSeriesPayload(metadata), pushed);
+      const coverUpdated = details.some((entry) => entry?.coverUpdated === true);
+      if (coverUpdated) await client.resetSeriesCover(seriesId);
+      const volumeCoversUpdated = details.some((entry) => typeof entry?.volumeCoversUpdated === 'number' && entry.volumeCoversUpdated > 0);
+      if (volumeCoversUpdated) {
+        for (const volume of await client.getVolumes(seriesId)) await client.resetVolumeCover(volume.id);
+      }
+      await client.scanSeries(series.libraryId, seriesId);
+
       db.delete(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).run();
       db.insert(schema.syncHistory)
         .values({
           kavitaSeriesId: seriesId,
           seriesTitle: series.name,
           action: 'unmatched',
-          detailsJson: JSON.stringify({ providerId: row.providerId, matchScore: row.matchScore }),
+          detailsJson: JSON.stringify({ providerId: row.providerId, matchScore: row.matchScore, removedFields: pushed, coverReset: coverUpdated, volumeCoversReset: volumeCoversUpdated }),
         })
         .run();
     }
@@ -557,9 +573,13 @@ api.put('/settings/poll-interval', async (c) => {
 api.get('/settings/downloader', (c) => c.json(getDownloaderSettings()));
 
 api.put('/settings/downloader', async (c) => {
-  const body = (await c.req.json()) as DownloaderSettings;
-  setDownloaderSettings({ ...getDownloaderSettings(), ...body });
-  return c.json({ ok: true, settings: getDownloaderSettings() });
+  const body = (await c.req.json().catch(() => null)) as Partial<DownloaderSettings> | null;
+  if (!body || typeof body.downloadDirectory !== 'string') {
+    return c.json({ error: 'downloadDirectory is required' }, 400);
+  }
+  const settings = { ...getDownloaderSettings(), ...body };
+  setDownloaderSettings(settings);
+  return c.json({ ok: true, settings });
 });
 
 /** List the available doujinshi sources for the UI source selector. */

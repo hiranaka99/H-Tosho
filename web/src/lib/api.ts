@@ -402,6 +402,7 @@ export const api = {
   downloaderSettings: () => request<DownloaderSettings>('/settings/downloader'),
   saveDownloaderSettings: (s: DownloaderSettings) =>
     request<{ ok: boolean; settings: DownloaderSettings }>('/settings/downloader', {
+      method: 'PUT',
       body: JSON.stringify(s),
     }),
   doujinProviders: () => request<DoujinProvider[]>('/doujin/providers'),

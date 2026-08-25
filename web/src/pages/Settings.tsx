@@ -326,7 +326,14 @@ function DownloaderSettingsCard() {
     if (dl.data) setDlSettings(dl.data);
   }, [dl.data]);
   const flash = useFlash(() => qc.invalidateQueries({ queryKey: ['downloader-settings'] }));
-  const save = useMutation({ mutationFn: (s: DownloaderSettings) => api.saveDownloaderSettings(s) });
+  const save = useMutation({
+    mutationFn: (s: DownloaderSettings) => api.saveDownloaderSettings(s),
+    onSuccess: (result) => {
+      setDlSettings(result.settings);
+      flash.flash();
+    },
+    onError: (error) => toast({ title: 'Failed to save downloader settings', description: error instanceof Error ? error.message : String(error), tone: 'danger' }),
+  });
 
   if (!dlSettings) {
     return (
@@ -342,7 +349,7 @@ function DownloaderSettingsCard() {
   return (
     <Card className="animate-fade-up">
       <SectionHeader icon={<Download className="h-4 w-4" />} title="Doujinshi downloader">
-        <SaveButton label={flash.saved ? 'Saved' : 'Save'} onClick={() => { save.mutate(dlSettings); flash.flash(); }} disabled={save.isPending} />
+        <SaveButton label={flash.saved ? 'Saved' : 'Save'} onClick={() => save.mutate(dlSettings)} disabled={save.isPending} />
       </SectionHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-col gap-1">

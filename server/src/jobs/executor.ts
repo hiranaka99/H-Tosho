@@ -166,6 +166,7 @@ async function matchAndApply(
       score: best.score,
       pushed: result.pushed,
       coverUpdated: result.coverUpdated,
+      volumeCoversUpdated: result.volumeCoversUpdated,
       errors: result.errors,
     });
     base.errors = result.errors;
@@ -214,31 +215,14 @@ function lastSegment(p: string): string {
   return p.split(/[\\/]+/).filter(Boolean).pop() ?? '';
 }
 
-/**
- * Best-effort targeted Kavita rescan so changes under a folder show up. Never fails
- * the job — a dead/unconfigured Kavita or an unknown library just means the periodic
- * scan picks the change up later.
- */
-async function rescanLibraryContainingDir(dir: string, log: LogFn): Promise<void> {
+/** Best-effort Kavita refresh after a local ComicInfo edit. */
+async function rescanLibraryContainingDir(dir: string, log: LogFn, seriesName?: string): Promise<void> {
   try {
     const conn = getKavitaConnection();
     if (!conn.baseUrl || !conn.apiKey) return;
     const client = new KavitaClient(conn.baseUrl, conn.apiKey);
-    // Normalize separators — Kavita reports '/' while Windows paths use '\\'.
     const norm = (p: string): string => path.normalize(p).replace(/\\/g, '/');
     const libraries = await client.getLibraries();
-    // 1) Direct prefix match — works when H-Tosho and Kavita share one filesystem view.
-    const byPath = libraries.find((l) => l.path && norm(dir).startsWith(norm(l.path)));
-    if (byPath) {
-      await client.scanLibrary(byPath.id);
-      log('info', `Requested Kavita rescan of "${byPath.name}"`);
-      return;
-    }
-    // 2) Docker setups: Kavita sees container paths (/media/Doujins) while the host
-    // sees drive letters (Z:\Doujins), so prefix matching can never succeed. Fall
-    // back to name matching — the folder itself may be a series folder, or one of
-    // its ancestors may be a library root (a freshly merged folder has no Kavita
-    // series yet, so only ancestor names are knowable).
     const candidates = new Set<string>();
     let d = dir;
     for (let i = 0; i < 3; i++) {
@@ -249,19 +233,30 @@ async function rescanLibraryContainingDir(dir: string, log: LogFn): Promise<void
       if (parent === d) break;
       d = parent;
     }
+
     for (const lib of libraries) {
+      const directLibrary = Boolean(lib.path && norm(dir).startsWith(norm(lib.path)));
+      const libRootName = lib.path ? lastSegment(lib.path).toLowerCase() : '';
+      const matchingLibrary = directLibrary || Boolean(libRootName && candidates.has(libRootName));
       let series;
       try {
         series = await client.getSeries(lib.id);
       } catch {
-        continue; // one unreachable library must not block the rest
+        continue;
       }
-      const libRootName = lib.path ? lastSegment(lib.path).toLowerCase() : '';
-      const isLibRoot = Boolean(libRootName && candidates.has(libRootName));
       const hit = series.find((s) => s.folderPath && candidates.has(lastSegment(s.folderPath).toLowerCase()));
-      if (isLibRoot || hit) {
+      if (hit) {
+        if (seriesName) {
+          await client.updateSeriesMetadata(hit.id, { name: seriesName });
+          log('info', `Updated Kavita series name to "${seriesName}"`);
+        }
+        await client.scanSeries(lib.id, hit.id);
+        log('info', `Requested Kavita rescan of series "${seriesName || hit.name}"`);
+        return;
+      }
+      if (matchingLibrary) {
         await client.scanLibrary(lib.id);
-        log('info', `Requested Kavita rescan of "${lib.name}" (${isLibRoot ? 'library root' : 'series folder'})`);
+        log('info', `Requested Kavita rescan of "${lib.name}"`);
         return;
       }
     }
@@ -397,7 +392,21 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
     }
     await rewriteZipEntry(file, 'ComicInfo.xml', Buffer.from(xml, 'utf8'));
     log('info', `Wrote ComicInfo.xml into ${file}`);
-    await rescanLibraryContainingDir(path.dirname(file), log);
+    const editedSeriesName = parseComicInfo(xml).fields.Series?.trim();
+    if (job.payload.seriesId !== undefined) {
+      const client = connectedClientOrNull();
+      if (client) {
+        const series = await client.getSeriesById(job.payload.seriesId);
+        if (editedSeriesName) {
+          await client.updateSeriesMetadata(series.id, { name: editedSeriesName });
+          log('info', `Updated Kavita series name to "${editedSeriesName}"`);
+        }
+        await client.scanSeries(series.libraryId, series.id);
+        log('info', `Requested Kavita rescan of series "${editedSeriesName || series.name}"`);
+      }
+    } else {
+      await rescanLibraryContainingDir(path.dirname(file), log, editedSeriesName);
+    }
     return { processed: 1, matched: 0, failed: 0 };
   }
 

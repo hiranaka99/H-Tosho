@@ -231,20 +231,27 @@ describe('KavitaClient', () => {
   });
 
   it('targets the correct Kavita library scan endpoints', async () => {
-    const urls: string[] = [];
-    globalThis.fetch = async (input) => {
-      urls.push(String(input));
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = async (input, init) => {
+      requests.push({ url: String(input), init });
       return Response.json({ ok: true });
     };
 
     const client = new KavitaClient('https://kavita.example', 'secret');
     await client.scanLibrary(7);
+    await client.scanSeries(7, 42);
     await client.scanAllLibraries();
 
-    // A single-library scan is a query-parameter call; there is no /scan/{id} route.
-    assert.deepEqual(urls, [
+    assert.deepEqual(requests.map((request) => request.url), [
       'https://kavita.example/api/Library/scan?libraryId=7',
+      'https://kavita.example/api/Series/scan',
       'https://kavita.example/api/Library/scan-all',
     ]);
+    assert.deepEqual(JSON.parse(String(requests[1]?.init?.body)), {
+      libraryId: 7,
+      seriesId: 42,
+      forceUpdate: true,
+      forceColorscape: false,
+    });
   });
 });

@@ -415,7 +415,7 @@ export function Libraries() {
                               </>
                             ) : null}
                             {r.providerId && (
-                              <Button size="sm" variant="ghost" onClick={() => unmatch.mutate(r)} disabled={unmatch.isPending} title="Remove the match link; metadata already pushed to Kavita stays in place">
+                              <Button size="sm" variant="ghost" onClick={() => unmatch.mutate(r)} disabled={unmatch.isPending} title="Remove the match and clear metadata and covers previously applied by H-Tosho from Kavita">
                                 <Unlink className="h-3.5 w-3.5" /> Unmatch
                               </Button>
                             )}

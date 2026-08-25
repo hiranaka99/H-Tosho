@@ -27,6 +27,7 @@ const { searchCatalog, invalidateCatalogCache } = await import('../src/match/man
 const { enqueueMatchForNewSeries } = await import('../src/services/sync.js');
 const { autoMatch } = await import('../src/match/autoMatcher.js');
 const { titleSearchParts } = await import('../src/match/normalize.js');
+const { api } = await import('../src/routes/api.js');
 
 describe('fetchJson error contract', () => {
   it('throws on non-2xx by default', async () => {
@@ -67,6 +68,31 @@ describe('notification settings validation', () => {
     assert.equal(parseNotificationSettings({ discord: { enabled: true } }), null);
     const ok = parseNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://x' } });
     assert.ok(ok);
+  });
+});
+
+describe('downloader settings persistence', () => {
+  it('saves the submitted output directory', async () => {
+    const downloadDirectory = path.join(process.env.HTOSHO_DATA_DIR!, 'downloads');
+    const res = await api.request('/settings/downloader', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        downloadDirectory,
+        format: 'cbz',
+        maxConcurrentDownloads: 2,
+        maxImageConcurrency: 4,
+        requestDelayMs: 150,
+        autoSyncKavita: false,
+        nhentaiApiKey: '',
+        nhentaiBannedTags: [],
+      }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).settings.downloadDirectory, downloadDirectory);
+
+    const stored = await api.request('/settings/downloader');
+    assert.equal((await stored.json()).downloadDirectory, downloadDirectory);
   });
 });
 
