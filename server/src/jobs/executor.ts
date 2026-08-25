@@ -506,13 +506,33 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       // Kavita itself has scanned them.
       await runKavitaLibraryScan(client, libs, job.id, log);
       const known = new Set(getDb().select().from(schema.seriesMatches).all().map((r) => r.kavitaSeriesId));
+      const liveIds = new Set<number>();
       for (const lib of libs) {
-        // Libraries with auto-matching disabled are skipped by the scan; their
-        // series can still be matched manually via match-library / match-series.
-        if (getLibraryOverride(lib.id)?.autoMatch === false) continue;
         if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled();
         const series = (await client.getSeries(lib.id)) as { id: number; name: string }[];
-        for (const s of series) if (!known.has(s.id)) targets.push({ id: s.id, name: s.name, libraryId: lib.id });
+        // Libraries with auto-matching disabled are skipped by the scan; their
+        // series can still be matched manually via match-library / match-series.
+        const autoMatchEnabled = getLibraryOverride(lib.id)?.autoMatch !== false;
+        for (const s of series) {
+          liveIds.add(s.id);
+          if (autoMatchEnabled && !known.has(s.id)) targets.push({ id: s.id, name: s.name, libraryId: lib.id });
+        }
+      }
+      // Prune local match rows whose Kavita series no longer exists (deleted in
+      // Kavita, or re-imported under a new id after a folder rename/move). Stale
+      // rows would otherwise keep counting toward the low-confidence badge even
+      // though no library view can ever show them. Only safe on an unscoped
+      // scan: every library was enumerated above, so anything missing is gone.
+      if (job.payload.libraryId === undefined) {
+        const orphans = getDb().select().from(schema.seriesMatches).all().filter((r) => !liveIds.has(r.kavitaSeriesId));
+        if (orphans.length > 0) {
+          getDb()
+            .delete(schema.seriesMatches)
+            .where(inArray(schema.seriesMatches.kavitaSeriesId, orphans.map((r) => r.kavitaSeriesId)))
+            .run();
+          summary.pruned = orphans.length;
+          log('info', `Pruned ${orphans.length} match row(s) for series no longer present in Kavita`);
+        }
       }
       break;
     }
