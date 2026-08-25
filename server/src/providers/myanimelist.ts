@@ -87,7 +87,6 @@ class MyAnimeListProvider extends BaseProvider {
       providerId: this.id,
       providerSeriesId,
       title: node.title ?? 'Unknown',
-      sortTitle: node.title,
       year: node.start_date ? new Date(node.start_date).getFullYear() : undefined,
       releaseDate,
       summary: node.synopsis?.trim(),

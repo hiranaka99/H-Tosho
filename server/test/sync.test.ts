@@ -10,7 +10,6 @@ describe('Kavita metadata mapping', () => {
       providerId: 'anilist',
       providerSeriesId: '123',
       title: 'Example',
-      sortTitle: 'Example, The',
       releaseDate: '2024-05-10',
       summary: 'Summary',
       genres: ['Action'],
@@ -26,7 +25,6 @@ describe('Kavita metadata mapping', () => {
       buildSeriesPayload(metadata),
       {
         name: 'Example',
-        sortName: 'Example, The',
         summary: 'Summary',
         genres: ['Action'],
         tags: ['Found family'],

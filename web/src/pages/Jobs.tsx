@@ -149,7 +149,7 @@ export function Jobs() {
                   {visibleJobs.map((j) => (
                     <tr key={j.id} className="animate-fade-in cursor-pointer border-b border-border transition-colors duration-150 last:border-0 hover:bg-surface-2/50" onClick={() => setSelected(j)}>
                       <td className="p-2 text-muted">#{j.id}</td>
-                      <td className="p-2 font-medium">{jobLabel(j.type)}</td>
+                      <td className="p-2 font-medium">{jobLabel(j.type, j.payload)}</td>
                       <td className="p-2">
                         <JobStatus status={j.status} />
                       </td>
@@ -225,7 +225,7 @@ export function Jobs() {
                 active.map((j) => (
                   <div key={j.id} className={cn('animate-fade-up rounded-lg border p-3 transition-colors', j.status === 'running' ? 'border-primary/40 bg-primary/5' : 'border-border')}>
                     <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium">{jobLabel(j.type)}</span>
+                      <span className="text-sm font-medium">{jobLabel(j.type, j.payload)}</span>
                       <div className="flex items-center gap-2">
                         <JobStatus status={j.status} />
                         <Button size="sm" variant="ghost" onClick={() => cancelJob(j.id)}>

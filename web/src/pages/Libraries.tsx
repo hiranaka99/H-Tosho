@@ -442,7 +442,6 @@ export function Libraries() {
           seriesId={identify.id}
           current={{
             name: currentMeta.data?.series.name ?? identify.name,
-            sortName: currentMeta.data?.series.sortName,
             metadata: currentMeta.data?.kavita ?? null,
           }}
           match={currentMeta.data?.match ?? null}

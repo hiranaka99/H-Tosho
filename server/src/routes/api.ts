@@ -272,7 +272,7 @@ api.get('/series/:id/identify', async (c) => {
         try {
           const providerMeta = await fetchProviderMetadata(existingMatch.providerId, existingMatch.providerSeriesId, credentials);
           const kavitaMeta = await client.getSeriesMetadata(seriesId).catch(() => null);
-          updates.aligned = checkAlignment({ name: series.name, sortName: series.sortName, metadata: kavitaMeta }, providerMeta).aligned;
+          updates.aligned = checkAlignment({ name: series.name, metadata: kavitaMeta }, providerMeta).aligned;
         } catch {
           /* provider fetch failed — keep the stored flag */
         }
@@ -398,7 +398,7 @@ api.post('/series/:id/apply', async (c) => {
     let aligned = false;
     try {
       const kavitaMeta = await client.getSeriesMetadata(seriesId);
-      aligned = checkAlignment({ name: series.name, sortName: series.sortName, metadata: kavitaMeta }, meta).aligned;
+      aligned = checkAlignment({ name: series.name, metadata: kavitaMeta }, meta).aligned;
     } catch {
       /* series without a metadata row yet — stays unaligned */
     }

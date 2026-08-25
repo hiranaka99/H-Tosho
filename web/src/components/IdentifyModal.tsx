@@ -55,7 +55,6 @@ function detailsText(details: Record<string, unknown> | null): string {
 
 interface CurrentKavita {
   name: string;
-  sortName?: string;
   metadata: KavitaSeriesMetadata | null;
 }
 
@@ -343,7 +342,6 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     const candStatus = m?.status != null ? (CANDIDATE_STATUS[m.status] ?? null) : null;
     const rows: DiffRow[] = [
       { label: 'Title', current: current.name, candidate: resolvedTitle, field: 'title' },
-      { label: 'Sort title', current: current.sortName ?? '', candidate: m?.sortTitle ?? '', field: 'sortTitle' },
       {
         label: 'Year',
         current: k && k.releaseYear > 0 ? String(k.releaseYear) : '',

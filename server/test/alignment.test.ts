@@ -18,7 +18,6 @@ const meta: SeriesMetadata = {
   providerId: 'mangadex',
   providerSeriesId: 'md-1',
   title: 'Test Series',
-  sortTitle: 'test series',
   summary: 'A story about found family.',
   genres: ['Romance', 'Comedy'],
   tags: ['Found family', 'New tag'],
@@ -33,7 +32,6 @@ const meta: SeriesMetadata = {
 /** Kavita's side of a fully aligned series. */
 const alignedKavita = {
   name: 'test series',
-  sortName: 'TEST SERIES',
   metadata: {
     id: 1,
     seriesId: 10,
@@ -165,7 +163,6 @@ describe('checkAlignment', () => {
     // Kavita carries stale values in fields the provider leaves empty — they are not compared.
     const kavita = {
       name: 'Sparse Series',
-      sortName: 'whatever',
       metadata: { ...alignedKavita.metadata, summary: 'old text', releaseYear: 1999 } as KavitaSeriesMetadataDto,
     };
     const result = checkAlignment(kavita, sparse);
@@ -179,14 +176,8 @@ describe('checkAlignment', () => {
     assert.deepEqual(result.mismatched, ['releaseDate']);
   });
 
-  it('flags a missing sort title when the provider supplies one', () => {
-    const kavita = { ...alignedKavita, sortName: null };
-    const result = checkAlignment(kavita, meta);
-    assert.deepEqual(result.mismatched, ['sortTitle']);
-  });
-
   it('handles a series with no metadata row yet as unaligned', () => {
-    const result = checkAlignment({ name: 'Test Series', sortName: null, metadata: null }, meta);
+    const result = checkAlignment({ name: 'Test Series', metadata: null }, meta);
     assert.equal(result.aligned, false);
     assert.ok(result.mismatched.length > 0);
   });

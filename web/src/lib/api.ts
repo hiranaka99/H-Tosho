@@ -80,7 +80,6 @@ export interface KavitaSeriesView {
   id: number;
   libraryId: number;
   name: string;
-  sortName?: string;
   slug: string;
   bookCount: number;
   cover?: string;
@@ -145,7 +144,6 @@ export interface SeriesMetadata {
   providerId: string;
   providerSeriesId: string;
   title: string;
-  sortTitle?: string;
   titleOptions?: string[];
   year?: number;
   releaseDate?: string;

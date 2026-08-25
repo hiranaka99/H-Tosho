@@ -32,7 +32,6 @@ export interface SeriesMetadata {
   title: string;
   /** Provider-backed names offered when choosing the ComicInfo.Series value. */
   titleOptions?: string[];
-  sortTitle?: string;
   year?: number;
   releaseDate?: string;
   summary?: string;

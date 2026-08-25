@@ -181,7 +181,6 @@ export class KavitaClient {
       id: series.id,
       libraryId: series.libraryId,
       name: series.name?.trim() || `Series ${series.id}`,
-      sortName: series.sortName ?? undefined,
       slug: String(series.id),
       bookCount: 0,
       totalChapterCount: 0,
@@ -212,16 +211,16 @@ export class KavitaClient {
   /** Read, merge, and write using Kavita's split v0.9 update endpoints. */
   async updateSeriesMetadata(seriesId: number, patch: SeriesMetadataPayload, opts: UpdateMetadataOptions = {}): Promise<void> {
     const lock = opts.lockMetadata !== false;
-    if (patch.name !== undefined || patch.sortName !== undefined) {
+    if (patch.name !== undefined) {
       const current = await this.getSeriesDto(seriesId);
       const update: KavitaUpdateSeriesDto = {
         id: seriesId,
         name: patch.name ?? current.name ?? null,
         localizedName: current.localizedName ?? null,
-        sortName: patch.sortName ?? current.sortName ?? null,
+        sortName: current.sortName ?? null,
         coverImageLocked: current.coverImageLocked ?? false,
         nameLocked: patch.name !== undefined && lock ? true : (current.nameLocked ?? false),
-        sortNameLocked: patch.sortName !== undefined && lock ? true : (current.sortNameLocked ?? false),
+        sortNameLocked: current.sortNameLocked ?? false,
         localizedNameLocked: current.localizedNameLocked ?? false,
         metadataProviderOverride: current.metadataProviderOverride ?? null,
         aniListId: current.aniListId ?? null,
@@ -328,7 +327,7 @@ export class KavitaClient {
   /** Remove fields previously applied by H-Tosho while preserving unrelated user metadata. */
   async removeSeriesMetadata(seriesId: number, applied: SeriesMetadataPayload, fields: readonly string[]): Promise<void> {
     const remove = new Set(fields);
-    if ((remove.has('name') && applied.name !== undefined) || (remove.has('sortName') && applied.sortName !== undefined)) {
+    if (remove.has('name') && applied.name !== undefined) {
       const current = await this.getSeriesDto(seriesId);
       const same = (left: string | null | undefined, right: string | undefined): boolean =>
         right !== undefined && (left ?? '').trim().toLowerCase() === right.trim().toLowerCase();
@@ -339,7 +338,7 @@ export class KavitaClient {
         sortName: current.sortName ?? null,
         coverImageLocked: current.coverImageLocked ?? false,
         nameLocked: false,
-        sortNameLocked: false,
+        sortNameLocked: current.sortNameLocked ?? false,
         localizedNameLocked: current.localizedNameLocked ?? false,
         metadataProviderOverride: current.metadataProviderOverride ?? null,
         aniListId: current.aniListId ?? null,
@@ -353,7 +352,7 @@ export class KavitaClient {
       await this.postJson('/Series/update', update, `Clear series ${seriesId} identity metadata`);
     }
 
-    if ([...remove].some((field) => field !== 'name' && field !== 'sortName')) {
+    if ([...remove].some((field) => field !== 'name')) {
       const metadata = this.normalizeMetadata(await this.getSeriesMetadata(seriesId), seriesId);
       const removeTags = (current: KavitaTagDto[], values?: string[]): KavitaTagDto[] => {
         const removed = new Set((values ?? []).map((value) => value.trim().toLowerCase()));

@@ -221,7 +221,6 @@ export interface KavitaSeries {
   id: number;
   libraryId: number;
   name: string;
-  sortName?: string;
   slug: string;
   bookCount: number;
   totalChapterCount?: number;
@@ -254,7 +253,6 @@ export interface KavitaVolume {
 /** H-Tosho's patch model; the client merges it into Kavita's current DTOs. */
 export interface SeriesMetadataPayload {
   name?: string;
-  sortName?: string;
   summary?: string;
   genres?: string[];
   tags?: string[];

@@ -55,7 +55,7 @@ test('selected MangaDex title rewrites every chapter and requests a series scan'
       providerId: 'mangadex',
       providerSeriesId: '00faf1ea-5086-4d75-9621-5a597e523e21',
       selectedTitle: 'Live!: Soto de Koubi Shiyou!',
-      excludedFields: ['sortTitle', 'summary', 'genres', 'tags', 'writers', 'artists', 'releaseDate', 'language', 'status', 'url'],
+      excludedFields: ['summary', 'genres', 'tags', 'writers', 'artists', 'releaseDate', 'language', 'status', 'url'],
       cover: false,
     }),
   });

@@ -139,7 +139,7 @@ async function matchAndApply(
     try {
       const full = await client.getSeriesById(series.id);
       const kavitaMeta = await client.getSeriesMetadata(series.id);
-      aligned = checkAlignment({ name: full.name, sortName: full.sortName, metadata: kavitaMeta }, meta).aligned;
+      aligned = checkAlignment({ name: full.name, metadata: kavitaMeta }, meta).aligned;
     } catch {
       /* series without a metadata row yet — stays unaligned */
     }

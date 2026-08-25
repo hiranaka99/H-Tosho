@@ -416,7 +416,6 @@ class MangaDexProvider extends BaseProvider {
       providerSeriesId,
       title: typeof title === 'string' ? title : 'Unknown',
       titleOptions,
-      sortTitle: typeof romanizedTitle === 'string' ? romanizedTitle : undefined,
       year: a.year ? Number(a.year) : undefined,
       releaseDate,
       summary: summaryText ? summaryText : undefined,

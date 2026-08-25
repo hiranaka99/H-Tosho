@@ -194,6 +194,9 @@ describe('KavitaClient', () => {
     assert.equal(identity.localizedName, 'Localized title');
     assert.equal(identity.aniListId, 123);
     assert.equal(identity.nameLocked, true);
+    // Identity updates must pass the existing sort title through untouched.
+    assert.equal(identity.sortName, 'Old sort');
+    assert.equal(identity.sortNameLocked, false);
 
     const metadata = JSON.parse(String(requests[3]?.init?.body)).seriesMetadata;
     assert.equal(metadata.summary, 'New summary');

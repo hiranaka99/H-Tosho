@@ -41,7 +41,10 @@ export const JOB_LABELS: Record<string, string> = {
   'merge-series': 'Merge series',
 };
 
-export function jobLabel(type: string): string {
+export function jobLabel(type: string, payload?: Record<string, unknown>): string {
+  // A library-scoped scan is the "Refresh Kavita Library" button; the scheduled
+  // auto-scan (no payload) keeps the generic name.
+  if (type === 'scan-new' && payload?.libraryId !== undefined) return 'Refreshing Kavita Library';
   return JOB_LABELS[type] ?? type;
 }
 

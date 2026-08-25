@@ -120,7 +120,6 @@ class AniListProvider extends BaseProvider {
       providerId: this.id,
       providerSeriesId: String(m.id),
       title: m.title.romaji || m.title.english || m.title.native || 'Unknown',
-      sortTitle: m.title.romaji || m.title.english,
       year: date?.year,
       releaseDate,
       summary: m.description?.replace(/<[^>]*>/g, '').trim(),

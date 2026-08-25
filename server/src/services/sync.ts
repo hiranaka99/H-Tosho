@@ -52,7 +52,6 @@ function releaseYear(meta: SeriesMetadata): number | undefined {
 export function buildSeriesPayload(meta: SeriesMetadata): SeriesMetadataPayload {
   const payload: SeriesMetadataPayload = {};
   if (meta.title) payload.name = meta.title;
-  if (meta.sortTitle) payload.sortName = meta.sortTitle;
   if (meta.summary) payload.summary = meta.summary;
   if (meta.genres.length) payload.genres = meta.genres;
   if (meta.tags.length) payload.tags = meta.tags;
@@ -93,7 +92,7 @@ export function mergeTagLists(existing: string[], incoming: string[]): string[] 
  * replacing; fields the provider does not supply are skipped.
  */
 export function checkAlignment(
-  kavita: { name: string; sortName?: string | null; metadata: KavitaSeriesMetadataDto | null },
+  kavita: { name: string; metadata: KavitaSeriesMetadataDto | null },
   meta: SeriesMetadata,
 ): { aligned: boolean; mismatched: string[] } {
   const k = kavita.metadata;
@@ -109,7 +108,6 @@ export function checkAlignment(
   };
 
   if (meta.title && norm(kavita.name) !== norm(meta.title)) mismatched.push('title');
-  if (meta.sortTitle && norm(kavita.sortName) !== norm(meta.sortTitle)) mismatched.push('sortTitle');
   if (meta.summary && norm(k?.summary) !== norm(meta.summary)) mismatched.push('summary');
   if (meta.genres.length && !sameSet((k?.genres ?? []).map((g) => g.title), meta.genres)) mismatched.push('genres');
   if (meta.tags.length) {
@@ -134,7 +132,6 @@ export function checkAlignment(
 /** User-selectable sync fields (identify dialog checkboxes) -> payload property names. */
 const EXCLUDABLE_FIELDS: Record<string, string> = {
   title: 'name',
-  sortTitle: 'sortName',
   summary: 'summary',
   genres: 'genres',
   tags: 'tags',
