@@ -253,7 +253,7 @@ api.get('/series/:id/identify', async (c) => {
     const series = await client.getSeriesById(seriesId);
     const { credentials, enabledProviders } = getCredentialMap();
     const providerOrder = providerOrderFor(series.libraryId, enabledProviders);
-    const outcome = await autoMatch(series, { providerOrder, credentials, enabledProviders });
+    const outcome = await autoMatch(series, { providerOrder, credentials, enabledProviders, searchAll: true });
     // Scoring improves over time (e.g. title-variant matching), so a stored
     // match can carry a stale confidence — and Kavita data drifts after
     // manual edits. Refresh both when the matched series still surfaces in

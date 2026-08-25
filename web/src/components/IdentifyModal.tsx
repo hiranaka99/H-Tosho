@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, Sparkles, AlertTriangle, Check, X, ArrowRight, Link2, Unlink, History } from 'lucide-react';
+import { Search, Sparkles, AlertTriangle, Check, X, ArrowRight, Link2, Unlink, History, RefreshCw } from 'lucide-react';
 import {
   api,
   type MatchOutcome,
@@ -271,6 +271,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
       qc.invalidateQueries({ queryKey: ['libraries'] });
       onClose();
     },
+    onError: (e) => toast({ tone: 'danger', title: 'Sync failed', description: e instanceof Error ? e.message : String(e) }),
   });
 
   const unmatch = useMutation({
@@ -384,9 +385,16 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                   <p className="text-xs text-muted">Unmatching removes the link only — metadata already pushed to Kavita stays in place.</p>
                 </div>
               </div>
-              <Button size="sm" variant="secondary" onClick={() => unmatch.mutate()} disabled={unmatch.isPending}>
-                {unmatch.isPending ? <Spinner /> : <Unlink className="h-3.5 w-3.5" />} Unmatch
-              </Button>
+              <div className="flex shrink-0 items-center gap-2">
+                {match.providerSeriesId && (
+                  <Button size="sm" variant="secondary" onClick={() => doApply({ providerId: match.providerId!, providerSeriesId: match.providerSeriesId! })} disabled={apply.isPending} title="Re-push this provider's metadata to Kavita">
+                    {apply.isPending ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />} Sync
+                  </Button>
+                )}
+                <Button size="sm" variant="secondary" onClick={() => unmatch.mutate()} disabled={unmatch.isPending}>
+                  {unmatch.isPending ? <Spinner /> : <Unlink className="h-3.5 w-3.5" />} Unmatch
+                </Button>
+              </div>
             </div>
           )}
 
@@ -457,6 +465,13 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                   </button>
                 ))}
               </div>)}
+              {!selected && outcome.errors && Object.keys(outcome.errors).length > 0 && (
+                <p className="text-xs text-warning">
+                  {Object.entries(outcome.errors)
+                    .map(([id, msg]) => `${PROVIDER_NAMES[id] ?? id}: ${msg}`)
+                    .join(' · ')}
+                </p>
+              )}
 
               {!selected && (
               <div className="max-h-[38vh] overflow-y-auto rounded-md border border-border">

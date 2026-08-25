@@ -32,6 +32,8 @@ export interface AutoMatchOptions {
   query?: string;
   /** Threshold override. */
   threshold?: number;
+  /** Search every provider even after a confident match (interactive identify). Background auto-match keeps the early exit for speed. */
+  searchAll?: boolean;
   /** Credentials map: providerId -> Record<string,string>. */
   credentials: Record<string, Record<string, string>>;
   enabledProviders: string[];
@@ -104,10 +106,12 @@ export async function autoMatch(
           });
         }
         // Early exit: a confident exact/near-exact match from the top provider.
+        // Skipped for interactive identify (searchAll), where every enabled
+        // provider must surface its own candidates.
         const top = candidates
           .filter((c) => c.providerId === providerId)
           .sort((a, b) => b.score - a.score)[0];
-        if (top && top.score >= 0.97) break;
+        if (!options.searchAll && top && top.score >= 0.97) break;
       } catch (err) {
         errors[providerId] = err instanceof Error ? err.message : String(err);
       }

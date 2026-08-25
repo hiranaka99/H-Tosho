@@ -175,6 +175,8 @@ export interface MatchOutcome {
   candidates: MatchCandidate[];
   /** Providers that were actually consulted, in evaluation order. */
   searchedProviders: string[];
+  /** Per-provider search failures (providerId -> message), when a provider was enabled but errored. */
+  errors?: Record<string, string>;
 }
 
 // ---------------- Doujinshi downloader types ----------------
