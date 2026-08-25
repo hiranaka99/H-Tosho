@@ -105,7 +105,7 @@ export interface Settings {
   notifications: {
     discord: { enabled: boolean; webhookUrl: string };
   };
-  pollInterval: number;
+  pollIntervalHours: number;
 }
 
 export interface Job {
@@ -395,8 +395,8 @@ export const api = {
   testNotifications: () => request<{ discord: string }>('/settings/notifications/test', {
     method: 'PUT',
   }),
-  savePollInterval: (minutes: number) =>
-    request<{ ok: boolean }>('/settings/poll-interval', { method: 'PUT', body: JSON.stringify({ minutes }) }),
+  savePollInterval: (hours: number) =>
+    request<{ ok: boolean }>('/settings/poll-interval', { method: 'PUT', body: JSON.stringify({ hours }) }),
 
   enqueue: (type: string, payload: Record<string, unknown> = {}) =>
     request<{ id: number }>('/jobs', { method: 'POST', body: JSON.stringify({ type, ...payload }) }),

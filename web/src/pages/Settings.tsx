@@ -95,10 +95,10 @@ export function Settings() {
   const [notifMsg, setNotifMsg] = React.useState<{ discord: string } | null>(null);
   const testNotif = useMutation({ mutationFn: api.testNotifications, onSuccess: (r) => setNotifMsg(r) });
 
-  const [poll, setPoll] = React.useState('30');
+  const [poll, setPoll] = React.useState('12');
   React.useEffect(() => {
-    if (s) setPoll(String(s.pollInterval));
-  }, [s?.pollInterval]);
+    if (s) setPoll(String(s.pollIntervalHours));
+  }, [s?.pollIntervalHours]);
   const pollFlash = useFlash(invalidate('settings'));
   const savePoll = useMutation({ mutationFn: () => api.savePollInterval(Number(poll)) });
   const [tab, setTab] = React.useState<SettingsTab>('general');
@@ -172,7 +172,7 @@ export function Settings() {
         </SectionHeader>
         <CardContent className="flex items-center gap-3">
           <Input type="number" min={0} value={poll} onChange={(e) => setPoll(e.target.value)} className="w-28" />
-          <span className="text-sm text-muted">minutes between background scans for newly ingested series (0 disables)</span>
+          <span className="text-sm text-muted">hours between background scans for newly ingested series (0 disables)</span>
         </CardContent>
       </Card>
       </>)

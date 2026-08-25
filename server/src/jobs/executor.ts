@@ -17,6 +17,7 @@ import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
 import { listCbzFiles, mergeCbzFiles, readComicInfo, resolveExistingFile, resolveSeriesHostDir, rewriteZipEntry } from '../lib/cbz.js';
+import { sleep } from '../lib/http.js';
 import { parseComicInfo, renderComicInfoXml } from '../downloader/comicinfo.js';
 
 interface Target {
@@ -259,6 +260,48 @@ async function rescanLibraryContainingDir(dir: string, log: LogFn, seriesName?: 
   }
 }
 
+const SCAN_WAIT_TIMEOUT_MS = 30 * 60_000;
+const SCAN_STATUS_POLL_MS = 5_000;
+
+/**
+ * Trigger a Kavita library scan and wait for it to finish so newly ingested
+ * folders become series before the matching pass runs. The scan covers every
+ * in-scope library regardless of H-Tosho's per-library auto-match override —
+ * that setting gates matching, not keeping Kavita's database fresh.
+ *
+ * Kavita 0.9 exposes no scan-status endpoint; each library's lastScanned
+ * timestamp (surfaced as lastModified) is the only completion signal, so poll
+ * until every in-scope library reports a new value.
+ */
+async function runKavitaLibraryScan(client: KavitaClient, libs: { id: number; name: string; lastModified?: string }[], jobId: number, log: LogFn): Promise<void> {
+  if (libs.length === 0) return;
+  const before = new Map(libs.map((l) => [l.id, l.lastModified]));
+  if (libs.length === 1) {
+    await client.scanLibrary(libs[0].id);
+    log('info', `Requested Kavita scan of "${libs[0].name}"`);
+  } else {
+    await client.scanAllLibraries();
+    log('info', `Requested Kavita scan of all ${libs.length} libraries`);
+  }
+  const deadline = Date.now() + SCAN_WAIT_TIMEOUT_MS;
+  for (;;) {
+    if (jobQueue.isCancelRequested(jobId)) throw new JobCancelled();
+    let current: Map<number, string | undefined>;
+    try {
+      current = new Map((await client.getLibraries()).map((l) => [l.id, l.lastModified]));
+    } catch (e) {
+      log('warn', `Kavita library list unavailable (${e instanceof Error ? e.message : String(e)}); proceeding without waiting`);
+      return;
+    }
+    if ([...before.keys()].every((id) => current.get(id) !== undefined && current.get(id) !== before.get(id))) return;
+    if (Date.now() >= deadline) {
+      log('warn', `Kavita scan not confirmed complete after ${SCAN_WAIT_TIMEOUT_MS / 60_000} minutes; matching now, leftovers are picked up next cycle`);
+      return;
+    }
+    await sleep(SCAN_STATUS_POLL_MS);
+  }
+}
+
 /**
  * After a merge, delete the Kavita series that belonged to the pre-merge source folders.
  * Kavita's scan reattaches moved files to their original series records instead of
@@ -459,6 +502,9 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       // library; the scheduled auto-scan enqueues without a payload and stays global.
       const libs = job.payload.libraryId !== undefined ? allLibs.filter((l) => l.id === job.payload.libraryId) : allLibs;
       summary.libraries = libs.length;
+      // Refresh Kavita's database first: folders only become series once
+      // Kavita itself has scanned them.
+      await runKavitaLibraryScan(client, libs, job.id, log);
       const known = new Set(getDb().select().from(schema.seriesMatches).all().map((r) => r.kavitaSeriesId));
       for (const lib of libs) {
         // Libraries with auto-matching disabled are skipped by the scan; their

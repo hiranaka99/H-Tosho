@@ -17,14 +17,14 @@ import {
   getKavitaConnection,
   getLibraryOverride,
   getNotificationSettings,
-  getPollInterval,
+  getPollIntervalHours,
   getProviderPriorities,
   parseNotificationSettings,
   getProviderSettings,
   setKavitaConnection,
   setLibraryOverride,
   setNotificationSettings,
-  setPollInterval,
+  setPollIntervalHours,
   setProviderPriorities,
   setProviderSetting,
   providerOrderFor,
@@ -583,7 +583,7 @@ api.get('/settings', (c) => {
   return c.json({
     priorities: getProviderPriorities(),
     notifications: getNotificationSettings(),
-    pollInterval: getPollInterval(),
+    pollIntervalHours: getPollIntervalHours(),
   });
 });
 
@@ -609,8 +609,8 @@ api.put('/settings/notifications/test', async (c) => {
 });
 
 api.put('/settings/poll-interval', async (c) => {
-  const body = (await c.req.json()) as { minutes: number };
-  setPollInterval(Math.max(0, Number(body.minutes) || 0));
+  const body = (await c.req.json()) as { hours: number };
+  setPollIntervalHours(Math.max(0, Number(body.hours) || 0));
   return c.json({ ok: true });
 });
 

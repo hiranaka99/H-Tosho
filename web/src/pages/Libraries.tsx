@@ -196,7 +196,7 @@ export function Libraries() {
               <Play className="h-3.5 w-3.5" /> Match all unmatched
             </Button>
             <Button size="sm" onClick={() => enqueue('scan-new', { libraryId: selected })} disabled={selected === null}>
-              <RefreshCw className="h-3.5 w-3.5" /> Scan for new series
+              <RefreshCw className="h-3.5 w-3.5" /> Refresh Kavita Library
             </Button>
           </div>
         </div>

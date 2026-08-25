@@ -4,7 +4,7 @@ import { getDb, initDb, schema } from './db/index.js';
 import { createApp } from './app.js';
 import { jobQueue } from './jobs/queue.js';
 import { runJob } from './jobs/executor.js';
-import { getKavitaConnection, getPollInterval } from './services/settings.js';
+import { getKavitaConnection, getPollIntervalHours } from './services/settings.js';
 import { countWatchedSearches } from './services/watchedSearches.js';
 import { downloadQueue } from './downloader/engine.js';
 
@@ -27,27 +27,40 @@ function main(): void {
   jobQueue.registerHandler(runJob);
   downloadQueue.start();
 
-  let pollTimer: NodeJS.Timeout | null = null;
+// Watched doujin searches run on a fixed cadence independent of the series
+// scan interval, so release detection stays responsive at long scan intervals.
+const WATCHED_SEARCH_INTERVAL_MS = 15 * 60_000;
+
+  let pollTimer: NodeJS.Timeout | undefined;
   function scheduleScan(): void {
-    if (pollTimer) clearTimeout(pollTimer);
-    const interval = getPollInterval();
-    if (interval > 0) {
+    clearTimeout(pollTimer);
+    const intervalHours = getPollIntervalHours();
+    if (intervalHours > 0) {
       pollTimer = setTimeout(async () => {
         const conn = getKavitaConnection();
         if (conn.baseUrl && conn.apiKey) {
           const active = jobQueue.active().some((j) => j.type === 'scan-new');
           if (!active) jobQueue.enqueue('scan-new', {});
         }
-        // Watched doujin searches run on the same cadence; they need no Kavita.
-        if (countWatchedSearches() > 0 && !jobQueue.active().some((j) => j.type === 'check-watched-searches')) {
-          jobQueue.enqueue('check-watched-searches', {});
-        }
         scheduleScan();
-      }, interval * 60_000);
+      }, intervalHours * 3_600_000);
       pollTimer.unref?.();
     }
   }
+
+  let watchedTimer: NodeJS.Timeout | undefined;
+  function scheduleWatchedSearches(): void {
+    clearTimeout(watchedTimer);
+    watchedTimer = setTimeout(async () => {
+      if (countWatchedSearches() > 0 && !jobQueue.active().some((j) => j.type === 'check-watched-searches')) {
+        jobQueue.enqueue('check-watched-searches', {});
+      }
+      scheduleWatchedSearches();
+    }, WATCHED_SEARCH_INTERVAL_MS);
+    watchedTimer.unref?.();
+  }
   scheduleScan();
+  scheduleWatchedSearches();
 
   const app = createApp();
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST });
@@ -58,7 +71,8 @@ function main(): void {
 
   const shutdown = (): void => {
     console.log('[h-tosho] shutting down');
-    if (pollTimer) clearTimeout(pollTimer);
+    clearTimeout(pollTimer);
+    clearTimeout(watchedTimer);
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 2000).unref();
   };

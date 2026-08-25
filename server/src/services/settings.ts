@@ -188,22 +188,22 @@ export function getAllLibraryOverrides(): LibraryOverride[] {
   return out;
 }
 
-const DEFAULT_POLL_INTERVAL = 15;
+const DEFAULT_POLL_INTERVAL_HOURS = 12;
 
-/** Polling interval (minutes) for detecting new series in Kavita. 0 disables. */
-export function getPollInterval(): number {
+/** Polling interval (hours) for detecting new series in Kavita. 0 disables. */
+export function getPollIntervalHours(): number {
   const db = getDb();
-  const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'pollInterval')).get();
-  if (!row) return DEFAULT_POLL_INTERVAL;
+  const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'pollIntervalHours')).get();
+  if (!row) return DEFAULT_POLL_INTERVAL_HOURS;
   const parsed = Number(safeParseJson<unknown>(row.valueJson));
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_POLL_INTERVAL;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_POLL_INTERVAL_HOURS;
 }
 
-export function setPollInterval(minutes: number): void {
+export function setPollIntervalHours(hours: number): void {
   const db = getDb();
   db.insert(schema.keyValueStore)
-    .values({ key: 'pollInterval', valueJson: JSON.stringify(minutes) })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(minutes) } })
+    .values({ key: 'pollIntervalHours', valueJson: JSON.stringify(hours) })
+    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(hours) } })
     .run();
 }
 
