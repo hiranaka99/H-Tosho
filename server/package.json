@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx --test test/client.test.ts test/sync.test.ts test/mangadex.test.ts test/mangadexCatalog.test.ts test/mangadexCatalogRefresh.test.ts test/syncApply.test.ts test/mangadexCatalogCover.test.ts test/fixes.test.ts test/unmatch.test.ts test/alignment.test.ts test/media.test.ts test/watchedSearches.test.ts test/seriesArtists.test.ts test/cbz.test.ts test/engineRetry.test.ts",
+    "test": "tsx --test test/client.test.ts test/sync.test.ts test/mangadex.test.ts test/mangadexCatalog.test.ts test/mangadexCatalogRefresh.test.ts test/syncApply.test.ts test/mangadexCatalogCover.test.ts test/fixes.test.ts test/unmatch.test.ts test/alignment.test.ts test/media.test.ts test/watchedSearches.test.ts test/seriesArtists.test.ts test/cbz.test.ts test/engineRetry.test.ts test/downloadQueue.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "npm run build && node dist/index.js"
   },

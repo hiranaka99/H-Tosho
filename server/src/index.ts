@@ -6,6 +6,7 @@ import { jobQueue } from './jobs/queue.js';
 import { runJob } from './jobs/executor.js';
 import { getKavitaConnection, getPollInterval } from './services/settings.js';
 import { countWatchedSearches } from './services/watchedSearches.js';
+import { downloadQueue } from './downloader/engine.js';
 
 const PORT = Number(process.env.PORT ?? 8787);
 // Local-only by default: the API has no auth, so binding to all interfaces
@@ -24,6 +25,7 @@ function main(): void {
     .where(eq(schema.jobs.status, 'running'))
     .run();
   jobQueue.registerHandler(runJob);
+  downloadQueue.start();
 
   let pollTimer: NodeJS.Timeout | null = null;
   function scheduleScan(): void {

@@ -1,4 +1,4 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, getTmpDir, schema } from '../db/index.js';
@@ -197,7 +197,7 @@ interface RunContext {
 type LiveFieldKeys = 'progressCurrent' | 'progressTotal' | 'speed' | 'currentFile' | 'bytesCurrent' | 'bytesTotal';
 type LiveFields = Partial<Pick<DownloadTask, LiveFieldKeys>>;
 
-class DownloadQueue {
+export class DownloadQueue {
   private running = 0;
   private pumping = false;
   /** id -> live run context (used for cancel/pause of in-flight jobs). */
@@ -218,6 +218,16 @@ class DownloadQueue {
   constructor(settingsProvider: () => DownloaderSettings) {
     this.settingsProvider = settingsProvider;
   }
+  /** Recover persistent queue state after process startup, then run queued work. */
+  start(): void {
+    getDb()
+      .update(schema.downloadQueue)
+      .set({ status: 'failed', errorMessage: 'Interrupted by server restart', speed: 0, currentFile: null, finishedAt: new Date().toISOString() })
+      .where(eq(schema.downloadQueue.status, 'downloading'))
+      .run();
+    void this.pump();
+  }
+
 
   // ---------------- Live update fan-out (SSE) ----------------
 
@@ -520,7 +530,7 @@ class DownloadQueue {
         .select()
         .from(schema.downloadQueue)
         .where(eq(schema.downloadQueue.status, 'queued'))
-        .orderBy(desc(schema.downloadQueue.id))
+        .orderBy(asc(schema.downloadQueue.id))
         .limit(1)
         .get();
       if (!row) return null;
@@ -793,7 +803,7 @@ class DownloadQueue {
     fs.mkdirSync(dir, { recursive: true });
     const comicInfo = generateComicInfoXml(gallery, this.mergeOptions(row));
 
-    if (settings.format === 'folder') {
+    if (row.outputFormat === 'folder') {
       for (const img of images) {
         await moveIntoPlace(img.path, path.join(dir, img.name));
       }
