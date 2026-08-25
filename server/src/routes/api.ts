@@ -9,6 +9,9 @@ import { KAVITA_OPENAPI_VERSION, type KavitaLibrary, type KavitaSeries } from '.
 import { getProvider } from '../providers/registry.js';
 import { mangaDexProvider } from '../providers/mangadex.js';
 import type { SeriesMetadata } from '../providers/types.js';
+import type { CandidateMatch } from '../match/autoMatcher.js';
+import { titleScore } from '../match/normalize.js';
+import { parseManualProviderUrl } from '../match/manualMatch.js';
 import {
   getCredentialMap,
   getKavitaConnection,
@@ -298,6 +301,45 @@ api.get('/series/:id/identify', async (c) => {
         coverUrl: rewriteMangaDexCoverUrl(cand.coverUrl),
       })),
     });
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
+api.post('/series/:id/manual-match', async (c) => {
+  const client = connectedClient();
+  if (!client) return c.json({ error: 'Kavita not configured' }, 503);
+  const body = (await c.req.json().catch(() => null)) as { url?: unknown } | null;
+  if (typeof body?.url !== 'string') return c.json({ error: 'url is required' }, 400);
+  const ref = parseManualProviderUrl(body.url);
+  if (!ref) return c.json({ error: 'Enter a MangaDex, MyAnimeList, or AniList series URL' }, 400);
+
+  try {
+    const seriesId = intParam(c.req.param('id'));
+    if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
+    const series = await client.getSeriesById(seriesId);
+    const { credentials } = getCredentialMap();
+    const meta = await fetchProviderMetadata(ref.providerId, ref.providerSeriesId, credentials);
+    const candidate: CandidateMatch = {
+      providerId: ref.providerId,
+      providerSeriesId: ref.providerSeriesId,
+      title: meta.title,
+      type: ref.type,
+      year: meta.year,
+      coverUrl: rewriteMangaDexCoverUrl(meta.coverUrl),
+      summary: meta.summary,
+      score: titleScore(series.name, meta.title),
+      fromProvider: {
+        providerId: ref.providerId,
+        providerSeriesId: ref.providerSeriesId,
+        title: meta.title,
+        type: ref.type,
+        year: meta.year,
+        coverUrl: meta.coverUrl,
+        summary: meta.summary,
+      },
+    };
+    return c.json(candidate);
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

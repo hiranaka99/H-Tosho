@@ -352,6 +352,10 @@ export const api = {
       kavita: KavitaSeriesMetadata | null;
     }>(`/series/${id}`),
   identify: (id: number) => request<MatchOutcome>(`/series/${id}/identify`),
+  manualMatch: (id: number, url: string) => request<MatchCandidate>(`/series/${id}/manual-match`, {
+    method: 'POST',
+    body: JSON.stringify({ url }),
+  }),
   apply: (id: number, providerId: string, providerSeriesId: string, opts?: { excludedFields?: string[]; cover?: boolean; score?: number }) =>
     request<{ pushed: string[]; errors: string[] }>(`/series/${id}/apply`, {
       method: 'POST',

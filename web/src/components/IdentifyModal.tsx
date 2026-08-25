@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Search, Sparkles, AlertTriangle, Check, X, ArrowRight, Link2, Unlink, History, RefreshCw } from 'lucide-react';
 import {
   api,
+  type MatchCandidate,
   type MatchOutcome,
   type SeriesMetadata,
   type KavitaSeriesMetadata,
@@ -12,7 +13,7 @@ import {
 } from '../lib/api';
 import { PROVIDER_NAMES, cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
-import { Button, Dialog, DialogContent, Label, ProviderBadge, Spinner } from './ui';
+import { Button, Dialog, DialogContent, Input, Label, ProviderBadge, Spinner } from './ui';
 
 const STATUS_LABELS: Record<number, string> = {
   0: 'Ongoing',
@@ -240,6 +241,8 @@ function CandidateCover({ src }: { src?: string }) {
 export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyModalProps) {
   const qc = useQueryClient();
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [manualUrl, setManualUrl] = React.useState('');
+  const [manualCandidate, setManualCandidate] = React.useState<MatchCandidate | null>(null);
   const [tab, setTab] = React.useState('all');
   const [excluded, setExcluded] = React.useState<ReadonlySet<string>>(new Set());
   const [coverEnabled, setCoverEnabled] = React.useState(true);
@@ -274,6 +277,15 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     onError: (e) => toast({ tone: 'danger', title: 'Sync failed', description: e instanceof Error ? e.message : String(e) }),
   });
 
+  const resolveManual = useMutation({
+    mutationFn: () => api.manualMatch(seriesId, manualUrl),
+    onSuccess: (candidate) => {
+      setManualCandidate(candidate);
+      setSelectedId(candidate.providerId + ':' + candidate.providerSeriesId);
+    },
+    onError: (e) => toast({ tone: 'danger', title: 'Could not load provider URL', description: e instanceof Error ? e.message : String(e) }),
+  });
+
   const unmatch = useMutation({
     mutationFn: () => api.unmatch(seriesId),
     onSuccess: (res) => {
@@ -286,20 +298,25 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
   });
 
   const outcome: MatchOutcome | undefined = identify.data;
-  const selected = outcome?.candidates.find((c) => c.providerId + ':' + c.providerSeriesId === selectedId);
+  const candidates = React.useMemo(() => {
+    const found = outcome?.candidates ?? [];
+    if (!manualCandidate) return found;
+    const key = manualCandidate.providerId + ':' + manualCandidate.providerSeriesId;
+    return [manualCandidate, ...found.filter((c) => c.providerId + ':' + c.providerSeriesId !== key)];
+  }, [outcome, manualCandidate]);
+  const selected = candidates.find((c) => c.providerId + ':' + c.providerSeriesId === selectedId);
   const autoBest = outcome?.best;
 
   // One tab per provider that was searched or returned candidates (search order).
   const tabProviders = React.useMemo(() => {
     if (!outcome) return [] as string[];
     const ids = [...outcome.searchedProviders];
-    for (const c of outcome.candidates) if (!ids.includes(c.providerId)) ids.push(c.providerId);
+    for (const c of candidates) if (!ids.includes(c.providerId)) ids.push(c.providerId);
     return ids;
-  }, [outcome]);
+  }, [outcome, candidates]);
   const visibleCandidates = React.useMemo(() => {
-    if (!outcome) return [];
-    return tab === 'all' ? outcome.candidates : outcome.candidates.filter((c) => c.providerId === tab);
-  }, [outcome, tab]);
+    return tab === 'all' ? candidates : candidates.filter((c) => c.providerId === tab);
+  }, [candidates, tab]);
 
   // Full aggregated metadata for the selected candidate — fetched through the
   // same path Apply & Sync uses, so the diff previews exactly what will push.
@@ -448,12 +465,37 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
               )}
 
               {!selected && (
+                <form
+                  className="rounded-lg border border-border-2 bg-surface-2 p-3"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (manualUrl.trim()) resolveManual.mutate();
+                  }}
+                >
+                  <Label htmlFor="manual-provider-url">Match by provider URL</Label>
+                  <div className="mt-2 flex gap-2">
+                    <Input
+                      id="manual-provider-url"
+                      type="url"
+                      value={manualUrl}
+                      onChange={(e) => setManualUrl(e.target.value)}
+                      placeholder="Paste a MangaDex, MyAnimeList, or AniList series URL"
+                      autoComplete="off"
+                    />
+                    <Button type="submit" variant="outline" disabled={!manualUrl.trim() || resolveManual.isPending}>
+                      {resolveManual.isPending ? <Spinner /> : <Link2 className="h-4 w-4" />} Load
+                    </Button>
+                  </div>
+                </form>
+              )}
+
+              {!selected && (
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   onClick={() => setTab('all')}
                   className={cn('rounded-full border px-2.5 py-1 text-xs transition-colors', tab === 'all' ? 'border-primary bg-primary/15 font-medium text-primary' : 'border-border text-muted hover:bg-surface-2')}
                 >
-                  All ({outcome.candidates.length})
+                  All ({candidates.length})
                 </button>
                 {tabProviders.map((id) => (
                   <button
@@ -461,7 +503,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                     onClick={() => setTab(id)}
                     className={cn('rounded-full border px-2.5 py-1 text-xs transition-colors', tab === id ? 'border-primary bg-primary/15 font-medium text-primary' : 'border-border text-muted hover:bg-surface-2')}
                   >
-                    {PROVIDER_NAMES[id] ?? id} ({outcome.candidates.filter((c) => c.providerId === id).length})
+                    {PROVIDER_NAMES[id] ?? id} ({candidates.filter((c) => c.providerId === id).length})
                   </button>
                 ))}
               </div>)}
