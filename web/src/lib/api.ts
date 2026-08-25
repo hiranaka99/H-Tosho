@@ -221,6 +221,8 @@ export interface DoujinGallery {
   series?: string | null;
   artists: string[];
   tags: string[];
+  /** Search namespace per tag (parallel to `tags`; null = plain keyword). */
+  tagNamespaces?: (string | null)[];
   /** Group/circle names (Hitomi). */
   groups?: string[];
   /** Characters / genres (Hitomi maps characters here). */

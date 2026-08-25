@@ -55,6 +55,13 @@ export interface DoujinGallery extends DoujinSearchResult {
   series?: string;
   /** Optional group/circle name. */
   groups?: string[];
+  /**
+   * Search namespace for each entry in `tags` (parallel array, same order and
+   * length). Hitomi tags carry a `female`/`male` area; nHentai tags carry their
+   * tag type (`tag`, `artist`, ...). Undefined where the tag is searched as a
+   * plain keyword. Serialized over JSON as null in those slots.
+   */
+  tagNamespaces?: (string | undefined)[];
   /** Optional ComicInfo.xsd `Tags`/`Genres` already split. */
   genres?: string[];
   /** Optional Manga (Doujin) rating value (0-10). */

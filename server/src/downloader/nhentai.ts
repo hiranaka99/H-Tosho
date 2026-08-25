@@ -432,10 +432,14 @@ export const nhentaiProvider: DoujinProvider = {
     const langTags: string[] = [];
     let series: string | undefined;
     const flatTags: string[] = [];
+    // Parallel to flatTags: each tag's own search namespace (its nHentai type),
+    // so the UI can build a namespaced query like `tag:"gyaru"` per pill.
+    const flatTagNs: (string | undefined)[] = [];
     for (const t of g.tags ?? []) {
       if (!t?.name) continue;
       const category = mapTagType(t.type);
       flatTags.push(t.name);
+      flatTagNs.push(category);
       if (category === 'artist') artists.push(t.name);
       else if (category === 'character') characters.push(t.name);
       else if (category === 'language') langTags.push(t.name);
@@ -457,6 +461,7 @@ export const nhentaiProvider: DoujinProvider = {
       series,
       artists,
       tags: flatTags.slice(0, 40),
+      tagNamespaces: flatTagNs.slice(0, 40),
       pageCount,
       pages,
       pageFallbacks,

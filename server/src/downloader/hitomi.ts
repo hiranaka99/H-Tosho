@@ -192,10 +192,32 @@ function parseGalleryInfo(text: string): any {
   throw new Error('Could not parse galleryinfo object.');
 }
 
-function tagValue(t: any): string {
+/** A single entry from a galleryinfo tag list (tags/artists/characters/groups/parodys). */
+interface HitomiTagEntry {
+  tag?: string;
+  artist?: string;
+  character?: string;
+  group?: string;
+  /** "1" when the tag belongs to that area, "" or absent otherwise. */
+  female?: string | number;
+  male?: string | number;
+}
+
+function tagValue(t: HitomiTagEntry | string): string {
   if (typeof t === 'string') return t;
-  if (t && typeof t === 'object') return String(t.tag ?? t.artist ?? t.character ?? '');
-  return '';
+  return String(t.tag ?? t.artist ?? t.character ?? '');
+}
+
+/**
+ * Search area for a gallery tag. Hitomi's galleryinfo tags carry `female`/`male`
+ * flags ("1" when the tag belongs to that area); unflagged tags (e.g. "digital")
+ * have no area and are searched as plain keywords.
+ */
+function tagNamespace(t: HitomiTagEntry | string): string | undefined {
+  if (typeof t === 'string') return undefined;
+  if (t.female) return 'female';
+  if (t.male) return 'male';
+  return undefined;
 }
 
 /**
@@ -679,7 +701,17 @@ export const hitomiProvider: DoujinProvider = {
     const parodies = (info.parodys ?? info.parody ?? []).map(tagValue).filter(Boolean);
     const series = parodies[0] ?? undefined;
     const language = typeof info.language === 'string' && info.language ? info.language : undefined;
-    const tags = (info.tags ?? []).map(tagValue).filter(Boolean).slice(0, 40);
+    // Tags keep their search area (female/male) so the UI can build a namespaced
+    // query per tag; unflagged tags stay plain keywords.
+    const tags: string[] = [];
+    const tagNamespaces: (string | undefined)[] = [];
+    for (const t of info.tags ?? []) {
+      if (tags.length >= 40) break;
+      const name = tagValue(t);
+      if (!name) continue;
+      tags.push(name);
+      tagNamespaces.push(tagNamespace(t));
+    }
     const uploadedAt = toIsoDate(info.date);
 
     return {
@@ -691,6 +723,7 @@ export const hitomiProvider: DoujinProvider = {
       series,
       artists,
       tags,
+      tagNamespaces,
       groups,
       genres: characters.slice(0, 12),
       pageCount: files.length,

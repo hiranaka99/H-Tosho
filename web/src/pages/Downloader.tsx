@@ -104,7 +104,7 @@ function translateQuery(query: string, from: DoujinSource, to: DoujinSource): st
  * (e.g. `artist:charu_lee`); nHentai wraps values in quotes (e.g. `artist:"Charu Lee"`).
  * An empty namespace yields a plain keyword search on the raw value.
  */
-export function buildTagSearchFragment(value: string, ns: string | undefined, source: DoujinSource): string {
+export function buildTagSearchFragment(value: string, ns: string | null | undefined, source: DoujinSource): string {
   const v = value.trim();
   if (!v) return '';
   if (source === 'nhentai') {
@@ -304,7 +304,16 @@ const TAG_GROUP_STYLES: Record<string, string> = {
   Tags: 'bg-slate-500/25 text-slate-300',
 };
 
-function TagList({ label, items, icon, onSearch }: { label: string; items?: string[]; icon?: React.ReactNode; onSearch?: (value: string) => void }) {
+function TagList({ label, items, namespaces, icon, onSearch, titleFor }: {
+  label: string;
+  items?: string[];
+  /** Per-item search namespace (parallel to `items`). */
+  namespaces?: (string | null)[];
+  icon?: React.ReactNode;
+  onSearch?: (value: string, ns?: string | null) => void;
+  /** Tooltip for a searchable item — show the exact query it will run. */
+  titleFor?: (value: string, ns?: string | null) => string | undefined;
+}) {
   if (!items?.length) return null;
   const style = Object.entries(TAG_GROUP_STYLES).find(([k]) => label.startsWith(k))?.[1] ?? 'bg-slate-500/25 text-slate-300';
   return (
@@ -313,21 +322,24 @@ function TagList({ label, items, icon, onSearch }: { label: string; items?: stri
         {icon} {label}
       </p>
       <div className="flex flex-wrap gap-1.5">
-        {items.map((t, i) => (
-          <button
-            key={i}
-            type="button"
-            onClick={() => onSearch?.(t)}
-            title={onSearch ? `Search for “${t}”` : undefined}
-            className={cn(
-              'rounded-full px-2.5 py-1 text-xs transition-all',
-              style,
-              onSearch && 'cursor-pointer hover:brightness-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
-            )}
-          >
-            {t}
-          </button>
-        ))}
+        {items.map((t, i) => {
+          const ns = namespaces?.[i];
+          return (
+            <button
+              key={i}
+              type="button"
+              onClick={() => onSearch?.(t, ns)}
+              title={titleFor ? titleFor(t, ns) : onSearch ? `Search for “${t}”` : undefined}
+              className={cn(
+                'rounded-full px-2.5 py-1 text-xs transition-all',
+                style,
+                onSearch && 'cursor-pointer hover:brightness-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+              )}
+            >
+              {t}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -353,9 +365,14 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
   const g = gallery;
 
   /** Search a single tag/artist value (from the details card) on this source. */
-  const searchFor = (value: string, ns?: string) => {
+  const searchFor = (value: string, ns?: string | null) => {
     const fragment = buildTagSearchFragment(value, ns, item.source);
     if (fragment) onSearchTag(fragment);
+  };
+  /** Tooltip showing the exact query a pill will run. */
+  const searchTitle = (value: string, ns?: string | null) => {
+    const fragment = buildTagSearchFragment(value, ns, item.source);
+    return fragment ? `Search for “${fragment}”` : undefined;
   };
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -409,9 +426,9 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
                   <MetaItem label="Gallery ID" value={g.galleryId} />
                 </div>
 
-                <TagList label="Artists" items={g.artists ?? item.artists} icon={<Users className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'artist')} />
-                <TagList label="Groups" items={g.groups} icon={<Layers className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'group')} />
-                <TagList label="Characters" items={g.genres} icon={<Star className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'character')} />
+                <TagList label="Artists" items={g.artists ?? item.artists} icon={<Users className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'artist')} titleFor={(v) => searchTitle(v, 'artist')} />
+                <TagList label="Groups" items={g.groups} icon={<Layers className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'group')} titleFor={(v) => searchTitle(v, 'group')} />
+                <TagList label="Characters" items={g.genres} icon={<Star className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'character')} titleFor={(v) => searchTitle(v, 'character')} />
                 {g.series && (
                   <div className="flex flex-col gap-1.5">
                     <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
@@ -420,7 +437,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
                     <button
                       type="button"
                       onClick={() => searchFor(g.series ?? '', 'series')}
-                      title={`Search for “${g.series}”`}
+                      title={searchTitle(g.series ?? '', 'series')}
                       className="w-fit cursor-pointer rounded-full bg-cyan-500/20 px-2.5 py-1 text-xs text-cyan-300 transition-all hover:brightness-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                     >
                       {g.series}
@@ -428,7 +445,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
                   </div>
                 )}
                 {g.tags?.length ? (
-                  <TagList label={`Tags (${g.tags.length})`} items={g.tags} icon={<Tags className="h-3 w-3" />} onSearch={(v) => searchFor(v)} />
+                  <TagList label={`Tags (${g.tags.length})`} items={g.tags} namespaces={g.tagNamespaces} icon={<Tags className="h-3 w-3" />} onSearch={(v, ns) => searchFor(v, ns)} titleFor={(v, ns) => searchTitle(v, ns)} />
                 ) : null}
 
                 <div className="mt-auto flex items-center justify-end gap-2 pt-2">
