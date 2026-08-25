@@ -375,8 +375,6 @@ export const api = {
   saveProvider: (id: string, setting: { enabled?: boolean; credentials?: Record<string, string> }) =>
     request<{ ok: boolean }>(`/providers/${id}`, { method: 'PUT', body: JSON.stringify(setting) }),
   testProvider: (id: string) => request<{ ok: boolean; error?: string }>(`/providers/${id}/test`, { method: 'POST' }),
-  mangadexCatalog: () => request<{ count: number; lastRefreshedAt: string | null }>('/mangadex/catalog'),
-
   settings: () => request<Settings>('/settings'),
   savePriorities: (priorities: string[]) =>
     request<{ ok: boolean }>('/settings/priorities', { method: 'PUT', body: JSON.stringify({ priorities }) }),

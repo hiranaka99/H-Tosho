@@ -35,12 +35,6 @@ export interface AutoMatchOptions {
   /** Credentials map: providerId -> Record<string,string>. */
   credentials: Record<string, Record<string, string>>;
   enabledProviders: string[];
-  /**
-   * Pre-scored candidates from non-live sources (e.g. the local MangaDex adult
-   * catalog). Merged into the candidate pool after provider searches; scored
-   * with the same titleScore machinery so selection logic is unchanged.
-   */
-  extraCandidates?: CandidateMatch[];
 }
 
 /**
@@ -122,9 +116,6 @@ export async function autoMatch(
 
   await searchProviders(query);
 
-  // Merge pre-scored local candidates (e.g. MangaDex adult catalog) into the pool.
-  if (options.extraCandidates?.length) candidates.push(...options.extraCandidates);
-
   // No confident match with the full series name? Kavita names often concatenate
   // title + subtitle ("Aizome - Fill With LOVE") and provider title search can't
   // see through the compound string — retry each separator-delimited part so bare
@@ -136,10 +127,9 @@ export async function autoMatch(
       await searchProviders(part);
     }
   }
-  // The same title can surface from both live search and a local catalog
-  // (adult titles are indexed in both). Collapse duplicates by provider +
-  // series id, keeping the higher score; ties keep the live result, which
-  // was pushed before the catalog merge.
+  // The same title can surface from multiple live searches (full name plus
+  // fallback part queries). Collapse duplicates by provider + series id,
+  // keeping the higher score.
   const deduped = new Map<string, CandidateMatch>();
   for (const c of candidates) {
     const key = `${c.providerId}:${c.providerSeriesId}`;

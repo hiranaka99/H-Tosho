@@ -12,7 +12,6 @@ import {
   providerOrderFor,
 } from '../services/settings.js';
 import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
-import { catalogCandidates, catalogNeedsRefresh, isMatureAgeRating, refreshCatalog } from '../match/mangadexCatalog.js';
 import { applyToKavita, checkAlignment, fetchCover } from '../services/sync.js';
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify } from '../notify/dispatcher.js';
@@ -24,8 +23,6 @@ interface Target {
   id: number;
   name: string;
   libraryId?: number;
-  /** Series is flagged mature in Kavita (eligible for fuzzy adult-catalog matching). */
-  mature?: boolean;
 }
 
 interface MatchResult {
@@ -85,7 +82,7 @@ function recordHistory(seriesId: number, title: string | null, action: string, d
 
 async function matchAndApply(
   client: KavitaClient,
-  series: { id: number; name: string; mature?: boolean },
+  series: { id: number; name: string },
   libraryId: number | undefined,
   force: boolean,
   log?: LogFn,
@@ -108,12 +105,8 @@ async function matchAndApply(
     return base;
   }
 
-  // The local MangaDex adult catalog covers chapterless titles that are
-  // invisible to live title search. Unflagged series only get exact-title
-  // catalog candidates (see catalogCandidates).
-  const extraCandidates = order.includes('mangadex') ? catalogCandidates(series.name, !!series.mature) : [];
-  const outcome = await autoMatch(series, { providerOrder: order, credentials, enabledProviders, extraCandidates });
-  log?.('info', `${series.name}: ${outcome.candidates.length} candidate(s) across [${outcome.searchedProviders.join(', ')}]${extraCandidates.length ? ` +${extraCandidates.length} catalog` : ''}`);
+  const outcome = await autoMatch(series, { providerOrder: order, credentials, enabledProviders });
+  log?.('info', `${series.name}: ${outcome.candidates.length} candidate(s) across [${outcome.searchedProviders.join(', ')}]`);
 
   const best: CandidateMatch | null = outcome.best;
   if (!outcome.matched || !best) {
@@ -348,16 +341,6 @@ async function pickSeriesStampName(dir: string, exclude: Set<string>): Promise<s
 
 /** Run a queued job. Returns a small summary stored on the job row. */
 export async function runJob(job: Job, log: LogFn): Promise<Record<string, number>> {
-  // The MangaDex catalog refresh talks to MangaDex only — no Kavita needed.
-  if (job.type === 'mangadex-catalog') {
-    const r = await refreshCatalog({
-      log,
-      onProgress: (current, total) => jobQueue.setProgress(job.id, current, total),
-      isCancelled: () => jobQueue.isCancelRequested(job.id),
-    });
-    return { processed: 0, matched: 0, failed: 0, added: r.added, updated: r.updated, indexed: r.total };
-  }
-
   // Watched-search checks talk to doujin sources only — no Kavita needed.
   if (job.type === 'check-watched-searches') {
     const r = await checkWatchedSearches(
@@ -547,46 +530,6 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       throw new Error('Unknown job type: ' + job.type);
   }
 
-  // Every series can match against the local MangaDex adult catalog, which
-  // covers chapterless titles invisible to live search; flagged-mature series
-  // fuzzily, others only on exact title match (see catalogCandidates). Detect
-  // maturity first; batch jobs refresh the catalog inline when empty or stale
-  // (single-series jobs never block on a multi-minute build).
-  if (getCredentialMap().enabledProviders.includes('mangadex')) {
-    let matureCount = 0;
-    // Bounded concurrency — sequential metadata calls took 20-60 s on large
-    // libraries before matching could even start.
-    const METADATA_CONCURRENCY = 5;
-    let nextTarget = 0;
-    const detectMaturity = async (): Promise<void> => {
-      while (nextTarget < targets.length) {
-        const t = targets[nextTarget++];
-        try {
-          if (isMatureAgeRating((await client.getSeriesMetadata(t.id)).ageRating)) {
-            t.mature = true;
-            matureCount++;
-          }
-        } catch {
-          /* series without a metadata row yet */
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(METADATA_CONCURRENCY, targets.length) }, () => detectMaturity()));
-    log('info', `${matureCount} of ${targets.length} target(s) flagged mature`);
-    if (catalogNeedsRefresh()) {
-      if (job.type === 'match-series') {
-        log('warn', 'MangaDex adult catalog is empty or stale; exact-title catalog matches are unavailable until it is built. Build it from Settings → Metadata providers.');
-      } else {
-        log('info', 'Refreshing MangaDex adult catalog before matching...');
-        await refreshCatalog({
-          log,
-          onProgress: (current, total) => jobQueue.setProgress(job.id, current, total),
-          isCancelled: () => jobQueue.isCancelRequested(job.id),
-        });
-      }
-    }
-  }
-  jobQueue.setProgress(job.id, 0, targets.length);
   log('info', `Processing ${targets.length} series`);
 
   const force = job.type === 'sync-series';

@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { eq } from 'drizzle-orm';
-import type { CandidateMatch } from '../src/match/autoMatcher.js';
 
 // Isolated DB before the db module loads.
 process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-fixes-'));
@@ -23,7 +22,6 @@ const { testNotification } = await import('../src/notify/dispatcher.js');
 const { setNotificationSettings, getNotificationSettings, parseNotificationSettings } = await import('../src/services/settings.js');
 const { anilistProvider } = await import('../src/providers/anilist.js');
 const { mediaRouter, mediaProxyUrl } = await import('../src/routes/media.js');
-const { searchCatalog, invalidateCatalogCache } = await import('../src/match/mangadexCatalog.js');
 const { enqueueMatchForNewSeries } = await import('../src/services/sync.js');
 const { autoMatch } = await import('../src/match/autoMatcher.js');
 const { titleSearchParts } = await import('../src/match/normalize.js');
@@ -175,7 +173,7 @@ describe('new-series matching trigger', () => {
 });
 
 describe('autoMatch candidate dedup', () => {
-  it('collapses a title found in both live search and the local catalog', async () => {
+  it('collapses the same title returned by repeated provider searches', async () => {
     globalThis.fetch = (async (input: unknown) => {
       const url = String(input);
       if (url.startsWith('https://api.mangadex.org/manga?')) {
@@ -183,41 +181,22 @@ describe('autoMatch candidate dedup', () => {
           result: 'ok',
           response: 'collection',
           data: [
-            { id: 'dup-1', attributes: { title: { en: '#Gal x Gal Yuri' }, year: 2025, description: { en: 'live desc' } }, relationships: [] },
+            { id: 'dup-1', attributes: { title: { en: 'Gamma' }, year: 2025, description: { en: 'live desc' } }, relationships: [] },
           ],
         });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     }) as typeof fetch;
 
-    const catalogDup: CandidateMatch = {
-      providerId: 'mangadex',
-      providerSeriesId: 'dup-1',
-      title: '#Gal x Gal Yuri',
-      type: 'MANGA',
-      year: 2025,
-      summary: 'catalog desc',
-      score: 1.0,
-      fromProvider: {
-        providerId: 'mangadex',
-        providerSeriesId: 'dup-1',
-        title: '#Gal x Gal Yuri',
-        type: 'MANGA',
-        year: 2025,
-        summary: 'catalog desc',
-      },
-    };
-
-    const outcome = await autoMatch({ id: 1, name: '#Gal x Gal Yuri' }, {
+    // The full name scores nothing usable, so the fallback re-searches each
+    // separator-delimited part — every search returns the same manga.
+    const outcome = await autoMatch({ id: 1, name: 'Alpha - Beta' }, {
       providerOrder: ['mangadex'],
       credentials: {},
       enabledProviders: ['mangadex'],
-      extraCandidates: [catalogDup],
     });
 
     assert.equal(outcome.candidates.filter((c) => c.providerSeriesId === 'dup-1').length, 1);
-    // Ties keep the live result (pushed before the catalog merge).
-    assert.equal(outcome.best?.summary, 'live desc');
   });
 
   it('breaks exact score ties by token overlap with the series name', async () => {
@@ -370,35 +349,5 @@ describe('media proxy allowlist', () => {
   it('mediaProxyUrl produces a base64url target', () => {
     const proxied = mediaProxyUrl('https://uploads.mangadex.org/covers/abc/1.png');
     assert.equal(Buffer.from(proxied.slice('/media?u='.length), 'base64url').toString('utf8'), 'https://uploads.mangadex.org/covers/abc/1.png');
-  });
-});
-
-describe('catalog scoring pre-filter', () => {
-  it('keeps short fuzzy matches but skips zero-token long pairs', () => {
-    invalidateCatalogCache();
-    const db = getDb();
-    db.delete(schema.mangadexCatalog).run();
-    // Long single-word titles, one edit apart, zero shared tokens: below the floor even with full scoring.
-    db.insert(schema.mangadexCatalog)
-      .values({ mangaId: 'long-fuzzy', titleEn: 'fuderoosiss', altTitlesJson: '[]', mdUpdatedAt: new Date().toISOString(), fetchedAt: new Date().toISOString() })
-      .run();
-    // Long pair sharing no tokens at all — must be skipped (score 0, not a floor-level false positive).
-    db.insert(schema.mangadexCatalog)
-      .values({ mangaId: 'zero-token', titleEn: 'totally unrelated very long catalog name words', altTitlesJson: '[]', mdUpdatedAt: new Date().toISOString(), fetchedAt: new Date().toISOString() })
-      .run();
-    // Normal containment match must still work.
-    db.insert(schema.mangadexCatalog)
-      .values({ mangaId: 'containment', titleEn: 'at home harem fudeoro sisters', altTitlesJson: '[]', mdUpdatedAt: new Date().toISOString(), fetchedAt: new Date().toISOString() })
-      .run();
-
-    const contained = searchCatalog('fudeoro sisters');
-    assert.ok(contained.some((c) => c.providerSeriesId === 'containment' && c.score >= 0.9), 'containment match preserved');
-
-    const zeroToken = searchCatalog('completely different short title alpha beta');
-    assert.ok(!zeroToken.some((c) => c.providerSeriesId === 'zero-token'), 'zero-token long pair must not surface');
-
-    // Short one-edit romanization variant (len <= 12) keeps full scoring.
-    const fuzzy = searchCatalog('fuderoosis');
-    assert.ok(fuzzy.some((c) => c.providerSeriesId === 'long-fuzzy'), 'short fuzzy match preserved');
   });
 });

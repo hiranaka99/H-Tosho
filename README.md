@@ -27,8 +27,6 @@ which is distinct from the Kavita *server* build number (e.g. `0.9.0.2`).
   cancel/retry, and optionally trigger a Kavita library scan on completion.
 - **Watched searches** — save doujinshi queries to re-run on every auto-scan
   cycle; new results ping Discord.
-- **MangaDex adult catalog** — a local catalog of mature MangaDex titles lets
-  chapterless series invisible to live search still match.
 - **Modern dark-mode dashboard** — Libraries, Downloader, Jobs and Settings
   pages with live job monitoring and drag-and-drop provider prioritization.
 - **Discord notifications** — push formatted updates (with cover art) when
@@ -39,7 +37,7 @@ which is distinct from the Kavita *server* build number (e.g. `0.9.0.2`).
 | Provider | API | Notes |
 | --- | --- | --- |
 | AniList | GraphQL | Primary source for manga & light novels |
-| MangaDex | REST | No credentials required; also backs the local adult-title catalog |
+| MangaDex | REST | No credentials required |
 | MyAnimeList | REST | Requires Client ID |
 
 Doujinshi sources: **Hitomi.la** and **nHentai** (optional API key).
@@ -114,8 +112,6 @@ It mounts `./data` for the SQLite database and `./downloads` as
    then click **Save & test connection**.
 3. In **Settings → Providers**, add provider credentials (e.g. MyAnimeList
    Client ID), test each provider, and drag to reorder the search priority.
-   Build/refresh the MangaDex adult catalog here as well if you need matching
-   for mature chapterless titles.
 4. Tune per-library behavior in **Libraries** (auto-match toggle and clearing
    overrides); deselect individual fields in the identify dialog when applying a match.
 5. In **Settings → Notifications**, configure and test the Discord webhook.
@@ -143,7 +139,7 @@ server/src/
   db/                 # Drizzle schema + SQLite bootstrap
   kavita/             # Kavita REST client (auth, libraries, metadata push)
   providers/          # Provider interface, base class, 3 providers, registry
-  match/              # Normalization, fuzzy matching, MangaDex adult catalog
+  match/              # Normalization, fuzzy matching
   downloader/         # Hitomi/nHentai sources, download engine, .cbz writer
   services/           # Settings, sync/apply, watched searches, series artists
   notify/             # Discord notification dispatcher

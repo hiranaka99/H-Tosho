@@ -27,8 +27,7 @@ import {
   providerOrderFor,
 } from '../services/settings.js';
 import { jobQueue, type JobType } from '../jobs/queue.js';
-import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
-import { catalogCandidates, catalogStatus, isMatureAgeRating, resolveCatalogCover } from '../match/mangadexCatalog.js';
+import { autoMatch, fetchProviderMetadata } from '../match/autoMatcher.js';
 import { applyToKavita, buildSeriesPayload, checkAlignment, fetchCover } from '../services/sync.js';
 import { invalidateSeriesArtists, kavitaSeriesArtists } from '../services/seriesArtists.js';
 import { testNotification } from '../notify/dispatcher.js';
@@ -254,15 +253,7 @@ api.get('/series/:id/identify', async (c) => {
     const series = await client.getSeriesById(seriesId);
     const { credentials, enabledProviders } = getCredentialMap();
     const providerOrder = providerOrderFor(series.libraryId, enabledProviders);
-    // The local MangaDex adult catalog covers chapterless titles that are
-    // invisible to live title search. Flagged-mature series match fuzzily;
-    // others only on exact title match (see catalogCandidates).
-    let extraCandidates: CandidateMatch[] = [];
-    if (providerOrder.includes('mangadex')) {
-      const meta = await client.getSeriesMetadata(seriesId).catch(() => null);
-      extraCandidates = catalogCandidates(series.name, isMatureAgeRating(meta?.ageRating));
-    }
-    const outcome = await autoMatch(series, { providerOrder, credentials, enabledProviders, extraCandidates });
+    const outcome = await autoMatch(series, { providerOrder, credentials, enabledProviders });
     // Scoring improves over time (e.g. title-variant matching), so a stored
     // match can carry a stale confidence — and Kavita data drifts after
     // manual edits. Refresh both when the matched series still surfaces in
@@ -289,20 +280,12 @@ api.get('/series/:id/identify', async (c) => {
     }
     // MangaDex search thumbnails resolve the main cover_art, but Apply & Sync
     // pushes the Volume 1 cover when one exists — swap the thumbnail so the
-    // dialog previews exactly what will land in Kavita. Catalog entries carry
-    // no cover until resolved (the list endpoint only ships relationship
-    // stubs); fetch the primary cover once and cache it in the catalog. Live
-    // candidates whose thumbnail lookup failed get the same fallback.
+    // dialog previews exactly what will land in Kavita.
     await Promise.all(
       outcome.candidates.map(async (cand) => {
         if (cand.providerId !== 'mangadex') return;
         const preferred = await mangaDexProvider.preferredSeriesCoverUrl(cand.providerSeriesId);
-        if (preferred) {
-          cand.coverUrl = preferred;
-        } else if (!cand.coverUrl) {
-          const url = await resolveCatalogCover(cand.providerSeriesId);
-          if (url) cand.coverUrl = url;
-        }
+        if (preferred) cand.coverUrl = preferred;
       }),
     );
     // MangaDex's cover CDN serves a placeholder card to third-party browser
@@ -526,11 +509,6 @@ api.post('/providers/:id/test', async (c) => {
   } catch (e) {
     return c.json({ ok: false, error: errMsg(e) });
   }
-});
-
-/** Status of the local MangaDex adult-title catalog (used by Settings UI). */
-api.get('/mangadex/catalog', (c) => {
-  return c.json(catalogStatus());
 });
 
 api.get('/settings', (c) => {

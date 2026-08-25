@@ -9,7 +9,6 @@ export type JobType =
   | 'match-series'
   | 'sync-series'
   | 'clear-overrides'
-  | 'mangadex-catalog'
   | 'check-watched-searches'
   | 'edit-comicinfo'
   | 'merge-series';

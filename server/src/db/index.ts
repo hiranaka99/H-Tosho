@@ -56,7 +56,7 @@ export function initDb(): Db {
   sqlite.pragma('busy_timeout = 5000');
   sqlite.exec(SCHEMA_DDL);
   migrateDownloadQueueColumns(sqlite);
-  migrateCatalogColumns(sqlite);
+  dropCatalogTable(sqlite);
   migrateSeriesMatchColumns(sqlite);
   pruneOldData(sqlite);
   db = drizzle(sqlite, { schema });
@@ -109,16 +109,12 @@ function migrateDownloadQueueColumns(sqlite: Database.Database): void {
   }
 }
 
-/** Add the lazily-resolved catalog cover column to databases created before it existed. */
-function migrateCatalogColumns(sqlite: Database.Database): void {
-  const existing = new Set(
-    (sqlite.prepare('PRAGMA table_info(mangadex_catalog)').all() ?? []).map((c) => (c as { name: string }).name),
-  );
-  if (existing.size === 0 || existing.has('cover_file')) return;
+/** Drop the legacy MangaDex adult catalog table (feature removed; live title search covers it). */
+function dropCatalogTable(sqlite: Database.Database): void {
   try {
-    sqlite.exec('ALTER TABLE mangadex_catalog ADD COLUMN cover_file TEXT');
+    sqlite.exec('DROP TABLE IF EXISTS mangadex_catalog');
   } catch (err) {
-    console.warn('[h-tosho] failed to add mangadex_catalog column cover_file:', err);
+    console.warn('[h-tosho] failed to drop legacy mangadex_catalog table:', err);
   }
 }
 /** Add the alignment flag column to databases created before it existed. */
@@ -310,22 +306,6 @@ CREATE TABLE IF NOT EXISTS series_matches (
   last_synced_at TEXT,
   created_at TEXT NOT NULL DEFAULT (current_timestamp),
   updated_at TEXT NOT NULL DEFAULT (current_timestamp)
-);
-CREATE TABLE IF NOT EXISTS mangadex_catalog (
-  manga_id TEXT PRIMARY KEY,
-  title_en TEXT,
-  original_title TEXT,
-  alt_titles_json TEXT NOT NULL DEFAULT '[]',
-  description_en TEXT,
-  year INTEGER,
-  status TEXT,
-  content_rating TEXT,
-  mal_id TEXT,
-  al_id TEXT,
-  mu_id TEXT,
-  md_updated_at TEXT NOT NULL,
-  fetched_at TEXT NOT NULL,
-  cover_file TEXT
 );
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -36,7 +36,6 @@ export const JOB_LABELS: Record<string, string> = {
   'match-series': 'Match series',
   'sync-series': 'Sync series',
   'clear-overrides': 'Clear overrides',
-  'mangadex-catalog': 'MangaDex catalog',
   'check-watched-searches': 'Check watched searches',
   'edit-comicinfo': 'Edit ComicInfo',
   'merge-series': 'Merge series',
