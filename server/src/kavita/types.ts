@@ -115,6 +115,18 @@ export interface KavitaPersonDto {
   coverImageLocked?: boolean;
 }
 
+/** A single file inside a Kavita chapter (book). */
+export interface KavitaChapterFileDto {
+  id?: number;
+  filePath?: string | null;
+}
+
+/** One book of a series as returned by /api/Search/chapters-by-series. */
+export interface KavitaChapterDto {
+  id: number;
+  files?: KavitaChapterFileDto[] | null;
+}
+
 export interface KavitaSeriesMetadataDto {
   id: number;
   seriesId: number;

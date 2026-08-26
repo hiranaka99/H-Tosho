@@ -356,6 +356,118 @@ async function removeSourceSeriesFromKavita(sourceFiles: string[], targetDir: st
     log('warn', `Kavita series cleanup failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
+const MERGE_VERIFY_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * Rescan the merged folder and verify that every moved archive actually lands in
+ * Kavita.
+ *
+ * Kavita scans are asynchronous, and a scan request for a library that is already
+ * scanning is dropped — e.g. the auto-sync scan fired by the last chapter's
+ * download may still be running when a merge starts. Moving files while such a
+ * scan walks the tree can leave later files behind: the in-flight pass has
+ * already enumerated the target folder, and removeSourceSeriesFromKavita deletes
+ * the stale source series records. So fire the scan, wait for Kavita to finish
+ * it, check which of the moved files are indexed by name, and repeat until every
+ * file is present (or the budget runs out).
+ */
+async function rescanAndVerifyMerge(targetDir: string, movedFiles: string[], log: LogFn): Promise<void> {
+  try {
+    const conn = getKavitaConnection();
+    if (!conn.baseUrl || !conn.apiKey) return;
+    const client = new KavitaClient(conn.baseUrl, conn.apiKey);
+    const norm = (p: string): string => path.normalize(p).replace(/\\/g, '/');
+    const libraries = await client.getLibraries();
+    let lib = libraries.find((l) => l.path && norm(targetDir).startsWith(norm(l.path)));
+    if (!lib) {
+      // Fall back to folder-name matching, like rescanLibraryContainingDir.
+      const candidates = new Set<string>();
+      let d = targetDir;
+      for (let i = 0; i < 3; i++) {
+        const seg = lastSegment(d);
+        if (!seg) break;
+        candidates.add(seg.toLowerCase());
+        const parent = path.dirname(d);
+        if (parent === d) break;
+        d = parent;
+      }
+      lib = libraries.find((l) => l.path && candidates.has(lastSegment(l.path).toLowerCase()));
+    }
+    if (!lib) {
+      log('warn', 'No Kavita library contains this folder — verification skipped, the periodic scan will pick it up');
+      return;
+    }
+    const library = lib;
+
+    const targetName = lastSegment(targetDir).toLowerCase();
+    const findSeries = async () => {
+      const series = await client.getSeries(library.id);
+      return series.find((s) => s.folderPath && lastSegment(s.folderPath).toLowerCase() === targetName);
+    };
+    // Verify by file name rather than book count: pre-existing books in the target
+    // folder, or partial indexing by a concurrent scan, must not skew the check.
+    const expectedNames = new Set(movedFiles.map((f) => path.basename(f).toLowerCase()));
+    const indexedNames = async (seriesId: number): Promise<Set<string>> => {
+      const chapters = await client.getChaptersBySeries(seriesId);
+      const found = new Set<string>();
+      for (const chapter of chapters) {
+        for (const file of chapter.files ?? []) {
+          if (file.filePath) found.add(path.basename(file.filePath).toLowerCase());
+        }
+      }
+      return found;
+    };
+
+    const deadline = Date.now() + MERGE_VERIFY_TIMEOUT_MS;
+    for (;;) {
+      const series = await findSeries().catch(() => undefined);
+      if (series) {
+        await client.scanSeries(library.id, series.id);
+        log('info', `Requested Kavita rescan of series "${series.name}"`);
+      } else {
+        // Library scans are asynchronous: only trust the file list once lastScanned moves.
+        const before = (await client.getLibraries()).find((l) => l.id === library.id)?.lastModified;
+        await client.scanLibrary(library.id);
+        log('info', `Requested Kavita rescan of "${library.name}"`);
+        for (;;) {
+          const current = (await client.getLibraries()).find((l) => l.id === library.id)?.lastModified;
+          if (current !== undefined && current !== before) break;
+          if (Date.now() >= deadline) break;
+          await sleep(SCAN_STATUS_POLL_MS);
+        }
+      }
+
+      const after = await findSeries().catch(() => undefined);
+      let missing: string[] | null = null;
+      if (after) {
+        try {
+          const indexed = await indexedNames(after.id);
+          missing = [...expectedNames].filter((n) => !indexed.has(n));
+        } catch {
+          /* chapter list unavailable — treat as not yet indexed */
+        }
+      }
+      if (missing !== null && missing.length === 0) {
+        log('success', `Kavita has indexed all ${movedFiles.length} moved file(s) into the merged series`);
+        return;
+      }
+      log('info', !after
+        ? 'Merged series not registered in Kavita yet — waiting for the scan'
+        : missing && missing.length > 0
+          ? `Kavita is still indexing ${missing.length} of ${movedFiles.length} moved file(s): ${missing.join(', ')}`
+          : 'Waiting for Kavita to finish writing the series');
+      if (Date.now() >= deadline) {
+        log('warn', missing && missing.length > 0
+          ? `Kavita did not index ${missing.length} of ${movedFiles.length} moved file(s) within ${MERGE_VERIFY_TIMEOUT_MS / 60_000} minutes: ${missing.join(', ')} — run a manual scan in Kavita`
+          : `Kavita merge verification timed out after ${MERGE_VERIFY_TIMEOUT_MS / 60_000} minutes — run a manual scan in Kavita`);
+        return;
+      }
+      await sleep(SCAN_STATUS_POLL_MS);
+    }
+  } catch (e) {
+    log('warn', `Kavita merge verification failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
 
 /**
  * The ComicInfo.Series value Kavita uses to group a series' files. When the
@@ -483,7 +595,7 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
     if (r.moved.length === 0) throw new Error('No files could be moved — check the source paths');
     log('success', `Moved ${r.moved.length} file(s) into one folder as "${stampName ?? lastSegment(targetDir)}"; stamped chapter numbers on ${r.chaptered.length}`);
     await removeSourceSeriesFromKavita(sourceFiles, targetDir, log);
-    await rescanLibraryContainingDir(targetDir, log);
+    await rescanAndVerifyMerge(targetDir, r.moved, log);
     return { processed: r.moved.length, matched: 0, failed: r.failed.length };
   }
 

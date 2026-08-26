@@ -2,6 +2,7 @@ import { fetchBuffer, fetchJson } from '../lib/http.js';
 import {
   KAVITA_MIN_SERVER_VERSION,
   KavitaLibraryType,
+  type KavitaChapterDto,
   type KavitaLibrary,
   type KavitaLibraryDto,
   type KavitaPersonDto,
@@ -206,6 +207,14 @@ export class KavitaClient {
     return this.getJson<KavitaSeriesMetadataDto>(
       `/Series/metadata?seriesId=${encodeURIComponent(seriesId)}`,
       `Get series ${seriesId} metadata`,
+    );
+  }
+
+  /** GET /api/Search/chapters-by-series?seriesId={seriesId} — every book Kavita has indexed for a series. */
+  async getChaptersBySeries(seriesId: number): Promise<KavitaChapterDto[]> {
+    return this.getJson<KavitaChapterDto[]>(
+      `/Search/chapters-by-series?seriesId=${encodeURIComponent(seriesId)}`,
+      `Get chapters for series ${seriesId}`,
     );
   }
 
