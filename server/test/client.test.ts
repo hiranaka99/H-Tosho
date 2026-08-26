@@ -151,7 +151,7 @@ describe('KavitaClient', () => {
     });
   });
 
-  it('read-merges full metadata before using the split v0.9 update endpoints', async () => {
+  it('read-merges full metadata and writes with the two-phase lock protocol', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     globalThis.fetch = async (input, init) => {
       const url = String(input);
@@ -169,6 +169,8 @@ describe('KavitaClient', () => {
         });
       }
       if (url.includes('/api/Series/metadata?')) return Response.json(currentMetadata());
+      if (url.includes('/api/Person?name=New%20Writer')) return Response.json({ id: 55, name: 'New Writer' });
+      if (url.includes('/api/Person?name=New%20Artist')) return new Response(null, { status: 404 });
       return Response.json({ ok: true });
     };
 
@@ -182,9 +184,14 @@ describe('KavitaClient', () => {
       publicationStatus: KavitaPublicationStatus.Completed,
     });
 
+    // No /api/Person/update call: unknown people ride along as id-0 entries and
+    // are created by the metadata write itself.
     assert.deepEqual(requests.map((request) => new URL(request.url).pathname), [
       '/api/Series/42',
       '/api/Series/update',
+      '/api/Series/metadata',
+      '/api/Person',
+      '/api/Person',
       '/api/Series/metadata',
       '/api/Series/metadata',
     ]);
@@ -198,19 +205,63 @@ describe('KavitaClient', () => {
     assert.equal(identity.sortName, 'Old sort');
     assert.equal(identity.sortNameLocked, false);
 
-    const metadata = JSON.parse(String(requests[3]?.init?.body)).seriesMetadata;
-    assert.equal(metadata.summary, 'New summary');
-    assert.deepEqual(metadata.tags, [{ id: 0, title: 'New tag' }]);
-    assert.deepEqual(metadata.writers, [{ id: 0, name: 'New Writer' }]);
-    assert.deepEqual(metadata.pencillers, [{ id: 0, name: 'New Artist' }]);
-    assert.equal(metadata.summaryLocked, true);
-    assert.equal(metadata.tagsLocked, true);
-    assert.equal(metadata.writerLocked, true);
-    assert.equal(metadata.pencillerLocked, true);
-    assert.equal(metadata.releaseYearLocked, true);
-    assert.equal(metadata.publicationStatusLocked, true);
-    assert.deepEqual(metadata.coverArtists, [{ id: 4, name: 'Preserved Cover Artist' }]);
-    assert.deepEqual(metadata.characters, [{ id: 5, name: 'Preserved Character' }]);
+    // Phase 1: values land with every patched field's lock flag cleared — Kavita
+    // skips a field's value whenever its lock flag is set in the payload.
+    const phase1 = JSON.parse(String(requests[5]?.init?.body)).seriesMetadata;
+    assert.equal(phase1.summary, 'New summary');
+    assert.deepEqual(phase1.tags, [{ id: 0, title: 'New tag' }]);
+    // Existing persons are referenced by their real Kavita person id…
+    assert.deepEqual(phase1.writers, [{ id: 55, name: 'New Writer' }]);
+    // …unknown ones go out as id 0 so the write creates them.
+    assert.deepEqual(phase1.pencillers, [{ id: 0, name: 'New Artist' }]);
+    assert.equal(phase1.summaryLocked, false);
+    assert.equal(phase1.tagsLocked, false);
+    assert.equal(phase1.writerLocked, false);
+    assert.equal(phase1.pencillerLocked, false);
+    assert.equal(phase1.releaseYearLocked, false);
+    assert.equal(phase1.publicationStatusLocked, false);
+    assert.deepEqual(phase1.coverArtists, [{ id: 4, name: 'Preserved Cover Artist' }]);
+    assert.deepEqual(phase1.characters, [{ id: 5, name: 'Preserved Character' }]);
+
+    // Phase 2: same values re-posted with the patched fields re-locked so Kavita's
+    // own provider fetches don't overwrite them.
+    const phase2 = JSON.parse(String(requests[6]?.init?.body)).seriesMetadata;
+    assert.equal(phase2.summary, 'New summary');
+    assert.deepEqual(phase2.writers, [{ id: 55, name: 'New Writer' }]);
+    assert.deepEqual(phase2.pencillers, [{ id: 0, name: 'New Artist' }]);
+    assert.equal(phase2.summaryLocked, true);
+    assert.equal(phase2.tagsLocked, true);
+    assert.equal(phase2.writerLocked, true);
+    assert.equal(phase2.pencillerLocked, true);
+    assert.equal(phase2.releaseYearLocked, true);
+    assert.equal(phase2.publicationStatusLocked, true);
+  });
+
+  it('sends unknown people with id 0 so the metadata write creates them', async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      requests.push({ url, init });
+      if (url.includes('/api/Person?name=Ghost%20Writer')) return new Response(null, { status: 404 });
+      if (url.includes('/api/Series/metadata?')) return Response.json(currentMetadata());
+      return Response.json({ ok: true });
+    };
+
+    await new KavitaClient('https://kavita.example', 'secret').updateSeriesMetadata(42, {
+      summary: 'New summary',
+      writers: ['Ghost Writer'],
+    });
+
+    const posts = requests.filter((request) => request.url.endsWith('/api/Series/metadata'));
+    assert.equal(posts.length, 2);
+    const phase1 = JSON.parse(String(posts[0]?.init?.body)).seriesMetadata;
+    // A name Kavita does not know yet is not dropped — id 0 makes the write create it.
+    assert.deepEqual(phase1.writers, [{ id: 0, name: 'Ghost Writer' }]);
+    assert.equal(phase1.writerLocked, false);
+    assert.equal(phase1.summary, 'New summary');
+    const phase2 = JSON.parse(String(posts[1]?.init?.body)).seriesMetadata;
+    assert.deepEqual(phase2.writers, [{ id: 0, name: 'Ghost Writer' }]);
+    assert.equal(phase2.writerLocked, true);
   });
 
   it('posts a base64 cover payload and forwards the cover lock state', async () => {

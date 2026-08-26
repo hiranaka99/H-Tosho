@@ -217,6 +217,35 @@ export class KavitaClient {
       `Get chapters for series ${seriesId}`,
     );
   }
+  /** GET /api/Person?name={name} — exact-name lookup; null when Kavita has no such person. */
+  private async findPerson(name: string): Promise<KavitaPersonDto | null> {
+    try {
+      const found = await this.getJson<KavitaPersonDto | null>(`/Person?name=${encodeURIComponent(name)}`, `Find person ${name}`);
+      if (found?.id && (found.name ?? '').trim().toLowerCase() === name.trim().toLowerCase()) return found;
+    } catch {
+      /* not found — the caller creates it */
+    }
+    return null;
+  }
+
+  /**
+   * Resolve names to Kavita persons. The series metadata endpoint matches people by
+   * person id, so existing persons must be referenced by their real id; unknown
+   * names are sent with id 0, which makes the metadata write itself create the
+   * person (Kavita 0.9.0.x has no standalone creation endpoint — POST
+   * /api/Person/update with id 0 answers "Person does not exist"). Kavita does not
+   * deduplicate id-0 entries by name, so existing persons must be resolved first
+   * or every sync would create a duplicate.
+   */
+  private async resolvePeople(names: string[]): Promise<KavitaPersonDto[]> {
+    const out: KavitaPersonDto[] = [];
+    for (const raw of names) {
+      const name = raw.trim();
+      if (!name) continue;
+      out.push((await this.findPerson(name)) ?? { id: 0, name });
+    }
+    return out;
+  }
 
   /** Read, merge, and write using Kavita's split v0.9 update endpoints. */
   async updateSeriesMetadata(seriesId: number, patch: SeriesMetadataPayload, opts: UpdateMetadataOptions = {}): Promise<void> {
@@ -246,9 +275,29 @@ export class KavitaClient {
 
     if (this.hasMetadataPatch(patch)) {
       const metadata = this.normalizeMetadata(await this.getSeriesMetadata(seriesId), seriesId);
-      this.mergeMetadataPatch(metadata, patch, lock);
-      const body: KavitaUpdateSeriesMetadataDto = { seriesMetadata: metadata };
-      await this.postJson('/Series/metadata', body, `Update series ${seriesId} metadata`);
+      // Kavita resolves people by person id and silently drops unknown ids, so names
+      // must be resolved through the Person endpoints before the write.
+      const people = {
+        writers: patch.writers !== undefined ? await this.resolvePeople(patch.writers) : undefined,
+        artists: patch.artists !== undefined ? await this.resolvePeople(patch.artists) : undefined,
+      };
+      // Kavita skips a field's value whenever its lock flag is set in the payload, so
+      // a previously locked field would never update. Write with the locks cleared…
+      this.mergeMetadataPatch(metadata, patch, false, people);
+      await this.postJson('/Series/metadata', { seriesMetadata: metadata }, `Update series ${seriesId} metadata`);
+      if (lock) {
+        // …then re-lock the fields we just wrote so Kavita's own provider fetches
+        // don't overwrite them.
+        if (patch.summary !== undefined) metadata.summaryLocked = true;
+        if (patch.genres !== undefined) metadata.genresLocked = true;
+        if (patch.tags !== undefined) metadata.tagsLocked = true;
+        if ((people?.writers ?? []).length > 0) metadata.writerLocked = true;
+        if ((people?.artists ?? []).length > 0) metadata.pencillerLocked = true;
+        if (patch.releaseYear !== undefined) metadata.releaseYearLocked = true;
+        if (patch.language !== undefined) metadata.languageLocked = true;
+        if (patch.publicationStatus !== undefined) metadata.publicationStatusLocked = true;
+        await this.postJson('/Series/metadata', { seriesMetadata: metadata }, `Lock series ${seriesId} metadata`);
+      }
     }
   }
 
@@ -292,44 +341,56 @@ export class KavitaClient {
     };
   }
 
-  private mergeMetadataPatch(metadata: KavitaSeriesMetadataDto, patch: SeriesMetadataPayload, lock = true): void {
+  private mergeMetadataPatch(
+    metadata: KavitaSeriesMetadataDto,
+    patch: SeriesMetadataPayload,
+    lock = true,
+    people?: { writers?: KavitaPersonDto[]; artists?: KavitaPersonDto[] },
+  ): void {
     const tags = (values: string[]): KavitaTagDto[] => values.map((title) => ({ id: 0, title }));
-    const people = (values: string[]): KavitaPersonDto[] => values.map((name) => ({ id: 0, name }));
 
     if (patch.summary !== undefined) {
       metadata.summary = patch.summary;
-      if (lock) metadata.summaryLocked = true;
+      metadata.summaryLocked = lock;
     }
     if (patch.genres !== undefined) {
       metadata.genres = tags(patch.genres);
-      if (lock) metadata.genresLocked = true;
+      metadata.genresLocked = lock;
     }
     if (patch.tags !== undefined) {
       metadata.tags = tags(patch.tags);
-      if (lock) metadata.tagsLocked = true;
+      metadata.tagsLocked = lock;
     }
     if (patch.writers !== undefined) {
-      metadata.writers = people(patch.writers);
-      if (lock) metadata.writerLocked = true;
+      // An empty resolved list means the names were all blank — keep the current
+      // writers rather than clearing them.
+      const resolved = people?.writers;
+      if (resolved && resolved.length > 0) {
+        metadata.writers = resolved;
+        metadata.writerLocked = lock;
+      }
     }
     if (patch.artists !== undefined) {
       // The unified provider model has one generic artist role. Penciller is
       // Kavita's closest series-level equivalent and remains independently
       // editable from cover artist, inker, and colorist roles.
-      metadata.pencillers = people(patch.artists);
-      if (lock) metadata.pencillerLocked = true;
+      const resolved = people?.artists;
+      if (resolved && resolved.length > 0) {
+        metadata.pencillers = resolved;
+        metadata.pencillerLocked = lock;
+      }
     }
     if (patch.releaseYear !== undefined) {
       metadata.releaseYear = patch.releaseYear;
-      if (lock) metadata.releaseYearLocked = true;
+      metadata.releaseYearLocked = lock;
     }
     if (patch.language !== undefined) {
       metadata.language = patch.language;
-      if (lock) metadata.languageLocked = true;
+      metadata.languageLocked = lock;
     }
     if (patch.publicationStatus !== undefined) {
       metadata.publicationStatus = patch.publicationStatus;
-      if (lock) metadata.publicationStatusLocked = true;
+      metadata.publicationStatusLocked = lock;
     }
     if (patch.webLinks !== undefined) metadata.webLinks = patch.webLinks;
   }
