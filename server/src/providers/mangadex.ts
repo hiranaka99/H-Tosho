@@ -88,8 +88,9 @@ export function parseDescriptionTags(description: string | null | undefined): st
  * parseDescriptionTags). Drops whole contiguous table runs and bold-label
  * runs that contain at least one known-namespace line — including their
  * `| Namespace | Tags |` headers, separator rows, and bare `**TAGS**`
- * headers — plus standalone `Tags:` lines. Returns the cleaned text, or
- * undefined when no tag block was present (description stays untouched).
+ * headers — plus standalone `Tags:` lines. Returns the cleaned text ('' when
+ * the description consisted solely of tag blocks), or undefined when no tag
+ * block was present (description stays untouched).
  */
 export function stripDescriptionTagLines(description: string | null | undefined): string | undefined {
   if (!description) return undefined;
@@ -117,7 +118,7 @@ export function stripDescriptionTagLines(description: string | null | undefined)
   }
   if (!drop.some(Boolean)) return undefined;
   const cleaned = lines.filter((_, i) => !drop[i]).join('\n').replace(/\n{3,}/g, '\n\n').trim();
-  return cleaned || undefined;
+  return cleaned;
 }
 /**
  * MangaDex — REST API v5. Excellent cover art + detailed metadata.
@@ -371,8 +372,11 @@ class MangaDexProvider extends BaseProvider {
         tags.push(parsed);
       }
     }
+    // undefined = no tag block present (raw description stands); '' = the
+    // description was tag blocks only — an empty summary is pushed so stale
+    // tag tables already in Kavita get cleared instead of surviving forever.
     const cleanedDescription = stripDescriptionTagLines(rawDescription);
-    const summaryText = (cleanedDescription ?? rawDescription)?.trim();
+    const summaryText = (cleanedDescription ?? rawDescription)?.trim() || (rawDescription ? '' : undefined);
 
     // In the detail response, author/artist relationships are inlined with
     // attributes ({ id, type, attributes: { name } }); cover_art stays a stub,
@@ -418,7 +422,7 @@ class MangaDexProvider extends BaseProvider {
       titleOptions,
       year: a.year ? Number(a.year) : undefined,
       releaseDate,
-      summary: summaryText ? summaryText : undefined,
+      summary: summaryText,
       coverUrl,
       genres,
       tags,

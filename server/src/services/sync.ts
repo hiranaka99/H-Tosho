@@ -52,7 +52,9 @@ function releaseYear(meta: SeriesMetadata): number | undefined {
 export function buildSeriesPayload(meta: SeriesMetadata): SeriesMetadataPayload {
   const payload: SeriesMetadataPayload = {};
   if (meta.title) payload.name = meta.title;
-  if (meta.summary) payload.summary = meta.summary;
+  // An empty string is meaningful: the provider's description was tag blocks
+  // only, so any stale summary (e.g. an old raw tag table) must be cleared.
+  if (meta.summary !== undefined) payload.summary = meta.summary;
   if (meta.genres.length) payload.genres = meta.genres;
   if (meta.tags.length) payload.tags = meta.tags;
   if (meta.writers.length) payload.writers = meta.writers;
@@ -108,7 +110,7 @@ export function checkAlignment(
   };
 
   if (meta.title && norm(kavita.name) !== norm(meta.title)) mismatched.push('title');
-  if (meta.summary && norm(k?.summary) !== norm(meta.summary)) mismatched.push('summary');
+  if (meta.summary !== undefined && norm(k?.summary) !== norm(meta.summary)) mismatched.push('summary');
   if (meta.genres.length && !sameSet((k?.genres ?? []).map((g) => g.title), meta.genres)) mismatched.push('genres');
   if (meta.tags.length) {
     const have = new Set((k?.tags ?? []).map((t) => listKey(t.title ?? '')).filter(Boolean));

@@ -353,9 +353,9 @@ describe('stripDescriptionTagLines', () => {
     assert.equal(stripDescriptionTagLines(desc), "Instead of Kuzuma, we got a big ol'bald guy who got isekai.");
   });
 
-  it('removes standalone Tags: lines and returns undefined when nothing remains or nothing matches', () => {
+  it('removes standalone Tags: lines; returns "" when only tags remain, undefined when nothing matches', () => {
     assert.equal(stripDescriptionTagLines('A story.\nTags: Cheating, Milf'), 'A story.');
-    assert.equal(stripDescriptionTagLines('Tags: Cheating, Milf'), undefined);
+    assert.equal(stripDescriptionTagLines('Tags: Cheating, Milf'), '');
     assert.equal(stripDescriptionTagLines('Just a plain description.'), undefined);
     assert.equal(stripDescriptionTagLines(null), undefined);
   });
@@ -424,6 +424,46 @@ describe('MangaDexProvider description tag merging', () => {
     assert.equal(meta.summary, 'A doujinshi about school life.');
   });
 
+  it('yields an empty summary (not undefined) when the description is tag blocks only', async () => {
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.startsWith('https://api.mangadex.org/manga/manga-1?')) {
+        return Response.json({
+          result: 'ok',
+          response: 'entity',
+          data: {
+            id: 'manga-1',
+            attributes: {
+              title: { en: 'Series One' },
+              status: 'completed',
+              originalLanguage: 'ja',
+              tags: [{ id: 't1', attributes: { name: { en: 'Loli' }, group: 'theme' } }],
+              description: {
+                en: [
+                  '| Namespace | Tags |',
+                  '|:-|:-',
+                  '|MALE| glasses, harem',
+                  '|OTHER| tankoubon',
+                ].join('\n'),
+              },
+            },
+            relationships: [],
+          },
+        });
+      }
+      if (url.startsWith('https://api.mangadex.org/cover?')) {
+        return Response.json({ result: 'ok', response: 'collection', data: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    const meta = await mangaDexProvider.getSeriesMetadata('manga-1');
+
+    // No prose survives the strip — an empty summary (not undefined) so sync
+    // clears any stale tag table already in Kavita.
+    assert.equal(meta.summary, '');
+    assert.deepEqual(meta.tags, ['Loli', 'glasses', 'harem', 'tankoubon']);
+  });
   it('splits structured tags into genres by MangaDex group (captured KonoSuba parody shape)', async () => {
     globalThis.fetch = async (input) => {
       const url = String(input);

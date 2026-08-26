@@ -102,6 +102,8 @@ interface DiffRow {
   candidate: string;
   /** Render the summary with more breathing room. */
   multiline?: boolean;
+  /** Candidate is empty and syncing will clear the current value. */
+  clearing?: boolean;
   /** Syncable field key (server EXCLUDABLE_FIELDS); rows without one are informational only. */
   field?: string;
   /** Tags merge into Kavita's existing tags instead of replacing them (see server mergeTagLists). */
@@ -119,6 +121,7 @@ const listParts = (s: string) => s.split(',').map(listKey).filter(Boolean);
 function computeDiffers(row: DiffRow): boolean {
   const a = row.current.trim();
   const b = row.candidate.trim();
+  if (row.clearing) return !!a;
   if (!a || !b) return false;
   if (row.list) {
     const pa = listParts(a);
@@ -156,7 +159,7 @@ function FieldRow({ row, providerName, checked, onToggle }: { row: DiffRow; prov
   const differs = !merge && computeDiffers(row);
   // Multiline fields (Summary) are never truncated: full text, wrapping, with an internal scroll for very long descriptions.
   const valueCls = row.multiline ? 'min-w-0 max-h-56 overflow-y-auto whitespace-pre-wrap break-words' : 'min-w-0 whitespace-pre-wrap break-words';
-  const showCheckbox = !!row.field && row.candidate.trim() !== '' && !!onToggle;
+  const showCheckbox = !!row.field && (row.candidate.trim() !== '' || row.clearing) && !!onToggle;
   return (
     <div className={cn(ROW_GRID, 'border-b border-border py-2 last:border-0', differs ? 'bg-warning/5' : 'transition-colors hover:bg-surface-2/40')}>
       <div className="flex min-w-0 items-start gap-1.5">
@@ -179,6 +182,11 @@ function FieldRow({ row, providerName, checked, onToggle }: { row: DiffRow; prov
       {merge ? (
         <div className="min-w-0 text-sm">
           <MergedTags existing={merge.existing} incoming={merge.incoming} dimmed={!checked} />
+        </div>
+      ) : row.clearing ? (
+        <div className={cn(valueCls, 'min-h-8 text-sm')}>
+          <span className="text-primary">Will be cleared</span>
+          <span className="text-muted"> — the provider's summary contains only the tag list.</span>
         </div>
       ) : (
         <div
@@ -353,9 +361,13 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
       {
         label: 'Summary',
         current: k?.summary ?? '',
-        candidate: m?.summary ?? selected.summary ?? '',
+        // Fall back to the raw search summary only while the full preview is
+        // still loading; once loaded, an empty candidate means the provider's
+        // description was tag blocks only and the summary will be cleared.
+        candidate: m ? (m.summary ?? '') : (selected.summary ?? ''),
         multiline: true,
         field: 'summary',
+        clearing: !!m && m.summary === '' && Boolean((k?.summary ?? '').trim()),
       },
       { label: 'Genres', current: tagNames(k?.genres), candidate: m ? m.genres.join(', ') : '', field: 'genres', list: true },
       { label: 'Tags', current: tagNames(k?.tags), candidate: m ? m.tags.join(', ') : '', field: 'tags', tagMerge: { existing: (k?.tags ?? []).map((t) => t.title).filter((t): t is string => Boolean(t)), incoming: m?.tags ?? [] } },
