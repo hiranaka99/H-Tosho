@@ -210,3 +210,45 @@ test('remaining metadata is pushed to the new entry, and the match row follows i
   const oldRow = db.select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, 42)).get();
   assert.equal(oldRow, undefined);
 });
+
+test('alternate English title (not display or romanized) is accepted as selectedTitle', async () => {
+  const altDir = path.join(dataDir, 'Demon-Hentai');
+  fs.mkdirSync(altDir);
+  const files = ['Chapter 1.cbz', 'Chapter 2.cbz'].map((name, index) => {
+    const file = path.join(altDir, name);
+    fs.writeFileSync(file, buildZip([
+      { name: 'page.jpg', data: Buffer.from(`image-${index}`) },
+      { name: 'ComicInfo.xml', data: Buffer.from(`<ComicInfo><Title>Chapter ${index + 1}</Title><Series>Old Name</Series></ComicInfo>`) },
+    ]));
+    return file;
+  });
+  const state = { scanned: false, requests: [] as RequestLog[] };
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('api.mangadex.org/manga/001f1dae-a245-4125-9ee3-f8e80c634990?')) {
+      // Display title is the romanized one; the name the folder actually
+      // matches lives in altTitles — the matcher offers it as selectedTitle.
+      return Response.json({ data: { id: '001f1dae-a245-4125-9ee3-f8e80c634990', attributes: { title: { en: 'DH! ~Himorogi Hyaku Yome Gatari~' }, altTitles: [{ en: 'Demon-Hentai - Shrine of One Hundred Wives' }], status: 'completed', originalLanguage: 'ja' }, relationships: [] } });
+    }
+    if (url.includes('api.mangadex.org/cover?')) return Response.json({ response: 'collection', data: [] });
+    return kavitaRenameMock(state, altDir, 'Old Name', 'Demon-Hentai - Shrine of One Hundred Wives', 49)(input, init);
+  }) as typeof fetch;
+
+  const res = await api.request('/series/42/apply', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      providerId: 'mangadex',
+      providerSeriesId: '001f1dae-a245-4125-9ee3-f8e80c634990',
+      selectedTitle: 'Demon-Hentai - Shrine of One Hundred Wives',
+      excludedFields: ['summary', 'genres', 'tags', 'writers', 'artists', 'releaseDate', 'language', 'status', 'url'],
+      cover: false,
+    }),
+  });
+
+  assert.equal(res.status, 200);
+  const result = await res.json();
+  assert.equal(result.titleFilesUpdated, 2);
+  assert.equal(result.newSeriesId, 49);
+  for (const file of files) assert.equal(parseComicInfo((await readComicInfo(file))!).fields.Series, 'Demon-Hentai - Shrine of One Hundred Wives');
+});

@@ -106,7 +106,47 @@ describe('MangaDexProvider cover URLs', () => {
 
     assert.equal(meta.coverUrl, 'https://uploads.mangadex.org/covers/manga-1/file-one.jpg');
     assert.deepEqual(meta.artists, ['Author One']);
-    assert.deepEqual(meta.titleOptions, ["When Mama and Papa Aren't Home", 'Papa to Mama ga Inai Aida ni...']);
+    assert.deepEqual(meta.titleOptions, ["When Mama and Papa Aren't Home", 'Papa to Mama ga Inai Aida ni...', 'パパとママがいない間に…']);
+  });
+
+  it('offers every title variant as a ComicInfo.Series option, not just display + romanized', async () => {
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.startsWith('https://api.mangadex.org/manga/manga-1?')) {
+        return Response.json({
+          result: 'ok',
+          response: 'entity',
+          data: {
+            id: 'manga-1',
+            attributes: {
+              title: { en: 'DH! ~Himorogi Hyaku Yome Gatari~' },
+              altTitles: [
+                { en: 'Demon-Hentai - Shrine of One Hundred Wives' },
+                { ja: 'でぃーエッチ！〜ひもろぎ百嫁語〜' },
+              ],
+              status: 'completed',
+              originalLanguage: 'ja',
+            },
+            relationships: [],
+          },
+        });
+      }
+      if (url.startsWith('https://api.mangadex.org/cover?')) {
+        return Response.json({ result: 'ok', response: 'collection', data: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    const meta = await mangaDexProvider.getSeriesMetadata('manga-1');
+
+    // The matcher can select any variant as the candidate title (bestVariant), so
+    // every one must survive apply validation — including an alternate English
+    // title that is neither the display title nor a romanization.
+    assert.deepEqual(meta.titleOptions, [
+      'DH! ~Himorogi Hyaku Yome Gatari~',
+      'Demon-Hentai - Shrine of One Hundred Wives',
+      'でぃーエッチ！〜ひもろぎ百嫁語〜',
+    ]);
   });
   it('selects one cover per volume with English preferred over Japanese and newest upload winning within a locale', async () => {
     const coverCollectionRequests: string[] = [];

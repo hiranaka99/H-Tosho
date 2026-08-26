@@ -327,11 +327,11 @@ class MangaDexProvider extends BaseProvider {
     if (!m) throw new Error(`MangaDex: manga ${providerSeriesId} not found`);
     const a = m.attributes ?? {};
     const title = this.pickTitle(a);
-    const altTitles: Array<Record<string, unknown>> = Array.isArray(a.altTitles) ? a.altTitles : [];
-    const romanizedTitle = a.title?.original || a.title?.['ja-ro'] || a.title?.romaji
-      || altTitles.find((entry) => typeof entry?.['ja-ro'] === 'string')?.['ja-ro']
-      || altTitles.find((entry) => typeof entry?.original === 'string')?.original;
-    const titleOptions = [...new Set([title, romanizedTitle].filter((value): value is string => typeof value === 'string' && value.trim().length > 0))];
+    // The matcher scores every known variant (autoMatch.bestVariant), so the
+    // ComicInfo.Series choices must cover the same set — otherwise a candidate
+    // whose best-matching name is an alternate title fails apply validation.
+    const titleOptions = [...new Set(this.titleVariants(a))];
+    if (!titleOptions.includes(title)) titleOptions.unshift(title);
 
     let releaseDate: string | undefined;
     const published = a.published as string | undefined;
