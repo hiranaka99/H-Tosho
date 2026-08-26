@@ -365,7 +365,12 @@ api.post('/series/:id/apply', async (c) => {
     }
     let titleFilesUpdated = 0;
     let titleFilesVerified = 0;
-    if (selectedTitle && !(body.excludedFields ?? []).includes('title')) {
+    // A checked TITLE means "make the series title this". Kavita 0.9 ignores API
+    // name pushes (the display name follows the folder path), so for any provider
+    // rewrite ComicInfo.Series in every chapter and rescan whenever the effective
+    // title differs from the current series name.
+    const newTitle = meta.title.trim();
+    if (newTitle && !(body.excludedFields ?? []).includes('title') && newTitle !== series.name.trim()) {
       const libraries = await client.getLibraries();
       const library = libraries.find((entry) => entry.id === series.libraryId);
       const dl = getDownloaderSettings();
@@ -377,7 +382,7 @@ api.post('/series/:id/apply', async (c) => {
       if (!dir) throw new Error(`Could not locate the series folder for "${series.name}" on this machine`);
       const files = listCbzFiles(dir);
       if (files.length === 0) throw new Error(`No CBZ chapters found for "${series.name}"`);
-      const rewrite = await setSeriesTitleInCbzFiles(files, selectedTitle);
+      const rewrite = await setSeriesTitleInCbzFiles(files, newTitle);
       titleFilesUpdated = rewrite.changed;
       titleFilesVerified = rewrite.verified;
       await client.scanSeries(series.libraryId, seriesId);
@@ -391,7 +396,8 @@ api.post('/series/:id/apply', async (c) => {
       cover,
       volumeCovers: pushCovers ? meta.volumeCovers : undefined,
       excludedFields: body.excludedFields ?? [],
-      title: selectedTitle ?? series.name,
+      title: meta.title,
+      titleFiles: titleFilesUpdated || undefined,
     });
     invalidateSeriesArtists(seriesId);
     // Verify the push against Kavita's live state and record whether every

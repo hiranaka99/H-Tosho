@@ -160,6 +160,8 @@ export async function applyToKavita(
     title: string;
     /** Fields the user deselected in the identify dialog (EXCLUDABLE_FIELDS keys). */
     excludedFields?: string[];
+    /** CBZ chapters whose ComicInfo.Series the caller rewrote to the applied title. */
+    titleFiles?: number;
   },
 ): Promise<ApplyResult> {
   const errors: string[] = [];
@@ -236,7 +238,7 @@ export async function applyToKavita(
       kavitaSeriesId: seriesId,
       seriesTitle: opts.title,
       action: errors.length ? 'failed' : 'updated',
-      detailsJson: JSON.stringify({ provider: meta.providerId, pushed, coverUpdated, volumeCoversUpdated, errors, warnings }),
+      detailsJson: JSON.stringify({ provider: meta.providerId, pushed, coverUpdated, volumeCoversUpdated, ...(opts.titleFiles ? { titleFiles: opts.titleFiles } : {}), errors, warnings }),
     })
     .run();
 

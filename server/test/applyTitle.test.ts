@@ -68,3 +68,46 @@ test('selected MangaDex title rewrites every chapter and requests a series scan'
   assert.equal(requests.filter((request) => request.url.endsWith('/api/Series/scan')).length, 1);
   assert.equal(requests.filter((request) => request.url.endsWith('/api/Series/update')).length, 0);
 });
+
+test('AniList match rewrites ComicInfo.Series when the title differs (no selectedTitle)', async () => {
+  const anilistDir = path.join(dataDir, 'Bitch na Inane-sama');
+  fs.mkdirSync(anilistDir);
+  const files = ['Vol 1.cbz', 'Vol 2.cbz'].map((name, index) => {
+    const file = path.join(anilistDir, name);
+    fs.writeFileSync(file, buildZip([
+      { name: 'page.jpg', data: Buffer.from(`image-${index}`) },
+      { name: 'ComicInfo.xml', data: Buffer.from(`<ComicInfo><Title>Vol ${index + 1}</Title><Series>Bitch na Inane-sama</Series></ComicInfo>`) },
+    ]));
+    return file;
+  });
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    requests.push({ url, init });
+    if (url.endsWith('/api/Series/42')) return Response.json({ id: 42, libraryId: 7, name: 'Bitch na Inane-sama', sortName: 'Bitch na Inane-sama', folderPath: anilistDir });
+    if (url.endsWith('/api/Library/libraries')) return Response.json([{ id: 7, name: 'Test', type: 0, folders: [dataDir] }]);
+    if (url.includes('graphql.anilist.co')) return Response.json({ data: { Media: { id: 129747, title: { romaji: 'Bitch na In`ane-sama' }, format: 'ONE_SHOT', coverImage: {}, description: '', averageScore: 0, startDate: null, genres: [], tags: [], studios: null, status: 'FINISHED' } } });
+    if (init?.method === 'POST') return Response.json({ ok: true });
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  const res = await api.request('/series/42/apply', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      providerId: 'anilist',
+      providerSeriesId: '129747',
+      excludedFields: ['summary', 'genres', 'tags', 'writers', 'artists', 'releaseDate', 'language', 'status', 'url'],
+      cover: false,
+    }),
+  });
+
+  assert.equal(res.status, 200);
+  const result = await res.json();
+  assert.equal(result.titleFilesUpdated, 2);
+  assert.equal(result.titleFilesVerified, 2);
+  for (const file of files) assert.equal(parseComicInfo((await readComicInfo(file))!).fields.Series, 'Bitch na In`ane-sama');
+  assert.equal(requests.filter((request) => request.url.endsWith('/api/Series/scan')).length, 1);
+  // Kavita 0.9 ignores the API name push, so the title must not be re-pushed after the file rewrite.
+  assert.equal(requests.filter((request) => request.url.endsWith('/api/Series/update')).length, 0);
+});
