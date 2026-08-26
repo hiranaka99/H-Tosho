@@ -14,6 +14,26 @@ import { toast } from '../lib/toast';
 const LOW_CONFIDENCE = 0.8;
 const SERIES_PAGE_SIZE = 40;
 
+const LIBRARY_STATE_KEY = 'h-tosho:library-state';
+
+interface LibraryStateCache {
+  query?: string;
+  pages?: Record<string, number>;
+}
+
+function readLibraryState(): LibraryStateCache {
+  try {
+    return JSON.parse(sessionStorage.getItem(LIBRARY_STATE_KEY) ?? '{}') as LibraryStateCache;
+  } catch {
+    return {};
+  }
+}
+
+function writeLibraryState(update: Partial<LibraryStateCache>) {
+  const current = readLibraryState();
+  sessionStorage.setItem(LIBRARY_STATE_KEY, JSON.stringify({ ...current, ...update }));
+}
+
 function Cover({ src, name, className }: { src?: string | null; name: string; className?: string }) {
   const [failed, setFailed] = React.useState(false);
   // Covers may be absolute provider URLs or same-origin relative paths
@@ -86,8 +106,9 @@ export function Libraries() {
   const navigate = useNavigate();
   const qc = useQueryClient();
 
+  const initialState = React.useMemo(readLibraryState, []);
   const [selected, setSelected] = React.useState<number | null>(libraryId ? Number(libraryId) : null);
-  const [query, setQuery] = React.useState('');
+  const [query, setQuery] = React.useState(initialState.query ?? '');
   const [statusFilter, setStatusFilter] = React.useState('all');
   const [view, setView] = React.useState<'grid' | 'table'>('grid');
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
@@ -95,15 +116,18 @@ export function Libraries() {
   const [comicInfo, setComicInfo] = React.useState<{ id: number; name: string } | null>(null);
   const [mergeOpen, setMergeOpen] = React.useState(false);
   const [selectMode, setSelectMode] = React.useState(false);
-  const [page, setPage] = React.useState(1);
+  const [page, setPage] = React.useState(() => libraryId ? initialState.pages?.[libraryId] ?? 1 : 1);
   const [unmatchTarget, setUnmatchTarget] = React.useState<SeriesRow | null>(null);
 
   React.useEffect(() => {
-    if (libraryId) setSelected(Number(libraryId));
+    if (!libraryId) return;
+    setSelected(Number(libraryId));
+    setPage(readLibraryState().pages?.[libraryId] ?? 1);
   }, [libraryId]);
 
   const pickLibrary = (id: number) => {
     setSelected(id);
+    setPage(readLibraryState().pages?.[String(id)] ?? 1);
     setChecked(new Set());
     navigate(`/libraries/${id}`);
   };
@@ -145,7 +169,15 @@ export function Libraries() {
   const pageCount = Math.max(1, Math.ceil(filtered.length / SERIES_PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
   const visibleRows = filtered.slice((currentPage - 1) * SERIES_PAGE_SIZE, currentPage * SERIES_PAGE_SIZE);
-  React.useEffect(() => setPage(1), [query, statusFilter, selected]);
+  React.useEffect(() => writeLibraryState({ query }), [query]);
+  const changePage = (nextPage: number) => {
+    setPage(nextPage);
+    document.querySelector('main')?.scrollTo({ top: 0 });
+  };
+  React.useEffect(() => {
+    if (selected === null) return;
+    writeLibraryState({ pages: { ...(readLibraryState().pages ?? {}), [selected]: page } });
+  }, [selected, page]);
   const isFiltering = statusFilter !== 'all' || query.trim() !== '';
 
   const toggleCheck = (id: number) => {
@@ -186,36 +218,78 @@ export function Libraries() {
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <PageHeader icon={<BookOpen className="h-5 w-5" />} title="Libraries" subtitle="Review matches and manage Kavita metadata." />
-      {/* View tabs — one per Kavita library. */}
-      {libs.isError ? (
-        <Card><ErrorState title="Could not load libraries" description={libs.error instanceof Error ? libs.error.message : String(libs.error)} onRetry={() => void libs.refetch()} /></Card>
-      ) : libs.data && libs.data.length > 0 ? (
-        <div className="flex flex-col gap-2 border-b border-border-2 lg:flex-row lg:items-end">
-          <div role="tablist" aria-label="Kavita libraries" className="flex max-w-full gap-4 overflow-x-auto">
-            {libs.data.map((lib) => (
-              <button
-                key={lib.id}
-                type="button"
-                role="tab"
-                aria-selected={selected === lib.id}
-                tabIndex={selected === lib.id ? 0 : -1}
-                onClick={() => pickLibrary(lib.id)}
-                className={cn('-mb-px shrink-0 border-b-2 px-1 pb-2 text-sm font-medium transition-colors', selected === lib.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground')}
-              >
-                {lib.name}
-              </button>
-            ))}
+      <div className="sticky -top-4 z-20 -mx-2 -mt-4 flex flex-col gap-3 bg-background px-2 pb-2 pt-4 sm:-top-6 sm:-mt-6 sm:pt-6 lg:-top-8 lg:-mt-8 lg:pt-8">
+        {/* View tabs — one per Kavita library. */}
+        {libs.isError ? (
+          <Card><ErrorState title="Could not load libraries" description={libs.error instanceof Error ? libs.error.message : String(libs.error)} onRetry={() => void libs.refetch()} /></Card>
+        ) : libs.data && libs.data.length > 0 ? (
+          <div className="flex flex-col gap-2 border-b border-border-2 lg:flex-row lg:items-end">
+            <div role="tablist" aria-label="Kavita libraries" className="flex max-w-full gap-4 overflow-x-auto">
+              {libs.data.map((lib) => (
+                <button
+                  key={lib.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected === lib.id}
+                  tabIndex={selected === lib.id ? 0 : -1}
+                  onClick={() => pickLibrary(lib.id)}
+                  className={cn('-mb-px shrink-0 border-b-2 px-1 pb-2 text-sm font-medium transition-colors', selected === lib.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground')}
+                >
+                  {lib.name}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2 pb-2 lg:ml-auto lg:flex-nowrap">
+              <Button size="sm" variant="outline" className="flex-1 sm:flex-none" onClick={() => enqueue('match-unmatched', { libraryId: selected })} disabled={selected === null}><Play className="h-3.5 w-3.5" /> Match all unmatched</Button>
+              <Button size="sm" className="flex-1 sm:flex-none" onClick={() => enqueue('scan-new', { libraryId: selected })} disabled={selected === null}><RefreshCw className="h-3.5 w-3.5" /> Refresh library</Button>
+            </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 pb-2 lg:ml-auto lg:flex-nowrap">
-            <Button size="sm" variant="outline" className="flex-1 sm:flex-none" onClick={() => enqueue('match-unmatched', { libraryId: selected })} disabled={selected === null}><Play className="h-3.5 w-3.5" /> Match all unmatched</Button>
-            <Button size="sm" className="flex-1 sm:flex-none" onClick={() => enqueue('scan-new', { libraryId: selected })} disabled={selected === null}><RefreshCw className="h-3.5 w-3.5" /> Refresh library</Button>
+        ) : (
+          <div className="self-start border-b border-border-2 pb-2 text-sm text-muted">
+            {libs.isLoading ? 'Loading libraries…' : 'No libraries — connect Kavita in Settings.'}
           </div>
-        </div>
-      ) : (
-        <div className="self-start border-b border-border-2 pb-2 text-sm text-muted">
-          {libs.isLoading ? 'Loading libraries…' : 'No libraries — connect Kavita in Settings.'}
-        </div>
-      )}
+        )}
+
+        {selected !== null && (
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h2>
+              <p className="text-sm text-muted">
+                {matchedInLib} matched · {rows.length - matchedInLib} pending
+              </p>
+            </div>
+            <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:justify-end">
+              <Button variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit multi-select mode' : 'Multi-select — click cards to select them'}>
+                <CheckSquare className="h-4 w-4" /> Select
+              </Button>
+              <label className="flex cursor-pointer select-none items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-xs font-medium text-muted">
+                Auto-match
+                <Switch aria-label="Automatically match new series" checked={override.data?.autoMatch ?? true} onCheckedChange={setAutoMatch} />
+              </label>
+              <div className="relative min-w-44 flex-1 sm:flex-none">
+                <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted" />
+                <Input aria-label="Filter series or artists" placeholder="Filter series or artist…" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} className="w-full pl-8 sm:w-52" />
+              </div>
+              <Select aria-label="Filter by match status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="w-full sm:w-44">
+                <option value="all">All</option>
+                <option value="matched">Matched</option>
+                <option value="unmatched">Unmatched</option>
+                <option value="syncing">Syncing</option>
+                <option value="failed">Failed</option>
+                <option value="low-score">Low confidence (&lt;80%)</option>
+              </Select>
+              <div className="flex overflow-hidden rounded-md border border-border-2">
+                <button type="button" aria-label="Grid view" aria-pressed={view === 'grid'} onClick={() => setView('grid')} className={cn('flex h-9 w-9 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
+                  <LayoutGrid className="h-4 w-4" />
+                </button>
+                <button type="button" aria-label="Table view" aria-pressed={view === 'table'} onClick={() => setView('table')} className={cn('flex h-9 w-9 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', view === 'table' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
+                  <Table2 className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
 
       <div className="flex min-w-0 flex-1 flex-col gap-3">
         {selected === null ? (
@@ -224,43 +298,6 @@ export function Libraries() {
           </Card>
         ) : (
           <>
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-semibold">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h2>
-                <p className="text-sm text-muted">
-                  {matchedInLib} matched · {rows.length - matchedInLib} pending
-                </p>
-              </div>
-              <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:justify-end">
-                <Button variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit multi-select mode' : 'Multi-select — click cards to select them'}>
-                  <CheckSquare className="h-4 w-4" /> Select
-                </Button>
-                <label className="flex cursor-pointer select-none items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-xs font-medium text-muted">
-                  Auto-match
-                  <Switch aria-label="Automatically match new series" checked={override.data?.autoMatch ?? true} onCheckedChange={setAutoMatch} />
-                </label>
-                <div className="relative min-w-44 flex-1 sm:flex-none">
-                  <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted" />
-                  <Input aria-label="Filter series or artists" placeholder="Filter series or artist…" value={query} onChange={(e) => setQuery(e.target.value)} className="w-full pl-8 sm:w-52" />
-                </div>
-                <Select aria-label="Filter by match status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-full sm:w-44">
-                  <option value="all">All</option>
-                  <option value="matched">Matched</option>
-                  <option value="unmatched">Unmatched</option>
-                  <option value="syncing">Syncing</option>
-                  <option value="failed">Failed</option>
-                  <option value="low-score">Low confidence (&lt;80%)</option>
-                </Select>
-                <div className="flex overflow-hidden rounded-md border border-border-2">
-                  <button type="button" aria-label="Grid view" aria-pressed={view === 'grid'} onClick={() => setView('grid')} className={cn('flex h-9 w-9 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
-                    <LayoutGrid className="h-4 w-4" />
-                  </button>
-                  <button type="button" aria-label="Table view" aria-pressed={view === 'table'} onClick={() => setView('table')} className={cn('flex h-9 w-9 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', view === 'table' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
-                    <Table2 className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            </div>
 
             {(selectMode || checked.size > 0) && (
               <div className={cn('flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border p-2 shadow-lg shadow-black/20', selectMode ? 'border-primary/50 bg-primary/10' : 'border-border-2 bg-surface-2')}>
@@ -450,11 +487,11 @@ export function Libraries() {
             )}
             {filtered.length > SERIES_PAGE_SIZE && (
               <nav aria-label="Series pages" className="flex flex-wrap items-center justify-center gap-2 pt-2">
-                <Button size="sm" variant="outline" disabled={currentPage === 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+                <Button size="sm" variant="outline" disabled={currentPage === 1} onClick={() => changePage(Math.max(1, currentPage - 1))}>
                   <ChevronLeft className="h-3.5 w-3.5" /> Previous
                 </Button>
                 <span className="text-sm tabular-nums text-muted">Page {currentPage} of {pageCount}</span>
-                <Button size="sm" variant="outline" disabled={currentPage === pageCount} onClick={() => setPage((p) => Math.min(pageCount, p + 1))}>
+                <Button size="sm" variant="outline" disabled={currentPage === pageCount} onClick={() => changePage(Math.min(pageCount, currentPage + 1))}>
                   Next <ChevronRight className="h-3.5 w-3.5" />
                 </Button>
               </nav>

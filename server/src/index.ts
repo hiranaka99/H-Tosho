@@ -9,9 +9,8 @@ import { countWatchedSearches } from './services/watchedSearches.js';
 import { downloadQueue } from './downloader/engine.js';
 
 const PORT = Number(process.env.PORT ?? 8787);
-// Local-only by default: the API has no auth, so binding to all interfaces
-// exposes it to the whole LAN. Set HOST=0.0.0.0 deliberately when remote
-// access is needed.
+// Local-only by default. Set HOST=0.0.0.0 deliberately for remote access;
+// the login gate protects the HTTP surface in either mode.
 const HOST = process.env.HOST ?? '127.0.0.1';
 
 function main(): void {
@@ -65,9 +64,6 @@ const WATCHED_SEARCH_INTERVAL_MS = 15 * 60_000;
   const app = createApp();
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST });
   console.log(`[h-tosho] listening on http://${HOST}:${PORT} (api at /api)`);
-  if (HOST === '0.0.0.0' || HOST === '::') {
-    console.warn('[h-tosho] WARNING: bound to all network interfaces and the API has no auth — keep the default HOST=127.0.0.1 unless you accept LAN exposure.');
-  }
 
   const shutdown = (): void => {
     console.log('[h-tosho] shutting down');

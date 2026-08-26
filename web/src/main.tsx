@@ -5,6 +5,7 @@ import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import { DownloadsProvider } from './lib/DownloadsContext';
 import { Toaster } from './lib/toast';
+import { AuthProvider } from './lib/AuthContext';
 import './index.css';
 
 const queryClient = new QueryClient({
@@ -21,10 +22,12 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <DownloadsProvider>
-          <App />
-          <Toaster />
-        </DownloadsProvider>
+        <AuthProvider>
+          <DownloadsProvider>
+            <App />
+            <Toaster />
+          </DownloadsProvider>
+        </AuthProvider>
       </BrowserRouter>
     </QueryClientProvider>
   </React.StrictMode>,

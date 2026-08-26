@@ -1,10 +1,11 @@
 import * as React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, Star, ArrowUp, ArrowDown } from 'lucide-react';
+import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, Star, ArrowUp, ArrowDown, LockKeyhole } from 'lucide-react';
 import { api, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type DoujinSource } from '../lib/api';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader, ErrorState, SegmentedTabs } from '../components/ui';
 import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
+import { useAuth } from '../lib/AuthContext';
 
 type Notif = SettingsType['notifications'];
 const SETTINGS_TABS = [
@@ -42,6 +43,55 @@ function useFlash(on?: () => void) {
     window.setTimeout(() => setSaved(false), 1500);
   }, [on]);
   return { saved, flash };
+}
+
+function AccountSettingsCard() {
+  const auth = useAuth();
+  const [currentPassword, setCurrentPassword] = React.useState('');
+  const [username, setUsername] = React.useState(auth.username ?? '');
+  const [password, setPassword] = React.useState('');
+  const [confirmPassword, setConfirmPassword] = React.useState('');
+  const [error, setError] = React.useState('');
+  const change = useMutation({
+    mutationFn: () => api.changeCredentials(currentPassword, username, password),
+    onSuccess: async () => {
+      setCurrentPassword('');
+      setPassword('');
+      setConfirmPassword('');
+      setError('');
+      await auth.refresh();
+      toast({ tone: 'success', title: 'Account updated' });
+    },
+    onError: (cause) => setError(cause instanceof Error ? cause.message : String(cause)),
+  });
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+    setError('');
+    change.mutate();
+  };
+  return (
+    <Card className="animate-fade-up">
+      <SectionHeader icon={<LockKeyhole className="h-4 w-4" />} title="Account security" />
+      <CardContent>
+        <form className="flex max-w-xl flex-col gap-3" onSubmit={submit}>
+          <div className="flex flex-col gap-1"><Label htmlFor="account-username">Username</Label><Input id="account-username" autoComplete="username" required maxLength={100} value={username} onChange={(event) => setUsername(event.target.value)} /></div>
+          <div className="flex flex-col gap-1"><Label htmlFor="current-password">Current password</Label><Input id="current-password" type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1"><Label htmlFor="new-password">New password</Label><Input id="new-password" type="password" autoComplete="new-password" required minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} /></div>
+            <div className="flex flex-col gap-1"><Label htmlFor="confirm-new-password">Confirm new password</Label><Input id="confirm-new-password" type="password" autoComplete="new-password" required minLength={8} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></div>
+          </div>
+          {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+          <Button type="submit" className="self-start" disabled={change.isPending || !username.trim() || password.length < 8 || confirmPassword.length < 8}>
+            {change.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Update account
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
 }
 
 export function Settings() {
@@ -130,6 +180,7 @@ export function Settings() {
       <SegmentedTabs items={SETTINGS_TABS} value={tab} onChange={setTab} label="Settings sections" className="self-start" />
 
       {tab === 'general' && (<>
+      <AccountSettingsCard />
       <Card className="animate-fade-up">
         <SectionHeader icon={<Server className="h-4 w-4" />} title="Kavita connection">
           <Badge tone={kavita?.data?.configured && !kavita.data.error ? 'success' : kavita?.data?.configured ? 'danger' : 'muted'}>

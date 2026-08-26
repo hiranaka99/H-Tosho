@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { Library, Settings as SettingsIcon, ListChecks, BookOpenText, Download, Menu, X } from 'lucide-react';
+import { Library, Settings as SettingsIcon, ListChecks, BookOpenText, Download, Menu, X, LogOut } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './lib/api';
 import { Libraries } from './pages/Libraries';
@@ -9,6 +9,7 @@ import { Jobs } from './pages/Jobs';
 import { Settings } from './pages/Settings';
 import { SidebarStatus } from './components/SidebarStatus';
 import { cn } from './lib/utils';
+import { useAuth } from './lib/AuthContext';
 function LowConfidenceBadge() {
   const { data } = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, refetchInterval: 60_000 });
   if (!data || data.count === 0) return null;
@@ -70,6 +71,7 @@ const NAV = [
 
 export default function App() {
   const location = useLocation();
+  const { username, logout } = useAuth();
   const inLibrary = location.pathname.startsWith('/libraries');
 
   const [navOpen, setNavOpen] = React.useState(false);
@@ -124,6 +126,12 @@ export default function App() {
             </NavLink>
           ))}
         </nav>
+        <div className="flex items-center gap-2 border-t border-border px-3 py-2">
+          <span className="min-w-0 flex-1 truncate text-xs text-muted" title={username ?? undefined}>{username}</span>
+          <button type="button" onClick={() => void logout()} aria-label="Sign out" title="Sign out" className="flex h-8 w-8 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+            <LogOut className="h-4 w-4" />
+          </button>
+        </div>
         <KavitaIndicator />
         <SidebarStatus />
       </aside>

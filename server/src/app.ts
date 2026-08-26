@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { api } from './routes/api.js';
 import { mediaRouter } from './routes/media.js';
+import { authStatus, changeCredentials, login, logout, requireAuth, setup } from './services/auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -25,7 +26,14 @@ export function createApp(): Hono {
   const app = new Hono();
   const webDist = resolveWebDist();
 
-  app.use('/api/*', cors());
+  app.use('/api/*', cors({ credentials: true, origin: (origin) => origin }));
+  app.get('/api/auth/status', authStatus);
+  app.post('/api/auth/setup', setup);
+  app.post('/api/auth/login', login);
+  app.post('/api/auth/logout', logout);
+  app.put('/api/auth/credentials', requireAuth, changeCredentials);
+  app.use('/api/*', requireAuth);
+  app.use('/media', requireAuth);
   app.route('/api', api);
   // Media proxy for doujin covers (Hitomi CDN requires a hitomi.la Referer).
   app.route('/', mediaRouter());

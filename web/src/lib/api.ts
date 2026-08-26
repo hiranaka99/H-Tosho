@@ -303,14 +303,22 @@ export interface WatchedSearch {
   seenCount: number;
 }
 
+export interface AuthStatus {
+  setupRequired: boolean;
+  authenticated: boolean;
+  username: string | null;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch('/api' + path, {
     ...init,
+    credentials: 'same-origin',
     headers: {
       'Content-Type': 'application/json',
       ...(init.headers || {}),
     },
   });
+  if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event('htosho:unauthorized'));
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
     try {
@@ -325,6 +333,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  authStatus: () => request<AuthStatus>('/auth/status'),
+  setup: (username: string, password: string) => request<{ authenticated: true; username: string }>('/auth/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  login: (username: string, password: string) => request<{ authenticated: true; username: string }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  logout: () => request<{ authenticated: false }>('/auth/logout', { method: 'POST' }),
+  changeCredentials: (currentPassword: string, username: string, password: string) => request<{ authenticated: true; username: string }>('/auth/credentials', { method: 'PUT', body: JSON.stringify({ currentPassword, username, password }) }),
   kavitaStatus: () => request<{
     configured: boolean;
     baseUrl?: string;

@@ -45,6 +45,28 @@ const SOURCES: { id: DoujinSource; label: string }[] = [
   { id: 'nhentai', label: 'nHentai' },
 ];
 
+const DOWNLOADER_STATE_KEY = 'h-tosho:downloader-state';
+
+interface DownloaderStateCache {
+  source?: DoujinSource;
+  query?: string;
+  searchKey?: string | null;
+  sort?: DoujinSort;
+  page?: number;
+}
+
+function readDownloaderState(): DownloaderStateCache {
+  try {
+    return JSON.parse(sessionStorage.getItem(DOWNLOADER_STATE_KEY) ?? '{}') as DownloaderStateCache;
+  } catch {
+    return {};
+  }
+}
+
+function writeDownloaderState(update: Partial<DownloaderStateCache>) {
+  sessionStorage.setItem(DOWNLOADER_STATE_KEY, JSON.stringify({ ...readDownloaderState(), ...update }));
+}
+
 /**
  * Result ordering options for nHentai searches, mirroring nhentai.net's own
  * sort controls.
@@ -613,19 +635,24 @@ function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm }: {
 
 export function Downloader() {
   // Shared app-wide download state (live via SSE + polling fallback) and actions.
-  // Deep links from the Libraries page prefill the source and an artist search
-  // (`/downloader?source=nhentai&q=artist%3A...`). App remounts this page on
-  // path changes, so reading the params once at mount covers every entry.
+  // Deep links from the Libraries page override cached search state; ordinary
+  // navigation restores the last input, committed search, and result page.
   const [searchParams] = useSearchParams();
-  const [source, setSource] = React.useState<DoujinSource>(() => (searchParams.get('source') === 'nhentai' ? 'nhentai' : 'hitomi'));
-  const [query, setQuery] = React.useState(() => searchParams.get('q') ?? '');
+  const initialState = React.useMemo(readDownloaderState, []);
+  const linkedQuery = searchParams.get('q');
+  const [source, setSource] = React.useState<DoujinSource>(() => {
+    const requested = searchParams.get('source');
+    if (requested === 'nhentai' || requested === 'hitomi') return requested;
+    return initialState.source === 'nhentai' ? 'nhentai' : 'hitomi';
+  });
+  const [query, setQuery] = React.useState(() => linkedQuery ?? initialState.query ?? '');
   const [searchKey, setSearchKey] = React.useState<string | null>(() => {
-    const q = searchParams.get('q');
-    return q && q.trim() ? q.trim() : null;
+    if (linkedQuery !== null) return linkedQuery.trim() || null;
+    return initialState.searchKey?.trim() || null;
   });
   // Result ordering for nHentai searches (ignored by other sources). Persisted
   // across source switches so it applies the next time nHentai is searched.
-  const [sort, setSort] = React.useState<DoujinSort>('default');
+  const [sort, setSort] = React.useState<DoujinSort>(() => sortsFor(source).some((option) => option.value === initialState.sort) ? initialState.sort! : 'default');
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
   // ComicInfo editor: null = closed; { path? } = open (path from a completed row, or none to browse).
   const [comicInfo, setComicInfo] = React.useState<{ path?: string } | null>(null);
@@ -740,16 +767,22 @@ export function Downloader() {
 
   // Results are fetched in full (up to ~1000 galleries) and paged client-side —
   // rendering every card at once is the heaviest thing this page can do.
-  const [page, setPage] = React.useState(1);
+  const [page, setPage] = React.useState(() => linkedQuery !== null ? 1 : Math.max(1, initialState.page ?? 1));
   const [showAllHistory, setShowAllHistory] = React.useState(false);
 
   // Top-of-page view tabs: search results vs. the download manager queue.
   const [tab, setTab] = React.useState<'search' | 'manager'>('search');
+  const searchMounted = React.useRef(false);
   React.useEffect(() => {
+    if (!searchMounted.current) {
+      searchMounted.current = true;
+      return;
+    }
     setPage(1);
     setSelectedGalleries(new Set());
     setSelectMode(false);
   }, [searchKey, source]);
+  React.useEffect(() => writeDownloaderState({ source, query, searchKey, sort, page }), [source, query, searchKey, sort, page]);
 
 
   async function doStartDownload(item: DoujinSearchResult) {
@@ -915,6 +948,11 @@ export function Downloader() {
   const finished = tasks.filter((t) => t.status === 'completed' || t.status === 'failed');
   const pageCount = Math.max(1, Math.ceil((results?.length ?? 0) / RESULTS_PAGE_SIZE));
   const curPage = Math.min(page, pageCount);
+
+  function changePage(nextPage: number) {
+    setPage(nextPage);
+    document.querySelector('main')?.scrollTo({ top: 0 });
+  }
   const pageItems = results ? results.slice((curPage - 1) * RESULTS_PAGE_SIZE, curPage * RESULTS_PAGE_SIZE) : [];
 
   return (
@@ -1112,19 +1150,19 @@ export function Downloader() {
               </div>
               {pageCount > 1 && (
                 <div className="mt-5 flex flex-wrap items-center justify-center gap-1">
-                  <Button size="sm" variant="outline" disabled={curPage <= 1} onClick={() => setPage(curPage - 1)}>
+                  <Button size="sm" variant="outline" disabled={curPage <= 1} onClick={() => changePage(curPage - 1)}>
                     <ChevronLeft className="h-3.5 w-3.5" /> Prev
                   </Button>
                   {pageList(curPage, pageCount).map((p, i) =>
                     p === '…' ? (
                       <span key={`e${i}`} className="px-1 text-xs text-muted">…</span>
                     ) : (
-                      <Button key={p} size="sm" variant={p === curPage ? 'default' : 'outline'} onClick={() => setPage(p)} aria-current={p === curPage ? 'page' : undefined}>
+                      <Button key={p} size="sm" variant={p === curPage ? 'default' : 'outline'} onClick={() => changePage(p)} aria-current={p === curPage ? 'page' : undefined}>
                         {p}
                       </Button>
                     ),
                   )}
-                  <Button size="sm" variant="outline" disabled={curPage >= pageCount} onClick={() => setPage(curPage + 1)}>
+                  <Button size="sm" variant="outline" disabled={curPage >= pageCount} onClick={() => changePage(curPage + 1)}>
                     Next <ChevronRight className="h-3.5 w-3.5" />
                   </Button>
                 </div>
