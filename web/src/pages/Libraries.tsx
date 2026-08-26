@@ -274,7 +274,6 @@ export function Libraries() {
                 <option value="all">All</option>
                 <option value="matched">Matched</option>
                 <option value="unmatched">Unmatched</option>
-                <option value="syncing">Syncing</option>
                 <option value="failed">Failed</option>
                 <option value="low-score">Low confidence (&lt;80%)</option>
               </Select>
