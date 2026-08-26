@@ -370,8 +370,9 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ url }),
   }),
+  /** Queue Apply & Sync as a background job (the Kavita scan wait can take minutes). */
   apply: (id: number, providerId: string, providerSeriesId: string, opts?: { selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) =>
-    request<{ pushed: string[]; errors: string[]; titleFilesUpdated: number; titleFilesVerified?: number; newSeriesId?: number }>(`/series/${id}/apply`, {
+    request<{ id: number }>(`/series/${id}/apply`, {
       method: 'POST',
       body: JSON.stringify({ providerId, providerSeriesId, ...opts }),
     }),

@@ -12,7 +12,7 @@ import {
   providerOrderFor,
 } from '../services/settings.js';
 import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
-import { applyToKavita, checkAlignment, fetchCover } from '../services/sync.js';
+import { applyToKavita, applySeriesMatch, checkAlignment, fetchCover, type ApplySeriesResult } from '../services/sync.js';
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
@@ -497,6 +497,69 @@ async function pickSeriesStampName(dir: string, exclude: Set<string>): Promise<s
   return values.size === 1 ? [...values][0] : null;
 }
 
+/**
+ * apply-series job: push one user-selected candidate onto a single series.
+ * applySeriesMatch owns the flow and the match-row update; this wrapper adds
+ * history, notification, and the job summary. Hard failures (missing folder,
+ * provider down, rejected title) fail the job with that message — the match
+ * row is left as-is, mirroring the old synchronous route's behavior.
+ */
+async function runApplySeries(client: KavitaClient, job: Job, log: LogFn): Promise<Record<string, number>> {
+  const p = job.payload;
+  const seriesId = p.seriesId!;
+  let result: ApplySeriesResult;
+  try {
+    result = await applySeriesMatch(client, {
+      seriesId,
+      providerId: p.providerId!,
+      providerSeriesId: p.providerSeriesId!,
+      selectedTitle: p.selectedTitle,
+      excludedFields: p.excludedFields,
+      cover: p.cover,
+      score: p.score ?? null,
+      isCancelled: () => jobQueue.isCancelRequested(job.id),
+    });
+  } catch (e) {
+    if (e instanceof JobCancelled) throw e;
+    const msg = e instanceof Error ? e.message : String(e);
+    log('error', `Apply failed for series ${seriesId}: ${msg}`);
+    throw new Error(msg);
+  }
+  const ok = result.errors.length === 0;
+  recordHistory(result.effectiveSeriesId, result.name, ok ? 'updated' : 'failed', {
+    providerId: p.providerId!,
+    score: p.score ?? null,
+    pushed: result.pushed,
+    coverUpdated: result.coverUpdated,
+    volumeCoversUpdated: result.volumeCoversUpdated,
+    errors: result.errors,
+  });
+  // Notification failures must not flip an already-applied match to failed —
+  // the metadata push succeeded by the time we get here.
+  try {
+    const name = providerName(p.providerId!);
+    await notify({
+      title: ok ? result.name : `Sync failed — ${result.name}`,
+      description: `Applied to ${result.meta.url ? `[${name}](${result.meta.url})` : name}`,
+      fields: [
+        ...(result.pushed.length ? [{ name: 'Updated', value: formatPushedFields(result.pushed) }] : []),
+        ...(result.warnings.length ? [{ name: 'Notes', value: result.warnings.join('\n') }] : []),
+        ...(result.errors.length ? [{ name: 'Errors', value: result.errors.join('\n') }] : []),
+      ],
+      coverUrl: result.meta.coverUrl,
+      success: ok,
+    });
+  } catch (e) {
+    log('warn', `Notification failed for ${result.name}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  log(ok ? 'success' : 'warn', `${result.name} -> ${p.providerId!}${ok ? '' : ` — ${result.errors.join('; ')}`}`);
+  const summary: Record<string, number> = { processed: 1, matched: ok ? 1 : 0, failed: ok ? 0 : 1 };
+  if (result.titleFilesUpdated > 0) summary.titleFilesUpdated = result.titleFilesUpdated;
+  if (result.titleFilesVerified > 0) summary.titleFilesVerified = result.titleFilesVerified;
+  if (result.effectiveSeriesId !== seriesId) summary.newSeriesId = result.effectiveSeriesId;
+  return summary;
+}
+
 /** Run a queued job. Returns a small summary stored on the job row. */
 export async function runJob(job: Job, log: LogFn): Promise<Record<string, number>> {
   // Watched-search checks talk to doujin sources only — no Kavita needed.
@@ -597,6 +660,19 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
     await removeSourceSeriesFromKavita(sourceFiles, targetDir, log);
     await rescanAndVerifyMerge(targetDir, r.moved, log);
     return { processed: r.moved.length, matched: 0, failed: r.failed.length };
+  }
+
+  // Identify dialog's "Apply & Sync": pushes one user-selected candidate onto
+  // a single series. Unlike the match jobs above it, this carries per-dialog
+  // options (title choice, field exclusions) and includes the ComicInfo.Series
+  // rename flow, which waits for Kavita's scan — potentially minutes — so it
+  // must run here rather than inside an HTTP request.
+  if (job.type === 'apply-series') {
+    const p = job.payload;
+    if (p.seriesId === undefined || !p.providerId || !p.providerSeriesId) throw new Error('seriesId, providerId and providerSeriesId required');
+    const client = connectedClientOrNull();
+    if (!client) throw new Error('Kavita is not configured');
+    return runApplySeries(client, job, log);
   }
 
   const client = connectedClientOrNull();

@@ -279,12 +279,13 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     mutationFn: (p: { providerId: string; providerSeriesId: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) =>
       api.apply(seriesId, p.providerId, p.providerSeriesId, { selectedTitle: p.selectedTitle, excludedFields: p.excludedFields, cover: p.cover, score: p.score }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['series', seriesId] });
-      qc.invalidateQueries({ queryKey: ['library-series'] });
-      qc.invalidateQueries({ queryKey: ['libraries'] });
+      // The push runs as a background job (the Kavita scan wait can take minutes);
+      // the sidebar polls ['jobs'] and shows it from here on.
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      toast({ tone: 'success', title: 'Sync queued', description: 'Apply & Sync runs in the background — progress shows in the sidebar.' });
       onClose();
     },
-    onError: (e) => toast({ tone: 'danger', title: 'Sync failed', description: e instanceof Error ? e.message : String(e) }),
+    onError: (e) => toast({ tone: 'danger', title: 'Could not queue sync', description: e instanceof Error ? e.message : String(e) }),
   });
 
   const resolveManual = useMutation({

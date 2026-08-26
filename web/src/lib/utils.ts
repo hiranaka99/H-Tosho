@@ -35,6 +35,7 @@ export const JOB_LABELS: Record<string, string> = {
   'match-library': 'Match library',
   'match-series': 'Match series',
   'sync-series': 'Sync series',
+  'apply-series': 'Apply & Sync',
   'clear-overrides': 'Clear overrides',
   'check-watched-searches': 'Check watched searches',
   'edit-comicinfo': 'Edit ComicInfo',

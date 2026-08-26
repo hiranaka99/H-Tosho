@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import { eq } from 'drizzle-orm';
+import type { Job, JobPayload } from '../src/jobs/queue.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-apply-title-'));
 const seriesDir = path.join(dataDir, 'Live!');
@@ -16,6 +17,8 @@ const { buildZip } = await import('../src/downloader/zip.js');
 const { parseComicInfo } = await import('../src/downloader/comicinfo.js');
 const { readComicInfo } = await import('../src/lib/cbz.js');
 const { setKavitaConnection, setDownloaderSettings, DEFAULT_DOWNLOADER } = await import('../src/services/settings.js');
+const { runJob } = await import('../src/jobs/executor.js');
+const { jobQueue } = await import('../src/jobs/queue.js');
 const { api } = await import('../src/routes/api.js');
 
 initDb();
@@ -49,7 +52,7 @@ function kavitaRenameMock(
 ) {
   const oldSeries = { id: 42, libraryId: 7, name: oldName, sortName: oldName, folderPath: dir };
   const newSeries = { id: newId, libraryId: 7, name: newName, sortName: newName, folderPath: dir };
-  return (async (input: unknown, init?: RequestInit) => {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     state.requests.push({ url, init });
     if (url.endsWith('/api/Series/42')) {
@@ -72,6 +75,21 @@ function kavitaRenameMock(
   }) as typeof fetch;
 }
 
+/** apply-series jobs run through the same executor path as every other background job. */
+const makeJob = (id: number, payload: JobPayload): Job => ({
+  id,
+  type: 'apply-series',
+  payload,
+  status: 'running',
+  progressCurrent: 0,
+  progressTotal: 1,
+  result: null,
+  errorMessage: null,
+  createdAt: new Date().toISOString(),
+  startedAt: null,
+  finishedAt: null,
+});
+
 test('selected MangaDex title rewrites every chapter, waits for the new entry, and targets it', async () => {
   const files = ['Chapter 1.cbz', 'Chapter 2.cbz'].map((name, index) => {
     const file = path.join(seriesDir, name);
@@ -82,7 +100,7 @@ test('selected MangaDex title rewrites every chapter, waits for the new entry, a
     return file;
   });
   const state = { scanned: false, requests: [] as RequestLog[] };
-  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes('api.mangadex.org/manga/00faf1ea-5086-4d75-9621-5a597e523e21?')) {
       return Response.json({ data: { id: '00faf1ea-5086-4d75-9621-5a597e523e21', attributes: { title: { 'ja-ro': 'Live!: Soto de Koubi Shiyou!' }, altTitles: [{ en: "Let's Do It Outside!" }], status: 'completed', originalLanguage: 'ja' }, relationships: [] } });
@@ -91,28 +109,21 @@ test('selected MangaDex title rewrites every chapter, waits for the new entry, a
     return kavitaRenameMock(state, seriesDir, 'Old Name', 'Live!: Soto de Koubi Shiyou!', 43)(input, init);
   }) as typeof fetch;
 
-  const res = await api.request('/series/42/apply', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      providerId: 'mangadex',
-      providerSeriesId: '00faf1ea-5086-4d75-9621-5a597e523e21',
-      selectedTitle: 'Live!: Soto de Koubi Shiyou!',
-      excludedFields: ['summary', 'genres', 'tags', 'writers', 'artists', 'releaseDate', 'language', 'status', 'url'],
-      cover: false,
-    }),
-  });
+  const summary = await runJob(makeJob(900, {
+    seriesId: 42,
+    providerId: 'mangadex',
+    providerSeriesId: '00faf1ea-5086-4d75-9621-5a597e523e21',
+    selectedTitle: 'Live!: Soto de Koubi Shiyou!',
+    excludedFields: ['summary', 'genres', 'tags', 'writers', 'artists', 'releaseDate', 'language', 'status', 'url'],
+    cover: false,
+  }), () => {});
 
-  assert.equal(res.status, 200);
-  const result = await res.json();
+  assert.deepEqual(summary, { processed: 1, matched: 1, failed: 0, titleFilesUpdated: 2, titleFilesVerified: 2, newSeriesId: 43 });
   // Step 1: every chapter carries the new Series value.
-  assert.equal(result.titleFilesUpdated, 2);
-  assert.equal(result.titleFilesVerified, 2);
   for (const file of files) assert.equal(parseComicInfo((await readComicInfo(file))!).fields.Series, 'Live!: Soto de Koubi Shiyou!');
   // Step 2: a library scan is fired and the new sibling entry becomes the target.
   assert.equal(state.requests.filter((request) => request.url.includes('/api/Library/scan')).length, 1);
   assert.equal(state.requests.filter((request) => request.url.endsWith('/api/Series/scan')).length, 0);
-  assert.equal(result.newSeriesId, 43);
   // The old record lost its books and is removed; nothing is pushed to it.
   assert.ok(state.requests.some((request) => request.url.endsWith('/api/Series/42') && request.init?.method === 'DELETE'));
   assert.equal(state.requests.filter((request) => request.url.endsWith('/api/Series/update')).length, 0);
@@ -130,7 +141,7 @@ test('AniList match rewrites ComicInfo.Series when the title differs (no selecte
     return file;
   });
   const state = { scanned: false, requests: [] as RequestLog[] };
-  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes('graphql.anilist.co')) {
       return Response.json({ data: { Media: { id: 129747, title: { romaji: 'Bitch na In`ane-sama' }, format: 'ONE_SHOT', coverImage: {}, description: '', averageScore: 0, startDate: null, genres: [], tags: [], studios: null, status: 'FINISHED' } } });
@@ -138,26 +149,19 @@ test('AniList match rewrites ComicInfo.Series when the title differs (no selecte
     return kavitaRenameMock(state, anilistDir, 'Bitch na Inane-sama', 'Bitch na In`ane-sama', 45)(input, init);
   }) as typeof fetch;
 
-  const res = await api.request('/series/42/apply', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      providerId: 'anilist',
-      providerSeriesId: '129747',
-      excludedFields: ['summary', 'genres', 'tags', 'writers', 'artists', 'releaseDate', 'language', 'status', 'url'],
-      cover: false,
-    }),
-  });
+  const summary = await runJob(makeJob(901, {
+    seriesId: 42,
+    providerId: 'anilist',
+    providerSeriesId: '129747',
+    excludedFields: ['summary', 'genres', 'tags', 'writers', 'artists', 'releaseDate', 'language', 'status', 'url'],
+    cover: false,
+  }), () => {});
 
-  assert.equal(res.status, 200);
-  const result = await res.json();
-  assert.equal(result.titleFilesUpdated, 2);
-  assert.equal(result.titleFilesVerified, 2);
+  assert.deepEqual(summary, { processed: 1, matched: 1, failed: 0, titleFilesUpdated: 2, titleFilesVerified: 2, newSeriesId: 45 });
   for (const file of files) assert.equal(parseComicInfo((await readComicInfo(file))!).fields.Series, 'Bitch na In`ane-sama');
   assert.equal(state.requests.filter((request) => request.url.includes('/api/Library/scan')).length, 1);
   // Kavita derives the name from the files, so the title must not be re-pushed via the API.
   assert.equal(state.requests.filter((request) => request.url.endsWith('/api/Series/update')).length, 0);
-  assert.equal(result.newSeriesId, 45);
 });
 
 test('remaining metadata is pushed to the new entry, and the match row follows it', async () => {
@@ -170,7 +174,7 @@ test('remaining metadata is pushed to the new entry, and the match row follows i
     ]));
   }
   const state = { scanned: false, requests: [] as RequestLog[] };
-  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes('api.mangadex.org/manga/00faf1ea-5086-4d75-9621-5a597e523e21?')) {
       return Response.json({ data: { id: '00faf1ea-5086-4d75-9621-5a597e523e21', attributes: { title: { 'ja-ro': 'Live!: Soto de Koubi Shiyou!' }, altTitles: [{ en: "Let's Do It Outside!" }], status: 'completed', originalLanguage: 'ja' }, relationships: [] } });
@@ -179,22 +183,16 @@ test('remaining metadata is pushed to the new entry, and the match row follows i
     return kavitaRenameMock(state, fullDir, 'Old Name', 'Live!: Soto de Koubi Shiyou!', 47)(input, init);
   }) as typeof fetch;
 
-  const res = await api.request('/series/42/apply', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      providerId: 'mangadex',
-      providerSeriesId: '00faf1ea-5086-4d75-9621-5a597e523e21',
-      selectedTitle: 'Live!: Soto de Koubi Shiyou!',
-      cover: false,
-    }),
-  });
+  const summary = await runJob(makeJob(902, {
+    seriesId: 42,
+    providerId: 'mangadex',
+    providerSeriesId: '00faf1ea-5086-4d75-9621-5a597e523e21',
+    selectedTitle: 'Live!: Soto de Koubi Shiyou!',
+    cover: false,
+  }), () => {});
 
-  assert.equal(res.status, 200);
-  const result = await res.json();
-  assert.equal(result.newSeriesId, 47);
+  assert.equal(summary.newSeriesId, 47);
   // Step 3: the remaining metadata lands on the new entry — write + re-lock.
-  assert.ok(result.pushed.includes('language'));
   const metadataWrites = state.requests.filter((request) => request.url.endsWith('/api/Series/metadata') && request.init?.method === 'POST');
   assert.equal(metadataWrites.length, 2);
   for (const request of metadataWrites) {
@@ -223,7 +221,7 @@ test('alternate English title (not display or romanized) is accepted as selected
     return file;
   });
   const state = { scanned: false, requests: [] as RequestLog[] };
-  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes('api.mangadex.org/manga/001f1dae-a245-4125-9ee3-f8e80c634990?')) {
       // Display title is the romanized one; the name the folder actually
@@ -234,21 +232,93 @@ test('alternate English title (not display or romanized) is accepted as selected
     return kavitaRenameMock(state, altDir, 'Old Name', 'Demon-Hentai - Shrine of One Hundred Wives', 49)(input, init);
   }) as typeof fetch;
 
-  const res = await api.request('/series/42/apply', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
+  const summary = await runJob(makeJob(903, {
+    seriesId: 42,
+    providerId: 'mangadex',
+    providerSeriesId: '001f1dae-a245-4125-9ee3-f8e80c634990',
+    selectedTitle: 'Demon-Hentai - Shrine of One Hundred Wives',
+    excludedFields: ['summary', 'genres', 'tags', 'writers', 'artists', 'releaseDate', 'language', 'status', 'url'],
+    cover: false,
+  }), () => {});
+
+  assert.deepEqual(summary, { processed: 1, matched: 1, failed: 0, titleFilesUpdated: 2, titleFilesVerified: 2, newSeriesId: 49 });
+  for (const file of files) assert.equal(parseComicInfo((await readComicInfo(file))!).fields.Series, 'Demon-Hentai - Shrine of One Hundred Wives');
+});
+
+test('a rejected selectedTitle fails the job without touching files or the match row', async () => {
+  const rejDir = path.join(dataDir, 'Rejected Title');
+  fs.mkdirSync(rejDir);
+  const file = path.join(rejDir, 'Chapter 1.cbz');
+  fs.writeFileSync(file, buildZip([
+    { name: 'page.jpg', data: Buffer.from('image') },
+    { name: 'ComicInfo.xml', data: Buffer.from('<ComicInfo><Series>Old Name</Series></ComicInfo>') },
+  ]));
+  const state = { scanned: false, requests: [] as RequestLog[] };
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('api.mangadex.org/manga/001f1dae-a245-4125-9ee3-f8e80c634990?')) {
+      return Response.json({ data: { id: '001f1dae-a245-4125-9ee3-f8e80c634990', attributes: { title: { en: 'DH! ~Himorogi Hyaku Yome Gatari~' }, altTitles: [{ en: 'Demon-Hentai - Shrine of One Hundred Wives' }], status: 'completed', originalLanguage: 'ja' }, relationships: [] } });
+    }
+    if (url.includes('api.mangadex.org/cover?')) return Response.json({ response: 'collection', data: [] });
+    return kavitaRenameMock(state, rejDir, 'Old Name', 'Whatever', 51)(input, init);
+  }) as typeof fetch;
+
+  await assert.rejects(
+    runJob(makeJob(904, {
+      seriesId: 42,
+      providerId: 'mangadex',
+      providerSeriesId: '001f1dae-a245-4125-9ee3-f8e80c634990',
+      selectedTitle: 'Not A Provider Title',
+    }), () => {}),
+    /selectedTitle is not provided by this metadata source/,
+  );
+  // Validation runs before any side effect: no files rewritten, no scan fired.
+  assert.equal(parseComicInfo((await readComicInfo(file))!).fields.Series, 'Old Name');
+  assert.equal(state.requests.filter((request) => request.url.includes('/api/Library/scan')).length, 0);
+});
+
+test('POST /series/:id/apply enqueues an apply-series job and rejects concurrent applies', async () => {
+  // Hold the (otherwise unregistered) handler slot with a gate so the enqueued
+  // job stays active while the guard is exercised.
+  let release: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  jobQueue.registerHandler(async () => { await gate; return {}; });
+  try {
+    const res = await api.request('/series/42/apply', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        providerId: 'mangadex',
+        providerSeriesId: '001f1dae-a245-4125-9ee3-f8e80c634990',
+        selectedTitle: 'Demon-Hentai - Shrine of One Hundred Wives',
+        excludedFields: ['genres'],
+        cover: false,
+        score: 0.97,
+      }),
+    });
+    assert.equal(res.status, 200);
+    const { id } = await res.json();
+    // The payload mapping must match what the executor reads — a mismatch would
+    // only surface as a job failure deep in the background.
+    const job = jobQueue.get(id)!;
+    assert.equal(job.type, 'apply-series');
+    assert.deepEqual(job.payload, {
+      seriesId: 42,
       providerId: 'mangadex',
       providerSeriesId: '001f1dae-a245-4125-9ee3-f8e80c634990',
       selectedTitle: 'Demon-Hentai - Shrine of One Hundred Wives',
-      excludedFields: ['summary', 'genres', 'tags', 'writers', 'artists', 'releaseDate', 'language', 'status', 'url'],
+      excludedFields: ['genres'],
       cover: false,
-    }),
-  });
-
-  assert.equal(res.status, 200);
-  const result = await res.json();
-  assert.equal(result.titleFilesUpdated, 2);
-  assert.equal(result.newSeriesId, 49);
-  for (const file of files) assert.equal(parseComicInfo((await readComicInfo(file))!).fields.Series, 'Demon-Hentai - Shrine of One Hundred Wives');
+      score: 0.97,
+    });
+    // A second apply for the same series while one is active is refused.
+    const again = await api.request('/series/42/apply', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ providerId: 'mangadex', providerSeriesId: '001f1dae-a245-4125-9ee3-f8e80c634990' }),
+    });
+    assert.equal(again.status, 409);
+  } finally {
+    release!();
+  }
 });

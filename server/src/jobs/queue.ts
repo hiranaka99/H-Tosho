@@ -8,6 +8,7 @@ export type JobType =
   | 'match-library'
   | 'match-series'
   | 'sync-series'
+  | 'apply-series'
   | 'clear-overrides'
   | 'check-watched-searches'
   | 'edit-comicinfo'
@@ -29,6 +30,18 @@ export interface JobPayload {
   targetDir?: string;
   /** merge-series: chapter numbers keyed by source path, written to ComicInfo.Number. */
   chapters?: Record<string, string>;
+  /** apply-series: provider of the candidate chosen in the identify dialog. */
+  providerId?: string;
+  /** apply-series: provider-side series id of the chosen candidate. */
+  providerSeriesId?: string;
+  /** apply-series: ComicInfo.Series value to write (one of the provider's titleOptions). */
+  selectedTitle?: string;
+  /** apply-series: sync fields deselected in the dialog. */
+  excludedFields?: string[];
+  /** apply-series: push series + volume covers (default true). */
+  cover?: boolean;
+  /** apply-series: candidate match score, kept on the match row. */
+  score?: number;
 }
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
