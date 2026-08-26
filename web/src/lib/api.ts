@@ -433,6 +433,9 @@ export const api = {
   downloads: () => request<DownloadTask[]>('/downloads'),
   /** Completed galleries for the duplicate-download badges. */
   downloadsCompleted: () => request<DownloadedGallery[]>('/downloads/completed'),
+  /** .cbz files on disk for a gallery (completed task first, per-gallery folder as fallback). */
+  galleryFiles: (source: DoujinSource, galleryId: string, title: string) =>
+    request<{ files: string[] }>(`/downloads/gallery-files?source=${encodeURIComponent(source)}&galleryId=${encodeURIComponent(galleryId)}&title=${encodeURIComponent(title)}`),
   download: (id: number) => request<DownloadTask>(`/downloads/${id}`),
   downloadAction: (id: number, action: 'pause' | 'resume' | 'cancel' | 'retry') =>
     request<{ ok: boolean }>(`/downloads/${id}/${action}`, { method: 'POST' }),

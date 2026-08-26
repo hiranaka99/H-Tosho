@@ -30,6 +30,7 @@ import {
   Tags,
   CheckSquare,
   Combine,
+  Merge,
 } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
 import { useDownloads } from '../lib/DownloadsContext';
@@ -37,6 +38,7 @@ import { cn, timeAgo, toIsoUtc } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, ErrorState, ConfirmDialog } from '../components/ui';
 import { ComicInfoModal } from '../components/ComicInfoModal';
+import { MergeIntoSeriesDialog } from '../components/MergeIntoSeriesDialog';
 
 const SOURCES: { id: DoujinSource; label: string }[] = [
   { id: 'hitomi', label: 'Hitomi.la' },
@@ -624,6 +626,7 @@ export function Downloader() {
   const [selectMode, setSelectMode] = React.useState(false);
   const [selectedGalleries, setSelectedGalleries] = React.useState<Set<string>>(new Set());
   const [mergeOpen, setMergeOpen] = React.useState(false);
+  const [mergeIntoOpen, setMergeIntoOpen] = React.useState(false);
 
   const { tasks, active, liveConnected, error: downloadsError, refetch: refetchDownloads, startDownload, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
   const [suggestions, setSuggestions] = React.useState<DoujinSuggestion[]>([]);
@@ -1068,6 +1071,9 @@ export function Downloader() {
                     <Button size="sm" disabled={selectedGalleries.size === 0} onClick={() => setMergeOpen(true)} title="Download all selected galleries into one folder — one Kavita series">
                       <Combine className="h-3.5 w-3.5" /> Download merged
                     </Button>
+                    <Button size="sm" variant="outline" disabled={selectedGalleries.size === 0} onClick={() => setMergeIntoOpen(true)} title="Move downloaded galleries into an existing Kavita series">
+                      <Merge className="h-3.5 w-3.5" /> Merge into series…
+                    </Button>
                     <Button size="sm" variant="ghost" disabled={selectedGalleries.size === 0} onClick={() => setSelectedGalleries(new Set())}>Clear</Button>
                   </div>
                 </div>
@@ -1132,6 +1138,19 @@ export function Downloader() {
           defaultFolder={folderNameFrom(selectedItems[0].title ?? '')}
           onClose={() => setMergeOpen(false)}
           onConfirm={(folder, numbers) => void doMergedDownload(folder, numbers)}
+        />
+      )}
+
+      {/* Merge selected galleries into an existing Kavita series */}
+      {mergeIntoOpen && selectedItems.length > 0 && (
+        <MergeIntoSeriesDialog
+          items={selectedItems}
+          onClose={() => setMergeIntoOpen(false)}
+          onQueued={() => {
+            setSelectedGalleries(new Set());
+            setSelectMode(false);
+          }}
+          onDownload={(item) => void doStartDownload(item)}
         />
       )}
       </>)

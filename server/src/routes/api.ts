@@ -42,6 +42,7 @@ import { addWatchedSearch, listWatchedSearches, removeWatchedSearch } from '../s
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
 import { listCbzFiles, readComicInfo, resolveExistingFile, resolveSeriesHostDir, setSeriesTitleInCbzFiles } from '../lib/cbz.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
+import { sanitizeFilename } from '../downloader/util.js';
 
 const CREDENTIAL_FIELDS: Record<string, { key: string; label: string }[]> = {
   myanimelist: [{ key: 'clientId', label: 'Client ID' }],
@@ -710,6 +711,34 @@ api.get('/downloads', (c) => c.json(downloadQueue.list(100)));
 
 /** Completed galleries (source + galleryId + finish time) for duplicate badges. */
 api.get('/downloads/completed', (c) => c.json(downloadQueue.completedGalleries()));
+
+/**
+ * Resolve the .cbz file(s) on disk for a gallery. Completed task rows win; when
+ * the history was cleared (or the download predates the queue), fall back to the
+ * per-gallery folder that writeOutput derives from the sanitized title.
+ */
+api.get('/downloads/gallery-files', (c) => {
+  const source = c.req.query('source');
+  const galleryId = c.req.query('galleryId');
+  const title = c.req.query('title') ?? '';
+  if (!source || !galleryId) return c.json({ error: 'source and galleryId are required' }, 400);
+  let files: string[] = [];
+  const done = downloadQueue.findCompleted(source as DoujinSource, galleryId);
+  if (done?.outputPath?.toLowerCase().endsWith('.cbz') && fs.existsSync(done.outputPath)) {
+    files = [done.outputPath];
+  } else if (title.trim()) {
+    const dl = getDownloaderSettings();
+    if (dl.downloadDirectory) {
+      const dir = path.join(path.resolve(dl.downloadDirectory), sanitizeFilename(title, `Gallery-${galleryId}`));
+      try {
+        files = listCbzFiles(dir);
+      } catch {
+        /* no such folder */
+      }
+    }
+  }
+  return c.json({ files });
+});
 
 /**
  * Server-Sent Events stream of live download-task updates. The client receives

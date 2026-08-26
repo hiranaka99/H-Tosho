@@ -12,6 +12,7 @@ process.env.HTOSHO_DATA_DIR = dataDir;
 const { initDb } = await import('../src/db/index.js');
 const { buildZip } = await import('../src/downloader/zip.js');
 const { runJob } = await import('../src/jobs/executor.js');
+const { readComicInfo } = await import('../src/lib/cbz.js');
 const { setKavitaConnection } = await import('../src/services/settings.js');
 
 initDb();
@@ -175,4 +176,65 @@ test('merge rescan is not skewed by books already in the target folder', async (
   // Series-level rescan only — the series already exists in Kavita.
   assert.ok(!state.requests.some((u) => u.includes('/api/Library/scan')));
   assert.ok(state.requests.some((u) => u.endsWith('/api/Series/scan')));
+});
+
+test('merge into an existing Kavita series targets that series folder and stamps its Series name', async () => {
+  // The target series already exists in Kavita with one chapter on disk.
+  const targetDir = path.join(dataDir, 'Ojisan');
+  fs.mkdirSync(targetDir, { recursive: true });
+  const existing = path.join(targetDir, 'Chapter 4.cbz');
+  fs.writeFileSync(existing, buildZip([
+    { name: '001.jpg', data: Buffer.from('image-x') },
+    { name: 'ComicInfo.xml', data: Buffer.from('<ComicInfo><Series>The Time-Stopper Ojisan</Series><Number>4</Number></ComicInfo>') },
+  ]));
+
+  // The separately downloaded part, still in its own per-gallery folder.
+  const srcDir = path.join(dataDir, 'src-5');
+  fs.mkdirSync(srcDir, { recursive: true });
+  const src = path.join(srcDir, 'Part 5.cbz');
+  fs.writeFileSync(src, buildZip([
+    { name: '001.jpg', data: Buffer.from('image-5') },
+    { name: 'ComicInfo.xml', data: Buffer.from('<ComicInfo><Series>He Was Here!! The Time-Stopper Ojisan 5</Series></ComicInfo>') },
+  ]));
+
+  const requests: string[] = [];
+  let scanned = false;
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    requests.push(`${init?.method ?? 'GET'} ${url}`);
+    if (url.endsWith('/api/Series/50')) {
+      return Response.json({ id: 50, libraryId: 7, name: 'The Time-Stopper Ojisan', folderPath: 'Ojisan' });
+    }
+    if (url.includes('/api/Library/libraries')) {
+      return Response.json([{ id: 7, name: 'Downloads', folders: [dataDir], type: 0, lastScanned: scanned ? 't1' : 't0' }]);
+    }
+    if (url.includes('/api/Series/all-v2')) {
+      return Response.json([
+        { id: 50, libraryId: 7, name: 'The Time-Stopper Ojisan', folderPath: 'Ojisan' },
+        { id: 51, libraryId: 7, name: 'He Was Here!! The Time-Stopper Ojisan 5', folderPath: 'src-5' },
+      ]);
+    }
+    if (url.endsWith('/api/Series/scan') || url.includes('/api/Library/scan')) {
+      scanned = true;
+      return Response.json({ ok: true });
+    }
+    if (url.includes('/api/Search/chapters-by-series')) {
+      const files = [existing, path.join(targetDir, 'Part 5.cbz')];
+      return Response.json(files.map((f, i) => ({ id: i + 1, files: [{ id: i + 1, filePath: f }] })));
+    }
+    return Response.json({ ok: true });
+  }) as typeof fetch;
+
+  const job: Job = { ...makeJob([src], targetDir), payload: { sourceFiles: [src], seriesId: 50, chapters: { [src]: '5' } } };
+  const result = await runJob(job, () => {});
+
+  assert.deepEqual(result, { processed: 1, matched: 0, failed: 0 });
+  // The archive moved into the target series folder…
+  assert.deepEqual(fs.readdirSync(targetDir).sort(), ['Chapter 4.cbz', 'Part 5.cbz']);
+  // …and adopted the existing ComicInfo.Series value plus its chapter number.
+  const xml = await readComicInfo(path.join(targetDir, 'Part 5.cbz'));
+  assert.ok(xml?.includes('The Time-Stopper Ojisan]]>') || xml?.includes('<Series>The Time-Stopper Ojisan</Series>'), `stamped series name, got: ${xml}`);
+  assert.ok(xml?.includes('<Number><![CDATA[5]]></Number>') || xml?.includes('<Number>5</Number>'), `stamped chapter number, got: ${xml}`);
+  // The emptied source folder's stale Kavita series is removed.
+  assert.ok(requests.some((r) => r.startsWith('DELETE') && r.endsWith('/api/Series/51')), 'stale source series deleted');
 });
