@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { fetchBuffer } from '../lib/http.js';
 import { extractGalleryId, stripTags, toIsoDate } from './util.js';
-import type { DoujinGallery, DoujinProvider, DoujinSearchResult, DoujinSuggestion } from './types.js';
+import type { DoujinGallery, DoujinProvider, DoujinSearchResult, DoujinSuggestion, DoujinSort } from './types.js';
 
 /**
  * Hitomi.la provider.
@@ -375,16 +375,36 @@ function nozomiUrl(f: NozomiFilter): string {
   return f.area ? `${API_BASE}/n/${f.area}/${tail}.nozomi` : `${API_BASE}/n/${tail}.nozomi`;
 }
 
+/** Parse a nozomi payload: big-endian int32 gallery-id list. */
+function parseNozomiIds(buf: Buffer): number[] {
+  const count = Math.floor(buf.byteLength / 4);
+  const ids: number[] = [];
+  for (let i = 0; i < count; i++) ids.push(buf.readInt32BE(i * 4));
+  return ids;
+}
+
 /** Fetch the big-endian int32 gallery-id list from a nozomi filter. */
 async function fetchNozomiIds(f: NozomiFilter): Promise<number[]> {
   try {
     const r = await fetch(nozomiUrl(f), { headers: { ...headers() } });
     if (r.status !== 200) return [];
-    const buf = Buffer.from(await r.arrayBuffer());
-    const count = Math.floor(buf.byteLength / 4);
-    const ids: number[] = [];
-    for (let i = 0; i < count; i++) ids.push(buf.readInt32BE(i * 4));
-    return ids;
+    return parseNozomiIds(Buffer.from(await r.arrayBuffer()));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fetch the popularity-ranked id list for a period, mirroring the live site's
+ * `orderby:popular orderbykey:<period>` sort, which resolves to
+ * `/n/popular/<period>-<language>.nozomi`. The returned order is descending
+ * popularity — callers must preserve it.
+ */
+async function fetchPopularIds(period: 'today' | 'week' | 'year', language: string): Promise<number[]> {
+  try {
+    const r = await fetch(`${API_BASE}/n/popular/${period}-${language}.nozomi`, { headers: { ...headers() } });
+    if (r.status !== 200) return [];
+    return parseNozomiIds(Buffer.from(await r.arrayBuffer()));
   } catch {
     return [];
   }
@@ -448,45 +468,53 @@ function tokenizeQuery(query: string): { ns?: string; val: string }[] {
  * live site combines filters. A term that matches nothing yields zero results.
  * Results are restricted to English by default (unless the query names an
  * explicit `language:`), so searches don't surface non-English galleries.
+ *
+ * With `popularPeriod` set, the base result set is instead the period's
+ * popularity-ranked list and every term's id set is AND-filtered onto it, so
+ * results keep descending-popularity order (the live site's
+ * `orderby:popular orderbykey:<period>` behavior).
  */
-async function searchGalleryIds(query: string, version: string): Promise<number[]> {
+async function searchGalleryIds(query: string, version: string, popularPeriod?: 'today' | 'week' | 'year'): Promise<number[]> {
   const terms = tokenizeQuery(query);
   if (!terms.length) return [];
 
   // Hitomi's keyword index is built from lowercased terms, so the B-tree lookup
   // is case-sensitive. Lowercase bare keywords (e.g. "Chibikko" → "chibikko") so
-  // a naturally-capitalized title still matches.
+  // a naturally-capitalized title still matches. Plain keywords AND-intersect —
+  // the live site filters the running result set by every positive term, so
+  // "aoi kajitsu to shiroi hada" returns only galleries matching all of those
+  // words, not the union, which would surface hundreds of unrelated galleries
+  // sharing any single common word.
   const btreeTerm = (t: { val: string }) => getGalleryIdsForTerm(t.val.toLowerCase(), version);
+  const sets = await Promise.all(
+    terms.map(async (t) => {
+      if (t.ns) {
+        const f = nozomiFilterFromTerm(`${t.ns}:${t.val}`);
+        return f ? fetchNozomiIds(f) : [];
+      }
+      return btreeTerm(t);
+    })
+  );
 
-  let ids: number[];
-  if (!terms.some((t) => t.ns)) {
-    // No namespaced term → plain keyword search. The live site AND-intersects
-    // every word (results.js filters the running result set by each positive
-    // term), so "aoi kajitsu to shiroi hada" returns only galleries matching
-    // all of those words — not the union, which would surface hundreds of
-    // unrelated galleries sharing any single common word.
-    const sets = await Promise.all(terms.map(btreeTerm));
-    ids = intersectIds(sets);
-  } else {
-    // Filtered search: AND-intersect every term (nozomi for namespaced terms,
-    // B-tree for bare keywords).
-    const sets = await Promise.all(
-      terms.map(async (t) => {
-        if (t.ns) {
-          const f = nozomiFilterFromTerm(`${t.ns}:${t.val}`);
-          return f ? fetchNozomiIds(f) : [];
-        }
-        return btreeTerm(t);
-      })
-    );
-    ids = intersectIds(sets);
+  const explicitLanguage = terms.find((t) => t.ns?.toLowerCase() === 'language')?.val;
+
+  if (popularPeriod) {
+    // The language rides on the popular list itself, so no separate English
+    // intersection applies in this mode. An empty popularity index yields zero
+    // results rather than falling back to index order.
+    const popular = await fetchPopularIds(popularPeriod, explicitLanguage ?? 'english');
+    if (!popular.length) return [];
+    const setOf = sets.map((s) => new Set(s));
+    return popular.filter((id) => setOf.every((s) => s.has(id)));
   }
+
+  let ids = intersectIds(sets);
 
   // Restrict results to English so plain keyword/tag searches don't surface
   // non-English galleries. An explicit `language:` term takes precedence, letting
   // users still search other languages. Fail open if the English index is
   // unavailable so a transient error doesn't blank out all results.
-  if (ids.length && !terms.some((t) => t.ns?.toLowerCase() === 'language')) {
+  if (ids.length && !explicitLanguage) {
     const english = await fetchNozomiIds({ tag: 'index', language: 'english' });
     if (english.length) ids = intersectIds([ids, english]);
   }
@@ -541,12 +569,19 @@ async function fetchTagSuggestions(field: string, term: string): Promise<TagSugg
 // Provider
 // ---------------------------------------------------------------------------
 
+/** Hitomi popularity periods behind the `orderby:popular orderbykey:<period>` sort. */
+const HITOMI_POPULAR_PERIODS: Partial<Record<DoujinSort, 'today' | 'week' | 'year'>> = {
+  'popular-today': 'today',
+  'popular-week': 'week',
+  'popular-year': 'year',
+};
+
 export const hitomiProvider: DoujinProvider = {
   id: 'hitomi',
   name: 'Hitomi.la',
   color: '#ff5722',
 
-  async search(query: string, limit = 24): Promise<DoujinSearchResult[]> {
+  async search(query: string, limit = 24, sort?: DoujinSort): Promise<DoujinSearchResult[]> {
     const q = query.trim();
     if (!q) return [];
 
@@ -571,12 +606,13 @@ export const hitomiProvider: DoujinProvider = {
     }
 
     const version = await getGalleriesIndexVersion();
-    const ids = await searchGalleryIds(q, version);
+    const ids = await searchGalleryIds(q, version, HITOMI_POPULAR_PERIODS[sort ?? 'default']);
     if (!ids.length) return [];
 
     // Hydrate the top N results with metadata (one request each), in bounded
     // batches so a large result set doesn't open thousands of concurrent
-    // connections. `ids` is newest-first, so batching preserves recency order.
+    // connections. `ids` keeps the ordering the index returned (popularity when
+    // a popular sort was requested, otherwise newest-first), so batching preserves it.
     const target = Math.max(limit, 1);
     const candidates = ids.slice(0, target);
     const out: DoujinSearchResult[] = [];

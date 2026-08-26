@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { getDownloaderSettings } from '../services/settings.js';
 import { fetchJson, sleep } from '../lib/http.js';
 import { extractGalleryId, toIsoDate } from './util.js';
-import { DOUJIN_SORTS, type DoujinGallery, type DoujinProvider, type DoujinSearchResult, type DoujinSort, type DoujinSuggestion } from './types.js';
+import { type DoujinGallery, type DoujinProvider, type DoujinSearchResult, type DoujinSort, type DoujinSuggestion } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -252,10 +252,11 @@ export const nhentaiProvider: DoujinProvider = {
     if (!q) return [];
 
     // Optional popularity ordering, mirroring nhentai.net's own sort controls
-    // (`sort=popular` all time, `popular-week`, `popular-today`). Unknown or
-    // omitted values fall back to the API's default (newest-first).
+    // (`sort=popular` all time, `popular-week`, `popular-today`). Values nHentai
+    // does not offer (e.g. Hitomi's `popular-year`) fall back to the API's
+    // default (newest-first).
     const sortParam =
-      sort && sort !== 'default' && DOUJIN_SORTS.includes(sort) ? `&sort=${sort}` : '';
+      sort && ['popular', 'popular-week', 'popular-today'].includes(sort) ? `&sort=${sort}` : '';
 
     // A bare gallery id / URL should resolve to that single gallery.
     if (/^\d+$/.test(q)) {

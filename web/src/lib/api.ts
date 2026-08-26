@@ -184,8 +184,8 @@ export interface MatchOutcome {
 
 export type DoujinSource = 'hitomi' | 'nhentai';
 
-/** Result ordering for a source search (only nHentai supports popularity sorts). */
-export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today';
+/** Result ordering for a source search (nHentai and Hitomi support popularity sorts). */
+export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today' | 'popular-year';
 
 export interface DoujinProvider {
   id: DoujinSource;

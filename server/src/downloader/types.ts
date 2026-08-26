@@ -7,13 +7,15 @@
 export type DoujinSource = 'hitomi' | 'nhentai';
 
 /**
- * Optional result ordering for a source search. Only nHentai supports
- * popularity sorting (mirroring nhentai.net's `sort=popular[-week|-today]`);
- * other providers ignore the option and keep their default ordering.
+ * Optional result ordering for a source search. nHentai mirrors nhentai.net's
+ * `sort=popular[-week|-today]`; Hitomi mirrors hitomi.la's
+ * `orderby:popular orderbykey:<period>` (today/week/year), resolved
+ * server-side against the popularity index and never appended to the user's
+ * query text. Each provider ignores values it does not support.
  */
-export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today';
+export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today' | 'popular-year';
 
-export const DOUJIN_SORTS: DoujinSort[] = ['default', 'popular', 'popular-week', 'popular-today'];
+export const DOUJIN_SORTS: DoujinSort[] = ['default', 'popular', 'popular-week', 'popular-today', 'popular-year'];
 
 /** A tag/artist/group autocomplete suggestion (as shown by the source's own search box). */
 export interface DoujinSuggestion {

@@ -47,7 +47,7 @@ const SOURCES: { id: DoujinSource; label: string }[] = [
 
 /**
  * Result ordering options for nHentai searches, mirroring nhentai.net's own
- * sort controls. Only shown for the nHentai source (Hitomi has no equivalent).
+ * sort controls.
  */
 const NHENTAI_SORTS: { value: DoujinSort; label: string }[] = [
   { value: 'default', label: 'Newest' },
@@ -55,6 +55,17 @@ const NHENTAI_SORTS: { value: DoujinSort; label: string }[] = [
   { value: 'popular-week', label: 'Popular — this week' },
   { value: 'popular-today', label: 'Popular — today' },
 ];
+
+/** Result ordering options for Hitomi searches (mirrors hitomi.la's sort dropdown). */
+const HITOMI_SORTS: { value: DoujinSort; label: string }[] = [
+  { value: 'default', label: 'Newest' },
+  { value: 'popular-today', label: 'Popular Today' },
+  { value: 'popular-week', label: 'Popular Week' },
+  { value: 'popular-year', label: 'Popular Year' },
+];
+
+/** The sort options a source offers (sent as a separate field — the search box never shows the syntax). */
+const sortsFor = (src: DoujinSource): { value: DoujinSort; label: string }[] => (src === 'nhentai' ? NHENTAI_SORTS : HITOMI_SORTS);
 
 /** Human-facing display name for a doujin source. */
 const SOURCE_LABELS: Record<DoujinSource, string> = { hitomi: 'Hitomi.la', nhentai: 'nHentai' };
@@ -888,6 +899,10 @@ export function Downloader() {
     const translated = translateQuery(query, source, next).trim();
     setQuery(translated);
     setSearchKey(translated || null);
+    // Drop a sort the new source does not offer (e.g. nHentai's all-time
+    // popularity when switching to Hitomi) so the dropdown never shows a value
+    // with no matching option.
+    if (!sortsFor(next).some((s) => s.value === sort)) setSort('default');
     setSource(next);
   }
 
@@ -1007,15 +1022,16 @@ export function Downloader() {
                 </div>
               )}
             </div>
-            {/* Popularity ordering — nHentai only (mirrors nhentai.net's sort). */}
-            {source === 'nhentai' && (
+            {/* Popularity ordering — mirrors each source's own sort controls. The
+                sort travels as a separate field, so its syntax never appears in the search box. */}
+            {(source === 'nhentai' || source === 'hitomi') && (
               <Select
                 value={sort}
                 onChange={(e) => setSort(e.target.value as DoujinSort)}
                 title="Sort results"
                 className="w-44 shrink-0"
               >
-                {NHENTAI_SORTS.map((s) => (
+                {sortsFor(source).map((s) => (
                   <option key={s.value} value={s.value}>{s.label}</option>
                 ))}
               </Select>
