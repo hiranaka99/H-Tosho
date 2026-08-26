@@ -371,7 +371,7 @@ export const api = {
     body: JSON.stringify({ url }),
   }),
   apply: (id: number, providerId: string, providerSeriesId: string, opts?: { selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) =>
-    request<{ pushed: string[]; errors: string[]; titleFilesUpdated: number }>(`/series/${id}/apply`, {
+    request<{ pushed: string[]; errors: string[]; titleFilesUpdated: number; titleFilesVerified?: number; newSeriesId?: number }>(`/series/${id}/apply`, {
       method: 'POST',
       body: JSON.stringify({ providerId, providerSeriesId, ...opts }),
     }),
