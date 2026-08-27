@@ -653,6 +653,22 @@ export function Downloader() {
   // Result ordering for nHentai searches (ignored by other sources). Persisted
   // across source switches so it applies the next time nHentai is searched.
   const [sort, setSort] = React.useState<DoujinSort>(() => sortsFor(source).some((option) => option.value === initialState.sort) ? initialState.sort! : 'default');
+  const deepLink = searchParams.toString();
+  const previousDeepLink = React.useRef(deepLink);
+  React.useEffect(() => {
+    if (deepLink === previousDeepLink.current) return;
+    previousDeepLink.current = deepLink;
+    const linkedSource = searchParams.get('source');
+    const nextSource = linkedSource === 'nhentai' || linkedSource === 'hitomi' ? linkedSource : source;
+    const nextQuery = searchParams.get('q');
+    if (nextQuery === null) return;
+    const trimmed = nextQuery.trim();
+    setSource(nextSource);
+    setQuery(nextQuery);
+    setSearchKey(trimmed || null);
+    setSort((current) => sortsFor(nextSource).some((option) => option.value === current) ? current : 'default');
+    setSelected(null);
+  }, [deepLink, searchParams, source]);
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
   // ComicInfo editor: null = closed; { path? } = open (path from a completed row, or none to browse).
   const [comicInfo, setComicInfo] = React.useState<{ path?: string } | null>(null);

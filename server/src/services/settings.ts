@@ -205,6 +205,16 @@ export function setPollIntervalHours(hours: number): void {
     .values({ key: 'pollIntervalHours', valueJson: JSON.stringify(hours) })
     .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(hours) } })
     .run();
+  for (const listener of pollIntervalListeners) listener();
+}
+
+type PollIntervalListener = () => void;
+const pollIntervalListeners = new Set<PollIntervalListener>();
+
+/** Notify the runtime scheduler immediately when the configured cadence changes. */
+export function onPollIntervalChange(listener: PollIntervalListener): () => void {
+  pollIntervalListeners.add(listener);
+  return () => pollIntervalListeners.delete(listener);
 }
 
 /** Notification delivery configuration. */
@@ -286,16 +296,38 @@ export const DEFAULT_DOWNLOADER: DownloaderSettings = {
   nhentaiBannedTags: [],
 };
 
+/** Validate the complete downloader configuration accepted from storage or HTTP. */
+export function parseDownloaderSettings(value: unknown): DownloaderSettings | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const s = value as Record<string, unknown>;
+  if (
+    typeof s.downloadDirectory !== 'string' ||
+    (s.format !== 'cbz' && s.format !== 'folder') ||
+    !Number.isInteger(s.maxConcurrentDownloads) || Number(s.maxConcurrentDownloads) < 1 || Number(s.maxConcurrentDownloads) > 10 ||
+    !Number.isInteger(s.maxImageConcurrency) || Number(s.maxImageConcurrency) < 1 || Number(s.maxImageConcurrency) > 20 ||
+    !Number.isFinite(s.requestDelayMs) || Number(s.requestDelayMs) < 0 || Number(s.requestDelayMs) > 60_000 ||
+    typeof s.autoSyncKavita !== 'boolean' ||
+    typeof s.nhentaiApiKey !== 'string' ||
+    !Array.isArray(s.nhentaiBannedTags) || s.nhentaiBannedTags.some((tag) => typeof tag !== 'string')
+  ) return null;
+  return {
+    downloadDirectory: s.downloadDirectory,
+    format: s.format,
+    maxConcurrentDownloads: Number(s.maxConcurrentDownloads),
+    maxImageConcurrency: Number(s.maxImageConcurrency),
+    requestDelayMs: Number(s.requestDelayMs),
+    autoSyncKavita: s.autoSyncKavita,
+    nhentaiApiKey: s.nhentaiApiKey,
+    nhentaiBannedTags: s.nhentaiBannedTags,
+  };
+}
+
 export function getDownloaderSettings(): DownloaderSettings {
   const db = getDb();
   const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'downloader')).get();
   if (!row) return { ...DEFAULT_DOWNLOADER };
   const stored = safeParseJson<Partial<DownloaderSettings>>(row.valueJson);
-  if (!stored) return { ...DEFAULT_DOWNLOADER };
-  const s: DownloaderSettings = { ...DEFAULT_DOWNLOADER, ...stored };
-  // Guard against stale/malformed rows so callers always get a string array.
-  if (!Array.isArray(s.nhentaiBannedTags)) s.nhentaiBannedTags = [];
-  return s;
+  return parseDownloaderSettings({ ...DEFAULT_DOWNLOADER, ...stored }) ?? { ...DEFAULT_DOWNLOADER };
 }
 
 export function setDownloaderSettings(s: DownloaderSettings): void {

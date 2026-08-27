@@ -2,17 +2,24 @@ import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 
 /** Types of background jobs the queue can run. */
-export type JobType =
-  | 'scan-new'
-  | 'match-unmatched'
-  | 'match-library'
-  | 'match-series'
-  | 'sync-series'
-  | 'apply-series'
-  | 'clear-overrides'
-  | 'check-watched-searches'
-  | 'edit-comicinfo'
-  | 'merge-series';
+export const JOB_TYPES = [
+  'scan-new',
+  'match-unmatched',
+  'match-library',
+  'match-series',
+  'sync-series',
+  'apply-series',
+  'clear-overrides',
+  'check-watched-searches',
+  'edit-comicinfo',
+  'merge-series',
+] as const;
+
+export type JobType = (typeof JOB_TYPES)[number];
+
+export function isJobType(value: unknown): value is JobType {
+  return typeof value === 'string' && JOB_TYPES.some((type) => type === value);
+}
 
 export interface JobPayload {
   libraryId?: number;

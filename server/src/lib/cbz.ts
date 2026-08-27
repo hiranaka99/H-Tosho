@@ -304,6 +304,14 @@ export function lastSegment(p: string): string {
   return p.split(/[\\/]+/).filter(Boolean).pop() ?? '';
 }
 
+/** True when candidate is root itself or a descendant, never merely a shared prefix. */
+export function pathContains(root: string, candidate: string): boolean {
+  const normalize = (value: string) => value.replace(/\\/g, '/').replace(/\/+$/, '');
+  const normalizedRoot = normalize(root);
+  const normalizedCandidate = normalize(candidate);
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}/`);
+}
+
 /** .cbz files under dir, recursive to a bounded depth (series folders may nest volume subfolders). */
 export function listCbzFiles(dir: string, maxDepth = 3): string[] {
   const out: string[] = [];

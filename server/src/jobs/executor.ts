@@ -16,7 +16,7 @@ import { applyToKavita, applySeriesMatch, checkAlignment, fetchCover, type Apply
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
-import { listCbzFiles, mergeCbzFiles, readComicInfo, resolveExistingFile, resolveSeriesHostDir, rewriteZipEntry } from '../lib/cbz.js';
+import { listCbzFiles, mergeCbzFiles, pathContains, readComicInfo, resolveExistingFile, resolveSeriesHostDir, rewriteZipEntry } from '../lib/cbz.js';
 import { sleep } from '../lib/http.js';
 import { parseComicInfo, renderComicInfoXml } from '../downloader/comicinfo.js';
 
@@ -232,7 +232,7 @@ async function rescanLibraryContainingDir(dir: string, log: LogFn, seriesName?: 
     }
 
     for (const lib of libraries) {
-      const directLibrary = Boolean(lib.path && norm(dir).startsWith(norm(lib.path)));
+      const directLibrary = Boolean(lib.path && pathContains(lib.path, dir));
       const libRootName = lib.path ? lastSegment(lib.path).toLowerCase() : '';
       const matchingLibrary = directLibrary || Boolean(libRootName && candidates.has(libRootName));
       let series;
@@ -376,9 +376,8 @@ async function rescanAndVerifyMerge(targetDir: string, movedFiles: string[], log
     const conn = getKavitaConnection();
     if (!conn.baseUrl || !conn.apiKey) return;
     const client = new KavitaClient(conn.baseUrl, conn.apiKey);
-    const norm = (p: string): string => path.normalize(p).replace(/\\/g, '/');
     const libraries = await client.getLibraries();
-    let lib = libraries.find((l) => l.path && norm(targetDir).startsWith(norm(l.path)));
+    let lib = libraries.find((l) => l.path && pathContains(l.path, targetDir));
     if (!lib) {
       // Fall back to folder-name matching, like rescanLibraryContainingDir.
       const candidates = new Set<string>();

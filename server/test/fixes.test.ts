@@ -17,9 +17,9 @@ const { initDb, getDb, schema } = await import('../src/db/index.js');
 initDb();
 
 const { fetchJson } = await import('../src/lib/http.js');
-const { jobQueue } = await import('../src/jobs/queue.js');
+const { isJobType, jobQueue } = await import('../src/jobs/queue.js');
 const { testNotification } = await import('../src/notify/dispatcher.js');
-const { setNotificationSettings, getNotificationSettings, parseNotificationSettings } = await import('../src/services/settings.js');
+const { getDownloaderSettings, getNotificationSettings, onPollIntervalChange, parseDownloaderSettings, parseNotificationSettings, setNotificationSettings, setPollIntervalHours } = await import('../src/services/settings.js');
 const { anilistProvider } = await import('../src/providers/anilist.js');
 const { mediaRouter, mediaProxyUrl } = await import('../src/routes/media.js');
 const { enqueueMatchForNewSeries } = await import('../src/services/sync.js');
@@ -91,6 +91,63 @@ describe('downloader settings persistence', () => {
 
     const stored = await api.request('/settings/downloader');
     assert.equal((await stored.json()).downloadDirectory, downloadDirectory);
+  });
+
+  it('rejects malformed and out-of-range downloader settings', async () => {
+    const base = {
+      downloadDirectory: path.join(process.env.HTOSHO_DATA_DIR!, 'downloads'),
+      format: 'cbz',
+      maxConcurrentDownloads: 2,
+      maxImageConcurrency: 4,
+      requestDelayMs: 150,
+      autoSyncKavita: false,
+      nhentaiApiKey: '',
+      nhentaiBannedTags: [],
+    };
+    assert.equal(parseDownloaderSettings({ ...base, format: 'rar' }), null);
+    assert.equal(parseDownloaderSettings({ ...base, maxConcurrentDownloads: 11 }), null);
+    assert.equal(parseDownloaderSettings({ ...base, maxImageConcurrency: 0 }), null);
+    assert.equal(parseDownloaderSettings({ ...base, requestDelayMs: -1 }), null);
+
+    const res = await api.request('/settings/downloader', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...base, maxImageConcurrency: 1000 }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('falls back to defaults when stored downloader settings are malformed', () => {
+    getDb()
+      .insert(schema.keyValueStore)
+      .values({ key: 'downloader', valueJson: JSON.stringify({ downloadDirectory: 'x', maxImageConcurrency: 1000 }) })
+      .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify({ downloadDirectory: 'x', maxImageConcurrency: 1000 }) } })
+      .run();
+    assert.equal(getDownloaderSettings().maxImageConcurrency, 4);
+  });
+});
+
+describe('runtime settings hooks', () => {
+  it('notifies the scheduler when the poll interval changes', () => {
+    let notifications = 0;
+    const unsubscribe = onPollIntervalChange(() => { notifications++; });
+    setPollIntervalHours(3);
+    unsubscribe();
+    setPollIntervalHours(4);
+    assert.equal(notifications, 1);
+  });
+});
+
+describe('job request validation', () => {
+  it('rejects unsupported job types before enqueueing', async () => {
+    assert.equal(isJobType('scan-new'), true);
+    assert.equal(isJobType('not-a-job'), false);
+    const res = await api.request('/jobs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'not-a-job' }),
+    });
+    assert.equal(res.status, 400);
   });
 });
 

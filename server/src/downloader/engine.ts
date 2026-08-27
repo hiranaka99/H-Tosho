@@ -2,6 +2,7 @@ import { and, asc, desc, eq } from 'drizzle-orm';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, getTmpDir, schema } from '../db/index.js';
+import { pathContains } from '../lib/cbz.js';
 import { fetchBufferStreaming, sleep, type StreamProgressHandlers } from '../lib/http.js';
 import { generateComicInfoXml } from './comicinfo.js';
 import { buildZipFromFiles } from './zip.js';
@@ -839,10 +840,8 @@ export class DownloadQueue {
       const { KavitaClient } = await import('../kavita/client.js');
       const client = new KavitaClient(conn.baseUrl, conn.apiKey);
       // If a specific library path contains our output, scan just that one.
-      // Normalize separators first — Kavita reports '/' while Windows paths use '\\'.
-      const norm = (p: string): string => path.normalize(p).replace(/\\/g, '/');
       const libraries = await client.getLibraries();
-      const matched = libraries.find((l) => l.path && norm(outputPath).startsWith(norm(l.path)));
+      const matched = libraries.find((l) => l.path && pathContains(l.path, outputPath));
       if (!matched) {
         await client.scanAllLibraries();
         return; // Library unknown — the periodic scan picks up whatever appears.

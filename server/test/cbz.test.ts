@@ -6,7 +6,7 @@ import path from 'node:path';
 import { crc32 } from 'node:zlib';
 import { describe, it } from 'node:test';
 
-import { readComicInfo, readZipEntries, readZipEntry, rewriteZipEntry, mergeCbzFiles, resolveSeriesHostDir } from '../src/lib/cbz.js';
+import { pathContains, readComicInfo, readZipEntries, readZipEntry, rewriteZipEntry, mergeCbzFiles, resolveSeriesHostDir } from '../src/lib/cbz.js';
 import { buildZip } from '../src/downloader/zip.js';
 import { parseComicInfo, renderComicInfoXml } from '../src/downloader/comicinfo.js';
 
@@ -34,6 +34,14 @@ function makeSampleArchive(): { entries: Record<string, Buffer> } {
   );
   return { entries };
 }
+
+describe('pathContains', () => {
+  it('accepts descendants but rejects sibling paths with a shared prefix', () => {
+    assert.equal(pathContains('/media/manga', '/media/manga/title/book.cbz'), true);
+    assert.equal(pathContains('/media/manga', '/media/manga-archive/title/book.cbz'), false);
+    assert.equal(pathContains('C:\\Manga', 'C:\\Manga\\Title\\book.cbz'), true);
+  });
+});
 
 /**
  * Hand-crafted archive emulating a foreign tool: stored entry with a non-empty

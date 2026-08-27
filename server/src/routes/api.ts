@@ -29,12 +29,12 @@ import {
   setProviderSetting,
   providerOrderFor,
 } from '../services/settings.js';
-import { jobQueue, type JobType } from '../jobs/queue.js';
+import { isJobType, jobQueue } from '../jobs/queue.js';
 import { autoMatch, fetchProviderMetadata } from '../match/autoMatcher.js';
 import { buildSeriesPayload, checkAlignment } from '../services/sync.js';
 import { kavitaSeriesArtists } from '../services/seriesArtists.js';
 import { testNotification } from '../notify/dispatcher.js';
-import { getDownloaderSettings, setDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
+import { getDownloaderSettings, parseDownloaderSettings, setDownloaderSettings } from '../services/settings.js';
 import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
 import { rewriteHitomiCover, rewriteMangaDexCoverUrl } from './media.js';
@@ -557,11 +557,11 @@ api.put('/settings/poll-interval', async (c) => {
 api.get('/settings/downloader', (c) => c.json(getDownloaderSettings()));
 
 api.put('/settings/downloader', async (c) => {
-  const body = (await c.req.json().catch(() => null)) as Partial<DownloaderSettings> | null;
-  if (!body || typeof body.downloadDirectory !== 'string') {
-    return c.json({ error: 'downloadDirectory is required' }, 400);
+  const body = await c.req.json().catch(() => null);
+  const settings = parseDownloaderSettings(body);
+  if (!settings) {
+    return c.json({ error: 'Invalid downloader settings' }, 400);
   }
-  const settings = { ...getDownloaderSettings(), ...body };
   setDownloaderSettings(settings);
   return c.json({ ok: true, settings });
 });
@@ -894,8 +894,8 @@ api.get('/cbz/series/:id', async (c) => {
 // ---------------- Jobs ----------------
 
 api.post('/jobs', async (c) => {
-  const body = (await c.req.json()) as { type: JobType; libraryId?: number; seriesId?: number; seriesIds?: number[]; path?: string; xml?: string; fields?: Record<string, string>; sourceFiles?: string[]; targetDir?: string; chapters?: Record<string, string>; providerId?: string; providerSeriesId?: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number };
-  if (!body.type) return c.json({ error: 'type is required' }, 400);
+  const body = (await c.req.json()) as { type?: unknown; libraryId?: number; seriesId?: number; seriesIds?: number[]; path?: string; xml?: string; fields?: Record<string, string>; sourceFiles?: string[]; targetDir?: string; chapters?: Record<string, string>; providerId?: string; providerSeriesId?: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number };
+  if (!isJobType(body.type)) return c.json({ error: 'Unsupported job type' }, 400);
   const id = jobQueue.enqueue(body.type, { libraryId: body.libraryId, seriesId: body.seriesId, seriesIds: body.seriesIds, path: body.path, xml: body.xml, fields: body.fields, sourceFiles: body.sourceFiles, targetDir: body.targetDir, chapters: body.chapters, providerId: body.providerId, providerSeriesId: body.providerSeriesId, selectedTitle: body.selectedTitle, excludedFields: body.excludedFields, cover: body.cover, score: body.score });
   return c.json({ id }, 202);
 });

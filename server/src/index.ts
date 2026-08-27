@@ -4,7 +4,7 @@ import { getDb, initDb, schema } from './db/index.js';
 import { createApp } from './app.js';
 import { jobQueue } from './jobs/queue.js';
 import { runJob } from './jobs/executor.js';
-import { getKavitaConnection, getPollIntervalHours } from './services/settings.js';
+import { getKavitaConnection, getPollIntervalHours, onPollIntervalChange } from './services/settings.js';
 import { countWatchedSearches } from './services/watchedSearches.js';
 import { downloadQueue } from './downloader/engine.js';
 
@@ -58,6 +58,7 @@ const WATCHED_SEARCH_INTERVAL_MS = 15 * 60_000;
     }, WATCHED_SEARCH_INTERVAL_MS);
     watchedTimer.unref?.();
   }
+  const unsubscribePollInterval = onPollIntervalChange(scheduleScan);
   scheduleScan();
   scheduleWatchedSearches();
 
@@ -69,6 +70,7 @@ const WATCHED_SEARCH_INTERVAL_MS = 15 * 60_000;
     console.log('[h-tosho] shutting down');
     clearTimeout(pollTimer);
     clearTimeout(watchedTimer);
+    unsubscribePollInterval();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 2000).unref();
   };
