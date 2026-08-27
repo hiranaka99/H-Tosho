@@ -10,6 +10,7 @@ import { extFromUrl, padPage, sanitizeFilename } from './util.js';
 import { getDoujinProvider } from './providers.js';
 import type { DoujinGallery, DoujinSource } from './types.js';
 import { getDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
+import { recordGalleryTags } from '../services/recommendations.js';
 
 /**
  * Doujinshi download queue engine.
@@ -585,6 +586,9 @@ export class DownloadQueue {
       // Resolve the full gallery (metadata + image list).
       this.updateProgress(row.id, { progressCurrent: 0, progressTotal: 0, speed: 0, currentFile: 'Resolving gallery…', bytesCurrent: 0, bytesTotal: 0 }, { force: true });
       const gallery = await retryTransient(() => provider.getGallery(row.galleryId), 4, [2000, 10000, 30000]);
+      // Capture this gallery's tags/artists for the recommendation profile —
+      // metadata we already resolved, so the profile never re-fetches it.
+      recordGalleryTags(row.source as DoujinSource, gallery);
       const total = gallery.pages.length;
       if (!total) throw new Error('Gallery has no downloadable pages.');
       this.updateProgress(row.id, { progressCurrent: 0, progressTotal: total, speed: 0, currentFile: null, bytesCurrent: 0, bytesTotal: 0 }, { force: true });

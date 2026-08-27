@@ -145,6 +145,26 @@ export const watchedSearchSeen = sqliteTable('watched_search_seen', {
     .notNull()
     .default(sql`(current_timestamp)`),
 });
+/**
+ * Tag/artist profile data for downloaded galleries, powering the daily
+ * recommendations. Written when a download resolves its gallery metadata and
+ * lazily backfilled for pre-existing downloads, so the recommendation engine
+ * never has to re-fetch source metadata it already knows.
+ */
+export const galleryTags = sqliteTable('gallery_tags', {
+  /** hitomi | nhentai */
+  source: text('source').notNull(),
+  galleryId: text('gallery_id').notNull(),
+  title: text('title'),
+  /** Tag entries as {name, ns} objects; ns is null when the tag is a plain keyword. */
+  tagsJson: text('tags_json').notNull().default('[]'),
+  artistsJson: text('artists_json').notNull().default('[]'),
+  language: text('language'),
+  fetchedAt: text('fetched_at')
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});
+
 
 export const keyValueStore = sqliteTable('key_value_store', {
   key: text('key').primaryKey(),

@@ -39,6 +39,7 @@ import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
 import { rewriteHitomiCover, rewriteMangaDexCoverUrl } from './media.js';
 import { addWatchedSearch, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
+import { getRecommendations, refreshRecommendations } from '../services/recommendations.js';
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
 import { listCbzFiles, readComicInfo, resolveExistingFile, resolveSeriesHostDir } from '../lib/cbz.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
@@ -781,6 +782,29 @@ api.delete('/watched-searches/:id', (c) => {
 api.post('/watched-searches/check', (c) => {
   const id = jobQueue.enqueue('check-watched-searches', {});
   return c.json({ id }, 202);
+});
+
+// ---------------- Recommendations ----------------
+
+/** Today's recommendations — cached per local date; generated on first request of the day. */
+api.get('/recommendations', async (c) => {
+  try {
+    const set = await getRecommendations();
+    // Hitomi covers need the /media proxy (their CDN requires a Referer the browser can't send).
+    return c.json({ ...set, items: set.items.map(rewriteHitomiCover) });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
+  }
+});
+
+/** Re-roll today's picks with a fresh seed (manual refresh from the UI). */
+api.post('/recommendations/refresh', async (c) => {
+  try {
+    const set = await refreshRecommendations();
+    return c.json({ ...set, items: set.items.map(rewriteHitomiCover) });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
+  }
 });
 
 

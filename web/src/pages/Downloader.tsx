@@ -27,6 +27,7 @@ import {
   Users,
   Layers,
   Star,
+  Sparkles,
   Tags,
   CheckSquare,
   Combine,
@@ -388,7 +389,7 @@ function MetaItem({ label, value }: { label: string; value?: string | number | n
   );
 }
 
-function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTag }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; downloading: boolean; onSearchTag: (fragment: string) => void }) {
+function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTag }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; downloading: boolean; onSearchTag: (fragment: string, source?: DoujinSource) => void }) {
   const { data: gallery, isPending, isError, error } = useQuery({
     queryKey: ['doujin-gallery', item.source, item.galleryId],
     queryFn: () => api.doujinGallery(item.source, item.galleryId),
@@ -400,7 +401,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
   /** Search a single tag/artist value (from the details card) on this source. */
   const searchFor = (value: string, ns?: string | null) => {
     const fragment = buildTagSearchFragment(value, ns, item.source);
-    if (fragment) onSearchTag(fragment);
+    if (fragment) onSearchTag(fragment, item.source);
   };
   /** Tooltip showing the exact query a pill will run. */
   const searchTitle = (value: string, ns?: string | null) => {
@@ -781,6 +782,26 @@ export function Downloader() {
     }
   }
 
+  // Daily recommendations: stable per local date (server caches the day's set),
+  // so no polling — a manual refresh re-rolls with a fresh seed.
+  const { data: recs, isFetching: recsLoading, isError: recsFailed, error: recsError, refetch: refetchRecs } = useQuery({
+    queryKey: ['recommendations'],
+    queryFn: api.recommendations,
+  });
+  const [recsRefreshing, setRecsRefreshing] = React.useState(false);
+  async function doRefreshRecs() {
+    setRecsRefreshing(true);
+    try {
+      await api.refreshRecommendations();
+      await refetchRecs();
+      toast({ tone: 'success', title: 'Fresh picks ready' });
+    } catch (e) {
+      toast({ tone: 'danger', title: 'Could not refresh recommendations', description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setRecsRefreshing(false);
+    }
+  }
+
   // Tracks which gallery a start-download is in flight for (for button spinners).
   const [pendingKey, setPendingKey] = React.useState<string | null>(null);
 
@@ -790,7 +811,7 @@ export function Downloader() {
   const [showAllHistory, setShowAllHistory] = React.useState(false);
 
   // Top-of-page view tabs: search results vs. the download manager queue.
-  const [tab, setTab] = React.useState<'search' | 'manager'>('search');
+  const [tab, setTab] = React.useState<'search' | 'recommend' | 'manager'>('search');
   const searchMounted = React.useRef(false);
   React.useEffect(() => {
     if (!searchMounted.current) {
@@ -932,11 +953,21 @@ export function Downloader() {
   /**
    * Run a fresh search for a single tag/artist clicked in the details card.
    * Replaces the search bar with just that fragment and commits it immediately,
-   * then closes the modal so the new results are visible.
+   * then closes the modal so the new results are visible. The fragment is built
+   * for the gallery's own source, so jump to that source's search tab — the
+   * details card also opens from the Recommended tab, where the active source
+   * may be the other one.
    */
-  function searchTagFragment(fragment: string) {
+  function searchTagFragment(fragment: string, itemSource?: DoujinSource) {
     const trimmed = fragment.trim();
     if (!trimmed) return;
+    if (itemSource && itemSource !== source) {
+      setSource(itemSource);
+      // Drop a sort the target source does not offer so the dropdown never
+      // shows a value with no matching option.
+      if (!sortsFor(itemSource).some((s) => s.value === sort)) setSort('default');
+    }
+    setTab('search');
     setQuery(trimmed);
     setSearchKey(trimmed);
     setSuggestions([]);
@@ -979,7 +1010,7 @@ export function Downloader() {
       <PageHeader icon={<ListVideo className="h-5 w-5" />} title="Doujinshi Downloader" subtitle="Search Hitomi.la and nHentai, then download galleries into your Kavita library." />
 
       <SegmentedTabs
-        items={[{ id: 'search' as const, label: 'Search' }, { id: 'manager' as const, label: 'Manager' }]}
+        items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'Recommended' }, { id: 'manager' as const, label: 'Manager' }]}
         value={tab}
         onChange={setTab}
         label="Downloader sections"
@@ -1202,16 +1233,6 @@ export function Downloader() {
         </div>
       )}
 
-      {/* Gallery detail modal */}
-      {selected && (
-        <GalleryDetailModal
-          item={selected}
-          onClose={() => setSelected(null)}
-          downloading={pendingKey === `${selected.source}:${selected.galleryId}`}
-          onDownload={() => doStartDownload(selected)}
-          onSearchTag={searchTagFragment}
-        />
-      )}
 
       {/* Merged download confirm */}
       {mergeOpen && selectedItems.length > 0 && (
@@ -1237,6 +1258,78 @@ export function Downloader() {
       )}
       </>)
       }
+
+      {/* Daily recommendations */}
+      {tab === 'recommend' && (
+        <div className="flex flex-col gap-4">
+          <Card>
+            <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
+              <CardTitle className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4" /> Recommended for you
+                {recs?.mode === 'popular' && <Badge tone="muted">Popular fallback</Badge>}
+              </CardTitle>
+              <Button size="sm" variant="outline" onClick={() => void doRefreshRecs()} disabled={recsRefreshing || (recsLoading && !recs)} title="Re-roll today's picks with a fresh selection">
+                <RotateCcw className={cn('h-3.5 w-3.5', (recsRefreshing || (recsLoading && !recs)) && 'animate-spin')} /> Refresh picks
+              </Button>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-2">
+              <p className="text-xs text-muted">
+                {recs?.mode === 'popular'
+                  ? 'Not enough download history yet — showing popular galleries from both sources. Downloads you queue will shape future picks.'
+                  : 'Picked from Hitomi.la and nHentai based on the galleries in your library. New picks every day; refresh any time for a different selection.'}
+              </p>
+              {recs && (recs.profile.artists.length > 0 || recs.profile.tags.length > 0) && (
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="text-xs text-muted">Based on:</span>
+                  {[...recs.profile.artists, ...recs.profile.tags].map((t) => (
+                    <span key={t} className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{t}</span>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {recsFailed ? (
+            <ErrorState title="Recommendations failed" description={recsError instanceof Error ? recsError.message : String(recsError)} onRetry={() => void refetchRecs()} />
+          ) : !recs && recsLoading ? (
+            <div className="flex items-center justify-center gap-2 py-16 text-muted">
+              <Spinner /> Building your picks — the first pass of the day can take a minute…
+            </div>
+          ) : recs && recs.items.length > 0 ? (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+              {recs.items.map((item, i) => (
+                <div key={item.source + item.galleryId} className="flex flex-col gap-1 [&>article]:flex-1">
+                  <GalleryCard
+                    item={item}
+                    index={i}
+                    onOpen={() => setSelected(item)}
+                    downloading={pendingKey === `${item.source}:${item.galleryId}`}
+                    downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
+                    onDownload={() => doStartDownload(item)}
+                  />
+                  {item.reasons.length > 0 && (
+                    <p className="px-1 text-xs leading-snug text-muted" title={`Matched: ${item.reasons.join(', ')}`}>
+                      Because: {item.reasons.slice(0, 3).join(', ')}{item.reasons.length > 3 ? '…' : ''}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={<Sparkles className="h-8 w-8" />} title="No picks today" description="Both sources came up empty — try refreshing, or check back later." />
+          )}
+        </div>
+      )}
+      {/* Gallery detail modal */}
+      {selected && (
+        <GalleryDetailModal
+          item={selected}
+          onClose={() => setSelected(null)}
+          downloading={pendingKey === `${selected.source}:${selected.galleryId}`}
+          onDownload={() => doStartDownload(selected)}
+          onSearchTag={searchTagFragment}
+        />
+      )}
 
       {/* Download manager */}
       {tab === 'manager' && (

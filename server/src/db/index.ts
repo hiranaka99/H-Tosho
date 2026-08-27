@@ -371,6 +371,15 @@ CREATE TABLE IF NOT EXISTS watched_search_seen (
   gallery_id TEXT NOT NULL,
   first_seen_at TEXT NOT NULL DEFAULT (current_timestamp)
 );
+CREATE TABLE IF NOT EXISTS gallery_tags (
+  source TEXT NOT NULL,
+  gallery_id TEXT NOT NULL,
+  title TEXT,
+  tags_json TEXT NOT NULL DEFAULT '[]',
+  artists_json TEXT NOT NULL DEFAULT '[]',
+  language TEXT,
+  fetched_at TEXT NOT NULL DEFAULT (current_timestamp)
+);
 CREATE TABLE IF NOT EXISTS key_value_store (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL
@@ -379,6 +388,7 @@ CREATE INDEX IF NOT EXISTS idx_job_logs_job_id ON job_logs(job_id);
 CREATE INDEX IF NOT EXISTS idx_sync_history_series ON sync_history(kavita_series_id);
 CREATE INDEX IF NOT EXISTS idx_download_queue_gallery ON download_queue(source, gallery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_watched_search_seen_unique ON watched_search_seen(search_id, source, gallery_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_tags_unique ON gallery_tags(source, gallery_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 `;
 

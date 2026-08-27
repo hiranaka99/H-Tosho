@@ -302,6 +302,21 @@ export interface WatchedSearch {
   lastResultCount: number | null;
   seenCount: number;
 }
+/** One pick in a daily recommendation set (a search result plus why it matched). */
+export interface RecommendationItem extends DoujinSearchResult {
+  /** Human-readable profile terms that matched this gallery, e.g. ["artist konboi", "tag solo"]. */
+  reasons: string[];
+}
+
+/** The day's recommendation set (cached server-side per local date). */
+export interface RecommendationSet {
+  date: string;
+  generatedAt: string;
+  /** 'library' = picked from the taste profile; 'popular' = cold-start fallback. */
+  mode: 'library' | 'popular';
+  profile: { artists: string[]; tags: string[]; language: string | null };
+  items: RecommendationItem[];
+}
 
 export interface AuthStatus {
   setupRequired: boolean;
@@ -389,6 +404,12 @@ export const api = {
     request<WatchedSearch>('/watched-searches', { method: 'POST', body: JSON.stringify({ source, query }) }),
   removeWatchedSearch: (id: number) => request<{ ok: boolean }>(`/watched-searches/${id}`, { method: 'DELETE' }),
   checkWatchedSearches: () => request<{ id: number }>('/watched-searches/check', { method: 'POST' }),
+
+  // ---------------- Recommendations ----------------
+  /** Today's recommendation set (cached per local date server-side). */
+  recommendations: () => request<RecommendationSet>('/recommendations'),
+  /** Re-roll today's picks with a fresh seed. */
+  refreshRecommendations: () => request<RecommendationSet>('/recommendations/refresh', { method: 'POST' }),
 
   /** Aggregated metadata a candidate would sync — same path as apply. */
   providerMetadata: (providerId: string, providerSeriesId: string) =>

@@ -27,6 +27,7 @@ which is distinct from the Kavita *server* build number (e.g. `0.9.0.2`).
   cancel/retry, and optionally trigger a Kavita library scan on completion.
 - **Watched searches** — save doujinshi queries to re-run on every auto-scan
   cycle; new results ping Discord.
+- **Daily recommendations** — picks a fresh selection of galleries from Hitomi.la & nHentai based on the tags and artists in your downloaded library; stable within a day, manually refreshable for a different selection.
 - **Modern dark-mode dashboard** — Libraries, Downloader, Jobs and Settings
   pages with live job monitoring and drag-and-drop provider prioritization.
 - **Discord notifications** — push formatted updates (with cover art) when
