@@ -61,9 +61,9 @@ const ARTIST_SOURCE_META: Record<DoujinSource, { label: string; color: string }>
  * circle); the tooltip lists every known artist.
  *
  * variant "pill" — always-visible bordered pill (table view).
- * variant "bar"  — dark button for the grid card's hover action bar.
+ * variant "icon" — always-visible source icon (grid card).
  */
-function ArtistSearchButton({ source, artists, variant = 'pill' }: { source: DoujinSource; artists: string[]; variant?: 'pill' | 'bar' }) {
+function ArtistSearchButton({ source, artists, variant = 'pill' }: { source: DoujinSource; artists: string[]; variant?: 'pill' | 'icon' }) {
   const navigate = useNavigate();
   const primary = artists[0];
   const fragment = buildTagSearchFragment(primary, 'artist', source);
@@ -71,17 +71,16 @@ function ArtistSearchButton({ source, artists, variant = 'pill' }: { source: Dou
   const meta = ARTIST_SOURCE_META[source];
   const target = artists.length > 1 ? `${artists.join(', ')} (first: ${primary})` : `“${primary}”`;
   const title = `Search artist ${target} on ${meta.label}`;
-  if (variant === 'bar') {
+  if (variant === 'icon') {
     return (
       <button
         type="button"
         onClick={() => navigate(`/downloader?source=${source}&q=${encodeURIComponent(fragment)}`)}
         title={title}
-        className="inline-flex items-center gap-1 rounded-lg border border-white/15 bg-black/70 px-2 py-1 text-[10px] font-semibold text-white backdrop-blur-sm transition-all duration-150 hover:border-primary hover:bg-primary"
+        aria-label={title}
+        className="relative z-30 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/20 bg-black/75 shadow-md backdrop-blur-sm transition-all duration-150 hover:-translate-y-px hover:border-primary hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
       >
-        <Search className="h-3 w-3" />
-        <span className="max-w-28 truncate">“{primary}”</span>
-        <span className="font-normal text-white/60">· {meta.label}</span>
+        <img src={`/${source}.png`} alt="" className="h-6 w-6 rounded object-contain" aria-hidden="true" />
       </button>
     );
   }
@@ -383,10 +382,9 @@ export function Libraries() {
                         )}
                       </div>
                       {!selectMode && r.artists?.length ? (
-                        // Action bar revealed on hover/focus: explicit buttons instead of badge-like pills.
-                        <div className="artist-action-bar flex max-h-0 flex-wrap gap-1 overflow-hidden opacity-0 transition-all duration-200 group-hover:max-h-16 group-hover:opacity-100">
-                          <ArtistSearchButton source="hitomi" artists={r.artists} variant="bar" />
-                          <ArtistSearchButton source="nhentai" artists={r.artists} variant="bar" />
+                        <div className="flex gap-1.5" aria-label={`Search for ${r.artists[0]} by source`}>
+                          <ArtistSearchButton source="hitomi" artists={r.artists} variant="icon" />
+                          <ArtistSearchButton source="nhentai" artists={r.artists} variant="icon" />
                         </div>
                       ) : null}
                     </div>

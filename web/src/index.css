@@ -143,12 +143,6 @@ select {
   padding-right: 2.1rem;
 }
 
-/* Library grid cards reveal their action bar on pointer hover via group-hover: utilities.
-   Tailwind v4 does not generate group-focus-within:, so the keyboard path lives here. */
-.group:focus-within .artist-action-bar {
-  max-height: calc(var(--spacing) * 16);
-  opacity: 1;
-}
 
 /* Library grid cards reveal the ComicInfo button on pointer hover / keyboard focus.
    Hidden state must not capture clicks (the Identify overlay sits beneath it). */
