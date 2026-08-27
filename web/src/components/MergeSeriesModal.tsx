@@ -123,7 +123,7 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="merge-target">Target folder</Label>
               <Input id="merge-target" value={targetOverride} onChange={(e) => setTargetOverride(e.target.value)} placeholder={defaultTarget || 'Select a series name first'} />
-              <p className="text-[11px] text-muted">
+              <p className="text-xs text-muted">
                 All files move into this folder — Kavita shows one series per folder, so the folder name becomes the series name.
               </p>
             </div>
@@ -153,7 +153,7 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
             )}
 
             {perSeries.data?.filter((e) => e.reason).map((e) => (
-              <p key={e.series.id} className="text-[11px] text-warning">{e.series.name}: {e.reason}</p>
+              <p key={e.series.id} className="text-xs text-warning">{e.series.name}: {e.reason}</p>
             ))}
           </div>
 

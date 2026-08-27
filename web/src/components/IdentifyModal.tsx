@@ -164,12 +164,12 @@ function FieldRow({ row, providerName, checked, onToggle }: { row: DiffRow; prov
     <div className={cn(ROW_GRID, 'border-b border-border py-2 last:border-0', differs ? 'bg-warning/5' : 'transition-colors hover:bg-surface-2/40')}>
       <div className="flex min-w-0 items-start gap-1.5">
         {showCheckbox ? (
-          <label className="flex min-h-11 cursor-pointer items-center gap-2 py-1 text-[11px] font-medium uppercase tracking-wider text-muted">
+          <label className="flex min-h-9 cursor-pointer items-center gap-2 py-1 text-xs font-medium uppercase tracking-wider text-muted">
             <input type="checkbox" checked={!!checked} onChange={onToggle} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
             {row.label}
           </label>
         ) : (
-          <span className="min-h-11 py-3 text-[11px] font-medium uppercase tracking-wider text-muted">{row.label}</span>
+          <span className="min-h-9 py-3 text-xs font-medium uppercase tracking-wider text-muted">{row.label}</span>
         )}
       </div>
       {merge ? (
@@ -231,7 +231,7 @@ function CoverThumb({ src, alt, onZoom }: { src?: string | null; alt: string; on
   );
   if (!onZoom) return img;
   return (
-    <button type="button" aria-label={`Enlarge ${alt}`} onClick={() => onZoom(src, alt)} className="shrink-0 cursor-zoom-in transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+    <button type="button" aria-label={`Enlarge ${alt}`} onClick={() => onZoom(src, alt)} className="shrink-0 cursor-zoom-in transition-opacity hover:opacity-90">
       {img}
     </button>
   );
@@ -415,9 +415,9 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                     Matched to {PROVIDER_NAMES[match.providerId] ?? match.providerId}
                     {typeof match.matchScore === 'number' && ` · ${Math.round(match.matchScore * 100)}%`}
                     {match.aligned ? (
-                      <span className="rounded bg-success/15 px-1.5 py-0.5 text-[10px] font-medium text-success">Aligned</span>
+                      <span className="rounded-md bg-success/15 px-1.5 py-0.5 text-2xs font-medium text-success">Aligned</span>
                     ) : (
-                      <span className="rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">Not aligned</span>
+                      <span className="rounded-md bg-warning/15 px-1.5 py-0.5 text-2xs font-medium text-warning">Not aligned</span>
                     )}
                   </p>
                   <p className="text-sm text-muted">Unmatching removes the link and removes metadata and covers previously applied by H-Tosho.</p>
@@ -444,9 +444,9 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
               <div className="flex max-h-48 flex-col gap-1 overflow-y-auto">
                 {history.data.map((h) => (
                   <div key={h.id} className="flex items-baseline gap-2 text-xs">
-                    <span className={cn('shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium', HISTORY_TONE[h.action] ?? 'bg-surface-2 text-muted')}>{h.action}</span>
+                    <span className={cn('shrink-0 rounded-md px-1.5 py-0.5 text-2xs font-medium', HISTORY_TONE[h.action] ?? 'bg-surface-2 text-muted')}>{h.action}</span>
                     <span className="min-w-0 flex-1 break-words text-muted">{detailsText(h.details)}</span>
-                    <span className="shrink-0 text-[10px] text-muted">{timeAgo(h.createdAt)}</span>
+                    <span className="shrink-0 text-2xs text-muted">{timeAgo(h.createdAt)}</span>
                   </div>
                 ))}
               </div>
@@ -566,7 +566,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <ProviderBadge id={c.providerId} />
-                          {isBest && <span className="rounded bg-success/15 px-1.5 py-0.5 text-[10px] font-medium text-success">Best</span>}
+                          {isBest && <span className="rounded-md bg-success/15 px-1.5 py-0.5 text-2xs font-medium text-success">Best</span>}
                           {c.year && <span className="text-xs text-muted">{c.year}</span>}
                         </div>
                         <p className="mt-1 truncate text-sm font-medium">{c.title}</p>
@@ -592,7 +592,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                         id="provider-title-choice"
                         value={resolvedTitle}
                         onChange={(e) => setSelectedTitle(e.target.value)}
-                        className="mt-2 flex h-9 w-full rounded-lg border border-border-2 bg-surface px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                        className="mt-2 flex h-9 w-full rounded-md border border-border-2 bg-surface px-3 text-sm"
                       >
                         {preview.data!.titleOptions!.map((title) => <option key={title} value={title}>{title}</option>)}
                       </select>
@@ -636,7 +636,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                       />
                     ))}
                     <div className={cn(ROW_GRID, 'items-center py-2')}>
-                      <label className="flex min-h-11 cursor-pointer items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted">
+                      <label className="flex min-h-9 cursor-pointer items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted">
                         <input type="checkbox" checked={coverEnabled} onChange={(e) => setCoverEnabled(e.target.checked)} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
                         Cover
                       </label>

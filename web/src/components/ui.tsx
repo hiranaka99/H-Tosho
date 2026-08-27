@@ -7,23 +7,22 @@ import { X, Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { cn, PROVIDER_COLORS, PROVIDER_NAMES } from '../lib/utils';
 
 const buttonVariants = cva(
-  'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg text-sm font-medium transition-all duration-150 ' +
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:pointer-events-none ' +
-    'disabled:opacity-50 px-4 active:scale-[0.97]',
+  'inline-flex select-none items-center justify-center gap-2 rounded-md text-sm font-medium transition-colors duration-150 ' +
+    'disabled:pointer-events-none disabled:opacity-50',
   {
     variants: {
       variant: {
-        default: 'bg-primary text-white shadow-md shadow-primary/20 hover:bg-primary-hover',
-        outline: 'border border-border-2 bg-transparent hover:bg-surface-2',
-        ghost: 'bg-transparent hover:bg-surface-2',
+        default: 'bg-primary text-white hover:bg-primary-hover',
+        outline: 'border border-border-2 bg-surface text-foreground hover:bg-surface-2',
+        ghost: 'text-muted hover:bg-surface-2 hover:text-foreground',
         danger: 'bg-danger text-white hover:opacity-90',
-        secondary: 'bg-surface-2 text-foreground hover:bg-border',
+        secondary: 'bg-surface-2 text-foreground hover:bg-border/60',
       },
       size: {
-        default: 'min-h-11 px-4',
-        sm: 'min-h-11 px-3 text-xs',
-        lg: 'min-h-12 px-6',
-        icon: 'h-11 w-11 p-0',
+        default: 'h-9 px-3',
+        sm: 'h-8 px-2.5 text-xs',
+        lg: 'h-10 px-4',
+        icon: 'h-8 w-8 p-0',
       },
     },
     defaultVariants: { variant: 'default', size: 'default' },
@@ -45,15 +44,15 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 Button.displayName = 'Button';
 
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('rounded-xl border border-border bg-surface transition-colors', className)} {...props} />;
+  return <div className={cn('rounded-lg border border-border bg-surface', className)} {...props} />;
 }
 
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('flex flex-col gap-1 p-4 border-b border-border', className)} {...props} />;
+  return <div className={cn('flex flex-col gap-1 border-b border-border p-4', className)} {...props} />;
 }
 
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn('text-sm font-semibold', className)} {...props} />;
+  return <h3 className={cn('text-sm font-semibold tracking-tight', className)} {...props} />;
 }
 
 export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
@@ -65,8 +64,8 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
     <input
       ref={ref}
       className={cn(
-        'flex min-h-11 w-full rounded-lg border border-border-2 bg-surface-2 px-3 py-2 text-sm placeholder:text-muted',
-        'transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50',
+        'flex h-9 w-full rounded-md border border-border-2 bg-surface px-3 text-sm placeholder:text-muted/70',
+        'transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
       {...props}
@@ -84,8 +83,8 @@ export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttrib
     <select
       ref={ref}
       className={cn(
-        'flex min-h-11 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-sm',
-        'transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
+        'flex h-9 w-full rounded-md border border-border-2 bg-surface px-3 text-sm',
+        'transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
       {...props}
@@ -111,13 +110,13 @@ export function Switch({
       onCheckedChange={onCheckedChange}
       aria-label={props['aria-label'] ?? 'Toggle'}
       className={cn(
-        'inline-flex h-7 w-12 items-center rounded-full transition-colors focus-visible:outline-none',
-        'focus-visible:ring-2 focus-visible:ring-primary/50 data-[state=checked]:bg-primary data-[state=unchecked]:bg-border-2',
+        'inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-150',
+        'data-[state=checked]:bg-primary data-[state=unchecked]:bg-border-2',
         className,
       )}
       {...props}
     >
-      <SwitchPrimitive.Thumb className="block h-6 w-6 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0.5" />
+      <SwitchPrimitive.Thumb className="block h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-150 data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0.5" />
     </SwitchPrimitive.Root>
   );
 }
@@ -217,28 +216,29 @@ export function Dialog({
 export function DialogContent({ children, className, ...props }: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>) {
   return (
     <DialogPrimitive.Portal>
-      <DialogPrimitive.Overlay className="dialog-overlay fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
+      <DialogPrimitive.Overlay className="dialog-overlay fixed inset-0 z-50 bg-black/50" />
       <DialogPrimitive.Content
         className={cn(
           'dialog-content fixed left-1/2 top-1/2 z-50 w-[calc(100vw-1.5rem)] max-w-5xl -translate-x-1/2 -translate-y-1/2',
-          'max-h-[calc(100vh-1.5rem)] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl shadow-black/40',
+          'max-h-[calc(100vh-1.5rem)] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl',
           className,
         )}
         {...props}
       >
         {children}
-        <DialogPrimitive.Close aria-label="Close dialog" className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center rounded-md bg-surface/90 text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+        <DialogPrimitive.Close aria-label="Close dialog" className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground">
           <X className="h-4 w-4" />
         </DialogPrimitive.Close>
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
   );
 }
+
 export const DialogTitle = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Title>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
 >(({ className, ...props }, ref) => (
-  <DialogPrimitive.Title ref={ref} className={cn('text-base font-semibold', className)} {...props} />
+  <DialogPrimitive.Title ref={ref} className={cn('text-base font-semibold tracking-tight', className)} {...props} />
 ));
 DialogTitle.displayName = DialogPrimitive.Title.displayName;
 
@@ -253,7 +253,7 @@ DialogDescription.displayName = DialogPrimitive.Description.displayName;
 export function ErrorState({ title = 'Something went wrong', description, onRetry }: { title?: string; description?: string; onRetry?: () => void }) {
   return (
     <div role="alert" className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-      <AlertTriangle className="h-7 w-7 text-danger" />
+      <AlertTriangle className="h-6 w-6 text-danger" />
       <div>
         <p className="font-medium">{title}</p>
         {description && <p className="mt-1 max-w-lg break-words text-sm text-muted">{description}</p>}
@@ -265,7 +265,7 @@ export function ErrorState({ title = 'Something went wrong', description, onRetr
 
 export function SegmentedTabs<T extends string>({ items, value, onChange, label, panelId, className }: { items: readonly { id: T; label: string }[]; value: T; onChange: (id: T) => void; label: string; panelId: string; className?: string }) {
   return (
-    <div role="tablist" aria-label={label} className={cn('flex max-w-full flex-wrap gap-4 border-b border-border-2', className)}>
+    <div role="tablist" aria-label={label} className={cn('flex max-w-full flex-wrap border-b border-border', className)}>
       {items.map((item) => (
         <button
           key={item.id}
@@ -286,7 +286,7 @@ export function SegmentedTabs<T extends string>({ items, value, onChange, label,
             requestAnimationFrame(() => tabs?.[nextIndex]?.focus());
           }}
           className={cn(
-            '-mb-px min-h-11 shrink-0 border-b-2 px-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+            '-mb-px min-h-9 shrink-0 border-b-2 px-3 text-sm font-medium transition-colors duration-150',
             value === item.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
           )}
         >
@@ -301,7 +301,7 @@ export function ConfirmDialog({ open, title, description, confirmLabel, danger =
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
-        <div className="flex flex-col gap-4 p-5 pr-14">
+        <div className="flex flex-col gap-4 p-5 pr-12">
           <div className="flex items-start gap-3">
             <div className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-full', danger ? 'bg-danger/15 text-danger' : 'bg-primary/15 text-primary')}>
               {danger ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
@@ -322,15 +322,17 @@ export function ConfirmDialog({ open, title, description, confirmLabel, danger =
     </Dialog>
   );
 }
+
 export function EmptyState({ icon, title, description }: { icon?: React.ReactNode; title: string; description?: string }) {
   return (
     <div className="flex animate-fade-in flex-col items-center justify-center gap-2 py-16 text-center">
-      {icon && <div className="text-muted">{icon}</div>}
+      {icon && <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-full bg-surface-2 text-muted">{icon}</div>}
       <p className="font-medium">{title}</p>
       {description && <p className="max-w-sm text-sm text-muted">{description}</p>}
     </div>
   );
 }
+
 /** Shimmering placeholder block for loading content. */
 export function Skeleton({ className }: { className?: string }) {
   return <div className={cn('skeleton', className)} />;
@@ -352,15 +354,15 @@ export function PageHeader({
 }) {
   return (
     <div className={cn('flex flex-wrap items-center justify-between gap-3', className)}>
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 items-center gap-3">
         {icon && (
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border bg-gradient-to-br from-primary/25 to-transparent text-primary shadow-md shadow-black/20">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
             {icon}
           </div>
         )}
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
-          {subtitle && <p className="text-sm text-muted">{subtitle}</p>}
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+          {subtitle && <p className="mt-0.5 text-sm text-muted">{subtitle}</p>}
         </div>
       </div>
       {children ? <div className="flex flex-wrap items-center gap-2">{children}</div> : null}

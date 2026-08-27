@@ -182,14 +182,14 @@ export function buildTagSearchFragment(value: string, ns: string | null | undefi
 
 /** Badge color per suggestion tag type (mirrors the nHentai search dropdown). */
 const SUGG_TYPE_STYLES: Record<string, string> = {
-  artist: 'bg-violet-500/20 text-violet-300',
-  group: 'bg-amber-500/25 text-amber-300',
-  character: 'bg-pink-500/20 text-pink-300',
-  parody: 'bg-blue-500/20 text-blue-300',
-  series: 'bg-cyan-500/20 text-cyan-300',
-  language: 'bg-emerald-500/20 text-emerald-300',
-  category: 'bg-rose-500/20 text-rose-300',
-  tag: 'bg-slate-500/25 text-slate-300',
+  artist: 'bg-violet-500/10 text-violet-700 dark:bg-violet-400/20 dark:text-violet-300',
+  group: 'bg-amber-500/10 text-amber-700 dark:bg-amber-400/20 dark:text-amber-300',
+  character: 'bg-pink-500/10 text-pink-700 dark:bg-pink-400/20 dark:text-pink-300',
+  parody: 'bg-blue-500/10 text-blue-700 dark:bg-blue-400/20 dark:text-blue-300',
+  series: 'bg-cyan-500/10 text-cyan-700 dark:bg-cyan-400/20 dark:text-cyan-300',
+  language: 'bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/20 dark:text-emerald-300',
+  category: 'bg-rose-500/10 text-rose-700 dark:bg-rose-400/20 dark:text-rose-300',
+  tag: 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/20 dark:text-slate-300',
 };
 
 function SourceBadge({ source }: { source: DoujinSource }) {
@@ -287,11 +287,11 @@ function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloa
     <article
       style={{ animationDelay: `${Math.min(index, 15) * 40}ms` }}
       className={cn(
-        'group flex animate-fade-up flex-col overflow-hidden rounded-xl border bg-surface transition-all duration-200 hover:-translate-y-1 hover:border-primary/50 hover:shadow-xl hover:shadow-black/30',
+        'group flex animate-fade-up flex-col overflow-hidden rounded-lg border bg-surface transition-colors duration-200 hover:border-border-2',
         selected ? 'border-primary/60 ring-2 ring-primary' : 'border-border',
       )}
     >
-      <button type="button" onClick={selectMode ? onToggleSelect : onOpen} className="text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60" aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
+      <button type="button" onClick={selectMode ? onToggleSelect : onOpen} className="text-left" aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
         <div className="relative overflow-hidden">
           <Cover url={item.coverUrl} title={item.title} className="aspect-[3/4] w-full transition-transform duration-300 ease-out group-hover:scale-105" />
           {item.language && (
@@ -301,11 +301,11 @@ function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloa
           )}
           {item.pageCount ? <span className="absolute right-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">{item.pageCount}p</span> : null}
           {selectMode && selected && (
-            <span className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white shadow-md">
+            <span className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white">
               <CheckSquare className="h-3.5 w-3.5" />
             </span>
           )}
-          <div className="pointer-events-none absolute inset-0 flex items-end justify-center bg-gradient-to-t from-black/80 via-black/10 to-transparent opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          <div className="pointer-events-none absolute inset-0 flex items-end justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
             <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-white">
               {selectMode ? (<><CheckSquare className="h-3 w-3" /> {selected ? 'Selected' : 'Select'}</>) : (<><Search className="h-3 w-3" /> Details</>)}
             </span>
@@ -330,11 +330,11 @@ function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloa
 // ---------------- Gallery detail modal ----------------
 
 const TAG_GROUP_STYLES: Record<string, string> = {
-  Artists: 'bg-violet-500/20 text-violet-300',
-  Groups: 'bg-amber-500/25 text-amber-300',
-  Characters: 'bg-pink-500/20 text-pink-300',
-  Series: 'bg-cyan-500/20 text-cyan-300',
-  Tags: 'bg-slate-500/25 text-slate-300',
+  Artists: 'bg-violet-500/10 text-violet-700 dark:bg-violet-400/20 dark:text-violet-300',
+  Groups: 'bg-amber-500/10 text-amber-700 dark:bg-amber-400/20 dark:text-amber-300',
+  Characters: 'bg-pink-500/10 text-pink-700 dark:bg-pink-400/20 dark:text-pink-300',
+  Series: 'bg-cyan-500/10 text-cyan-700 dark:bg-cyan-400/20 dark:text-cyan-300',
+  Tags: 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/20 dark:text-slate-300',
 };
 
 function TagList({ label, items, namespaces, icon, onSearch, titleFor }: {
@@ -348,7 +348,7 @@ function TagList({ label, items, namespaces, icon, onSearch, titleFor }: {
   titleFor?: (value: string, ns?: string | null) => string | undefined;
 }) {
   if (!items?.length) return null;
-  const style = Object.entries(TAG_GROUP_STYLES).find(([k]) => label.startsWith(k))?.[1] ?? 'bg-slate-500/25 text-slate-300';
+  const style = Object.entries(TAG_GROUP_STYLES).find(([k]) => label.startsWith(k))?.[1] ?? 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/20 dark:text-slate-300';
   return (
     <div className="flex flex-col gap-1.5">
       <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
@@ -366,7 +366,7 @@ function TagList({ label, items, namespaces, icon, onSearch, titleFor }: {
               className={cn(
                 'rounded-full px-2.5 py-1 text-xs transition-all',
                 style,
-                onSearch && 'cursor-pointer hover:brightness-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                onSearch && 'cursor-pointer hover:brightness-125',
               )}
             >
               {t}
@@ -382,7 +382,7 @@ function MetaItem({ label, value }: { label: string; value?: string | number | n
   if (value === undefined || value === null || value === '') return null;
   return (
     <div className="flex flex-col gap-0.5 rounded-md border border-border bg-surface-2/50 px-3 py-2">
-      <span className="text-[10px] font-semibold uppercase tracking-wide text-muted">{label}</span>
+      <span className="text-2xs font-semibold uppercase tracking-wide text-muted">{label}</span>
       <span className="text-sm font-medium">{value}</span>
     </div>
   );
@@ -463,7 +463,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
                       type="button"
                       onClick={() => searchFor(g.series ?? '', 'series')}
                       title={searchTitle(g.series ?? '', 'series')}
-                      className="w-fit cursor-pointer rounded-full bg-cyan-500/20 px-2.5 py-1 text-xs text-cyan-300 transition-all hover:brightness-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                      className="w-fit cursor-pointer rounded-full bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-700 transition-all hover:brightness-125 dark:bg-cyan-400/20 dark:text-cyan-300"
                     >
                       {g.series}
                     </button>
@@ -503,7 +503,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
 function QueueRow({ task, onAction, onEditComicInfo, onDelete }: { task: DownloadTask; onAction: (a: 'pause' | 'resume' | 'cancel' | 'retry') => void; onEditComicInfo?: (path: string) => void; onDelete?: () => void }) {
   const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : 0;
   return (
-    <div className="flex animate-fade-up flex-col gap-2 rounded-lg border border-border p-3 transition-colors">
+    <div className="flex animate-fade-up flex-col gap-2 rounded-md border border-border p-3 transition-colors">
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <DownloadStatusBadge status={task.status} />
@@ -1009,7 +1009,7 @@ export function Downloader() {
                   }}
                   aria-checked={source === s.id}
                   className={cn(
-                    'min-h-11 flex-1 px-4 py-2 text-sm font-medium transition-colors lg:flex-none',
+                    'h-9 flex-1 px-4 text-sm font-medium transition-colors lg:flex-none',
                     source === s.id ? 'bg-primary text-white' : 'bg-surface-2 text-muted hover:text-foreground',
                   )}
                 >
@@ -1032,21 +1032,21 @@ export function Downloader() {
                 onFocus={() => setInputFocused(true)}
                 onBlur={() => { setInputFocused(false); setHighlight(-1); }}
                 placeholder="Search by keyword, tag, artist, gallery ID or URL…"
-                className="pl-9 pr-8"
+                className="pl-9 pr-9"
               />
               {query && (
                 <button
                   type="button"
                   onClick={() => setQuery('')}
                   aria-label="Clear search input"
-                  className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded text-muted hover:text-foreground"
+                  className="absolute right-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded text-muted hover:text-foreground"
                 >
                   <X className="h-4 w-4" />
                 </button>
               )}
 
               {showDropdown && (
-                <div id="doujin-suggestions" role="listbox" className="absolute left-0 right-0 top-full z-50 mt-1 origin-top animate-scale-in overflow-hidden rounded-lg border border-border bg-surface shadow-xl shadow-black/30">
+                <div id="doujin-suggestions" role="listbox" className="absolute left-0 right-0 top-full z-50 mt-1 origin-top animate-scale-in overflow-hidden rounded-md border border-border bg-surface shadow-lg">
                   {suggLoading && suggestions.length === 0 ? (
                     <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted">
                       <Spinner /> Searching tags…
@@ -1072,8 +1072,8 @@ export function Downloader() {
                         >
                           <span
                             className={cn(
-                              'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
-                              SUGG_TYPE_STYLES[s.type] ?? 'bg-slate-500/25 text-slate-300',
+                              'shrink-0 rounded px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide',
+                              SUGG_TYPE_STYLES[s.type] ?? 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/20 dark:text-slate-300',
                             )}
                           >
                             {s.type}
@@ -1160,7 +1160,7 @@ export function Downloader() {
                   </div>
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
                 {pageItems.map((item, i) => (
                   <GalleryCard
                     key={item.source + item.galleryId}

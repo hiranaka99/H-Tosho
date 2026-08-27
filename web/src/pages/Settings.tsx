@@ -1,11 +1,12 @@
 import * as React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, Star, ArrowUp, ArrowDown, LockKeyhole } from 'lucide-react';
+import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, Star, ArrowUp, ArrowDown, LockKeyhole, Monitor, Moon, Sun, Palette } from 'lucide-react';
 import { api, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type DoujinSource } from '../lib/api';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader, ErrorState, SegmentedTabs, ConfirmDialog } from '../components/ui';
 import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { useAuth } from '../lib/AuthContext';
+import { useTheme, type Theme } from '../lib/theme';
 
 type Notif = SettingsType['notifications'];
 const SETTINGS_TABS = [
@@ -43,6 +44,31 @@ function useFlash(on?: () => void) {
     window.setTimeout(() => setSaved(false), 1500);
   }, [on]);
   return { saved, flash };
+}
+
+function AppearanceCard() {
+  const { theme, setTheme } = useTheme();
+  const options: { id: Theme; label: string; icon: typeof Monitor }[] = [
+    { id: 'system', label: 'System', icon: Monitor },
+    { id: 'light', label: 'Light', icon: Sun },
+    { id: 'dark', label: 'Dark', icon: Moon },
+  ];
+  return (
+    <Card className="animate-fade-up">
+      <SectionHeader icon={<Palette className="h-4 w-4" />} title="Appearance" />
+      <CardContent>
+        <div role="group" aria-label="Theme" className="flex gap-1 rounded-md border border-border-2 bg-surface p-1">
+          {options.map((o) => (
+            <button key={o.id} type="button" aria-pressed={theme === o.id} onClick={() => setTheme(o.id)}
+              className={cn('flex h-8 flex-1 items-center justify-center gap-2 rounded text-sm font-medium transition-colors duration-150', theme === o.id ? 'bg-surface-2 text-foreground' : 'text-muted hover:text-foreground')}>
+              <o.icon className="h-3.5 w-3.5" /> {o.label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-sm text-muted">System follows your operating system's color scheme.</p>
+      </CardContent>
+    </Card>
+  );
 }
 
 function AccountSettingsCard() {
@@ -187,6 +213,7 @@ export function Settings() {
 
       <div id="settings-panel" role="tabpanel" aria-labelledby={`settings-panel-tab-${tab}`} className="contents">
       {tab === 'general' && (<>
+      <AppearanceCard />
       <AccountSettingsCard />
       <Card className="animate-fade-up">
         <SectionHeader icon={<Server className="h-4 w-4" />} title="Kavita connection">
@@ -251,7 +278,7 @@ export function Settings() {
                   onDragStart={() => (dragIndex.current = idx)}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={() => onDrop(idx)}
-                  className="flex items-center gap-3 rounded-lg border border-border bg-surface-2 p-2 transition-colors hover:border-border-2"
+                  className="flex items-center gap-3 rounded-md border border-border bg-surface-2 p-2 transition-colors hover:border-border-2"
                 >
                   <GripVertical className="hidden h-4 w-4 shrink-0 cursor-grab text-muted active:cursor-grabbing sm:block" aria-hidden="true" />
                   <span className="w-6 text-center text-xs text-muted">{idx + 1}</span>
@@ -333,9 +360,9 @@ function BannedTagsEditor({ value, onChange }: { value: string[]; onChange: (tag
       {value.length > 0 && (
         <div className="flex flex-wrap gap-1.5 py-1">
           {value.map((tag) => (
-            <span key={tag} className="inline-flex min-h-11 items-center gap-1 rounded-full bg-danger/15 pl-3 text-xs font-medium text-danger">
+            <span key={tag} className="inline-flex items-center gap-1 rounded-full bg-danger/15 pl-3 pr-1 text-xs font-medium text-danger">
               {tag}
-              <button type="button" onClick={() => onChange(value.filter((value) => value !== tag))} className="flex h-11 w-11 items-center justify-center rounded-full hover:bg-danger/30" aria-label={`Remove ${tag}`}><X className="h-3.5 w-3.5" /></button>
+              <button type="button" onClick={() => onChange(value.filter((value) => value !== tag))} className="flex h-7 w-7 items-center justify-center rounded-full hover:bg-danger/30" aria-label={`Remove ${tag}`}><X className="h-3.5 w-3.5" /></button>
             </span>
           ))}
         </div>
@@ -483,7 +510,7 @@ function ProviderCreds({ provider, onChanged }: { provider: ProviderInfo; onChan
   const credentialsDirty = provider.credentialFields.some((field) => (creds[field.key] ?? '') !== (provider.credentials?.[field.key] ?? ''));
 
   return (
-    <div className="rounded-md border border-border p-3">
+    <div className="rounded-md border border-border bg-surface-2/50 p-3">
       <div className="flex flex-wrap items-center gap-3">
         <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: provider.color }} />
         <span className="text-sm font-medium">{provider.name}</span>

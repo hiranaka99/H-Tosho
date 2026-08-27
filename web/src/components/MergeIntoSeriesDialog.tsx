@@ -278,7 +278,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, onDownload }: 
                       }`}
                     >
                       <span className="min-w-0 truncate" title={o.name}>{o.name}</span>
-                      <span className="shrink-0 text-[10px] text-muted">{o.library}</span>
+                      <span className="shrink-0 text-2xs text-muted">{o.library}</span>
                     </button>
                   ))}
                 </div>
@@ -310,9 +310,9 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, onDownload }: 
                       {ready ? (
                         <span className="hidden truncate text-xs text-muted sm:block" title={e.files.join('\n')}>{e.files.map((f) => f.split(/[\\/]/).pop()).join(', ')}</span>
                       ) : e.resolving ? (
-                        <span className="hidden items-center gap-1.5 text-[11px] text-muted sm:flex"><Spinner className="h-3 w-3" /> Resolving files…</span>
+                        <span className="hidden items-center gap-1.5 text-xs text-muted sm:flex"><Spinner className="h-3 w-3" /> Resolving files…</span>
                       ) : (
-                        <span className="hidden truncate text-[11px] text-warning sm:block" title={e.note ?? ''}>{e.note}</span>
+                        <span className="hidden truncate text-xs text-warning sm:block" title={e.note ?? ''}>{e.note}</span>
                       )}
                       <Input
                         value={chapterValue}

@@ -64,7 +64,7 @@ function LogConsole({ logs }: { logs: JobLog[] }) {
     if (el) el.scrollTop = el.scrollHeight;
   }, [logs.length]);
   return (
-    <div ref={ref} className="h-64 overflow-y-auto rounded-md border border-border bg-black/40 p-3 font-mono text-xs">
+    <div ref={ref} className="h-64 overflow-y-auto rounded-md border border-border bg-background p-3 font-mono text-xs">
       {logs.length === 0 ? (
         <p className="text-muted">No logs yet.</p>
       ) : (
@@ -127,7 +127,7 @@ export function Jobs() {
       />
 
       <Card>
-        <CardHeader className="sticky top-0 z-10 flex-row flex-wrap items-center justify-between gap-3 rounded-t-xl bg-surface">
+        <CardHeader className="sticky top-0 z-10 flex-row flex-wrap items-center justify-between gap-3 rounded-t-lg bg-surface">
           <CardTitle>Task queue</CardTitle>
           <SegmentedTabs items={filters} value={filter} onChange={setFilter} label="Filter jobs" panelId="jobs-list" className="border-0" />
         </CardHeader>
@@ -140,7 +140,7 @@ export function Jobs() {
             <>
               <div className="flex flex-col gap-2 md:hidden">
                 {visibleJobs.map((job) => (
-                  <button key={job.id} type="button" onClick={() => setSelected(job)} className="rounded-lg border border-border p-3 text-left hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+                  <button key={job.id} type="button" onClick={() => setSelected(job)} className="rounded-md border border-border p-3 text-left transition-colors duration-150 hover:bg-surface-2/60">
                     <div className="flex items-start justify-between gap-2"><div><span className="text-xs text-muted">#{job.id}</span><p className="font-medium">{jobLabel(job.type, job.payload)}</p></div><JobStatus status={job.status} /></div>
                     <div className="mt-2"><ProgressBar label={`${jobLabel(job.type, job.payload)} progress`} value={job.progressCurrent} max={job.progressTotal} className="h-1.5" /></div>
                     {jobResultText(job) && <p className="mt-2 line-clamp-2 text-xs text-muted">{jobResultText(job)}</p>}
@@ -150,11 +150,11 @@ export function Jobs() {
               </div>
               <div className="hidden overflow-x-auto md:block">
                 <table className="min-w-[760px] w-full text-sm">
-                  <thead className="border-b border-border text-xs text-muted"><tr><th className="p-2 text-left font-medium">ID</th><th className="p-2 text-left font-medium">Type</th><th className="p-2 text-left font-medium">Status</th><th className="p-2 text-left font-medium">Progress</th><th className="p-2 text-left font-medium">Result</th><th className="p-2 text-left font-medium">Created</th><th className="p-2"><span className="sr-only">Actions</span></th></tr></thead>
+                  <thead className="border-b border-border text-xs text-muted"><tr><th className="px-3 py-2 text-left text-xs font-medium text-muted">ID</th><th className="px-3 py-2 text-left text-xs font-medium text-muted">Type</th><th className="px-3 py-2 text-left text-xs font-medium text-muted">Status</th><th className="px-3 py-2 text-left text-xs font-medium text-muted">Progress</th><th className="px-3 py-2 text-left text-xs font-medium text-muted">Result</th><th className="px-3 py-2 text-left text-xs font-medium text-muted">Created</th><th className="px-3 py-2"><span className="sr-only">Actions</span></th></tr></thead>
                   <tbody>
                     {visibleJobs.map((j) => (
-                      <tr key={j.id} tabIndex={0} aria-label={`Open details for ${jobLabel(j.type, j.payload)}`} className="cursor-pointer border-b border-border last:border-0 hover:bg-surface-2/50" onClick={() => setSelected(j)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelected(j); } }}>
-                        <td className="p-2 text-muted">#{j.id}</td><td className="p-2 font-medium">{jobLabel(j.type, j.payload)}</td><td className="p-2"><JobStatus status={j.status} /></td><td className="p-2"><ProgressBar label={`${jobLabel(j.type, j.payload)} progress`} value={j.progressCurrent} max={j.progressTotal} className="h-1.5" /></td><td className="max-w-xs truncate p-2 text-xs text-muted">{jobResultText(j)}</td><td className="p-2 text-xs text-muted">{timeAgo(j.createdAt)}</td><td className="p-2">{(j.status === 'running' || j.status === 'queued') && <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); cancelJob(j.id); }}>Cancel</Button>}</td>
+                      <tr key={j.id} tabIndex={0} aria-label={`Open details for ${jobLabel(j.type, j.payload)}`} className="cursor-pointer border-b border-border last:border-0 transition-colors hover:bg-surface-2/60" onClick={() => setSelected(j)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelected(j); } }}>
+                        <td className="px-3 py-2.5 text-muted">#{j.id}</td><td className="px-3 py-2.5 font-medium">{jobLabel(j.type, j.payload)}</td><td className="px-3 py-2.5"><JobStatus status={j.status} /></td><td className="px-3 py-2.5"><ProgressBar label={`${jobLabel(j.type, j.payload)} progress`} value={j.progressCurrent} max={j.progressTotal} className="h-1.5" /></td><td className="max-w-xs truncate px-3 py-2.5 text-xs text-muted">{jobResultText(j)}</td><td className="px-3 py-2.5 text-xs text-muted">{timeAgo(j.createdAt)}</td><td className="px-3 py-2.5">{(j.status === 'running' || j.status === 'queued') && <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); cancelJob(j.id); }}>Cancel</Button>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -198,7 +198,7 @@ export function Jobs() {
                 <EmptyState icon={<Inbox className="h-7 w-7" />} title="No active jobs" description="Queued and running work appears here." />
               ) : (
                 active.map((j) => (
-                  <div key={j.id} className={cn('animate-fade-up rounded-lg border p-3 transition-colors', j.status === 'running' ? 'border-primary/40 bg-primary/5' : 'border-border')}>
+                  <div key={j.id} className={cn('animate-fade-up rounded-md border p-3 transition-colors', j.status === 'running' ? 'border-primary/40 bg-primary/5' : 'border-border')}>
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-medium">{jobLabel(j.type, j.payload)}</span>
                       <div className="flex items-center gap-2">

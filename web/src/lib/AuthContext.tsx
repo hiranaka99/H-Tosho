@@ -82,13 +82,13 @@ function AuthScreen({ setupRequired, onAuthenticated }: { setupRequired: boolean
 
   return (
     <main className="flex h-full items-center justify-center p-4">
-      <Card className="w-full max-w-md overflow-hidden shadow-2xl shadow-black/30">
+      <Card className="w-full max-w-md overflow-hidden shadow-lg">
         <div className="flex flex-col items-center gap-3 border-b border-border bg-surface-2/50 px-6 py-7 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary-hover text-white shadow-lg shadow-primary/30">
+          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary text-white">
             <BookOpenText className="h-6 w-6" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold">{setupRequired ? 'Set up H-Tosho' : 'Welcome back'}</h1>
+            <h1 className="text-xl font-semibold tracking-tight">{setupRequired ? 'Set up H-Tosho' : 'Welcome back'}</h1>
             <p className="mt-1 text-sm text-muted">{setupRequired ? 'Create the account used to protect this installation.' : 'Sign in to manage your library.'}</p>
           </div>
         </div>

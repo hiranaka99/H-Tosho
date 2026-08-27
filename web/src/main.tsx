@@ -6,6 +6,7 @@ import App from './App';
 import { DownloadsProvider } from './lib/DownloadsContext';
 import { Toaster } from './lib/toast';
 import { AuthProvider } from './lib/AuthContext';
+import { ThemeProvider } from './lib/theme';
 import './index.css';
 
 const queryClient = new QueryClient({
@@ -22,12 +23,14 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <AuthProvider>
-          <DownloadsProvider>
-            <App />
-            <Toaster />
-          </DownloadsProvider>
-        </AuthProvider>
+        <ThemeProvider>
+          <AuthProvider>
+            <DownloadsProvider>
+              <App />
+              <Toaster />
+            </DownloadsProvider>
+          </AuthProvider>
+        </ThemeProvider>
       </BrowserRouter>
     </QueryClientProvider>
   </React.StrictMode>,

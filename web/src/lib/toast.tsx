@@ -61,7 +61,7 @@ export function Toaster() {
         <div
           key={t.id}
           className={cn(
-            'pointer-events-auto relative flex animate-slide-in-right items-start gap-3 overflow-hidden rounded-lg border border-border bg-surface/95 p-3 shadow-xl shadow-black/30 backdrop-blur',
+            'pointer-events-auto relative flex animate-slide-in-right items-start gap-3 overflow-hidden rounded-md border border-border bg-surface p-3 shadow-lg',
             'border-l-4',
             TONE_STYLE[t.tone].border,
           )}
@@ -75,7 +75,7 @@ export function Toaster() {
           <button
             type="button"
             onClick={() => setItems((prev) => prev.filter((x) => x.id !== t.id))}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground"
             aria-label={`Dismiss ${t.title}`}
           >
             <X className="h-3.5 w-3.5" />

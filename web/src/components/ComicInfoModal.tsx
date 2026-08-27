@@ -199,7 +199,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                   <p className="text-xs text-warning">{seriesFiles.data.reason}</p>
                 ) : seriesFiles.data && seriesFiles.data.files.length > 0 ? (
                   <>
-                    <span className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-muted" title={seriesFiles.data.dir ?? undefined}>
+                    <span className="flex items-center gap-1 text-2xs font-medium uppercase tracking-wider text-muted" title={seriesFiles.data.dir ?? undefined}>
                       <FileArchive className="h-3 w-3" /> {seriesFiles.data.name}
                     </span>
                     <div className="flex max-h-56 flex-col gap-1 overflow-y-auto pr-1">
@@ -209,15 +209,15 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                         return (
                           <button key={f} type="button" onClick={() => openFile(f)} aria-label={`Open ${f}`}
                             className={cn(
-                              'flex min-h-11 min-w-0 shrink-0 items-center gap-2 rounded border px-2 py-1.5 text-left text-xs transition-colors',
+                              'flex min-h-9 min-w-0 shrink-0 items-center gap-2 rounded-md border px-2 py-1.5 text-left text-xs transition-colors',
                               f === file ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border-2 hover:border-primary/50',
                             )}>
                             <FileArchive className="h-3.5 w-3.5 shrink-0 text-success" />
                             {num && num.trim() !== '' && (
-                              <span className="shrink-0 rounded bg-surface px-1.5 py-px font-mono text-[10px] tabular-nums text-muted">{num}</span>
+                              <span className="shrink-0 rounded-md bg-surface px-1.5 py-px font-mono text-2xs tabular-nums text-muted">{num}</span>
                             )}
                             <span className="min-w-0 flex-1 truncate">{f.split(/[\\/]/).pop()}</span>
-                            {pending && <span className="shrink-0 rounded-full bg-warning/20 px-1.5 py-px text-[10px] font-medium text-warning">unsaved</span>}
+                            {pending && <span className="shrink-0 rounded-full bg-warning/20 px-1.5 py-px text-2xs font-medium text-warning">unsaved</span>}
                           </button>
                         );
                       })}
@@ -235,7 +235,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                   <div className="flex items-center gap-2 text-xs text-muted"><Spinner /> Loading roots…</div>
                 ) : roots.data && roots.data.roots.length > 0 ? (
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-muted"><HardDrive className="h-3 w-3" /> Roots</span>
+                    <span className="flex items-center gap-1 text-2xs font-medium uppercase tracking-wider text-muted"><HardDrive className="h-3 w-3" /> Roots</span>
                     {roots.data.roots.map((r) => (
                       <button
                         key={r}
@@ -243,7 +243,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                         onClick={() => setDir(r)}
                         title={r}
                         className={cn(
-                          'min-h-11 max-w-56 break-all rounded-full border px-2.5 py-1 text-xs transition-colors',
+                          'min-h-9 max-w-56 break-all rounded-full border px-2.5 py-1 text-xs transition-colors',
                           dir === r ? 'border-primary bg-primary/10 text-primary' : 'border-border-2 hover:border-primary/50 hover:text-foreground',
                         )}
                       >
@@ -265,23 +265,23 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                         onClick={() => setDir(dirData.data.parent)}
                         disabled={!dirData.data.parent}
                         title={dirData.data.parent ?? undefined}
-                        className="flex min-h-11 items-center gap-1 rounded border border-border-2 px-3 py-1 text-muted transition-colors hover:text-foreground disabled:opacity-40"
+                        className="flex min-h-9 items-center gap-1 rounded-md border border-border-2 px-3 py-1 text-muted transition-colors hover:text-foreground disabled:opacity-40"
                       >
                         <ArrowUp className="h-3 w-3" /> Up
                       </button>
-                      <span className="break-all font-mono text-[11px] text-muted">{dirData.data.path}</span>
+                      <span className="break-all font-mono text-xs text-muted">{dirData.data.path}</span>
                     </div>
                     {dirData.data.dirs.length > 0 || dirData.data.files.length > 0 ? (
                       <div className="grid max-h-48 grid-cols-1 gap-1 overflow-y-auto sm:grid-cols-2">
                         {dirData.data.dirs.map((d) => (
                           <button key={d} type="button" onClick={() => setDir(joinPath(dirData.data.path, d))} aria-label={`Open folder ${d}`}
-                            className="flex min-h-11 min-w-0 items-center gap-1.5 rounded border border-border-2 px-2 py-1 text-left text-xs transition-colors hover:border-primary/50">
+                            className="flex min-h-9 min-w-0 items-center gap-1.5 rounded-md border border-border-2 px-2 py-1 text-left text-xs transition-colors hover:border-primary/50">
                             <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted" /> <span className="break-all">{d}</span>
                           </button>
                         ))}
                         {dirData.data.files.map((f) => (
                           <button key={f} type="button" onClick={() => openFile(joinPath(dirData.data.path, f))} aria-label={`Open file ${f}`}
-                            className="flex min-h-11 min-w-0 items-center gap-1.5 rounded border border-border-2 px-2 py-1 text-left text-xs transition-colors hover:border-primary/50">
+                            className="flex min-h-9 min-w-0 items-center gap-1.5 rounded-md border border-border-2 px-2 py-1 text-left text-xs transition-colors hover:border-primary/50">
                             <FileArchive className="h-3.5 w-3.5 shrink-0 text-success" /> <span className="break-all">{f}</span>
                           </button>
                         ))}
@@ -340,7 +340,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                             value={values[f] ?? ''}
                             onChange={(e) => patchDraft({ values: { ...values, [f]: e.target.value } })}
                             rows={4}
-                            className={cn('w-full rounded-md border bg-surface px-3 py-2 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/50', isChanged ? 'border-warning/60' : 'border-border-2')}
+                            className={cn('w-full rounded-md border bg-surface px-3 py-2 text-sm transition-colors', isChanged ? 'border-warning/60' : 'border-border-2')}
                           />
                         ) : (
                           <Input id={id} value={values[f] ?? ''} onChange={(e) => patchDraft({ values: { ...values, [f]: e.target.value } })} className={isChanged ? 'border-warning/60 bg-warning/10' : undefined} />
@@ -364,7 +364,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                   onChange={(e) => patchDraft({ rawText: e.target.value })}
                   rows={14}
                   spellCheck={false}
-                  className={cn('w-full rounded-md border bg-surface px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-colors focus:border-primary', draft && rawText !== draft.origRaw ? 'border-warning/60' : 'border-border-2')}
+                  className={cn('w-full rounded-md border bg-surface px-3 py-2 font-mono text-xs leading-relaxed transition-colors', draft && rawText !== draft.origRaw ? 'border-warning/60' : 'border-border-2')}
                 />
               )}
             </>

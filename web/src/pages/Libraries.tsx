@@ -78,9 +78,9 @@ function ArtistSearchButton({ source, artists, variant = 'pill' }: { source: Dou
         onClick={() => navigate(`/downloader?source=${source}&q=${encodeURIComponent(fragment)}`)}
         title={title}
         aria-label={title}
-        className="relative z-30 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-white/20 bg-black/75 shadow-md backdrop-blur-sm transition-all duration-150 hover:-translate-y-px hover:border-primary hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+        className="relative z-30 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/20 bg-black/75 transition-colors duration-150 hover:border-primary hover:bg-black"
       >
-        <img src={`/${source}.png`} alt="" className="h-6 w-6 rounded object-contain" aria-hidden="true" />
+        <img src={`/${source}.png`} alt="" className="h-5 w-5 rounded object-contain" aria-hidden="true" />
       </button>
     );
   }
@@ -89,7 +89,7 @@ function ArtistSearchButton({ source, artists, variant = 'pill' }: { source: Dou
       type="button"
       onClick={() => navigate(`/downloader?source=${source}&q=${encodeURIComponent(fragment)}`)}
       title={title}
-      className="group/artist inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition-all duration-150 hover:-translate-y-px hover:brightness-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+      className="group/artist inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors duration-150 hover:brightness-125"
       style={{ borderColor: meta.color + '8c', backgroundColor: meta.color + '33' }}
     >
       <Search className="h-3 w-3" />
@@ -230,7 +230,7 @@ export function Libraries() {
                   type="button"
                   aria-pressed={selected === lib.id}
                   onClick={() => pickLibrary(lib.id)}
-                  className={cn('-mb-px shrink-0 border-b-2 px-1 pb-2 text-sm font-medium transition-colors', selected === lib.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground')}
+                  className={cn('-mb-px shrink-0 border-b-2 px-1 pb-2 text-sm font-medium transition-colors duration-150', selected === lib.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground')}
                 >
                   {lib.name}
                 </button>
@@ -259,12 +259,12 @@ export function Libraries() {
               <Button variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit multi-select mode' : 'Multi-select — click cards to select them'}>
                 <CheckSquare className="h-4 w-4" /> Select
               </Button>
-              <label className="flex cursor-pointer select-none items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-xs font-medium text-muted">
+              <label className="flex h-9 cursor-pointer select-none items-center gap-2 rounded-md border border-border-2 bg-surface px-3 text-xs font-medium text-muted transition-colors duration-150 hover:bg-surface-2">
                 Auto-match
                 <Switch aria-label="Automatically match new series" checked={override.data?.autoMatch ?? true} onCheckedChange={setAutoMatch} />
               </label>
               <div className="relative min-w-44 flex-1 sm:flex-none">
-                <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted" />
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
                 <Input aria-label="Filter series or artists" placeholder="Filter series or artist…" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} className="w-full pl-8 sm:w-52" />
               </div>
               <Select aria-label="Filter by match status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="w-full sm:w-44">
@@ -275,10 +275,10 @@ export function Libraries() {
                 <option value="low-score">Low confidence (&lt;80%)</option>
               </Select>
               <div className="flex overflow-hidden rounded-md border border-border-2">
-                <button type="button" aria-label="Grid view" aria-pressed={view === 'grid'} onClick={() => setView('grid')} className={cn('flex h-11 w-11 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
+                <button type="button" aria-label="Grid view" aria-pressed={view === 'grid'} onClick={() => setView('grid')} className={cn('flex h-8 w-8 items-center justify-center transition-colors duration-150', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
                   <LayoutGrid className="h-4 w-4" />
                 </button>
-                <button type="button" aria-label="Table view" aria-pressed={view === 'table'} onClick={() => setView('table')} className={cn('flex h-11 w-11 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', view === 'table' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
+                <button type="button" aria-label="Table view" aria-pressed={view === 'table'} onClick={() => setView('table')} className={cn('flex h-8 w-8 items-center justify-center transition-colors duration-150', view === 'table' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
                   <Table2 className="h-4 w-4" />
                 </button>
               </div>
@@ -296,7 +296,7 @@ export function Libraries() {
           <>
 
             {(selectMode || checked.size > 0) && (
-              <div className={cn('flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border p-2 shadow-lg shadow-black/20', selectMode ? 'border-primary/50 bg-primary/10' : 'border-border-2 bg-surface-2')}>
+              <div className={cn('flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border p-2', selectMode ? 'border-primary/50 bg-primary/10' : 'border-border-2 bg-surface-2')}>
                 {selectMode && (
                   <>
                     <CheckSquare className="h-4 w-4 shrink-0 text-primary" />
@@ -336,13 +336,13 @@ export function Libraries() {
                     key={r.id}
                     style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
                     className={cn(
-                      'group relative animate-fade-up cursor-pointer overflow-hidden transition-all duration-200 hover:-translate-y-1 hover:border-primary/50 hover:shadow-xl hover:shadow-black/30',
+                      'group relative animate-fade-up cursor-pointer overflow-hidden transition-colors duration-200 hover:border-border-2',
                       r.aligned && 'ring-2 ring-success',
                       checked.has(r.id) && 'border-primary/60 ring-1 ring-primary',
                     )}
                   >
                     <button
-                      className={cn('absolute inset-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', selectMode ? 'z-30' : 'z-10')}
+                      className={cn('absolute inset-0 rounded-xl', selectMode ? 'z-30' : 'z-10')}
                       onClick={(e) => {
                         e.stopPropagation();
                         if (selectMode) toggleCheck(r.id);
@@ -352,7 +352,7 @@ export function Libraries() {
                       aria-label={selectMode ? (checked.has(r.id) ? `Deselect ${r.name}` : `Select ${r.name}`) : `Identify ${r.name}`}
                     />
                     {checked.has(r.id) && (
-                      <div className="pointer-events-none absolute bottom-2 left-2 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-primary bg-primary text-white shadow-md" aria-hidden>
+                      <div className="pointer-events-none absolute bottom-2 left-2 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-primary bg-primary text-white" aria-hidden>
                         <Check className="h-3.5 w-3.5" />
                       </div>
                     )}
@@ -370,10 +370,10 @@ export function Libraries() {
                           setComicInfo({ id: r.id, name: r.name });
                         }}
                         title="Edit ComicInfo.xml"
-                        className="flex h-11 w-11 items-center justify-center rounded-lg border border-white/15 bg-black/70 text-white shadow-md backdrop-blur-sm transition-all duration-150 hover:border-primary hover:bg-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                        className="flex h-8 w-8 items-center justify-center rounded-md border border-white/15 bg-black/70 text-white transition-colors duration-150 hover:border-primary hover:bg-primary"
                         aria-label={`Edit ComicInfo.xml for ${r.name}`}
                       >
-                        <FileText className="h-3.5 w-3.5" />
+                        <FileText className="h-4 w-4" />
                       </button>
                     </div>
                     <div className="aspect-[3/4] w-full overflow-hidden">
@@ -385,10 +385,10 @@ export function Libraries() {
                         {r.providerId && <ProviderBadge id={r.providerId} solid />}
                         <StatusBadge status={r.status} className="bg-black/70" />
                         {typeof r.pageCount === 'number' && r.pageCount > 0 && (
-                          <span className="rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white/80">{r.pageCount} pages</span>
+                          <span className="rounded bg-black/70 px-1.5 py-0.5 text-2xs font-medium tabular-nums text-white/80">{r.pageCount} pages</span>
                         )}
                       </div>
-                      {r.status === 'failed' && r.errorMessage && <span className="line-clamp-2 text-[10px] text-red-200">{r.errorMessage}</span>}
+                      {r.status === 'failed' && r.errorMessage && <span className="line-clamp-2 text-2xs text-red-200">{r.errorMessage}</span>}
                     </div>
                   </Card>
                 ))}
@@ -396,10 +396,10 @@ export function Libraries() {
             ) : (
               <Card className="overflow-x-auto">
                 <table className="min-w-[760px] w-full text-sm">
-                  <thead className="border-b border-border text-xs text-muted">
+                  <thead className="border-b border-border">
                     <tr>
-                      <th className="w-11 p-2">
-                        <label className="flex h-11 w-11 cursor-pointer items-center justify-center">
+                      <th className="px-3 py-2">
+                        <label className="flex h-9 w-9 cursor-pointer items-center justify-center">
                           <input
                             type="checkbox"
                             checked={allChecked}
@@ -409,46 +409,46 @@ export function Libraries() {
                           />
                         </label>
                       </th>
-                      <th className="p-2 text-left font-medium">Series</th>
-                      <th className="p-2 text-left font-medium">Status</th>
-                      <th className="p-2 text-left font-medium">Provider</th>
-                      <th className="p-2 text-left font-medium">Score</th>
-                      <th className="p-2 text-left font-medium">Pages</th>
-                      <th className="p-2 text-left font-medium">Synced</th>
-                      <th className="min-w-56 p-2 text-right font-medium">Actions</th>
+                      <th className="px-3 py-2 text-left font-medium text-muted">Series</th>
+                      <th className="px-3 py-2 text-left font-medium text-muted">Status</th>
+                      <th className="px-3 py-2 text-left font-medium text-muted">Provider</th>
+                      <th className="px-3 py-2 text-left font-medium text-muted">Score</th>
+                      <th className="px-3 py-2 text-left font-medium text-muted">Pages</th>
+                      <th className="px-3 py-2 text-left font-medium text-muted">Synced</th>
+                      <th className="min-w-56 px-3 py-2 text-right font-medium text-muted">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {visibleRows.map((r) => (
-                      <tr key={r.id} className="border-b border-border last:border-0 hover:bg-surface-2/50">
-                        <td className="p-2">
-                          <label className="flex h-11 w-11 cursor-pointer items-center justify-center">
+                      <tr key={r.id} className="border-b border-border last:border-0 transition-colors hover:bg-surface-2/60">
+                        <td className="px-3 py-2.5">
+                          <label className="flex h-9 w-9 cursor-pointer items-center justify-center">
                             <input type="checkbox" aria-label={`Select ${r.name}`} checked={checked.has(r.id)} onChange={() => toggleCheck(r.id)} className="h-4 w-4 accent-[var(--color-primary)]" />
                           </label>
                         </td>
-                        <td className="p-2">
+                        <td className="px-3 py-2.5">
                           <div className="flex items-center gap-2">
-                            <div className="h-9 w-6 overflow-hidden rounded bg-surface-2">
+                            <div className="h-9 w-6 overflow-hidden rounded border border-border bg-surface-2">
                               <Cover src={r.cover} name={r.name} />
                             </div>
                             <span className="font-medium">{r.name}</span>
                           </div>
                         </td>
-                        <td className="p-2">
+                        <td className="px-3 py-2.5">
                           <StatusBadge status={r.status} />
                           {r.status === 'failed' && r.errorMessage && <p className="mt-1 max-w-48 break-words text-xs text-danger">{r.errorMessage}</p>}
                         </td>
-                        <td className="p-2">
+                        <td className="px-3 py-2.5">
                           {r.providerId ? (
                             <div className="flex items-center gap-1.5">
                               <ProviderBadge id={r.providerId} />
-                              {r.aligned && <span className="rounded bg-success/15 px-1.5 py-0.5 text-[10px] font-medium text-success">Aligned</span>}
+                              {r.aligned && <span className="rounded bg-success/15 px-1.5 py-0.5 text-2xs font-medium text-success">Aligned</span>}
                             </div>
                           ) : (
                             <span className="text-muted">—</span>
                           )}
                         </td>
-                        <td className="p-2 text-muted">
+                        <td className="px-3 py-2.5 text-muted">
                           {typeof r.matchScore === 'number' ? (
                             <span
                               className={cn('tabular-nums', r.status === 'matched' && r.matchScore < LOW_CONFIDENCE && 'font-medium text-warning')}
@@ -460,9 +460,9 @@ export function Libraries() {
                             '—'
                           )}
                         </td>
-                        <td className="p-2 tabular-nums text-muted">{typeof r.pageCount === 'number' && r.pageCount > 0 ? `${r.pageCount}` : '—'}</td>
-                        <td className="p-2 text-xs text-muted">{timeAgo(r.lastSyncedAt)}</td>
-                        <td className="p-2 text-right">
+                        <td className="px-3 py-2.5 tabular-nums text-muted">{typeof r.pageCount === 'number' && r.pageCount > 0 ? `${r.pageCount}` : '—'}</td>
+                        <td className="px-3 py-2.5 text-xs text-muted">{timeAgo(r.lastSyncedAt)}</td>
+                        <td className="px-3 py-2.5 text-right">
                           <div className="flex flex-wrap items-center justify-end gap-1.5">
                             {r.artists?.length ? (
                               <>
