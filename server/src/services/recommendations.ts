@@ -3,14 +3,20 @@ import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery, DoujinSearchResult, DoujinSource, DoujinSort } from '../downloader/types.js';
 import { sleep } from '../lib/http.js';
+import { KavitaClient } from '../kavita/client.js';
+import type { KavitaSeries } from '../kavita/types.js';
+import { getKavitaConnection } from './settings.js';
 
 /**
  * Daily doujinshi recommendations based on the user's downloaded library.
  *
  * Signal: the tag/artist profile of downloaded galleries (the `gallery_tags`
  * table — written when a download resolves its metadata, lazily backfilled for
- * pre-existing downloads). The engine builds a handful of artist/tag queries
- * per source from the top profile terms, searches each source, scores
+ * pre-existing downloads), plus the user's existing Kavita library: each series'
+ * title feeds parody/series searches, and the genres/tags/writers Kavita has
+ * already indexed from the archives join the artist/tag profile. The engine builds a handful
+ * of artist/tag/series queries per source from the top profile terms, searches
+ * each source, scores
  * candidates by how strongly they match the profile, drops galleries already
  * in the library, and picks a daily set.
  *
@@ -28,7 +34,8 @@ const SOURCES: DoujinSource[] = ['hitomi', 'nhentai'];
 
 /** Top-N profile terms turned into one search query each, per source. */
 const ARTIST_QUERIES = 3;
-const TAG_QUERIES = 4;
+const TAG_QUERIES = 4; // top tag terms per source
+const SERIES_QUERIES = 3; // top Kavita series titles per source (parody/series search)
 /** Results fetched per candidate query (bounded — hydration is one request per gallery on Hitomi). */
 const RESULTS_PER_QUERY = 12;
 /** Picks per source and total size of the daily set. */
@@ -39,6 +46,11 @@ const MIN_PROFILE_TERMS = 3;
 /** Backfill cap per generation, and the tagged-gallery count below which it runs. */
 const BACKFILL_LIMIT = 25;
 const BACKFILL_THRESHOLD = 10;
+// Hard bound on how many Kavita series the library scan touches (one metadata
+// call each), so a very large library cannot stall daily generation.
+const KAVITA_SERIES_LIMIT = 600;
+/** Concurrent per-series metadata fetches against Kavita. */
+const METADATA_PARALLELISM = 8;
 
 export interface GalleryTagEntry {
   name: string;
@@ -54,6 +66,8 @@ export interface RecommendationItem extends DoujinSearchResult {
 export interface RecommendationProfile {
   artists: string[];
   tags: string[];
+  /** Top series titles from the user's Kavita library driving parody searches. */
+  series: string[];
   language: string | null;
 }
 
@@ -114,9 +128,9 @@ export function recordGalleryTags(source: DoujinSource, gallery: DoujinGallery):
 // ---------------------------------------------------------------------------
 
 interface ProfileTerm {
-  kind: 'artist' | 'tag';
+  kind: 'artist' | 'tag' | 'series';
   name: string;
-  /** Number of tagged galleries carrying this term. */
+  /** Number of tagged galleries (or owned .cbz, for series) carrying this term. */
   weight: number;
   /** Search namespace observed per source (null = plain keyword). */
   nsBySource: Partial<Record<DoujinSource, string | null>>;
@@ -128,14 +142,15 @@ interface TasteProfile {
   language: string | null;
 }
 
-function bumpTerm(terms: Map<string, ProfileTerm>, kind: 'artist' | 'tag', name: string, source: DoujinSource, ns: string | null): void {
+function bumpTerm(terms: Map<string, ProfileTerm>, kind: 'artist' | 'tag' | 'series', name: string, source: DoujinSource | null, ns: string | null, weight = 1): void {
   const key = `${kind}:${name.toLowerCase()}`;
   let t = terms.get(key);
   if (!t) {
     t = { kind, name, weight: 0, nsBySource: {} };
     terms.set(key, t);
   }
-  t.weight += 1;
+  t.weight += weight;
+  if (source === null) return; // library-scan terms are source-agnostic keywords
   const existing = t.nsBySource[source];
   // Prefer a concrete namespace over a keyword slot once seen.
   if (existing === undefined || (existing === null && ns !== null)) t.nsBySource[source] = ns;
@@ -150,8 +165,8 @@ function parseEntries(json: string): unknown[] {
   }
 }
 
-/** Aggregate the per-gallery tag rows into a weighted artist/tag profile. */
-function buildProfile(): TasteProfile {
+/** Aggregate the per-gallery tag rows plus Kavita library signals into a weighted artist/tag/series profile. */
+function buildProfile(signals: KavitaSeriesSignal[]): TasteProfile {
   const rows = getDb().select().from(schema.galleryTags).all();
   const terms = new Map<string, ProfileTerm>();
   const langCounts = new Map<string, number>();
@@ -182,6 +197,29 @@ function buildProfile(): TasteProfile {
     }
   }
 
+  // Existing-library signals: each series' title becomes a 'series' term
+  // (weight = pages Kavita has indexed — a heavily-read series matters more),
+  // and its metadata tags/artists join the profile as plain keyword terms.
+  for (const sig of signals) {
+    const name = sig.name.trim();
+    if (!name) continue;
+    bumpTerm(terms, 'series', name, null, null, sig.weight);
+    const seenTags = new Set<string>();
+    for (const tag of sig.tags) {
+      const t = tag.trim();
+      if (!t || seenTags.has(t.toLowerCase())) continue;
+      seenTags.add(t.toLowerCase());
+      bumpTerm(terms, 'tag', t, null, null);
+    }
+    const seenArtists = new Set<string>();
+    for (const artist of sig.artists) {
+      const a = artist.trim();
+      if (!a || seenArtists.has(a.toLowerCase())) continue;
+      seenArtists.add(a.toLowerCase());
+      bumpTerm(terms, 'artist', a, null, null);
+    }
+  }
+
   let language: string | null = null;
   if (taggedWithLang >= 5) {
     let best: [string, number] | null = null;
@@ -190,6 +228,77 @@ function buildProfile(): TasteProfile {
   }
 
   return { terms: [...terms.values()].sort((a, b) => b.weight - a.weight), language };
+}
+
+/** One Kavita series reduced to recommendation signals. */
+export interface KavitaSeriesSignal {
+  name: string;
+  /** Engagement weight — pages Kavita has indexed for the series (≥1). */
+  weight: number;
+  tags: string[];
+  artists: string[];
+}
+
+/**
+ * Fetch recommendation signals from the user's existing Kavita library via the
+ * Kavita API — no local file access, so a large library (even on a network
+ * drive) stays fast. Each series contributes its title (doujinshi sources
+ * index fan works under the parody/series tag, so a series you own is a search
+ * term) plus the genres/tags and writers Kavita already indexed from the
+ * archives at scan time. Bounded by KAVITA_SERIES_LIMIT; any failure degrades
+ * to an empty signal set so the download-based profile still works.
+ */
+async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
+  const conn = getKavitaConnection();
+  if (!conn.baseUrl || !conn.apiKey) return [];
+  const client = new KavitaClient(conn.baseUrl, conn.apiKey);
+  let libraries;
+  try {
+    libraries = await client.getLibraries();
+  } catch (err) {
+    console.warn('[recommendations] Kavita library scan skipped:', err instanceof Error ? err.message : err);
+    return [];
+  }
+
+  // Phase 1: collect series across all libraries (one bulk call per library).
+  const seriesList: KavitaSeries[] = [];
+  for (const lib of libraries) {
+    if (seriesList.length >= KAVITA_SERIES_LIMIT) break;
+    let series: KavitaSeries[];
+    try {
+      series = await client.getSeries(lib.id);
+    } catch (err) {
+      console.warn(`[recommendations] Kavita series list skipped for library "${lib.name}":`, err instanceof Error ? err.message : err);
+      continue;
+    }
+    for (const s of series) {
+      if (seriesList.length >= KAVITA_SERIES_LIMIT) break;
+      seriesList.push(s);
+    }
+  }
+
+  // Phase 2 (bounded parallelism): one metadata call per series. A failed
+  // lookup still keeps the series title — it is a valid search term on its own.
+  const signals: KavitaSeriesSignal[] = [];
+  for (let i = 0; i < seriesList.length; i += METADATA_PARALLELISM) {
+    const batch = await Promise.all(
+      seriesList.slice(i, i + METADATA_PARALLELISM).map(async (s) => {
+        try {
+          const meta = await client.getSeriesMetadata(s.id);
+          return {
+            name: s.name,
+            weight: s.pages ?? 1,
+            tags: [...(meta.genres ?? []), ...(meta.tags ?? [])].map((t) => t.title?.trim() ?? '').filter(Boolean),
+            artists: (meta.writers ?? []).map((p) => p.name?.trim() ?? '').filter(Boolean),
+          };
+        } catch {
+          return { name: s.name, weight: 1, tags: [] as string[], artists: [] as string[] };
+        }
+      }),
+    );
+    signals.push(...batch);
+  }
+  return signals;
 }
 
 /**
@@ -259,6 +368,10 @@ function fragmentFor(source: DoujinSource, term: ProfileTerm): string | null {
     // Hitomi namespaces use underscores for spaces; nHentai quotes the value.
     return source === 'hitomi' ? `artist:${name.replace(/\s+/g, '_')}` : `artist:"${name}"`;
   }
+  if (term.kind === 'series') {
+    // Fan works of a series are indexed under its name on both sources.
+    return source === 'hitomi' ? `series:${name.replace(/\s+/g, '_')}` : `parody:"${name}"`;
+  }
   const ns = term.nsBySource[source] ?? null;
   if (ns === 'language') return null; // language is handled as its own filter
   if (source === 'hitomi') {
@@ -276,10 +389,11 @@ function languageFragment(source: DoujinSource, language: string): string {
 function buildQuerySpecs(profile: TasteProfile): QuerySpec[] {
   const artists = profile.terms.filter((t) => t.kind === 'artist').slice(0, ARTIST_QUERIES);
   const tags = profile.terms.filter((t) => t.kind === 'tag' && (t.nsBySource.hitomi ?? null) !== 'language' && (t.nsBySource.nhentai ?? null) !== 'language').slice(0, TAG_QUERIES);
+  const series = profile.terms.filter((t) => t.kind === 'series').slice(0, SERIES_QUERIES);
   const specs: QuerySpec[] = [];
   for (const source of SOURCES) {
     const lang = profile.language ? languageFragment(source, profile.language) : null;
-    for (const term of [...artists, ...tags]) {
+    for (const term of [...artists, ...tags, ...series]) {
       const frag = fragmentFor(source, term);
       if (!frag) continue;
       specs.push({
@@ -458,6 +572,24 @@ function completedGalleryKeys(): Set<string> {
     .all();
   return new Set(rows.map((r) => `${r.source}:${r.galleryId}`));
 }
+
+/** Galleries the user has marked as owned — they are never recommended. */
+function ownedGalleryKeys(): Set<string> {
+  const rows = getDb()
+    .select({ source: schema.ownedGalleries.source, galleryId: schema.ownedGalleries.galleryId })
+    .from(schema.ownedGalleries)
+    .all();
+  return new Set(rows.map((r) => `${r.source}:${r.galleryId}`));
+}
+
+/** Mark a gallery as owned (idempotent). */
+export function markOwned(source: DoujinSource, galleryId: string): void {
+  getDb()
+    .insert(schema.ownedGalleries)
+    .values({ source, galleryId })
+    .onConflictDoNothing()
+    .run();
+}
 const seenKey = (date: string) => `recommendations-seen:${date}`;
 /** Cap on previously-shown picks retained per day (bounds the row and the recycling pool). */
 const MAX_SEEN_PICKS = 300;
@@ -492,11 +624,12 @@ function addSeenItems(date: string, items: RecommendationItem[]): void {
 async function doGenerate(date: string, nonce: number): Promise<RecommendationSet> {
   const rng = mulberry32(hashSeed(`${date}:${nonce}`));
   await backfillMissingTags();
-  const profile = buildProfile();
-  // Galleries already in the library plus everything served earlier today —
-  // a manual refresh must not re-serve today's previous picks.
+  const kavitaSignals = await buildKavitaSignals();
+  const profile = buildProfile(kavitaSignals);
+  // Galleries already in the library, marked as owned, or served earlier today —
+  // a manual refresh must not re-serve any of them.
   const seen = readSeenItems(date);
-  const excluded = new Set([...completedGalleryKeys(), ...seen.map(keyOf)]);
+  const excluded = new Set([...completedGalleryKeys(), ...ownedGalleryKeys(), ...seen.map(keyOf)]);
 
   let items: RecommendationItem[] = [];
   let mode: 'library' | 'popular' = 'popular';
@@ -536,6 +669,7 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
     profile: {
       artists: profile.terms.filter((t) => t.kind === 'artist').slice(0, 8).map((t) => t.name),
       tags: profile.terms.filter((t) => t.kind === 'tag').slice(0, 8).map((t) => t.name),
+      series: profile.terms.filter((t) => t.kind === 'series').slice(0, 8).map((t) => t.name),
       language: profile.language,
     },
     items,
@@ -551,7 +685,13 @@ function readCached(date: string): RecommendationSet | null {
     const parsed = JSON.parse(row.valueJson) as RecommendationSet;
     // An empty set means generation found nothing (e.g. both sources were
     // down) — don't pin that to the rest of the day, regenerate instead.
-    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.items) && parsed.items.length > 0) return parsed;
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.items) || parsed.items.length === 0) return null;
+    // Rows written by an older server build lack profile.series — a shape
+    // mismatch means the payload is stale for the current client, so
+    // regenerate instead of serving it.
+    const p = parsed.profile;
+    if (!p || !Array.isArray(p.artists) || !Array.isArray(p.tags) || !Array.isArray(p.series)) return null;
+    return parsed;
   } catch {
     /* malformed row — regenerate */
   }
@@ -591,16 +731,26 @@ function generateFor(date: string, nonce: number): Promise<RecommendationSet> {
   return promise;
 }
 
-/** Today's recommendations — the cached daily set, or a fresh generation on first request of the day. */
-export function getRecommendations(): Promise<RecommendationSet> {
+/** Daily set plus fresh ownership state for the UI (owned picks filtered out). */
+export interface RecommendationResponse extends RecommendationSet {
+  /** Keys (`source:galleryId`) of every owned gallery, for the UI's owned badges. */
+  ownedKeys: string[];
+}
+
+function withOwned(set: RecommendationSet): RecommendationResponse {
+  const owned = ownedGalleryKeys();
+  return { ...set, items: set.items.filter((it) => !owned.has(keyOf(it))), ownedKeys: [...owned] };
+}
+
+export function getRecommendations(): Promise<RecommendationResponse> {
   const date = localDate();
   const cached = readCached(date);
-  return cached ? Promise.resolve(cached) : generateFor(date, 0);
+  return (cached ? Promise.resolve(cached) : generateFor(date, 0)).then(withOwned);
 }
 
 /** Re-roll today's picks with a fresh seed (manual refresh). */
-export async function refreshRecommendations(): Promise<RecommendationSet> {
+export async function refreshRecommendations(): Promise<RecommendationResponse> {
   const date = localDate();
   getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(date))).run();
-  return generateFor(date, Math.floor(Math.random() * 0x7fffffff));
+  return withOwned(await generateFor(date, Math.floor(Math.random() * 0x7fffffff)));
 }

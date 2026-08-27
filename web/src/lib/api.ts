@@ -314,8 +314,10 @@ export interface RecommendationSet {
   generatedAt: string;
   /** 'library' = picked from the taste profile; 'popular' = cold-start fallback. */
   mode: 'library' | 'popular';
-  profile: { artists: string[]; tags: string[]; language: string | null };
+  profile: { artists: string[]; tags: string[]; series: string[]; language: string | null };
   items: RecommendationItem[];
+  /** Keys (`source:galleryId`) of every owned gallery — drives the owned badges. */
+  ownedKeys: string[];
 }
 
 export interface AuthStatus {
@@ -410,6 +412,9 @@ export const api = {
   recommendations: () => request<RecommendationSet>('/recommendations'),
   /** Re-roll today's picks with a fresh seed. */
   refreshRecommendations: () => request<RecommendationSet>('/recommendations/refresh', { method: 'POST' }),
+  /** Mark a gallery as owned — it will never be recommended again. */
+  markGalleryOwned: (body: { source: DoujinSource; galleryId: string }) =>
+    request<{ ok: boolean }>('/recommendations/owned', { method: 'POST', body: JSON.stringify(body) }),
 
   /** Aggregated metadata a candidate would sync — same path as apply. */
   providerMetadata: (providerId: string, providerSeriesId: string) =>

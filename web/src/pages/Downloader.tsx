@@ -22,6 +22,7 @@ import {
   ArrowRight,
   ExternalLink,
   BookOpen,
+  Bookmark,
   ChevronLeft,
   ChevronRight,
   Users,
@@ -282,7 +283,7 @@ function DownloadStatusBadge({ status }: { status: string }) {
 }
 
 // ---------------- Gallery card ----------------
-function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloadedAt, selectMode = false, selected = false, onToggleSelect }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean; index?: number; downloadedAt?: string | null; selectMode?: boolean; selected?: boolean; onToggleSelect?: () => void }) {
+function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloadedAt, selectMode = false, selected = false, onToggleSelect, owned = false, onMarkOwned }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean; index?: number; downloadedAt?: string | null; selectMode?: boolean; selected?: boolean; onToggleSelect?: () => void; owned?: boolean; onMarkOwned?: () => void }) {
   const tags = [...item.artists, ...item.tags].slice(0, 6);
   return (
     <article
@@ -319,10 +320,17 @@ function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloa
       </button>
       <div className="mt-auto flex items-center justify-between gap-2 p-3 pt-2">
         <SourceBadge source={item.source} />
-        <Button size="sm" onClick={onDownload} disabled={downloading || !!downloadedAt} aria-label={downloadedAt ? `${item.title} already downloaded` : `Download ${item.title}`}>
-          {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : downloadedAt ? <CheckCircle2 className="h-3.5 w-3.5" /> : <DownloadIcon className="h-3.5 w-3.5" />}
-          {downloadedAt ? 'Downloaded' : 'Download'}
-        </Button>
+        <div className="flex items-center gap-1.5">
+          {onMarkOwned && (
+            <Button size="sm" variant="outline" onClick={onMarkOwned} disabled={owned} title={owned ? 'Marked as owned — never recommended again' : 'Mark as owned — never recommended again'} aria-label={owned ? `${item.title} is marked as owned` : `Mark ${item.title} as owned`}>
+              <Bookmark className={cn('h-3.5 w-3.5', owned && 'fill-current text-primary')} />
+            </Button>
+          )}
+          <Button size="sm" onClick={onDownload} disabled={downloading || !!downloadedAt} aria-label={downloadedAt ? `${item.title} already downloaded` : `Download ${item.title}`}>
+            {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : downloadedAt ? <CheckCircle2 className="h-3.5 w-3.5" /> : <DownloadIcon className="h-3.5 w-3.5" />}
+            {downloadedAt ? 'Downloaded' : 'Download'}
+          </Button>
+        </div>
       </div>
     </article>
   );
@@ -802,6 +810,29 @@ export function Downloader() {
     }
   }
 
+  // Galleries marked owned this session; the server is the source of truth and
+  // returns the full owned list (recs.ownedKeys) with every recommendation set.
+  const [ownedExtra, setOwnedExtra] = React.useState<ReadonlySet<string>>(new Set());
+  const ownedKeys = React.useMemo(
+    () => new Set([...(recs?.ownedKeys ?? []), ...ownedExtra]),
+    [recs, ownedExtra],
+  );
+  // Owned picks vanish from the grid immediately (the server also filters them
+  // out of every response, so this is just for the click-to-disappear moment).
+  const visibleRecs = React.useMemo(
+    () => (recs ? recs.items.filter((it) => !ownedKeys.has(`${it.source}:${it.galleryId}`)) : []),
+    [recs, ownedKeys],
+  );
+  async function doMarkOwned(item: DoujinSearchResult) {
+    try {
+      await api.markGalleryOwned({ source: item.source, galleryId: item.galleryId });
+      setOwnedExtra((prev) => new Set(prev).add(`${item.source}:${item.galleryId}`));
+      toast({ tone: 'success', title: 'Marked as owned', description: 'It will never be recommended again.' });
+    } catch (e) {
+      toast({ tone: 'danger', title: 'Could not mark as owned', description: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   // Tracks which gallery a start-download is in flight for (for button spinners).
   const [pendingKey, setPendingKey] = React.useState<string | null>(null);
 
@@ -1275,13 +1306,13 @@ export function Downloader() {
             <CardContent className="flex flex-col gap-2">
               <p className="text-xs text-muted">
                 {recs?.mode === 'popular'
-                  ? 'Not enough download history yet — showing popular galleries from both sources. Downloads you queue will shape future picks.'
-                  : 'Picked from Hitomi.la and nHentai based on the galleries in your library. New picks every day; refresh any time for a different selection.'}
+                  ? 'Not enough library history yet — showing popular galleries from both sources. Downloads you queue (and your Kavita library) will shape future picks.'
+                  : 'Picked from Hitomi.la and nHentai based on your downloaded galleries and your Kavita library. New picks every day; refresh any time for a different selection.'}
               </p>
-              {recs && (recs.profile.artists.length > 0 || recs.profile.tags.length > 0) && (
+              {recs && (recs.profile.artists.length > 0 || recs.profile.tags.length > 0 || (recs.profile.series?.length ?? 0) > 0) && (
                 <div className="flex flex-wrap items-center gap-1">
                   <span className="text-xs text-muted">Based on:</span>
-                  {[...recs.profile.artists, ...recs.profile.tags].map((t) => (
+                  {[...recs.profile.artists, ...recs.profile.tags, ...(recs.profile.series ?? [])].map((t) => (
                     <span key={t} className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{t}</span>
                   ))}
                 </div>
@@ -1295,9 +1326,9 @@ export function Downloader() {
             <div className="flex items-center justify-center gap-2 py-16 text-muted">
               <Spinner /> Building your picks — the first pass of the day can take a minute…
             </div>
-          ) : recs && recs.items.length > 0 ? (
+          ) : visibleRecs.length > 0 ? (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
-              {recs.items.map((item, i) => (
+              {visibleRecs.map((item, i) => (
                 <div key={item.source + item.galleryId} className="flex flex-col gap-1 [&>article]:flex-1">
                   <GalleryCard
                     item={item}
@@ -1306,6 +1337,8 @@ export function Downloader() {
                     downloading={pendingKey === `${item.source}:${item.galleryId}`}
                     downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
                     onDownload={() => doStartDownload(item)}
+                    owned={ownedKeys.has(`${item.source}:${item.galleryId}`)}
+                    onMarkOwned={() => void doMarkOwned(item)}
                   />
                   {item.reasons.length > 0 && (
                     <p className="px-1 text-xs leading-snug text-muted" title={`Matched: ${item.reasons.join(', ')}`}>

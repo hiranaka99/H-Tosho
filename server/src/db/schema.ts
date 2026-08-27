@@ -170,3 +170,11 @@ export const keyValueStore = sqliteTable('key_value_store', {
   key: text('key').primaryKey(),
   valueJson: text('value_json').notNull(),
 });
+
+export const ownedGalleries = sqliteTable('owned_galleries', {
+  source: text('source').notNull(),
+  galleryId: text('gallery_id').notNull(),
+  markedAt: text('marked_at')
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});

@@ -39,7 +39,7 @@ import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
 import { rewriteHitomiCover, rewriteMangaDexCoverUrl } from './media.js';
 import { addWatchedSearch, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
-import { getRecommendations, refreshRecommendations } from '../services/recommendations.js';
+import { getRecommendations, markOwned, refreshRecommendations } from '../services/recommendations.js';
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
 import { listCbzFiles, readComicInfo, resolveExistingFile, resolveSeriesHostDir } from '../lib/cbz.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
@@ -805,6 +805,18 @@ api.post('/recommendations/refresh', async (c) => {
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
   }
+});
+
+/** Mark a gallery as owned — it will never be recommended again. */
+api.post('/recommendations/owned', async (c) => {
+  const body = await c.req.json<{ source?: unknown; galleryId?: unknown }>().catch(() => null);
+  const source = body?.source;
+  const galleryId = typeof body?.galleryId === 'string' ? body.galleryId.trim() : '';
+  if (source !== 'hitomi' && source !== 'nhentai' || !galleryId) {
+    return c.json({ error: 'source (hitomi|nhentai) and galleryId are required' }, 400);
+  }
+  markOwned(source, galleryId);
+  return c.json({ ok: true });
 });
 
 
