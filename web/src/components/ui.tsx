@@ -265,7 +265,7 @@ export function ErrorState({ title = 'Something went wrong', description, onRetr
 
 export function SegmentedTabs<T extends string>({ items, value, onChange, label, panelId, className }: { items: readonly { id: T; label: string }[]; value: T; onChange: (id: T) => void; label: string; panelId: string; className?: string }) {
   return (
-    <div role="tablist" aria-label={label} className={cn('flex max-w-full gap-4 overflow-x-auto border-b border-border-2', className)}>
+    <div role="tablist" aria-label={label} className={cn('flex max-w-full flex-wrap gap-4 border-b border-border-2', className)}>
       {items.map((item) => (
         <button
           key={item.id}

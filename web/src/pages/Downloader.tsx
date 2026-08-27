@@ -984,7 +984,7 @@ export function Downloader() {
         onChange={setTab}
         label="Downloader sections"
         panelId="downloader-panel"
-        className="self-start"
+        className="sticky top-0 z-10 self-start bg-background"
       />
       <div id="downloader-panel" role="tabpanel" aria-labelledby={`downloader-panel-tab-${tab}`} className="contents">
 

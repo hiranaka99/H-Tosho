@@ -183,7 +183,7 @@ export function Settings() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader icon={<SlidersHorizontal className="h-5 w-5" />} title="Settings" subtitle="Connect Kavita, configure providers and notifications." />
-      <SegmentedTabs items={SETTINGS_TABS} value={tab} onChange={setTab} label="Settings sections" panelId="settings-panel" className="self-start" />
+      <SegmentedTabs items={SETTINGS_TABS} value={tab} onChange={setTab} label="Settings sections" panelId="settings-panel" className="sticky top-0 z-10 self-start bg-background" />
 
       <div id="settings-panel" role="tabpanel" aria-labelledby={`settings-panel-tab-${tab}`} className="contents">
       {tab === 'general' && (<>

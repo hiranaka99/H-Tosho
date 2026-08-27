@@ -135,19 +135,23 @@ export default function App() {
         <KavitaIndicator />
         <SidebarStatus />
       </aside>
-      <main className="min-w-0 flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
-        <div key={location.pathname} className="animate-fade-up">
-          <PageErrorBoundary>
-            <Routes>
-              <Route path="/" element={<Navigate to="/libraries" replace />} />
-              <Route path="/libraries" element={<Libraries />} />
-              <Route path="/libraries/:libraryId" element={<Libraries />} />
-              <Route path="/downloader" element={<Downloader />} />
-              <Route path="/jobs" element={<Jobs />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="*" element={<Navigate to="/libraries" replace />} />
-            </Routes>
-          </PageErrorBoundary>
+      <main className="min-w-0 flex-1 overflow-y-auto">
+        {/* Padding lives on an inner wrapper, not on the scroll container itself: sticky
+            page elements (tab bars) pin flush to the scrollport edge this way. */}
+        <div className="p-4 sm:p-6 lg:p-8">
+          <div key={location.pathname} className="animate-fade-up">
+            <PageErrorBoundary>
+              <Routes>
+                <Route path="/" element={<Navigate to="/libraries" replace />} />
+                <Route path="/libraries" element={<Libraries />} />
+                <Route path="/libraries/:libraryId" element={<Libraries />} />
+                <Route path="/downloader" element={<Downloader />} />
+                <Route path="/jobs" element={<Jobs />} />
+                <Route path="/settings" element={<Settings />} />
+                <Route path="*" element={<Navigate to="/libraries" replace />} />
+              </Routes>
+            </PageErrorBoundary>
+          </div>
         </div>
       </main>
     </div>

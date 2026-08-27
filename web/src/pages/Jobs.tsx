@@ -127,7 +127,7 @@ export function Jobs() {
       />
 
       <Card>
-        <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
+        <CardHeader className="sticky top-0 z-10 flex-row flex-wrap items-center justify-between gap-3 rounded-t-xl bg-surface">
           <CardTitle>Task queue</CardTitle>
           <SegmentedTabs items={filters} value={filter} onChange={setFilter} label="Filter jobs" panelId="jobs-list" className="border-0" />
         </CardHeader>
