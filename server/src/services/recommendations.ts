@@ -5,7 +5,7 @@ import type { DoujinGallery, DoujinSearchResult, DoujinSource, DoujinSort } from
 import { sleep } from '../lib/http.js';
 import { KavitaClient } from '../kavita/client.js';
 import type { KavitaSeries } from '../kavita/types.js';
-import { getKavitaConnection } from './settings.js';
+import { getKavitaConnection, getRecommendationSettings, setRecommendationSettings } from './settings.js';
 
 /**
  * Daily doujinshi recommendations based on the user's downloaded library.
@@ -33,14 +33,22 @@ import { getKavitaConnection } from './settings.js';
 const SOURCES: DoujinSource[] = ['hitomi', 'nhentai'];
 
 /** Top-N profile terms turned into one search query each, per source. */
-const ARTIST_QUERIES = 3;
+const ARTIST_QUERIES = 2; // artist terms per source — artists rotate, tags/series carry the set
 const TAG_QUERIES = 4; // top tag terms per source
 const SERIES_QUERIES = 3; // top Kavita series titles per source (parody/series search)
+/** How many heaviest terms per kind are eligible for queries. Artists sample without an anchor (they rotate fully); tags/series keep their #1 anchor. */
+const ARTIST_QUERY_POOL = 6;
+const TAG_QUERY_POOL = 8;
+const SERIES_QUERY_POOL = 6;
 /** Results fetched per candidate query (bounded — hydration is one request per gallery on Hitomi). */
 const RESULTS_PER_QUERY = 12;
 /** Picks per source and total size of the daily set. */
 const PICKS_PER_SOURCE = 6;
 const TOTAL_PICKS = 12;
+/** Max picks per set a single tag/series term may dominate. */
+const MAX_PICKS_PER_TERM = 2;
+/** Artists get a stricter cap — one favorite artist should surface at most once per set. */
+const MAX_PICKS_PER_ARTIST = 1;
 /** Fewer profile terms than this → cold-start popularity fallback. */
 const MIN_PROFILE_TERMS = 3;
 /** Backfill cap per generation, and the tagged-gallery count below which it runs. */
@@ -64,9 +72,9 @@ export interface RecommendationItem extends DoujinSearchResult {
 }
 
 export interface RecommendationProfile {
+  /** Terms that matched today's picks (top 8 per kind by match count). */
   artists: string[];
   tags: string[];
-  /** Top series titles from the user's Kavita library driving parody searches. */
   series: string[];
   language: string | null;
 }
@@ -260,10 +268,13 @@ async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
     return [];
   }
 
+  // Libraries the user excluded from recommendations (e.g. a regular manga
+  // collection that should not feed doujinshi searches).
+  const excludedLibraries = new Set(getRecommendationSettings().excludedLibraryIds);
   // Phase 1: collect series across all libraries (one bulk call per library).
   const seriesList: KavitaSeries[] = [];
   for (const lib of libraries) {
-    if (seriesList.length >= KAVITA_SERIES_LIMIT) break;
+    if (excludedLibraries.has(lib.id)) continue;
     let series: KavitaSeries[];
     try {
       series = await client.getSeries(lib.id);
@@ -385,11 +396,21 @@ function languageFragment(source: DoujinSource, language: string): string {
   return source === 'hitomi' ? `language:${language.toLowerCase()}` : `language:"${language}"`;
 }
 
-/** One query per top profile term, per source (AND-combining would shrink pools too hard). */
-function buildQuerySpecs(profile: TasteProfile): QuerySpec[] {
-  const artists = profile.terms.filter((t) => t.kind === 'artist').slice(0, ARTIST_QUERIES);
-  const tags = profile.terms.filter((t) => t.kind === 'tag' && (t.nsBySource.hitomi ?? null) !== 'language' && (t.nsBySource.nhentai ?? null) !== 'language').slice(0, TAG_QUERIES);
-  const series = profile.terms.filter((t) => t.kind === 'series').slice(0, SERIES_QUERIES);
+/**
+ * The terms queried this roll. Tags/series keep their #1 heaviest term as a
+ * taste anchor; artists are fully seeded-sampled from their pool (no anchor —
+ * otherwise the top artist would be re-queried on every roll). One query per
+ * term, per source (AND-combining would shrink pools too hard).
+ */
+function buildQuerySpecs(profile: TasteProfile, rng: () => number): QuerySpec[] {
+  const artists = sampleTerms(profile.terms.filter((t) => t.kind === 'artist'), ARTIST_QUERIES, ARTIST_QUERY_POOL, rng, false);
+  const tags = sampleTerms(
+    profile.terms.filter((t) => t.kind === 'tag' && (t.nsBySource.hitomi ?? null) !== 'language' && (t.nsBySource.nhentai ?? null) !== 'language'),
+    TAG_QUERIES,
+    TAG_QUERY_POOL,
+    rng,
+  );
+  const series = sampleTerms(profile.terms.filter((t) => t.kind === 'series'), SERIES_QUERIES, SERIES_QUERY_POOL, rng);
   const specs: QuerySpec[] = [];
   for (const source of SOURCES) {
     const lang = profile.language ? languageFragment(source, profile.language) : null;
@@ -406,6 +427,22 @@ function buildQuerySpecs(profile: TasteProfile): QuerySpec[] {
     }
   }
   return specs;
+}
+
+/**
+ * Top-`count` terms from a weight-descending list. With `anchor`, the #1 term
+ * is always in and the remaining slots are seeded-sampled from the top
+ * `poolSize`; without it, all slots are sampled from the pool.
+ */
+function sampleTerms(terms: ProfileTerm[], count: number, poolSize: number, rng: () => number, anchor = true): ProfileTerm[] {
+  const pool = terms.slice(0, poolSize);
+  if (pool.length <= count) return pool;
+  const rest = anchor ? pool.slice(1) : [...pool];
+  for (let i = 0; i < (anchor ? count - 1 : count); i++) {
+    const j = i + Math.floor(rng() * (rest.length - i));
+    [rest[i], rest[j]] = [rest[j], rest[i]];
+  }
+  return anchor ? [pool[0], ...rest.slice(0, count - 1)] : rest.slice(0, count);
 }
 
 // ---------------------------------------------------------------------------
@@ -469,30 +506,55 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
   return out;
 }
 
-/** Score-sorted picks with a seeded jitter so same-day re-rolls differ but top matches stay favored. */
-function pickDaily(candidates: Candidate[], count: number, rng: () => number): RecommendationItem[] {
+/**
+ * Score-sorted picks with a seeded jitter so same-day re-rolls differ but top
+ * matches stay favored. A single term may contribute at most MAX_PICKS_PER_TERM
+ * picks (artists: MAX_PICKS_PER_ARTIST), tracked across calls via `termPicks`,
+ * so no favorite can dominate the whole set.
+ */
+function pickDaily(candidates: Candidate[], count: number, rng: () => number, termIndex: Map<string, ProfileTerm>, termPicks: Map<string, number>): RecommendationItem[] {
   const list = [...candidates];
   if (!list.length || count <= 0) return [];
   const maxScore = Math.max(1, ...list.map((c) => c.score));
   for (const c of list) c.effective = c.score + rng() * 0.25 * maxScore;
   list.sort((a, b) => b.effective - a.effective);
-  return list.slice(0, count).map((c) => ({ ...c.result, reasons: c.reasons }));
+  const out: RecommendationItem[] = [];
+  for (const c of list) {
+    if (out.length >= count) break;
+    // The candidate's dominant term is its heaviest match — that term "consumes" the pick.
+    let dominant: string | null = null;
+    let bestWeight = -1;
+    for (const key of c.matched) {
+      const w = termIndex.get(key)?.weight ?? 0;
+      if (w > bestWeight) {
+        bestWeight = w;
+        dominant = key;
+      }
+    }
+    if (dominant) {
+      const cap = dominant.startsWith('artist:') ? MAX_PICKS_PER_ARTIST : MAX_PICKS_PER_TERM;
+      if ((termPicks.get(dominant) ?? 0) >= cap) continue;
+      termPicks.set(dominant, (termPicks.get(dominant) ?? 0) + 1);
+    }
+    out.push({ ...c.result, reasons: c.reasons });
+  }
+  return out;
 }
 
 /** Per-source budget of PICKS_PER_SOURCE, topped up from the leftovers when a source is thin. */
-function pickWithBudget(candidates: Map<string, Candidate>, rng: () => number): RecommendationItem[] {
+function pickWithBudget(candidates: Map<string, Candidate>, rng: () => number, termIndex: Map<string, ProfileTerm>, termPicks: Map<string, number>): RecommendationItem[] {
   const picked: RecommendationItem[] = [];
   const pickedKeys = new Set<string>();
   for (const source of SOURCES) {
     const pool = [...candidates.values()].filter((c) => c.result.source === source);
-    for (const item of pickDaily(pool, PICKS_PER_SOURCE, rng)) {
+    for (const item of pickDaily(pool, PICKS_PER_SOURCE, rng, termIndex, termPicks)) {
       pickedKeys.add(keyOf(item));
       picked.push(item);
     }
   }
   if (picked.length < TOTAL_PICKS) {
     const rest = [...candidates.values()].filter((c) => !pickedKeys.has(keyOf(c.result)));
-    picked.push(...pickDaily(rest, TOTAL_PICKS - picked.length, rng));
+    picked.push(...pickDaily(rest, TOTAL_PICKS - picked.length, rng, termIndex, termPicks));
   }
   return picked;
 }
@@ -621,6 +683,26 @@ function addSeenItems(date: string, items: RecommendationItem[]): void {
     .run();
 }
 
+/**
+ * Terms that actually matched today's picks, by match count — drives the
+ * "Based on:" chips so they vary with every re-roll. Reasons are generated in
+ * the fixed `${kind} ${name}` format, so splitting on the first space is safe.
+ */
+function termsFromPicks(items: RecommendationItem[]): { artists: string[]; tags: string[]; series: string[] } {
+  const counts = new Map<string, number>();
+  for (const it of items) {
+    for (const reason of it.reasons) counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  }
+  const byKind: Record<'artist' | 'tag' | 'series', [string, number][]> = { artist: [], tag: [], series: [] };
+  for (const [reason, n] of counts) {
+    const i = reason.indexOf(' ');
+    if (i <= 0) continue;
+    const kind = reason.slice(0, i);
+    if (kind === 'artist' || kind === 'tag' || kind === 'series') byKind[kind].push([reason.slice(i + 1), n]);
+  }
+  const top = (list: [string, number][]) => list.sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name]) => name);
+  return { artists: top(byKind.artist), tags: top(byKind.tag), series: top(byKind.series) };
+}
 async function doGenerate(date: string, nonce: number): Promise<RecommendationSet> {
   const rng = mulberry32(hashSeed(`${date}:${nonce}`));
   await backfillMissingTags();
@@ -636,13 +718,15 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
   if (profile.terms.length >= MIN_PROFILE_TERMS) {
     mode = 'library';
     const termIndex = new Map(profile.terms.map((t) => [`${t.kind}:${t.name.toLowerCase()}`, t]));
-    const candidates = await gatherCandidates(buildQuerySpecs(profile), excluded, termIndex);
-    items = pickWithBudget(candidates, rng);
+    // Shared across both pick passes so the per-term cap applies to the whole set.
+    const termPicks = new Map<string, number>();
+    const candidates = await gatherCandidates(buildQuerySpecs(profile, rng), excluded, termIndex);
+    items = pickWithBudget(candidates, rng, termIndex, termPicks);
   }
 
-  // Cold start (or a day when the profile queries came up empty): fill with
-  // each source's popularity list so the panel is never blank.
-  if (items.length < TOTAL_PICKS / 2) {
+  // Cold start (or a day when the profile queries came up empty, or the per-term
+  // caps left the panel short): fill with each source's popularity list.
+  if (items.length < TOTAL_PICKS) {
     const existing = new Set(items.map(keyOf));
     const extra = (await gatherPopular(excluded, rng)).filter((r) => !existing.has(keyOf(r)));
     items = [...items, ...extra].slice(0, TOTAL_PICKS);
@@ -666,17 +750,13 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
     date,
     generatedAt: new Date().toISOString(),
     mode,
-    profile: {
-      artists: profile.terms.filter((t) => t.kind === 'artist').slice(0, 8).map((t) => t.name),
-      tags: profile.terms.filter((t) => t.kind === 'tag').slice(0, 8).map((t) => t.name),
-      series: profile.terms.filter((t) => t.kind === 'series').slice(0, 8).map((t) => t.name),
-      language: profile.language,
-    },
+    // Chips describe this set, not the whole library — they change with every re-roll.
+    profile: { ...termsFromPicks(items), language: profile.language },
     items,
   };
 }
 
-const cacheKey = (date: string) => `recommendations:${date}`;
+const cacheKey = (date: string) => `recommendations-v2:${date}`;
 
 function readCached(date: string): RecommendationSet | null {
   const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(date))).get();
@@ -753,4 +833,10 @@ export async function refreshRecommendations(): Promise<RecommendationResponse> 
   const date = localDate();
   getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(date))).run();
   return withOwned(await generateFor(date, Math.floor(Math.random() * 0x7fffffff)));
+}
+
+/** Replace the list of Kavita libraries feeding the profile; today's cached set is re-generated. */
+export function setExcludedLibraries(ids: number[]): void {
+  setRecommendationSettings({ excludedLibraryIds: [...new Set(ids)] });
+  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(localDate()))).run();
 }

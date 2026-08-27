@@ -39,7 +39,8 @@ import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
 import { rewriteHitomiCover, rewriteMangaDexCoverUrl } from './media.js';
 import { addWatchedSearch, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
-import { getRecommendations, markOwned, refreshRecommendations } from '../services/recommendations.js';
+import { getRecommendations, markOwned, refreshRecommendations, setExcludedLibraries } from '../services/recommendations.js';
+import { getRecommendationSettings } from '../services/settings.js';
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
 import { listCbzFiles, readComicInfo, resolveExistingFile, resolveSeriesHostDir } from '../lib/cbz.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
@@ -817,6 +818,31 @@ api.post('/recommendations/owned', async (c) => {
   }
   markOwned(source, galleryId);
   return c.json({ ok: true });
+});
+
+/** Which Kavita libraries feed the recommendation profile. */
+api.get('/recommendations/settings', (c) => c.json(getRecommendationSettings()));
+
+/** Replace the excluded-library list — today's cached set is re-generated. */
+api.post('/recommendations/settings', async (c) => {
+  const body = await c.req.json<{ excludedLibraryIds?: unknown }>().catch(() => null);
+  if (!body || !Array.isArray(body.excludedLibraryIds) || body.excludedLibraryIds.some((x) => typeof x !== 'number')) {
+    return c.json({ error: 'excludedLibraryIds must be an array of numbers' }, 400);
+  }
+  setExcludedLibraries(body.excludedLibraryIds as number[]);
+  return c.json(getRecommendationSettings());
+});
+
+/** Light Kavita library list (id + name) for the recommendation settings row. */
+api.get('/recommendations/libraries', async (c) => {
+  const client = connectedClient();
+  if (!client) return c.json({ error: 'Kavita not configured' }, 503);
+  try {
+    const libs = await client.getLibraries();
+    return c.json(libs.map((l) => ({ id: l.id, name: l.name })));
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
+  }
 });
 
 

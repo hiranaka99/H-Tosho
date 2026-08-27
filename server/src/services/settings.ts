@@ -338,4 +338,31 @@ export function setDownloaderSettings(s: DownloaderSettings): void {
     .run();
 }
 
+// ---------------- Recommendations ----------------
+
+export interface RecommendationSettings {
+  /** Kavita library ids excluded from the recommendation profile. */
+  excludedLibraryIds: number[];
+}
+
+const DEFAULT_RECOMMENDATION_SETTINGS: RecommendationSettings = { excludedLibraryIds: [] };
+
+export function getRecommendationSettings(): RecommendationSettings {
+  const db = getDb();
+  const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations')).get();
+  if (!row) return { ...DEFAULT_RECOMMENDATION_SETTINGS };
+  const stored = safeParseJson<Partial<RecommendationSettings>>(row.valueJson);
+  return {
+    excludedLibraryIds: Array.isArray(stored?.excludedLibraryIds) ? stored.excludedLibraryIds.filter((x) => typeof x === 'number') : [],
+  };
+}
+
+export function setRecommendationSettings(s: RecommendationSettings): void {
+  const db = getDb();
+  db.insert(schema.keyValueStore)
+    .values({ key: 'recommendations', valueJson: JSON.stringify(s) })
+    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(s) } })
+    .run();
+}
+
 export { getProvider };

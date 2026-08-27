@@ -320,6 +320,11 @@ export interface RecommendationSet {
   ownedKeys: string[];
 }
 
+export interface RecommendationSettings {
+  /** Kavita library ids excluded from the recommendation profile. */
+  excludedLibraryIds: number[];
+}
+
 export interface AuthStatus {
   setupRequired: boolean;
   authenticated: boolean;
@@ -415,6 +420,11 @@ export const api = {
   /** Mark a gallery as owned — it will never be recommended again. */
   markGalleryOwned: (body: { source: DoujinSource; galleryId: string }) =>
     request<{ ok: boolean }>('/recommendations/owned', { method: 'POST', body: JSON.stringify(body) }),
+  recommendationSettings: () => request<RecommendationSettings>('/recommendations/settings'),
+  saveRecommendationSettings: (body: RecommendationSettings) =>
+    request<RecommendationSettings>('/recommendations/settings', { method: 'POST', body: JSON.stringify(body) }),
+  /** Light Kavita library list (id + name) for the recommendation settings row. */
+  recommendationLibraries: () => request<{ id: number; name: string }[]>('/recommendations/libraries'),
 
   /** Aggregated metadata a candidate would sync — same path as apply. */
   providerMetadata: (providerId: string, providerSeriesId: string) =>

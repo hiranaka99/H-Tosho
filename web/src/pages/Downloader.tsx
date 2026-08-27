@@ -833,6 +833,23 @@ export function Downloader() {
     }
   }
 
+  // Which Kavita libraries feed the recommendation profile (per-library opt-out).
+  const { data: recLibs } = useQuery({ queryKey: ['recommendation-libraries'], queryFn: api.recommendationLibraries });
+  const { data: recSettings, refetch: refetchRecSettings } = useQuery({ queryKey: ['recommendation-settings'], queryFn: api.recommendationSettings });
+  async function toggleRecLibrary(lib: { id: number; name: string }) {
+    const excluded = new Set(recSettings?.excludedLibraryIds ?? []);
+    if (excluded.has(lib.id)) excluded.delete(lib.id);
+    else excluded.add(lib.id);
+    try {
+      await api.saveRecommendationSettings({ excludedLibraryIds: [...excluded] });
+      // The server invalidates today's cached set — refetching re-rolls the picks.
+      await Promise.all([refetchRecSettings(), refetchRecs()]);
+      toast({ tone: 'success', title: `“${lib.name}” ${excluded.has(lib.id) ? 'excluded from' : 'added to'} recommendations`, description: "Today's picks were re-rolled." });
+    } catch (e) {
+      toast({ tone: 'danger', title: 'Could not update libraries', description: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   // Tracks which gallery a start-download is in flight for (for button spinners).
   const [pendingKey, setPendingKey] = React.useState<string | null>(null);
 
@@ -1315,6 +1332,25 @@ export function Downloader() {
                   {[...recs.profile.artists, ...recs.profile.tags, ...(recs.profile.series ?? [])].map((t) => (
                     <span key={t} className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{t}</span>
                   ))}
+                </div>
+              )}
+              {recLibs && recLibs.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="text-xs text-muted">Kavita libraries:</span>
+                  {recLibs.map((lib) => {
+                    const excluded = (recSettings?.excludedLibraryIds ?? []).includes(lib.id);
+                    return (
+                      <button
+                        key={lib.id}
+                        type="button"
+                        onClick={() => void toggleRecLibrary(lib)}
+                        title={excluded ? `“${lib.name}” is excluded from recommendations — click to include it` : `“${lib.name}” feeds the recommendation profile — click to exclude it`}
+                        className={cn('rounded-full px-2 py-0.5 text-xs transition-colors', excluded ? 'bg-surface-2 text-muted line-through' : 'bg-primary/15 text-primary')}
+                      >
+                        {lib.name}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </CardContent>
