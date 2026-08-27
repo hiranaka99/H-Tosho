@@ -406,8 +406,9 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ notifications }),
     }),
-  testNotifications: () => request<{ discord: string }>('/settings/notifications/test', {
+  testNotifications: (notifications: Settings['notifications']) => request<{ discord: string }>('/settings/notifications/test', {
     method: 'PUT',
+    body: JSON.stringify({ notifications }),
   }),
   savePollInterval: (hours: number) =>
     request<{ ok: boolean }>('/settings/poll-interval', { method: 'PUT', body: JSON.stringify({ hours }) }),

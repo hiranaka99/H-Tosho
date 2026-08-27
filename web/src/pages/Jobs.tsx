@@ -129,9 +129,9 @@ export function Jobs() {
       <Card>
         <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
           <CardTitle>Task queue</CardTitle>
-          <SegmentedTabs items={filters} value={filter} onChange={setFilter} label="Filter jobs" className="border-0" />
+          <SegmentedTabs items={filters} value={filter} onChange={setFilter} label="Filter jobs" panelId="jobs-list" className="border-0" />
         </CardHeader>
-        <CardContent>
+        <CardContent id="jobs-list" role="tabpanel" aria-labelledby={`jobs-list-tab-${filter}`}>
           {jobs.length === 0 ? (
             <EmptyState icon={<ListChecks className="h-8 w-8" />} title="No jobs" description="Jobs appear here when you run a scan or match." />
           ) : visibleJobs.length === 0 ? (
@@ -153,7 +153,7 @@ export function Jobs() {
                   <thead className="border-b border-border text-xs text-muted"><tr><th className="p-2 text-left font-medium">ID</th><th className="p-2 text-left font-medium">Type</th><th className="p-2 text-left font-medium">Status</th><th className="p-2 text-left font-medium">Progress</th><th className="p-2 text-left font-medium">Result</th><th className="p-2 text-left font-medium">Created</th><th className="p-2"><span className="sr-only">Actions</span></th></tr></thead>
                   <tbody>
                     {visibleJobs.map((j) => (
-                      <tr key={j.id} tabIndex={0} className="cursor-pointer border-b border-border last:border-0 hover:bg-surface-2/50" onClick={() => setSelected(j)} onKeyDown={(e) => { if (e.key === 'Enter') setSelected(j); }}>
+                      <tr key={j.id} tabIndex={0} aria-label={`Open details for ${jobLabel(j.type, j.payload)}`} className="cursor-pointer border-b border-border last:border-0 hover:bg-surface-2/50" onClick={() => setSelected(j)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelected(j); } }}>
                         <td className="p-2 text-muted">#{j.id}</td><td className="p-2 font-medium">{jobLabel(j.type, j.payload)}</td><td className="p-2"><JobStatus status={j.status} /></td><td className="p-2"><ProgressBar label={`${jobLabel(j.type, j.payload)} progress`} value={j.progressCurrent} max={j.progressTotal} className="h-1.5" /></td><td className="max-w-xs truncate p-2 text-xs text-muted">{jobResultText(j)}</td><td className="p-2 text-xs text-muted">{timeAgo(j.createdAt)}</td><td className="p-2">{(j.status === 'running' || j.status === 'queued') && <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); cancelJob(j.id); }}>Cancel</Button>}</td>
                       </tr>
                     ))}

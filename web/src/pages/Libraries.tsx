@@ -78,7 +78,7 @@ function ArtistSearchButton({ source, artists, variant = 'pill' }: { source: Dou
         onClick={() => navigate(`/downloader?source=${source}&q=${encodeURIComponent(fragment)}`)}
         title={title}
         aria-label={title}
-        className="relative z-30 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/20 bg-black/75 shadow-md backdrop-blur-sm transition-all duration-150 hover:-translate-y-px hover:border-primary hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+        className="relative z-30 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-white/20 bg-black/75 shadow-md backdrop-blur-sm transition-all duration-150 hover:-translate-y-px hover:border-primary hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
       >
         <img src={`/${source}.png`} alt="" className="h-6 w-6 rounded object-contain" aria-hidden="true" />
       </button>
@@ -223,14 +223,12 @@ export function Libraries() {
           <Card><ErrorState title="Could not load libraries" description={libs.error instanceof Error ? libs.error.message : String(libs.error)} onRetry={() => void libs.refetch()} /></Card>
         ) : libs.data && libs.data.length > 0 ? (
           <div className="flex flex-col gap-2 border-b border-border-2 lg:flex-row lg:items-end">
-            <div role="tablist" aria-label="Kavita libraries" className="flex max-w-full gap-4 overflow-x-auto">
+            <div role="group" aria-label="Kavita library" className="flex max-w-full gap-4 overflow-x-auto">
               {libs.data.map((lib) => (
                 <button
                   key={lib.id}
                   type="button"
-                  role="tab"
-                  aria-selected={selected === lib.id}
-                  tabIndex={selected === lib.id ? 0 : -1}
+                  aria-pressed={selected === lib.id}
                   onClick={() => pickLibrary(lib.id)}
                   className={cn('-mb-px shrink-0 border-b-2 px-1 pb-2 text-sm font-medium transition-colors', selected === lib.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground')}
                 >
@@ -277,10 +275,10 @@ export function Libraries() {
                 <option value="low-score">Low confidence (&lt;80%)</option>
               </Select>
               <div className="flex overflow-hidden rounded-md border border-border-2">
-                <button type="button" aria-label="Grid view" aria-pressed={view === 'grid'} onClick={() => setView('grid')} className={cn('flex h-9 w-9 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
+                <button type="button" aria-label="Grid view" aria-pressed={view === 'grid'} onClick={() => setView('grid')} className={cn('flex h-11 w-11 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
                   <LayoutGrid className="h-4 w-4" />
                 </button>
-                <button type="button" aria-label="Table view" aria-pressed={view === 'table'} onClick={() => setView('table')} className={cn('flex h-9 w-9 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', view === 'table' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
+                <button type="button" aria-label="Table view" aria-pressed={view === 'table'} onClick={() => setView('table')} className={cn('flex h-11 w-11 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60', view === 'table' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
                   <Table2 className="h-4 w-4" />
                 </button>
               </div>
@@ -350,8 +348,8 @@ export function Libraries() {
                         if (selectMode) toggleCheck(r.id);
                         else setIdentify({ id: r.id, name: r.name });
                       }}
-                      title={selectMode ? (checked.has(r.id) ? 'Deselect series' : 'Select series') : undefined}
-                      aria-label={selectMode ? (checked.has(r.id) ? `Deselect ${r.name}` : `Select ${r.name}`) : 'Identify'}
+                      title={selectMode ? (checked.has(r.id) ? 'Deselect series' : 'Select series') : `Identify ${r.name}`}
+                      aria-label={selectMode ? (checked.has(r.id) ? `Deselect ${r.name}` : `Select ${r.name}`) : `Identify ${r.name}`}
                     />
                     {checked.has(r.id) && (
                       <div className="pointer-events-none absolute bottom-2 left-2 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-primary bg-primary text-white shadow-md" aria-hidden>
@@ -365,7 +363,8 @@ export function Libraries() {
                         setComicInfo({ id: r.id, name: r.name });
                       }}
                       title="Edit ComicInfo.xml"
-                      className="card-cbz-btn absolute right-1.5 top-1.5 z-30 rounded-lg border border-white/15 bg-black/70 p-1.5 text-white backdrop-blur-sm transition-all duration-150 hover:border-primary hover:bg-primary"
+                      className="absolute right-1.5 top-1.5 z-30 flex h-11 w-11 items-center justify-center rounded-lg border border-white/15 bg-black/70 text-white shadow-md backdrop-blur-sm transition-all duration-150 hover:border-primary hover:bg-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                      aria-label={`Edit ComicInfo.xml for ${r.name}`}
                     >
                       <FileText className="h-3.5 w-3.5" />
                     </button>
@@ -376,11 +375,15 @@ export function Libraries() {
                       <p className="truncate text-xs font-semibold text-white [text-shadow:1px_0_0_rgba(0,0,0,0.85),-1px_0_0_rgba(0,0,0,0.85),0_1px_0_rgba(0,0,0,0.85),0_-1px_0_rgba(0,0,0,0.85),0_2px_3px_rgba(0,0,0,0.6)]">{r.name}</p>
                       <div className="flex flex-wrap items-center gap-1">
                         {r.providerId && <ProviderBadge id={r.providerId} solid />}
-                        <StatusBadge status={r.status} title={r.errorMessage ?? undefined} className="bg-black/70" />
+                        <StatusBadge status={r.status} className="bg-black/70" />
                         {typeof r.pageCount === 'number' && r.pageCount > 0 && (
                           <span className="rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white/80">{r.pageCount} pages</span>
                         )}
                       </div>
+                      {!selectMode && (
+                        <span className="pointer-events-none text-[10px] font-medium text-white/75">Open to identify</span>
+                      )}
+                      {r.status === 'failed' && r.errorMessage && <span className="line-clamp-2 text-[10px] text-red-200">{r.errorMessage}</span>}
                       {!selectMode && r.artists?.length ? (
                         <div className="flex gap-1.5" aria-label={`Search for ${r.artists[0]} by source`}>
                           <ArtistSearchButton source="hitomi" artists={r.artists} variant="icon" />
@@ -396,14 +399,16 @@ export function Libraries() {
                 <table className="min-w-[760px] w-full text-sm">
                   <thead className="border-b border-border text-xs text-muted">
                     <tr>
-                      <th className="w-10 p-2">
-                        <input
-                          type="checkbox"
-                          checked={allChecked}
-                          onChange={() => setChecked(allChecked ? new Set([...checked].filter((id) => !visibleRows.some((r) => r.id === id))) : new Set([...checked, ...visibleRows.map((r) => r.id)]))}
-                          aria-label="Select all series on this page"
-                          className="h-4 w-4 accent-[var(--color-primary)]"
-                        />
+                      <th className="w-11 p-2">
+                        <label className="flex h-11 w-11 cursor-pointer items-center justify-center">
+                          <input
+                            type="checkbox"
+                            checked={allChecked}
+                            onChange={() => setChecked(allChecked ? new Set([...checked].filter((id) => !visibleRows.some((r) => r.id === id))) : new Set([...checked, ...visibleRows.map((r) => r.id)]))}
+                            aria-label="Select all series on this page"
+                            className="h-4 w-4 accent-[var(--color-primary)]"
+                          />
+                        </label>
                       </th>
                       <th className="p-2 text-left font-medium">Series</th>
                       <th className="p-2 text-left font-medium">Status</th>
@@ -418,7 +423,9 @@ export function Libraries() {
                     {visibleRows.map((r) => (
                       <tr key={r.id} className="border-b border-border last:border-0 hover:bg-surface-2/50">
                         <td className="p-2">
-                          <input type="checkbox" aria-label={`Select ${r.name}`} checked={checked.has(r.id)} onChange={() => toggleCheck(r.id)} className="h-4 w-4 accent-[var(--color-primary)]" />
+                          <label className="flex h-11 w-11 cursor-pointer items-center justify-center">
+                            <input type="checkbox" aria-label={`Select ${r.name}`} checked={checked.has(r.id)} onChange={() => toggleCheck(r.id)} className="h-4 w-4 accent-[var(--color-primary)]" />
+                          </label>
                         </td>
                         <td className="p-2">
                           <div className="flex items-center gap-2">
@@ -429,7 +436,8 @@ export function Libraries() {
                           </div>
                         </td>
                         <td className="p-2">
-                          <StatusBadge status={r.status} title={r.errorMessage ?? undefined} />
+                          <StatusBadge status={r.status} />
+                          {r.status === 'failed' && r.errorMessage && <p className="mt-1 max-w-48 break-words text-xs text-danger">{r.errorMessage}</p>}
                         </td>
                         <td className="p-2">
                           {r.providerId ? (

@@ -207,9 +207,9 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                         const num = seriesFiles.data?.chapterNumbers[f];
                         const pending = drafts[f] ? draftHasChanges(drafts[f]) : false;
                         return (
-                          <button key={f} type="button" onClick={() => openFile(f)} title={f}
+                          <button key={f} type="button" onClick={() => openFile(f)} aria-label={`Open ${f}`}
                             className={cn(
-                              'flex min-w-0 shrink-0 items-center gap-2 rounded border px-2 py-1.5 text-left text-xs transition-colors',
+                              'flex min-h-11 min-w-0 shrink-0 items-center gap-2 rounded border px-2 py-1.5 text-left text-xs transition-colors',
                               f === file ? 'border-primary bg-primary/10 font-medium text-primary' : 'border-border-2 hover:border-primary/50',
                             )}>
                             <FileArchive className="h-3.5 w-3.5 shrink-0 text-success" />
@@ -243,7 +243,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                         onClick={() => setDir(r)}
                         title={r}
                         className={cn(
-                          'max-w-56 truncate rounded-full border px-2.5 py-1 text-xs transition-colors',
+                          'min-h-11 max-w-56 break-all rounded-full border px-2.5 py-1 text-xs transition-colors',
                           dir === r ? 'border-primary bg-primary/10 text-primary' : 'border-border-2 hover:border-primary/50 hover:text-foreground',
                         )}
                       >
@@ -265,24 +265,24 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                         onClick={() => setDir(dirData.data.parent)}
                         disabled={!dirData.data.parent}
                         title={dirData.data.parent ?? undefined}
-                        className="flex items-center gap-1 rounded border border-border-2 px-2 py-1 text-muted transition-colors hover:text-foreground disabled:opacity-40"
+                        className="flex min-h-11 items-center gap-1 rounded border border-border-2 px-3 py-1 text-muted transition-colors hover:text-foreground disabled:opacity-40"
                       >
                         <ArrowUp className="h-3 w-3" /> Up
                       </button>
-                      <span className="truncate font-mono text-[11px] text-muted" title={dirData.data.path}>{dirData.data.path}</span>
+                      <span className="break-all font-mono text-[11px] text-muted">{dirData.data.path}</span>
                     </div>
                     {dirData.data.dirs.length > 0 || dirData.data.files.length > 0 ? (
                       <div className="grid max-h-48 grid-cols-1 gap-1 overflow-y-auto sm:grid-cols-2">
                         {dirData.data.dirs.map((d) => (
-                          <button key={d} type="button" onClick={() => setDir(joinPath(dirData.data.path, d))} title={d}
-                            className="flex min-w-0 items-center gap-1.5 truncate rounded border border-border-2 px-2 py-1 text-left text-xs transition-colors hover:border-primary/50">
-                            <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted" /> {d}
+                          <button key={d} type="button" onClick={() => setDir(joinPath(dirData.data.path, d))} aria-label={`Open folder ${d}`}
+                            className="flex min-h-11 min-w-0 items-center gap-1.5 rounded border border-border-2 px-2 py-1 text-left text-xs transition-colors hover:border-primary/50">
+                            <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted" /> <span className="break-all">{d}</span>
                           </button>
                         ))}
                         {dirData.data.files.map((f) => (
-                          <button key={f} type="button" onClick={() => openFile(joinPath(dirData.data.path, f))} title={joinPath(dirData.data.path, f)}
-                            className="flex min-w-0 items-center gap-1.5 truncate rounded border border-border-2 px-2 py-1 text-left text-xs transition-colors hover:border-primary/50">
-                            <FileArchive className="h-3.5 w-3.5 shrink-0 text-success" /> {f}
+                          <button key={f} type="button" onClick={() => openFile(joinPath(dirData.data.path, f))} aria-label={`Open file ${f}`}
+                            className="flex min-h-11 min-w-0 items-center gap-1.5 rounded border border-border-2 px-2 py-1 text-left text-xs transition-colors hover:border-primary/50">
+                            <FileArchive className="h-3.5 w-3.5 shrink-0 text-success" /> <span className="break-all">{f}</span>
                           </button>
                         ))}
                       </div>

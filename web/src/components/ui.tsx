@@ -7,9 +7,9 @@ import { X, Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { cn, PROVIDER_COLORS, PROVIDER_NAMES } from '../lib/utils';
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-all duration-150 ' +
+  'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg text-sm font-medium transition-all duration-150 ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:pointer-events-none ' +
-    'disabled:opacity-50 h-9 px-4 active:scale-[0.97]',
+    'disabled:opacity-50 px-4 active:scale-[0.97]',
   {
     variants: {
       variant: {
@@ -20,10 +20,10 @@ const buttonVariants = cva(
         secondary: 'bg-surface-2 text-foreground hover:bg-border',
       },
       size: {
-        default: 'h-9 px-4',
-        sm: 'h-8 px-3 text-xs',
-        lg: 'h-10 px-6',
-        icon: 'h-9 w-9 p-0',
+        default: 'min-h-11 px-4',
+        sm: 'min-h-11 px-3 text-xs',
+        lg: 'min-h-12 px-6',
+        icon: 'h-11 w-11 p-0',
       },
     },
     defaultVariants: { variant: 'default', size: 'default' },
@@ -65,7 +65,7 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
     <input
       ref={ref}
       className={cn(
-        'flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 py-1 text-sm placeholder:text-muted',
+        'flex min-h-11 w-full rounded-lg border border-border-2 bg-surface-2 px-3 py-2 text-sm placeholder:text-muted',
         'transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50',
         className,
       )}
@@ -84,7 +84,7 @@ export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttrib
     <select
       ref={ref}
       className={cn(
-        'flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-sm',
+        'flex min-h-11 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-sm',
         'transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
         className,
       )}
@@ -111,13 +111,13 @@ export function Switch({
       onCheckedChange={onCheckedChange}
       aria-label={props['aria-label'] ?? 'Toggle'}
       className={cn(
-        'inline-flex h-5 w-9 items-center rounded-full transition-colors focus-visible:outline-none',
+        'inline-flex h-7 w-12 items-center rounded-full transition-colors focus-visible:outline-none',
         'focus-visible:ring-2 focus-visible:ring-primary/50 data-[state=checked]:bg-primary data-[state=unchecked]:bg-border-2',
         className,
       )}
       {...props}
     >
-      <SwitchPrimitive.Thumb className="block h-4 w-4 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-4 data-[state=unchecked]:translate-x-0.5" />
+      <SwitchPrimitive.Thumb className="block h-6 w-6 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0.5" />
     </SwitchPrimitive.Root>
   );
 }
@@ -227,7 +227,7 @@ export function DialogContent({ children, className, ...props }: React.Component
         {...props}
       >
         {children}
-        <DialogPrimitive.Close aria-label="Close dialog" className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-md bg-surface/90 text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+        <DialogPrimitive.Close aria-label="Close dialog" className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center rounded-md bg-surface/90 text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
           <X className="h-4 w-4" />
         </DialogPrimitive.Close>
       </DialogPrimitive.Content>
@@ -263,7 +263,7 @@ export function ErrorState({ title = 'Something went wrong', description, onRetr
   );
 }
 
-export function SegmentedTabs<T extends string>({ items, value, onChange, label, className }: { items: readonly { id: T; label: string }[]; value: T; onChange: (id: T) => void; label: string; className?: string }) {
+export function SegmentedTabs<T extends string>({ items, value, onChange, label, panelId, className }: { items: readonly { id: T; label: string }[]; value: T; onChange: (id: T) => void; label: string; panelId: string; className?: string }) {
   return (
     <div role="tablist" aria-label={label} className={cn('flex max-w-full gap-4 overflow-x-auto border-b border-border-2', className)}>
       {items.map((item) => (
@@ -272,6 +272,8 @@ export function SegmentedTabs<T extends string>({ items, value, onChange, label,
           type="button"
           role="tab"
           aria-selected={value === item.id}
+          id={`${panelId}-tab-${item.id}`}
+          aria-controls={panelId}
           tabIndex={value === item.id ? 0 : -1}
           onClick={() => onChange(item.id)}
           onKeyDown={(event) => {
@@ -284,7 +286,7 @@ export function SegmentedTabs<T extends string>({ items, value, onChange, label,
             requestAnimationFrame(() => tabs?.[nextIndex]?.focus());
           }}
           className={cn(
-            '-mb-px shrink-0 border-b-2 px-1 pb-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+            '-mb-px min-h-11 shrink-0 border-b-2 px-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
             value === item.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
           )}
         >

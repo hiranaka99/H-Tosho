@@ -88,7 +88,7 @@ export default function App() {
             <div className="text-xs leading-tight text-muted">Kavita metadata manager</div>
           </div>
         </div>
-        <button type="button" aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} onClick={() => setNavOpen((v) => !v)} className="flex h-10 w-10 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+        <button type="button" aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} onClick={() => setNavOpen((v) => !v)} className="flex h-11 w-11 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
           {navOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
       </header>
@@ -128,7 +128,7 @@ export default function App() {
         </nav>
         <div className="flex items-center gap-2 border-t border-border px-3 py-2">
           <span className="min-w-0 flex-1 truncate text-xs text-muted" title={username ?? undefined}>{username}</span>
-          <button type="button" onClick={() => void logout()} aria-label="Sign out" title="Sign out" className="flex h-8 w-8 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+          <button type="button" onClick={() => void logout()} aria-label="Sign out" title="Sign out" className="flex h-11 w-11 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
             <LogOut className="h-4 w-4" />
           </button>
         </div>

@@ -542,8 +542,10 @@ api.put('/settings/notifications', async (c) => {
 });
 
 api.put('/settings/notifications/test', async (c) => {
-  const result = await testNotification();
-  return c.json(result);
+  const body = (await c.req.json().catch(() => null)) as { notifications?: unknown } | null;
+  const settings = parseNotificationSettings(body?.notifications);
+  if (!settings) return c.json({ error: 'Invalid notification settings' }, 400);
+  return c.json(await testNotification(settings));
 });
 
 api.put('/settings/poll-interval', async (c) => {

@@ -91,7 +91,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
     onSuccess: invalidate,
     onError: mutationError('Download action failed'),
   });
-  const remove = useMutation({ mutationFn: (id: number) => api.deleteDownload(id), onSuccess: invalidate, onError: mutationError('Could not remove download') });
+  const remove = useMutation({ mutationFn: (id: number) => api.deleteDownload(id), onSuccess: () => { invalidate(); toast({ tone: 'info', title: 'Removed from download history' }); }, onError: mutationError('Could not remove download') });
   const clear = useMutation({ mutationFn: api.clearCompletedDownloads, onSuccess: invalidate, onError: mutationError('Could not clear completed downloads') });
 
   // Toast on status transitions to completed/failed.

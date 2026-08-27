@@ -27,7 +27,7 @@ function JobRow({ job }: { job: Job }) {
             type="button"
             onClick={() => void api.cancelJob(job.id).then(() => qc.invalidateQueries({ queryKey: ['jobs'] }))}
             aria-label={`Cancel ${jobLabel(job.type, job.payload)}`}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
           >
             <Ban className="h-3.5 w-3.5" />
           </button>
@@ -68,17 +68,17 @@ function DownloadRow({ task, onAction }: { task: DownloadTask; onAction: (op: 'p
           {task.title ?? `Gallery ${task.galleryId}`}
         </span>
         {busy && (
-          <button type="button" onClick={() => onAction('pause', task.id)} aria-label={`Pause ${task.title ?? `Gallery ${task.galleryId}`}`} className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+          <button type="button" onClick={() => onAction('pause', task.id)} aria-label={`Pause ${task.title ?? `Gallery ${task.galleryId}`}`} className="flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
             <Pause className="h-3.5 w-3.5" />
           </button>
         )}
         {task.status === 'paused' && (
-          <button type="button" onClick={() => onAction('resume', task.id)} aria-label={`Resume ${task.title ?? `Gallery ${task.galleryId}`}`} className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+          <button type="button" onClick={() => onAction('resume', task.id)} aria-label={`Resume ${task.title ?? `Gallery ${task.galleryId}`}`} className="flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
             <Play className="h-3.5 w-3.5" />
           </button>
         )}
         {(busy || task.status === 'queued') && (
-          <button type="button" onClick={() => onAction('cancel', task.id)} aria-label={`Cancel ${task.title ?? `Gallery ${task.galleryId}`}`} className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+          <button type="button" onClick={() => onAction('cancel', task.id)} aria-label={`Cancel ${task.title ?? `Gallery ${task.galleryId}`}`} className="flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
             <XCircle className="h-3.5 w-3.5" />
           </button>
         )}

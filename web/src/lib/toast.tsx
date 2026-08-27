@@ -73,9 +73,10 @@ export function Toaster() {
             {t.description && <p className={cn('mt-0.5 text-xs text-muted', t.tone === 'danger' ? 'line-clamp-4' : 'truncate')} title={t.description}>{t.description}</p>}
           </div>
           <button
+            type="button"
             onClick={() => setItems((prev) => prev.filter((x) => x.id !== t.id))}
-            className="shrink-0 rounded p-0.5 text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
-            title="Dismiss"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+            aria-label={`Dismiss ${t.title}`}
           >
             <X className="h-3.5 w-3.5" />
           </button>

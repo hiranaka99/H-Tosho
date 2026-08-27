@@ -144,17 +144,6 @@ select {
 }
 
 
-/* Library grid cards reveal the ComicInfo button on pointer hover / keyboard focus.
-   Hidden state must not capture clicks (the Identify overlay sits beneath it). */
-.card-cbz-btn {
-  opacity: 0;
-  pointer-events: none;
-}
-.group:hover .card-cbz-btn,
-.group:focus-within .card-cbz-btn {
-  opacity: 1;
-  pointer-events: auto;
-}
 
 /* Shimmering placeholder for loading content. */
 .skeleton {

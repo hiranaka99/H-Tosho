@@ -515,7 +515,7 @@ function QueueRow({ task, onAction, onEditComicInfo, onDelete }: { task: Downloa
           {task.status === 'failed' && <Button size="icon" variant="ghost" aria-label="Retry download" onClick={() => onAction('retry')}><RotateCcw className="h-4 w-4" /></Button>}
           {task.status === 'completed' && <Button size="icon" variant="ghost" aria-label="Download again" onClick={() => onAction('retry')}><RotateCcw className="h-4 w-4" /></Button>}
           {(task.status === 'downloading' || task.status === 'queued') && <Button size="icon" variant="ghost" aria-label="Cancel download" onClick={() => onAction('cancel')}><XCircle className="h-4 w-4" /></Button>}
-          {onDelete && <Button size="icon" variant="danger" aria-label="Remove download from history" onClick={onDelete}><Trash2 className="h-4 w-4" /></Button>}
+          {onDelete && <Button size="icon" variant="ghost" aria-label="Remove download from history" onClick={onDelete}><Trash2 className="h-4 w-4" /></Button>}
         </div>
       </div>
 
@@ -536,9 +536,9 @@ function QueueRow({ task, onAction, onEditComicInfo, onDelete }: { task: Downloa
       {task.status === 'completed' && task.outputPath && (
         <div className="flex items-center gap-2 text-xs">
           {task.outputFormat === 'cbz' ? <FileArchive className="h-3.5 w-3.5 text-success" /> : <FolderOpen className="h-3.5 w-3.5 text-success" />}
-          <span className="truncate text-muted" title={task.outputPath}>{task.outputPath}</span>
+          <span className="min-w-0 break-all text-muted">{task.outputPath}</span>
           {task.outputFormat === 'cbz' && onEditComicInfo && (
-            <Button size="icon" variant="ghost" className="ml-auto h-9 w-9 shrink-0" aria-label="Edit ComicInfo.xml" onClick={() => onEditComicInfo(task.outputPath!)}>
+            <Button size="icon" variant="ghost" className="ml-auto shrink-0" aria-label="Edit ComicInfo.xml" onClick={() => onEditComicInfo(task.outputPath!)}>
               <FileText className="h-3.5 w-3.5" />
             </Button>
           )}
@@ -673,6 +673,7 @@ export function Downloader() {
   // ComicInfo editor: null = closed; { path? } = open (path from a completed row, or none to browse).
   const [comicInfo, setComicInfo] = React.useState<{ path?: string } | null>(null);
   const [confirmClear, setConfirmClear] = React.useState(false);
+  const [removeTarget, setRemoveTarget] = React.useState<DownloadTask | null>(null);
 
   // Multi-select mode for merged downloads (mirrors the Libraries page). Selection
   // is keyed `${source}:${galleryId}` and persists across result pages; a fresh
@@ -753,16 +754,18 @@ export function Downloader() {
     [completed],
   );
 
-  // Saved watches so the star button reflects the current search's state.
+  // Saved watches correspond to the committed search represented by the visible
+  // results, never to edits that have not been submitted yet.
   const { data: watches, refetch: refetchWatches } = useQuery({
     queryKey: ['watched-searches'],
     queryFn: api.watchedSearches,
     refetchInterval: 30_000,
   });
-  const currentWatch = (watches ?? []).find((w) => w.source === source && w.query === query.trim());
+  const watchedQuery = searchKey?.trim() ?? '';
+  const currentWatch = (watches ?? []).find((w) => w.source === source && w.query === watchedQuery);
 
   async function toggleWatch() {
-    const q = query.trim();
+    const q = watchedQuery;
     if (!q) return;
     try {
       if (currentWatch) {
@@ -980,8 +983,10 @@ export function Downloader() {
         value={tab}
         onChange={setTab}
         label="Downloader sections"
+        panelId="downloader-panel"
         className="self-start"
       />
+      <div id="downloader-panel" role="tabpanel" aria-labelledby={`downloader-panel-tab-${tab}`} className="contents">
 
       {tab === 'search' && (<>
 
@@ -989,15 +994,22 @@ export function Downloader() {
       <Card>
         <CardContent className="flex flex-col gap-3">
           <form onSubmit={runSearch} className="flex flex-col gap-2 lg:flex-row">
-            <div role="group" aria-label="Download source" className="flex overflow-hidden rounded-md border border-border-2">
+            <div role="radiogroup" aria-label="Download source" className="flex overflow-hidden rounded-md border border-border-2">
               {SOURCES.map((s) => (
                 <button
                   key={s.id}
-                  type="button"
+                  role="radio"
                   onClick={() => switchSource(s.id)}
-                  aria-pressed={source === s.id}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                    event.preventDefault();
+                    const group = event.currentTarget.parentElement;
+                    switchSource(source === 'hitomi' ? 'nhentai' : 'hitomi');
+                    requestAnimationFrame(() => group?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus());
+                  }}
+                  aria-checked={source === s.id}
                   className={cn(
-                    'px-4 py-2 text-sm font-medium transition-colors',
+                    'min-h-11 flex-1 px-4 py-2 text-sm font-medium transition-colors lg:flex-none',
                     source === s.id ? 'bg-primary text-white' : 'bg-surface-2 text-muted hover:text-foreground',
                   )}
                 >
@@ -1026,8 +1038,8 @@ export function Downloader() {
                 <button
                   type="button"
                   onClick={() => setQuery('')}
-                  title="Clear"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted hover:text-foreground"
+                  aria-label="Clear search input"
+                  className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded text-muted hover:text-foreground"
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -1097,8 +1109,8 @@ export function Downloader() {
               type="button"
               variant={currentWatch ? 'secondary' : 'outline'}
               onClick={() => void toggleWatch()}
-              disabled={!query.trim()}
-              title={currentWatch ? `Stop watching “${query.trim()}”` : 'Watch this search — get a Discord ping when it finds new results'}
+              disabled={!watchedQuery}
+              title={currentWatch ? `Stop watching “${watchedQuery}”` : watchedQuery ? `Watch the displayed results for “${watchedQuery}”` : 'Search first to watch these results'}
             >
               <Star className={cn('h-4 w-4', currentWatch && 'fill-current')} /> Watch
             </Button>
@@ -1235,7 +1247,7 @@ export function Downloader() {
               {liveConnected && <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" /> Live</span>}
               {currentTasks.length > 0 && <Badge tone="info">{currentTasks.length} current</Badge>}
             </CardTitle>
-            {finished.some((task) => task.status === 'completed') && <Button size="sm" variant="danger" onClick={() => setConfirmClear(true)}><Trash2 className="h-3.5 w-3.5" /> Clear completed</Button>}
+            {finished.some((task) => task.status === 'completed') && <Button size="sm" variant="outline" onClick={() => setConfirmClear(true)}><Trash2 className="h-3.5 w-3.5" /> Clear completed</Button>}
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             {downloadsError ? (
@@ -1256,7 +1268,7 @@ export function Downloader() {
                       <p id="download-history" className="text-xs font-semibold uppercase tracking-wide text-muted">History</p>
                       {finished.length > HISTORY_PREVIEW && <Button size="sm" variant="ghost" onClick={() => setShowAllHistory((value) => !value)}>{showAllHistory ? 'Show less' : `Show all (${finished.length})`}</Button>}
                     </div>
-                    {(showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW)).map((task) => <QueueRow key={task.id} task={task} onAction={(action) => act(task.id, action)} onEditComicInfo={(path) => setComicInfo({ path })} onDelete={() => removeTask(task.id)} />)}
+                    {(showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW)).map((task) => <QueueRow key={task.id} task={task} onAction={(action) => act(task.id, action)} onEditComicInfo={(path) => setComicInfo({ path })} onDelete={() => setRemoveTarget(task)} />)}
                   </section>
                 )}
               </>
@@ -1269,6 +1281,14 @@ export function Downloader() {
         <ComicInfoModal initialPath={comicInfo.path} onClose={() => setComicInfo(null)} />
       )}
       <ConfirmDialog
+        open={removeTarget !== null}
+        title="Remove download from history?"
+        description={removeTarget ? `This removes “${removeTarget.title ?? `Gallery ${removeTarget.galleryId}`}” from history. Downloaded files are not deleted.` : ''}
+        confirmLabel="Remove"
+        onOpenChange={(open) => { if (!open) setRemoveTarget(null); }}
+        onConfirm={() => { if (removeTarget) removeTask(removeTarget.id); setRemoveTarget(null); }}
+      />
+      <ConfirmDialog
         open={confirmClear}
         title="Clear completed downloads?"
         description="This removes every completed download from the manager history. Downloaded files are not deleted."
@@ -1278,6 +1298,7 @@ export function Downloader() {
         onConfirm={() => { clearCompleted(); setConfirmClear(false); }}
       />
 
+      </div>
     </div>
   );
 }

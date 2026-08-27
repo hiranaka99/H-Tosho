@@ -164,11 +164,13 @@ function FieldRow({ row, providerName, checked, onToggle }: { row: DiffRow; prov
     <div className={cn(ROW_GRID, 'border-b border-border py-2 last:border-0', differs ? 'bg-warning/5' : 'transition-colors hover:bg-surface-2/40')}>
       <div className="flex min-w-0 items-start gap-1.5">
         {showCheckbox ? (
-          <input type="checkbox" checked={!!checked} onChange={onToggle} className="mt-1 h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]" />
+          <label className="flex min-h-11 cursor-pointer items-center gap-2 py-1 text-[11px] font-medium uppercase tracking-wider text-muted">
+            <input type="checkbox" checked={!!checked} onChange={onToggle} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
+            {row.label}
+          </label>
         ) : (
-          <span className="w-3.5 shrink-0" />
+          <span className="min-h-11 py-3 text-[11px] font-medium uppercase tracking-wider text-muted">{row.label}</span>
         )}
-        <span className="text-[11px] font-medium uppercase tracking-wider text-muted">{row.label}</span>
       </div>
       {merge ? (
         <div className={cn(valueCls, 'min-h-8 text-sm')} title={row.current}>
@@ -443,7 +445,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                 {history.data.map((h) => (
                   <div key={h.id} className="flex items-baseline gap-2 text-xs">
                     <span className={cn('shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium', HISTORY_TONE[h.action] ?? 'bg-surface-2 text-muted')}>{h.action}</span>
-                    <span className="min-w-0 flex-1 truncate text-muted" title={detailsText(h.details)}>{detailsText(h.details)}</span>
+                    <span className="min-w-0 flex-1 break-words text-muted">{detailsText(h.details)}</span>
                     <span className="shrink-0 text-[10px] text-muted">{timeAgo(h.createdAt)}</span>
                   </div>
                 ))}
@@ -634,10 +636,10 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                       />
                     ))}
                     <div className={cn(ROW_GRID, 'items-center py-2')}>
-                      <div className="flex items-center gap-1.5">
-                        <input type="checkbox" checked={coverEnabled} onChange={(e) => setCoverEnabled(e.target.checked)} className="h-3.5 w-3.5 shrink-0 accent-[var(--color-primary)]" />
-                        <span className="text-[11px] font-medium uppercase tracking-wider text-muted">Cover</span>
-                      </div>
+                      <label className="flex min-h-11 cursor-pointer items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted">
+                        <input type="checkbox" checked={coverEnabled} onChange={(e) => setCoverEnabled(e.target.checked)} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
+                        Cover
+                      </label>
                       <div>
                         <CoverThumb src={`/api/kavita/series/${seriesId}/cover`} alt="Current cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
                       </div>

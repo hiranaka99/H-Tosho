@@ -120,8 +120,7 @@ async function sendDiscord(n: Notification, webhookUrl: string): Promise<void> {
 }
 
 
-export async function testNotification(): Promise<{ discord: string }> {
-  const settings = getNotificationSettings();
+export async function testNotification(settings = getNotificationSettings()): Promise<{ discord: string }> {
   const out = { discord: 'disabled' };
   if (settings.discord.enabled && settings.discord.webhookUrl) {
     try {

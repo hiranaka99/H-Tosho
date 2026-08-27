@@ -159,6 +159,24 @@ describe('dispatcher status handling', () => {
     assert.match(out.discord, /HTTP 403/);
   });
 
+  it('tests submitted notification settings without persisting them', async () => {
+    setNotificationSettings({ discord: { enabled: false, webhookUrl: '' } });
+    let requested = '';
+    globalThis.fetch = (async (input) => {
+      requested = String(input);
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const res = await api.request('/settings/notifications/test', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ notifications: { discord: { enabled: true, webhookUrl: 'https://discord.com/api/webhooks/draft' } } }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).discord, 'ok');
+    assert.equal(requested, 'https://discord.com/api/webhooks/draft');
+    assert.equal(getNotificationSettings().discord.enabled, false);
+  });
+
   it('retries once after Retry-After on 429', async () => {
     setNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://discord.com/api/webhooks/rate' } });
     let calls = 0;

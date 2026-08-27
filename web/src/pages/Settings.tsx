@@ -2,7 +2,7 @@ import * as React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, Star, ArrowUp, ArrowDown, LockKeyhole } from 'lucide-react';
 import { api, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type DoujinSource } from '../lib/api';
-import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader, ErrorState, SegmentedTabs } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader, ErrorState, SegmentedTabs, ConfirmDialog } from '../components/ui';
 import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { useAuth } from '../lib/AuthContext';
@@ -104,6 +104,7 @@ export function Settings() {
 
   const invalidate = (key: string) => () => qc.invalidateQueries({ queryKey: [key] });
   const conn = React.useState({ baseUrl: '', apiKey: '' });
+  const connectionDirty = Boolean(kavita?.data && (conn[0].baseUrl !== (kavita.data.baseUrl ?? '') || conn[0].apiKey.trim()));
   // Hydrate the stored base URL on load / after save. The auth key is never
   // returned by the server — a set key is shown as "Set" in the placeholder.
   React.useEffect(() => {
@@ -114,6 +115,7 @@ export function Settings() {
     mutationFn: api.saveConnection,
     onSuccess: (res) => {
       invalidate('kavita-status')();
+      conn[1]((previous) => ({ ...previous, apiKey: '' }));
       setKavitaMsg({ ok: res.connected, text: res.test });
     },
     onError: (error) => setKavitaMsg({ ok: false, text: error instanceof Error ? error.message : String(error) }),
@@ -124,7 +126,9 @@ export function Settings() {
   React.useEffect(() => {
     if (s) setOrder(s.priorities);
   }, [s?.priorities]);
-  const savePriorities = useMutation({ mutationFn: api.savePriorities, onSuccess: invalidate('settings'), onError: (error) => toast({ tone: 'danger', title: 'Could not save provider priority', description: error instanceof Error ? error.message : String(error) }) });
+  const prioritiesDirty = Boolean(s && order.join('\0') !== s.priorities.join('\0'));
+  const priorityFlash = useFlash(invalidate('settings'));
+  const savePriorities = useMutation({ mutationFn: api.savePriorities, onSuccess: priorityFlash.flash, onError: (error) => toast({ tone: 'danger', title: 'Could not save provider priority', description: error instanceof Error ? error.message : String(error) }) });
   const onDrop = (to: number) => {
     const from = dragIndex.current;
     dragIndex.current = null;
@@ -150,15 +154,17 @@ export function Settings() {
   React.useEffect(() => {
     if (s) setNotif(s.notifications);
   }, [s?.notifications]);
+  const notificationsDirty = Boolean(s && JSON.stringify(notif) !== JSON.stringify(s.notifications));
   const notifFlash = useFlash(invalidate('settings'));
   const saveNotif = useMutation({ mutationFn: api.saveNotifications, onSuccess: notifFlash.flash, onError: (error) => toast({ tone: 'danger', title: 'Could not save notifications', description: error instanceof Error ? error.message : String(error) }) });
   const [notifMsg, setNotifMsg] = React.useState<{ discord: string } | null>(null);
-  const testNotif = useMutation({ mutationFn: api.testNotifications, onSuccess: (r) => setNotifMsg(r), onError: (error) => toast({ tone: 'danger', title: 'Notification test failed', description: error instanceof Error ? error.message : String(error) }) });
+  const testNotif = useMutation({ mutationFn: () => api.testNotifications(notif), onSuccess: (r) => setNotifMsg(r), onError: (error) => toast({ tone: 'danger', title: 'Notification test failed', description: error instanceof Error ? error.message : String(error) }) });
 
   const [poll, setPoll] = React.useState('12');
   React.useEffect(() => {
     if (s) setPoll(String(s.pollIntervalHours));
   }, [s?.pollIntervalHours]);
+  const pollDirty = Boolean(s && poll !== String(s.pollIntervalHours));
   const pollFlash = useFlash(invalidate('settings'));
   const savePoll = useMutation({ mutationFn: () => api.savePollInterval(Number(poll)), onSuccess: pollFlash.flash, onError: (error) => toast({ tone: 'danger', title: 'Could not save scan interval', description: error instanceof Error ? error.message : String(error) }) });
   const [tab, setTab] = React.useState<SettingsTab>('general');
@@ -177,8 +183,9 @@ export function Settings() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader icon={<SlidersHorizontal className="h-5 w-5" />} title="Settings" subtitle="Connect Kavita, configure providers and notifications." />
-      <SegmentedTabs items={SETTINGS_TABS} value={tab} onChange={setTab} label="Settings sections" className="self-start" />
+      <SegmentedTabs items={SETTINGS_TABS} value={tab} onChange={setTab} label="Settings sections" panelId="settings-panel" className="self-start" />
 
+      <div id="settings-panel" role="tabpanel" aria-labelledby={`settings-panel-tab-${tab}`} className="contents">
       {tab === 'general' && (<>
       <AccountSettingsCard />
       <Card className="animate-fade-up">
@@ -203,7 +210,7 @@ export function Settings() {
             </div>
           </div>
           <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-            <Button onClick={() => kavitaSave.mutate(conn[0])} disabled={kavitaSave.isPending || !conn[0].baseUrl}>
+            <Button onClick={() => kavitaSave.mutate(conn[0])} disabled={kavitaSave.isPending || !conn[0].baseUrl || !connectionDirty}>
               {kavitaSave.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Server className="h-3.5 w-3.5" />} Save & test connection
             </Button>
             {kavitaMsg && (
@@ -216,7 +223,7 @@ export function Settings() {
       </Card>
       <Card className="animate-fade-up" style={{ animationDelay: '60ms' }}>
         <SectionHeader icon={<Timer className="h-4 w-4" />} title="Auto-scan interval">
-          <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => savePoll.mutate()} disabled={savePoll.isPending || poll === '' || Number(poll) < 0} />
+          <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => savePoll.mutate()} disabled={savePoll.isPending || !pollDirty || poll === '' || Number(poll) < 0} />
         </SectionHeader>
         <CardContent className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <Input id="scan-interval" aria-label="Auto-scan interval in hours" type="number" min={0} value={poll} onChange={(e) => setPoll(e.target.value)} className="w-full sm:w-28" />
@@ -229,7 +236,7 @@ export function Settings() {
       {tab === 'providers' && (
       <Card className="animate-fade-up">
         <SectionHeader icon={<SlidersHorizontal className="h-4 w-4" />} title="Metadata providers">
-          <SaveButton label="Save priority" onClick={() => savePriorities.mutate(order)} disabled={savePriorities.isPending} />
+          <SaveButton label={priorityFlash.saved ? 'Saved' : 'Save priority'} onClick={() => savePriorities.mutate(order)} disabled={savePriorities.isPending || !prioritiesDirty} />
         </SectionHeader>
         <CardContent className="flex flex-col gap-4">
           <p className="text-sm text-muted">Drag to reorder or use the arrow buttons. Providers are searched top-to-bottom; the first confident match wins.</p>
@@ -251,9 +258,9 @@ export function Settings() {
                   <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: p.color }} />
                   <span className="min-w-0 flex-1 truncate text-sm font-medium">{p.name}</span>
                   <div className="flex items-center gap-1">
-                    <Button size="icon" variant="ghost" className="h-8 w-8" aria-label={`Move ${p.name} up`} disabled={idx === 0} onClick={() => moveProvider(idx, idx - 1)}><ArrowUp className="h-3.5 w-3.5" /></Button>
-                    <Button size="icon" variant="ghost" className="h-8 w-8" aria-label={`Move ${p.name} down`} disabled={idx === order.length - 1} onClick={() => moveProvider(idx, idx + 1)}><ArrowDown className="h-3.5 w-3.5" /></Button>
-                    <Switch aria-label={`Enable ${p.name}`} checked={p.enabled} onCheckedChange={(c) => api.saveProvider(p.id, { enabled: c }).then(invalidate('providers')).catch((error) => toast({ tone: 'danger', title: `Could not update ${p.name}`, description: error instanceof Error ? error.message : String(error) }))} />
+                    <Button size="icon" variant="ghost" aria-label={`Move ${p.name} up`} disabled={idx === 0} onClick={() => moveProvider(idx, idx - 1)}><ArrowUp className="h-3.5 w-3.5" /></Button>
+                    <Button size="icon" variant="ghost" aria-label={`Move ${p.name} down`} disabled={idx === order.length - 1} onClick={() => moveProvider(idx, idx + 1)}><ArrowDown className="h-3.5 w-3.5" /></Button>
+                    <Switch aria-label={`Enable ${p.name}`} checked={p.enabled} onCheckedChange={(c) => api.saveProvider(p.id, { enabled: c }).then(() => { invalidate('providers')(); toast({ tone: 'success', title: `${p.name} ${c ? 'enabled' : 'disabled'}` }); }).catch((error) => toast({ tone: 'danger', title: `Could not update ${p.name}`, description: error instanceof Error ? error.message : String(error) }))} />
                   </div>
                 </div>
               );
@@ -274,9 +281,9 @@ export function Settings() {
       <Card className="animate-fade-up">
         <SectionHeader icon={<Bell className="h-4 w-4" />} title="Notifications">
           <div className="flex items-center gap-2">
-            <SaveButton label={notifFlash.saved ? 'Saved' : 'Save'} onClick={() => saveNotif.mutate(notif)} disabled={saveNotif.isPending} />
-            <Button size="sm" variant="outline" onClick={() => testNotif.mutate()} disabled={testNotif.isPending}>
-              Test
+            <SaveButton label={notifFlash.saved ? 'Saved' : 'Save'} onClick={() => saveNotif.mutate(notif)} disabled={saveNotif.isPending || !notificationsDirty} />
+            <Button size="sm" variant="outline" onClick={() => testNotif.mutate()} disabled={testNotif.isPending || (notif.discord.enabled && !notif.discord.webhookUrl.trim())}>
+              {testNotif.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Test draft
             </Button>
           </div>
         </SectionHeader>
@@ -303,6 +310,7 @@ export function Settings() {
           <WatchedSearchesCard />
         </>
       )}
+      </div>
     </div>
   );
 }
@@ -325,9 +333,9 @@ function BannedTagsEditor({ value, onChange }: { value: string[]; onChange: (tag
       {value.length > 0 && (
         <div className="flex flex-wrap gap-1.5 py-1">
           {value.map((tag) => (
-            <span key={tag} className="inline-flex items-center gap-1 rounded-full bg-danger/15 px-2 py-0.5 text-xs font-medium text-danger">
+            <span key={tag} className="inline-flex min-h-11 items-center gap-1 rounded-full bg-danger/15 pl-3 text-xs font-medium text-danger">
               {tag}
-              <button type="button" onClick={() => onChange(value.filter((value) => value !== tag))} className="flex h-6 w-6 items-center justify-center rounded hover:bg-danger/30" aria-label={`Remove ${tag}`}><X className="h-3 w-3" /></button>
+              <button type="button" onClick={() => onChange(value.filter((value) => value !== tag))} className="flex h-11 w-11 items-center justify-center rounded-full hover:bg-danger/30" aria-label={`Remove ${tag}`}><X className="h-3.5 w-3.5" /></button>
             </span>
           ))}
         </div>
@@ -354,11 +362,12 @@ function DownloaderSettingsCard() {
 
   if (dl.isError) return <Card><ErrorState title="Could not load downloader settings" description={dl.error instanceof Error ? dl.error.message : String(dl.error)} onRetry={() => void dl.refetch()} /></Card>;
   if (!dlSettings) return <Card><SectionHeader icon={<Download className="h-4 w-4" />} title="Doujinshi downloader" /><CardContent className="flex items-center gap-2 text-muted"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</CardContent></Card>;
+  const downloaderDirty = Boolean(dl.data && JSON.stringify(dlSettings) !== JSON.stringify(dl.data));
 
   return (
     <Card className="animate-fade-up">
       <SectionHeader icon={<Download className="h-4 w-4" />} title="Doujinshi downloader">
-        <SaveButton label={flash.saved ? 'Saved' : 'Save'} onClick={() => save.mutate(dlSettings)} disabled={save.isPending} />
+        <SaveButton label={flash.saved ? 'Saved' : 'Save'} onClick={() => save.mutate(dlSettings)} disabled={save.isPending || !downloaderDirty} />
       </SectionHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-col gap-1"><Label htmlFor="download-directory">Output folder</Label><Input id="download-directory" value={dlSettings.downloadDirectory} onChange={(e) => setDlSettings({ ...dlSettings, downloadDirectory: e.target.value })} placeholder="/path/to/kavita/library or /downloads" /><p className="text-sm text-muted">Absolute path on this machine. Point it at a Kavita library folder to have new media picked up automatically.</p></div>
@@ -385,6 +394,7 @@ function WatchedSearchesCard() {
   const [source, setSource] = React.useState<DoujinSource>('hitomi');
   const [query, setQuery] = React.useState('');
   const [adding, setAdding] = React.useState(false);
+  const [removeTarget, setRemoveTarget] = React.useState<{ id: number; query: string } | null>(null);
   const [checking, setChecking] = React.useState(false);
 
   async function add() {
@@ -406,6 +416,7 @@ function WatchedSearchesCard() {
     try {
       await api.removeWatchedSearch(id);
       qc.invalidateQueries({ queryKey: ['watched-searches'] });
+      toast({ tone: 'info', title: 'Watched search removed' });
     } catch (e) {
       toast({ tone: 'danger', title: 'Could not remove watch', description: e instanceof Error ? e.message : String(e) });
     }
@@ -438,8 +449,7 @@ function WatchedSearchesCard() {
               <div key={w.id} className="flex flex-wrap items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-xs">
                 <Badge tone="muted">{WATCH_SOURCE_LABELS[w.source] ?? w.source}</Badge>
                 <span className="min-w-0 flex-1 truncate font-medium" title={w.query}>{w.query}</span>
-                <span className="w-full text-muted sm:w-auto sm:shrink-0">{w.lastCheckedAt ? `checked ${timeAgo(w.lastCheckedAt)}` : 'not checked yet'} · {w.seenCount} seen</span>
-                <Button size="icon" variant="ghost" aria-label={`Remove watch ${w.query}`} onClick={() => void remove(w.id)}><X className="h-3.5 w-3.5" /></Button>
+                <Button size="icon" variant="ghost" aria-label={`Remove watch ${w.query}`} onClick={() => setRemoveTarget({ id: w.id, query: w.query })}><X className="h-3.5 w-3.5" /></Button>
               </div>
             ))}
           </div>
@@ -451,6 +461,14 @@ function WatchedSearchesCard() {
           <Input aria-label="Watched search query" placeholder="Search query, e.g. artist:konboi" value={query} onChange={(e) => setQuery(e.target.value)} className="flex-1" />
           <Button size="sm" type="submit" disabled={adding || !query.trim()}>{adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add</Button>
         </form>
+      <ConfirmDialog
+        open={removeTarget !== null}
+        title="Remove watched search?"
+        description={removeTarget ? `Stop watching “${removeTarget.query}”?` : ''}
+        confirmLabel="Remove"
+        onOpenChange={(open) => { if (!open) setRemoveTarget(null); }}
+        onConfirm={() => { if (removeTarget) void remove(removeTarget.id); setRemoveTarget(null); }}
+      />
       </CardContent>
     </Card>
   );
@@ -462,6 +480,7 @@ function ProviderCreds({ provider, onChanged }: { provider: ProviderInfo; onChan
   const [testMsg, setTestMsg] = React.useState<{ ok: boolean; error?: string } | null>(null);
   const [saved, setSaved] = React.useState(false);
   const hasFields = provider.credentialFields.length > 0;
+  const credentialsDirty = provider.credentialFields.some((field) => (creds[field.key] ?? '') !== (provider.credentials?.[field.key] ?? ''));
 
   return (
     <div className="rounded-md border border-border p-3">
@@ -474,6 +493,7 @@ function ProviderCreds({ provider, onChanged }: { provider: ProviderInfo; onChan
           <Button
             size="sm"
             variant="outline"
+            disabled={!credentialsDirty}
             onClick={async () => {
               try {
                 await api.saveProvider(provider.id, { credentials: creds });
@@ -485,7 +505,7 @@ function ProviderCreds({ provider, onChanged }: { provider: ProviderInfo; onChan
               }
             }}
           >
-            {saved ? 'Saved' : 'Save creds'}
+            {saved ? 'Saved' : 'Save credentials'}
           </Button>
         )}
         <Button size="sm" variant="secondary" onClick={() => test.mutate()} disabled={test.isPending}>
