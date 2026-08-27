@@ -356,18 +356,26 @@ export function Libraries() {
                         <Check className="h-3.5 w-3.5" />
                       </div>
                     )}
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setComicInfo({ id: r.id, name: r.name });
-                      }}
-                      title="Edit ComicInfo.xml"
-                      className="absolute right-1.5 top-1.5 z-30 flex h-11 w-11 items-center justify-center rounded-lg border border-white/15 bg-black/70 text-white shadow-md backdrop-blur-sm transition-all duration-150 hover:border-primary hover:bg-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                      aria-label={`Edit ComicInfo.xml for ${r.name}`}
-                    >
-                      <FileText className="h-3.5 w-3.5" />
-                    </button>
+                    <div className="absolute right-1.5 top-1.5 z-30 flex items-center gap-1.5">
+                      {!selectMode && r.artists?.length ? (
+                        <>
+                          <ArtistSearchButton source="hitomi" artists={r.artists} variant="icon" />
+                          <ArtistSearchButton source="nhentai" artists={r.artists} variant="icon" />
+                        </>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setComicInfo({ id: r.id, name: r.name });
+                        }}
+                        title="Edit ComicInfo.xml"
+                        className="flex h-11 w-11 items-center justify-center rounded-lg border border-white/15 bg-black/70 text-white shadow-md backdrop-blur-sm transition-all duration-150 hover:border-primary hover:bg-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                        aria-label={`Edit ComicInfo.xml for ${r.name}`}
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                     <div className="aspect-[3/4] w-full overflow-hidden">
                       <Cover src={r.cover} name={r.name} className="transition-transform duration-300 ease-out group-hover:scale-105" />
                     </div>
@@ -380,16 +388,7 @@ export function Libraries() {
                           <span className="rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white/80">{r.pageCount} pages</span>
                         )}
                       </div>
-                      {!selectMode && (
-                        <span className="pointer-events-none text-[10px] font-medium text-white/75">Open to identify</span>
-                      )}
                       {r.status === 'failed' && r.errorMessage && <span className="line-clamp-2 text-[10px] text-red-200">{r.errorMessage}</span>}
-                      {!selectMode && r.artists?.length ? (
-                        <div className="flex gap-1.5" aria-label={`Search for ${r.artists[0]} by source`}>
-                          <ArtistSearchButton source="hitomi" artists={r.artists} variant="icon" />
-                          <ArtistSearchButton source="nhentai" artists={r.artists} variant="icon" />
-                        </div>
-                      ) : null}
                     </div>
                   </Card>
                 ))}
