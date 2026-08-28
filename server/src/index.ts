@@ -58,10 +58,10 @@ const WATCHED_SEARCH_INTERVAL_MS = 15 * 60_000;
     }, WATCHED_SEARCH_INTERVAL_MS);
     watchedTimer.unref?.();
   }
+
   const unsubscribePollInterval = onPollIntervalChange(scheduleScan);
   scheduleScan();
   scheduleWatchedSearches();
-
   const app = createApp();
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST });
   console.log(`[h-tosho] listening on http://${HOST}:${PORT} (api at /api)`);
@@ -70,7 +70,6 @@ const WATCHED_SEARCH_INTERVAL_MS = 15 * 60_000;
     console.log('[h-tosho] shutting down');
     clearTimeout(pollTimer);
     clearTimeout(watchedTimer);
-    unsubscribePollInterval();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 2000).unref();
   };

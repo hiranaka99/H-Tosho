@@ -55,8 +55,15 @@ export interface DoujinGallery extends DoujinSearchResult {
    */
   pageFallbacks?: (string | null)[];
   series?: string;
-  /** Optional group/circle name. */
+  /** Original-language title when the source exposes one (display title stays in `title`). */
+  titleAlt?: string;
   groups?: string[];
+  /** Scanlation group credited by the source, when exposed. */
+  scanlator?: string;
+  /** Optional character names from the gallery. */
+  characters?: string[];
+  /** Optional parody/series the gallery is a fan work of (all values, not just the primary). */
+  parodies?: string[];
   /**
    * Search namespace for each entry in `tags` (parallel array, same order and
    * length). Hitomi tags carry a `female`/`male` area; nHentai tags carry their

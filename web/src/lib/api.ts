@@ -226,9 +226,15 @@ export interface DoujinGallery {
   tags: string[];
   /** Search namespace per tag (parallel to `tags`; null = plain keyword). */
   tagNamespaces?: (string | null)[];
-  /** Group/circle names (Hitomi). */
+  /** Group/circle names. */
   groups?: string[];
-  /** Characters / genres (Hitomi maps characters here). */
+  /** Character names from the gallery. */
+  characters?: string[];
+  /** All parody/series values the gallery is a fan work of. */
+  parodies?: string[];
+  /** Original-language title when the source exposes one. */
+  titleAlt?: string;
+  /** Legacy genres slot (Hitomi historically mapped characters here). */
   genres?: string[];
   pageCount: number;
   url?: string;
@@ -301,7 +307,18 @@ export interface WatchedSearch {
   lastCheckedAt: string | null;
   lastResultCount: number | null;
   seenCount: number;
+  /** New galleries from the last check that found something (empty otherwise). */
+  lastResults: WatchedSearchResultItem[];
 }
+
+/** One gallery in a watch's "new since last check" list. */
+export interface WatchedSearchResultItem {
+  galleryId: string;
+  title: string;
+  url?: string;
+  coverUrl?: string;
+}
+
 /** One pick in a daily recommendation set (a search result plus why it matched). */
 export interface RecommendationItem extends DoujinSearchResult {
   /** Human-readable profile terms that matched this gallery, e.g. ["artist konboi", "tag solo"]. */
@@ -405,7 +422,6 @@ export const api = {
   /** Recent sync/match history for one series (newest first). */
   seriesHistory: (id: number) => request<SyncHistoryEntry[]>(`/series/${id}/history`),
 
-  // ---------------- Watched searches ----------------
   watchedSearches: () => request<WatchedSearch[]>('/watched-searches'),
   addWatchedSearch: (source: DoujinSource, query: string) =>
     request<WatchedSearch>('/watched-searches', { method: 'POST', body: JSON.stringify({ source, query }) }),
@@ -454,6 +470,7 @@ export const api = {
   jobs: () => request<Job[]>('/jobs'),
   job: (id: number) => request<{ job: Job; logs: JobLog[] }>(`/jobs/${id}`),
   cancelJob: (id: number) => request<{ ok: boolean }>(`/jobs/${id}/cancel`, { method: 'POST' }),
+  retryJob: (id: number) => request<{ ok: boolean; id: number }>(`/jobs/${id}/retry`, { method: 'POST' }),
   logs: () => request<JobLog[]>('/logs'),
 
   // ---------------- Doujinshi downloader ----------------

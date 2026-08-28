@@ -11,17 +11,134 @@ const execFileAsync = promisify(execFile);
 /**
  * nHentai (nhentai.net) provider — uses the official v2 JSON API.
  *
- * Endpoints (see https://nhentai.net/api/v2/docs):
- *   - `GET /api/v2/search?query=<q>&limit=<n>`  -> { result: GalleryListItem[] }
+ * Endpoints (see https://nhentai.net/api/v2/docs, spec: /api/v2/openapi.json):
+ *   - `GET /api/v2/search?query=<q>&page=<n>`   -> PaginatedResponse<GalleryListItem>
  *   - `GET /api/v2/galleries/{id}`              -> GalleryDetailResponse
  *   - `GET /api/v2/cdn`                         -> { image_servers, thumb_servers }
+ *   - `GET /api/v2/tags/ids?ids=<csv>`          -> TagResponse[] (max 100 ids)
+ *   - `POST /api/v2/tags/search`                -> TagResponse[] (autocomplete)
+ *
+ * Auth: the optional API key is sent as `Authorization: Key <key>` (the only
+ * documented mechanism — see the openapi.json info description). Search rows
+ * carry numeric `tag_ids` only, so they are batch-resolved to named tags via
+ * `/api/v2/tags/ids` (cached for the process lifetime) before being mapped.
  *
  * The detail response returns relative media paths (`galleries/<mediaId>/<n>.<ext>`)
  * plus a typed `tags[]` array. Full-resolution images live on the rotating
  * `image_servers` (i1..i4.nhentai.net) and thumbnails on `thumb_servers`. We
  * cache the CDN config briefly and prefix each relative path with the first
- * available server.
+ * available server, keeping the remaining image servers (then the thumbnail) as
+ * per-page fallbacks.
+ *
+ * Documented rate limits per IP: search 10/min anonymous / 20/min with key,
+ * gallery detail 20/min / 45/min, galleries listing 15/min / 30/min, tag
+ * lookups 15/min, tag autocomplete 30/min. Every outbound call is serialized
+ * through a shared client-side throttle (per-endpoint-class minimum interval,
+ * see `nhentaiRateLimits`) tuned to the key tier, with adaptive slowdown plus
+ * bounded retry-with-backoff on 429/5xx.
  */
+
+/**
+ * Client-side rate-limit knobs, per endpoint class, kept just under the
+ * documented per-IP caps. Exported so tests can tighten them; mutate before
+ * exercising the provider in tests to keep them fast. Without an API key the
+ * tighter anonymous tier applies (see `anonIntervalMs`); with one, the key tier.
+ */
+export const nhentaiRateLimits = {
+  /**
+   * Key-tier minimum interval (ms): /api/v2/search (documented 20/min),
+   * gallery detail + CDN config (45/min), /api/v2/tags/ids batch lookups
+   * (15/min, public), tag autocomplete (30/min, public).
+   */
+  intervalMs: {
+    search: 3_200,
+    gallery: 2_200,
+    tags: 4_200,
+    suggest: 2_200,
+  } as Record<RateClass, number>,
+  /**
+   * Anonymous-tier minimum interval (ms): search 10/min, gallery detail
+   * 20/min. Tags/autocomplete endpoints are public (no key tiers), so the
+   * key-tier intervals already satisfy them.
+   */
+  anonIntervalMs: {
+    search: 6_200,
+    gallery: 3_100,
+    tags: 0,
+    suggest: 0,
+  } as Record<RateClass, number>,
+  /** Base delay for the first 429/5xx retry; doubles per attempt. */
+  backoffBaseMs: 800,
+  /** Max retries per request on 429/5xx before surfacing the failure. */
+  maxRetries: 3,
+};
+
+type RateClass = 'search' | 'gallery' | 'tags' | 'suggest';
+
+// Shared throttle state: one serialization queue across every call the
+// provider makes, so a burst of watched-search/recommendation lookups cannot
+// fire concurrently and trip an IP ban.
+let throttleTail: Promise<void> = Promise.resolve();
+let lastAnyAt = 0;
+const lastByClass = new Map<RateClass, number>();
+let throttleMultiplier = 1;
+let last429At = 0;
+/** After this long without a 429, the adaptive slowdown decays back to 1x. */
+const THROTTLE_DECAY_MS = 5 * 60_000;
+const THROTTLE_MULTIPLIER_MAX = 6;
+/** Minimum gap between any two requests, regardless of endpoint class. */
+const MIN_ANY_GAP_MS = 250;
+
+async function acquireSlot(cls: RateClass): Promise<void> {
+  const run = throttleTail.then(async () => {
+    if (throttleMultiplier > 1 && Date.now() - last429At > THROTTLE_DECAY_MS) {
+      throttleMultiplier = 1;
+    }
+    const now = Date.now();
+    const intervalMs = getApiKey()
+      ? nhentaiRateLimits.intervalMs[cls]
+      : Math.max(nhentaiRateLimits.intervalMs[cls], nhentaiRateLimits.anonIntervalMs[cls]);
+    const waitMs = Math.max(
+      lastAnyAt + MIN_ANY_GAP_MS - now,
+      (lastByClass.get(cls) ?? 0) + intervalMs * throttleMultiplier - now,
+    );
+    if (waitMs > 0) await sleep(waitMs);
+    const at = Date.now();
+    lastAnyAt = at;
+    lastByClass.set(cls, at);
+  });
+  throttleTail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  await run;
+}
+
+/**
+ * fetchJson with the shared throttle applied plus bounded 429/5xx retry with
+ * exponential backoff. Each 429 raises the adaptive multiplier (slowing every
+ * subsequent call) so a sustained throttle backs off rather than hammering.
+ * Non-2xx responses are returned as-is (raw mode) for callers to interpret.
+ */
+async function throttledFetchJson<T>(
+  cls: RateClass,
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 15_000,
+): Promise<{ status: number; data: T | null }> {
+  for (let attempt = 0; ; attempt++) {
+    await acquireSlot(cls);
+    const res = await fetchJson<T>(url, init, timeoutMs, { raw: true });
+    if ((res.status !== 429 && res.status < 500) || attempt >= nhentaiRateLimits.maxRetries) {
+      return { status: res.status, data: (res.data ?? null) as T | null };
+    }
+    if (res.status === 429) {
+      last429At = Date.now();
+      throttleMultiplier = Math.min(throttleMultiplier * 1.5, THROTTLE_MULTIPLIER_MAX);
+    }
+    await sleep(nhentaiRateLimits.backoffBaseMs * 2 ** attempt);
+  }
+}
 
 const BASE = 'https://nhentai.net';
 // nHentai asks clients to send a descriptive User-Agent ("AppName/version") so
@@ -105,9 +222,13 @@ let cdnCache: CdnConfig | null = null;
 let cdnCacheAt = 0;
 const CDN_TTL_MS = 10 * 60_000;
 
-async function getCdn(): Promise<CdnConfig> {
-  if (cdnCache && Date.now() - cdnCacheAt < CDN_TTL_MS) return cdnCache;
-  const res = await fetchJson<{ image_servers: string[]; thumb_servers: string[] }>(`${BASE}/api/v2/cdn`, { headers: headers() }, 15_000, { raw: true });
+async function getCdn(forceRefresh = false): Promise<CdnConfig> {
+  if (!forceRefresh && cdnCache && Date.now() - cdnCacheAt < CDN_TTL_MS) return cdnCache;
+  const res = await throttledFetchJson<{ image_servers: string[]; thumb_servers: string[] }>(
+    'gallery',
+    `${BASE}/api/v2/cdn`,
+    { headers: headers() },
+  );
   if (res.status !== 200 || !res.data?.image_servers?.length) {
     throw new Error('nHentai CDN config fetch failed');
   }
@@ -122,7 +243,104 @@ function joinServer(server: string | undefined, relPath: string): string {
   return `${base}/${relPath.replace(/^\/+/, '')}`;
 }
 
+/**
+ * A search row enriched with the pre-hydration metadata recommendations and
+ * watched searches filter on. `DoujinSearchResult` only declares the common
+ * subset; the extra fields ride along on the returned objects.
+ */
+interface NhentaiSearchRow extends DoujinSearchResult {
+  series?: string;
+  parodies?: string[];
+  groups?: string[];
+  characters?: string[];
+  tagNamespaces?: (string | undefined)[];
+}
+
+// ---- search-row tag resolution ----------------------------------------------
+
+/**
+ * Search rows carry numeric `tag_ids` only. Resolve them to named tags via
+ * `/api/v2/tags/ids` (max 100 ids per request, documented 15/min). The taxonomy
+ * is stable, so results are cached for the process lifetime — repeated searches
+ * and recommendation bursts mostly hit the cache instead of the API.
+ */
+const tagCache = new Map<number, ApiTag>();
+const TAG_CACHE_MAX = 100_000;
+
+async function resolveTags(ids: number[]): Promise<Map<number, ApiTag>> {
+  const out = new Map<number, ApiTag>();
+  const missing: number[] = [];
+  for (const id of ids) {
+    const cached = tagCache.get(id);
+    if (cached) {
+      out.set(id, cached);
+    } else if (!missing.includes(id)) {
+      missing.push(id);
+    }
+  }
+  const CHUNK = 100;
+  for (let i = 0; i < missing.length; i += CHUNK) {
+    const chunk = missing.slice(i, i + CHUNK);
+    const res = await throttledFetchJson<ApiTag[]>(
+      'tags',
+      `${BASE}/api/v2/tags/ids?ids=${chunk.join(',')}`,
+      { headers: headers() },
+    );
+    if (res.status !== 200 || !Array.isArray(res.data)) continue;
+    for (const t of res.data) {
+      if (typeof t?.id !== 'number' || !t.name) continue;
+      if (tagCache.size >= TAG_CACHE_MAX) tagCache.clear();
+      tagCache.set(t.id, t);
+      out.set(t.id, t);
+    }
+  }
+  return out;
+}
+
 // ---- tag taxonomy -----------------------------------------------------------
+
+interface SplitTags {
+  tags: string[];
+  /** Parallel to `tags`: each tag's own search namespace (its nHentai type). */
+  tagNamespaces: (string | undefined)[];
+  artists: string[];
+  characters: string[];
+  /** Parody/series values (nHentai models a series as a `parody` tag). */
+  parodies: string[];
+  groups: string[];
+  langTags: string[];
+}
+
+/** Split a typed nHentai `tags[]` array into the per-category lists we expose. */
+function splitTags(apiTags: ApiTag[]): SplitTags {
+  const out: SplitTags = {
+    tags: [],
+    tagNamespaces: [],
+    artists: [],
+    characters: [],
+    parodies: [],
+    groups: [],
+    langTags: [],
+  };
+  for (const t of apiTags) {
+    if (!t?.name) continue;
+    const category = mapTagType(t.type);
+    // Cap the flat tag list (the ComicInfo Tags field stays bounded); category
+    // lists stay uncapped — they are naturally small.
+    if (out.tags.length < 40) {
+      out.tags.push(t.name);
+      out.tagNamespaces.push(category);
+    }
+    if (category === 'artist') out.artists.push(t.name);
+    else if (category === 'character') out.characters.push(t.name);
+    else if (category === 'language') out.langTags.push(t.name);
+    else if (category === 'group') out.groups.push(t.name);
+    else if (category === 'parody' || category === 'series') out.parodies.push(t.name);
+  }
+  return out;
+}
+
+// ---- tag taxonomy (type mapping) --------------------------------------------
 
 /** Map an nHentai v2 tag `type` onto our normalized tag category. */
 function mapTagType(type: string): string {
@@ -168,6 +386,9 @@ function detectLanguage(langTags: string[], title: string): string | undefined {
 async function fetchTagsViaCurl(body: string): Promise<ApiTag[] | null> {
   const bin = process.platform === 'win32' ? 'curl.exe' : 'curl';
   for (let attempt = 0; attempt < 2; attempt++) {
+    // The server counts subprocess requests the same as in-process ones, so
+    // the curl path goes through the shared throttle too.
+    await acquireSlot('suggest');
     try {
       const { stdout } = await execFileAsync(
         bin,
@@ -191,6 +412,24 @@ async function fetchTagsViaCurl(body: string): Promise<ApiTag[] | null> {
   return null;
 }
 
+/**
+ * Direct in-process POST to /api/v2/tags/search (Cloudflare usually waves
+ * authenticated requests through). Returns the parsed tag array, or null when
+ * the endpoint is unreachable/challenged — callers fall back to curl.
+ */
+async function postTagSearch(body: string): Promise<ApiTag[] | null> {
+  const res = await throttledFetchJson<ApiTag[]>(
+    'suggest',
+    `${BASE}/api/v2/tags/search`,
+    {
+      method: 'POST',
+      headers: { ...headers(), 'Content-Type': 'application/json' },
+      body,
+    },
+  );
+  return res.status === 200 && Array.isArray(res.data) ? res.data : null;
+}
+
 // ---- API shapes -------------------------------------------------------------
 
 interface ApiGalleryListItem {
@@ -207,7 +446,7 @@ interface ApiSearchResponse {
   result: ApiGalleryListItem[];
   /** Total number of pages for this query (1-based). */
   num_pages?: number;
-  /** Results per page as served by the API (25 without an API key, up to 50 with one). */
+  /** Fixed page size as served by the API (25 live-observed; the search endpoint has no `limit` parameter). */
   per_page?: number;
   /** Total matching galleries. */
   total?: number;
@@ -258,22 +497,10 @@ export const nhentaiProvider: DoujinProvider = {
     const sortParam =
       sort && ['popular', 'popular-week', 'popular-today'].includes(sort) ? `&sort=${sort}` : '';
 
-    // A bare gallery id / URL should resolve to that single gallery.
+    // A bare gallery id / URL should resolve to that single gallery. The full
+    // DoujinGallery doubles as a search row (it extends DoujinSearchResult).
     if (/^\d+$/.test(q)) {
-      const g = await this.getGallery(q);
-      return [
-        {
-          source: 'nhentai',
-          galleryId: g.galleryId,
-          title: g.title,
-          coverUrl: g.coverUrl ?? undefined,
-          tags: g.tags,
-          artists: g.artists,
-          language: g.language,
-          pageCount: g.pageCount,
-          url: g.url,
-        },
-      ];
+      return [await this.getGallery(q)];
     }
 
     // Append configured banned-tag exclusions so galleries carrying any of them
@@ -284,30 +511,24 @@ export const nhentaiProvider: DoujinProvider = {
 
     const cdn = await getCdn();
     const want = Math.max(limit, 1);
-    // The API caps `limit` at 50 per request and paginates via `page`. Walk the
-    // pages until we've collected `want` results or run out of pages. A hard cap
-    // keeps open-ended queries (e.g. a single common tag) from issuing dozens of
+    // The API serves a fixed page size (`per_page`, 25 live-observed; there is
+    // no `limit` parameter) and paginates via `page`. Walk the pages until
+    // we've collected `want` results or run out of pages. A hard cap keeps
+    // open-ended queries (e.g. a single common tag) from issuing dozens of
     // sequential page requests — which is slow and easily trips nHentai's rate
     // limits, especially without a valid API key.
     const MAX_RESULTS = 250;
     const target = Math.min(want, MAX_RESULTS);
-    const out: DoujinSearchResult[] = [];
+    const out: NhentaiSearchRow[] = [];
     const seen = new Set<string>();
 
     let page = 1;
     do {
-      const url = `${BASE}/api/v2/search?query=${encodeURIComponent(searchQuery)}&limit=50&page=${page}${sortParam}`;
-      // Retry transient rate limits (429) / server errors with backoff so a
-      // multi-page search doesn't fail on a single throttled request. Retries are
-      // capped for BOTH 429 and 5xx — previously the 429 branch had no attempt
-      // guard, so a sustained throttle retried forever (ever-growing backoff) and
-      // hung the whole search well past a minute.
-      interface SearchFetchResult { status: number; data: ApiSearchResponse | null }
-      let res: SearchFetchResult = await fetchJson<ApiSearchResponse>(url, { headers: headers() }, 15_000, { raw: true });
-      for (let attempt = 0; attempt < 3 && (res.status === 429 || res.status >= 500); attempt++) {
-        await sleep(800 * (attempt + 1));
-        res = await fetchJson<ApiSearchResponse>(url, { headers: headers() }, 15_000, { raw: true });
-      }
+      const url = `${BASE}/api/v2/search?query=${encodeURIComponent(searchQuery)}&page=${page}${sortParam}`;
+      // throttledFetchJson spaces pages through the shared throttle and retries
+      // transient 429/5xx with capped exponential backoff, so a multi-page
+      // search doesn't fail on a single throttled request.
+      const res = await throttledFetchJson<ApiSearchResponse>('search', url, { headers: headers() });
       if (res.status === 429) {
         throw new Error(
           'nHentai is rate-limiting this search. Set a valid nHentai API key in Settings to raise the limit, then try again.',
@@ -319,18 +540,34 @@ export const nhentaiProvider: DoujinProvider = {
       const items = res.data.result;
       if (!items.length) break;
 
+      // Resolve the page's numeric tag ids to named tags (cache hits are free;
+      // misses batch into /api/v2/tags/ids calls of up to 100 ids each).
+      const tagIds = items.flatMap((item) => (Array.isArray(item?.tag_ids) ? item.tag_ids : []));
+      const tagsById = await resolveTags(tagIds);
+
       for (const item of items) {
         if (!item || typeof item.id !== 'number') continue;
         const id = String(item.id);
         if (seen.has(id)) continue;
         seen.add(id);
+        const title = item.english_title || item.japanese_title || `Gallery ${id}`;
+        const resolved = (item.tag_ids ?? [])
+          .map((tid) => tagsById.get(tid))
+          .filter((t): t is ApiTag => !!t);
+        const split = splitTags(resolved);
         out.push({
           source: 'nhentai',
           galleryId: id,
-          title: item.english_title || item.japanese_title || `Gallery ${id}`,
+          title,
           coverUrl: joinServer(cdn.thumbServers[0], item.thumbnail ?? ''),
-          tags: [],
-          artists: [],
+          tags: split.tags,
+          tagNamespaces: split.tagNamespaces,
+          artists: split.artists,
+          series: split.parodies[0],
+          parodies: split.parodies,
+          groups: split.groups,
+          characters: split.characters,
+          language: detectLanguage(split.langTags, title),
           pageCount: item.num_pages ?? undefined,
           url: `${BASE}/g/${id}/`,
         });
@@ -340,8 +577,7 @@ export const nhentaiProvider: DoujinProvider = {
       const totalPages = res.data.num_pages && res.data.num_pages > 0 ? res.data.num_pages : Infinity;
       page++;
       if (page > totalPages) break;
-      // Small pause between pages to stay within the API's rate limits.
-      await new Promise((r) => setTimeout(r, 250));
+      // Page spacing is enforced by the shared throttle — no extra pause needed.
     } while (true);
 
     return out.slice(0, want);
@@ -357,16 +593,13 @@ export const nhentaiProvider: DoujinProvider = {
     if (!q) return [];
 
     const body = JSON.stringify({ query: q, limit: Math.min(Math.max(limit, 1), 50) });
-    // Prefer curl (Cloudflare lets it through); fall back to fetch().
-    let data: ApiTag[] | null = await fetchTagsViaCurl(body);
-    if (!data) {
-      const res = await fetchJson<ApiTag[]>(`${BASE}/api/v2/tags/search`, {
-        method: 'POST',
-        headers: headers(),
-        body,
-      }, 15_000, { raw: true });
-      if (res.status === 200 && Array.isArray(res.data)) data = res.data;
-    }
+    // With an API key, go straight through the official POST endpoint
+    // (authenticated requests are usually waved through Cloudflare); without
+    // one, Node's fetch() on POST endpoints gets challenged, so curl goes
+    // first and the in-process POST is only the last resort.
+    const data: ApiTag[] | null = getApiKey()
+      ? (await postTagSearch(body)) ?? (await fetchTagsViaCurl(body))
+      : (await fetchTagsViaCurl(body)) ?? (await postTagSearch(body));
     if (!data) return [];
 
     const out: DoujinSuggestion[] = [];
@@ -390,17 +623,27 @@ export const nhentaiProvider: DoujinProvider = {
     const id = extractGalleryId(idOrUrl, GALLERY_URL_RE);
     if (!id) throw new Error('Could not parse an nHentai gallery ID from the input.');
 
-    const res = await fetchJson<ApiGalleryDetail>(`${BASE}/api/v2/galleries/${id}`, { headers: headers() }, 15_000, { raw: true });
+    const res = await throttledFetchJson<ApiGalleryDetail>(
+      'gallery',
+      `${BASE}/api/v2/galleries/${id}`,
+      { headers: headers() },
+    );
     if (res.status !== 200 || !res.data) {
       throw new Error(`nHentai gallery fetch failed (HTTP ${res.status})`);
     }
     const g = res.data;
 
     const title = g.title?.pretty || g.title?.english || g.title?.japanese || `Gallery ${id}`;
+    // Original-language (Japanese) title for metadata sync; display title stays
+    // in `title`.
+    const titleAlt =
+      g.title?.japanese ||
+      (g.title?.english && g.title.english !== g.title?.pretty ? g.title.english : undefined) ||
+      undefined;
 
     // Pages: prefer the explicit pages[] list, else synthesize from num_pages.
     const cdn = await getCdn();
-    const imageServer = cdn.imageServers[0];
+    const imageServers = cdn.imageServers;
     const thumbServer = cdn.thumbServers[0];
     const mediaId = g.media_id != null ? String(g.media_id) : '';
 
@@ -412,62 +655,93 @@ export const nhentaiProvider: DoujinProvider = {
     const pageFallbacks: (string | null)[] = [];
     for (let n = 1; n <= pageCount; n++) {
       const p = apiPages.find((ap) => ap.number === n);
-      let fullUrl = '';
-      let thumbUrl: string | undefined;
+      let relPath = '';
       if (p?.path) {
-        fullUrl = joinServer(imageServer, p.path);
-        thumbUrl = p.thumbnail ? joinServer(thumbServer, p.thumbnail) : undefined;
+        relPath = p.path;
       } else if (mediaId) {
         // Synthesize the canonical path: galleries/<mediaId>/<n>.<ext>
         const ext = apiPages[0]?.path?.split('.').pop() ?? 'jpg';
-        fullUrl = joinServer(imageServer, `galleries/${mediaId}/${n}.${ext}`);
+        relPath = `galleries/${mediaId}/${n}.${ext}`;
       }
-      if (!fullUrl) throw new Error(`Could not resolve image URLs for nHentai gallery ${id} (page ${n}).`);
-      pages.push(fullUrl);
-      pageFallbacks.push(thumbUrl && thumbUrl !== fullUrl ? thumbUrl : null);
+      if (!relPath) throw new Error(`Could not resolve image URLs for nHentai gallery ${id} (page ${n}).`);
+      const primary = joinServer(imageServers[0], relPath);
+      // The engine keeps a single static fallback per page, so order the
+      // alternates same-quality first: the other full-res image servers, then
+      // the low-res thumbnail as the last resort. resolvePageUrl below
+      // re-resolves against the current CDN config at download time anyway.
+      let fallback: string | null = null;
+      for (let s = 1; s < imageServers.length; s++) {
+        const alt = joinServer(imageServers[s], relPath);
+        if (alt && alt !== primary) {
+          fallback = alt;
+          break;
+        }
+      }
+      if (!fallback) {
+        const thumbUrl = p?.thumbnail ? joinServer(thumbServer, p.thumbnail) : null;
+        if (thumbUrl && thumbUrl !== primary) fallback = thumbUrl;
+      }
+      pages.push(primary);
+      pageFallbacks.push(fallback);
     }
 
-    // Tags: typed tags[] -> artists, characters, language, series + flat list.
-    const artists: string[] = [];
-    const characters: string[] = [];
-    const langTags: string[] = [];
-    let series: string | undefined;
-    const flatTags: string[] = [];
-    // Parallel to flatTags: each tag's own search namespace (its nHentai type),
-    // so the UI can build a namespaced query like `tag:"gyaru"` per pill.
-    const flatTagNs: (string | undefined)[] = [];
-    for (const t of g.tags ?? []) {
-      if (!t?.name) continue;
-      const category = mapTagType(t.type);
-      flatTags.push(t.name);
-      flatTagNs.push(category);
-      if (category === 'artist') artists.push(t.name);
-      else if (category === 'character') characters.push(t.name);
-      else if (category === 'language') langTags.push(t.name);
-      else if (category === 'series' && !series) series = t.name;
-    }
-
-    const language = detectLanguage(langTags, title);
+    // Tags: typed tags[] -> artists, characters, parodies, groups + flat list.
+    const split = splitTags(g.tags ?? []);
+    const language = detectLanguage(split.langTags, title);
 
     // Cover: prefer the dedicated cover, else the first thumbnail.
     const coverRel = typeof g.cover === 'string' ? g.cover : g.cover?.path;
-    const coverUrl = coverRel ? joinServer(cdn.thumbServers[0], coverRel) : pageFallbacks[0] ?? undefined;
+    const coverUrl = coverRel ? joinServer(thumbServer, coverRel) : pageFallbacks[0] ?? undefined;
 
     return {
       source: 'nhentai',
       galleryId: id,
       title,
+      titleAlt,
       coverUrl,
       language,
-      series,
-      artists,
-      tags: flatTags.slice(0, 40),
-      tagNamespaces: flatTagNs.slice(0, 40),
+      series: split.parodies[0],
+      artists: split.artists,
+      tags: split.tags,
+      tagNamespaces: split.tagNamespaces,
+      groups: split.groups,
+      characters: split.characters,
+      parodies: split.parodies,
+      scanlator: g.scanlator?.trim() || undefined,
       pageCount,
       pages,
       pageFallbacks,
       uploadedAt: toIsoDate(g.upload_date),
       url: `${BASE}/g/${id}/`,
+      // Rebuild a page's URLs against the *current* CDN config right before
+      // fetching (and after a failure with forceRefresh), so long downloads
+      // survive image-server rotation that would 404 stale pre-built URLs.
+      resolvePageUrl: async (index, opts) => {
+        if (index < 0 || index >= pageCount) return null;
+        const cdnNow = await getCdn(opts?.forceRefresh === true);
+        const p = apiPages.find((ap) => ap.number === index + 1);
+        let relPath = p?.path ?? '';
+        if (!relPath && mediaId) {
+          const ext = apiPages[0]?.path?.split('.').pop() ?? 'jpg';
+          relPath = `galleries/${mediaId}/${index + 1}.${ext}`;
+        }
+        if (!relPath) return null;
+        const url2 = joinServer(cdnNow.imageServers[0], relPath);
+        if (!url2) return null;
+        let fallback2: string | null = null;
+        for (let s = 1; s < cdnNow.imageServers.length; s++) {
+          const alt = joinServer(cdnNow.imageServers[s], relPath);
+          if (alt && alt !== url2) {
+            fallback2 = alt;
+            break;
+          }
+        }
+        if (!fallback2) {
+          const thumbUrl = p?.thumbnail ? joinServer(cdnNow.thumbServers[0], p.thumbnail) : null;
+          if (thumbUrl && thumbUrl !== url2) fallback2 = thumbUrl;
+        }
+        return { url: url2, fallback: fallback2 };
+      },
     };
   },
 };

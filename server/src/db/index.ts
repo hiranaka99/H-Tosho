@@ -56,8 +56,8 @@ export function initDb(): Db {
   sqlite.pragma('busy_timeout = 5000');
   sqlite.exec(SCHEMA_DDL);
   migrateDownloadQueueColumns(sqlite);
+  migrateWatchedSearchColumns(sqlite);
   dropCatalogTable(sqlite);
-  migrateSeriesMatchColumns(sqlite);
   pruneOldData(sqlite);
   db = drizzle(sqlite, { schema });
   return db;
@@ -98,6 +98,7 @@ function migrateDownloadQueueColumns(sqlite: Database.Database): void {
     ['bytes_total', 'INTEGER NOT NULL DEFAULT 0'],
     ['merge_folder', 'TEXT'],
     ['chapter_number', 'INTEGER'],
+    ['priority', 'INTEGER NOT NULL DEFAULT 0'],
   ];
   for (const [col, def] of additions) {
     if (existing.has(col)) continue;
@@ -106,6 +107,20 @@ function migrateDownloadQueueColumns(sqlite: Database.Database): void {
     } catch (err) {
       console.warn(`[h-tosho] failed to add download_queue column ${col}:`, err);
     }
+  }
+}
+
+/** Add the watched-search last-results column to databases created before it existed. */
+function migrateWatchedSearchColumns(sqlite: Database.Database): void {
+  const existing = new Set(
+    (sqlite.prepare('PRAGMA table_info(watched_searches)').all() ?? []).map((c) => (c as { name: string }).name),
+  );
+  if (existing.size === 0) return; // table created by the DDL above already has every column
+  if (existing.has('last_results_json')) return;
+  try {
+    sqlite.exec('ALTER TABLE watched_searches ADD COLUMN last_results_json TEXT');
+  } catch (err) {
+    console.warn('[h-tosho] failed to add watched_searches column last_results_json:', err);
   }
 }
 
@@ -351,6 +366,7 @@ CREATE TABLE IF NOT EXISTS download_queue (
   output_path TEXT,
   merge_folder TEXT,
   chapter_number INTEGER,
+  priority INTEGER NOT NULL DEFAULT 0,
   error_message TEXT,
   created_at TEXT NOT NULL DEFAULT (current_timestamp),
   started_at TEXT,
@@ -362,6 +378,7 @@ CREATE TABLE IF NOT EXISTS watched_searches (
   query TEXT NOT NULL,
   last_checked_at TEXT,
   last_result_count INTEGER,
+  last_results_json TEXT,
   created_at TEXT NOT NULL DEFAULT (current_timestamp)
 );
 CREATE TABLE IF NOT EXISTS watched_search_seen (

@@ -69,12 +69,13 @@ test('start recovers interrupted downloads and processes persisted queued work',
     }));
     const interruptedId = Number(interrupted.lastInsertRowid);
     const queuedId = Number(queued.lastInsertRowid);
-    const completed = waitForStatus(queue, queuedId, 'completed');
+    const completedQueued = waitForStatus(queue, queuedId, 'completed');
+    const completedInterrupted = waitForStatus(queue, interruptedId, 'completed');
     queue.start();
 
-    await completed;
-    assert.equal(queue.get(interruptedId)?.status, 'failed');
-    assert.equal(queue.get(interruptedId)?.errorMessage, 'Interrupted by server restart');
+    await Promise.all([completedQueued, completedInterrupted]);
+    // Interrupted rows now resume: start() re-queues them instead of failing.
+    assert.equal(queue.get(interruptedId)?.status, 'completed');
     assert.equal(queue.get(queuedId)?.status, 'completed');
   } finally {
     globalThis.fetch = originalFetch;

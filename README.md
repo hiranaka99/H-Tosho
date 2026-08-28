@@ -24,10 +24,10 @@ which is distinct from the Kavita *server* build number (e.g. `0.9.0.2`).
   diff and deselect individual fields before applying a match.
 - **Doujinshi downloader** — search Hitomi.la & nHentai, download galleries as
   `.cbz` archives or image folders through a live queue with pause/resume/
-  cancel/retry, and optionally trigger a Kavita library scan on completion.
+  cancel/retry, duplicate detection, and an optional Kavita library scan on
+  completion.
 - **Watched searches** — save doujinshi queries to re-run on every auto-scan
-  cycle; new results ping Discord.
-- **Daily recommendations** — picks a fresh selection of galleries from Hitomi.la & nHentai based on your download history and your existing Kavita library (series you own drive parody searches); stable within a day, manually refreshable for a different selection.
+  cycle; new results ping Discord and stay browsable in-app per watch.
 - **Modern dark-mode dashboard** — Libraries, Downloader, Jobs and Settings
   pages with live job monitoring and drag-and-drop provider prioritization.
 - **Discord notifications** — push formatted updates (with cover art) when
@@ -41,7 +41,8 @@ which is distinct from the Kavita *server* build number (e.g. `0.9.0.2`).
 | MangaDex | REST | No credentials required |
 | MyAnimeList | REST | Requires Client ID |
 
-Doujinshi sources: **Hitomi.la** and **nHentai** (optional API key).
+Doujinshi sources: **Hitomi.la** and **nHentai** (nHentai uses the official
+API v2 — optional API key, client-side rate limiting).
 
 ## Tech stack
 

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, Star, ArrowUp, ArrowDown, LockKeyhole, Monitor, Moon, Sun, Palette } from 'lucide-react';
+import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, Star, ArrowUp, ArrowDown, LockKeyhole, Monitor, Moon, Sun, Palette, ChevronDown } from 'lucide-react';
 import { api, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type DoujinSource } from '../lib/api';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader, ErrorState, SegmentedTabs, ConfirmDialog } from '../components/ui';
 import { cn, timeAgo } from '../lib/utils';
@@ -414,6 +414,7 @@ function DownloaderSettingsCard() {
 
 const WATCH_SOURCE_LABELS: Record<DoujinSource, string> = { hitomi: 'Hitomi', nhentai: 'nHentai' };
 
+
 function WatchedSearchesCard() {
   const qc = useQueryClient();
   const watchesQuery = useQuery({ queryKey: ['watched-searches'], queryFn: api.watchedSearches, refetchInterval: 30_000 });
@@ -423,6 +424,14 @@ function WatchedSearchesCard() {
   const [adding, setAdding] = React.useState(false);
   const [removeTarget, setRemoveTarget] = React.useState<{ id: number; query: string } | null>(null);
   const [checking, setChecking] = React.useState(false);
+  const [expanded, setExpanded] = React.useState<Set<number>>(new Set());
+  const toggleExpanded = (id: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   async function add() {
     const q = query.trim();
@@ -473,10 +482,28 @@ function WatchedSearchesCard() {
         {watches && watches.length > 0 ? (
           <div className="flex flex-col gap-1.5">
             {watches.map((w) => (
-              <div key={w.id} className="flex flex-wrap items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-xs">
-                <Badge tone="muted">{WATCH_SOURCE_LABELS[w.source] ?? w.source}</Badge>
-                <span className="min-w-0 flex-1 truncate font-medium" title={w.query}>{w.query}</span>
-                <Button size="icon" variant="ghost" aria-label={`Remove watch ${w.query}`} onClick={() => setRemoveTarget({ id: w.id, query: w.query })}><X className="h-3.5 w-3.5" /></Button>
+              <div key={w.id} className="rounded-md border border-border-2 px-3 py-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone="muted">{WATCH_SOURCE_LABELS[w.source] ?? w.source}</Badge>
+                  <span className="min-w-0 flex-1 truncate font-medium" title={w.query}>{w.query}</span>
+                  {w.lastResults.length > 0 && (
+                    <Button size="sm" variant="ghost" aria-expanded={expanded.has(w.id)} onClick={() => toggleExpanded(w.id)}>
+                      {w.lastResults.length} new
+                      <ChevronDown className={cn('h-3.5 w-3.5 transition-transform duration-150', expanded.has(w.id) && 'rotate-180')} />
+                    </Button>
+                  )}
+                  <Button size="icon" variant="ghost" aria-label={`Remove watch ${w.query}`} onClick={() => setRemoveTarget({ id: w.id, query: w.query })}><X className="h-3.5 w-3.5" /></Button>
+                </div>
+                {w.lastResults.length > 0 && expanded.has(w.id) && (
+                  <div className="mt-2 flex flex-col gap-1.5 border-t border-border pt-2">
+                    {w.lastResults.map((r) => (
+                      <a key={r.galleryId} href={r.url ?? '#'} target="_blank" rel="noreferrer" className="flex items-center gap-2 hover:underline">
+                        {r.coverUrl && <img src={r.coverUrl} alt="" className="h-8 w-6 shrink-0 rounded object-cover" loading="lazy" />}
+                        <span className="truncate">{r.title}</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>

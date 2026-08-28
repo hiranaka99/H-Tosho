@@ -12,7 +12,7 @@ import {
   providerOrderFor,
 } from '../services/settings.js';
 import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
-import { applyToKavita, applySeriesMatch, checkAlignment, fetchCover, type ApplySeriesResult } from '../services/sync.js';
+import { applyToKavita, applySeriesMatch, checkAlignment, type ApplySeriesResult } from '../services/sync.js';
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
@@ -127,9 +127,10 @@ async function matchAndApply(
   base.matched = true;
   try {
     const meta = await fetchProviderMetadata(best.providerId, best.providerSeriesId, credentials);
-    const cover = await fetchCover(client, meta.coverUrl);
+    // The cover URL is applied inside applyToKavita: it prefers a Kavita-side
+    // fetch (upload-by-url) and falls back to a local download + base64 apply.
     const result = await applyToKavita(client, series.id, meta, {
-      cover,
+      coverUrl: meta.coverUrl,
       volumeCovers: meta.volumeCovers,
       title: series.name,
     });
@@ -262,23 +263,27 @@ async function rescanLibraryContainingDir(dir: string, log: LogFn, seriesName?: 
     log('warn', `Kavita rescan failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
-
 const SCAN_WAIT_TIMEOUT_MS = 30 * 60_000;
 const SCAN_STATUS_POLL_MS = 5_000;
+/**
+ * Kavita enqueues scans asynchronously (Hangfire), so an idle isTaskRunning
+ * answer right after the request is not proof the scan finished. Allow this
+ * much time for the task to appear in the queue before trusting an idle read.
+ */
+const SCAN_TASK_GRACE_MS = 15_000;
 
 /**
  * Trigger a Kavita library scan and wait for it to finish so newly ingested
  * folders become series before the matching pass runs. The scan covers every
  * in-scope library regardless of H-Tosho's per-library auto-match override —
  * that setting gates matching, not keeping Kavita's database fresh.
- *
- * Kavita 0.9 exposes no scan-status endpoint; each library's lastScanned
- * timestamp (surfaced as lastModified) is the only completion signal, so poll
- * until every in-scope library reports a new value.
+ * Completion is detected with GET /api/Server/is-task-running (true while any
+ * task is running or queued): the wait ends once the flag turns off after
+ * having been seen, or once the task never appeared within the grace window,
+ * or at the deadline with a warning — matching proceeds either way.
  */
 async function runKavitaLibraryScan(client: KavitaClient, libs: { id: number; name: string; lastModified?: string }[], jobId: number, log: LogFn): Promise<void> {
   if (libs.length === 0) return;
-  const before = new Map(libs.map((l) => [l.id, l.lastModified]));
   if (libs.length === 1) {
     await client.scanLibrary(libs[0].id);
     log('info', `Requested Kavita scan of "${libs[0].name}"`);
@@ -287,16 +292,22 @@ async function runKavitaLibraryScan(client: KavitaClient, libs: { id: number; na
     log('info', `Requested Kavita scan of all ${libs.length} libraries`);
   }
   const deadline = Date.now() + SCAN_WAIT_TIMEOUT_MS;
+  const graceUntil = Date.now() + SCAN_TASK_GRACE_MS;
+  let sawTask = false;
   for (;;) {
     if (jobQueue.isCancelRequested(jobId)) throw new JobCancelled();
-    let current: Map<number, string | undefined>;
+    let running: boolean;
     try {
-      current = new Map((await client.getLibraries()).map((l) => [l.id, l.lastModified]));
+      running = await client.isTaskRunning();
     } catch (e) {
-      log('warn', `Kavita library list unavailable (${e instanceof Error ? e.message : String(e)}); proceeding without waiting`);
+      log('warn', `Kavita task status unavailable (${e instanceof Error ? e.message : String(e)}); proceeding without waiting`);
       return;
     }
-    if ([...before.keys()].every((id) => current.get(id) !== undefined && current.get(id) !== before.get(id))) return;
+    if (running) {
+      sawTask = true;
+    } else if (sawTask || Date.now() >= graceUntil) {
+      return;
+    }
     if (Date.now() >= deadline) {
       log('warn', `Kavita scan not confirmed complete after ${SCAN_WAIT_TIMEOUT_MS / 60_000} minutes; matching now, leftovers are picked up next cycle`);
       return;
@@ -424,13 +435,21 @@ async function rescanAndVerifyMerge(targetDir: string, movedFiles: string[], log
         await client.scanSeries(library.id, series.id);
         log('info', `Requested Kavita rescan of series "${series.name}"`);
       } else {
-        // Library scans are asynchronous: only trust the file list once lastScanned moves.
-        const before = (await client.getLibraries()).find((l) => l.id === library.id)?.lastModified;
         await client.scanLibrary(library.id);
         log('info', `Requested Kavita rescan of "${library.name}"`);
+        // Library scans are queued asynchronously and their completion is not
+        // otherwise observable: wait for Kavita's task queue to drain before
+        // trusting the file list. The scan may finish before the first poll,
+        // so give the task the usual grace window to show up.
+        const graceUntil = Date.now() + SCAN_TASK_GRACE_MS;
+        let sawTask = false;
         for (;;) {
-          const current = (await client.getLibraries()).find((l) => l.id === library.id)?.lastModified;
-          if (current !== undefined && current !== before) break;
+          const running = await client.isTaskRunning();
+          if (running) {
+            sawTask = true;
+          } else if (sawTask || Date.now() >= graceUntil) {
+            break;
+          }
           if (Date.now() >= deadline) break;
           await sleep(SCAN_STATUS_POLL_MS);
         }
@@ -570,6 +589,7 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
     );
     return { processed: r.checked, matched: 0, failed: 0, notified: r.notified, newGalleries: r.newGalleries };
   }
+
 
   // ComicInfo edits rewrite a local archive — no Kavita connection needed for
   // the write itself; the rescan below is best-effort.

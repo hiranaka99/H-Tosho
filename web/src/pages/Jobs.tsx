@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Terminal, Activity, Circle, XCircle, CheckCircle2, ListChecks, Ban, X, Inbox } from 'lucide-react';
+import { Terminal, Activity, Circle, XCircle, CheckCircle2, ListChecks, Ban, X, Inbox, RotateCcw } from 'lucide-react';
 import { api, type Job, type JobLog } from '../lib/api';
 import { Card, CardContent, CardHeader, CardTitle, Badge, Button, EmptyState, ProgressBar, PageHeader, ErrorState, SegmentedTabs } from '../components/ui';
 import { cn, timeAgo, shortDate, toIsoUtc, jobLabel } from '../lib/utils';
@@ -99,7 +99,12 @@ export function Jobs() {
       qc.invalidateQueries({ queryKey: ['job', id] });
     }).catch((error) => toast({ tone: 'danger', title: 'Could not cancel job', description: error instanceof Error ? error.message : String(error) }));
   };
-
+  const retryJob = (id: number) => {
+    void api.retryJob(id).then(() => {
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      qc.invalidateQueries({ queryKey: ['job', id] });
+    }).catch((error) => toast({ tone: 'danger', title: 'Could not retry job', description: error instanceof Error ? error.message : String(error) }));
+  };
   type JobFilter = 'all' | 'active' | 'failed' | 'done';
   const [filter, setFilter] = React.useState<JobFilter>('all');
   const filters: readonly { id: JobFilter; label: string }[] = [
@@ -154,7 +159,7 @@ export function Jobs() {
                   <tbody>
                     {visibleJobs.map((j) => (
                       <tr key={j.id} tabIndex={0} aria-label={`Open details for ${jobLabel(j.type, j.payload)}`} className="cursor-pointer border-b border-border last:border-0 transition-colors hover:bg-surface-2/60" onClick={() => setSelected(j)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelected(j); } }}>
-                        <td className="px-3 py-2.5 text-muted">#{j.id}</td><td className="px-3 py-2.5 font-medium">{jobLabel(j.type, j.payload)}</td><td className="px-3 py-2.5"><JobStatus status={j.status} /></td><td className="px-3 py-2.5"><ProgressBar label={`${jobLabel(j.type, j.payload)} progress`} value={j.progressCurrent} max={j.progressTotal} className="h-1.5" /></td><td className="max-w-xs truncate px-3 py-2.5 text-xs text-muted">{jobResultText(j)}</td><td className="px-3 py-2.5 text-xs text-muted">{timeAgo(j.createdAt)}</td><td className="px-3 py-2.5">{(j.status === 'running' || j.status === 'queued') && <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); cancelJob(j.id); }}>Cancel</Button>}</td>
+                        <td className="px-3 py-2.5 text-muted">#{j.id}</td><td className="px-3 py-2.5 font-medium">{jobLabel(j.type, j.payload)}</td><td className="px-3 py-2.5"><JobStatus status={j.status} /></td><td className="px-3 py-2.5"><ProgressBar label={`${jobLabel(j.type, j.payload)} progress`} value={j.progressCurrent} max={j.progressTotal} className="h-1.5" /></td><td className="max-w-xs truncate px-3 py-2.5 text-xs text-muted">{jobResultText(j)}</td><td className="px-3 py-2.5 text-xs text-muted">{timeAgo(j.createdAt)}</td><td className="px-3 py-2.5">{(j.status === 'running' || j.status === 'queued') && <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); cancelJob(j.id); }}>Cancel</Button>}{j.status === 'failed' && <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); retryJob(j.id); }}><RotateCcw className="h-3.5 w-3.5" /> Retry</Button>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -182,15 +187,21 @@ export function Jobs() {
             {jobDetail && (
               <div className="mt-2 flex items-center gap-2">
                 <Button size="sm" variant="ghost" onClick={() => setSelected(null)}>Back to all logs</Button>
+                {jobDetail.job.status === 'failed' && (
+                  <Button size="sm" variant="outline" onClick={() => selected && retryJob(selected.id)}>
+                    <RotateCcw className="h-3.5 w-3.5" /> Retry
+                  </Button>
+                )}
               </div>
             )}
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="flex-row items-center justify-between">
             <CardTitle>Queue status</CardTitle>
           </CardHeader>
+
           <CardContent className="flex flex-col gap-3">
             {(() => {
               const active = jobs.filter((j) => j.status === 'running' || j.status === 'queued');

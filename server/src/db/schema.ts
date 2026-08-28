@@ -48,7 +48,7 @@ export const seriesMatches = sqliteTable('series_matches', {
 
 export const jobs = sqliteTable('jobs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  /** sync-library | match-series | update-series */
+  /** scan-new | match-unmatched | match-library | match-series | sync-series | apply-series | clear-overrides | check-watched-searches | edit-comicinfo | merge-series (see src/jobs/queue.ts JOB_TYPES) */
   type: text('type').notNull(),
   payloadJson: text('payload_json').notNull().default('{}'),
   /** queued | running | completed | failed */
@@ -109,6 +109,8 @@ export const downloadQueue = sqliteTable('download_queue', {
   mergeFolder: text('merge_folder'),
   /** Manual chapter number written to ComicInfo.Number for merged downloads. */
   chapterNumber: integer('chapter_number'),
+  /** Queue priority: claimNext picks higher values first (ties break on id ASC). */
+  priority: integer('priority').notNull().default(0),
   errorMessage: text('error_message'),
   createdAt: text('created_at')
     .notNull()
@@ -129,6 +131,8 @@ export const watchedSearches = sqliteTable('watched_searches', {
   query: text('query').notNull(),
   lastCheckedAt: text('last_checked_at'),
   lastResultCount: integer('last_result_count'),
+  /** New galleries from the last check that found something (JSON array; null = no check yet). */
+  lastResultsJson: text('last_results_json'),
   createdAt: text('created_at')
     .notNull()
     .default(sql`(current_timestamp)`),
@@ -178,3 +182,4 @@ export const ownedGalleries = sqliteTable('owned_galleries', {
     .notNull()
     .default(sql`(current_timestamp)`),
 });
+

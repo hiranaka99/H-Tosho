@@ -1,10 +1,11 @@
 import * as React from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import {
   Search,
-  Download as DownloadIcon,
   Loader2,
+  RefreshCcw,
+  Download as DownloadIcon,
   Pause,
   Play,
   XCircle,
@@ -43,10 +44,17 @@ import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select,
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeIntoSeriesDialog } from '../components/MergeIntoSeriesDialog';
 
-const SOURCES: { id: DoujinSource; label: string }[] = [
+/** Source list fallback (rendered before the server's provider list resolves). */
+const FALLBACK_SOURCES: { id: DoujinSource; label: string }[] = [
   { id: 'hitomi', label: 'Hitomi.la' },
   { id: 'nhentai', label: 'nHentai' },
 ];
+
+/** Display accent per doujin source (mirrors backend provider.color). */
+const SOURCE_COLORS: Record<DoujinSource, string> = {
+  hitomi: '#ff5722',
+  nhentai: '#e91e63',
+};
 
 const DOWNLOADER_STATE_KEY = 'h-tosho:downloader-state';
 
@@ -90,7 +98,9 @@ const HITOMI_SORTS: { value: DoujinSort; label: string }[] = [
 ];
 
 /** The sort options a source offers (sent as a separate field — the search box never shows the syntax). */
-const sortsFor = (src: DoujinSource): { value: DoujinSort; label: string }[] => (src === 'nhentai' ? NHENTAI_SORTS : HITOMI_SORTS);
+const DEFAULT_SORTS: { value: DoujinSort; label: string }[] = [{ value: 'default', label: 'Newest' }];
+const sortsFor = (src: DoujinSource): { value: DoujinSort; label: string }[] =>
+  src === 'nhentai' ? NHENTAI_SORTS : src === 'hitomi' ? HITOMI_SORTS : DEFAULT_SORTS;
 
 /** Human-facing display name for a doujin source. */
 const SOURCE_LABELS: Record<DoujinSource, string> = { hitomi: 'Hitomi.la', nhentai: 'nHentai' };
@@ -196,7 +206,7 @@ const SUGG_TYPE_STYLES: Record<string, string> = {
 };
 
 function SourceBadge({ source }: { source: DoujinSource }) {
-  const color = source === 'nhentai' ? '#e91e63' : '#ff5722';
+  const color = SOURCE_COLORS[source];
   return (
     <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium" style={{ backgroundColor: color + '22', color }}>
       <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
@@ -445,7 +455,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
 
                 <TagList label="Artists" items={g.artists ?? item.artists} icon={<Users className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'artist')} titleFor={(v) => searchTitle(v, 'artist')} />
                 <TagList label="Groups" items={g.groups} icon={<Layers className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'group')} titleFor={(v) => searchTitle(v, 'group')} />
-                <TagList label="Characters" items={g.genres} icon={<Star className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'character')} titleFor={(v) => searchTitle(v, 'character')} />
+                <TagList label="Characters" items={g.characters ?? g.genres} icon={<Star className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'character')} titleFor={(v) => searchTitle(v, 'character')} />
                 {g.series && (
                   <div className="flex flex-col gap-1.5">
                     <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
@@ -634,9 +644,17 @@ export function Downloader() {
   const linkedQuery = searchParams.get('q');
   const [source, setSource] = React.useState<DoujinSource>(() => {
     const requested = searchParams.get('source');
-    if (requested === 'nhentai' || requested === 'hitomi') return requested;
-    return initialState.source === 'nhentai' ? 'nhentai' : 'hitomi';
+    if (requested && SOURCE_COLORS[requested as DoujinSource]) return requested as DoujinSource;
+    return initialState.source && SOURCE_COLORS[initialState.source] ? initialState.source : 'hitomi';
   });
+
+  // The server reports the registered doujin providers; the radio list follows
+  // it so new sources appear without UI changes (static fallback while loading).
+  const { data: providerList } = useQuery({ queryKey: ['doujin-providers'], queryFn: api.doujinProviders, staleTime: Infinity });
+  const sources = React.useMemo(
+    () => (providerList && providerList.length > 0 ? providerList.map((p) => ({ id: p.id, label: p.name })) : FALLBACK_SOURCES),
+    [providerList],
+  );
   const [query, setQuery] = React.useState(() => linkedQuery ?? initialState.query ?? '');
   const [searchKey, setSearchKey] = React.useState<string | null>(() => {
     if (linkedQuery !== null) return linkedQuery.trim() || null;
@@ -1057,7 +1075,7 @@ export function Downloader() {
         <CardContent className="flex flex-col gap-3">
           <form onSubmit={runSearch} className="flex flex-col gap-2 lg:flex-row">
             <div role="radiogroup" aria-label="Download source" className="flex overflow-hidden rounded-md border border-border-2">
-              {SOURCES.map((s) => (
+              {sources.map((s) => (
                 <button
                   key={s.id}
                   role="radio"
@@ -1066,7 +1084,9 @@ export function Downloader() {
                     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
                     event.preventDefault();
                     const group = event.currentTarget.parentElement;
-                    switchSource(source === 'hitomi' ? 'nhentai' : 'hitomi');
+                    const idx = sources.findIndex((x) => x.id === source);
+                    const neighbor = sources[(idx + (event.key === 'ArrowRight' ? 1 : sources.length - 1)) % sources.length];
+                    if (neighbor) switchSource(neighbor.id);
                     requestAnimationFrame(() => group?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus());
                   }}
                   aria-checked={source === s.id}
@@ -1152,7 +1172,7 @@ export function Downloader() {
             </div>
             {/* Popularity ordering — mirrors each source's own sort controls. The
                 sort travels as a separate field, so its syntax never appears in the search box. */}
-            {(source === 'nhentai' || source === 'hitomi') && (
+            {sortsFor(source).length > 1 && (
               <Select
                 value={sort}
                 onChange={(e) => setSort(e.target.value as DoujinSort)}
@@ -1385,7 +1405,8 @@ export function Downloader() {
 
       {/* Download manager */}
       {tab === 'manager' && (
-        <Card>
+        <>
+          <Card>
           <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
             <CardTitle className="flex items-center gap-2">
               <DownloadIcon className="h-4 w-4" /> Download Manager
@@ -1420,6 +1441,7 @@ export function Downloader() {
             )}
           </CardContent>
         </Card>
+        </>
       )}
 
       {comicInfo && (

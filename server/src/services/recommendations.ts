@@ -65,9 +65,9 @@ const SEARCH_SORTS: Record<DoujinSource, DoujinSort[]> = {
   hitomi: ['popular-year', 'popular-week'],
   nhentai: ['popular', 'popular-week'],
 };
-/** Picks per source and total size of the daily set. */
-const PICKS_PER_SOURCE = 6;
+/** Total size of the daily set, split evenly across the registered sources. */
 const TOTAL_PICKS = 12;
+const PICKS_PER_SOURCE = Math.max(1, Math.floor(TOTAL_PICKS / SOURCES.length));
 /** Max picks per set a single tag/series term may dominate. */
 const MAX_PICKS_PER_TERM = 2;
 /** Artists get a stricter cap — one favorite artist should surface at most once per set. */

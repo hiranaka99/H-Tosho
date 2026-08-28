@@ -1,7 +1,11 @@
+import { mkdtempSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { KavitaClient } from '../src/kavita/client.js';
 import { KavitaAgeRating, KavitaPublicationStatus, type KavitaSeriesMetadataDto } from '../src/kavita/types.js';
+import type { SeriesMetadata } from '../src/providers/types.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -307,5 +311,122 @@ describe('KavitaClient', () => {
       forceUpdate: true,
       forceColorscape: false,
     });
+  });
+
+  it('posts a scan-folder body carrying the admin key and no series-match abort', async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = async (input, init) => {
+      requests.push({ url: String(input), init });
+      return Response.json({ ok: true });
+    };
+
+    await new KavitaClient('https://kavita.example', 'secret').scanFolder(7, 'C:\\downloads\\Author_Title');
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.url, 'https://kavita.example/api/Library/scan-folder');
+    // ScanFolderDto has no library field: the server resolves the library from
+    // the folder path and re-authenticates via the body's apiKey.
+    assert.deepEqual(JSON.parse(String(requests[0]?.init?.body)), {
+      apiKey: 'secret',
+      folderPath: 'C:\\downloads\\Author_Title',
+      abortOnNoSeriesMatch: false,
+    });
+  });
+
+  it('maps is-task-running responses onto a real boolean', async () => {
+    let body: string = 'false';
+    const requests: string[] = [];
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      requests.push(url);
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+    const client = new KavitaClient('https://kavita.example', 'secret');
+
+    body = 'true';
+    assert.equal(await client.isTaskRunning(), true);
+    body = '"true"';
+    assert.equal(await client.isTaskRunning(), true, 'a quoted-string body still means running');
+    body = 'false';
+    assert.equal(await client.isTaskRunning(), false);
+
+    assert.equal(requests.every((u) => u === 'https://kavita.example/api/Server/is-task-running'), true);
+  });
+
+  it('stages covers through Kavita (upload-by-url) and applies the staged bytes as base64', async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      requests.push({ url, init });
+      if (url.endsWith('/api/Upload/upload-by-url')) return Response.json('coverupload_2026_1.jpg');
+      if (url.includes('/api/Image/cover-upload?')) {
+        return new Response(Buffer.from('staged-image'), { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+      }
+      return Response.json({ ok: true });
+    };
+
+    await new KavitaClient('https://kavita.example', 'secret').updateSeriesCoverFromUrl(42, 'https://cdn.example/cover.jpg', false);
+
+    assert.equal(requests.length, 3);
+    assert.equal(requests[0]?.url, 'https://kavita.example/api/Upload/upload-by-url');
+    assert.deepEqual(JSON.parse(String(requests[0]?.init?.body)), { url: 'https://cdn.example/cover.jpg' });
+    // Kavita's cover endpoints only accept inline base64 on v0.9, so the staged
+    // temp file must be read back before it can be applied.
+    assert.match(requests[1]?.url ?? '', /\/api\/Image\/cover-upload\?filename=coverupload_2026_1\.jpg&apiKey=secret$/);
+    assert.equal(requests[2]?.url, 'https://kavita.example/api/Upload/series');
+    assert.deepEqual(JSON.parse(String(requests[2]?.init?.body)), {
+      id: 42,
+      url: Buffer.from('staged-image').toString('base64'),
+      lockCover: false,
+    });
+  });
+
+  it('falls back to a local cover download + base64 apply when upload-by-url fails', async () => {
+    // applyToKavita writes sync history, so point the DB at a throwaway
+    // directory before the db module loads (dynamic-import module boundary).
+    process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-client-cover-'));
+    const { initDb } = await import('../src/db/index.js');
+    const { applyToKavita } = await import('../src/services/sync.js');
+    initDb();
+
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      requests.push({ url, init });
+      if (url.endsWith('/api/Upload/upload-by-url')) return new Response('url-not-valid', { status: 400 });
+      if (url === 'https://cdn.example/cover.jpg') {
+        return new Response(Buffer.from('local-image'), { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+      }
+      return Response.json({ ok: true });
+    };
+
+    const client = new KavitaClient('https://kavita.example', 'secret');
+    const metadata: SeriesMetadata = {
+      providerId: 'mangadex',
+      providerSeriesId: 'md-1',
+      title: 'Test Series',
+      genres: [],
+      tags: [],
+      writers: [],
+      artists: [],
+    };
+    const result = await applyToKavita(client, 42, metadata, {
+      coverUrl: 'https://cdn.example/cover.jpg',
+      title: 'Test Series',
+    });
+
+    assert.equal(result.coverUpdated, true);
+    const seriesCover = requests.find((r) => r.url.endsWith('/api/Upload/series'));
+    assert.ok(seriesCover, 'the base64 series-cover endpoint must still be used');
+    assert.deepEqual(JSON.parse(String(seriesCover.init?.body)), {
+      id: 42,
+      url: Buffer.from('local-image').toString('base64'),
+      lockCover: false,
+    });
+    assert.equal(
+      requests.some((r) => r.url.includes('/api/Image/cover-upload')),
+      false,
+      'a failed staging must not leave the flow trying to read a staged upload',
+    );
   });
 });

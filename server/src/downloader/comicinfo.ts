@@ -29,17 +29,15 @@ function clean(values?: string[]): string {
 }
 
 function pickLanguage(g: DoujinGallery): string {
-  // Prefer an explicit `language:` tag when present.
-  const langTag = g.tags.find((t) => t.startsWith('language:') && t.length > 'language:'.length);
-  if (langTag) return langTag.slice('language:'.length).trim();
-  if (g.language && g.language.trim()) return g.language.trim();
-  return '';
+  // Real field, populated by every provider at gallery-resolve time.
+  return g.language?.trim() ?? '';
 }
 
 function pickYear(g: DoujinGallery): string {
-  const m = /(?:year:)?(\d{4})/.exec(clean(g.tags));
-  if (m) return m[1];
-  return '';
+  // Real upload/publish date — no more grepping year-like numbers out of tags.
+  if (!g.uploadedAt) return '';
+  const year = new Date(g.uploadedAt).getUTCFullYear();
+  return Number.isFinite(year) && year > 1900 ? String(year) : '';
 }
 
 /** Map a doujinshi gallery to the subset of ComicInfo fields we populate. */
@@ -48,6 +46,10 @@ export interface ComicInfoFields {
   Series: string;
   Artist: string;
   Writer: string;
+  Characters: string;
+  Publisher: string;
+  Genre: string;
+  SeriesGroup: string;
   Summary: string;
   Tags: string;
   Language: string;
@@ -59,11 +61,18 @@ export function buildComicInfoFields(g: DoujinGallery): ComicInfoFields {
   const artists = clean(g.artists);
   // Series is the primary series name, or falls back to the gallery title.
   const series = (g.series ?? '').trim() || g.title.trim();
+  // Doujinshi "genres" are the gendered content tags (female:/male: areas);
+  // generic tags stay in Tags. An explicit genres list wins when present.
+  const genreNames = g.tags.filter((t, i) => g.tagNamespaces?.[i] === 'female' || g.tagNamespaces?.[i] === 'male');
   return {
     Title: g.title.trim(),
     Series: series,
     Artist: artists,
     Writer: artists, // doujinshi typically credit the same circle for writing
+    Characters: clean(g.characters),
+    Publisher: clean(g.groups), // circles map to the ComicInfo Publisher role
+    Genre: clean(g.genres ?? genreNames),
+    SeriesGroup: clean(g.parodies),
     Summary: clean(g.tags).slice(0, 2000),
     Tags: clean(g.tags),
     Language: pickLanguage(g),
@@ -88,10 +97,14 @@ export function generateComicInfoXml(
     number && `  <Number>${number}</Number>`,
     f.Artist && `  <Artist>${cdata(f.Artist)}</Artist>`,
     f.Writer && `  <Writer>${cdata(f.Writer)}</Writer>`,
+    f.Characters && `  <Characters>${cdata(f.Characters)}</Characters>`,
+    f.Publisher && `  <Publisher>${cdata(f.Publisher)}</Publisher>`,
+    f.Genre && `  <Genre>${cdata(f.Genre)}</Genre>`,
     f.Summary && `  <Summary>${cdata(f.Summary)}</Summary>`,
     f.Tags && `  <Tags>${cdata(f.Tags)}</Tags>`,
     f.Language && `  <Language>${cdata(f.Language)}</Language>`,
     f.Year && `  <Year>${f.Year}</Year>`,
+    f.SeriesGroup && `  <SeriesGroup>${cdata(f.SeriesGroup)}</SeriesGroup>`,
     f.Web && `  <Web>${cdata(f.Web)}</Web>`,
     '</ComicInfo>',
   ];

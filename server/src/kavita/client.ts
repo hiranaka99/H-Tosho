@@ -148,6 +148,17 @@ export class KavitaClient {
     return info;
   }
 
+  /**
+   * GET /api/Server/is-task-running — true while a Kavita task is running or
+   * queued in the default queue (scans, metadata refreshes, backups, ...).
+   * The endpoint answers a bare JSON boolean on current builds but has also
+   * been observed as a quoted string, so both shapes map to a real boolean.
+   */
+  async isTaskRunning(): Promise<boolean> {
+    const data = await this.getJson<boolean | string>('/Server/is-task-running', 'Kavita task status');
+    return data === true || data === 'true';
+  }
+
   /** GET /api/Library/libraries */
   async getLibraries(): Promise<KavitaLibrary[]> {
     const libraries = await this.getJson<KavitaLibraryDto[]>('/Library/libraries', 'Get libraries');
@@ -492,6 +503,48 @@ export class KavitaClient {
   }
 
   /**
+   * Fetch a cover image via Kavita instead of locally: POST
+   * /api/Upload/upload-by-url (body { url }) makes Kavita download the image
+   * into its temp dir and returns the staged filename; GET
+   * /api/Image/cover-upload then reads the staged bytes back. The round-trip
+   * is required because Kavita's cover apply endpoints (/Upload/series,
+   * /Upload/volume) only accept inline base64 payloads on v0.9 — they cannot
+   * reference the staged temp file. Throws when Kavita cannot download or
+   * validate the image; callers fall back to the local-download + base64 path
+   * (some provider CDNs require a Referer header Kavita cannot send).
+   */
+  async fetchCoverViaServer(url: string): Promise<Buffer> {
+    const staged = await this.postJson<unknown>('/Upload/upload-by-url', { url }, 'Stage cover upload from URL');
+    const filename = typeof staged === 'string' ? staged.replace(/^"|"$/g, '').trim() : '';
+    if (!filename) {
+      throw new Error('Kavita staged cover upload did not return a filename.');
+    }
+    const path = `/Image/cover-upload?filename=${encodeURIComponent(filename)}&apiKey=${encodeURIComponent(this.apiKey)}`;
+    const response = await fetch(this.url(path), {
+      headers: this.headers,
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw this.requestError('Fetch staged cover image', path, response.status);
+    const data = Buffer.from(await response.arrayBuffer());
+    if (data.length === 0) throw new Error(`Kavita staged cover image ${filename} was empty.`);
+    return data;
+  }
+
+  /**
+   * Apply a series cover from a provider URL, letting Kavita do the download.
+   * Throws when either leg fails so the caller can fall back to the base64
+   * path with a locally downloaded image.
+   */
+  async updateSeriesCoverFromUrl(seriesId: number, url: string, lockCover: boolean): Promise<void> {
+    await this.updateSeriesCover(seriesId, await this.fetchCoverViaServer(url), lockCover);
+  }
+
+  /** Server-side cover fetch for a volume; see updateSeriesCoverFromUrl. */
+  async updateVolumeCoverFromUrl(volumeId: number, url: string, lockCover: boolean): Promise<void> {
+    await this.updateVolumeCover(volumeId, await this.fetchCoverViaServer(url), lockCover);
+  }
+
+  /**
    * GET /api/Image/series-cover?seriesId={seriesId}&apiKey={key}
    *
    * Kavita's image endpoints (unlike JSON endpoints) require the API key to be
@@ -518,6 +571,20 @@ export class KavitaClient {
   /** POST /api/Library/scan?libraryId={id} - rescan a single library for new media. */
   async scanLibrary(libraryId: number): Promise<void> {
     await this.postJson(`/Library/scan?libraryId=${encodeURIComponent(libraryId)}`, {}, `Scan library ${libraryId}`);
+  }
+
+  /**
+   * POST /api/Library/scan-folder — scan the Kavita library that owns a folder
+   * path. ScanFolderDto carries the folder path plus the admin API key (the
+   * server re-resolves the user from it) and has no library field, so
+   * libraryId only names the target in logs/errors. abortOnNoSeriesMatch must
+   * be false: with it set Kavita drops the scan when the folder doesn't
+   * already map to a series, which is exactly the newly-downloaded-folder
+   * case this call exists for.
+   */
+  async scanFolder(libraryId: number, folderPath: string): Promise<void> {
+    const body = { apiKey: this.apiKey, folderPath, abortOnNoSeriesMatch: false };
+    await this.postJson('/Library/scan-folder', body, `Scan folder ${folderPath} (library ${libraryId})`);
   }
 
   /** POST /api/Series/scan — force Kavita to re-read this series' files. */

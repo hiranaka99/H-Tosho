@@ -202,6 +202,19 @@ class JobQueue {
     return false;
   }
 
+  /**
+   * Retry a failed job by copying its type + payload into a NEW queued
+   * job row; the original stays as history. Returns the new id, or null when
+   * the job is missing or not in a failed state.
+   */
+  retryJob(id: number): number | null {
+    const job = this.get(id);
+    if (!job || job.status !== 'failed') return null;
+    const newId = this.enqueue(job.type, job.payload);
+    this.log(id, 'info', `Retried as job #${newId}`);
+    return newId;
+  }
+
   /** Whether cancellation has been requested for a running job. */
   isCancelRequested(id: number): boolean {
     return this.cancelRequested.has(id);

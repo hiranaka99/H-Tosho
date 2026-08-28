@@ -20,6 +20,16 @@ export interface WatchedSearch {
   lastCheckedAt: string | null;
   lastResultCount: number | null;
   seenCount: number;
+  /** New galleries from the last check that found something; empty otherwise. */
+  lastResults: WatchedSearchNewResult[];
+}
+
+/** One gallery in a watch's "new since last check" list. */
+export interface WatchedSearchNewResult {
+  galleryId: string;
+  title: string;
+  url?: string;
+  coverUrl?: string;
 }
 
 const SOURCE_LABELS: Record<string, string> = { hitomi: 'Hitomi.la', nhentai: 'nHentai' };
@@ -30,6 +40,32 @@ const SEEN_RETENTION = 2000;
 const SEEN_PRUNE_TO = 1500;
 /** New results listed in the Discord ping (the rest are counted only). */
 const NOTIFY_MAX_LISTED = 10;
+/** Cap on the persisted "new since last check" list shown in the UI. */
+const LAST_RESULTS_MAX = 50;
+
+/** Decode the persisted new-results JSON; malformed payloads degrade to []. */
+function decodeLastResults(json: string | null): WatchedSearchNewResult[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: WatchedSearchNewResult[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue;
+      const r = item as Record<string, unknown>;
+      if (typeof r.galleryId !== 'string' || typeof r.title !== 'string') continue;
+      out.push({
+        galleryId: r.galleryId,
+        title: r.title,
+        ...(typeof r.url === 'string' ? { url: r.url } : {}),
+        ...(typeof r.coverUrl === 'string' ? { coverUrl: r.coverUrl } : {}),
+      });
+    }
+    return out.slice(0, LAST_RESULTS_MAX);
+  } catch {
+    return [];
+  }
+}
 
 export function listWatchedSearches(): WatchedSearch[] {
   const db = getDb();
@@ -41,6 +77,7 @@ export function listWatchedSearches(): WatchedSearch[] {
     lastCheckedAt: r.lastCheckedAt,
     lastResultCount: r.lastResultCount,
     seenCount: db.select().from(schema.watchedSearchSeen).where(eq(schema.watchedSearchSeen.searchId, r.id)).all().length,
+    lastResults: decodeLastResults(r.lastResultsJson),
   }));
 }
 
@@ -56,6 +93,7 @@ export function addWatchedSearch(source: DoujinSource, query: string): WatchedSe
       lastCheckedAt: existing.lastCheckedAt,
       lastResultCount: existing.lastResultCount,
       seenCount: 0,
+      lastResults: [],
     };
   }
   const res = db.insert(schema.watchedSearches).values({ source, query }).run();
@@ -130,6 +168,7 @@ export async function checkWatchedSearches(
         .map((r) => r.galleryId),
     );
     const newIds = diffSeenResults(firstRun, ids, seenIds);
+    result.newGalleries += newIds.length;
 
     // Remember every current result so a gallery that leaves and re-enters the
     // top-N is not reported twice.
@@ -164,10 +203,26 @@ export async function checkWatchedSearches(
       }
     }
 
+    // In-app "new since last check" list: a seeding run stores an empty list;
+    // later runs replace it only when they actually found something new, so
+    // the previous finds stay visible across quiet checks.
+    const lastResults: WatchedSearchNewResult[] = firstRun
+      ? []
+      : newIds.slice(0, LAST_RESULTS_MAX).map((id) => {
+          const r = results.find((x) => x.galleryId === id);
+          return {
+            galleryId: id,
+            title: r?.title || id,
+            ...(r?.url ? { url: r.url } : {}),
+            ...(r?.coverUrl ? { coverUrl: r.coverUrl } : {}),
+          };
+        });
+    const lastResultsJson = firstRun || lastResults.length > 0 ? JSON.stringify(lastResults) : null;
+
     pruneSeen(s.id);
     getDb()
       .update(schema.watchedSearches)
-      .set({ lastCheckedAt: new Date().toISOString(), lastResultCount: ids.length })
+      .set({ lastCheckedAt: new Date().toISOString(), lastResultCount: ids.length, ...(lastResultsJson !== null ? { lastResultsJson } : {}) })
       .where(eq(schema.watchedSearches.id, s.id))
       .run();
     log(firstRun ? 'info' : 'success', `Watch ${s.id} "${s.query}": ${ids.length} result(s), ${newIds.length} new${firstRun ? ' (seeded)' : ''}`);

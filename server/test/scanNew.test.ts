@@ -56,18 +56,22 @@ test('global scan-new triggers a Kavita scan before listing series and skips aut
   const requests: string[] = [];
   let libraryCalls = 0;
   let seriesCalls = 0;
+  let taskCalls = 0;
   globalThis.fetch = (async (input: unknown) => {
     const url = String(input);
     requests.push(url);
     if (url.endsWith('/api/Library/libraries')) {
       libraryCalls += 1;
-      // Call 1 scopes the job, call 2 is the first completion poll (scan still
-      // in flight), call 3 sees fresh lastScanned values and releases the wait.
-      const scanned = libraryCalls >= 3;
       return Response.json([
-        { id: 1, name: 'Lib A', type: 0, folders: [dataDir], lastScanned: scanned ? '2026-08-25T12:01:00' : '2026-08-25T12:00:00' },
-        { id: 2, name: 'Lib B', type: 0, folders: [dataDir], lastScanned: scanned ? '2026-08-25T12:01:01' : '2026-08-25T12:00:01' },
+        { id: 1, name: 'Lib A', type: 0, folders: [dataDir], lastScanned: '2026-08-25T12:00:00' },
+        { id: 2, name: 'Lib B', type: 0, folders: [dataDir], lastScanned: '2026-08-25T12:00:01' },
       ]);
+    }
+    if (url.endsWith('/api/Server/is-task-running')) {
+      taskCalls += 1;
+      // First completion poll: scan still in flight; the next one sees an
+      // idle queue and releases the wait.
+      return Response.json(taskCalls === 1);
     }
     if (url.endsWith('/api/Library/scan-all')) return Response.json({});
     if (url.includes('/api/Series/all-v2?')) {
@@ -84,7 +88,7 @@ test('global scan-new triggers a Kavita scan before listing series and skips aut
   const firstSeriesIndex = requests.findIndex((u) => u.includes('/api/Series/all-v2?'));
   assert.ok(scanAllIndex !== -1 && firstSeriesIndex !== -1, 'expected both scan-all and series listing');
   assert.ok(scanAllIndex < firstSeriesIndex, `Kavita scan (${scanAllIndex}) must precede series listing (${firstSeriesIndex})`);
-  assert.equal(libraryCalls, 3, 'completion polled until every library reported a fresh lastScanned');
+  assert.ok(taskCalls >= 2, `completion polled isTaskRunning until it cleared (${taskCalls} polls)`);
   assert.equal(seriesCalls, 2, 'every library is listed so orphaned match rows can be detected');
   assert.deepEqual(summary, { processed: 1, matched: 0, failed: 1, libraries: 2 });
 

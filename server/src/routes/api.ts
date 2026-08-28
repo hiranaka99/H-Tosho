@@ -625,7 +625,7 @@ api.post('/doujin/gallery', async (c) => {
 
 /** Enqueue a gallery download. */
 api.post('/downloads', async (c) => {
-  const body = (await c.req.json()) as { source: string; galleryId: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number };
+  const body = (await c.req.json()) as { source: string; galleryId: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number; priority?: number };
   if (!body.source || !body.galleryId) return c.json({ error: 'source and galleryId are required' }, 400);
   if (!getDoujinProvider(body.source)) return c.json({ error: `Unknown source: ${body.source}` }, 400);
   // Merge options: all chapters of one series land in a shared folder so Kavita
@@ -636,8 +636,14 @@ api.post('/downloads', async (c) => {
   // Duplicate guard: a completed task for this gallery already exists. Re-downloading
   // is possible via the queue's Retry action, which re-runs the stored task.
   const done = downloadQueue.findCompleted(body.source as DoujinSource, body.galleryId);
-  if (done) return c.json({ error: 'already-downloaded', finishedAt: done.finishedAt ?? null }, 409);
-  const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, body.title ?? null, body.format, mergeFolder, chapter);
+  if (done) return c.json({ error: 'already-downloaded', message: 'A completed task for this gallery already exists — use Retry in the Download Manager to re-download it.', finishedAt: done.finishedAt ?? null }, 409);
+  // Also block duplicates that are queued/downloading/paused (retrying one of
+  // those goes through the task's own Retry action, not a new enqueue).
+  const active = downloadQueue.findActive(body.source as DoujinSource, body.galleryId);
+  if (active) return c.json({ error: 'already-queued', message: 'This gallery is already queued or downloading.', status: active.status }, 409);
+  // Queue priority: higher runs first; ties keep FIFO order. Defaults to 0.
+  const priority = typeof body.priority === 'number' && Number.isFinite(body.priority) ? Math.trunc(body.priority) : 0;
+  const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, body.title ?? null, body.format, mergeFolder, chapter, priority);
   return c.json({ id, status: 'queued' }, 202);
 });
 
@@ -792,6 +798,7 @@ api.get('/recommendations', async (c) => {
   try {
     const set = await getRecommendations();
     // Hitomi covers need the /media proxy (their CDN requires a Referer the browser can't send).
+
     return c.json({ ...set, items: set.items.map(rewriteHitomiCover) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
@@ -979,6 +986,14 @@ api.post('/jobs/:id/cancel', (c) => {
   if (id === null) return c.json({ error: 'Invalid job id' }, 400);
   if (!jobQueue.cancel(id)) return c.json({ error: 'Job is not active' }, 409);
   return c.json({ ok: true });
+});
+
+api.post('/jobs/:id/retry', (c) => {
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid job id' }, 400);
+  const newId = jobQueue.retryJob(id);
+  if (newId === null) return c.json({ error: 'Job is not retryable' }, 409);
+  return c.json({ ok: true, id: newId });
 });
 
 api.get('/logs', (c) => c.json(jobQueue.recentLogs(300)));

@@ -162,7 +162,10 @@ export async function applyToKavita(
   seriesId: number,
   meta: SeriesMetadata,
   opts: {
-    cover: Buffer | null;
+    /** Provider cover URL. Kavita is asked to fetch it server-side first; falls back to a local download + base64 apply. */
+    coverUrl?: string;
+    /** Pre-downloaded cover image. Optional; used as fallback and by callers that only have bytes. */
+    cover?: Buffer | null;
     volumeCovers?: VolumeCover[];
     title: string;
     /** Fields the user deselected in the identify dialog (EXCLUDABLE_FIELDS keys). */
@@ -221,9 +224,19 @@ export async function applyToKavita(
     }
   }
 
-  if (opts.cover && opts.cover.length > 0) {
+  if (opts.coverUrl || (opts.cover && opts.cover.length > 0)) {
     try {
-      await client.updateSeriesCover(seriesId, opts.cover, false);
+      if (opts.coverUrl) {
+        await applyCover(
+          client,
+          opts.coverUrl,
+          (url) => client.updateSeriesCoverFromUrl(seriesId, url, false),
+          (image) => client.updateSeriesCover(seriesId, image, false),
+          opts.cover,
+        );
+      } else {
+        await client.updateSeriesCover(seriesId, opts.cover!, false);
+      }
       coverUpdated = true;
       pushed.push('cover');
     } catch (err) {
@@ -282,14 +295,44 @@ export async function applyToKavita(
   return { seriesId, pushed, coverUpdated, volumeCoversUpdated, errors, warnings };
 }
 
-/** Download a cover from a provider URL, returning null on failure. */
-export async function fetchCover(client: KavitaClient, url?: string): Promise<Buffer | null> {
+/**
+ * Download a cover from a provider URL, returning null on failure.
+ */
+async function fetchCover(client: KavitaClient, url?: string): Promise<Buffer | null> {
   if (!url) return null;
   try {
     const buf = await client.downloadImage(url);
     return buf.length > 0 ? buf : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Push one cover image onto Kavita, preferring a Kavita-side fetch
+ * (upload-by-url): Kavita downloads the image from its own network, which
+ * works for provider CDNs that block H-Tosho's host. The fallback to a local
+ * download + base64 apply must stay: some provider CDNs require a Referer
+ * header Kavita cannot send, so only H-Tosho's own fetch can retrieve them.
+ * `localImage` (an already-downloaded buffer) short-circuits that re-download.
+ */
+async function applyCover(
+  client: KavitaClient,
+  url: string,
+  applyFromUrl: (url: string) => Promise<void>,
+  applyBuffer: (image: Buffer) => Promise<void>,
+  localImage?: Buffer | null,
+): Promise<void> {
+  try {
+    await applyFromUrl(url);
+    return;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    const image = localImage && localImage.length > 0 ? localImage : await fetchCover(client, url);
+    if (!image) {
+      throw new Error(`cover fetch by Kavita failed (${reason}) and local download failed`);
+    }
+    await applyBuffer(image);
   }
 }
 /**
@@ -311,13 +354,13 @@ export async function applyVolumeCovers(
   const errors: string[] = [];
   let updated = 0;
   for (const assignment of matchVolumeCovers(volumes, covers)) {
-    const image = await fetchCover(client, assignment.url);
-    if (!image) {
-      errors.push(`vol ${assignment.number}: cover download failed`);
-      continue;
-    }
     try {
-      await client.updateVolumeCover(assignment.volumeId, image, false);
+      await applyCover(
+        client,
+        assignment.url,
+        (url) => client.updateVolumeCoverFromUrl(assignment.volumeId, url, false),
+        (image) => client.updateVolumeCover(assignment.volumeId, image, false),
+      );
       updated += 1;
     } catch (err) {
       errors.push(`vol ${assignment.number}: ${err instanceof Error ? err.message : String(err)}`);
@@ -343,12 +386,6 @@ export function matchVolumeCovers(volumes: KavitaVolume[], covers: VolumeCover[]
     out.push({ volumeId: vol.id, number: cover.number, url: cover.url });
   }
   return out;
-}
-
-export function getConnectedClient(): KavitaClient | null {
-  const conn = getKavitaConnection();
-  if (!conn.baseUrl || !conn.apiKey) return null;
-  return new KavitaClient(conn.baseUrl, conn.apiKey);
 }
 
 /**
@@ -563,11 +600,10 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
   // Per-dialog overrides: deselected fields are skipped, and unchecking Cover
   // skips the series cover + volume covers.
   const pushCovers = opts.cover !== false;
-  const cover = pushCovers ? await fetchCover(client, meta.coverUrl) : null;
   // Step 3: the remaining metadata lands on the entry Kavita now uses for
   // this folder — the new one when the rename split it.
   const result = await applyToKavita(client, effectiveSeriesId, meta, {
-    cover,
+    coverUrl: pushCovers ? meta.coverUrl : undefined,
     volumeCovers: pushCovers ? meta.volumeCovers : undefined,
     excludedFields,
     title: meta.title,

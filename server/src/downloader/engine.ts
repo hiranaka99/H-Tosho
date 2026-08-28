@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, getTmpDir, schema } from '../db/index.js';
@@ -33,6 +33,9 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho
 const MAX_AUTO_RETRIES = 3;
 /** Cooldown before an automatic retry starts, giving the CDN time to recover. */
 const AUTO_RETRY_DELAY_MS = 60_000;
+/** Bounds for waiting on a Kavita scan task to finish before diffing series. */
+const SCAN_COMPLETION_TIMEOUT_MS = 120_000;
+const SCAN_COMPLETION_POLL_MS = 2_000;
 
 /** True when a fetch error is transient (worth retrying with backoff). */
 export function isTransientError(err: unknown): boolean {
@@ -137,6 +140,8 @@ export interface DownloadTask {
   mergeFolder: string | null;
   /** Manual chapter number written to ComicInfo.Number for merged downloads. */
   chapterNumber: number | null;
+  /** Queue priority: higher values are claimed first (ties break on id ASC). */
+  priority: number;
   errorMessage: string | null;
   createdAt: string;
   startedAt: string | null;
@@ -159,6 +164,7 @@ interface DownloadRow {
   outputPath: string | null;
   mergeFolder: string | null;
   chapterNumber: number | null;
+  priority: number;
   errorMessage: string | null;
   createdAt: string;
   startedAt: string | null;
@@ -182,10 +188,11 @@ function rowToTask(row: DownloadRow): DownloadTask {
     outputPath: row.outputPath,
     mergeFolder: row.mergeFolder ?? null,
     chapterNumber: row.chapterNumber ?? null,
+    priority: row.priority ?? 0,
     errorMessage: row.errorMessage,
-    createdAt: row.createdAt,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt,
+    createdAt: row.createdAt,
   };
 }
 
@@ -222,9 +229,12 @@ export class DownloadQueue {
   }
   /** Recover persistent queue state after process startup, then run queued work. */
   start(): void {
+    // A previous process may have died mid-download. Its partial page files are
+    // still in the task's tmpDir, so re-queue instead of failing — the run
+    // resumes from the first missing page file.
     getDb()
       .update(schema.downloadQueue)
-      .set({ status: 'failed', errorMessage: 'Interrupted by server restart', speed: 0, currentFile: null, finishedAt: new Date().toISOString() })
+      .set({ status: 'queued', speed: null, currentFile: null, errorMessage: null, startedAt: null })
       .where(eq(schema.downloadQueue.status, 'downloading'))
       .run();
     void this.pump();
@@ -259,6 +269,7 @@ export class DownloadQueue {
     outputFormat?: 'cbz' | 'folder',
     mergeFolder?: string,
     chapterNumber?: number,
+    priority?: number,
   ): number {
     const db = getDb();
     const res = db
@@ -273,6 +284,7 @@ export class DownloadQueue {
         outputFormat: outputFormat ?? this.settingsProvider().format,
         mergeFolder: mergeFolder ?? null,
         chapterNumber: chapterNumber ?? null,
+        priority: priority ?? 0,
       })
       .run();
     const id = Number(res.lastInsertRowid);
@@ -450,7 +462,7 @@ export class DownloadQueue {
       if (!t || t.status !== 'failed') return; // user retried or deleted meanwhile
       getDb()
         .update(schema.downloadQueue)
-        .set({ status: 'queued', progressCurrent: 0, speed: null, currentFile: null, bytesCurrent: 0, bytesTotal: 0, errorMessage: null, startedAt: null, finishedAt: null })
+        .set({ status: 'queued', speed: null, currentFile: null, errorMessage: null, startedAt: null, finishedAt: null })
         .where(eq(schema.downloadQueue.id, id))
         .run();
       this.syncLive(id);
@@ -460,7 +472,7 @@ export class DownloadQueue {
     this.retryTimers.set(id, timer);
   }
 
-  /** Re-run a failed/completed task from scratch. */
+  /** Re-queue a failed/completed task, resuming from its partial page files. */
   retry(id: number): boolean {
     const task = this.get(id);
     if (!task) return false;
@@ -474,13 +486,14 @@ export class DownloadQueue {
     this.live.delete(id);
     getDb()
       .update(schema.downloadQueue)
-      .set({ status: 'queued', progressCurrent: 0, speed: null, currentFile: null, bytesCurrent: 0, bytesTotal: 0, errorMessage: null, startedAt: null, finishedAt: null })
+      .set({ status: 'queued', speed: null, currentFile: null, errorMessage: null, startedAt: null, finishedAt: null })
       .where(eq(schema.downloadQueue.id, id))
       .run();
     void this.pump();
     return true;
   }
 
+  /** Delete a task and its scratch directory. */
   remove(id: number): boolean {
     getDb().delete(schema.downloadQueue).where(eq(schema.downloadQueue.id, id)).run();
     this.live.delete(id);
@@ -490,6 +503,8 @@ export class DownloadQueue {
       clearTimeout(pending);
       this.retryTimers.delete(id);
     }
+    // The task is gone for good: its scratch space goes with it.
+    fs.rmSync(path.join(getTmpDir(), 'downloads', String(id)), { recursive: true, force: true });
     return true;
   }
 
@@ -499,13 +514,33 @@ export class DownloadQueue {
     const res = db.delete(schema.downloadQueue).where(eq(schema.downloadQueue.status, 'completed')).run();
     return Number(res.changes ?? 0);
   }
-
   /** Most recent completed task for a gallery (duplicate-download guard). */
   findCompleted(source: DoujinSource, galleryId: string): DownloadTask | null {
     const row = getDb()
       .select()
       .from(schema.downloadQueue)
       .where(and(eq(schema.downloadQueue.source, source), eq(schema.downloadQueue.galleryId, galleryId), eq(schema.downloadQueue.status, 'completed')))
+      .orderBy(desc(schema.downloadQueue.id))
+      .limit(1)
+      .get();
+    return row ? this.get(row.id) : null;
+  }
+
+  /**
+   * Most recent queued/downloading/paused task for a gallery — blocks duplicate
+   * enqueues of work that is already in flight or waiting.
+   */
+  findActive(source: DoujinSource, galleryId: string): DownloadTask | null {
+    const row = getDb()
+      .select()
+      .from(schema.downloadQueue)
+      .where(
+        and(
+          eq(schema.downloadQueue.source, source),
+          eq(schema.downloadQueue.galleryId, galleryId),
+          inArray(schema.downloadQueue.status, ['queued', 'downloading', 'paused']),
+        ),
+      )
       .orderBy(desc(schema.downloadQueue.id))
       .limit(1)
       .get();
@@ -532,7 +567,7 @@ export class DownloadQueue {
         .select()
         .from(schema.downloadQueue)
         .where(eq(schema.downloadQueue.status, 'queued'))
-        .orderBy(asc(schema.downloadQueue.id))
+        .orderBy(desc(schema.downloadQueue.priority), asc(schema.downloadQueue.id))
         .limit(1)
         .get();
       if (!row) return null;
@@ -604,6 +639,10 @@ export class DownloadQueue {
       this.setStatus(row.id, 'completed');
       this.updateProgress(row.id, { progressCurrent: total, progressTotal: total, speed: 0, currentFile: null }, { force: true });
 
+      // The output is final: the scratch pages are no longer needed. On failure
+      // the tmpDir is deliberately kept so a retry can resume from partial data.
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+
       // Optional Kavita auto-sync.
       if (settings.autoSyncKavita) await this.triggerKavitaScan(outputPath);
     } catch (e) {
@@ -614,7 +653,8 @@ export class DownloadQueue {
         else this.setStatus(row.id, 'failed');
       }
     } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      // NOTE: the tmpDir intentionally survives a failed run (resume-from-partial);
+      // it is removed here only implicitly by success above or by an explicit remove().
       // Drop the in-memory snapshot so subsequent reads reflect the authoritative DB state.
       this.live.delete(row.id);
       this.lastBroadcast.delete(row.id);
@@ -641,6 +681,25 @@ export class DownloadQueue {
     fs.mkdirSync(tmpDir, { recursive: true });
     const out: { name: string; path: string }[] = new Array(total);
 
+    // Resume-from-partial: page files from an earlier attempt live in tmpDir as
+    // bare index names ("0", "1", …). Trust only a consecutive prefix starting
+    // at index 0 — parallel workers can leave interior holes, so anything past
+    // the first missing file is re-downloaded (overwriting a stale extra file
+    // is harmless). Valid files become part of the result without a re-fetch.
+    const resumedSizes = new Map<number, number>();
+    for (let i = 0; i < total; i++) {
+      try {
+        const st = fs.statSync(path.join(tmpDir, String(i)));
+        if (!st.isFile() || st.size <= 0) break;
+        resumedSizes.set(i, st.size);
+      } catch {
+        break;
+      }
+    }
+    for (const [i] of resumedSizes) {
+      out[i] = { name: `${padPage(i + 1, total)}.${extFromUrl(pages[i])}`, path: path.join(tmpDir, String(i)) };
+    }
+
     // Per-run byte-level accounting used to derive a live bytes-current/total.
     const bs = {
       actual: new Map<number, number>(), // index -> final page size
@@ -651,7 +710,12 @@ export class DownloadQueue {
       lastBytes: 0,
       ema: 0,
     };
-
+    // Seed the byte accounting with the resumed pages so speed/bytes never
+    // report a spurious re-download of data already on disk.
+    for (const [i, size] of resumedSizes) {
+      bs.actual.set(i, size);
+      bs.completed.add(i);
+    }
     const currentBytes = (): number => {
       let sum = 0;
       for (const v of bs.actual.values()) sum += v;
@@ -661,6 +725,9 @@ export class DownloadQueue {
       }
       return sum;
     };
+    // Baseline the speed window at the resumed byte total so the EMA does not
+    // spike on the first tick after a resume.
+    bs.lastBytes = currentBytes();
 
     const estimateTotal = (): number => {
       const completedCount = bs.completed.size;
@@ -694,7 +761,7 @@ export class DownloadQueue {
     // the label bounce backwards within the in-flight window (e.g. a late chunk
     // from page 83 after page 87). Track the frontier — the highest page index
     // touched so far — which only ever moves forward.
-    let frontier = 0;
+    let frontier = resumedSizes.size;
     let lastReport = 0;
     const touchPage = (i: number): void => {
       if (i + 1 > frontier) frontier = i + 1;
@@ -733,7 +800,7 @@ export class DownloadQueue {
       report(true);
     };
 
-    let nextIndex = 0;
+    let nextIndex = resumedSizes.size;
     const worker = async (): Promise<void> => {
       while (true) {
         if (ctx.cancelled) throw new Error('Cancelled by user');
@@ -783,6 +850,22 @@ export class DownloadQueue {
 
     const workers = Array.from({ length: Math.min(concurrency, total) }, () => worker());
     await Promise.all(workers);
+    // A resumed run reports its on-disk progress immediately instead of sitting
+    // at 0 until the first new page lands.
+    if (resumedSizes.size > 0) {
+      this.updateProgress(
+        taskId,
+        {
+          progressCurrent: resumedSizes.size,
+          progressTotal: total,
+          speed: 0,
+          currentFile: null,
+          bytesCurrent: Math.round(currentBytes()),
+          bytesTotal: estimateTotal(),
+        },
+        { force: true },
+      );
+    }
     return out;
   }
 
@@ -838,6 +921,9 @@ export class DownloadQueue {
    */
   private async triggerKavitaScan(outputPath: string): Promise<void> {
     try {
+      // Lazy imports: the Kavita client and sync services are only needed when
+      // auto-sync is on; static imports would drag settings/job deps into every
+      // engine import (and their module side effects into tests).
       const { getKavitaConnection } = await import('../services/settings.js');
       const conn = getKavitaConnection();
       if (!conn.baseUrl || !conn.apiKey) return;
@@ -852,7 +938,23 @@ export class DownloadQueue {
       }
       // Snapshot current series so only what this rescan adds gets matched.
       const seen = new Set((await client.getSeries(matched.id)).map((s) => s.id));
-      await client.scanLibrary(matched.id);
+      // Scan just the folder this download wrote into (the .cbz's parent folder
+      // for archive output) — far cheaper than a whole-library scan.
+      const outputDir = outputPath.toLowerCase().endsWith('.cbz') ? path.dirname(outputPath) : outputPath;
+      await client.scanFolder(matched.id, outputDir);
+      // Kavita runs scans as background tasks; wait for the task queue to drain
+      // before diffing the series list, otherwise the new entry is not visible yet.
+      const deadline = Date.now() + SCAN_COMPLETION_TIMEOUT_MS;
+      for (;;) {
+        let running: boolean;
+        try {
+          running = await client.isTaskRunning();
+        } catch {
+          break; // status endpoint unreachable — proceed best-effort
+        }
+        if (!running || Date.now() >= deadline) break;
+        await sleep(SCAN_COMPLETION_POLL_MS);
+      }
       const { enqueueMatchForNewSeries } = await import('../services/sync.js');
       const fresh = await enqueueMatchForNewSeries(client, matched.id, seen);
       if (fresh.length > 0) console.log(`[h-tosho] auto-matching ${fresh.length} new series in "${matched.name}"`);

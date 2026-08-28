@@ -15,11 +15,11 @@ const { doujinProviders } = await import('../src/downloader/providers.js');
 const recs = await import('../src/services/recommendations.js');
 
 initDb();
-const originalHitomi = doujinProviders.hitomi;
-const originalNhentai = doujinProviders.nhentai;
+const originals: Record<string, DoujinProvider> = { ...doujinProviders };
 after(() => {
-  doujinProviders.hitomi = originalHitomi;
-  doujinProviders.nhentai = originalNhentai;
+  for (const [id, provider] of Object.entries(originals)) {
+    doujinProviders[id as DoujinSource] = provider;
+  }
 });
 
 function localDate(d: Date): string {
@@ -123,7 +123,6 @@ test('exhausted candidate pool recycles previously-served picks instead of going
   const shared = () => Array.from({ length: 12 }, (_, i) => String(i));
   doujinProviders.hitomi = stubProvider('hitomi', shared);
   doujinProviders.nhentai = stubProvider('nhentai', shared);
-
   const set1 = await recs.refreshRecommendations();
   assert.equal(set1.items.length, 12);
   const set2 = await recs.refreshRecommendations();
