@@ -37,6 +37,7 @@ import {
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
 import { useDownloads } from '../lib/DownloadsContext';
 import { cn, timeAgo, toIsoUtc } from '../lib/utils';
+import { formatBytes, formatSpeed } from '../lib/format';
 import { toast } from '../lib/toast';
 import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, ErrorState, ConfirmDialog } from '../components/ui';
 import { ComicInfoModal } from '../components/ComicInfoModal';
@@ -243,24 +244,6 @@ function pageList(page: number, count: number): (number | '…')[] {
   if (hi < count - 1) pages.push('…');
   pages.push(count);
   return pages;
-}
-
-function formatSpeed(bps: number | null): string {
-  if (!bps || bps <= 0) return '';
-  const mb = bps / (1024 * 1024);
-  return mb >= 1 ? `${mb.toFixed(1)} MB/s` : `${Math.round(bps / 1024)} KB/s`;
-}
-
-function formatBytes(bytes: number | null | undefined): string {
-  if (!bytes || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let v = bytes;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 /** Format an ISO 8601 date string for display, or undefined when absent/invalid. */
