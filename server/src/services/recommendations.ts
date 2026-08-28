@@ -14,20 +14,23 @@ import { getKavitaConnection, getRecommendationSettings, setRecommendationSettin
  * table — written when a download resolves its metadata, lazily backfilled for
  * pre-existing downloads), plus the user's existing Kavita library: each series'
  * title feeds parody/series searches, and the genres/tags/writers Kavita has
- * already indexed from the archives join the artist/tag profile. The engine builds a handful
- * of artist/tag/series queries per source from the top profile terms, searches
- * each source, scores
- * candidates by how strongly they match the profile, drops galleries already
- * in the library, and picks a daily set.
+ * already indexed from the archives join the artist/tag profile. The engine
+ * builds a handful of artist/tag/series queries per source from the top
+ * profile terms (the popularity horizon is a seeded per-roll choice, so the
+ * candidate pool itself rotates), scores candidates by how strongly they
+ * match the profile, drops galleries already in the library or served
+ * recently, and picks a daily set.
  *
  * Daily rotation: selection is seeded with the local date, so a day always
  * yields the same picks (cached in `key_value_store` under
- * `recommendations:<date>`). "Refresh" busts the cache and re-rolls with a
- * fresh nonce; every pick served that day is recorded under
- * `recommendations-seen:<date>` and banned from later refreshes, so a manual
- * refresh always surfaces galleries the user has not seen today. When the
- * profile is too thin to be meaningful (cold start), it falls back to each
- * source's popularity list.
+ * `recommendations-v2:<date>`). "Refresh" busts the cache and re-rolls with a
+ * fresh nonce. Every served pick enters a rolling cross-day history
+ * (`recommendations-history`): manual refreshes never re-serve it, and
+ * neither does the next day's first set — that history is what stops the
+ * same galleries from resurfacing day after day. Picks become eligible again
+ * after HISTORY_DAYS, or sooner when the fresh candidate pool is exhausted
+ * (oldest history recycles first). When the profile is too thin to be
+ * meaningful (cold start), it falls back to each source's popularity list.
  */
 
 const SOURCES: DoujinSource[] = ['hitomi', 'nhentai'];
@@ -36,12 +39,32 @@ const SOURCES: DoujinSource[] = ['hitomi', 'nhentai'];
 const ARTIST_QUERIES = 2; // artist terms per source — artists rotate, tags/series carry the set
 const TAG_QUERIES = 4; // top tag terms per source
 const SERIES_QUERIES = 3; // top Kavita series titles per source (parody/series search)
-/** How many heaviest terms per kind are eligible for queries. Artists sample without an anchor (they rotate fully); tags/series keep their #1 anchor. */
-const ARTIST_QUERY_POOL = 6;
-const TAG_QUERY_POOL = 8;
-const SERIES_QUERY_POOL = 6;
-/** Results fetched per candidate query (bounded — hydration is one request per gallery on Hitomi). */
-const RESULTS_PER_QUERY = 12;
+/**
+ * How many heaviest terms per kind are eligible for queries. Wide pools are
+ * what give later rolls somewhere to rotate to; without them every roll
+ * queries the same handful of heaviest terms and returns the same galleries.
+ * Artists sample without an anchor (they rotate fully); tags/series keep
+ * their #1 anchor on only some rolls (see buildQuerySpecs).
+ */
+const ARTIST_QUERY_POOL = 12;
+const TAG_QUERY_POOL = 16;
+const SERIES_QUERY_POOL = 12;
+/**
+ * Results fetched per candidate query. Hitomi hydration is one request per
+ * gallery, so its cap stays tight; nhentai answers from a single API page,
+ * so a wider pool there costs nothing.
+ */
+const HITOMI_RESULTS_PER_QUERY = 12;
+const NHENTAI_RESULTS_PER_QUERY = 24;
+/**
+ * Popularity horizons a roll draws one sort from, per source. All-time lists
+ * barely move day to day; pairing them with a weekly horizon keeps the
+ * candidate pool itself rotating, not just the terms querying it.
+ */
+const SEARCH_SORTS: Record<DoujinSource, DoujinSort[]> = {
+  hitomi: ['popular-year', 'popular-week'],
+  nhentai: ['popular', 'popular-week'],
+};
 /** Picks per source and total size of the daily set. */
 const PICKS_PER_SOURCE = 6;
 const TOTAL_PICKS = 12;
@@ -367,6 +390,8 @@ async function backfillMissingTags(): Promise<void> {
 interface QuerySpec {
   source: DoujinSource;
   query: string;
+  /** Result cap for this query (hitomi hydrates one request per result; nhentai is a single API page). */
+  results: number;
   terms: ProfileTerm[];
   sort: DoujinSort;
 }
@@ -398,9 +423,10 @@ function languageFragment(source: DoujinSource, language: string): string {
 
 /**
  * The terms queried this roll. Tags/series keep their #1 heaviest term as a
- * taste anchor; artists are fully seeded-sampled from their pool (no anchor —
- * otherwise the top artist would be re-queried on every roll). One query per
- * term, per source (AND-combining would shrink pools too hard).
+ * taste anchor on only half the rolls (a seeded coin — anchoring every roll
+ * re-queries the top term every time and the set converges on it); artists
+ * are always fully seeded-sampled from their pool. One query per term, per
+ * source (AND-combining would shrink pools too hard).
  */
 function buildQuerySpecs(profile: TasteProfile, rng: () => number): QuerySpec[] {
   const artists = sampleTerms(profile.terms.filter((t) => t.kind === 'artist'), ARTIST_QUERIES, ARTIST_QUERY_POOL, rng, false);
@@ -409,8 +435,9 @@ function buildQuerySpecs(profile: TasteProfile, rng: () => number): QuerySpec[] 
     TAG_QUERIES,
     TAG_QUERY_POOL,
     rng,
+    rng() < 0.5,
   );
-  const series = sampleTerms(profile.terms.filter((t) => t.kind === 'series'), SERIES_QUERIES, SERIES_QUERY_POOL, rng);
+  const series = sampleTerms(profile.terms.filter((t) => t.kind === 'series'), SERIES_QUERIES, SERIES_QUERY_POOL, rng, rng() < 0.5);
   const specs: QuerySpec[] = [];
   for (const source of SOURCES) {
     const lang = profile.language ? languageFragment(source, profile.language) : null;
@@ -420,9 +447,9 @@ function buildQuerySpecs(profile: TasteProfile, rng: () => number): QuerySpec[] 
       specs.push({
         source,
         query: [frag, lang].filter(Boolean).join(' '),
+        results: source === 'hitomi' ? HITOMI_RESULTS_PER_QUERY : NHENTAI_RESULTS_PER_QUERY,
         terms: [term],
-        // Quality over freshness for recommendations.
-        sort: source === 'nhentai' ? 'popular' : 'popular-year',
+        sort: SEARCH_SORTS[source][Math.floor(rng() * SEARCH_SORTS[source].length)],
       });
     }
   }
@@ -452,7 +479,6 @@ function sampleTerms(terms: ProfileTerm[], count: number, poolSize: number, rng:
 interface Candidate {
   result: DoujinSearchResult;
   score: number;
-  effective: number;
   reasons: string[];
   matched: Set<string>;
 }
@@ -466,6 +492,16 @@ function credit(c: Candidate, termKey: string, reason: string, weight: number): 
   if (!c.reasons.includes(reason)) c.reasons.push(reason);
 }
 
+/**
+ * Match weight used for scoring: log-damped library frequency. Raw weight is
+ * skewed by design — a series term weighs as many pages as Kavita indexed for
+ * it (hundreds) while a tag counts galleries (single digits) — so raw sums
+ * would let one series hit outweigh a five-tag profile match.
+ */
+function termScore(t: ProfileTerm): number {
+  return 1 + Math.log2(1 + t.weight);
+}
+
 /** Search every spec and merge candidates by gallery (a gallery hit by several queries sums their weights). */
 async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, termIndex: Map<string, ProfileTerm>): Promise<Map<string, Candidate>> {
   const out = new Map<string, Candidate>();
@@ -475,7 +511,7 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
       if (!provider) return;
       let results: DoujinSearchResult[];
       try {
-        results = await provider.search(spec.query, RESULTS_PER_QUERY, spec.sort);
+        results = await provider.search(spec.query, spec.results, spec.sort);
       } catch (err) {
         console.warn(`[h-tosho] recommendations query failed (${spec.source} “${spec.query}”):`, err instanceof Error ? err.message : err);
         return;
@@ -485,19 +521,19 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
         if (downloaded.has(key)) continue;
         let c = out.get(key);
         if (!c) {
-          c = { result: r, score: 0, effective: 0, reasons: [], matched: new Set() };
+          c = { result: r, score: 0, reasons: [], matched: new Set() };
           out.set(key, c);
         }
-        for (const t of spec.terms) credit(c, `${t.kind}:${t.name.toLowerCase()}`, `${t.kind} ${t.name}`, t.weight);
+        for (const t of spec.terms) credit(c, `${t.kind}:${t.name.toLowerCase()}`, `${t.kind} ${t.name}`, termScore(t));
         // Hitomi results carry their own tag/artist lists — credit extra profile terms they share.
         if (r.source === 'hitomi') {
           for (const a of r.artists ?? []) {
             const t = termIndex.get(`artist:${a.toLowerCase()}`);
-            if (t) credit(c, `artist:${a.toLowerCase()}`, `artist ${t.name}`, t.weight);
+            if (t) credit(c, `artist:${a.toLowerCase()}`, `artist ${t.name}`, termScore(t));
           }
           for (const tag of r.tags ?? []) {
             const t = termIndex.get(`tag:${tag.toLowerCase()}`);
-            if (t) credit(c, `tag:${tag.toLowerCase()}`, `tag ${t.name}`, t.weight);
+            if (t) credit(c, `tag:${tag.toLowerCase()}`, `tag ${t.name}`, termScore(t));
           }
         }
       }
@@ -507,38 +543,62 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
 }
 
 /**
- * Score-sorted picks with a seeded jitter so same-day re-rolls differ but top
- * matches stay favored. A single term may contribute at most MAX_PICKS_PER_TERM
- * picks (artists: MAX_PICKS_PER_ARTIST), tracked across calls via `termPicks`,
- * so no favorite can dominate the whole set.
+ * Draws `count` picks by weighted sampling without replacement — draw
+ * probability is proportional to a candidate's score, so top matches surface
+ * most rolls without the same scoreboard winning every time (a sorted list
+ * with small jitter could not: top scores always out-ranked the jitter). A
+ * single term may contribute at most MAX_PICKS_PER_TERM picks (artists:
+ * MAX_PICKS_PER_ARTIST), tracked across calls via `termPicks`, so no favorite
+ * can dominate the whole set.
  */
 function pickDaily(candidates: Candidate[], count: number, rng: () => number, termIndex: Map<string, ProfileTerm>, termPicks: Map<string, number>): RecommendationItem[] {
-  const list = [...candidates];
-  if (!list.length || count <= 0) return [];
-  const maxScore = Math.max(1, ...list.map((c) => c.score));
-  for (const c of list) c.effective = c.score + rng() * 0.25 * maxScore;
-  list.sort((a, b) => b.effective - a.effective);
+  const pool = [...candidates];
   const out: RecommendationItem[] = [];
-  for (const c of list) {
-    if (out.length >= count) break;
-    // The candidate's dominant term is its heaviest match — that term "consumes" the pick.
-    let dominant: string | null = null;
-    let bestWeight = -1;
-    for (const key of c.matched) {
-      const w = termIndex.get(key)?.weight ?? 0;
-      if (w > bestWeight) {
-        bestWeight = w;
-        dominant = key;
+  while (out.length < count && pool.length > 0) {
+    // Candidates whose dominant term already hit its cap for this set are not drawable.
+    const eligible = pool.filter((c) => !capReached(c, termIndex, termPicks));
+    if (!eligible.length) break;
+    let total = 0;
+    for (const c of eligible) total += c.score;
+    // Roulette draw ∝ score; falls back to uniform when every score is 0.
+    let chosen = eligible[Math.floor(rng() * eligible.length)];
+    if (total > 0) {
+      let r = rng() * total;
+      for (const c of eligible) {
+        r -= c.score;
+        if (r <= 0) {
+          chosen = c;
+          break;
+        }
       }
     }
-    if (dominant) {
-      const cap = dominant.startsWith('artist:') ? MAX_PICKS_PER_ARTIST : MAX_PICKS_PER_TERM;
-      if ((termPicks.get(dominant) ?? 0) >= cap) continue;
-      termPicks.set(dominant, (termPicks.get(dominant) ?? 0) + 1);
-    }
-    out.push({ ...c.result, reasons: c.reasons });
+    const dominant = dominantTerm(chosen, termIndex);
+    if (dominant) termPicks.set(dominant, (termPicks.get(dominant) ?? 0) + 1);
+    out.push({ ...chosen.result, reasons: chosen.reasons });
+    pool.splice(pool.indexOf(chosen), 1);
   }
   return out;
+}
+
+/** The candidate's heaviest match — that term "consumes" the pick. */
+function dominantTerm(c: Candidate, termIndex: Map<string, ProfileTerm>): string | null {
+  let dominant: string | null = null;
+  let bestWeight = -1;
+  for (const key of c.matched) {
+    const w = termIndex.get(key)?.weight ?? 0;
+    if (w > bestWeight) {
+      bestWeight = w;
+      dominant = key;
+    }
+  }
+  return dominant;
+}
+
+function capReached(c: Candidate, termIndex: Map<string, ProfileTerm>, termPicks: Map<string, number>): boolean {
+  const dominant = dominantTerm(c, termIndex);
+  if (!dominant) return false;
+  const cap = dominant.startsWith('artist:') ? MAX_PICKS_PER_ARTIST : MAX_PICKS_PER_TERM;
+  return (termPicks.get(dominant) ?? 0) >= cap;
 }
 
 /** Per-source budget of PICKS_PER_SOURCE, topped up from the leftovers when a source is thin. */
@@ -652,11 +712,71 @@ export function markOwned(source: DoujinSource, galleryId: string): void {
     .onConflictDoNothing()
     .run();
 }
-const seenKey = (date: string) => `recommendations-seen:${date}`;
-/** Cap on previously-shown picks retained per day (bounds the row and the recycling pool). */
-const MAX_SEEN_PICKS = 300;
+const HISTORY_KEY = 'recommendations-history';
+/** Served picks stay excluded for this many days before they are eligible again. */
+const HISTORY_DAYS = 30;
+/** Hard cap on retained history entries (bounds the row and the recycling pool). */
+const MAX_HISTORY = 1200;
 
-/** Picks already served earlier today — a manual refresh must not re-serve them. */
+/** One previously-served pick, kept until it ages out of the history window. */
+interface HistoryEntry {
+  key: string;
+  /** Local date the pick was last served — drives expiry. */
+  date: string;
+  item: RecommendationItem;
+}
+
+function readHistory(): HistoryEntry[] {
+  const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, HISTORY_KEY)).get();
+  if (!row) return [];
+  try {
+    const parsed = JSON.parse(row.valueJson);
+    return Array.isArray(parsed) ? (parsed as HistoryEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+
+/** Drop expired entries and enforce the cap (oldest last, so the tail is the newest). */
+function pruneHistory(): HistoryEntry[] {
+  const cutoff = localDate(new Date(Date.now() - HISTORY_DAYS * 86_400_000));
+  const history = readHistory().filter((h) => h.date >= cutoff).slice(-MAX_HISTORY);
+  const valueJson = JSON.stringify(history);
+  getDb().insert(schema.keyValueStore)
+    .values({ key: HISTORY_KEY, valueJson })
+    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson } })
+    .run();
+  return history;
+}
+
+/**
+ * Record today's picks as served (re-serving a recycled pick refreshes its
+ * date, restarting its exclusion window). Also migrates the legacy per-day
+ * seen row, so a deploy does not re-serve picks shown earlier today.
+ */
+function addHistory(date: string, items: RecommendationItem[]): void {
+  const entries = new Map<string, HistoryEntry>();
+  for (const h of readHistory()) entries.set(h.key, h);
+  const legacy = readSeenItems(date);
+  for (const it of legacy) entries.set(keyOf(it), { key: keyOf(it), date, item: it });
+  if (legacy.length) {
+    getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, seenKey(date))).run();
+  }
+  for (const it of items) entries.set(keyOf(it), { key: keyOf(it), date, item: it });
+  const trimmed = [...entries.values()].slice(-MAX_HISTORY);
+  const valueJson = JSON.stringify(trimmed);
+  getDb().insert(schema.keyValueStore)
+    .values({ key: HISTORY_KEY, valueJson })
+    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson } })
+    .run();
+}
+
+const seenKey = (date: string) => `recommendations-seen:${date}`;
+/**
+ * Legacy per-day seen rows (`recommendations-seen:<date>`), read only for the
+ * one-time migration into the rolling history.
+ */
 function readSeenItems(date: string): RecommendationItem[] {
   const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, seenKey(date))).get();
   if (!row) return [];
@@ -666,21 +786,6 @@ function readSeenItems(date: string): RecommendationItem[] {
   } catch {
     return [];
   }
-}
-
-function addSeenItems(date: string, items: RecommendationItem[]): void {
-  if (!items.length) return;
-  const existing = readSeenItems(date);
-  const known = new Set(existing.map(keyOf));
-  for (const it of items) {
-    if (!known.has(keyOf(it))) existing.push(it);
-  }
-  const trimmed = existing.slice(-MAX_SEEN_PICKS);
-  const valueJson = JSON.stringify(trimmed);
-  getDb().insert(schema.keyValueStore)
-    .values({ key: seenKey(date), valueJson })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson } })
-    .run();
 }
 
 /**
@@ -708,10 +813,11 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
   await backfillMissingTags();
   const kavitaSignals = await buildKavitaSignals();
   const profile = buildProfile(kavitaSignals);
-  // Galleries already in the library, marked as owned, or served earlier today —
-  // a manual refresh must not re-serve any of them.
-  const seen = readSeenItems(date);
-  const excluded = new Set([...completedGalleryKeys(), ...ownedGalleryKeys(), ...seen.map(keyOf)]);
+  // Galleries already in the library, marked as owned, or served recently —
+  // a fresh set must not re-serve any of them, even across days. That rolling
+  // exclusion is what keeps today's first set from repeating yesterday's.
+  const history = pruneHistory();
+  const excluded = new Set([...completedGalleryKeys(), ...ownedGalleryKeys(), ...history.map((h) => h.key)]);
 
   let items: RecommendationItem[] = [];
   let mode: 'library' | 'popular' = 'popular';
@@ -732,19 +838,19 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
     items = [...items, ...extra].slice(0, TOTAL_PICKS);
   }
 
-  // The day's fresh candidate pool is exhausted after many refreshes: top up
-  // with the oldest previously-shown picks rather than leaving the panel short.
+  // The fresh candidate pool is exhausted (tiny pool, many refreshes): top up
+  // with the oldest previously-served picks rather than leaving the panel short.
   if (items.length < TOTAL_PICKS) {
     const existing = new Set(items.map(keyOf));
-    for (const it of seen) {
-      if (existing.has(keyOf(it))) continue;
-      items.push(it);
-      existing.add(keyOf(it));
+    for (const h of history) {
+      if (existing.has(h.key)) continue;
+      items.push(h.item);
+      existing.add(h.key);
       if (items.length >= TOTAL_PICKS) break;
     }
   }
 
-  addSeenItems(date, items);
+  addHistory(date, items);
 
   return {
     date,
@@ -785,12 +891,13 @@ function writeCached(set: RecommendationSet): void {
     .values({ key: cacheKey(set.date), valueJson })
     .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson } })
     .run();
-  // Keep only today's cached set and seen list so the store doesn't accumulate one row per day.
+  // Keep only today's cached set (the rolling history row prunes itself), and
+  // drop legacy per-day seen rows superseded by the history.
   db.delete(schema.keyValueStore)
     .where(and(like(schema.keyValueStore.key, 'recommendations:%'), ne(schema.keyValueStore.key, cacheKey(set.date))))
     .run();
   db.delete(schema.keyValueStore)
-    .where(and(like(schema.keyValueStore.key, 'recommendations-seen:%'), ne(schema.keyValueStore.key, seenKey(set.date))))
+    .where(like(schema.keyValueStore.key, 'recommendations-seen:%'))
     .run();
 }
 
