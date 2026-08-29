@@ -137,7 +137,11 @@ export function removeWatchedSearch(id: number): boolean {
 
 /** Number of saved watches (used by the poll scheduler to decide whether to run). */
 export function countWatchedSearches(): number {
-  return getDb().select().from(schema.watchedSearches).all().length;
+  const row = getDb()
+    .select({ n: sql<number>`count(*)` })
+    .from(schema.watchedSearches)
+    .get();
+  return Number(row?.n ?? 0);
 }
 
 /**

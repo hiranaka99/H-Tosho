@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import fs from 'node:fs';
 import path from 'node:path';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq, lt, sql } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
 import { KAVITA_OPENAPI_VERSION, type KavitaLibrary, type KavitaSeries } from '../kavita/types.js';
@@ -217,9 +217,14 @@ api.get('/kavita/series/:id/cover', async (c) => {
 /** Matched series whose confidence is below the review threshold (local DB only). */
 const LOW_CONFIDENCE_THRESHOLD = 0.8;
 api.get('/series/low-confidence', (c) => {
-  const rows = getDb().select().from(schema.seriesMatches).all();
-  const count = rows.filter((r) => r.status === 'matched' && r.matchScore !== null && r.matchScore < LOW_CONFIDENCE_THRESHOLD).length;
-  return c.json({ count, threshold: LOW_CONFIDENCE_THRESHOLD });
+  // SQL count instead of loading the table and filtering in JS; a NULL score
+  // fails the `<` comparison, matching the old `matchScore !== null` guard.
+  const row = getDb()
+    .select({ n: sql<number>`count(*)` })
+    .from(schema.seriesMatches)
+    .where(and(eq(schema.seriesMatches.status, 'matched'), lt(schema.seriesMatches.matchScore, LOW_CONFIDENCE_THRESHOLD)))
+    .get();
+  return c.json({ count: Number(row?.n ?? 0), threshold: LOW_CONFIDENCE_THRESHOLD });
 });
 
 api.get('/series/:id', async (c) => {
@@ -870,24 +875,31 @@ api.get('/cbz/roots', async (c) => {
       /* Kavita unreachable — the download directory is still a valid root */
     }
   }
-  const existing = [...new Set(roots)].filter((r) => {
-    try {
-      return fs.statSync(r).isDirectory();
-    } catch {
-      return false;
-    }
-  });
-  return c.json({ roots: existing });
+  // Async stats: library paths may live on network drives, where a blocking
+  // statSync would stall the event loop (and every other request) per syscall.
+  const unique = [...new Set(roots)];
+  const ok = await Promise.all(
+    unique.map(async (r) => {
+      try {
+        return (await fs.promises.stat(r)).isDirectory();
+      } catch {
+        return false;
+      }
+    }),
+  );
+  return c.json({ roots: unique.filter((_, i) => ok[i]) });
 });
 
 /** List subdirectories and .cbz files of a directory for the file browser. */
-api.get('/cbz/browse', (c) => {
+api.get('/cbz/browse', async (c) => {
   const dir = c.req.query('path');
   if (!dir || !path.isAbsolute(dir)) return c.json({ error: 'Absolute directory path required' }, 400);
   const full = path.resolve(dir);
   let entries;
   try {
-    entries = fs.readdirSync(full, { withFileTypes: true });
+    // Async read: the browsed directory may be a network drive, where a
+    // blocking readdirSync would stall the event loop for the whole syscall.
+    entries = await fs.promises.readdir(full, { withFileTypes: true });
   } catch {
     return c.json({ error: 'Directory not found or not readable' }, 404);
   }

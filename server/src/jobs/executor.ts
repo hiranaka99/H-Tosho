@@ -18,7 +18,7 @@ import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
 import { listCbzFiles, mergeCbzFiles, pathContains, readComicInfo, resolveExistingFile, resolveSeriesHostDir, rewriteZipEntry } from '../lib/cbz.js';
-import { sleep } from '../lib/http.js';
+import { mapLimit, sleep } from '../lib/http.js';
 import { parseComicInfo, renderComicInfoXml } from '../downloader/comicinfo.js';
 
 interface Target {
@@ -579,6 +579,9 @@ async function runApplySeries(client: KavitaClient, job: Job, log: LogFn): Promi
   return summary;
 }
 
+/** Concurrent series matched inside one match/sync job. Targets are independent (separate Kavita rows and provider lookups), so a few can run at once; the cap keeps provider rate limits (MAL) and Discord webhook bursts comfortable. */
+const MATCH_CONCURRENCY = 3;
+
 /** Run a queued job. Returns a small summary stored on the job row. */
 export async function runJob(job: Job, log: LogFn): Promise<Record<string, number>> {
   // Watched-search checks talk to doujin sources only — no Kavita needed.
@@ -829,15 +832,19 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
   log('info', `Processing ${targets.length} series`);
 
   const force = job.type === 'sync-series';
-  for (let i = 0; i < targets.length; i++) {
+  // Progress counts completions, so it stays monotonic even when series finish
+  // out of order. A cancel request stops new work at the next slot; already-
+  // running series run to completion (same checkpoint semantics as before).
+  let done = 0;
+  await mapLimit(targets, MATCH_CONCURRENCY, async (t) => {
     if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled();
-    const t = targets[i];
     const r = await matchAndApply(client, t, t.libraryId, force, log);
     summary.processed++;
     if (r.matched && r.errors.length === 0) summary.matched++;
     if (r.errors.length > 0) summary.failed++;
-    jobQueue.setProgress(job.id, i + 1, targets.length);
-  }
+    done++;
+    jobQueue.setProgress(job.id, done, targets.length);
+  });
 
   return summary;
 }
