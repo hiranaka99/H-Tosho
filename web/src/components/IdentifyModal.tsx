@@ -154,7 +154,7 @@ function UrlValue({ text, className }: { text: string; className?: string }) {
 /** Label column (fixed width) + two equal-width value columns: Kavita on the left, candidate on the right. */
 const ROW_GRID = 'grid grid-cols-1 items-start gap-1 sm:grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)] sm:gap-x-3';
 
-function FieldRow({ row, providerName, checked, onToggle }: { row: DiffRow; providerName: string; checked?: boolean; onToggle?: () => void }) {
+function FieldRow({ row, checked, onToggle }: { row: DiffRow; checked?: boolean; onToggle?: () => void }) {
   const merge = row.tagMerge;
   const differs = !merge && computeDiffers(row);
   // Multiline fields (Summary) are never truncated: full text, wrapping, with an internal scroll for very long descriptions.
@@ -272,15 +272,14 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     staleTime: 60_000,
   });
 
-  // The identify run may refresh the stored alignment flag on the server — refetch the series row so the match banner shows current state.
-  React.useEffect(() => {
-    if (identify.data) qc.invalidateQueries({ queryKey: ['series', seriesId] });
-  }, [identify.data, qc, seriesId]);
 
   const apply = useMutation({
     mutationFn: (p: { providerId: string; providerSeriesId: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) =>
       api.apply(seriesId, p.providerId, p.providerSeriesId, { selectedTitle: p.selectedTitle, excludedFields: p.excludedFields, cover: p.cover, score: p.score }),
     onSuccess: () => {
+      // Applying a match can flip the stored alignment flag — refresh the
+      // series row so the match banner is current when the modal closes.
+      qc.invalidateQueries({ queryKey: ['series', seriesId] });
       // The push runs as a background job (the Kavita scan wait can take minutes);
       // the sidebar polls ['jobs'] and shows it from here on.
       qc.invalidateQueries({ queryKey: ['jobs'] });
@@ -620,7 +619,6 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                       <FieldRow
                         key={row.label}
                         row={row}
-                        providerName={PROVIDER_NAMES[selected.providerId] ?? selected.providerId}
                         checked={!excluded.has(row.field ?? '')}
                         onToggle={
                           row.field

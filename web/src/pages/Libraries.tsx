@@ -7,8 +7,7 @@ import { Button, Card, Input, Select, Badge, StatusBadge, ProviderBadge, Spinner
 import { IdentifyModal } from '../components/IdentifyModal';
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeSeriesModal } from '../components/MergeSeriesModal';
-import { buildTagSearchFragment } from './Downloader';
-import { cn, timeAgo } from '../lib/utils';
+import { buildTagSearchFragment, cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
 /** Matches below this score are surfaced for review (mirrors the server's threshold). */
 const LOW_CONFIDENCE = 0.8;
@@ -131,12 +130,30 @@ export function Libraries() {
     navigate(`/libraries/${id}`);
   };
 
-  const libs = useQuery({ queryKey: ['libraries'], queryFn: api.libraries, enabled: selected === null || true });
+  const libs = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
+  // The full series list is expensive server-side (Kavita fan-out per request),
+  // so only refresh it while a job is actually running — the sidebar's always-on
+  // ['jobs'] poll drives this. When the last active job finishes, one explicit
+  // refresh captures the outcome without any idle polling.
+  const { data: jobs } = useQuery({ queryKey: ['jobs'], queryFn: api.jobs });
+  const activeJobs = React.useMemo(
+    () => (jobs ?? []).filter((j) => j.status === 'queued' || j.status === 'running').length,
+    [jobs],
+  );
+  const hadActiveJobs = React.useRef(false);
+  React.useEffect(() => {
+    const wasActive = hadActiveJobs.current;
+    hadActiveJobs.current = activeJobs > 0;
+    if (wasActive && activeJobs === 0 && selected !== null) {
+      void qc.invalidateQueries({ queryKey: ['library-series', selected] });
+    }
+  }, [activeJobs, selected, qc]);
+
   const series = useQuery({
     queryKey: ['library-series', selected],
     queryFn: () => api.librarySeries(selected!),
     enabled: selected !== null,
-    refetchInterval: 5000,
+    refetchInterval: activeJobs > 0 ? 5000 : false,
   });
   const currentMeta = useQuery({
     queryKey: ['series', identify?.id],
@@ -149,6 +166,7 @@ export function Libraries() {
     enabled: selected !== null,
   });
 
+
   // /libraries no longer has an "all" view — land on the first library once loaded.
   React.useEffect(() => {
     if (selected === null && libs.data && libs.data.length > 0) {
@@ -157,15 +175,19 @@ export function Libraries() {
   }, [libs.data, selected, navigate]);
 
   const rows = series.data ?? [];
-  const filtered = rows.filter((r) => {
-    const okStatus =
-      statusFilter === 'all' ? true :
-      statusFilter === 'low-score' ? (r.status === 'matched' && typeof r.matchScore === 'number' && r.matchScore < LOW_CONFIDENCE) :
-      r.status === statusFilter;
-    const okQuery = query ? r.name.toLowerCase().includes(query.toLowerCase()) || (r.artists ?? []).some((a) => a.toLowerCase().includes(query.toLowerCase())) : true;
-    return okStatus && okQuery;
-  });
-  const pageCount = Math.max(1, Math.ceil(filtered.length / SERIES_PAGE_SIZE));
+
+  const filtered = React.useMemo(() => {
+    const q = query.toLowerCase();
+    return rows.filter((r) => {
+      const okStatus =
+        statusFilter === 'all' ? true :
+        statusFilter === 'low-score' ? (r.status === 'matched' && typeof r.matchScore === 'number' && r.matchScore < LOW_CONFIDENCE) :
+        r.status === statusFilter;
+      const okQuery = query ? r.name.toLowerCase().includes(q) || (r.artists ?? []).some((a) => a.toLowerCase().includes(q)) : true;
+      return okStatus && okQuery;
+    });
+  }, [rows, statusFilter, query]);
+  const pageCount = React.useMemo(() => Math.max(1, Math.ceil(filtered.length / SERIES_PAGE_SIZE)), [filtered.length]);
   const currentPage = Math.min(page, pageCount);
   const visibleRows = filtered.slice((currentPage - 1) * SERIES_PAGE_SIZE, currentPage * SERIES_PAGE_SIZE);
   React.useEffect(() => writeLibraryState({ query }), [query]);

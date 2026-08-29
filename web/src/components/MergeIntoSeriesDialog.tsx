@@ -19,6 +19,8 @@ interface Entry {
   note: string | null;
   /** File lookup still in flight (history-cleared galleries are resolved server-side). */
   resolving: boolean;
+  /** Server file lookup failed — the row shows a distinct error note. */
+  error: boolean;
 }
 
 interface MergeIntoSeriesDialogProps {
@@ -53,8 +55,9 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, onDownload }: 
   // Editable chapter state for archives already in the target series: `value` is
   // what the user sees, `orig` the last saved baseline (dirty when they differ).
   const [existing, setExisting] = React.useState<Record<string, { value: string; orig: string }>>({});
-  // Server-resolved files for galleries whose download history row is gone.
-  const [remoteFiles, setRemoteFiles] = React.useState<Record<string, string[]> | null>(null);
+  // Server-resolved files for galleries whose download history row is gone;
+  // a null entry means the lookup failed (shown as its own error note).
+  const [remoteFiles, setRemoteFiles] = React.useState<Record<string, string[] | null>>({});
 
   /** Completed-task .cbz path when available; null means "ask the server". */
   const taskPath = (item: DoujinSearchResult): string | null => {
@@ -62,37 +65,44 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, onDownload }: 
     return t?.outputPath?.toLowerCase().endsWith('.cbz') ? t.outputPath : null;
   };
 
+  // Server-resolved file lists are fetched once per unique gallery key per
+  // mount: taskPath stays null forever for folder-format or history-cleared
+  // galleries, so refiring on every download tick would loop requests. The
+  // live taskPath is still preferred at render time once a task completes.
+  const requestedRef = React.useRef(new Set<string>());
   React.useEffect(() => {
-    const missing = items.filter((item) => taskPath(item) === null);
-    if (missing.length === 0) {
-      setRemoteFiles({});
-      return;
-    }
     let cancelled = false;
-    void Promise.all(
-      missing.map(async (item) => [`${item.source}:${item.galleryId}`, await api.galleryFiles(item.source, item.galleryId, item.title).catch(() => ({ files: [] }))]),
-    ).then((pairs) => {
-      if (!cancelled) setRemoteFiles(Object.fromEntries(pairs));
-    });
+    for (const item of items) {
+      const key = `${item.source}:${item.galleryId}`;
+      if (requestedRef.current.has(key)) continue;
+      requestedRef.current.add(key);
+      void api.galleryFiles(item.source, item.galleryId, item.title).then(
+        (res) => { if (!cancelled) setRemoteFiles((prev) => ({ ...prev, [key]: res.files })); },
+        () => { if (!cancelled) setRemoteFiles((prev) => ({ ...prev, [key]: null })); },
+      );
+    }
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, tasks]);
+  }, [items]);
 
   const entries: Entry[] = items.map((item) => {
     const key = `${item.source}:${item.galleryId}`;
     const direct = taskPath(item);
-    if (direct) return { item, files: [direct], note: null, resolving: false };
-    if (remoteFiles === null) return { item, files: [], note: 'Resolving files…', resolving: true };
-    const files = remoteFiles[key] ?? [];
-    if (files.length > 0) return { item, files, note: null, resolving: false };
+    if (direct) return { item, files: [direct], note: null, error: false, resolving: false };
+    if (!(key in remoteFiles)) return { item, files: [], note: null, error: false, resolving: true };
+    const files = remoteFiles[key];
+    if (files === null) return { item, files: [], note: "Couldn't resolve files.", error: true, resolving: false };
+    if (files.length > 0) return { item, files, note: null, error: false, resolving: false };
     const hasTask = tasks.some((t) => t.source === item.source && t.galleryId === item.galleryId && t.status === 'completed');
-    return { item, files: [], note: hasTask ? 'Downloaded as an image folder — merge works on .cbz archives.' : 'Not downloaded yet.', resolving: false };
+    return { item, files: [], note: hasTask ? 'Downloaded as an image folder — merge works on .cbz archives.' : 'Not downloaded yet.', error: false, resolving: false };
   });
 
   const options = useQuery({
     queryKey: ['merge-into-series-options'],
+    // Library/series lists change rarely; don't refetch from scratch on every
+    // dialog open or window focus.
+    staleTime: 5 * 60_000,
     queryFn: async (): Promise<TargetOption[]> => {
       const libs = await api.libraries();
       const perLib = await Promise.all(
@@ -112,7 +122,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, onDownload }: 
   const target = (options.data ?? []).find((o) => o.id === targetId) ?? null;
 
   const targetFiles = useQuery({
-    queryKey: ['cbz-series-files', 'merge-into', targetId],
+    queryKey: ['cbz-series-files', targetId],
     queryFn: () => api.cbzSeriesFiles(targetId!),
     enabled: targetId != null,
   });
@@ -207,13 +217,24 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, onDownload }: 
       const v = existing[f]?.value?.trim() ?? '';
       return api.enqueue('edit-comicinfo', { path: f, seriesId: targetId!, fields: { Number: v } });
     },
+    onMutate: (f) => {
+      // Mark the row saved optimistically: Enter and blur both fire while the
+      // row is dirty, and the baseline only updated on success, so Enter
+      // followed by a blur (e.g. onto Cancel) enqueued the same job twice.
+      const prevOrig = existing[f]?.orig ?? '';
+      setExisting((prev) => (prev[f] ? { ...prev, [f]: { ...prev[f], orig: prev[f].value } } : prev));
+      return { prevOrig };
+    },
     onSuccess: (_res, f) => {
       qc.invalidateQueries({ queryKey: ['jobs'] });
-      qc.invalidateQueries({ queryKey: ['cbz-series-files', 'merge-into', targetId] });
-      setExisting((prev) => (prev[f] ? { ...prev, [f]: { ...prev[f], orig: prev[f].value } } : prev));
+      qc.invalidateQueries({ queryKey: ['cbz-series-files'] });
       toast({ tone: 'success', title: 'Chapter save queued', description: `${f.split(/[\\/]/).pop()} — check the Jobs page` });
     },
-    onError: (e) => toast({ tone: 'danger', title: 'Could not queue chapter save', description: e instanceof Error ? e.message : String(e) }),
+    onError: (e, f, ctx) => {
+      // Revert the optimistic baseline so the row reads as unsaved again.
+      setExisting((prev) => (prev[f] ? { ...prev, [f]: { ...prev[f], orig: ctx?.prevOrig ?? prev[f].orig } } : prev));
+      toast({ tone: 'danger', title: 'Could not queue chapter save', description: e instanceof Error ? e.message : String(e) });
+    },
   });
 
   const visible = (options.data ?? []).filter((o) => o.name.toLowerCase().includes(filter.trim().toLowerCase()));
@@ -312,7 +333,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, onDownload }: 
                       ) : e.resolving ? (
                         <span className="hidden items-center gap-1.5 text-xs text-muted sm:flex"><Spinner className="h-3 w-3" /> Resolving files…</span>
                       ) : (
-                        <span className="hidden truncate text-xs text-warning sm:block" title={e.note ?? ''}>{e.note}</span>
+                        <span className={`hidden truncate text-xs sm:block ${e.error ? 'text-danger' : 'text-warning'}`} title={e.note ?? ''}>{e.note}</span>
                       )}
                       <Input
                         value={chapterValue}

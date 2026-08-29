@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Clock, Download, Pause, Play, XCircle, Ban } from 'lucide-react';
 import { api, type Job, type DownloadTask } from '../lib/api';
+import { toast } from '../lib/toast';
 import { useDownloads } from '../lib/DownloadsContext';
 import { formatBytes, formatSpeed } from '../lib/format';
 import { jobLabel } from '../lib/utils';
@@ -25,7 +26,7 @@ function JobRow({ job }: { job: Job }) {
         {running && (
           <button
             type="button"
-            onClick={() => void api.cancelJob(job.id).then(() => qc.invalidateQueries({ queryKey: ['jobs'] }))}
+            onClick={() => void api.cancelJob(job.id).then(() => qc.invalidateQueries({ queryKey: ['jobs'] })).catch((error) => toast({ tone: 'danger', title: 'Could not cancel job', description: error instanceof Error ? error.message : String(error) }))}
             aria-label={`Cancel ${jobLabel(job.type, job.payload)}`}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-danger"
           >

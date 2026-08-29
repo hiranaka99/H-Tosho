@@ -3,10 +3,12 @@ import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { Library, Settings as SettingsIcon, ListChecks, BookOpenText, Download, Menu, X, LogOut, Monitor, Sun, Moon } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './lib/api';
-import { Libraries } from './pages/Libraries';
-import { Downloader } from './pages/Downloader';
-import { Jobs } from './pages/Jobs';
-import { Settings } from './pages/Settings';
+// Route-level code splitting: each page (and the modals only it imports) loads
+// on first navigation instead of one upfront bundle.
+const Libraries = React.lazy(() => import('./pages/Libraries').then((m) => ({ default: m.Libraries })));
+const Downloader = React.lazy(() => import('./pages/Downloader').then((m) => ({ default: m.Downloader })));
+const Jobs = React.lazy(() => import('./pages/Jobs').then((m) => ({ default: m.Jobs })));
+const Settings = React.lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
 import { SidebarStatus } from './components/SidebarStatus';
 import { Button } from './components/ui';
 import { cn } from './lib/utils';
@@ -157,15 +159,17 @@ export default function App() {
         <div className="p-4 sm:p-6 lg:p-8">
           <div key={location.pathname} className="animate-fade-up">
             <PageErrorBoundary>
-              <Routes>
-                <Route path="/" element={<Navigate to="/libraries" replace />} />
-                <Route path="/libraries" element={<Libraries />} />
-                <Route path="/libraries/:libraryId" element={<Libraries />} />
-                <Route path="/downloader" element={<Downloader />} />
-                <Route path="/jobs" element={<Jobs />} />
-                <Route path="/settings" element={<Settings />} />
-                <Route path="*" element={<Navigate to="/libraries" replace />} />
-              </Routes>
+              <React.Suspense fallback={<div className="flex h-40 items-center justify-center text-sm text-muted">Loading…</div>}>
+                <Routes>
+                  <Route path="/" element={<Navigate to="/libraries" replace />} />
+                  <Route path="/libraries" element={<Libraries />} />
+                  <Route path="/libraries/:libraryId" element={<Libraries />} />
+                  <Route path="/downloader" element={<Downloader />} />
+                  <Route path="/jobs" element={<Jobs />} />
+                  <Route path="/settings" element={<Settings />} />
+                  <Route path="*" element={<Navigate to="/libraries" replace />} />
+                </Routes>
+              </React.Suspense>
             </PageErrorBoundary>
           </div>
         </div>

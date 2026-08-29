@@ -129,19 +129,26 @@ export function Settings() {
   const provs = providers.data ?? [];
 
   const invalidate = (key: string) => () => qc.invalidateQueries({ queryKey: [key] });
-  const conn = React.useState({ baseUrl: '', apiKey: '' });
-  const connectionDirty = Boolean(kavita?.data && (conn[0].baseUrl !== (kavita.data.baseUrl ?? '') || conn[0].apiKey.trim()));
+  const [conn, setConn] = React.useState({ baseUrl: '', apiKey: '' });
+  const connectionDirty = Boolean(kavita?.data && (conn.baseUrl !== (kavita.data.baseUrl ?? '') || conn.apiKey.trim()));
   // Hydrate the stored base URL on load / after save. The auth key is never
   // returned by the server — a set key is shown as "Set" in the placeholder.
+  // Hydrate once: ['kavita-status'] is polled app-wide, so a background
+  // refetch must not clobber fields the user is editing. kavitaSave.onSuccess
+  // clears the guard so the post-save refetch re-syncs intentionally.
+  const connHydrated = React.useRef(false);
   React.useEffect(() => {
-    if (kavita?.data) conn[1]((prev) => ({ ...prev, baseUrl: kavita.data.baseUrl ?? '' }));
+    if (!kavita?.data || connHydrated.current) return;
+    connHydrated.current = true;
+    setConn((prev) => ({ ...prev, baseUrl: kavita.data.baseUrl ?? '' }));
   }, [kavita?.data]);
   const [kavitaMsg, setKavitaMsg] = React.useState<{ ok: boolean; text: string } | null>(null);
   const kavitaSave = useMutation({
     mutationFn: api.saveConnection,
     onSuccess: (res) => {
+      connHydrated.current = false;
       invalidate('kavita-status')();
-      conn[1]((previous) => ({ ...previous, apiKey: '' }));
+      setConn((previous) => ({ ...previous, apiKey: '' }));
       setKavitaMsg({ ok: res.connected, text: res.test });
     },
     onError: (error) => setKavitaMsg({ ok: false, text: error instanceof Error ? error.message : String(error) }),
@@ -149,12 +156,17 @@ export function Settings() {
 
   const [order, setOrder] = React.useState<string[]>([]);
   const dragIndex = React.useRef<number | null>(null);
+  // Hydrate once (see connHydrated); savePriorities clears the guard on
+  // success so the post-save refetch re-syncs intentionally.
+  const orderHydrated = React.useRef(false);
   React.useEffect(() => {
-    if (s) setOrder(s.priorities);
+    if (!s || orderHydrated.current) return;
+    orderHydrated.current = true;
+    setOrder(s.priorities);
   }, [s?.priorities]);
   const prioritiesDirty = Boolean(s && order.join('\0') !== s.priorities.join('\0'));
   const priorityFlash = useFlash(invalidate('settings'));
-  const savePriorities = useMutation({ mutationFn: api.savePriorities, onSuccess: priorityFlash.flash, onError: (error) => toast({ tone: 'danger', title: 'Could not save provider priority', description: error instanceof Error ? error.message : String(error) }) });
+  const savePriorities = useMutation({ mutationFn: api.savePriorities, onSuccess: () => { orderHydrated.current = false; priorityFlash.flash(); }, onError: (error) => toast({ tone: 'danger', title: 'Could not save provider priority', description: error instanceof Error ? error.message : String(error) }) });
   const onDrop = (to: number) => {
     const from = dragIndex.current;
     dragIndex.current = null;
@@ -177,22 +189,36 @@ export function Settings() {
   };
 
   const [notif, setNotif] = React.useState<Notif>({ discord: { enabled: false, webhookUrl: '' } });
+  const notifHydrated = React.useRef(false);
   React.useEffect(() => {
-    if (s) setNotif(s.notifications);
+    if (!s || notifHydrated.current) return;
+    notifHydrated.current = true;
+    setNotif(s.notifications);
   }, [s?.notifications]);
   const notificationsDirty = Boolean(s && JSON.stringify(notif) !== JSON.stringify(s.notifications));
   const notifFlash = useFlash(invalidate('settings'));
-  const saveNotif = useMutation({ mutationFn: api.saveNotifications, onSuccess: notifFlash.flash, onError: (error) => toast({ tone: 'danger', title: 'Could not save notifications', description: error instanceof Error ? error.message : String(error) }) });
+  const saveNotif = useMutation({ mutationFn: api.saveNotifications, onSuccess: () => { notifHydrated.current = false; notifFlash.flash(); }, onError: (error) => toast({ tone: 'danger', title: 'Could not save notifications', description: error instanceof Error ? error.message : String(error) }) });
   const [notifMsg, setNotifMsg] = React.useState<{ discord: string } | null>(null);
   const testNotif = useMutation({ mutationFn: () => api.testNotifications(notif), onSuccess: (r) => setNotifMsg(r), onError: (error) => toast({ tone: 'danger', title: 'Notification test failed', description: error instanceof Error ? error.message : String(error) }) });
 
   const [poll, setPoll] = React.useState('12');
+  const pollHydrated = React.useRef(false);
   React.useEffect(() => {
-    if (s) setPoll(String(s.pollIntervalHours));
+    if (!s || pollHydrated.current) return;
+    pollHydrated.current = true;
+    setPoll(String(s.pollIntervalHours));
   }, [s?.pollIntervalHours]);
   const pollDirty = Boolean(s && poll !== String(s.pollIntervalHours));
   const pollFlash = useFlash(invalidate('settings'));
-  const savePoll = useMutation({ mutationFn: () => api.savePollInterval(Number(poll)), onSuccess: pollFlash.flash, onError: (error) => toast({ tone: 'danger', title: 'Could not save scan interval', description: error instanceof Error ? error.message : String(error) }) });
+  const savePoll = useMutation({ mutationFn: () => api.savePollInterval(Number(poll)), onSuccess: () => { pollHydrated.current = false; pollFlash.flash(); }, onError: (error) => toast({ tone: 'danger', title: 'Could not save scan interval', description: error instanceof Error ? error.message : String(error) }) });
+  const providerToggle = useMutation({
+    mutationFn: (v: { id: string; name: string; enabled: boolean }) => api.saveProvider(v.id, { enabled: v.enabled }),
+    onSuccess: (_res, v) => {
+      invalidate('providers')();
+      toast({ tone: 'success', title: `${v.name} ${v.enabled ? 'enabled' : 'disabled'}` });
+    },
+    onError: (error, v) => toast({ tone: 'danger', title: `Could not update ${v.name}`, description: error instanceof Error ? error.message : String(error) }),
+  });
   const [tab, setTab] = React.useState<SettingsTab>('general');
 
   if (settings.isError) {
@@ -212,7 +238,7 @@ export function Settings() {
       <SegmentedTabs items={SETTINGS_TABS} value={tab} onChange={setTab} label="Settings sections" panelId="settings-panel" className="sticky top-0 z-10 self-start bg-background" />
 
       <div id="settings-panel" role="tabpanel" aria-labelledby={`settings-panel-tab-${tab}`} className="contents">
-      {tab === 'general' && (<>
+      <div hidden={tab !== 'general'} className="flex flex-col gap-4">
       <AppearanceCard />
       <AccountSettingsCard />
       <Card className="animate-fade-up">
@@ -229,15 +255,15 @@ export function Settings() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="flex flex-col gap-1">
               <Label htmlFor="kavita-base-url">Base URL</Label>
-              <Input id="kavita-base-url" value={conn[0].baseUrl} onChange={(e) => conn[1]({ ...conn[0], baseUrl: e.target.value })} placeholder="http://kavita:5000" />
+              <Input id="kavita-base-url" value={conn.baseUrl} onChange={(e) => setConn({ ...conn, baseUrl: e.target.value })} placeholder="http://kavita:5000" />
             </div>
             <div className="flex flex-col gap-1">
               <Label htmlFor="kavita-auth-key">Auth Key</Label>
-              <Input id="kavita-auth-key" type="password" value={conn[0].apiKey} onChange={(e) => conn[1]({ ...conn[0], apiKey: e.target.value })} placeholder={kavita?.data?.hasApiKey ? 'Set' : 'your Kavita Auth Key'} />
+              <Input id="kavita-auth-key" type="password" value={conn.apiKey} onChange={(e) => setConn({ ...conn, apiKey: e.target.value })} placeholder={kavita?.data?.hasApiKey ? 'Set' : 'your Kavita Auth Key'} />
             </div>
           </div>
           <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-            <Button onClick={() => kavitaSave.mutate(conn[0])} disabled={kavitaSave.isPending || !conn[0].baseUrl || !connectionDirty}>
+            <Button onClick={() => kavitaSave.mutate(conn)} disabled={kavitaSave.isPending || !conn.baseUrl || !connectionDirty}>
               {kavitaSave.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Server className="h-3.5 w-3.5" />} Save & test connection
             </Button>
             {kavitaMsg && (
@@ -257,10 +283,9 @@ export function Settings() {
           <span className="text-sm text-muted">hours between background scans for newly ingested series (0 disables)</span>
         </CardContent>
       </Card>
-      </>)
-      }
+      </div>
 
-      {tab === 'providers' && (
+      <div hidden={tab !== 'providers'} className="flex flex-col gap-4">
       <Card className="animate-fade-up">
         <SectionHeader icon={<SlidersHorizontal className="h-4 w-4" />} title="Metadata providers">
           <SaveButton label={priorityFlash.saved ? 'Saved' : 'Save priority'} onClick={() => savePriorities.mutate(order)} disabled={savePriorities.isPending || !prioritiesDirty} />
@@ -287,7 +312,7 @@ export function Settings() {
                   <div className="flex items-center gap-1">
                     <Button size="icon" variant="ghost" aria-label={`Move ${p.name} up`} disabled={idx === 0} onClick={() => moveProvider(idx, idx - 1)}><ArrowUp className="h-3.5 w-3.5" /></Button>
                     <Button size="icon" variant="ghost" aria-label={`Move ${p.name} down`} disabled={idx === order.length - 1} onClick={() => moveProvider(idx, idx + 1)}><ArrowDown className="h-3.5 w-3.5" /></Button>
-                    <Switch aria-label={`Enable ${p.name}`} checked={p.enabled} onCheckedChange={(c) => api.saveProvider(p.id, { enabled: c }).then(() => { invalidate('providers')(); toast({ tone: 'success', title: `${p.name} ${c ? 'enabled' : 'disabled'}` }); }).catch((error) => toast({ tone: 'danger', title: `Could not update ${p.name}`, description: error instanceof Error ? error.message : String(error) }))} />
+                    <Switch aria-label={`Enable ${p.name}`} checked={p.enabled} disabled={providerToggle.isPending} onCheckedChange={(c) => providerToggle.mutate({ id: p.id, name: p.name, enabled: c })} />
                   </div>
                 </div>
               );
@@ -301,10 +326,9 @@ export function Settings() {
           </div>
         </CardContent>
       </Card>
-      )}
+      </div>
 
-      {tab === 'notifications' && (
-
+      <div hidden={tab !== 'notifications'} className="flex flex-col gap-4">
       <Card className="animate-fade-up">
         <SectionHeader icon={<Bell className="h-4 w-4" />} title="Notifications">
           <div className="flex items-center gap-2">
@@ -329,14 +353,12 @@ export function Settings() {
           )}
         </CardContent>
       </Card>
-      )}
+      </div>
 
-      {tab === 'downloader' && (
-        <>
-          <DownloaderSettingsCard />
-          <WatchedSearchesCard />
-        </>
-      )}
+      <div hidden={tab !== 'downloader'} className="flex flex-col gap-4">
+        <DownloaderSettingsCard />
+        <WatchedSearchesCard />
+      </div>
       </div>
     </div>
   );
@@ -379,7 +401,14 @@ function DownloaderSettingsCard() {
   const qc = useQueryClient();
   const dl = useQuery({ queryKey: ['downloader-settings'], queryFn: api.downloaderSettings });
   const [dlSettings, setDlSettings] = React.useState<DownloaderSettings | null>(null);
-  React.useEffect(() => { if (dl.data) setDlSettings(dl.data); }, [dl.data]);
+  // Hydrate once: refetches must not clobber the edit draft; save.onSuccess
+  // applies the server's response explicitly.
+  const dlHydrated = React.useRef(false);
+  React.useEffect(() => {
+    if (!dl.data || dlHydrated.current) return;
+    dlHydrated.current = true;
+    setDlSettings(dl.data);
+  }, [dl.data]);
   const flash = useFlash(() => qc.invalidateQueries({ queryKey: ['downloader-settings'] }));
   const save = useMutation({
     mutationFn: (settings: DownloaderSettings) => api.saveDownloaderSettings(settings),
@@ -532,7 +561,7 @@ function ProviderCreds({ provider, onChanged }: { provider: ProviderInfo; onChan
   const [creds, setCreds] = React.useState<Record<string, string>>(provider.credentials ?? {});
   const test = useMutation({ mutationFn: () => api.testProvider(provider.id), onSuccess: (r) => setTestMsg(r) });
   const [testMsg, setTestMsg] = React.useState<{ ok: boolean; error?: string } | null>(null);
-  const [saved, setSaved] = React.useState(false);
+  const credsFlash = useFlash();
   const hasFields = provider.credentialFields.length > 0;
   const credentialsDirty = provider.credentialFields.some((field) => (creds[field.key] ?? '') !== (provider.credentials?.[field.key] ?? ''));
 
@@ -552,14 +581,13 @@ function ProviderCreds({ provider, onChanged }: { provider: ProviderInfo; onChan
               try {
                 await api.saveProvider(provider.id, { credentials: creds });
                 onChanged();
-                setSaved(true);
-                window.setTimeout(() => setSaved(false), 1500);
+                credsFlash.flash();
               } catch (error) {
                 toast({ tone: 'danger', title: `Could not save ${provider.name} credentials`, description: error instanceof Error ? error.message : String(error) });
               }
             }}
           >
-            {saved ? 'Saved' : 'Save credentials'}
+            {credsFlash.saved ? 'Saved' : 'Save credentials'}
           </Button>
         )}
         <Button size="sm" variant="secondary" onClick={() => test.mutate()} disabled={test.isPending}>

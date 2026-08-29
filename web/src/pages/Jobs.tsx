@@ -80,17 +80,38 @@ function LogConsole({ logs }: { logs: JobLog[] }) {
   );
 }
 
+/** Track a CSS media query; re-renders only when the match flips. */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = React.useState(() => window.matchMedia(query).matches);
+  React.useEffect(() => {
+    const mql = window.matchMedia(query);
+    const onChange = (event: MediaQueryListEvent) => setMatches(event.matches);
+    setMatches(mql.matches); // re-sync in case the query result changed before mount
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }, [query]);
+  return matches;
+}
+
 export function Jobs() {
-  const jobsQuery = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, refetchInterval: 2500 });
-  const logsQuery = useQuery({ queryKey: ['logs'], queryFn: api.logs, refetchInterval: 2500 });
+  const jobsQuery = useQuery({ queryKey: ['jobs'], queryFn: api.jobs });
   const jobs = jobsQuery.data ?? [];
+  // SidebarStatus always keeps ['jobs'] warm with its own 2.5s poll, so this page
+  // never needs its own interval for that key — the shared cache refreshes anyway.
+  const hasActiveJobs = jobs.some((j) => j.status === 'running' || j.status === 'queued');
+  const logsQuery = useQuery({ queryKey: ['logs'], queryFn: api.logs, refetchInterval: hasActiveJobs ? 2500 : false });
   const recentLogs = logsQuery.data ?? [];
   const [selected, setSelected] = React.useState<Job | null>(null);
+  const isDesktop = useMediaQuery('(min-width: 768px)');
   const { data: jobDetail } = useQuery({
     queryKey: ['job', selected?.id],
     queryFn: () => api.job(selected!.id),
     enabled: selected !== null,
-    refetchInterval: 1500,
+    // Only poll while the job can still change state; a finished job never will.
+    refetchInterval: (query) => {
+      const status = query.state.data?.job.status;
+      return status === 'running' || status === 'queued' ? 1500 : false;
+    },
   });
   const qc = useQueryClient();
   const cancelJob = (id: number) => {
@@ -142,8 +163,8 @@ export function Jobs() {
           ) : visibleJobs.length === 0 ? (
             <p className="py-8 text-center text-sm text-muted">No {filter} jobs.</p>
           ) : (
-            <>
-              <div className="flex flex-col gap-2 md:hidden">
+            !isDesktop ? (
+              <div className="flex flex-col gap-2">
                 {visibleJobs.map((job) => (
                   <button key={job.id} type="button" onClick={() => setSelected(job)} className="rounded-md border border-border p-3 text-left transition-colors duration-150 hover:bg-surface-2/60">
                     <div className="flex items-start justify-between gap-2"><div><span className="text-xs text-muted">#{job.id}</span><p className="font-medium">{jobLabel(job.type, job.payload)}</p></div><JobStatus status={job.status} /></div>
@@ -153,7 +174,8 @@ export function Jobs() {
                   </button>
                 ))}
               </div>
-              <div className="hidden overflow-x-auto md:block">
+            ) : (
+              <div className="overflow-x-auto">
                 <table className="min-w-[760px] w-full text-sm">
                   <thead className="border-b border-border text-xs text-muted"><tr><th className="px-3 py-2 text-left text-xs font-medium text-muted">ID</th><th className="px-3 py-2 text-left text-xs font-medium text-muted">Type</th><th className="px-3 py-2 text-left text-xs font-medium text-muted">Status</th><th className="px-3 py-2 text-left text-xs font-medium text-muted">Progress</th><th className="px-3 py-2 text-left text-xs font-medium text-muted">Result</th><th className="px-3 py-2 text-left text-xs font-medium text-muted">Created</th><th className="px-3 py-2"><span className="sr-only">Actions</span></th></tr></thead>
                   <tbody>
@@ -165,7 +187,7 @@ export function Jobs() {
                   </tbody>
                 </table>
               </div>
-            </>
+            )
           )}
         </CardContent>
       </Card>
@@ -181,6 +203,10 @@ export function Jobs() {
           <CardContent>
             {jobDetail ? (
               <LogConsole logs={jobDetail.logs} />
+            ) : logsQuery.isError ? (
+              <p className="py-2 text-sm text-danger">
+                Could not load logs: {logsQuery.error instanceof Error ? logsQuery.error.message : String(logsQuery.error)}
+              </p>
             ) : (
               <LogConsole logs={recentLogs} />
             )}

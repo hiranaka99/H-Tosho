@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import {
   Search,
@@ -36,8 +36,8 @@ import {
   Merge,
 } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
-import { useDownloads } from '../lib/DownloadsContext';
-import { cn, timeAgo, toIsoUtc } from '../lib/utils';
+import { useDownloadActions, useDownloads } from '../lib/DownloadsContext';
+import { buildTagSearchFragment, cn, timeAgo, toIsoUtc } from '../lib/utils';
 import { formatBytes, formatSpeed } from '../lib/format';
 import { toast } from '../lib/toast';
 import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, ErrorState, ConfirmDialog } from '../components/ui';
@@ -177,22 +177,6 @@ function translateQuery(query: string, from: DoujinSource, to: DoujinSource): st
   return out.join(' ');
 }
 
-/**
- * Build a single-tag/artist search fragment from the details card, formatted for
- * the target source's query syntax. Hitomi uses bare underscored multi-word values
- * (e.g. `artist:charu_lee`); nHentai wraps values in quotes (e.g. `artist:"Charu Lee"`).
- * An empty namespace yields a plain keyword search on the raw value.
- */
-export function buildTagSearchFragment(value: string, ns: string | null | undefined, source: DoujinSource): string {
-  const v = value.trim();
-  if (!v) return '';
-  if (source === 'nhentai') {
-    return ns ? `${ns}:"${v}"` : `"${v}"`;
-  }
-  const underscored = v.replace(/\s+/g, '_');
-  return ns ? `${ns}:${underscored}` : underscored;
-}
-
 /** Badge color per suggestion tag type (mirrors the nHentai search dropdown). */
 const SUGG_TYPE_STYLES: Record<string, string> = {
   artist: 'bg-violet-500/10 text-violet-700 dark:bg-violet-400/20 dark:text-violet-300',
@@ -276,7 +260,9 @@ function DownloadStatusBadge({ status }: { status: string }) {
 }
 
 // ---------------- Gallery card ----------------
-function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloadedAt, selectMode = false, selected = false, onToggleSelect, owned = false, onMarkOwned }: { item: DoujinSearchResult; onOpen: () => void; onDownload: () => void; downloading: boolean; index?: number; downloadedAt?: string | null; selectMode?: boolean; selected?: boolean; onToggleSelect?: () => void; owned?: boolean; onMarkOwned?: () => void }) {
+// Handlers take the item they act on (instead of per-card closures) so the
+// memoized card only re-renders when its own data changes.
+const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloadedAt, selectMode = false, selected = false, onToggleSelect, owned = false, onMarkOwned }: { item: DoujinSearchResult; onOpen: (item: DoujinSearchResult) => void; onDownload: (item: DoujinSearchResult) => void; downloading: boolean; index?: number; downloadedAt?: string | null; selectMode?: boolean; selected?: boolean; onToggleSelect?: (item: DoujinSearchResult) => void; owned?: boolean; onMarkOwned?: (item: DoujinSearchResult) => void }) {
   const tags = [...item.artists, ...item.tags].slice(0, 6);
   return (
     <article
@@ -286,7 +272,7 @@ function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloa
         selected ? 'border-primary/60 ring-2 ring-primary' : 'border-border',
       )}
     >
-      <button type="button" onClick={selectMode ? onToggleSelect : onOpen} className="text-left" aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
+      <button type="button" onClick={() => (selectMode ? onToggleSelect?.(item) : onOpen(item))} className="text-left" aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
         <div className="relative overflow-hidden">
           <Cover url={item.coverUrl} title={item.title} className="aspect-[3/4] w-full transition-transform duration-300 ease-out group-hover:scale-105" />
           {item.language && (
@@ -315,11 +301,11 @@ function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloa
         <SourceBadge source={item.source} />
         <div className="flex items-center gap-1.5">
           {onMarkOwned && (
-            <Button size="sm" variant="outline" onClick={onMarkOwned} disabled={owned} title={owned ? 'Marked as owned — never recommended again' : 'Mark as owned — never recommended again'} aria-label={owned ? `${item.title} is marked as owned` : `Mark ${item.title} as owned`}>
+            <Button size="sm" variant="outline" onClick={() => void onMarkOwned(item)} disabled={owned} title={owned ? 'Marked as owned — never recommended again' : 'Mark as owned — never recommended again'} aria-label={owned ? `${item.title} is marked as owned` : `Mark ${item.title} as owned`}>
               <Bookmark className={cn('h-3.5 w-3.5', owned && 'fill-current text-primary')} />
             </Button>
           )}
-          <Button size="sm" onClick={onDownload} disabled={downloading || !!downloadedAt} aria-label={downloadedAt ? `${item.title} already downloaded` : `Download ${item.title}`}>
+          <Button size="sm" onClick={() => onDownload(item)} disabled={downloading || !!downloadedAt} aria-label={downloadedAt ? `${item.title} already downloaded` : `Download ${item.title}`}>
             {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : downloadedAt ? <CheckCircle2 className="h-3.5 w-3.5" /> : <DownloadIcon className="h-3.5 w-3.5" />}
             {downloadedAt ? 'Downloaded' : 'Download'}
           </Button>
@@ -327,7 +313,7 @@ function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloa
       </div>
     </article>
   );
-}
+});
 
 // ---------------- Gallery detail modal ----------------
 
@@ -502,7 +488,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
 
 // ---------------- Queue row ----------------
 
-function QueueRow({ task, onAction, onEditComicInfo, onDelete }: { task: DownloadTask; onAction: (a: 'pause' | 'resume' | 'cancel' | 'retry') => void; onEditComicInfo?: (path: string) => void; onDelete?: () => void }) {
+const QueueRow = React.memo(function QueueRow({ task, onAction, onEditComicInfo, onDelete }: { task: DownloadTask; onAction: (id: number, a: 'pause' | 'resume' | 'cancel' | 'retry') => void; onEditComicInfo?: (path: string) => void; onDelete?: (id: number) => void }) {
   const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : 0;
   return (
     <div className="flex animate-fade-up flex-col gap-2 rounded-md border border-border p-3 transition-colors">
@@ -512,12 +498,12 @@ function QueueRow({ task, onAction, onEditComicInfo, onDelete }: { task: Downloa
           <span className="truncate text-sm font-medium" title={task.title ?? ''}>{task.title ?? `Gallery ${task.galleryId}`}</span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {task.status === 'downloading' && <Button size="icon" variant="ghost" aria-label="Pause download" onClick={() => onAction('pause')}><Pause className="h-4 w-4" /></Button>}
-          {task.status === 'paused' && <Button size="icon" variant="ghost" aria-label="Resume download" onClick={() => onAction('resume')}><Play className="h-4 w-4" /></Button>}
-          {task.status === 'failed' && <Button size="icon" variant="ghost" aria-label="Retry download" onClick={() => onAction('retry')}><RotateCcw className="h-4 w-4" /></Button>}
-          {task.status === 'completed' && <Button size="icon" variant="ghost" aria-label="Download again" onClick={() => onAction('retry')}><RotateCcw className="h-4 w-4" /></Button>}
-          {(task.status === 'downloading' || task.status === 'queued') && <Button size="icon" variant="ghost" aria-label="Cancel download" onClick={() => onAction('cancel')}><XCircle className="h-4 w-4" /></Button>}
-          {onDelete && <Button size="icon" variant="ghost" aria-label="Remove download from history" onClick={onDelete}><Trash2 className="h-4 w-4" /></Button>}
+          {task.status === 'downloading' && <Button size="icon" variant="ghost" aria-label="Pause download" onClick={() => onAction(task.id, 'pause')}><Pause className="h-4 w-4" /></Button>}
+          {task.status === 'paused' && <Button size="icon" variant="ghost" aria-label="Resume download" onClick={() => onAction(task.id, 'resume')}><Play className="h-4 w-4" /></Button>}
+          {task.status === 'failed' && <Button size="icon" variant="ghost" aria-label="Retry download" onClick={() => onAction(task.id, 'retry')}><RotateCcw className="h-4 w-4" /></Button>}
+          {task.status === 'completed' && <Button size="icon" variant="ghost" aria-label="Download again" onClick={() => onAction(task.id, 'retry')}><RotateCcw className="h-4 w-4" /></Button>}
+          {(task.status === 'downloading' || task.status === 'queued') && <Button size="icon" variant="ghost" aria-label="Cancel download" onClick={() => onAction(task.id, 'cancel')}><XCircle className="h-4 w-4" /></Button>}
+          {onDelete && <Button size="icon" variant="ghost" aria-label="Remove download from history" onClick={() => onDelete(task.id)}><Trash2 className="h-4 w-4" /></Button>}
         </div>
       </div>
 
@@ -557,7 +543,7 @@ function QueueRow({ task, onAction, onEditComicInfo, onDelete }: { task: Downloa
       </div>
     </div>
   );
-}
+});
 
 // ---------------- Merged download dialog ----------------
 
@@ -633,12 +619,107 @@ function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm }: {
   );
 }
 
+// ---------------- Download manager tab ----------------
+
+/**
+ * The manager tab is the only consumer of live task state; subscribing here
+ * (rather than at the page top) keeps SSE progress ticks from re-rendering the
+ * whole page. Task-mutating actions come from the same stable actions API.
+ */
+function ManagerTab() {
+  const { tasks, liveConnected, error: downloadsError, refetch: refetchDownloads, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
+  const [confirmClear, setConfirmClear] = React.useState(false);
+  // The id (not the task row) is held so the delete callback stays stable for
+  // memoized QueueRows; the row itself is resolved from the task list for the
+  // dialog copy.
+  const [removeTargetId, setRemoveTargetId] = React.useState<number | null>(null);
+  // History collapse and the ComicInfo editor are reachable only from manager rows.
+  const [showAllHistory, setShowAllHistory] = React.useState(false);
+  const [comicInfo, setComicInfo] = React.useState<{ path?: string } | null>(null);
+
+  const currentTasks = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
+  const finished = tasks.filter((t) => t.status === 'completed' || t.status === 'failed');
+  const removeTarget = removeTargetId !== null ? tasks.find((t) => t.id === removeTargetId) ?? null : null;
+
+  const act = React.useCallback((id: number, a: 'pause' | 'resume' | 'cancel' | 'retry') => {
+    if (a === 'pause') pause(id);
+    else if (a === 'resume') resume(id);
+    else if (a === 'cancel') cancel(id);
+    else retry(id);
+  }, [pause, resume, cancel, retry]);
+  // Stable row callbacks so memoized QueueRows skip re-renders when untouched.
+  const openComicInfo = React.useCallback((path: string) => setComicInfo({ path }), []);
+  const removeFromHistory = React.useCallback((id: number) => setRemoveTargetId(id), []);
+
+  return (
+    <>
+      <Card>
+        <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2">
+            <DownloadIcon className="h-4 w-4" /> Download Manager
+            {liveConnected && <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" /> Live</span>}
+            {currentTasks.length > 0 && <Badge tone="info">{currentTasks.length} current</Badge>}
+          </CardTitle>
+          {finished.some((task) => task.status === 'completed') && <Button size="sm" variant="outline" onClick={() => setConfirmClear(true)}><Trash2 className="h-3.5 w-3.5" /> Clear completed</Button>}
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {downloadsError ? (
+            <ErrorState title="Could not load downloads" description={downloadsError.message} onRetry={() => void refetchDownloads()} />
+          ) : tasks.length === 0 ? (
+            <EmptyState icon={<DownloadIcon className="h-8 w-8" />} title="No downloads yet" description="Click Download on a gallery to queue it. Set the output folder in Settings first." />
+          ) : (
+            <>
+              {currentTasks.length > 0 && (
+                <section className="flex flex-col gap-2" aria-labelledby="current-downloads">
+                  <p id="current-downloads" className="text-xs font-semibold uppercase tracking-wide text-muted">Current</p>
+                  {currentTasks.map((task) => <QueueRow key={task.id} task={task} onAction={act} onEditComicInfo={openComicInfo} />)}
+                </section>
+              )}
+              {finished.length > 0 && (
+                <section className="flex flex-col gap-2" aria-labelledby="download-history">
+                  <div className="flex items-center justify-between">
+                    <p id="download-history" className="text-xs font-semibold uppercase tracking-wide text-muted">History</p>
+                    {finished.length > HISTORY_PREVIEW && <Button size="sm" variant="ghost" onClick={() => setShowAllHistory((value) => !value)}>{showAllHistory ? 'Show less' : `Show all (${finished.length})`}</Button>}
+                  </div>
+                  {(showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW)).map((task) => <QueueRow key={task.id} task={task} onAction={act} onEditComicInfo={openComicInfo} onDelete={removeFromHistory} />)}
+                </section>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {comicInfo && (
+        <ComicInfoModal initialPath={comicInfo.path} onClose={() => setComicInfo(null)} />
+      )}
+      <ConfirmDialog
+        open={removeTarget !== null}
+        title="Remove download from history?"
+        description={removeTarget ? `This removes “${removeTarget.title ?? `Gallery ${removeTarget.galleryId}`}” from history. Downloaded files are not deleted.` : ''}
+        confirmLabel="Remove"
+        onOpenChange={(open) => { if (!open) setRemoveTargetId(null); }}
+        onConfirm={() => { if (removeTarget) removeTask(removeTarget.id); setRemoveTargetId(null); }}
+      />
+      <ConfirmDialog
+        open={confirmClear}
+        title="Clear completed downloads?"
+        description="This removes every completed download from the manager history. Downloaded files are not deleted."
+        confirmLabel="Clear completed"
+        danger
+        onOpenChange={setConfirmClear}
+        onConfirm={() => { clearCompleted(); setConfirmClear(false); }}
+      />
+    </>
+  );
+}
+
 // ---------------- Page ----------------
 
 export function Downloader() {
-  // Shared app-wide download state (live via SSE + polling fallback) and actions.
-  // Deep links from the Libraries page override cached search state; ordinary
-  // navigation restores the last input, committed search, and result page.
+  // Download actions (stable across progress ticks — live task state is
+  // consumed by ManagerTab, not here). Deep links from the Libraries page
+  // override cached search state; ordinary navigation restores the last input,
+  // committed search, and result page.
   const [searchParams] = useSearchParams();
   const initialState = React.useMemo(readDownloaderState, []);
   const linkedQuery = searchParams.get('q');
@@ -680,10 +761,6 @@ export function Downloader() {
     setSelected(null);
   }, [deepLink, searchParams, source]);
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
-  // ComicInfo editor: null = closed; { path? } = open (path from a completed row, or none to browse).
-  const [comicInfo, setComicInfo] = React.useState<{ path?: string } | null>(null);
-  const [confirmClear, setConfirmClear] = React.useState(false);
-  const [removeTarget, setRemoveTarget] = React.useState<DownloadTask | null>(null);
 
   // Multi-select mode for merged downloads (mirrors the Libraries page). Selection
   // is keyed `${source}:${galleryId}` and persists across result pages; a fresh
@@ -693,7 +770,7 @@ export function Downloader() {
   const [mergeOpen, setMergeOpen] = React.useState(false);
   const [mergeIntoOpen, setMergeIntoOpen] = React.useState(false);
 
-  const { tasks, active, liveConnected, error: downloadsError, refetch: refetchDownloads, startDownload, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
+  const { startDownload } = useDownloadActions();
   const [suggestions, setSuggestions] = React.useState<DoujinSuggestion[]>([]);
   const [suggLoading, setSuggLoading] = React.useState(false);
   const [inputFocused, setInputFocused] = React.useState(false);
@@ -721,7 +798,10 @@ export function Downloader() {
   // `suggest`, so the dropdown stays empty for Hitomi (its search is unchanged).
   React.useEffect(() => {
     const seed = activeSeed();
-    if (seed.length < 2) {
+    // The dropdown is only visible while the input has focus — skip the network
+    // entirely when suggestions cannot be shown, but still drop stale state so
+    // reopening the dropdown never flashes old tags.
+    if (!inputFocused || seed.length < 2) {
       setSuggestions([]);
       setSuggLoading(false);
       return;
@@ -745,19 +825,25 @@ export function Downloader() {
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [query, source]);
+  }, [query, source, inputFocused]);
 
+  // Top-of-page view tabs: search results vs. the download manager queue.
+  const [tab, setTab] = React.useState<'search' | 'recommend' | 'manager'>('search');
   const { data: results, isFetching, isError: searchFailed, error: searchError, refetch: retrySearch } = useQuery({
     queryKey: ['doujin-search', source, searchKey, sort],
     queryFn: () => api.doujinSearch(source, searchKey!, sort),
     enabled: searchKey !== null && searchKey.trim().length > 0,
+    // Refocusing the window must not re-scrape Hitomi/nHentai, and while a new
+    // search loads the grid keeps the previous results instead of blanking.
+    staleTime: 5 * 60_000,
+    placeholderData: keepPreviousData,
   });
 
   // Galleries with a completed download task — powers the duplicate badges.
+  // The downloads context invalidates this key when a task completes.
   const { data: completed } = useQuery({
     queryKey: ['downloads-completed'],
     queryFn: api.downloadsCompleted,
-    refetchInterval: 15_000,
   });
   const downloadedAt = React.useMemo(
     () => new Map((completed ?? []).map((k) => [`${k.source}:${k.galleryId}`, k.finishedAt])),
@@ -769,7 +855,9 @@ export function Downloader() {
   const { data: watches, refetch: refetchWatches } = useQuery({
     queryKey: ['watched-searches'],
     queryFn: api.watchedSearches,
-    refetchInterval: 30_000,
+    // toggleWatch refetches after add/remove and the cache survives tab
+    // switches — no polling, and no fetch while the search tab is hidden.
+    enabled: tab === 'search',
   });
   const watchedQuery = searchKey?.trim() ?? '';
   const currentWatch = (watches ?? []).find((w) => w.source === source && w.query === watchedQuery);
@@ -824,7 +912,9 @@ export function Downloader() {
     () => (recs ? recs.items.filter((it) => !ownedKeys.has(`${it.source}:${it.galleryId}`)) : []),
     [recs, ownedKeys],
   );
-  async function doMarkOwned(item: DoujinSearchResult) {
+  // Item-argument style + setter-only closure so memoized GalleryCards can
+  // keep this reference.
+  const doMarkOwned = React.useCallback(async (item: DoujinSearchResult) => {
     try {
       await api.markGalleryOwned({ source: item.source, galleryId: item.galleryId });
       setOwnedExtra((prev) => new Set(prev).add(`${item.source}:${item.galleryId}`));
@@ -832,7 +922,7 @@ export function Downloader() {
     } catch (e) {
       toast({ tone: 'danger', title: 'Could not mark as owned', description: e instanceof Error ? e.message : String(e) });
     }
-  }
+  }, []);
 
   // Which Kavita libraries feed the recommendation profile (per-library opt-out).
   const { data: recLibs } = useQuery({ queryKey: ['recommendation-libraries'], queryFn: api.recommendationLibraries });
@@ -857,10 +947,6 @@ export function Downloader() {
   // Results are fetched in full (up to ~1000 galleries) and paged client-side —
   // rendering every card at once is the heaviest thing this page can do.
   const [page, setPage] = React.useState(() => linkedQuery !== null ? 1 : Math.max(1, initialState.page ?? 1));
-  const [showAllHistory, setShowAllHistory] = React.useState(false);
-
-  // Top-of-page view tabs: search results vs. the download manager queue.
-  const [tab, setTab] = React.useState<'search' | 'recommend' | 'manager'>('search');
   const searchMounted = React.useRef(false);
   React.useEffect(() => {
     if (!searchMounted.current) {
@@ -871,10 +957,17 @@ export function Downloader() {
     setSelectedGalleries(new Set());
     setSelectMode(false);
   }, [searchKey, source]);
-  React.useEffect(() => writeDownloaderState({ source, query, searchKey, sort, page }), [source, query, searchKey, sort, page]);
+  React.useEffect(() => {
+    // Debounced so typing a long query does not serialize to sessionStorage on
+    // every keystroke; the timer resets per change and clears on unmount.
+    const t = window.setTimeout(() => writeDownloaderState({ source, query, searchKey, sort, page }), 300);
+    return () => window.clearTimeout(t);
+  }, [source, query, searchKey, sort, page]);
 
 
-  async function doStartDownload(item: DoujinSearchResult) {
+  // Item-argument style and stable (startDownload is stable, setPendingKey is
+  // a setter) so memoized GalleryCards can keep this reference.
+  const doStartDownload = React.useCallback(async (item: DoujinSearchResult) => {
     const key = `${item.source}:${item.galleryId}`;
     setPendingKey(key);
     try {
@@ -889,16 +982,18 @@ export function Downloader() {
     } finally {
       setPendingKey(null);
     }
-  }
+  }, [startDownload]);
 
-  function toggleGallerySelect(key: string) {
+  // Item-argument style + setter-only closure (see GalleryCard memo).
+  const toggleGallerySelect = React.useCallback((item: DoujinSearchResult) => {
+    const key = `${item.source}:${item.galleryId}`;
     setSelectedGalleries((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
-  }
+  }, []);
 
   // Selected galleries in click order — the order chapter numbers are assigned.
   const selectedItems = React.useMemo(() => {
@@ -930,13 +1025,6 @@ export function Downloader() {
     setSelectMode(false);
     setMergeOpen(false);
   }
-
-  const act = (id: number, a: 'pause' | 'resume' | 'cancel' | 'retry') => {
-    if (a === 'pause') pause(id);
-    else if (a === 'resume') resume(id);
-    else if (a === 'cancel') cancel(id);
-    else retry(id);
-  };
 
   function selectSuggestion(s: DoujinSuggestion) {
     const el = inputRef.current;
@@ -1043,8 +1131,6 @@ export function Downloader() {
     commitQuery(query);
   };
 
-  const currentTasks = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
-  const finished = tasks.filter((t) => t.status === 'completed' || t.status === 'failed');
   const pageCount = Math.max(1, Math.ceil((results?.length ?? 0) / RESULTS_PAGE_SIZE));
   const curPage = Math.min(page, pageCount);
 
@@ -1078,6 +1164,7 @@ export function Downloader() {
               {sources.map((s) => (
                 <button
                   key={s.id}
+                  type="button"
                   role="radio"
                   onClick={() => switchSource(s.id)}
                   onKeyDown={(event) => {
@@ -1205,7 +1292,9 @@ export function Downloader() {
         <div>
           {searchFailed ? (
             <ErrorState title="Search failed" description={searchError instanceof Error ? searchError.message : String(searchError)} onRetry={() => void retrySearch()} />
-          ) : isFetching ? (
+          // placeholderData keeps the previous grid mounted during a refetch —
+          // the spinner only shows before any results exist.
+          ) : isFetching && !results ? (
             <div className="flex items-center justify-center gap-2 py-16 text-muted">
               <Spinner /> Searching {SOURCE_LABELS[source]}…
             </div>
@@ -1250,11 +1339,11 @@ export function Downloader() {
                     index={i}
                     selectMode={selectMode}
                     selected={selectedGalleries.has(`${item.source}:${item.galleryId}`)}
-                    onToggleSelect={() => toggleGallerySelect(`${item.source}:${item.galleryId}`)}
-                    onOpen={() => setSelected(item)}
+                    onToggleSelect={toggleGallerySelect}
+                    onOpen={setSelected}
                     downloading={pendingKey === `${item.source}:${item.galleryId}`}
                     downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
-                    onDownload={() => doStartDownload(item)}
+                    onDownload={doStartDownload}
                   />
                 ))}
               </div>
@@ -1372,12 +1461,12 @@ export function Downloader() {
                   <GalleryCard
                     item={item}
                     index={i}
-                    onOpen={() => setSelected(item)}
+                    onOpen={setSelected}
                     downloading={pendingKey === `${item.source}:${item.galleryId}`}
                     downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
-                    onDownload={() => doStartDownload(item)}
+                    onDownload={doStartDownload}
                     owned={ownedKeys.has(`${item.source}:${item.galleryId}`)}
-                    onMarkOwned={() => void doMarkOwned(item)}
+                    onMarkOwned={doMarkOwned}
                   />
                   {item.reasons.length > 0 && (
                     <p className="px-1 text-xs leading-snug text-muted" title={`Matched: ${item.reasons.join(', ')}`}>
@@ -1403,67 +1492,8 @@ export function Downloader() {
         />
       )}
 
-      {/* Download manager */}
-      {tab === 'manager' && (
-        <>
-          <Card>
-          <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
-            <CardTitle className="flex items-center gap-2">
-              <DownloadIcon className="h-4 w-4" /> Download Manager
-              {liveConnected && <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" /> Live</span>}
-              {currentTasks.length > 0 && <Badge tone="info">{currentTasks.length} current</Badge>}
-            </CardTitle>
-            {finished.some((task) => task.status === 'completed') && <Button size="sm" variant="outline" onClick={() => setConfirmClear(true)}><Trash2 className="h-3.5 w-3.5" /> Clear completed</Button>}
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            {downloadsError ? (
-              <ErrorState title="Could not load downloads" description={downloadsError.message} onRetry={() => void refetchDownloads()} />
-            ) : tasks.length === 0 ? (
-              <EmptyState icon={<DownloadIcon className="h-8 w-8" />} title="No downloads yet" description="Click Download on a gallery to queue it. Set the output folder in Settings first." />
-            ) : (
-              <>
-                {currentTasks.length > 0 && (
-                  <section className="flex flex-col gap-2" aria-labelledby="current-downloads">
-                    <p id="current-downloads" className="text-xs font-semibold uppercase tracking-wide text-muted">Current</p>
-                    {currentTasks.map((task) => <QueueRow key={task.id} task={task} onAction={(action) => act(task.id, action)} onEditComicInfo={(path) => setComicInfo({ path })} />)}
-                  </section>
-                )}
-                {finished.length > 0 && (
-                  <section className="flex flex-col gap-2" aria-labelledby="download-history">
-                    <div className="flex items-center justify-between">
-                      <p id="download-history" className="text-xs font-semibold uppercase tracking-wide text-muted">History</p>
-                      {finished.length > HISTORY_PREVIEW && <Button size="sm" variant="ghost" onClick={() => setShowAllHistory((value) => !value)}>{showAllHistory ? 'Show less' : `Show all (${finished.length})`}</Button>}
-                    </div>
-                    {(showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW)).map((task) => <QueueRow key={task.id} task={task} onAction={(action) => act(task.id, action)} onEditComicInfo={(path) => setComicInfo({ path })} onDelete={() => setRemoveTarget(task)} />)}
-                  </section>
-                )}
-              </>
-            )}
-          </CardContent>
-        </Card>
-        </>
-      )}
-
-      {comicInfo && (
-        <ComicInfoModal initialPath={comicInfo.path} onClose={() => setComicInfo(null)} />
-      )}
-      <ConfirmDialog
-        open={removeTarget !== null}
-        title="Remove download from history?"
-        description={removeTarget ? `This removes “${removeTarget.title ?? `Gallery ${removeTarget.galleryId}`}” from history. Downloaded files are not deleted.` : ''}
-        confirmLabel="Remove"
-        onOpenChange={(open) => { if (!open) setRemoveTarget(null); }}
-        onConfirm={() => { if (removeTarget) removeTask(removeTarget.id); setRemoveTarget(null); }}
-      />
-      <ConfirmDialog
-        open={confirmClear}
-        title="Clear completed downloads?"
-        description="This removes every completed download from the manager history. Downloaded files are not deleted."
-        confirmLabel="Clear completed"
-        danger
-        onOpenChange={setConfirmClear}
-        onConfirm={() => { clearCompleted(); setConfirmClear(false); }}
-      />
+      {/* Download manager — own component so live task ticks never re-render the page */}
+      {tab === 'manager' && <ManagerTab />}
 
       </div>
     </div>

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Combine, FolderInput } from 'lucide-react';
 import { api, type SeriesRow } from '../lib/api';
 import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, EmptyState } from './ui';
@@ -36,36 +36,48 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
   const [files, setFiles] = React.useState<MergeFile[] | null>(null);
 
   const roots = useQuery({ queryKey: ['cbz-roots'], queryFn: api.cbzRoots });
-  const perSeries = useQuery({
-    queryKey: ['cbz-series-files', 'merge', selected.map((s) => s.id).join(',')],
-    queryFn: async (): Promise<SeriesFiles[]> => {
-      const results = await Promise.all(
-        selected.map(async (s) => {
-          try {
-            const data = await api.cbzSeriesFiles(s.id);
-            return { series: s, files: data.files, chapterNumbers: data.chapterNumbers ?? {}, reason: data.reason };
-          } catch (e) {
-            return { series: s, files: [], chapterNumbers: {}, reason: e instanceof Error ? e.message : String(e) };
-          }
-        }),
-      );
-      return results;
-    },
+  // One canonical cache entry per source series (same ['cbz-series-files', id]
+  // shape ComicInfoModal uses) so chapter edits elsewhere invalidate these too.
+  const perSeries = useQueries({
+    queries: selected.map((s) => ({
+      queryKey: ['cbz-series-files', s.id],
+      queryFn: () => api.cbzSeriesFiles(s.id),
+      retry: false,
+    })),
+    combine: (results) => ({
+      isLoading: results.some((r) => r.isPending),
+      data: results.map((r, i): SeriesFiles => {
+        const s = selected[i];
+        if (r.data) return { series: s, files: r.data.files, chapterNumbers: r.data.chapterNumbers ?? {}, reason: r.data.reason };
+        return { series: s, files: [], chapterNumbers: {}, reason: r.error instanceof Error ? r.error.message : String(r.error) };
+      }),
+    }),
   });
 
-  // Flatten the collected files (deduped by path) into editable rows.
+  // Build the draft list once when the files first arrive, then merge later
+  // refetches: chapter numbers the user typed (keyed by file path) survive
+  // window-focus refetches, while files added or removed server-side still sync.
   React.useEffect(() => {
     if (!perSeries.data) return;
-    const seen = new Set<string>();
-    const list: MergeFile[] = [];
-    for (const entry of perSeries.data) {
-      for (const f of entry.files) {
-        if (seen.has(f)) continue;
-        seen.add(f);
-        list.push({ path: f, name: f.split(/[\\/]/).pop() ?? f, fromSeries: entry.series.name, chapter: entry.chapterNumbers[f] ?? '' });
+    setFiles((prev) => {
+      const prevChapter: Record<string, string> = {};
+      for (const f of prev ?? []) prevChapter[f.path] = f.chapter;
+      const seen = new Set<string>();
+      const list: MergeFile[] = [];
+      for (const entry of perSeries.data) {
+        for (const f of entry.files) {
+          if (seen.has(f)) continue;
+          seen.add(f);
+          list.push({
+            path: f,
+            name: f.split(/[\\/]/).pop() ?? f,
+            fromSeries: entry.series.name,
+            chapter: prevChapter[f] ?? entry.chapterNumbers[f] ?? '',
+          });
+        }
       }
-    }
-    setFiles(list);
+      return list;
+    });
   }, [perSeries.data]);
 
   // Default target = the download directory (first root) + the merged series name.

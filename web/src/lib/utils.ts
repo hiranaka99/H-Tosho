@@ -6,6 +6,22 @@ export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
 }
 
+/**
+ * Build a single-tag/artist search fragment from a details card, formatted for
+ * the target source's query syntax. Hitomi uses bare underscored multi-word values
+ * (e.g. `artist:charu_lee`); nHentai wraps values in quotes (e.g. `artist:"Charu Lee"`).
+ * An empty namespace yields a plain keyword search on the raw value.
+ */
+export function buildTagSearchFragment(value: string, ns: string | null | undefined, source: 'hitomi' | 'nhentai'): string {
+  const v = value.trim();
+  if (!v) return '';
+  if (source === 'nhentai') {
+    return ns ? `${ns}:"${v}"` : `"${v}"`;
+  }
+  const underscored = v.replace(/\s+/g, '_');
+  return ns ? `${ns}:${underscored}` : underscored;
+}
+
 export type MatchStatus = 'matched' | 'unmatched' | 'syncing' | 'failed';
 
 export const STATUS_LABEL: Record<MatchStatus, string> = {
