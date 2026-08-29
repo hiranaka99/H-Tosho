@@ -598,6 +598,8 @@ const HITOMI_POPULAR_PERIODS: Partial<Record<DoujinSort, 'today' | 'week' | 'yea
   'popular-week': 'week',
   'popular-year': 'year',
 };
+/** Gallery types omitted from search results (hitomi's "image set" / "artist CG"). */
+const EXCLUDED_GALLERY_TYPES: Record<string, true> = { imageset: true, artistcg: true };
 
 export const hitomiProvider: DoujinProvider = {
   id: 'hitomi',
@@ -632,20 +634,25 @@ export const hitomiProvider: DoujinProvider = {
     const ids = await searchGalleryIds(q, version, HITOMI_POPULAR_PERIODS[sort ?? 'default']);
     if (!ids.length) return [];
 
-    // Hydrate the top N results with metadata (one request each), in bounded
-    // batches so a large result set doesn't open thousands of concurrent
-    // connections. `ids` keeps the ordering the index returned (popularity when
-    // a popular sort was requested, otherwise newest-first), so batching preserves it.
+    // Hydrate results with metadata (one request each), in bounded batches so a
+    // large result set doesn't open thousands of concurrent connections. `ids`
+    // keeps the ordering the index returned (popularity when a popular sort was
+    // requested, otherwise newest-first), so batching preserves it. Excluded
+    // types (image sets, artist CG) are dropped during hydration and backfilled
+    // from later candidates so results still fill to `limit` where possible; the
+    // scan caps at 4x the target to bound lookups on type-heavy queries.
     const target = Math.max(limit, 1);
-    const candidates = ids.slice(0, target);
+    const scanLimit = Math.min(ids.length, target * 4);
     const out: DoujinSearchResult[] = [];
     const BATCH = 25;
-    for (let i = 0; i < candidates.length && out.length < target; i += BATCH) {
+    for (let i = 0; i < scanLimit && out.length < target; i += BATCH) {
       await Promise.all(
-        candidates.slice(i, i + BATCH).map(async (id) => {
+        ids.slice(i, Math.min(i + BATCH, scanLimit)).map(async (id) => {
           if (out.length >= target) return;
           try {
             const info = parseGalleryInfo(await fetchText(`${API_BASE}/galleries/${id}.js`));
+            const type = typeof info.type === 'string' ? info.type.toLowerCase().replace(/[^a-z]/g, '') : '';
+            if (EXCLUDED_GALLERY_TYPES[type]) return;
             const gg = await loadGG();
             const files: HitomiFile[] = info.files ?? [];
             out.push({

@@ -70,7 +70,6 @@ function Brand() {
       </div>
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold leading-tight tracking-tight">H-Tosho</div>
-        <div className="truncate text-xs leading-tight text-muted">Kavita metadata manager</div>
       </div>
     </div>
   );
