@@ -2,7 +2,7 @@ import { and, desc, eq, like, ne } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery, DoujinSearchResult, DoujinSource, DoujinSort } from '../downloader/types.js';
-import { sleep } from '../lib/http.js';
+import { mapLimit, sleep } from '../lib/http.js';
 import { KavitaClient } from '../kavita/client.js';
 import type { KavitaSeries } from '../kavita/types.js';
 import { getKavitaConnection, getRecommendationSettings, setRecommendationSettings } from './settings.js';
@@ -505,17 +505,38 @@ function termScore(t: ProfileTerm): number {
 /** Search every spec and merge candidates by gallery (a gallery hit by several queries sums their weights). */
 async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, termIndex: Map<string, ProfileTerm>): Promise<Map<string, Candidate>> {
   const out = new Map<string, Candidate>();
-  await Promise.all(
-    specs.map(async (spec) => {
-      const provider = getDoujinProvider(spec.source);
-      if (!provider) return;
-      let results: DoujinSearchResult[];
-      try {
-        results = await provider.search(spec.query, spec.results, spec.sort);
-      } catch (err) {
-        console.warn(`[h-tosho] recommendations query failed (${spec.source} “${spec.query}”):`, err instanceof Error ? err.message : err);
-        return;
-      }
+  // Run one spec's search, returning its raw results (or null when the query
+  // failed — one failing query cannot kill the whole generation).
+  const runSpec = async (spec: QuerySpec): Promise<DoujinSearchResult[] | null> => {
+    const provider = getDoujinProvider(spec.source);
+    if (!provider) return null;
+    try {
+      return await provider.search(spec.query, spec.results, spec.sort);
+    } catch (err) {
+      console.warn(`[h-tosho] recommendations query failed (${spec.source} “${spec.query}”):`, err instanceof Error ? err.message : err);
+      return null;
+    }
+  };
+  // Fire ~18 searches per generation. Run them all at once and the sources'
+  // rate limits answer with 429s (and the downloader's requestDelayMs throttle
+  // is bypassed entirely) — cap each source at 4 concurrent searches; sources
+  // run independently since their limits are independent.
+  const bySource = new Map<DoujinSource, QuerySpec[]>();
+  for (const spec of specs) {
+    const group = bySource.get(spec.source);
+    if (group) group.push(spec);
+    else bySource.set(spec.source, [spec]);
+  }
+  const resultsBySpec = await Promise.all(
+    [...bySource.values()].map((group) => mapLimit(group, 4, runSpec)),
+  );
+  // Merge in spec order (not completion order): the candidate map's insertion
+  // order feeds the weighted sampler, and a completion-order map would make
+  // per-term cap outcomes nondeterministic across runs.
+  for (const [groupIndex, group] of [...bySource.values()].entries()) {
+    for (const [specIndex, spec] of group.entries()) {
+      const results = resultsBySpec[groupIndex]?.[specIndex];
+      if (!results) continue;
       for (const r of results) {
         const key = keyOf(r);
         if (downloaded.has(key)) continue;
@@ -537,8 +558,8 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
           }
         }
       }
-    }),
-  );
+    }
+  }
   return out;
 }
 
@@ -737,7 +758,6 @@ function readHistory(): HistoryEntry[] {
   }
 }
 
-
 /** Drop expired entries and enforce the cap (oldest last, so the tail is the newest). */
 function pruneHistory(): HistoryEntry[] {
   const cutoff = localDate(new Date(Date.now() - HISTORY_DAYS * 86_400_000));
@@ -753,11 +773,13 @@ function pruneHistory(): HistoryEntry[] {
 /**
  * Record today's picks as served (re-serving a recycled pick refreshes its
  * date, restarting its exclusion window). Also migrates the legacy per-day
- * seen row, so a deploy does not re-serve picks shown earlier today.
+ * seen row, so a deploy does not re-serve picks shown earlier today. Takes the
+ * pruned history doGenerate already read — re-reading the row here would
+ * JSON-parse the (up to 1200-entry) payload a second time per generation.
  */
-function addHistory(date: string, items: RecommendationItem[]): void {
+function addHistory(date: string, items: RecommendationItem[], history: HistoryEntry[]): void {
   const entries = new Map<string, HistoryEntry>();
-  for (const h of readHistory()) entries.set(h.key, h);
+  for (const h of history) entries.set(h.key, h);
   const legacy = readSeenItems(date);
   for (const it of legacy) entries.set(keyOf(it), { key: keyOf(it), date, item: it });
   if (legacy.length) {
@@ -850,7 +872,7 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
     }
   }
 
-  addHistory(date, items);
+  addHistory(date, items, history);
 
   return {
     date,
@@ -935,11 +957,14 @@ export function getRecommendations(): Promise<RecommendationResponse> {
   return (cached ? Promise.resolve(cached) : generateFor(date, 0)).then(withOwned);
 }
 
+/** Monotonic nonce so each refresh draws differently (deterministic, unlike Math.random). */
+let refreshNonce = 0;
+
 /** Re-roll today's picks with a fresh seed (manual refresh). */
 export async function refreshRecommendations(): Promise<RecommendationResponse> {
   const date = localDate();
   getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(date))).run();
-  return withOwned(await generateFor(date, Math.floor(Math.random() * 0x7fffffff)));
+  return withOwned(await generateFor(date, ++refreshNonce));
 }
 
 /** Replace the list of Kavita libraries feeding the profile; today's cached set is re-generated. */

@@ -9,7 +9,7 @@ afterEach(() => {
 });
 
 describe('MangaDexProvider cover URLs', () => {
-  it('resolves search candidate covers via /cover/{id} fileName, not the relationship id', async () => {
+  it('resolves search candidate covers in one batched /cover collection request', async () => {
     const coverRequests: string[] = [];
     const searchUrls: string[] = [];
     globalThis.fetch = async (input) => {
@@ -38,15 +38,21 @@ describe('MangaDexProvider cover URLs', () => {
           ],
         });
       }
-      if (url.startsWith('https://api.mangadex.org/cover/')) {
+      if (url.startsWith('https://api.mangadex.org/cover?')) {
         coverRequests.push(url);
-        const id = url.split('/').pop();
-        if (id === 'cover-uuid-1') {
-          return Response.json({ result: 'ok', response: 'entity', data: { attributes: { fileName: 'file-one.jpg' } } });
-        }
-        if (id === 'cover-uuid-2') {
-          return new Response('not found', { status: 404 });
-        }
+        return Response.json({
+          result: 'ok',
+          response: 'collection',
+          data: [
+            // Only manga-1's cover resolves; manga-2's row is absent, which is
+            // the bulk equivalent of the old per-id 404 → no thumbnail.
+            {
+              id: 'cover-uuid-1',
+              attributes: { fileName: 'file-one.jpg' },
+              relationships: [{ id: 'manga-1', type: 'manga' }],
+            },
+          ],
+        });
       }
       throw new Error(`Unexpected fetch: ${url}`);
     };
@@ -64,16 +70,17 @@ describe('MangaDexProvider cover URLs', () => {
         `missing contentRating[]=${rating}`,
       );
     }
-    // The CDN path must use the fileName served by /cover/{id}; using the raw
-    // cover relationship id as the file name 404s on uploads.mangadex.org.
+    // The CDN path must use the fileName served by the /cover collection; using
+    // the raw cover relationship id as the file name 404s on uploads.mangadex.org.
     assert.equal(results[0].coverUrl, 'https://uploads.mangadex.org/covers/manga-1/file-one.jpg');
-    // A failed /cover lookup degrades to no thumbnail instead of a broken URL.
+    // An unresolvable cover degrades to no thumbnail instead of a broken URL.
     assert.equal(results[1].coverUrl, undefined);
     assert.equal(results[2].coverUrl, undefined);
-    assert.deepEqual(coverRequests.sort(), [
-      'https://api.mangadex.org/cover/cover-uuid-1',
-      'https://api.mangadex.org/cover/cover-uuid-2',
-    ]);
+    // One batched collection request covers every cover-bearing candidate.
+    assert.equal(coverRequests.length, 1);
+    const coverParams = new URL(coverRequests[0]).searchParams;
+    assert.deepEqual(coverParams.getAll('manga[]').sort(), ['manga-1', 'manga-2', 'manga-3']);
+    assert.equal(coverParams.get('limit'), '100');
   });
 
   it('builds series metadata cover URLs from the resolved fileName without query params', async () => {
@@ -275,10 +282,12 @@ describe('MangaDexProvider cover URLs', () => {
       throw new Error(`Unexpected fetch: ${url}`);
     };
 
-    assert.equal(await mangaDexProvider.preferredSeriesCoverUrl('manga-1'), undefined);
+    // A fresh manga id: the Volume-1 test above caches manga-1's cover in the
+    // provider's TTL cache, which must not leak into this scenario.
+    assert.equal(await mangaDexProvider.preferredSeriesCoverUrl('manga-no-vol1'), undefined);
 
     globalThis.fetch = async () => new Response('boom', { status: 500 });
-    assert.equal(await mangaDexProvider.preferredSeriesCoverUrl('manga-1'), undefined);
+    assert.equal(await mangaDexProvider.preferredSeriesCoverUrl('manga-no-vol1'), undefined);
   });
 });
 

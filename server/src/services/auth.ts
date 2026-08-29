@@ -22,14 +22,23 @@ interface Session {
 
 const sessions = new Map<string, Session>();
 
+/**
+ * Parsed credentials cache: credentials() runs on every authenticated request
+ * via requireAuth. `undefined` = not yet loaded; storeCredentials is the only
+ * writer of the 'app-auth' key (grep-verified), so it keeps the cache in sync.
+ */
+let cachedCredentials: StoredCredentials | null | undefined;
+ 
 function credentials(): StoredCredentials | null {
+  if (cachedCredentials !== undefined) return cachedCredentials;
   const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, AUTH_KEY)).get();
   if (!row) return null;
   try {
     const parsed = JSON.parse(row.valueJson) as Partial<StoredCredentials>;
-    return typeof parsed.username === 'string' && typeof parsed.salt === 'string' && typeof parsed.passwordHash === 'string'
-      ? parsed as StoredCredentials
-      : null;
+    if (typeof parsed.username === 'string' && typeof parsed.salt === 'string' && typeof parsed.passwordHash === 'string') {
+      cachedCredentials = parsed as StoredCredentials;
+    }
+    return cachedCredentials ?? null;
   } catch {
     return null;
   }
@@ -50,6 +59,7 @@ function storeCredentials(username: string, password: string): void {
     .values({ key: AUTH_KEY, valueJson: JSON.stringify(value) })
     .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(value) } })
     .run();
+  cachedCredentials = value;
 }
 
 function validPassword(password: string, stored: StoredCredentials): boolean {

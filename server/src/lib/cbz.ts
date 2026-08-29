@@ -1,6 +1,7 @@
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import fs from 'node:fs';
 import path from 'node:path';
+import { crc32 } from './crc.js';
 import { parseComicInfo, renderComicInfoXml } from '../downloader/comicinfo.js';
 
 /**
@@ -36,6 +37,41 @@ const CENTRAL_SIG = 0x02014b50;
 const LOCAL_SIG = 0x04034b50;
 const ZIP64_MARKER = 0xffffffff;
 
+/** Parse `count` central-directory records starting at cd[0]. */
+function parseCentralDirectory(cd: Buffer, count: number): ZipEntryInfo[] {
+  const entries: ZipEntryInfo[] = [];
+  let p = 0;
+  for (let n = 0; n < count; n++) {
+    if (p + 46 > cd.length || cd.readUInt32LE(p) !== CENTRAL_SIG) {
+      throw new Error('Corrupt ZIP (bad central directory record)');
+    }
+    const method = cd.readUInt16LE(p + 10);
+    const crc = cd.readUInt32LE(p + 16);
+    const compressedSize = cd.readUInt32LE(p + 20);
+    const uncompressedSize = cd.readUInt32LE(p + 24);
+    const nameLen = cd.readUInt16LE(p + 28);
+    const extraLen = cd.readUInt16LE(p + 30);
+    const commentLen = cd.readUInt16LE(p + 32);
+    const localOffset = cd.readUInt32LE(p + 42);
+    if (compressedSize === ZIP64_MARKER || uncompressedSize === ZIP64_MARKER) {
+      throw new Error('ZIP64 archives are not supported');
+    }
+    const name = cd.toString('utf8', p + 46, p + 46 + nameLen);
+    entries.push({
+      name,
+      method,
+      crc,
+      compressedSize,
+      uncompressedSize,
+      localOffset,
+      time: cd.readUInt16LE(p + 12),
+      date: cd.readUInt16LE(p + 14),
+    });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
 /** Parse the central directory of a ZIP buffer, returning entries in archive order. */
 export function readZipEntries(buf: Buffer): ZipEntryInfo[] {
   // EOCD sits at the end, preceded by an optional comment of up to 65535 bytes.
@@ -54,38 +90,61 @@ export function readZipEntries(buf: Buffer): ZipEntryInfo[] {
   if (count === ZIP64_MARKER || centralStart === ZIP64_MARKER) {
     throw new Error('ZIP64 archives are not supported');
   }
+  return parseCentralDirectory(buf.subarray(centralStart), count);
+}
 
-  const entries: ZipEntryInfo[] = [];
-  let p = centralStart;
-  for (let n = 0; n < count; n++) {
-    if (p + 46 > buf.length || buf.readUInt32LE(p) !== CENTRAL_SIG) {
-      throw new Error('Corrupt ZIP (bad central directory record)');
-    }
-    const method = buf.readUInt16LE(p + 10);
-    const crc = buf.readUInt32LE(p + 16);
-    const compressedSize = buf.readUInt32LE(p + 20);
-    const uncompressedSize = buf.readUInt32LE(p + 24);
-    const nameLen = buf.readUInt16LE(p + 28);
-    const extraLen = buf.readUInt16LE(p + 30);
-    const commentLen = buf.readUInt16LE(p + 32);
-    const localOffset = buf.readUInt32LE(p + 42);
-    if (compressedSize === ZIP64_MARKER || uncompressedSize === ZIP64_MARKER) {
-      throw new Error('ZIP64 archives are not supported');
-    }
-    const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
-    entries.push({
-      name,
-      method,
-      crc,
-      compressedSize,
-      uncompressedSize,
-      localOffset,
-      time: buf.readUInt16LE(p + 12),
-      date: buf.readUInt16LE(p + 14),
-    });
-    p += 46 + nameLen + extraLen + commentLen;
+/** Read exactly buf.length bytes at `position`, throwing on early EOF. */
+async function readFull(fh: fs.promises.FileHandle, buf: Buffer, position: number): Promise<void> {
+  let off = 0;
+  while (off < buf.length) {
+    const { bytesRead } = await fh.read(buf, off, buf.length - off, position + off);
+    if (bytesRead <= 0) throw new Error('Unexpected EOF while reading ZIP');
+    off += bytesRead;
   }
-  return entries;
+}
+
+/**
+ * Read the central directory of the ZIP open at `fh` positionally (tail scan
+ * for the EOCD, then a central-directory read), so an archive is never loaded
+ * into RAM whole — only its directory and the payloads actually consumed.
+ */
+async function readZipEntriesFromDisk(fh: fs.promises.FileHandle, fileSize: number): Promise<ZipEntryInfo[]> {
+  const tailLen = Math.min(fileSize, 22 + 0xffff);
+  const tail = Buffer.alloc(tailLen);
+  await readFull(fh, tail, fileSize - tailLen);
+  let eocd = -1;
+  for (let i = tail.length - 22; i >= 0; i--) {
+    if (tail.readUInt32LE(i) === EOCD_SIG) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error('Not a ZIP file (end of central directory not found)');
+
+  const count = tail.readUInt16LE(eocd + 10);
+  const centralStart = tail.readUInt32LE(eocd + 16);
+  if (count === ZIP64_MARKER || centralStart === ZIP64_MARKER) {
+    throw new Error('ZIP64 archives are not supported');
+  }
+  // The central directory ends exactly at the EOCD, so its extent is known
+  // without trusting the size field.
+  const cdEnd = fileSize - tailLen + eocd;
+  if (centralStart > cdEnd) throw new Error('Corrupt ZIP (central directory extends past EOCD)');
+  const cd = Buffer.alloc(cdEnd - centralStart);
+  await readFull(fh, cd, centralStart);
+  return parseCentralDirectory(cd, count);
+}
+
+/** Payload start offset inside a file-open ZIP (reads the entry's local header). */
+async function payloadStartFromDisk(fh: fs.promises.FileHandle, e: ZipEntryInfo): Promise<number> {
+  const header = Buffer.alloc(30);
+  await readFull(fh, header, e.localOffset);
+  if (header.readUInt32LE(0) !== LOCAL_SIG) {
+    throw new Error(`Corrupt ZIP (bad local header for ${e.name})`);
+  }
+  const nameLen = header.readUInt16LE(26);
+  const extraLen = header.readUInt16LE(28);
+  return e.localOffset + 30 + nameLen + extraLen;
 }
 
 /** Payload start offset inside the file for an entry (local header + name/extra). */
@@ -186,9 +245,6 @@ const CHUNK = 8 * 1024 * 1024;
  * archive is written next to the source and atomically renamed over it.
  */
 export async function rewriteZipEntry(srcPath: string, entryName: string, data: Buffer): Promise<void> {
-  const srcBuf = await fs.promises.readFile(srcPath);
-  const entries = readZipEntries(srcBuf);
-
   // Encode the replacement entry up front (deflate only when it saves space).
   const compressed = deflateRawSync(data);
   const useDeflate = compressed.length < data.length;
@@ -199,13 +255,15 @@ export async function rewriteZipEntry(srcPath: string, entryName: string, data: 
   const src = await fs.promises.open(srcPath, 'r');
   const out = await fs.promises.open(tmpPath, 'w');
   try {
+    const stat = await src.stat();
+    const entries = await readZipEntriesFromDisk(src, stat.size);
     let offset = 0;
     let centralSize = 0;
     const centrals: Buffer[] = [];
 
     for (const e of entries) {
       if (e.name === entryName) continue; // replaced by the new entry below
-      const start = payloadStart(srcBuf, e);
+      const start = await payloadStartFromDisk(src, e);
       const spec: EntrySpec = {
         name: e.name,
         method: e.method,
@@ -265,27 +323,32 @@ export async function rewriteZipEntry(srcPath: string, entryName: string, data: 
   await fs.promises.rename(tmpPath, srcPath);
 }
 
-// --- CRC32 (same polynomial as downloader/zip.ts; kept local to avoid coupling) ---
-let crcTableCache: number[] | null = null;
-function crc32(buf: Buffer): number {
-  if (!crcTableCache) {
-    crcTableCache = [];
-    for (let n = 0; n < 256; n++) {
-      let c = n;
-      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-      crcTableCache[n] = c;
-    }
-  }
-  let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = (c >>> 8) ^ crcTableCache[(c ^ buf[i]) & 0xff];
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-/** Read the ComicInfo.xml entry of a CBZ, or null when absent. */
+/**
+ * Read the ComicInfo.xml entry of a CBZ, or null when absent. Positional
+ * reads: only the central directory and this one entry's payload are touched,
+ * never the whole archive.
+ */
 export async function readComicInfo(p: string): Promise<string | null> {
-  const buf = await fs.promises.readFile(p);
-  const entry = readZipEntry(buf, 'ComicInfo.xml');
-  return entry ? entry.toString('utf8') : null;
+  const fh = await fs.promises.open(p, 'r');
+  try {
+    const stat = await fh.stat();
+    const entries = await readZipEntriesFromDisk(fh, stat.size);
+    const e = entries.find((x) => x.name === 'ComicInfo.xml');
+    if (!e) return null;
+    const start = await payloadStartFromDisk(fh, e);
+    const raw = Buffer.alloc(e.compressedSize);
+    await readFull(fh, raw, start);
+    switch (e.method) {
+      case 0:
+        return raw.toString('utf8');
+      case 8:
+        return inflateRawSync(raw).toString('utf8');
+      default:
+        throw new Error(`Unsupported compression method ${e.method} for entry "ComicInfo.xml"`);
+    }
+  } finally {
+    await fh.close();
+  }
 }
 
 /** Resolve a user-supplied path to an existing absolute file (rejects dirs/missing). */

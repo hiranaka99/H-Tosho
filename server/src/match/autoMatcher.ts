@@ -1,6 +1,6 @@
 import { getProvider } from '../providers/registry.js';
 import type { SearchResult, SeriesMetadata, MediaType } from '../providers/types.js';
-import { AUTO_MATCH_THRESHOLD, canonicalTitle, titleScore, titleSearchParts } from './normalize.js';
+import { AUTO_MATCH_THRESHOLD, canonicalTitle, scoreCanonical, titleSearchParts } from './normalize.js';
 import type { KavitaSeries } from '../kavita/types.js';
 
 export interface CandidateMatch {
@@ -40,16 +40,17 @@ export interface AutoMatchOptions {
 }
 
 /**
- * Score a search result against the series name across every known title
- * variant (display title + provider alternates). Returns the best score and
- * the variant that achieved it, so candidates display the name the folder
- * actually matches. Ties keep the display title.
+ * Score a search result against the series' canonical name across every known
+ * title variant (display title + provider alternates). Returns the best score
+ * and the variant that achieved it, so candidates display the name the folder
+ * actually matches. Ties keep the display title. The series name is
+ * canonicalized once per autoMatch call, not per candidate/alt title.
  */
-function bestVariant(seriesName: string, r: SearchResult): { score: number; title: string } {
-  let score = titleScore(seriesName, r.title);
+function bestVariant(seriesCanonical: string, r: SearchResult): { score: number; title: string } {
+  let score = scoreCanonical(seriesCanonical, canonicalTitle(r.title));
   let title = r.title;
   for (const alt of r.altTitles ?? []) {
-    const s = titleScore(seriesName, alt);
+    const s = scoreCanonical(seriesCanonical, canonicalTitle(alt));
     if (s > score) {
       score = s;
       title = alt;
@@ -74,6 +75,9 @@ export async function autoMatch(
     options.enabledProviders.includes(id),
   );
   const query = options.query ?? series.name;
+  // Canonicalize the series name once; bestVariant scores every candidate
+  // against this instead of re-canonicalizing per candidate and per alt title.
+  const seriesCanonical = canonicalTitle(series.name);
   const candidates: CandidateMatch[] = [];
   const searchedProviders: string[] = [];
   const errors: Record<string, string> = {};
@@ -92,7 +96,7 @@ export async function autoMatch(
           // Score against every known title variant: folder names often match
           // a romanized or alternate title the display title misses. The best
           // scoring variant becomes the candidate's displayed title.
-          const { score, title } = bestVariant(series.name, r);
+          const { score, title } = bestVariant(seriesCanonical, r);
           candidates.push({
             providerId: provider.id,
             providerSeriesId: r.providerSeriesId,

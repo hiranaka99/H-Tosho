@@ -7,6 +7,7 @@ import {
   getCredentialMap,
   getDownloaderSettings,
   getKavitaConnection,
+  clearLibraryOverrides,
   getLibraryOverride,
   getProviderPriorities,
   providerOrderFor,
@@ -715,7 +716,16 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       // Refresh Kavita's database first: folders only become series once
       // Kavita itself has scanned them.
       await runKavitaLibraryScan(client, libs, job.id, log);
-      const known = new Set(getDb().select().from(schema.seriesMatches).all().map((r) => r.kavitaSeriesId));
+      // Full-table scans used to drag every metadataJson blob out of
+      // seriesMatches just to build id/status sets — project only the columns
+      // actually used.
+      const known = new Set(
+        getDb()
+          .select({ kavitaSeriesId: schema.seriesMatches.kavitaSeriesId })
+          .from(schema.seriesMatches)
+          .all()
+          .map((r) => r.kavitaSeriesId),
+      );
       const liveIds = new Set<number>();
       for (const lib of libs) {
         if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled();
@@ -734,7 +744,11 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       // though no library view can ever show them. Only safe on an unscoped
       // scan: every library was enumerated above, so anything missing is gone.
       if (job.payload.libraryId === undefined) {
-        const orphans = getDb().select().from(schema.seriesMatches).all().filter((r) => !liveIds.has(r.kavitaSeriesId));
+        const orphans = getDb()
+          .select({ kavitaSeriesId: schema.seriesMatches.kavitaSeriesId })
+          .from(schema.seriesMatches)
+          .all()
+          .filter((r) => !liveIds.has(r.kavitaSeriesId));
         if (orphans.length > 0) {
           getDb()
             .delete(schema.seriesMatches)
@@ -750,7 +764,10 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       const allLibs = await client.getLibraries();
       // Same scoping as scan-new: explicit libraryId targets one library.
       const libs = job.payload.libraryId !== undefined ? allLibs.filter((l) => l.id === job.payload.libraryId) : allLibs;
-      const rows = getDb().select().from(schema.seriesMatches).all();
+      const rows = getDb()
+        .select({ kavitaSeriesId: schema.seriesMatches.kavitaSeriesId, status: schema.seriesMatches.status })
+        .from(schema.seriesMatches)
+        .all();
       const statusBySeries = new Map(rows.map((r) => [r.kavitaSeriesId, r.status]));
       for (const lib of libs) {
         if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled();
@@ -783,7 +800,10 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       } else {
         const libraryId = job.payload.libraryId;
         if (libraryId === undefined) throw new Error('seriesIds or libraryId required');
-        const rows = getDb().select().from(schema.seriesMatches).all();
+        const rows = getDb()
+          .select({ kavitaSeriesId: schema.seriesMatches.kavitaSeriesId, status: schema.seriesMatches.status })
+          .from(schema.seriesMatches)
+          .all();
         const matchedIds = new Set(rows.filter((r) => r.status === 'matched').map((r) => r.kavitaSeriesId));
         const series = (await client.getSeries(libraryId)) as { id: number; name: string }[];
         for (const s of series) {
@@ -796,9 +816,9 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
     }
     case 'clear-overrides': {
       const libIds = job.payload.libraryId !== undefined ? [job.payload.libraryId] : [];
-      for (const libId of libIds) {
-        getDb().delete(schema.libraryOverrides).where(eq(schema.libraryOverrides.libraryId, libId)).run();
-      }
+      // Route through settings so its library-override cache is invalidated —
+      // settings.ts is the module that caches reads of this table.
+      clearLibraryOverrides(libIds);
       summary.cleared = libIds.length;
       return summary;
     }

@@ -648,13 +648,20 @@ export const nhentaiProvider: DoujinProvider = {
     const mediaId = g.media_id != null ? String(g.media_id) : '';
 
     const apiPages: ApiPage[] = Array.isArray(g.pages) && g.pages.length ? g.pages : [];
+    // Index the page list once: both the URL build below and resolvePageUrl
+    // look pages up by number, and a per-page find() is O(n²) across a gallery.
+    // First entry wins so duplicate `number` fields keep the old find() match.
+    const pageByNumber = new Map<number, ApiPage>();
+    for (const ap of apiPages) {
+      if (!pageByNumber.has(ap.number)) pageByNumber.set(ap.number, ap);
+    }
     const pageCount = apiPages.length || g.num_pages || 0;
     if (!pageCount) throw new Error(`Could not determine the page count for nHentai gallery ${id}.`);
 
     const pages: string[] = [];
     const pageFallbacks: (string | null)[] = [];
     for (let n = 1; n <= pageCount; n++) {
-      const p = apiPages.find((ap) => ap.number === n);
+      const p = pageByNumber.get(n);
       let relPath = '';
       if (p?.path) {
         relPath = p.path;
@@ -719,7 +726,7 @@ export const nhentaiProvider: DoujinProvider = {
       resolvePageUrl: async (index, opts) => {
         if (index < 0 || index >= pageCount) return null;
         const cdnNow = await getCdn(opts?.forceRefresh === true);
-        const p = apiPages.find((ap) => ap.number === index + 1);
+        const p = pageByNumber.get(index + 1);
         let relPath = p?.path ?? '';
         if (!relPath && mediaId) {
           const ext = apiPages[0]?.path?.split('.').pop() ?? 'jpg';

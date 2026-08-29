@@ -147,8 +147,11 @@ export interface HitomiPageRef {
  * serves the current base path, URLs must be constructed close to the moment of
  * the request — this is what lets downloads survive mid-run CDN rotation.
  */
-export async function buildHitomiPageUrl(ref: HitomiPageRef, opts?: { forceGgRefresh?: boolean }): Promise<string> {
-  const gg = await loadGG(opts?.forceGgRefresh);
+export async function buildHitomiPageUrl(
+  ref: HitomiPageRef,
+  opts?: { forceGgRefresh?: boolean; preloadedGg?: GG },
+): Promise<string> {
+  const gg = opts?.preloadedGg ?? (await loadGG(opts?.forceGgRefresh));
   if (ref.ext) return imageUrl(gg, ref.hash, ref.ext);
   // Original format — no compressed rendition; bare numeric subdomain.
   return originalUrl(gg, ref.hash, ref.origExt ?? 'jpg');
@@ -307,6 +310,16 @@ async function getGalleriesIndexVersion(): Promise<string> {
   return galleriesIndexVersion;
 }
 
+/**
+ * Decoded B-tree node LRU, keyed `${indexVersion}:${addr}`. Index nodes are
+ * immutable for a given galleriesindex version, so caching them removes the up
+ * to 12 sequential range reads per term on repeat lookups; the version in the
+ * key makes a version change miss every entry (implicit invalidation). The
+ * final gallery-id data fetch stays uncached — it is one read per exact match.
+ */
+const btreeNodeCache = new Map<string, BTreeNode>();
+const BTREE_NODE_CACHE_MAX = 256;
+
 /** Resolve the gallery ids that exactly match a single keyword term. */
 async function getGalleryIdsForTerm(term: string, version: string): Promise<number[]> {
   const key = hashTerm(term);
@@ -315,8 +328,18 @@ async function getGalleryIdsForTerm(term: string, version: string): Promise<numb
 
   let addr = 0n;
   for (let depth = 0; depth < 12; depth++) {
-    const buf = await rangeFetch(indexUrl, Number(addr), Number(addr) + MAX_NODE_SIZE - 1);
-    const node = decodeNode(buf);
+    const nodeKey = `${version}:${addr}`;
+    let node = btreeNodeCache.get(nodeKey);
+    if (!node) {
+      const buf = await rangeFetch(indexUrl, Number(addr), Number(addr) + MAX_NODE_SIZE - 1);
+      node = decodeNode(buf);
+      // LRU: evict the stalest entry (Map insertion order) when over cap.
+      if (btreeNodeCache.size >= BTREE_NODE_CACHE_MAX) {
+        const oldest = btreeNodeCache.keys().next().value;
+        if (oldest !== undefined) btreeNodeCache.delete(oldest);
+      }
+      btreeNodeCache.set(nodeKey, node);
+    }
     if (!node.keys.length) return [];
 
     let there = false;
@@ -689,7 +712,11 @@ export const hitomiProvider: DoujinProvider = {
     const id = extractGalleryId(idOrUrl, GALLERY_URL_RE);
     if (!id) throw new Error('Could not parse a Hitomi gallery ID from the input.');
 
-    const info = parseGalleryInfo(await fetchText(`${API_BASE}/galleries/${id}.js`));
+    // The gallery JSON and the gg.js routing table are independent fetches (gg
+    // is only consumed after the files list is parsed), so load them in
+    // parallel; both must succeed for the gallery to resolve.
+    const [infoText, gg] = await Promise.all([fetchText(`${API_BASE}/galleries/${id}.js`), loadGG()]);
+    const info = parseGalleryInfo(infoText);
     const files: HitomiFile[] = info.files ?? [];
     if (!files.length) throw new Error(`Could not find any images for Hitomi gallery ${id}.`);
 
@@ -712,8 +739,6 @@ export const hitomiProvider: DoujinProvider = {
       }
       refs.push(ref);
     }
-
-    const gg = await loadGG();
 
     // Primary pages: AVIF when available (best compression/quality), else WEBP,
     // else a constructed original URL. Fallbacks give the engine a second path.
@@ -776,9 +801,19 @@ export const hitomiProvider: DoujinProvider = {
       resolvePageUrl: async (index, opts) => {
         const ref = refs[index];
         if (!ref) return null;
-        const o = opts?.forceRefresh ? { forceGgRefresh: true } : undefined;
-        const url = await buildHitomiPageUrl(ref, o);
-        const fallback = await buildHitomiPageFallbackUrlLive(ref, o);
+        if (!opts?.forceRefresh) {
+          // Normal path: both builders share the short-lived gg cache, so the
+          // second lookup does not re-fetch.
+          const url = await buildHitomiPageUrl(ref);
+          const fallback = await buildHitomiPageFallbackUrlLive(ref);
+          return { url, fallback };
+        }
+        // Force-refresh path: load the routing table ONCE and hand it to both
+        // builders — letting each force-refresh would fetch gg.js twice for a
+        // single page resolution.
+        const shared = { preloadedGg: await loadGG(true) };
+        const url = await buildHitomiPageUrl(ref, shared);
+        const fallback = await buildHitomiPageFallbackUrlLive(ref, shared);
         return { url, fallback };
       },
     };
@@ -786,8 +821,11 @@ export const hitomiProvider: DoujinProvider = {
 };
 
 /** Async fallback builder (fresh routing table) for the live resolver. */
-async function buildHitomiPageFallbackUrlLive(ref: HitomiPageRef, opts?: { forceGgRefresh?: boolean }): Promise<string | null> {
+async function buildHitomiPageFallbackUrlLive(
+  ref: HitomiPageRef,
+  opts?: { forceGgRefresh?: boolean; preloadedGg?: GG },
+): Promise<string | null> {
   if (!ref.fallbackExt || ref.fallbackExt === ref.ext) return null;
-  const gg = await loadGG(opts?.forceGgRefresh);
+  const gg = opts?.preloadedGg ?? (await loadGG(opts?.forceGgRefresh));
   return imageUrl(gg, ref.hash, ref.fallbackExt);
 }

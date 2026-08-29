@@ -68,7 +68,11 @@ class MyAnimeListProvider extends BaseProvider {
   }
 
   async getSeriesMetadata(providerSeriesId: string): Promise<SeriesMetadata> {
-    const data = await this.get<{ data: any }>(`/manga/${providerSeriesId}`, {
+    // MAL omits most fields unless `fields=` is requested; ask for exactly
+    // what the mapping below consumes so the payload stays small.
+    const fields =
+      'id,title,main_picture,alternative_titles,start_date,synopsis,genres,tags,authors{node{id,first_name,last_name},role},status,media_type';
+    const data = await this.get<{ data: any }>(`/manga/${providerSeriesId}?fields=${encodeURIComponent(fields)}`, {
       headers: this.headers(),
     });
     // Approved clients wrap the node in `data`; the public stub returns it directly.
@@ -83,6 +87,16 @@ class MyAnimeListProvider extends BaseProvider {
       if (!Number.isNaN(d.getTime())) releaseDate = d.toISOString().slice(0, 10);
     }
 
+    // MAL authors are {node:{id,first_name,last_name},role} with role
+    // 'Story' | 'Art' | 'Story & Art' — split them across the unified model
+    // (the node itself has no `name`).
+    const authors: { name: string; role?: string }[] = (
+      node.authors ?? []
+    ).map((p: { node?: { first_name?: string; last_name?: string }; role?: string }) => ({
+      name: `${p?.node?.first_name ?? ''} ${p?.node?.last_name ?? ''}`.trim(),
+      role: p?.role,
+    }));
+
     return {
       providerId: this.id,
       providerSeriesId,
@@ -93,8 +107,8 @@ class MyAnimeListProvider extends BaseProvider {
       coverUrl: this.coverUrl(node),
       genres: (node.genres ?? []).map((g: any) => g.name).filter(Boolean),
       tags: (node.tags ?? []).map((t: any) => t.name).filter(Boolean),
-      writers: (node.authors ?? []).map((p: any) => p.name).filter(Boolean),
-      artists: (node.authors ?? []).map((p: any) => p.name).filter(Boolean),
+      writers: authors.filter((p) => p.role === 'Story' || p.role === 'Story & Art').map((p) => p.name).filter(Boolean),
+      artists: authors.filter((p) => p.role === 'Art' || p.role === 'Story & Art').map((p) => p.name).filter(Boolean),
       readingDirection: 'RTL',
       language: 'en',
       status: mapMalStatus(node.status),

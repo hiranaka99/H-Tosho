@@ -1,47 +1,26 @@
 import { deflateRawSync } from 'node:zlib';
 import fs from 'node:fs';
+import { crc32 } from '../lib/crc.js';
 
 /**
  * Minimal, dependency-free ZIP (CBZ) writer.
  *
- * Uses DEFLATE compression (method 8) so galleries stay small on disk while
- * remaining fully readable by Kavita and any other CBZ consumer. All entries
- * are written in "local file header + central directory" order per the
- * PKZIP spec. Offsets are computed as we append, then the central directory
- * and End-Of-Central-Directory record are finalized at the end.
+ * Uses DEFLATE compression (method 8) where it actually saves space — XML and
+ * other text — while already-compressed image payloads are stored (method 0),
+ * so galleries stay small on disk while remaining fully readable by Kavita and
+ * any other CBZ consumer. All entries are written in "local file header +
+ * central directory" order per the PKZIP spec. Offsets are computed as we
+ * append, then the central directory and End-Of-Central-Directory record are
+ * finalized at the end.
  *
  * Two entry points: `buildZip` (in-memory, for small payloads) and
  * `buildZipFromFiles`, which streams page data from disk files one at a time
- * so large galleries never hold more than one image plus its compressed form
- * in memory.
+ * so large galleries never hold more than one image in memory.
  */
 
 interface Entry {
   name: string; // UTF-8 entry path (no leading slash)
   data: Buffer;
-}
-
-// Lazily-built CRC32 table (shared by all entries).
-let crcTableCache: number[] | null = null;
-function crcTable(): number[] {
-  if (!crcTableCache) {
-    crcTableCache = [];
-    for (let n = 0; n < 256; n++) {
-      let c = n;
-      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-      crcTableCache[n] = c;
-    }
-  }
-  return crcTableCache;
-}
-
-function crc32(buf: Buffer): number {
-  const table = crcTable();
-  let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) {
-    c = (c >>> 8) ^ table[(c ^ buf[i]) & 0xff];
-  }
-  return (c ^ 0xffffffff) >>> 0;
 }
 
 function dosDateTime(date: Date): { time: number; date: number } {
@@ -61,14 +40,27 @@ interface EncodedEntry {
   central: Buffer;
 }
 
-function encodeEntry(name: string, data: Buffer, offset: number, now: { time: number; date: number }): EncodedEntry {
+function encodeEntry(
+  name: string,
+  data: Buffer,
+  offset: number,
+  now: { time: number; date: number },
+  tryDeflate: boolean,
+): EncodedEntry {
   const nameBuf = Buffer.from(name, 'utf8');
   const crc = crc32(data);
-  const compressed = deflateRawSync(data);
   // Prefer deflate only when it actually saves space; otherwise store.
-  const useDeflate = compressed.length < data.length;
-  const method = useDeflate ? 8 : 0;
-  const payload = useDeflate ? compressed : data;
+  // Already-compressed payloads skip the deflate attempt entirely: it costs
+  // full-zlib CPU synchronously on the event loop and saves <2% on JPEG/WebP.
+  let method = 0;
+  let payload = data;
+  if (tryDeflate) {
+    const compressed = deflateRawSync(data);
+    if (compressed.length < data.length) {
+      method = 8;
+      payload = compressed;
+    }
+  }
 
   // Local file header (30 bytes + name).
   const local = Buffer.alloc(30 + nameBuf.length);
@@ -109,6 +101,19 @@ function encodeEntry(name: string, data: Buffer, offset: number, now: { time: nu
   return { local, payload, central };
 }
 
+/** File extensions whose payload is already compressed — stored, never deflated. */
+const STORE_EXTENSIONS: Record<string, true> = {
+  jpg: true,
+  jpeg: true,
+  png: true,
+  webp: true,
+  avif: true,
+  gif: true,
+  jxl: true,
+  heic: true,
+  heif: true,
+};
+
 function endOfCentralDirectory(count: number, centralStart: number, centralSize: number): Buffer {
   const eocd = Buffer.alloc(22);
   eocd.writeUInt32LE(0x06054b50, 0); // signature
@@ -130,7 +135,7 @@ export function buildZip(entries: Entry[]): Buffer {
   const now = dosDateTime(new Date());
 
   for (const entry of entries) {
-    const spec = encodeEntry(entry.name, entry.data, offset, now);
+    const spec = encodeEntry(entry.name, entry.data, offset, now, true);
     parts.push(spec.local, spec.payload);
     central.push(spec.central);
     offset += spec.local.length + spec.payload.length;
@@ -145,11 +150,11 @@ export function buildZip(entries: Entry[]): Buffer {
 
 /**
  * Stream a ZIP archive to `destPath` from page files on disk. Each file is
- * read one at a time (peak memory = one image + its compressed form), so
- * multi-hundred-MB galleries no longer need ~2x their size in RAM. Entries are
- * written in the given order; small in-memory entries (e.g. ComicInfo.xml) can
- * be appended after the file-based ones. On failure the partial archive is
- * removed before rethrowing.
+ * read one at a time (peak memory = one image), so multi-hundred-MB galleries
+ * no longer need ~2x their size in RAM. Entries are written in the given
+ * order; small in-memory entries (e.g. ComicInfo.xml) can be appended after
+ * the file-based ones. On failure the partial archive is removed before
+ * rethrowing.
  */
 export async function buildZipFromFiles(
   files: { name: string; path: string }[],
@@ -168,30 +173,38 @@ export async function buildZipFromFiles(
   out.on('error', (e) => rejectDone(e));
   out.on('finish', () => resolveDone());
 
+  // Respect the WriteStream's backpressure: buffering the whole archive
+  // in-memory when the destination (NAS, SMR disk) stalls defeats the
+  // one-image peak-memory design.
+  const write = async (buf: Buffer): Promise<void> => {
+    if (!out.write(buf)) await new Promise<void>((resolve) => out.once('drain', resolve));
+  };
+
   try {
     let offset = 0;
     const central: Buffer[] = [];
     const now = dosDateTime(new Date());
-    const append = (name: string, data: Buffer): void => {
-      const spec = encodeEntry(name, data, offset, now);
-      out.write(spec.local);
-      out.write(spec.payload);
+    const append = async (name: string, data: Buffer, tryDeflate: boolean): Promise<void> => {
+      const spec = encodeEntry(name, data, offset, now, tryDeflate);
+      await write(spec.local);
+      await write(spec.payload);
       central.push(spec.central);
       offset += spec.local.length + spec.payload.length;
     };
 
     for (const f of files) {
-      append(f.name, await fs.promises.readFile(f.path));
+      const ext = f.name.slice(f.name.lastIndexOf('.') + 1).toLowerCase();
+      await append(f.name, await fs.promises.readFile(f.path), !STORE_EXTENSIONS[ext]);
     }
     for (const e of inlineEntries) {
-      append(e.name, e.data);
+      await append(e.name, e.data, true);
     }
 
     const centralStart = offset;
     let centralSize = 0;
     for (const c of central) centralSize += c.length;
-    for (const c of central) out.write(c);
-    out.write(endOfCentralDirectory(files.length + inlineEntries.length, centralStart, centralSize));
+    for (const c of central) await write(c);
+    await write(endOfCentralDirectory(files.length + inlineEntries.length, centralStart, centralSize));
     out.end();
   } catch (e) {
     out.destroy();

@@ -1,9 +1,6 @@
 import { BaseProvider } from './base.js';
 import type { MediaType, SeriesMetadata, SearchResult, VolumeCover } from './types.js';
 
-/** Max concurrent /cover/{id} lookups while resolving search-result thumbnails. */
-const COVER_RESOLVE_BATCH_SIZE = 6;
-
 /**
  * Every contentRating value in MangaDex's current enum. The API's default
  * search scope hides pornographic-rated titles, so identify must request all
@@ -20,6 +17,7 @@ interface CoverListItem {
     locale?: string;
     updatedAt?: string;
   };
+  relationships?: Array<{ id?: string; type?: string }>;
 }
 
 /** Raw manga list item as returned by GET /manga (only the fields search() consumes). */
@@ -121,6 +119,16 @@ export function stripDescriptionTagLines(description: string | null | undefined)
   return cleaned;
 }
 /**
+ * Volume-1 cover URLs per manga id. Cover fileNames are immutable, so a
+ * short-TTL cache avoids re-paging /cover for every candidate of every
+ * identify request. Successful resolutions only — failures re-resolve next
+ * time so a transient API hiccup is not remembered.
+ */
+const preferredCoverCache = new Map<string, { url: string; at: number }>();
+const PREFERRED_COVER_CACHE_TTL_MS = 10 * 60_000;
+const PREFERRED_COVER_CACHE_MAX = 500;
+
+/**
  * MangaDex — REST API v5. Excellent cover art + detailed metadata.
  * No credentials required (Client-Agent header recommended).
  */
@@ -215,6 +223,40 @@ class MangaDexProvider extends BaseProvider {
   }
 
   /**
+   * Resolve many candidates' cover fileNames in bulk via the /cover
+   * collection — one request per 100 manga instead of one GET /cover/{id}
+   * per search result. Builds a mangaId -> fileName map from each row's
+   * `manga` relationship; when a manga's known cover_art id (its main cover)
+   * appears among the rows, that row wins so thumbnails resolve to the same
+   * cover the per-id lookup used to pick. A failed chunk leaves those
+   * candidates unresolved (no thumbnail) instead of failing the search.
+   */
+  private async bulkCoverFileNames(
+    entries: ReadonlyArray<{ mangaId: string; coverId?: string }>,
+  ): Promise<Map<string, string>> {
+    const byManga = new Map<string, string>();
+    for (let i = 0; i < entries.length; i += 100) {
+      const chunk = entries.slice(i, i + 100);
+      const query = chunk.map((entry) => `manga%5B%5D=${encodeURIComponent(entry.mangaId)}`).join('&');
+      try {
+        const res = await this.get<{ data?: CoverListItem[] }>(`/cover?${query}&limit=100`, {
+          headers: this.headers(),
+        });
+        const preferred = new Set(chunk.map((entry) => entry.coverId).filter((id): id is string => Boolean(id)));
+        for (const item of res?.data ?? []) {
+          const fileName = item.attributes?.fileName;
+          const mangaId = (item.relationships ?? []).find((rel) => rel.type === 'manga')?.id;
+          if (!fileName || !mangaId) continue;
+          if (preferred.has(item.id) || !byManga.has(mangaId)) byManga.set(mangaId, fileName);
+        }
+      } catch {
+        /* candidates in this chunk keep no thumbnail */
+      }
+    }
+    return byManga;
+  }
+
+  /**
    * Fetch every published cover of a manga via the /cover collection and
    * reduce it to one entry per volume number. Locale preference is English,
    * then Japanese, then anything else; within a locale the most recently
@@ -259,11 +301,27 @@ class MangaDexProvider extends BaseProvider {
    * main cover_art, so the identify dialog uses this to preview exactly what
    * will land in Kavita. Returns undefined when there is no Volume 1 cover or
    * the collection lookup fails; callers then keep their main-cover fallback.
+   * Successful results are cached briefly (cover fileNames are immutable).
    */
   async preferredSeriesCoverUrl(mangaId: string): Promise<string | undefined> {
+    const cached = preferredCoverCache.get(mangaId);
+    const now = Date.now();
+    if (cached) {
+      if (now - cached.at < PREFERRED_COVER_CACHE_TTL_MS) return cached.url;
+      preferredCoverCache.delete(mangaId);
+    }
     try {
       const volumeCovers = await this.fetchVolumeCovers(mangaId, { stopAtVolume1: true });
-      return volumeCovers.find((v) => v.number === 1)?.url;
+      const url = volumeCovers.find((v) => v.number === 1)?.url;
+      if (url) {
+        if (preferredCoverCache.size >= PREFERRED_COVER_CACHE_MAX) {
+          // Map iterates in insertion order, so the first key is the oldest entry.
+          const oldest = preferredCoverCache.keys().next().value;
+          if (oldest !== undefined) preferredCoverCache.delete(oldest);
+        }
+        preferredCoverCache.set(mangaId, { url, at: now });
+      }
+      return url;
     } catch {
       return undefined;
     }
@@ -280,10 +338,10 @@ class MangaDexProvider extends BaseProvider {
       headers: this.headers(),
     });
 
-    // List items only carry cover_art relationship stubs ({id, type}), so each
-    // candidate's cover must be resolved via /cover/{id} to get the fileName
-    // the CDN actually serves. Resolve in small parallel batches; a failure
-    // simply leaves that candidate without a thumbnail.
+    // List items only carry cover_art relationship stubs ({id, type}), so the
+    // fileNames the CDN actually serves must be resolved through the /cover
+    // collection — in bulk (one request per 100 manga) instead of one GET per
+    // candidate. A candidate whose cover cannot be resolved keeps no thumbnail.
     const items = (data.data ?? []).map((m) => {
       const attrs = m.attributes ?? {};
       const title = this.pickTitle(attrs);
@@ -298,12 +356,12 @@ class MangaDexProvider extends BaseProvider {
       };
     });
 
-    for (let i = 0; i < items.length; i += COVER_RESOLVE_BATCH_SIZE) {
-      await Promise.all(
-        items.slice(i, i + COVER_RESOLVE_BATCH_SIZE).map(async (item) => {
-          item.coverUrl = await this.resolveCoverUrl(item.coverId, item.mangaId);
-        }),
-      );
+    const coverFileNames = await this.bulkCoverFileNames(
+      items.map((item) => ({ mangaId: item.mangaId, coverId: item.coverId })),
+    );
+    for (const item of items) {
+      const fileName = coverFileNames.get(item.mangaId);
+      if (fileName) item.coverUrl = `${this.imageBaseUrl}/covers/${item.mangaId}/${fileName}`;
     }
 
     return items.map((item) => ({
@@ -319,6 +377,10 @@ class MangaDexProvider extends BaseProvider {
   }
 
   async getSeriesMetadata(providerSeriesId: string): Promise<SeriesMetadata> {
+    // Per-volume covers only need the series id and are independent of the
+    // detail fetch — start both together; a cover-collection failure must not
+    // sink the whole metadata fetch (series-level data is still usable).
+    const volumeCoversPromise = this.fetchVolumeCovers(providerSeriesId).catch(() => undefined);
     const data = await this.get<{ data: any }>(
       `/manga/${providerSeriesId}?${this.includesParam(['cover', 'author', 'artist'])}`,
       { headers: this.headers() },
@@ -392,14 +454,7 @@ class MangaDexProvider extends BaseProvider {
         if (name && !people.includes(name)) people.push(name);
       }
     }
-    // Per-volume covers come from the /cover collection; a failure here must
-    // not sink the whole metadata fetch (series-level data is still usable).
-    let volumeCovers: VolumeCover[] | undefined;
-    try {
-      volumeCovers = await this.fetchVolumeCovers(providerSeriesId);
-    } catch {
-      volumeCovers = undefined;
-    }
+    const volumeCovers = await volumeCoversPromise;
 
     // The series cover is always the Volume 1 cover when one exists; otherwise
     // fall back to the manga's main cover_art (which also skips the extra

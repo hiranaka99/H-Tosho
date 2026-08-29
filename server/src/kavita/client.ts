@@ -1,4 +1,4 @@
-import { fetchBuffer, fetchJson } from '../lib/http.js';
+import { fetchBuffer, fetchJsonRetry } from '../lib/http.js';
 import {
   KAVITA_MIN_SERVER_VERSION,
   KavitaLibraryType,
@@ -42,10 +42,23 @@ const LIBRARY_MEDIA_FORMATS: Record<KavitaLibraryType, MediaFormat> = {
   [KavitaLibraryType.ComicVine]: 'comic',
 };
 
-/** Options for updateSeriesMetadata. */
+/**
+ * Positive person lookups shared across clients (clients are constructed per
+ * job, so module-level state is what survives between syncs). Keyed by
+ * `${baseUrl}|${lowercased name}`; a person's id never changes once created.
+ */
+const personCache = new Map<string, { id: number; name: string; at: number }>();
+const PERSON_CACHE_TTL_MS = 60 * 60_000;
+const PERSON_CACHE_MAX_ENTRIES = 5000;
+
 export interface UpdateMetadataOptions {
   /** When false, pushed fields are written without setting Kavita's field-lock flags. */
   lockMetadata?: boolean;
+  /**
+   * Series metadata the caller already read (e.g. for tag merging) — skips
+   * this method's own GET /Series/metadata re-read. Still normalized here.
+   */
+  metadata?: KavitaSeriesMetadataDto;
 }
 
 /** Thin typed wrapper over the Kavita v0.9.0.22 REST API. */
@@ -88,13 +101,13 @@ export class KavitaClient {
   }
 
   private async getJson<T>(path: string, action: string): Promise<T> {
-    const res = await fetchJson<T>(this.url(path), { headers: this.headers }, 15_000, { raw: true });
+    const res = await fetchJsonRetry<T>(this.url(path), { headers: this.headers }, 15_000, { raw: true });
     if (res.status !== 200) throw this.requestError(action, path, res.status, res.data);
     return res.data;
   }
 
   private async postJson<T = unknown>(path: string, body: unknown, action: string): Promise<T> {
-    const res = await fetchJson<T>(this.url(path), {
+    const res = await fetchJsonRetry<T>(this.url(path), {
       method: 'POST',
       headers: { ...this.headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -106,7 +119,7 @@ export class KavitaClient {
   }
 
   private async deleteJson(path: string, action: string): Promise<void> {
-    const res = await fetchJson<unknown>(this.url(path), { method: 'DELETE', headers: this.headers }, 15_000, { raw: true });
+    const res = await fetchJsonRetry<unknown>(this.url(path), { method: 'DELETE', headers: this.headers }, 15_000, { raw: true });
     if (res.status < 200 || res.status >= 300) {
       throw this.requestError(action, path, res.status, res.data);
     }
@@ -135,13 +148,14 @@ export class KavitaClient {
 
   /** Validate reachability, the Auth Key, and the admin access needed for writes. */
   async testConnection(): Promise<KavitaServerInfo> {
-    const info = await this.getServerInfo();
+    // Reachability/version and auth/admin checks read independent endpoints —
+    // fetch both up front so a slow server pays only one round-trip latency.
+    const [info, user] = await Promise.all([this.getServerInfo(), this.getCurrentUser()]);
     if (!isVersionAtLeast(info.version, KAVITA_MIN_SERVER_VERSION)) {
       throw new Error(
         `Kavita ${info.version} is not supported. H-Tosho requires Kavita ${KAVITA_MIN_SERVER_VERSION} or newer.`,
       );
     }
-    const user = await this.getCurrentUser();
     if (!user.roles?.some((role) => role.toLowerCase() === 'admin')) {
       throw new Error('The Kavita Auth Key is valid, but H-Tosho requires an admin user to update metadata and covers.');
     }
@@ -228,6 +242,7 @@ export class KavitaClient {
       `Get chapters for series ${seriesId}`,
     );
   }
+
   /** GET /api/Person?name={name} — exact-name lookup; null when Kavita has no such person. */
   private async findPerson(name: string): Promise<KavitaPersonDto | null> {
     try {
@@ -246,16 +261,34 @@ export class KavitaClient {
    * person (Kavita 0.9.0.x has no standalone creation endpoint — POST
    * /api/Person/update with id 0 answers "Person does not exist"). Kavita does not
    * deduplicate id-0 entries by name, so existing persons must be resolved first
-   * or every sync would create a duplicate.
+   * or every sync would create a duplicate. Lookups run in parallel and reuse
+   * the module-level cache; negative results are never cached, because a
+   * not-yet-created person may exist by the next sync.
    */
   private async resolvePeople(names: string[]): Promise<KavitaPersonDto[]> {
-    const out: KavitaPersonDto[] = [];
-    for (const raw of names) {
-      const name = raw.trim();
-      if (!name) continue;
-      out.push((await this.findPerson(name)) ?? { id: 0, name });
-    }
-    return out;
+    const now = Date.now();
+    const resolved = await Promise.all(
+      names.map(async (raw) => {
+        const name = raw.trim();
+        if (!name) return null;
+        const key = `${this.baseUrl}|${name.toLowerCase()}`;
+        const cached = personCache.get(key);
+        if (cached) {
+          if (now - cached.at < PERSON_CACHE_TTL_MS) return { id: cached.id, name: cached.name };
+          personCache.delete(key);
+        }
+        const found = await this.findPerson(name);
+        if (!found || found.id <= 0) return { id: 0, name };
+        if (personCache.size >= PERSON_CACHE_MAX_ENTRIES) {
+          // Map iterates in insertion order, so the first key is the oldest entry.
+          const oldest = personCache.keys().next().value;
+          if (oldest !== undefined) personCache.delete(oldest);
+        }
+        personCache.set(key, { id: found.id, name: found.name ?? name, at: now });
+        return found;
+      }),
+    );
+    return resolved.filter((person): person is KavitaPersonDto => person !== null);
   }
 
   /** Read, merge, and write using Kavita's split v0.9 update endpoints. */
@@ -285,13 +318,18 @@ export class KavitaClient {
     }
 
     if (this.hasMetadataPatch(patch)) {
-      const metadata = this.normalizeMetadata(await this.getSeriesMetadata(seriesId), seriesId);
       // Kavita resolves people by person id and silently drops unknown ids, so names
-      // must be resolved through the Person endpoints before the write.
-      const people = {
-        writers: patch.writers !== undefined ? await this.resolvePeople(patch.writers) : undefined,
-        artists: patch.artists !== undefined ? await this.resolvePeople(patch.artists) : undefined,
-      };
+      // must be resolved through the Person endpoints before the write. Person
+      // resolution is independent of the metadata read — run both concurrently;
+      // a caller-supplied pre-read skips the GET entirely.
+      const [read, people] = await Promise.all([
+        opts.metadata !== undefined ? Promise.resolve(opts.metadata) : this.getSeriesMetadata(seriesId),
+        Promise.all([
+          patch.writers !== undefined ? this.resolvePeople(patch.writers) : undefined,
+          patch.artists !== undefined ? this.resolvePeople(patch.artists) : undefined,
+        ]).then(([writers, artists]) => ({ writers, artists })),
+      ]);
+      const metadata = this.normalizeMetadata(read, seriesId);
       // Kavita skips a field's value whenever its lock flag is set in the payload, so
       // a previously locked field would never update. Write with the locks cleared…
       this.mergeMetadataPatch(metadata, patch, false, people);
@@ -409,8 +447,16 @@ export class KavitaClient {
   /** Remove fields previously applied by H-Tosho while preserving unrelated user metadata. */
   async removeSeriesMetadata(seriesId: number, applied: SeriesMetadataPayload, fields: readonly string[]): Promise<void> {
     const remove = new Set(fields);
-    if (remove.has('name') && applied.name !== undefined) {
-      const current = await this.getSeriesDto(seriesId);
+    // When both removal kinds are requested the series and metadata reads are
+    // independent — start both up front instead of serializing them (branch
+    // order and error behavior below stay unchanged).
+    const removeName = remove.has('name') && applied.name !== undefined;
+    const currentDto = removeName ? this.getSeriesDto(seriesId) : undefined;
+    const metadataDto = [...remove].some((field) => field !== 'name')
+      ? this.getSeriesMetadata(seriesId)
+      : undefined;
+    if (removeName && currentDto) {
+      const current = await currentDto;
       const same = (left: string | null | undefined, right: string | undefined): boolean =>
         right !== undefined && (left ?? '').trim().toLowerCase() === right.trim().toLowerCase();
       const update: KavitaUpdateSeriesDto = {
@@ -434,8 +480,8 @@ export class KavitaClient {
       await this.postJson('/Series/update', update, `Clear series ${seriesId} identity metadata`);
     }
 
-    if ([...remove].some((field) => field !== 'name')) {
-      const metadata = this.normalizeMetadata(await this.getSeriesMetadata(seriesId), seriesId);
+    if (metadataDto) {
+      const metadata = this.normalizeMetadata(await metadataDto, seriesId);
       const removeTags = (current: KavitaTagDto[], values?: string[]): KavitaTagDto[] => {
         const removed = new Set((values ?? []).map((value) => value.trim().toLowerCase()));
         return current.filter((item) => !removed.has((item.title ?? '').trim().toLowerCase()));

@@ -29,22 +29,45 @@ function safeParseJson<T>(text: string): T | null {
   }
 }
 
+/**
+ * Write-invalidated read-through cache for the settings getters. Only
+ * tables/keys this module exclusively writes are cached (grep-verified):
+ * foreign key_value_store keys ('app-auth' in auth.ts, the recommendation
+ * rows in recommendations.ts) stay uncached, and executor.ts deletes
+ * library_overrides through clearLibraryOverrides below, so no writer
+ * bypasses the invalidation.
+ */
+const settingsCache = new Map<string, unknown>();
+
+/**
+ * Read-through: load on a miss, clone on a hit so a caller can never mutate
+ * the cached value (every getter used to return a fresh parse per call).
+ */
+function cachedSetting<T>(key: string, clone: (v: T) => T, load: () => T): T {
+  const hit = settingsCache.get(key);
+  if (hit !== undefined) return clone(hit as T);
+  const value = load();
+  settingsCache.set(key, value);
+  return value;
+}
 /** Ordered global provider priorities. */
 export function getProviderPriorities(): string[] {
-  const db = getDb();
-  const rows = db.select().from(schema.providerPriorities).all();
-  if (rows.length === 0) return allProviderIds();
-  const map = new Map(rows.map((r) => [r.providerId, r.position]));
-  const known = allProviderIds()
-    .filter((id) => map.has(id))
-    .sort((a, b) => (map.get(a) ?? 0) - (map.get(b) ?? 0));
-  // Providers added to the registry after priorities were last saved have no
-  // stored position; append them in canonical order so they are still tried
-  // (at the end) instead of being silently excluded from matching.
-  for (const id of allProviderIds()) {
-    if (!map.has(id)) known.push(id);
-  }
-  return known;
+  return cachedSetting('provider-priorities', (v) => [...v], () => {
+    const db = getDb();
+    const rows = db.select().from(schema.providerPriorities).all();
+    if (rows.length === 0) return allProviderIds();
+    const map = new Map(rows.map((r) => [r.providerId, r.position]));
+    const known = allProviderIds()
+      .filter((id) => map.has(id))
+      .sort((a, b) => (map.get(a) ?? 0) - (map.get(b) ?? 0));
+    // Providers added to the registry after priorities were last saved have no
+    // stored position; append them in canonical order so they are still tried
+    // (at the end) instead of being silently excluded from matching.
+    for (const id of allProviderIds()) {
+      if (!map.has(id)) known.push(id);
+    }
+    return known;
+  });
 }
 
 export function setProviderPriorities(orderedIds: string[]): void {
@@ -53,13 +76,16 @@ export function setProviderPriorities(orderedIds: string[]): void {
   for (const [i, id] of orderedIds.entries()) {
     db.insert(schema.providerPriorities).values({ providerId: id, position: i }).run();
   }
+  settingsCache.delete('provider-priorities');
 }
 
 export function getKavitaConnection(): KavitaConnection {
-  const db = getDb();
-  const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'kavita')).get();
-  if (!row) return { baseUrl: '', apiKey: '' };
-  return JSON.parse(row.valueJson) as KavitaConnection;
+  return cachedSetting('kavita-connection', (v) => ({ ...v }), () => {
+    const db = getDb();
+    const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'kavita')).get();
+    if (!row) return { baseUrl: '', apiKey: '' };
+    return JSON.parse(row.valueJson) as KavitaConnection;
+  });
 }
 
 export function setKavitaConnection(conn: KavitaConnection): void {
@@ -68,20 +94,23 @@ export function setKavitaConnection(conn: KavitaConnection): void {
     .values({ key: 'kavita', valueJson: JSON.stringify(conn) })
     .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(conn) } })
     .run();
+  settingsCache.delete('kavita-connection');
 }
 
 export function getProviderSettings(): Record<string, ProviderSetting> {
-  const db = getDb();
-  const out: Record<string, ProviderSetting> = {};
-  for (const p of allProviderIds()) {
-    const row = db.select().from(schema.providerCredentials).where(eq(schema.providerCredentials.providerId, p)).get();
-    out[p] = {
-      providerId: p,
-      enabled: row?.enabled ?? true,
-      credentials: row ? (safeParseJson<ProviderCredentials>(row.credentialsJson) ?? {}) : {},
-    };
-  }
-  return out;
+  return cachedSetting('provider-settings', (v) => ({ ...v }), () => {
+    const db = getDb();
+    const out: Record<string, ProviderSetting> = {};
+    for (const p of allProviderIds()) {
+      const row = db.select().from(schema.providerCredentials).where(eq(schema.providerCredentials.providerId, p)).get();
+      out[p] = {
+        providerId: p,
+        enabled: row?.enabled ?? true,
+        credentials: row ? (safeParseJson<ProviderCredentials>(row.credentialsJson) ?? {}) : {},
+      };
+    }
+    return out;
+  });
 }
 
 export function setProviderSetting(providerId: string, setting: Partial<ProviderSetting>): void {
@@ -110,6 +139,7 @@ export function setProviderSetting(providerId: string, setting: Partial<Provider
       },
     })
     .run();
+  settingsCache.delete('provider-settings');
 }
 
 /** Credentials map for the auto-matcher (enabled providers only). */
@@ -130,16 +160,19 @@ export function getCredentialMap(): {
 }
 
 export function getLibraryOverride(libraryId: number): LibraryOverride | null {
-  const db = getDb();
-  const row = db.select().from(schema.libraryOverrides).where(eq(schema.libraryOverrides.libraryId, libraryId)).get();
-  if (!row) return null;
-  const priority = safeParseJson<string[]>(row.priorityJson);
-  if (!priority) return null; // malformed override — fall back to global priorities
-  return {
-    libraryId,
-    priority,
-    autoMatch: row.autoMatch,
-  };
+  // Per-library key: called once per series inside the match loop.
+  return cachedSetting(`library-override:${libraryId}`, (v) => (v ? { ...v } : null), () => {
+    const db = getDb();
+    const row = db.select().from(schema.libraryOverrides).where(eq(schema.libraryOverrides.libraryId, libraryId)).get();
+    if (!row) return null;
+    const priority = safeParseJson<string[]>(row.priorityJson);
+    if (!priority) return null; // malformed override — fall back to global priorities
+    return {
+      libraryId,
+      priority,
+      autoMatch: row.autoMatch,
+    };
+  });
 }
 
 export function setLibraryOverride(lib: LibraryOverride): void {
@@ -158,6 +191,7 @@ export function setLibraryOverride(lib: LibraryOverride): void {
       },
     })
     .run();
+  settingsCache.delete(`library-override:${lib.libraryId}`);
 }
 
 /** Effective provider order for a library (override-aware, enabled providers only). */
@@ -174,6 +208,7 @@ export function clearLibraryOverrides(libraryIds: number[]): void {
   const db = getDb();
   for (const id of libraryIds) {
     db.delete(schema.libraryOverrides).where(eq(schema.libraryOverrides.libraryId, id)).run();
+    settingsCache.delete(`library-override:${id}`);
   }
 }
 
@@ -192,11 +227,13 @@ const DEFAULT_POLL_INTERVAL_HOURS = 12;
 
 /** Polling interval (hours) for detecting new series in Kavita. 0 disables. */
 export function getPollIntervalHours(): number {
-  const db = getDb();
-  const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'pollIntervalHours')).get();
-  if (!row) return DEFAULT_POLL_INTERVAL_HOURS;
-  const parsed = Number(safeParseJson<unknown>(row.valueJson));
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_POLL_INTERVAL_HOURS;
+  return cachedSetting('poll-interval', (v) => v, () => {
+    const db = getDb();
+    const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'pollIntervalHours')).get();
+    if (!row) return DEFAULT_POLL_INTERVAL_HOURS;
+    const parsed = Number(safeParseJson<unknown>(row.valueJson));
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_POLL_INTERVAL_HOURS;
+  });
 }
 
 export function setPollIntervalHours(hours: number): void {
@@ -205,6 +242,7 @@ export function setPollIntervalHours(hours: number): void {
     .values({ key: 'pollIntervalHours', valueJson: JSON.stringify(hours) })
     .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(hours) } })
     .run();
+  settingsCache.delete('poll-interval');
   for (const listener of pollIntervalListeners) listener();
 }
 
@@ -242,16 +280,18 @@ export function parseNotificationSettings(v: unknown): NotificationSettings | nu
 }
 
 export function getNotificationSettings(): NotificationSettings {
-  const db = getDb();
-  const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'notifications')).get();
-  if (!row) return structuredClone(DEFAULT_NOTIFICATIONS);
-  try {
-    const parsed = parseNotificationSettings(JSON.parse(row.valueJson));
-    if (parsed) return parsed;
-  } catch {
-    // malformed row — fall through to defaults
-  }
-  return structuredClone(DEFAULT_NOTIFICATIONS);
+  return cachedSetting('notifications', (v) => structuredClone(v), () => {
+    const db = getDb();
+    const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'notifications')).get();
+    if (!row) return structuredClone(DEFAULT_NOTIFICATIONS);
+    try {
+      const parsed = parseNotificationSettings(JSON.parse(row.valueJson));
+      if (parsed) return parsed;
+    } catch {
+      // malformed row — fall through to defaults
+    }
+    return structuredClone(DEFAULT_NOTIFICATIONS);
+  });
 }
 
 export function setNotificationSettings(s: NotificationSettings): void {
@@ -260,6 +300,7 @@ export function setNotificationSettings(s: NotificationSettings): void {
     .values({ key: 'notifications', valueJson: JSON.stringify(s) })
     .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(s) } })
     .run();
+  settingsCache.delete('notifications');
 }
 
 /** Output format for downloaded galleries. */
@@ -323,11 +364,13 @@ export function parseDownloaderSettings(value: unknown): DownloaderSettings | nu
 }
 
 export function getDownloaderSettings(): DownloaderSettings {
-  const db = getDb();
-  const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'downloader')).get();
-  if (!row) return { ...DEFAULT_DOWNLOADER };
-  const stored = safeParseJson<Partial<DownloaderSettings>>(row.valueJson);
-  return parseDownloaderSettings({ ...DEFAULT_DOWNLOADER, ...stored }) ?? { ...DEFAULT_DOWNLOADER };
+  return cachedSetting('downloader', (v) => structuredClone(v), () => {
+    const db = getDb();
+    const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'downloader')).get();
+    if (!row) return { ...DEFAULT_DOWNLOADER };
+    const stored = safeParseJson<Partial<DownloaderSettings>>(row.valueJson);
+    return parseDownloaderSettings({ ...DEFAULT_DOWNLOADER, ...stored }) ?? { ...DEFAULT_DOWNLOADER };
+  });
 }
 
 export function setDownloaderSettings(s: DownloaderSettings): void {
@@ -336,6 +379,7 @@ export function setDownloaderSettings(s: DownloaderSettings): void {
     .values({ key: 'downloader', valueJson: JSON.stringify(s) })
     .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(s) } })
     .run();
+  settingsCache.delete('downloader');
 }
 
 // ---------------- Recommendations ----------------
@@ -348,13 +392,15 @@ export interface RecommendationSettings {
 const DEFAULT_RECOMMENDATION_SETTINGS: RecommendationSettings = { excludedLibraryIds: [] };
 
 export function getRecommendationSettings(): RecommendationSettings {
-  const db = getDb();
-  const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations')).get();
-  if (!row) return { ...DEFAULT_RECOMMENDATION_SETTINGS };
-  const stored = safeParseJson<Partial<RecommendationSettings>>(row.valueJson);
-  return {
-    excludedLibraryIds: Array.isArray(stored?.excludedLibraryIds) ? stored.excludedLibraryIds.filter((x) => typeof x === 'number') : [],
-  };
+  return cachedSetting('recommendations', (v) => structuredClone(v), () => {
+    const db = getDb();
+    const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations')).get();
+    if (!row) return { ...DEFAULT_RECOMMENDATION_SETTINGS };
+    const stored = safeParseJson<Partial<RecommendationSettings>>(row.valueJson);
+    return {
+      excludedLibraryIds: Array.isArray(stored?.excludedLibraryIds) ? stored.excludedLibraryIds.filter((x) => typeof x === 'number') : [],
+    };
+  });
 }
 
 export function setRecommendationSettings(s: RecommendationSettings): void {
@@ -363,6 +409,7 @@ export function setRecommendationSettings(s: RecommendationSettings): void {
     .values({ key: 'recommendations', valueJson: JSON.stringify(s) })
     .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(s) } })
     .run();
+  settingsCache.delete('recommendations');
 }
 
 export { getProvider };

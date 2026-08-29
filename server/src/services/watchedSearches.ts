@@ -1,5 +1,5 @@
-import { asc, eq, inArray } from 'drizzle-orm';
-import { getDb, schema } from '../db/index.js';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { getDb, schema, type Db } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinSearchResult, DoujinSource } from '../downloader/types.js';
 import type { LogFn } from '../jobs/queue.js';
@@ -67,16 +67,44 @@ function decodeLastResults(json: string | null): WatchedSearchNewResult[] {
   }
 }
 
+/** Build the API shape for one watch row, counting its seen rows. */
+function rowToWatch(row: typeof schema.watchedSearches.$inferSelect): WatchedSearch {
+  const counted = getDb()
+    .select({ n: sql<number>`count(*)` })
+    .from(schema.watchedSearchSeen)
+    .where(eq(schema.watchedSearchSeen.searchId, row.id))
+    .get();
+  return {
+    id: row.id,
+    source: row.source,
+    query: row.query,
+    lastCheckedAt: row.lastCheckedAt,
+    lastResultCount: row.lastResultCount,
+    seenCount: Number(counted?.n ?? 0),
+    lastResults: decodeLastResults(row.lastResultsJson),
+  };
+}
+
 export function listWatchedSearches(): WatchedSearch[] {
   const db = getDb();
   const rows = db.select().from(schema.watchedSearches).orderBy(asc(schema.watchedSearches.id)).all();
+  // One grouped count for every watch instead of a per-watch full-row scan of
+  // watched_search_seen just to call .all().length.
+  const seenCounts = new Map(
+    db
+      .select({ searchId: schema.watchedSearchSeen.searchId, n: sql<number>`count(*)` })
+      .from(schema.watchedSearchSeen)
+      .groupBy(schema.watchedSearchSeen.searchId)
+      .all()
+      .map((r) => [r.searchId, Number(r.n)] as const),
+  );
   return rows.map((r) => ({
     id: r.id,
     source: r.source,
     query: r.query,
     lastCheckedAt: r.lastCheckedAt,
     lastResultCount: r.lastResultCount,
-    seenCount: db.select().from(schema.watchedSearchSeen).where(eq(schema.watchedSearchSeen.searchId, r.id)).all().length,
+    seenCount: seenCounts.get(r.id) ?? 0,
     lastResults: decodeLastResults(r.lastResultsJson),
   }));
 }
@@ -84,21 +112,17 @@ export function listWatchedSearches(): WatchedSearch[] {
 /** Add a watch; an identical source+query pair is returned as-is (idempotent). */
 export function addWatchedSearch(source: DoujinSource, query: string): WatchedSearch {
   const db = getDb();
-  const existing = db.select().from(schema.watchedSearches).where(eq(schema.watchedSearches.source, source)).all().find((r) => r.query === query);
-  if (existing) {
-    return listWatchedSearches().find((s) => s.id === existing.id) ?? {
-      id: existing.id,
-      source: existing.source,
-      query: existing.query,
-      lastCheckedAt: existing.lastCheckedAt,
-      lastResultCount: existing.lastResultCount,
-      seenCount: 0,
-      lastResults: [],
-    };
-  }
+  // Point query on the unique (source, query) pair instead of pulling every
+  // watch row and .find()-ing twice over.
+  const existing = db
+    .select()
+    .from(schema.watchedSearches)
+    .where(and(eq(schema.watchedSearches.source, source), eq(schema.watchedSearches.query, query)))
+    .get();
+  if (existing) return rowToWatch(existing);
   const res = db.insert(schema.watchedSearches).values({ source, query }).run();
-  const id = Number(res.lastInsertRowid);
-  return listWatchedSearches().find((s) => s.id === id)!;
+  const row = db.select().from(schema.watchedSearches).where(eq(schema.watchedSearches.id, Number(res.lastInsertRowid))).get()!;
+  return rowToWatch(row);
 }
 
 /** Remove a watch and its seen history. Returns false when the id is unknown. */
@@ -161,7 +185,9 @@ export async function checkWatchedSearches(
     const firstRun = s.lastCheckedAt === null;
     const seenIds = new Set(
       getDb()
-        .select()
+        // Only the gallery id is needed; pulling full seen rows (timestamps,
+        // source) just to build a Set of ids is wasted I/O.
+        .select({ galleryId: schema.watchedSearchSeen.galleryId })
         .from(schema.watchedSearchSeen)
         .where(eq(schema.watchedSearchSeen.searchId, s.id))
         .all()
@@ -169,17 +195,6 @@ export async function checkWatchedSearches(
     );
     const newIds = diffSeenResults(firstRun, ids, seenIds);
     result.newGalleries += newIds.length;
-
-    // Remember every current result so a gallery that leaves and re-enters the
-    // top-N is not reported twice.
-    for (const id of ids) {
-      getDb()
-        .insert(schema.watchedSearchSeen)
-        .values({ searchId: s.id, source: s.source, galleryId: id })
-        .onConflictDoNothing()
-        .run();
-    }
-
     if (!firstRun && newIds.length > 0) {
       const label = SOURCE_LABELS[s.source] ?? s.source;
       // Markdown links render as clean clickable titles in Discord; raw URLs cluttered the embed.
@@ -218,13 +233,26 @@ export async function checkWatchedSearches(
           };
         });
     const lastResultsJson = firstRun || lastResults.length > 0 ? JSON.stringify(lastResults) : null;
-
-    pruneSeen(s.id);
-    getDb()
-      .update(schema.watchedSearches)
-      .set({ lastCheckedAt: new Date().toISOString(), lastResultCount: ids.length, ...(lastResultsJson !== null ? { lastResultsJson } : {}) })
-      .where(eq(schema.watchedSearches.id, s.id))
-      .run();
+    // One transaction per watch: the seen inserts, the retention prune, and the
+    // last-checked bookkeeping land together or not at all. The seen rows go in
+    // as one multi-row insert; the unique index idx_watched_search_seen_unique
+    // on (search_id, source, gallery_id) keeps the dedupe instead of a per-row
+    // ON CONFLICT loop (up to 50 statements per watch per check before).
+    getDb().transaction((tx) => {
+      // Remember every current result so a gallery that leaves and re-enters the
+      // top-N is not reported twice.
+      if (ids.length > 0) {
+        tx.insert(schema.watchedSearchSeen)
+          .values(ids.map((id) => ({ searchId: s.id, source: s.source, galleryId: id })))
+          .onConflictDoNothing()
+          .run();
+      }
+      pruneSeen(s.id, tx);
+      tx.update(schema.watchedSearches)
+        .set({ lastCheckedAt: new Date().toISOString(), lastResultCount: ids.length, ...(lastResultsJson !== null ? { lastResultsJson } : {}) })
+        .where(eq(schema.watchedSearches.id, s.id))
+        .run();
+    });
     log(firstRun ? 'info' : 'success', `Watch ${s.id} "${s.query}": ${ids.length} result(s), ${newIds.length} new${firstRun ? ' (seeded)' : ''}`);
   }
   onProgress?.(searches.length, searches.length);
@@ -232,13 +260,18 @@ export async function checkWatchedSearches(
 }
 
 /** Keep the seen table bounded: drop the oldest rows beyond the retention cap. */
-function pruneSeen(searchId: number): void {
-  const db = getDb();
-  const count = db.select().from(schema.watchedSearchSeen).where(eq(schema.watchedSearchSeen.searchId, searchId)).all().length;
+function pruneSeen(searchId: number, db: Db): void {
+  // COUNT instead of loading every seen row just to call .all().length.
+  const counted = db
+    .select({ n: sql<number>`count(*)` })
+    .from(schema.watchedSearchSeen)
+    .where(eq(schema.watchedSearchSeen.searchId, searchId))
+    .get();
+  const count = Number(counted?.n ?? 0);
   if (count <= SEEN_RETENTION) return;
   const excess = count - SEEN_PRUNE_TO;
   const oldest = db
-    .select()
+    .select({ id: schema.watchedSearchSeen.id })
     .from(schema.watchedSearchSeen)
     .where(eq(schema.watchedSearchSeen.searchId, searchId))
     .orderBy(asc(schema.watchedSearchSeen.id))

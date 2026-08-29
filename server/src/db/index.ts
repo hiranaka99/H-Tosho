@@ -51,6 +51,9 @@ export function initDb(): Db {
   migrateLegacyDatabases(dbFile);
   const sqlite = new Database(dbFile);
   sqlite.pragma('journal_mode = WAL');
+  // Standard WAL pairing: crash-safe, only a power loss may lose the last
+  // transactions.
+  sqlite.pragma('synchronous = NORMAL');
   sqlite.pragma('foreign_keys = ON');
   // Tolerate brief lock contention from concurrent readers (SSE snapshots, UI polls).
   sqlite.pragma('busy_timeout = 5000');
@@ -413,6 +416,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_watched_search_seen_unique ON watched_sear
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_tags_unique ON gallery_tags(source, gallery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_owned_galleries_unique ON owned_galleries(source, gallery_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_download_queue_claim ON download_queue(status, priority);
+CREATE INDEX IF NOT EXISTS idx_jobs_finished_at ON jobs(finished_at);
+CREATE INDEX IF NOT EXISTS idx_sync_history_created ON sync_history(created_at);
 `;
 
 export function getDb(): Db {

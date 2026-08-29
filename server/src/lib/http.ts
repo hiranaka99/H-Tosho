@@ -1,3 +1,5 @@
+import * as fsp from 'node:fs/promises';
+
 /**
  * Small shared HTTP helpers for outbound calls to providers & Kavita.
  */
@@ -5,6 +7,8 @@
 export interface HttpResponse<T = unknown> {
   status: number;
   data: T;
+  /** Response headers (exposed so retry wrappers can read Retry-After). */
+  headers?: Headers;
 }
 
 export interface FetchJsonOptions {
@@ -43,7 +47,7 @@ export async function fetchJson<T = unknown>(
       // credentials in it.
       throw new Error(`HTTP ${res.status} from ${url.split('?')[0]}`);
     }
-    return { status: res.status, data };
+    return { status: res.status, data, headers: res.headers };
   } finally {
     clearTimeout(timer);
   }
@@ -135,22 +139,138 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Retry helper with exponential backoff. */
-export async function retry<T>(
-  fn: () => Promise<T>,
+const RETRYABLE_STATUS: Record<number, true> = { 429: true, 502: true, 503: true, 504: true };
+
+/** Parse a Retry-After header (delay seconds or HTTP date) into ms; null when absent/invalid. */
+function retryAfterMs(headers: Headers | undefined): number | null {
+  const raw = headers?.get('retry-after');
+  if (!raw) return null;
+  const secs = Number(raw);
+  if (Number.isFinite(secs)) return Math.max(0, Math.min(secs * 1000, 15_000));
+  const date = Date.parse(raw);
+  return Number.isNaN(date) ? null : Math.max(0, Math.min(date - Date.now(), 15_000));
+}
+
+/**
+ * fetchJson with retry on transient upstream failures: HTTP 429/502/503/504 and
+ * network errors. Honors Retry-After when present, otherwise exponential
+ * backoff. Non-retryable failures and exhausted attempts behave exactly like
+ * fetchJson (throw unless opts.raw).
+ */
+export async function fetchJsonRetry<T = unknown>(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 15_000,
+  opts: FetchJsonOptions = {},
   attempts = 3,
-  baseDelayMs = 500,
-): Promise<T> {
-  let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
+): Promise<HttpResponse<T>> {
+  for (let attempt = 1; ; attempt++) {
+    let res: HttpResponse<T>;
     try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (i < attempts - 1) {
-        await sleep(baseDelayMs * 2 ** i);
+      // raw:true so 429/5xx statuses reach the retry check instead of throwing.
+      res = await fetchJson<T>(url, init, timeoutMs, { ...opts, raw: true });
+    } catch (e) {
+      if (attempt >= attempts) throw e;
+      await sleep(Math.min(500 * 2 ** (attempt - 1), 4000));
+      continue;
+    }
+    if (RETRYABLE_STATUS[res.status] && attempt < attempts) {
+      await sleep(retryAfterMs(res.headers) ?? Math.min(500 * 2 ** (attempt - 1), 4000));
+      continue;
+    }
+    if (!(res.status >= 200 && res.status < 300) && !opts.raw) {
+      throw new Error(`HTTP ${res.status} from ${url.split('?')[0]}`);
+    }
+    return res;
+  }
+}
+
+/**
+ * Map over items with at most `limit` fn calls in flight; results keep input
+ * order. Used to bound parallelism for network fan-out and disk moves.
+ */
+export async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * Fetch a URL straight to a file, streaming the body to disk so page-sized
+ * images never transit RAM twice (fetchBufferStreaming buffers the whole
+ * body). Writes to `destPath + '.part'` and atomically renames on success so
+ * consumers only ever see complete files; the .part file is removed on
+ * failure. `timeoutMs` is an IDLE timeout, identical to fetchBufferStreaming.
+ * Returns the number of bytes written.
+ */
+export async function fetchToFileStreaming(
+  url: string,
+  init: RequestInit,
+  destPath: string,
+  handlers: StreamProgressHandlers = {},
+  timeoutMs = 30_000,
+): Promise<number> {
+  const controller = new AbortController();
+  let timer = setTimeout(() => controller.abort(), timeoutMs);
+  const armTimer = (): void => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+  };
+  const partPath = `${destPath}.part`;
+  const fh = await fsp.open(partPath, 'w');
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal, redirect: 'follow' });
+    if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
+    armTimer(); // headers received — start the idle window for the body
+    const lengthHeader = res.headers.get('content-length');
+    const totalBytes = lengthHeader ? Number(lengthHeader) || null : null;
+    handlers.onAttemptStart?.();
+
+    interface StreamReader {
+      read(): Promise<{ done: boolean; value?: Uint8Array }>;
+    }
+    const body = res.body as unknown as { getReader?: () => StreamReader } | null;
+    if (!body || typeof body.getReader !== 'function') {
+      const buf = Buffer.from(await res.arrayBuffer());
+      await fh.write(buf);
+      handlers.onProgress?.(buf.length, totalBytes ?? buf.length);
+      await fh.close();
+      await fsp.rename(partPath, destPath);
+      return buf.length;
+    }
+
+    const reader = body.getReader();
+    let written = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        armTimer(); // bytes arrived — reset the idle window
+        await fh.write(value);
+        written += value.byteLength;
+        handlers.onProgress?.(written, totalBytes);
       }
     }
+    await fh.close();
+    await fsp.rename(partPath, destPath);
+    return written;
+  } catch (e) {
+    await fh.close().catch(() => {});
+    await fsp.unlink(partPath).catch(() => {});
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  throw lastErr;
 }

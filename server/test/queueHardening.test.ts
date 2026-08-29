@@ -259,5 +259,11 @@ test('removing a task deletes its scratch directory', async () => {
 
   assert.ok(queue.remove(id));
   assert.equal(queue.get(id), null);
+  // remove() deletes the scratch dir with a fire-and-forget fs.promises.rm —
+  // no event or promise is exposed to await, so poll the real filesystem
+  // briefly (deterministic control is not possible here).
+  for (let i = 0; i < 100 && fs.existsSync(tdir); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   assert.ok(!fs.existsSync(tdir));
 });

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, getTmpDir, schema } from '../db/index.js';
 import { pathContains } from '../lib/cbz.js';
-import { fetchBufferStreaming, sleep, type StreamProgressHandlers } from '../lib/http.js';
+import { fetchToFileStreaming, mapLimit, sleep, type StreamProgressHandlers } from '../lib/http.js';
 import { generateComicInfoXml } from './comicinfo.js';
 import { buildZipFromFiles } from './zip.js';
 import { extFromUrl, padPage, sanitizeFilename } from './util.js';
@@ -50,19 +50,26 @@ export function isTransientError(err: unknown): boolean {
 }
 
 /**
- * Stream a URL into a Buffer, retrying transient failures (429/5xx/network)
+ * Stream a URL straight to a file, retrying transient failures (429/5xx/network)
  * with growing backoff. Non-transient errors are rethrown immediately so the
  * caller can fall through to a per-page fallback without needless retries.
  * The schedule (~63s of waiting total) is long enough to ride out typical CDN
- * 503 storms, which clear within seconds to a couple of minutes.
+ * 503 storms, which clear within seconds to a couple of minutes. Pages land
+ * complete-or-absent (`.part` + atomic rename), so a crash never leaves a
+ * truncated file under the bare name the resume scan stats.
  */
-async function fetchPageWithRetry(url: string, headers: Record<string, string>, handlers: StreamProgressHandlers): Promise<Buffer> {
+async function fetchPageToFileWithRetry(
+  url: string,
+  headers: Record<string, string>,
+  destPath: string,
+  handlers: StreamProgressHandlers,
+): Promise<number> {
   const attempts = 5;
   const delays = [2000, 6000, 15000, 40000];
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
-      return await fetchBufferStreaming(url, { headers }, handlers);
+      return await fetchToFileStreaming(url, { headers }, destPath, handlers);
     } catch (err) {
       lastErr = err;
       if (!isTransientError(err)) throw err;
@@ -199,7 +206,16 @@ function rowToTask(row: DownloadRow): DownloadTask {
 /** A cancellation token checked between each image request. */
 interface RunContext {
   cancelled: boolean;
-  pauseSignal: { paused: boolean };
+  pauseSignal: {
+    paused: boolean;
+    /** Resolvers of workers parked on the pause gate; resume()/cancel() settle them. */
+    waiters: (() => void)[];
+  };
+}
+
+/** Wake every worker parked on the pause gate (resume, cancel, and run teardown). */
+function wakePaused(run: RunContext): void {
+  for (const w of run.pauseSignal.waiters.splice(0)) w();
 }
 
 /** Volatile progress fields that update faster than the throttled DB write. */
@@ -413,6 +429,7 @@ export class DownloadQueue {
         // wake it in place instead of re-queueing (which would start a second
         // download of the same gallery and leak the first run's concurrency slot).
         run.pauseSignal.paused = false;
+        wakePaused(run);
         this.setStatus(id, 'downloading');
         return true;
       }
@@ -429,7 +446,11 @@ export class DownloadQueue {
     if (!task) return false;
     if (task.status === 'queued' || task.status === 'downloading' || task.status === 'paused') {
       const run = this.activeRuns.get(id);
-      if (run) run.cancelled = true;
+      if (run) {
+        run.cancelled = true;
+        // A worker parked on the pause gate must exit promptly.
+        wakePaused(run);
+      }
       getDb().update(schema.downloadQueue).set({ errorMessage: 'Cancelled by user' }).where(eq(schema.downloadQueue.id, id)).run();
       this.setStatus(id, 'failed');
       return true;
@@ -503,8 +524,12 @@ export class DownloadQueue {
       clearTimeout(pending);
       this.retryTimers.delete(id);
     }
-    // The task is gone for good: its scratch space goes with it.
-    fs.rmSync(path.join(getTmpDir(), 'downloads', String(id)), { recursive: true, force: true });
+    // The task is gone for good: its scratch space goes with it. Fire-and-forget
+    // so the API call doesn't block on a large recursive delete; the row is
+    // already deleted, so a failure can only be logged, not reported per-task.
+    void fs.promises
+      .rm(path.join(getTmpDir(), 'downloads', String(id)), { recursive: true, force: true })
+      .catch((err) => console.warn('[h-tosho] failed to remove download scratch dir:', err));
     return true;
   }
 
@@ -605,7 +630,7 @@ export class DownloadQueue {
   // ---------------- Execution ----------------
 
   private async process(row: DownloadRow): Promise<void> {
-    const ctx: RunContext = { cancelled: false, pauseSignal: { paused: false } };
+    const ctx: RunContext = { cancelled: false, pauseSignal: { paused: false, waiters: [] } };
     this.activeRuns.set(row.id, ctx);
     // Per-task scratch space: pages stream to disk here so only the in-flight
     // images (bounded by maxImageConcurrency) live in RAM.
@@ -636,12 +661,14 @@ export class DownloadQueue {
       const outputPath = await this.writeOutput(row, gallery, images, settings);
       getDb().update(schema.downloadQueue).set({ outputPath }).where(eq(schema.downloadQueue.id, row.id)).run();
 
-      this.setStatus(row.id, 'completed');
-      this.updateProgress(row.id, { progressCurrent: total, progressTotal: total, speed: 0, currentFile: null }, { force: true });
-
       // The output is final: the scratch pages are no longer needed. On failure
       // the tmpDir is deliberately kept so a retry can resume from partial data.
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      // Cleanup completes before the 'completed' status is published so nothing
+      // observes a completed task whose scratch dir is still on disk.
+      await fs.promises.rm(tmpDir, { recursive: true, force: true });
+
+      this.setStatus(row.id, 'completed');
+      this.updateProgress(row.id, { progressCurrent: total, progressTotal: total, speed: 0, currentFile: null }, { force: true });
 
       // Optional Kavita auto-sync.
       if (settings.autoSyncKavita) await this.triggerKavitaScan(outputPath);
@@ -659,6 +686,8 @@ export class DownloadQueue {
       this.live.delete(row.id);
       this.lastBroadcast.delete(row.id);
       this.lastWrite.delete(row.id);
+      // Defensive: no worker may stay parked on the pause gate after the run ends.
+      wakePaused(ctx);
       this.activeRuns.delete(row.id);
       const final = this.readRow(row.id);
       if (final) this.broadcast(final);
@@ -686,10 +715,13 @@ export class DownloadQueue {
     // at index 0 — parallel workers can leave interior holes, so anything past
     // the first missing file is re-downloaded (overwriting a stale extra file
     // is harmless). Valid files become part of the result without a re-fetch.
+    // Pages land complete-or-absent (fetch writes to `i.part`, atomic rename to
+    // `i`), so an interrupted fetch never shows up here — leftover `.part`
+    // files are simply never counted.
     const resumedSizes = new Map<number, number>();
     for (let i = 0; i < total; i++) {
       try {
-        const st = fs.statSync(path.join(tmpDir, String(i)));
+        const st = await fs.promises.stat(path.join(tmpDir, String(i)));
         if (!st.isFile() || st.size <= 0) break;
         resumedSizes.set(i, st.size);
       } catch {
@@ -805,8 +837,10 @@ export class DownloadQueue {
       while (true) {
         if (ctx.cancelled) throw new Error('Cancelled by user');
         if (ctx.pauseSignal.paused) {
-          // Wait until resumed or cancelled.
-          await sleep(250);
+          // Park until resume()/cancel() settles the pause gate — event-driven,
+          // so a paused run costs no polling timers and wakes the instant it
+          // is resumed or cancelled.
+          await new Promise<void>((resolve) => ctx.pauseSignal.waiters.push(resolve));
           continue;
         }
         const i = nextIndex++;
@@ -815,7 +849,11 @@ export class DownloadQueue {
         // state right before fetching, so long downloads survive base-path
         // rotation. If both primary and fallback fail, force a routing-table
         // refresh (the CDN may have rotated) and try once more before giving up.
-        let data: Buffer | null = null;
+        // Each candidate streams straight to the page's final temp name via
+        // `.part` + atomic rename, so only `concurrency` images transit RAM and
+        // the resume scan never sees a truncated page.
+        const filePath = path.join(tmpDir, String(i));
+        let size: number | null = null;
         let usedUrl: string | null = null;
         let lastErr: unknown = null;
         for (const force of [false, true]) {
@@ -823,7 +861,7 @@ export class DownloadQueue {
           const candidates = await resolvePageCandidates(gallery, i, force);
           for (const url of candidates) {
             try {
-              data = await fetchPageWithRetry(url, pageHeaders, {
+              size = await fetchPageToFileWithRetry(url, pageHeaders, filePath, {
                 onAttemptStart: () => {
                   bs.inflight.set(i, 0);
                 },
@@ -835,15 +873,12 @@ export class DownloadQueue {
               lastErr = err;
             }
           }
-          if (data) break;
+          if (size != null) break;
         }
-        if (!data) throw lastErr instanceof Error ? lastErr : new Error(`Failed to download page ${i + 1}`);
+        if (size == null) throw lastErr instanceof Error ? lastErr : new Error(`Failed to download page ${i + 1}`);
         const name = `${padPage(i + 1, total)}.${extFromUrl(usedUrl ?? pages[i])}`;
-        // Persist the page immediately so only `concurrency` images live in RAM.
-        const filePath = path.join(tmpDir, String(i));
-        await fs.promises.writeFile(filePath, data);
         out[i] = { name, path: filePath };
-        onPageDone(i, data.length);
+        onPageDone(i, size);
         if (delay > 0) await sleep(delay);
       }
     };
@@ -892,9 +927,10 @@ export class DownloadQueue {
     const comicInfo = generateComicInfoXml(gallery, this.mergeOptions(row));
 
     if (row.outputFormat === 'folder') {
-      for (const img of images) {
-        await moveIntoPlace(img.path, path.join(dir, img.name));
-      }
+      // Page moves are independent (unique destinations, no shared ordering
+      // state), so run a few at a time. mapLimit rethrows the first failure,
+      // keeping the old semantics: one failed page fails the whole write.
+      await mapLimit(images, 4, (img) => moveIntoPlace(img.path, path.join(dir, img.name)));
       fs.writeFileSync(path.join(dir, 'ComicInfo.xml'), comicInfo);
       return dir;
     }

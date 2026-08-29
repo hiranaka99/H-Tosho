@@ -10,7 +10,7 @@ import type { SeriesMetadata, VolumeCover } from '../providers/types.js';
 import type { KavitaVolume, KavitaSeriesMetadataDto } from '../kavita/types.js';
 import { fetchProviderMetadata } from '../match/autoMatcher.js';
 import { listCbzFiles, resolveSeriesHostDir, setSeriesTitleInCbzFiles } from '../lib/cbz.js';
-import { sleep } from '../lib/http.js';
+import { mapLimit, sleep } from '../lib/http.js';
 import { invalidateSeriesArtists } from './seriesArtists.js';
 import { getKavitaConnection, getNotificationSettings, getCredentialMap, getDownloaderSettings } from './settings.js';
 import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
@@ -188,10 +188,11 @@ export async function applyToKavita(
   }
   // Merge provider tags with the series' existing Kavita tags instead of
   // replacing them (Kavita's metadata update is a full-field write).
+  let currentMetadata: KavitaSeriesMetadataDto | undefined;
   if (payload.tags) {
     try {
-      const current = await client.getSeriesMetadata(seriesId);
-      payload.tags = mergeTagLists((current.tags ?? []).map((t) => t.title).filter((t): t is string => Boolean(t)), payload.tags);
+      currentMetadata = await client.getSeriesMetadata(seriesId);
+      payload.tags = mergeTagLists((currentMetadata.tags ?? []).map((t) => t.title).filter((t): t is string => Boolean(t)), payload.tags);
     } catch {
       /* series without a metadata row yet — push provider tags as-is */
     }
@@ -199,7 +200,7 @@ export async function applyToKavita(
   const fields = Object.keys(payload).filter((k) => (payload as Record<string, unknown>)[k] !== undefined);
   if (fields.length) {
     try {
-      await client.updateSeriesMetadata(seriesId, payload);
+      await client.updateSeriesMetadata(seriesId, payload, { metadata: currentMetadata });
       pushed.push(...fields);
     } catch (err) {
       errors.push(`metadata: ${err instanceof Error ? err.message : String(err)}`);
@@ -351,9 +352,10 @@ export async function applyVolumeCovers(
   } catch (err) {
     return { updated: 0, errors: [`volumes: ${err instanceof Error ? err.message : String(err)}`] };
   }
-  const errors: string[] = [];
-  let updated = 0;
-  for (const assignment of matchVolumeCovers(volumes, covers)) {
+  // Up to three covers in flight; each apply is up to two network ops and
+  // failures are collected per volume without aborting the rest. mapLimit
+  // keeps the final error list in volume order.
+  const results = await mapLimit(matchVolumeCovers(volumes, covers), 3, async (assignment) => {
     try {
       await applyCover(
         client,
@@ -361,12 +363,13 @@ export async function applyVolumeCovers(
         (url) => client.updateVolumeCoverFromUrl(assignment.volumeId, url, false),
         (image) => client.updateVolumeCover(assignment.volumeId, image, false),
       );
-      updated += 1;
+      return null;
     } catch (err) {
-      errors.push(`vol ${assignment.number}: ${err instanceof Error ? err.message : String(err)}`);
+      return `vol ${assignment.number}: ${err instanceof Error ? err.message : String(err)}`;
     }
-  }
-  return { updated, errors };
+  });
+  const errors = results.filter((error): error is string => error !== null);
+  return { updated: results.length - errors.length, errors };
 }
 
 /**
@@ -400,7 +403,13 @@ export async function enqueueMatchForNewSeries(
   seenIds: ReadonlySet<number>,
 ): Promise<number[]> {
   const series = await client.getSeries(libraryId);
-  const known = new Set(getDb().select().from(schema.seriesMatches).all().map((r) => r.kavitaSeriesId));
+  const known = new Set(
+    getDb()
+      .select({ kavitaSeriesId: schema.seriesMatches.kavitaSeriesId })
+      .from(schema.seriesMatches)
+      .all()
+      .map((r) => r.kavitaSeriesId),
+  );
   const fresh = series.filter((s) => !seenIds.has(s.id) && !known.has(s.id)).map((s) => s.id);
   if (fresh.length > 0) jobQueue.enqueue('match-series', { seriesIds: fresh });
   return fresh;
