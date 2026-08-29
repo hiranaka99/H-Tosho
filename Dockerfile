@@ -5,10 +5,15 @@ FROM node:22-slim AS build
 WORKDIR /app
 
 # Install workspace dependencies first for layer caching.
+# npm 12 (upgraded from the node:22-bundled 10.x) gates dependency install
+# scripts by default; the "allowScripts" policy in package.json explicitly
+# denies them, so better-sqlite3 v13 uses the N-API prebuilds shipped in its
+# tarball instead of compiling from source. This stage needs no python or
+# build tools. `npm ci` installs strictly from the lockfile.
 COPY package.json package-lock.json* ./
 COPY server/package.json ./server/
 COPY web/package.json ./web/
-RUN npm install
+RUN npm install -g npm@12 && npm ci
 
 # Build the frontend into web/dist.
 COPY web ./web

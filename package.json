@@ -1,11 +1,17 @@
 {
   "name": "h-tosho",
   "private": true,
+  "type": "module",
   "description": "Metadata fetcher & manager for Kavita (AniList, MangaUpdates, MangaDex, MyAnimeList)",
   "workspaces": [
     "server",
     "web"
   ],
+  "allowScripts": {
+    "better-sqlite3@13.0.3": false,
+    "esbuild@0.28.2": false,
+    "esbuild@0.25.12": false
+  },
   "scripts": {
     "dev": "concurrently -k -n server,web -c cyan,magenta \"npm run dev --workspace @h-tosho/server\" \"npm run dev --workspace @h-tosho/web\"",
     "build": "npm run build --workspace @h-tosho/web && npm run build --workspace @h-tosho/server",
