@@ -5,7 +5,9 @@ const API_URL = 'https://graphql.anilist.co';
 
 interface AniListMedia {
   id: number;
-  title: { romaji?: string; english?: string; native?: string };
+  title: { romaji?: string; english?: string; native?: string; userPreferred?: string };
+  /** Alternate titles as entered by the community — may carry stray whitespace. */
+  synonyms?: string[] | null;
   format: string;
   coverImage: { extraLarge?: string; large?: string };
   description: string;
@@ -94,7 +96,7 @@ class AniListProvider extends BaseProvider {
       `query ($id: Int) {
         Media(id: $id) {
           id
-          title { romaji english native }
+          title { romaji english native userPreferred }
           format
           coverImage { extraLarge large }
           description
@@ -104,6 +106,7 @@ class AniListProvider extends BaseProvider {
           tags { name }
           studios { nodes { name } }
           status
+          synonyms
         }
       }`,
       { id: Number(providerSeriesId) },
@@ -116,10 +119,23 @@ class AniListProvider extends BaseProvider {
       ? `${date.year}-${String(date.month ?? 1).padStart(2, '0')}-${String(date.day ?? 1).padStart(2, '0')}`
       : undefined;
 
+    // Every known title (main fields + community synonyms) as plain strings —
+    // the same convention as MangaDex's titleVariants: the identify dialog
+    // offers each one for the ComicInfo.Series value, and apply validates
+    // selectedTitle against this list. Synonyms may carry stray whitespace.
+    const title = m.title.romaji || m.title.english || m.title.native || 'Unknown';
+    const titleOptions = [...new Set(
+      [m.title.romaji, m.title.english, m.title.native, m.title.userPreferred, ...(m.synonyms ?? [])]
+        .filter((v): v is string => typeof v === 'string' && v.trim() !== '')
+        .map((v) => v.trim()),
+    )];
+    if (!titleOptions.includes(title)) titleOptions.unshift(title);
+
     return {
       providerId: this.id,
       providerSeriesId: String(m.id),
-      title: m.title.romaji || m.title.english || m.title.native || 'Unknown',
+      title,
+      titleOptions,
       year: date?.year,
       releaseDate,
       summary: m.description?.replace(/<[^>]*>/g, '').trim(),

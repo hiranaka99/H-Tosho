@@ -41,14 +41,17 @@ const MAX_DESCRIPTION_TAGS = 60;
  * The comma-separated value portion of a tag-list line, or null when the
  * line is not one. Three observed formats: markdown table rows
  * (`|MALE| glasses, harem`), bold labels (`**FEMALE** ahegao, big breasts`),
- * and plain `Tags:` lines. Only lines with a known namespace parse as tags,
+ * and plain `Tags:` lines. Namespace cells may carry uploader decoration —
+ * leading dash bullets, bold markers, trailing colons (`|-**MALE**: | ...`)
+ * — which is tolerated before the namespace check, so decorated rows parse
+ * like their plain ones. Only lines with a known namespace parse as tags,
  * so prose is never treated as tags. [ \t]* (not \s*) keeps each match on
  * its own line so a bare label can't swallow the next one.
  */
 function tagLineValue(line: string): string | null {
-  let m = line.match(/^[ \t]*\|[ \t]*([A-Za-z]+)[ \t]*\|[ \t]*(.+?)[ \t]*$/);
+  let m = line.match(/^[ \t]*\|[ \t]*(?:-[ \t]*)?(?:\*\*)?([A-Za-z]+)(?:\*\*)?[ \t]*:?[ \t]*\|[ \t]*(.+?)[ \t]*$/);
   if (m) return DESCRIPTION_TAG_NAMESPACES.has(m[1].toUpperCase()) ? m[2] : null;
-  m = line.match(/^[ \t]*\*\*([A-Za-z]+)\*\*[ \t]*(.+?)[ \t]*$/);
+  m = line.match(/^[ \t]*\*\*([A-Za-z]+)\*\*[ \t]*:?[ \t]*(.+?)[ \t]*$/);
   if (m) return DESCRIPTION_TAG_NAMESPACES.has(m[1].toUpperCase()) ? m[2] : null;
   m = line.match(/^[ \t]*tags?[ \t]*:[ \t]*(.+?)[ \t]*$/i);
   return m ? m[1] : null;

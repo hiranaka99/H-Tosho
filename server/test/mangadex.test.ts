@@ -373,6 +373,31 @@ describe('parseDescriptionTags', () => {
     assert.deepEqual(parseDescriptionTags(undefined), []);
     assert.deepEqual(parseDescriptionTags(''), []);
   });
+
+  it('extracts table rows with decorated namespace cells (captured Imouto description shape)', () => {
+    const desc = [
+      '1. Instead of her boyfriend...',
+      '2. Since you asked for a video...',
+      '',
+      '| Namespace | Tags |',
+      '| :- | :- |',
+      '|-**MALE**: | bondage, cheating, mouth mask, orgasm denial, sole male',
+      '|-**FEMALE**: | ahegao, anal, big breasts, blowjob, cheating, cunnilingus',
+      '|-**MIXED** : | ffm threesome, group, incest',
+      '|-**OTHER**: | story arc, tankoubon',
+    ].join('\n');
+    assert.deepEqual(parseDescriptionTags(desc), [
+      'bondage', 'cheating', 'mouth mask', 'orgasm denial', 'sole male',
+      'ahegao', 'anal', 'big breasts', 'blowjob', 'cunnilingus',
+      'ffm threesome', 'group', 'incest',
+      'story arc', 'tankoubon',
+    ]);
+  });
+
+  it('extracts bold-label lines with a trailing colon and ignores decorated unknown namespaces', () => {
+    assert.deepEqual(parseDescriptionTags('**FEMALE**: ahegao, anal'), ['ahegao', 'anal']);
+    assert.deepEqual(parseDescriptionTags('|-**NOTE**: | hello, world'), []);
+  });
 });
 
 describe('stripDescriptionTagLines', () => {
@@ -418,6 +443,23 @@ describe('stripDescriptionTagLines', () => {
       '**Note:** not a tag block.',
     ].join('\n');
     assert.equal(stripDescriptionTagLines(desc), undefined);
+  });
+
+  it('removes decorated-namespace table blocks, keeping the prose above them', () => {
+    const desc = [
+      '1. Instead of her boyfriend...',
+      '2. Since you asked for a video...',
+      '',
+      '| Namespace | Tags |',
+      '| :- | :- |',
+      '|-**MALE**: | bondage, cheating',
+      '|-**FEMALE**: | ahegao, anal',
+    ].join('\n');
+    assert.equal(stripDescriptionTagLines(desc), '1. Instead of her boyfriend...\n2. Since you asked for a video...');
+  });
+
+  it('keeps decorated-namespace table rows whose namespace is unknown', () => {
+    assert.equal(stripDescriptionTagLines('|-**NOTE**: | hello, world'), undefined);
   });
 });
 

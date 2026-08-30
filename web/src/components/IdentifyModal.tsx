@@ -584,7 +584,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                     <span className="font-medium">{selected.title}</span>
                     <span className="text-xs text-muted">{Math.round(selected.score * 100)}% match</span>
                   </div>
-                  {selected.providerId === 'mangadex' && (preview.data?.titleOptions?.length ?? 0) > 1 && (
+                  {(preview.data?.titleOptions?.length ?? 0) > 1 && (
                     <div className="rounded-md border border-border bg-surface-2 p-3">
                       <Label htmlFor="provider-title-choice">Series name written to every chapter's ComicInfo.xml</Label>
                       <select
@@ -657,7 +657,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                   <X className="h-4 w-4" /> Cancel
                 </Button>
                 <Button
-                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: selected.providerId === 'mangadex' ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: selected.score })}
+                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: selected.score })}
                   disabled={!selected || apply.isPending}
                 >
                   {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} Apply & Sync to Kavita
