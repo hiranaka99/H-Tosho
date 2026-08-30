@@ -4,7 +4,7 @@ import { getDb, initDb, schema } from './db/index.js';
 import { createApp } from './app.js';
 import { jobQueue } from './jobs/queue.js';
 import { runJob } from './jobs/executor.js';
-import { getKavitaConnection, getPollIntervalHours, onPollIntervalChange } from './services/settings.js';
+import { getKavitaConnection, getPollIntervalHours, getWatchedSearchIntervalMinutes, onSettingChange } from './services/settings.js';
 import { countWatchedSearches } from './services/watchedSearches.js';
 import { downloadQueue } from './downloader/engine.js';
 
@@ -26,10 +26,8 @@ function main(): void {
   jobQueue.registerHandler(runJob);
   downloadQueue.start();
 
-// Watched doujin searches run on a fixed cadence independent of the series
-// scan interval, so release detection stays responsive at long scan intervals.
-const WATCHED_SEARCH_INTERVAL_MS = 15 * 60_000;
-
+// Watched doujin searches run on a configurable cadence independent of the
+// series scan interval, so release detection stays responsive at long scan intervals.
   let pollTimer: NodeJS.Timeout | undefined;
   function scheduleScan(): void {
     clearTimeout(pollTimer);
@@ -50,16 +48,20 @@ const WATCHED_SEARCH_INTERVAL_MS = 15 * 60_000;
   let watchedTimer: NodeJS.Timeout | undefined;
   function scheduleWatchedSearches(): void {
     clearTimeout(watchedTimer);
-    watchedTimer = setTimeout(async () => {
-      if (countWatchedSearches() > 0 && !jobQueue.active().some((j) => j.type === 'check-watched-searches')) {
-        jobQueue.enqueue('check-watched-searches', {});
-      }
-      scheduleWatchedSearches();
-    }, WATCHED_SEARCH_INTERVAL_MS);
-    watchedTimer.unref?.();
+    const intervalMinutes = getWatchedSearchIntervalMinutes();
+    if (intervalMinutes > 0) {
+      watchedTimer = setTimeout(async () => {
+        if (countWatchedSearches() > 0 && !jobQueue.active().some((j) => j.type === 'check-watched-searches')) {
+          jobQueue.enqueue('check-watched-searches', {});
+        }
+        scheduleWatchedSearches();
+      }, intervalMinutes * 60_000);
+      watchedTimer.unref?.();
+    }
   }
 
-  const unsubscribePollInterval = onPollIntervalChange(scheduleScan);
+  const unsubscribePollInterval = onSettingChange('poll-interval', scheduleScan);
+  const unsubscribeWatchedSearchInterval = onSettingChange('watched-search-interval', scheduleWatchedSearches);
   scheduleScan();
   scheduleWatchedSearches();
   const app = createApp();

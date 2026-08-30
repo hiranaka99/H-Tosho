@@ -19,7 +19,7 @@ initDb();
 const { fetchJson } = await import('../src/lib/http.js');
 const { isJobType, jobQueue } = await import('../src/jobs/queue.js');
 const { testNotification } = await import('../src/notify/dispatcher.js');
-const { getDownloaderSettings, getNotificationSettings, onPollIntervalChange, parseDownloaderSettings, parseNotificationSettings, setNotificationSettings, setPollIntervalHours } = await import('../src/services/settings.js');
+const { getDownloaderSettings, getNotificationSettings, onSettingChange, parseDownloaderSettings, parseNotificationSettings, setNotificationSettings, setPollIntervalHours, setWatchedSearchIntervalMinutes } = await import('../src/services/settings.js');
 const { anilistProvider } = await import('../src/providers/anilist.js');
 const { mediaRouter, mediaProxyUrl } = await import('../src/routes/media.js');
 const { enqueueMatchForNewSeries } = await import('../src/services/sync.js');
@@ -128,13 +128,19 @@ describe('downloader settings persistence', () => {
 });
 
 describe('runtime settings hooks', () => {
-  it('notifies the scheduler when the poll interval changes', () => {
-    let notifications = 0;
-    const unsubscribe = onPollIntervalChange(() => { notifications++; });
+  it('notifies schedulers when cadence settings change', () => {
+    let pollNotifications = 0;
+    let watchedNotifications = 0;
+    const unsubPoll = onSettingChange('poll-interval', () => { pollNotifications++; });
+    const unsubWatched = onSettingChange('watched-search-interval', () => { watchedNotifications++; });
     setPollIntervalHours(3);
-    unsubscribe();
+    setWatchedSearchIntervalMinutes(30);
+    unsubPoll();
+    unsubWatched();
     setPollIntervalHours(4);
-    assert.equal(notifications, 1);
+    setWatchedSearchIntervalMinutes(60);
+    assert.equal(pollNotifications, 1);
+    assert.equal(watchedNotifications, 1);
   });
 });
 

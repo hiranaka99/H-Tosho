@@ -243,16 +243,46 @@ export function setPollIntervalHours(hours: number): void {
     .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(hours) } })
     .run();
   settingsCache.delete('poll-interval');
-  for (const listener of pollIntervalListeners) listener();
+  notifySettingChange('poll-interval');
 }
 
-type PollIntervalListener = () => void;
-const pollIntervalListeners = new Set<PollIntervalListener>();
+const DEFAULT_WATCHED_SEARCH_INTERVAL_MINUTES = 15;
 
-/** Notify the runtime scheduler immediately when the configured cadence changes. */
-export function onPollIntervalChange(listener: PollIntervalListener): () => void {
-  pollIntervalListeners.add(listener);
-  return () => pollIntervalListeners.delete(listener);
+/** Interval (minutes) at which watched searches are re-checked. 0 disables auto-checks. */
+export function getWatchedSearchIntervalMinutes(): number {
+  return cachedSetting('watched-search-interval', (v) => v, () => {
+    const db = getDb();
+    const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'watchedSearchIntervalMinutes')).get();
+    if (!row) return DEFAULT_WATCHED_SEARCH_INTERVAL_MINUTES;
+    const parsed = Number(safeParseJson<unknown>(row.valueJson));
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_WATCHED_SEARCH_INTERVAL_MINUTES;
+  });
+}
+
+export function setWatchedSearchIntervalMinutes(minutes: number): void {
+  const db = getDb();
+  db.insert(schema.keyValueStore)
+    .values({ key: 'watchedSearchIntervalMinutes', valueJson: JSON.stringify(minutes) })
+    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(minutes) } })
+    .run();
+  settingsCache.delete('watched-search-interval');
+  notifySettingChange('watched-search-interval');
+}
+
+type SettingListener = () => void;
+const settingListeners = new Map<string, Set<SettingListener>>();
+
+/** Subscribe to a cached setting changing; returns an unsubscribe function. */
+export function onSettingChange(key: string, listener: SettingListener): () => void {
+  const listeners = settingListeners.get(key);
+  if (listeners) listeners.add(listener);
+  else settingListeners.set(key, new Set([listener]));
+  return () => settingListeners.get(key)?.delete(listener);
+}
+
+/** Notify the runtime schedulers immediately when a configured cadence changes. */
+function notifySettingChange(key: string): void {
+  for (const listener of settingListeners.get(key) ?? []) listener();
 }
 
 /** Notification delivery configuration. */

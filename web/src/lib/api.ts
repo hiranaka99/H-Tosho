@@ -107,6 +107,7 @@ export interface Settings {
     discord: { enabled: boolean; webhookUrl: string };
   };
   pollIntervalHours: number;
+  watchedSearchIntervalMinutes: number;
 }
 
 export interface Job {
@@ -464,6 +465,8 @@ export const api = {
   }),
   savePollInterval: (hours: number) =>
     request<{ ok: boolean }>('/settings/poll-interval', { method: 'PUT', body: JSON.stringify({ hours }) }),
+  saveWatchedSearchInterval: (minutes: number) =>
+    request<{ ok: boolean }>('/settings/watched-search-interval', { method: 'PUT', body: JSON.stringify({ minutes }) }),
 
   enqueue: (type: string, payload: Record<string, unknown> = {}) =>
     request<{ id: number }>('/jobs', { method: 'POST', body: JSON.stringify({ type, ...payload }) }),

@@ -19,6 +19,7 @@ import {
   getNotificationSettings,
   getPollIntervalHours,
   getProviderPriorities,
+  getWatchedSearchIntervalMinutes,
   parseNotificationSettings,
   getProviderSettings,
   setKavitaConnection,
@@ -26,6 +27,7 @@ import {
   setNotificationSettings,
   setPollIntervalHours,
   setProviderPriorities,
+  setWatchedSearchIntervalMinutes,
   setProviderSetting,
   providerOrderFor,
 } from '../services/settings.js';
@@ -529,6 +531,7 @@ api.get('/settings', (c) => {
     priorities: getProviderPriorities(),
     notifications: getNotificationSettings(),
     pollIntervalHours: getPollIntervalHours(),
+    watchedSearchIntervalMinutes: getWatchedSearchIntervalMinutes(),
   });
 });
 
@@ -558,6 +561,12 @@ api.put('/settings/notifications/test', async (c) => {
 api.put('/settings/poll-interval', async (c) => {
   const body = (await c.req.json()) as { hours: number };
   setPollIntervalHours(Math.max(0, Number(body.hours) || 0));
+  return c.json({ ok: true });
+});
+
+api.put('/settings/watched-search-interval', async (c) => {
+  const body = (await c.req.json()) as { minutes: number };
+  setWatchedSearchIntervalMinutes(Math.max(0, Number(body.minutes) || 0));
   return c.json({ ok: true });
 });
 

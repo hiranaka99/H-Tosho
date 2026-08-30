@@ -629,10 +629,30 @@ function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm }: {
  * refetches never re-render the rest of the page; the search tab's Watch
  * button shares the same cache key.
  */
+const WATCH_INTERVAL_OPTIONS = [
+  { minutes: 0, label: 'Off' },
+  { minutes: 5, label: '5 min' },
+  { minutes: 15, label: '15 min' },
+  { minutes: 30, label: '30 min' },
+  { minutes: 60, label: '1 hour' },
+  { minutes: 180, label: '3 hours' },
+  { minutes: 360, label: '6 hours' },
+  { minutes: 720, label: '12 hours' },
+  { minutes: 1440, label: '24 hours' },
+] as const;
+
+/** Human-readable cadence for the description copy; falls back to raw minutes. */
+function watchIntervalLabel(minutes: number): string {
+  return WATCH_INTERVAL_OPTIONS.find((o) => o.minutes === minutes)?.label ?? `${minutes} min`;
+}
+
 function WatchedTab() {
   const qc = useQueryClient();
   const watchesQuery = useQuery({ queryKey: ['watched-searches'], queryFn: api.watchedSearches, refetchInterval: 30_000 });
   const watches = watchesQuery.data;
+  const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.settings });
+  const intervalMinutes = settingsQuery.data?.watchedSearchIntervalMinutes ?? 15;
+  const [savingInterval, setSavingInterval] = React.useState(false);
   const [source, setSource] = React.useState<DoujinSource>('hitomi');
   const [query, setQuery] = React.useState('');
   const [adding, setAdding] = React.useState(false);
@@ -683,19 +703,45 @@ function WatchedTab() {
     }
   }
 
+  async function saveInterval(minutes: number) {
+    if (minutes === intervalMinutes || savingInterval) return;
+    setSavingInterval(true);
+    try {
+      await api.saveWatchedSearchInterval(minutes);
+      qc.invalidateQueries({ queryKey: ['settings'] });
+      toast({ tone: 'success', title: 'Check interval updated' });
+    } catch (e) {
+      void settingsQuery.refetch(); // snap the select back to the server value
+      toast({ tone: 'danger', title: 'Could not save check interval', description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setSavingInterval(false);
+    }
+  }
+
   return (
     <Card>
       <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
         <CardTitle className="flex items-center gap-2">
           <Star className="h-4 w-4" /> Watched searches
         </CardTitle>
-        <Button size="sm" variant="outline" onClick={checkNow} disabled={checking}>
-          {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Star className="h-3.5 w-3.5" />} Check now
-        </Button>
+        <div className="flex items-center gap-2">
+          <Select aria-label="Watched search check interval" value={String(intervalMinutes)} onChange={(e) => void saveInterval(Number(e.target.value))} disabled={savingInterval} className="h-8 w-32 shrink-0">
+            {WATCH_INTERVAL_OPTIONS.map((o) => (
+              <option key={o.minutes} value={o.minutes}>{o.label}</option>
+            ))}
+          </Select>
+          <Button size="sm" variant="outline" onClick={checkNow} disabled={checking}>
+            {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Star className="h-3.5 w-3.5" />} Check now
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         {watchesQuery.isError && <ErrorState title="Could not load watched searches" description={watchesQuery.error instanceof Error ? watchesQuery.error.message : String(watchesQuery.error)} onRetry={() => void watchesQuery.refetch()} />}
-        <p className="text-sm text-muted">Saved doujinshi searches re-run on every auto-scan cycle. New results ping Discord — the first run just records what already exists.</p>
+        {intervalMinutes > 0 ? (
+          <p className="text-sm text-muted">Checked automatically every {watchIntervalLabel(intervalMinutes)}. New results ping Discord — the first run just records what already exists.</p>
+        ) : (
+          <p className="text-sm text-muted">Auto-check is off — use Check now to run all watches. New results ping Discord; the first run just records what already exists.</p>
+        )}
         {watches && watches.length > 0 ? (
           <div className="flex flex-col gap-1.5">
             {watches.map((w) => (
