@@ -490,58 +490,84 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
 
 // ---------------- Queue row ----------------
 
+/**
+ * Cover for a finished download — the first image of the saved file, served
+ * locally by /downloads/:id/cover. Stretches to the full height of its row so
+ * completed downloads are identifiable at a glance; lazy-loaded and hidden
+ * when the file is gone or holds no image, so rows never show a broken
+ * placeholder.
+ */
+function TaskCover({ id }: { id: number }) {
+  const [failed, setFailed] = React.useState(false);
+  if (failed) return null;
+  return (
+    <img
+      src={`/api/downloads/${id}/cover`}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+      className="w-16 shrink-0 self-stretch rounded-sm border border-border object-cover"
+    />
+  );
+}
+
 const QueueRow = React.memo(function QueueRow({ task, onAction, onEditComicInfo, onDelete }: { task: DownloadTask; onAction: (id: number, a: 'pause' | 'resume' | 'cancel' | 'retry') => void; onEditComicInfo?: (path: string) => void; onDelete?: (id: number) => void }) {
   const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : 0;
+  const showCover = task.status === 'completed' && !!task.outputPath;
   return (
-    <div className="flex animate-fade-up flex-col gap-2 rounded-md border border-border p-3 transition-colors">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <DownloadStatusBadge status={task.status} />
-          <span className="truncate text-sm font-medium" title={task.title ?? ''}>{task.title ?? `Gallery ${task.galleryId}`}</span>
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {task.status === 'downloading' && <Button size="icon" variant="ghost" aria-label="Pause download" onClick={() => onAction(task.id, 'pause')}><Pause className="h-4 w-4" /></Button>}
-          {task.status === 'paused' && <Button size="icon" variant="ghost" aria-label="Resume download" onClick={() => onAction(task.id, 'resume')}><Play className="h-4 w-4" /></Button>}
-          {task.status === 'failed' && <Button size="icon" variant="ghost" aria-label="Retry download" onClick={() => onAction(task.id, 'retry')}><RotateCcw className="h-4 w-4" /></Button>}
-          {task.status === 'completed' && <Button size="icon" variant="ghost" aria-label="Download again" onClick={() => onAction(task.id, 'retry')}><RotateCcw className="h-4 w-4" /></Button>}
-          {(task.status === 'downloading' || task.status === 'queued') && <Button size="icon" variant="ghost" aria-label="Cancel download" onClick={() => onAction(task.id, 'cancel')}><XCircle className="h-4 w-4" /></Button>}
-          {onDelete && <Button size="icon" variant="ghost" aria-label="Remove download from history" onClick={() => onDelete(task.id)}><Trash2 className="h-4 w-4" /></Button>}
-        </div>
-      </div>
-
-      {task.status === 'downloading' && (
-        <>
-          <ProgressBar value={task.progressCurrent} max={task.progressTotal} active={task.status === 'downloading'} />
-          <div className="flex flex-col gap-1 text-sm text-muted sm:flex-row sm:items-center sm:justify-between">
-            <span className="truncate">{task.currentFile ? `Saving ${task.currentFile}` : 'Starting…'}</span>
-            <span className="shrink-0">
-              {task.progressTotal > 0 ? `${task.progressCurrent}/${task.progressTotal} pages (${pct}%)` : 'Resolving gallery…'}
-              {typeof task.bytesCurrent === 'number' && (task.bytesCurrent > 0 || (task.bytesTotal ?? 0) > 0) && (` · ${formatBytes(task.bytesCurrent)}${(task.bytesTotal ?? 0) > 0 ? ` / ${formatBytes(task.bytesTotal)}` : ''}`)}
-              {formatSpeed(task.speed) && ` · ${formatSpeed(task.speed)}`}
-            </span>
+    <div className="flex animate-fade-up gap-3 rounded-md border border-border p-3 transition-colors">
+      {showCover && <TaskCover id={task.id} />}
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <DownloadStatusBadge status={task.status} />
+            <span className="truncate text-sm font-medium" title={task.title ?? ''}>{task.title ?? `Gallery ${task.galleryId}`}</span>
           </div>
-        </>
-      )}
-
-      {task.status === 'completed' && task.outputPath && (
-        <div className="flex items-center gap-2 text-xs">
-          {task.outputFormat === 'cbz' ? <FileArchive className="h-3.5 w-3.5 text-success" /> : <FolderOpen className="h-3.5 w-3.5 text-success" />}
-          <span className="min-w-0 break-all text-muted">{task.outputPath}</span>
-          {task.outputFormat === 'cbz' && onEditComicInfo && (
-            <Button size="icon" variant="ghost" className="ml-auto shrink-0" aria-label="Edit ComicInfo.xml" onClick={() => onEditComicInfo(task.outputPath!)}>
-              <FileText className="h-3.5 w-3.5" />
-            </Button>
-          )}
+          <div className="flex shrink-0 items-center gap-1">
+            {task.status === 'downloading' && <Button size="icon" variant="ghost" aria-label="Pause download" onClick={() => onAction(task.id, 'pause')}><Pause className="h-4 w-4" /></Button>}
+            {task.status === 'paused' && <Button size="icon" variant="ghost" aria-label="Resume download" onClick={() => onAction(task.id, 'resume')}><Play className="h-4 w-4" /></Button>}
+            {task.status === 'failed' && <Button size="icon" variant="ghost" aria-label="Retry download" onClick={() => onAction(task.id, 'retry')}><RotateCcw className="h-4 w-4" /></Button>}
+            {task.status === 'completed' && <Button size="icon" variant="ghost" aria-label="Download again" onClick={() => onAction(task.id, 'retry')}><RotateCcw className="h-4 w-4" /></Button>}
+            {(task.status === 'downloading' || task.status === 'queued') && <Button size="icon" variant="ghost" aria-label="Cancel download" onClick={() => onAction(task.id, 'cancel')}><XCircle className="h-4 w-4" /></Button>}
+            {onDelete && <Button size="icon" variant="ghost" aria-label="Remove download from history" onClick={() => onDelete(task.id)}><Trash2 className="h-4 w-4" /></Button>}
+          </div>
         </div>
-      )}
 
-      {task.status === 'failed' && task.errorMessage && (
-        <p className="text-xs text-danger">{task.errorMessage}</p>
-      )}
+        {task.status === 'downloading' && (
+          <>
+            <ProgressBar value={task.progressCurrent} max={task.progressTotal} active={task.status === 'downloading'} />
+            <div className="flex flex-col gap-1 text-sm text-muted sm:flex-row sm:items-center sm:justify-between">
+              <span className="truncate">{task.currentFile ? `Saving ${task.currentFile}` : 'Starting…'}</span>
+              <span className="shrink-0">
+                {task.progressTotal > 0 ? `${task.progressCurrent}/${task.progressTotal} pages (${pct}%)` : 'Resolving gallery…'}
+                {typeof task.bytesCurrent === 'number' && (task.bytesCurrent > 0 || (task.bytesTotal ?? 0) > 0) && (` · ${formatBytes(task.bytesCurrent)}${(task.bytesTotal ?? 0) > 0 ? ` / ${formatBytes(task.bytesTotal)}` : ''}`)}
+                {formatSpeed(task.speed) && ` · ${formatSpeed(task.speed)}`}
+              </span>
+            </div>
+          </>
+        )}
 
-      <div className="flex items-center justify-between text-xs text-muted">
-        <span>{timeAgo(task.createdAt)}</span>
-        <Badge tone={task.outputFormat === 'cbz' ? 'default' : 'info'}>{task.outputFormat.toUpperCase()}</Badge>
+        {task.status === 'completed' && task.outputPath && (
+          <div className="flex items-center gap-2 text-xs">
+            {task.outputFormat === 'cbz' ? <FileArchive className="h-3.5 w-3.5 text-success" /> : <FolderOpen className="h-3.5 w-3.5 text-success" />}
+            <span className="min-w-0 break-all text-muted">{task.outputPath}</span>
+            {task.outputFormat === 'cbz' && onEditComicInfo && (
+              <Button size="icon" variant="ghost" className="ml-auto shrink-0" aria-label="Edit ComicInfo.xml" onClick={() => onEditComicInfo(task.outputPath!)}>
+                <FileText className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </div>
+        )}
+
+        {task.status === 'failed' && task.errorMessage && (
+          <p className="text-xs text-danger">{task.errorMessage}</p>
+        )}
+
+        <div className="flex items-center justify-between text-xs text-muted">
+          <span>{timeAgo(task.createdAt)}</span>
+          <Badge tone={task.outputFormat === 'cbz' ? 'default' : 'info'}>{task.outputFormat.toUpperCase()}</Badge>
+        </div>
       </div>
     </div>
   );
@@ -1051,6 +1077,32 @@ export function Downloader() {
     }
   }
 
+  // Watched tab sub-tabs: the "Recently added" feed (default) and the watch list.
+  const [watchedSubTab, setWatchedSubTab] = React.useState<'recent' | 'list'>('recent');
+  // Galleries the watches reported as new — polled only while the sub-tab is
+  // visible; a check can land new rows at any time in between.
+  const { data: newGalleries, isFetching: feedLoading, isError: feedFailed, error: feedError, refetch: retryFeed } = useQuery({
+    queryKey: ['watched-search-new'],
+    queryFn: () => api.watchedSearchNew(200),
+    enabled: tab === 'watched' && watchedSubTab === 'recent',
+    refetchInterval: 60_000,
+  });
+  // Feed rows as gallery items for the shared card/selection machinery; the
+  // detail modal fetches full metadata itself.
+  const feedItems = React.useMemo<DoujinSearchResult[]>(
+    () => (newGalleries ?? []).map((g) => ({ source: g.source, galleryId: g.galleryId, title: g.title, coverUrl: g.coverUrl ?? null, tags: [], artists: [] })),
+    [newGalleries],
+  );
+  const feedMetaByKey = React.useMemo(() => {
+    const m = new Map<string, { query: string; foundAt: string }>();
+    for (const g of newGalleries ?? []) m.set(`${g.source}:${g.galleryId}`, { query: g.query, foundAt: g.foundAt });
+    return m;
+  }, [newGalleries]);
+  const [feedPage, setFeedPage] = React.useState(1);
+  const feedPageCount = Math.max(1, Math.ceil(feedItems.length / RESULTS_PAGE_SIZE));
+  const feedCurPage = Math.min(feedPage, feedPageCount);
+  const feedPageItems = feedItems.slice((feedCurPage - 1) * RESULTS_PAGE_SIZE, feedCurPage * RESULTS_PAGE_SIZE);
+
   // Daily recommendations: stable per local date (server caches the day's set),
   // so no polling — a manual refresh re-rolls with a fresh seed.
   const { data: recs, isFetching: recsLoading, isError: recsFailed, error: recsError, refetch: refetchRecs } = useQuery({
@@ -1168,11 +1220,14 @@ export function Downloader() {
   }, []);
 
   // Selected galleries in click order — the order chapter numbers are assigned.
+  // Selections can come from either results grid (search or "Recently added");
+  // a gallery present in live search results keeps its richer metadata.
   const selectedItems = React.useMemo(() => {
-    if (!results) return [];
-    const byKey = new Map(results.map((r) => [`${r.source}:${r.galleryId}`, r]));
+    const byKey = new Map<string, DoujinSearchResult>();
+    for (const r of results ?? []) byKey.set(`${r.source}:${r.galleryId}`, r);
+    for (const f of feedItems) if (!byKey.has(`${f.source}:${f.galleryId}`)) byKey.set(`${f.source}:${f.galleryId}`, f);
     return [...selectedGalleries].map((k) => byKey.get(k)).filter((r): r is DoujinSearchResult => !!r);
-  }, [results, selectedGalleries]);
+  }, [results, feedItems, selectedGalleries]);
 
   /** Queue every selected gallery into one shared folder (one Kavita series). */
   async function doMergedDownload(folder: string, numbers: (number | null)[]) {
@@ -1545,29 +1600,6 @@ export function Downloader() {
         </div>
       )}
 
-
-      {/* Merged download confirm */}
-      {mergeOpen && selectedItems.length > 0 && (
-        <MergeDownloadDialog
-          items={selectedItems}
-          defaultFolder={folderNameFrom(selectedItems[0].title ?? '')}
-          onClose={() => setMergeOpen(false)}
-          onConfirm={(folder, numbers) => void doMergedDownload(folder, numbers)}
-        />
-      )}
-
-      {/* Merge selected galleries into an existing Kavita series */}
-      {mergeIntoOpen && selectedItems.length > 0 && (
-        <MergeIntoSeriesDialog
-          items={selectedItems}
-          onClose={() => setMergeIntoOpen(false)}
-          onQueued={() => {
-            setSelectedGalleries(new Set());
-            setSelectMode(false);
-          }}
-          onDownload={(item) => void doStartDownload(item)}
-        />
-      )}
       </>)
       }
 
@@ -1654,8 +1686,132 @@ export function Downloader() {
         </div>
       )}
 
-      {/* Watched searches */}
-      {tab === 'watched' && <WatchedTab onOpenSearch={(src, q) => searchTagFragment(q, src)} />}
+      {/* Watched searches — sub-tabs: the "Recently added" feed and the watch list */}
+      {tab === 'watched' && (
+        <div className="flex flex-col gap-4">
+          <SegmentedTabs
+            items={[{ id: 'recent' as const, label: 'Recently added' }, { id: 'list' as const, label: 'Watched Searches' }]}
+            value={watchedSubTab}
+            onChange={setWatchedSubTab}
+            label="Watched sections"
+            panelId="watched-panel"
+          />
+          <div id="watched-panel" role="tabpanel" aria-labelledby={`watched-panel-tab-${watchedSubTab}`} className="contents">
+            {watchedSubTab === 'list' ? (
+              <WatchedTab onOpenSearch={(src, q) => searchTagFragment(q, src)} />
+            ) : feedFailed ? (
+              <ErrorState title="Could not load recently added galleries" description={feedError instanceof Error ? feedError.message : String(feedError)} onRetry={() => void retryFeed()} />
+            ) : !newGalleries && feedLoading ? (
+              <div className="flex items-center justify-center gap-2 py-16 text-muted">
+                <Spinner /> Loading recently added galleries…
+              </div>
+            ) : feedItems.length > 0 ? (
+              <>
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <p className="text-xs text-muted">
+                    {feedItems.length} {feedItems.length === 1 ? 'gallery' : 'galleries'} found by your watched searches — newest first
+                  </p>
+                  <Button size="sm" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit selection mode' : 'Select multiple galleries for a merged download'}>
+                    <CheckSquare className="h-3.5 w-3.5" /> Select
+                  </Button>
+                </div>
+                {(selectMode || selectedGalleries.size > 0) && (
+                  <div className={cn('mb-4 flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border p-2', selectMode ? 'border-primary/50 bg-primary/10' : 'border-border-2 bg-surface-2')}>
+                    {selectMode ? (
+                      <>
+                        <CheckSquare className="h-4 w-4 shrink-0 text-primary" />
+                        <span className="text-xs font-medium text-primary">Selection mode — click cards to select or deselect</span>
+                      </>
+                    ) : (
+                      <span className="px-1 text-xs text-muted">Merged download ready</span>
+                    )}
+                    {selectedGalleries.size > 0 && <Badge tone="info">{selectedGalleries.size} selected</Badge>}
+                    <div className="ml-auto flex items-center gap-2">
+                      <Button size="sm" disabled={selectedGalleries.size === 0} onClick={() => setMergeOpen(true)} title="Download all selected galleries into one folder — one Kavita series">
+                        <Combine className="h-3.5 w-3.5" /> Download merged
+                      </Button>
+                      <Button size="sm" variant="outline" disabled={selectedGalleries.size === 0} onClick={() => setMergeIntoOpen(true)} title="Move downloaded galleries into an existing Kavita series">
+                        <Merge className="h-3.5 w-3.5" /> Merge into series…
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled={selectedGalleries.size === 0} onClick={() => setSelectedGalleries(new Set())}>Clear</Button>
+                    </div>
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+                  {feedPageItems.map((item, i) => {
+                    const key = `${item.source}:${item.galleryId}`;
+                    const meta = feedMetaByKey.get(key);
+                    return (
+                      <div key={key} className="flex flex-col gap-1 [&>article]:flex-1">
+                        <GalleryCard
+                          item={item}
+                          index={i}
+                          selectMode={selectMode}
+                          selected={selectedGalleries.has(key)}
+                          onToggleSelect={toggleGallerySelect}
+                          onOpen={setSelected}
+                          downloading={pendingKey === key}
+                          downloadedAt={downloadedAt.get(key)}
+                          onDownload={doStartDownload}
+                        />
+                        {meta && (
+                          <p className="px-1 text-xs leading-snug text-muted" title={`Found by watch “${meta.query}”`}>
+                            via “{meta.query}” · {timeAgo(meta.foundAt)}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                {feedPageCount > 1 && (
+                  <div className="mt-5 flex flex-wrap items-center justify-center gap-1">
+                    <Button size="sm" variant="outline" disabled={feedCurPage <= 1} onClick={() => { setFeedPage(feedCurPage - 1); document.querySelector('main')?.scrollTo({ top: 0 }); }}>
+                      <ChevronLeft className="h-3.5 w-3.5" /> Prev
+                    </Button>
+                    {pageList(feedCurPage, feedPageCount).map((p, i) =>
+                      p === '…' ? (
+                        <span key={`e${i}`} className="px-1 text-xs text-muted">…</span>
+                      ) : (
+                        <Button key={p} size="sm" variant={p === feedCurPage ? 'default' : 'outline'} onClick={() => { setFeedPage(p); document.querySelector('main')?.scrollTo({ top: 0 }); }} aria-current={p === feedCurPage ? 'page' : undefined}>
+                          {p}
+                        </Button>
+                      ),
+                    )}
+                    <Button size="sm" variant="outline" disabled={feedCurPage >= feedPageCount} onClick={() => { setFeedPage(feedCurPage + 1); document.querySelector('main')?.scrollTo({ top: 0 }); }}>
+                      Next <ChevronRight className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <EmptyState icon={<Star className="h-8 w-8" />} title="Nothing new yet" description="New results from your watched searches will appear here after the next check — add a search in the Watched Searches tab if you haven't yet." />
+            )}
+          </div>
+        </div>
+      )}
+      {/* Merged download confirm — reachable from both results grids */}
+      {mergeOpen && selectedItems.length > 0 && (
+        <MergeDownloadDialog
+          items={selectedItems}
+          defaultFolder={folderNameFrom(selectedItems[0].title ?? '')}
+          onClose={() => setMergeOpen(false)}
+          onConfirm={(folder, numbers) => void doMergedDownload(folder, numbers)}
+        />
+      )}
+
+      {/* Merge selected galleries into an existing Kavita series */}
+      {mergeIntoOpen && selectedItems.length > 0 && (
+        <MergeIntoSeriesDialog
+          items={selectedItems}
+          onClose={() => setMergeIntoOpen(false)}
+          onQueued={() => {
+            setSelectedGalleries(new Set());
+            setSelectMode(false);
+          }}
+          onDownload={(item) => void doStartDownload(item)}
+        />
+      )}
+
       {/* Gallery detail modal */}
       {selected && (
         <GalleryDetailModal

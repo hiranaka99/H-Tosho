@@ -351,6 +351,93 @@ export async function readComicInfo(p: string): Promise<string | null> {
   }
 }
 
+/**
+ * MIME type for image files by extension, or null when not a recognized image.
+ * The set mirrors the writer's STORE_EXTENSIONS (zip.ts) — every format the
+ * downloader can store in an archive is cover-eligible (Hitomi serves AVIF).
+ */
+export function imageMime(name: string): string | null {
+  switch (path.extname(name).toLowerCase()) {
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.png':
+      return 'image/png';
+    case '.webp':
+      return 'image/webp';
+    case '.avif':
+      return 'image/avif';
+    case '.gif':
+      return 'image/gif';
+    case '.jxl':
+      return 'image/jxl';
+    case '.heic':
+      return 'image/heic';
+    case '.heif':
+      return 'image/heif';
+    default:
+      return null;
+  }
+}
+
+/** Hard cap on a cover payload (a single page image, never the whole archive). */
+const COVER_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Resolve a cover image for a download output path: the first image entry of a
+ * .cbz archive (archive order), or the first image file of an output folder
+ * (name order — page names are zero-padded, so lexicographic is page order).
+ * Positional reads: only the central directory and one payload are touched.
+ * Returns null when the path is missing or holds no image.
+ */
+export async function readCoverImage(outputPath: string): Promise<{ data: Buffer; mime: string } | null> {
+  let st: fs.Stats;
+  try {
+    st = await fs.promises.stat(outputPath);
+  } catch {
+    return null;
+  }
+  if (st.isDirectory()) {
+    let names: string[];
+    try {
+      names = await fs.promises.readdir(outputPath);
+    } catch {
+      return null;
+    }
+    const image = [...names].sort().find((n) => imageMime(n) !== null);
+    if (!image) return null;
+    try {
+      const data = await fs.promises.readFile(path.join(outputPath, image));
+      if (data.length === 0 || data.length > COVER_MAX_BYTES) return null;
+      return { data, mime: imageMime(image)! };
+    } catch {
+      return null;
+    }
+  }
+
+  const fh = await fs.promises.open(outputPath, 'r');
+  try {
+    const entries = await readZipEntriesFromDisk(fh, st.size);
+    for (const e of entries) {
+      const mime = imageMime(e.name);
+      if (!mime || (e.method !== 0 && e.method !== 8)) continue;
+      if (e.uncompressedSize === 0 || e.uncompressedSize > COVER_MAX_BYTES) continue;
+      const start = await payloadStartFromDisk(fh, e);
+      const raw = Buffer.alloc(e.compressedSize);
+      await readFull(fh, raw, start);
+      const data = e.method === 0 ? raw : inflateRawSync(raw);
+      if (data.length === 0) continue;
+      return { data, mime };
+    }
+    return null;
+  } catch {
+    // Not a ZIP or corrupt — no cover rather than an error.
+    return null;
+  } finally {
+    await fh.close();
+  }
+}
+
 /** Resolve a user-supplied path to an existing absolute file (rejects dirs/missing). */
 export function resolveExistingFile(p: string): string | null {
   if (!p || !path.isAbsolute(p)) return null;

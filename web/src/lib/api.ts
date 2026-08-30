@@ -320,6 +320,19 @@ export interface WatchedSearchResultItem {
   coverUrl?: string;
 }
 
+/** One gallery in the "recently added" feed (reported new by a watched search). */
+export interface WatchedNewGallery {
+  source: DoujinSource;
+  galleryId: string;
+  title: string;
+  url?: string | null;
+  coverUrl?: string | null;
+  /** The watch query that found the gallery. */
+  query: string;
+  /** ISO 8601 timestamp of the check that first reported it. */
+  foundAt: string;
+}
+
 /** One pick in a daily recommendation set (a search result plus why it matched). */
 export interface RecommendationItem extends DoujinSearchResult {
   /** Human-readable profile terms that matched this gallery, e.g. ["artist konboi", "tag solo"]. */
@@ -428,6 +441,8 @@ export const api = {
     request<WatchedSearch>('/watched-searches', { method: 'POST', body: JSON.stringify({ source, query }) }),
   removeWatchedSearch: (id: number) => request<{ ok: boolean }>(`/watched-searches/${id}`, { method: 'DELETE' }),
   checkWatchedSearches: () => request<{ id: number }>('/watched-searches/check', { method: 'POST' }),
+  watchedSearchNew: (limit?: number) =>
+    request<WatchedNewGallery[]>(`/watched-searches/new${limit ? `?limit=${limit}` : ''}`),
 
   // ---------------- Recommendations ----------------
   /** Today's recommendation set (cached per local date server-side). */

@@ -3,10 +3,10 @@ import fs from 'node:fs';
 import { mkdtempSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { crc32 } from 'node:zlib';
+import { crc32, deflateRawSync } from 'node:zlib';
 import { describe, it } from 'node:test';
 
-import { pathContains, readComicInfo, readZipEntries, readZipEntry, rewriteZipEntry, mergeCbzFiles, resolveSeriesHostDir } from '../src/lib/cbz.js';
+import { pathContains, readComicInfo, readCoverImage, readZipEntries, readZipEntry, rewriteZipEntry, mergeCbzFiles, resolveSeriesHostDir } from '../src/lib/cbz.js';
 import { buildZip } from '../src/downloader/zip.js';
 import { parseComicInfo, renderComicInfoXml } from '../src/downloader/comicinfo.js';
 
@@ -445,5 +445,113 @@ describe('resolveSeriesHostDir', () => {
   it('returns null when required inputs are missing', () => {
     assert.equal(resolveSeriesHostDir({ libraryPath: nativeLib, folderPath: null, anchors: [anchor] }), null);
     assert.equal(resolveSeriesHostDir({ libraryPath: null, folderPath: '/x/y', anchors: [anchor] }), null);
+  });
+});
+
+/**
+ * Single-entry archive with a DEFLATED image payload — our own writer stores
+ * images (method 0), so this emulates a foreign tool that compresses them.
+ */
+function makeDeflatedImageArchive(p: string, data: Buffer): void {
+  const name = Buffer.from('001.jpg', 'utf8');
+  const compressed = deflateRawSync(data);
+  const crc = crc32(data) >>> 0;
+
+  const local = Buffer.alloc(30 + name.length);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(0, 6); // no flags
+  local.writeUInt16LE(8, 8); // deflated
+  local.writeUInt32LE(crc, 14);
+  local.writeUInt32LE(compressed.length, 18);
+  local.writeUInt32LE(data.length, 22);
+  local.writeUInt16LE(name.length, 26);
+  local.writeUInt16LE(0, 28);
+  name.copy(local, 30);
+
+  const central = Buffer.alloc(46 + name.length);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(0, 8);
+  central.writeUInt16LE(8, 10); // deflated
+  central.writeUInt32LE(crc, 16);
+  central.writeUInt32LE(compressed.length, 20);
+  central.writeUInt32LE(data.length, 24);
+  central.writeUInt16LE(name.length, 28);
+  central.writeUInt16LE(0, 30);
+  central.writeUInt32LE(0, 42); // local offset
+  name.copy(central, 46);
+
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(1, 8);
+  eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(central.length, 12);
+  eocd.writeUInt32LE(local.length + compressed.length, 16);
+
+  writeFileSync(p, Buffer.concat([local, compressed, central, eocd]));
+}
+
+describe('readCoverImage', () => {
+  it('returns the first image entry of a cbz in archive order', async () => {
+    const { entries } = makeSampleArchive();
+    const img = await readCoverImage(cbzPath);
+    assert.ok(img);
+    assert.equal(img.mime, 'image/jpeg');
+    assert.ok(img.data.equals(entries['001.jpg']));
+  });
+
+  it('recognizes modern image formats like AVIF (Hitomi galleries)', async () => {
+    const p = path.join(dir, 'avif.cbz');
+    const page = Buffer.alloc(16 * 1024, 3);
+    writeFileSync(p, buildZip([
+      { name: 'ComicInfo.xml', data: Buffer.from('<ComicInfo/>') },
+      { name: '01.avif', data: page },
+      { name: '02.avif', data: Buffer.alloc(16 * 1024, 4) },
+    ]));
+    const img = await readCoverImage(p);
+    assert.ok(img);
+    assert.equal(img.mime, 'image/avif');
+    assert.ok(img.data.equals(page));
+  });
+
+  it('inflates deflated image entries written by foreign tools', async () => {
+    const p = path.join(dir, 'deflated.cbz');
+    const data = Buffer.alloc(32 * 1024, 7);
+    makeDeflatedImageArchive(p, data);
+    const img = await readCoverImage(p);
+    assert.ok(img);
+    assert.equal(img.mime, 'image/jpeg');
+    assert.ok(img.data.equals(data));
+  });
+
+  it('returns null for archives without image entries', async () => {
+    const p = path.join(dir, 'text-only.cbz');
+    writeFileSync(p, buildZip([
+      { name: 'ComicInfo.xml', data: Buffer.from('<ComicInfo/>') },
+      { name: 'notes.txt', data: Buffer.from('hi') },
+    ]));
+    assert.equal(await readCoverImage(p), null);
+  });
+
+  it('returns the first image of a folder in name order, skipping non-images', async () => {
+    const f = path.join(dir, 'folder-out');
+    fs.mkdirSync(f, { recursive: true });
+    writeFileSync(path.join(f, '001.jpg'), Buffer.from('jpg-bytes'));
+    writeFileSync(path.join(f, '002.png'), Buffer.from('png-bytes'));
+    writeFileSync(path.join(f, 'ComicInfo.xml'), Buffer.from('<ComicInfo/>'));
+    const img = await readCoverImage(f);
+    assert.ok(img);
+    assert.equal(img.mime, 'image/jpeg');
+    assert.deepEqual(img.data, Buffer.from('jpg-bytes'));
+  });
+
+  it('returns null for missing paths and image-less folders', async () => {
+    assert.equal(await readCoverImage(path.join(dir, 'nope.cbz')), null);
+    const f = path.join(dir, 'empty-folder');
+    fs.mkdirSync(f, { recursive: true });
+    writeFileSync(path.join(f, 'ComicInfo.xml'), Buffer.from('<ComicInfo/>'));
+    assert.equal(await readCoverImage(f), null);
   });
 });

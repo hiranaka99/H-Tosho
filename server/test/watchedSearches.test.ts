@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
+import { eq, sql } from 'drizzle-orm';
 
 // Point the DB at a throwaway directory before the service loads (it imports
 // db/index.js at module level); diffSeenResults itself is pure.
@@ -11,6 +12,8 @@ process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-ws-'));
 // Dynamic imports are required here: the DB module snapshots HTOSHO_DATA_DIR at module load.
 const { diffSeenResults, addWatchedSearch, checkWatchedSearches, listWatchedSearches } = await import('../src/services/watchedSearches.js');
 const { doujinProviders } = await import('../src/downloader/providers.js');
+const { listNewGalleries, removeWatchedSearch } = await import('../src/services/watchedSearches.js');
+const { getDb, schema } = await import('../src/db/index.js');
 const originalHitomi = doujinProviders.hitomi;
 
 // Stub the hitomi provider so the full check pipeline runs against fixture data.
@@ -90,5 +93,77 @@ describe('lastResults persistence', () => {
     assert.deepEqual(listWatchedSearches().find((w) => w.id === watch.id)!.lastResults, [
       { galleryId: 'fresh-4', title: 'Fresh Four', url: 'https://hitomi.la/g/4' },
     ]);
+  });
+});
+
+describe('recently added feed', () => {
+  const FEED_QUERY = 'artist:feedtest';
+  /** Feed rows for this describe's watch only — earlier tests leave their own rows behind. */
+  const myFeed = (limit = 500) => listNewGalleries(limit).filter((g) => g.query === FEED_QUERY);
+
+  it('persists new finds with metadata and lists them newest-first', async () => {
+    addWatchedSearch('hitomi', FEED_QUERY);
+    searchResults = [
+      { source: 'hitomi', galleryId: 'f-1', title: 'Feed One', tags: [], artists: [] },
+    ];
+    await checkWatchedSearches(log); // seed run — nothing lands in the feed
+    assert.equal(myFeed().length, 0);
+
+    searchResults = [
+      { source: 'hitomi', galleryId: 'f-1', title: 'Feed One', tags: [], artists: [] },
+      { source: 'hitomi', galleryId: 'f-2', title: 'Feed Two', tags: [], artists: [], url: 'https://hitomi.la/g/2', coverUrl: 'https://img.test/2.jpg' },
+    ];
+    const res = await checkWatchedSearches(log);
+    assert.equal(res.newGalleries >= 1, true);
+    const [only] = myFeed();
+    assert.ok(only, 'expected the new find in the feed');
+    assert.equal(only.source, 'hitomi');
+    assert.equal(only.galleryId, 'f-2');
+    assert.equal(only.title, 'Feed Two');
+    assert.equal(only.url, 'https://hitomi.la/g/2');
+    assert.equal(only.coverUrl, 'https://img.test/2.jpg');
+    assert.equal(only.query, FEED_QUERY);
+    assert.ok(!Number.isNaN(Date.parse(only.foundAt)), 'foundAt must be parseable ISO 8601');
+
+    // A later find sorts above the earlier one.
+    searchResults.push({ source: 'hitomi', galleryId: 'f-3', title: 'Feed Three', tags: [], artists: [] });
+    await checkWatchedSearches(log);
+    assert.deepEqual(myFeed().map((g) => g.galleryId), ['f-3', 'f-2']);
+  });
+
+  it('dedupes a gallery found by several watches and honors the limit', async () => {
+    const watchB = addWatchedSearch('hitomi', 'artist:feedtest-b');
+    searchResults = [
+      { source: 'hitomi', galleryId: 'shared-9', title: 'Shared Nine', tags: [], artists: [] },
+    ];
+    await checkWatchedSearches(log); // watch B seeds; the other watches report shared-9 as new
+
+    searchResults = [
+      { source: 'hitomi', galleryId: 'f-4', title: 'Feed Four', tags: [], artists: [] },
+      { source: 'hitomi', galleryId: 'shared-9', title: 'Shared Nine', tags: [], artists: [] },
+    ];
+    await checkWatchedSearches(log); // f-4 is new for every non-seeded watch
+
+    const rawForF4 = getDb()
+      .select({ n: sql<number>`count(*)` })
+      .from(schema.watchedSearchNew)
+      .where(eq(schema.watchedSearchNew.galleryId, 'f-4'))
+      .get();
+    assert.ok(Number(rawForF4?.n ?? 0) >= 2, 'expected one row per discovering watch');
+
+    const feed = listNewGalleries(500);
+    assert.equal(feed.filter((g) => g.galleryId === 'f-4').length, 1, 'feed must dedupe across watches');
+    assert.equal(feed[0].galleryId, 'f-4', 'newest find comes first');
+    assert.deepEqual(listNewGalleries(1).map((g) => g.galleryId), ['f-4'], 'limit caps the feed');
+
+    // Removing a watch drops its feed rows (table level: other watches also
+    // reported f-4, so it stays in the feed via them).
+    assert.equal(removeWatchedSearch(watchB.id), true);
+    const rowsForB = getDb()
+      .select({ n: sql<number>`count(*)` })
+      .from(schema.watchedSearchNew)
+      .where(eq(schema.watchedSearchNew.searchId, watchB.id))
+      .get();
+    assert.equal(Number(rowsForB?.n ?? 0), 0);
   });
 });

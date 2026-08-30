@@ -40,11 +40,11 @@ import { getDownloaderSettings, parseDownloaderSettings, setDownloaderSettings }
 import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
 import { rewriteHitomiCover, rewriteMangaDexCoverUrl } from './media.js';
-import { addWatchedSearch, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
+import { addWatchedSearch, listNewGalleries, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
 import { getRecommendations, markOwned, refreshRecommendations, setExcludedLibraries } from '../services/recommendations.js';
 import { getRecommendationSettings } from '../services/settings.js';
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
-import { listCbzFiles, readComicInfo, resolveExistingFile, resolveSeriesHostDir } from '../lib/cbz.js';
+import { listCbzFiles, readComicInfo, readCoverImage, resolveExistingFile, resolveSeriesHostDir } from '../lib/cbz.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
 import { sanitizeFilename } from '../downloader/util.js';
 
@@ -731,6 +731,23 @@ api.get('/downloads/:id', (c) => {
   return c.json(task);
 });
 
+/**
+ * Cover thumbnail for a completed download: the first image of its .cbz (or
+ * output folder), read locally so history rows show covers without any
+ * provider round-trip. Served same-origin, so the session cookie authenticates it.
+ */
+api.get('/downloads/:id/cover', async (c) => {
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid download id' }, 400);
+  const task = downloadQueue.get(id);
+  if (!task || task.status !== 'completed' || !task.outputPath) return c.json({ error: 'No cover available' }, 404);
+  const img = await readCoverImage(task.outputPath);
+  if (!img) return c.json({ error: 'No cover available' }, 404);
+  return new Response(img.data, {
+    headers: { 'Content-Type': img.mime, 'Cache-Control': 'private, max-age=86400' },
+  });
+});
+
 const DOWNLOAD_ACTIONS = ['pause', 'resume', 'cancel', 'retry'] as const;
 for (const action of DOWNLOAD_ACTIONS) {
   api.post(`/downloads/:id/${action}`, (c) => {
@@ -781,6 +798,14 @@ api.put('/libraries/:id/override', async (c) => {
 // ---------------- Watched searches ----------------
 
 api.get('/watched-searches', (c) => c.json(listWatchedSearches()));
+
+/** Newest-first feed of galleries the watches reported as new ("Recently added"). */
+api.get('/watched-searches/new', (c) => {
+  const limitParam = Number(c.req.query('limit') ?? '100');
+  const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(Math.floor(limitParam), 500) : 100;
+  // Hitomi covers need the /media proxy (their CDN requires a Referer the browser can't send).
+  return c.json(listNewGalleries(limit).map(rewriteHitomiCover));
+});
 
 api.post('/watched-searches', async (c) => {
   const body = (await c.req.json()) as { source?: string; query?: string };

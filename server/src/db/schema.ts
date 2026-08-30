@@ -150,6 +150,24 @@ export const watchedSearchSeen = sqliteTable('watched_search_seen', {
     .default(sql`(current_timestamp)`),
 });
 /**
+ * Galleries a watch reported as new, with enough metadata to render them in
+ * the Downloader's "Recently added" feed without re-scraping. Kept bounded by
+ * pruneNew; rows are removed together with their watch.
+ */
+export const watchedSearchNew = sqliteTable('watched_search_new', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  searchId: integer('search_id').notNull(),
+  source: text('source').notNull(),
+  /** The watch query that found the gallery (shown as "via …" in the feed). */
+  query: text('query').notNull(),
+  galleryId: text('gallery_id').notNull(),
+  title: text('title').notNull(),
+  url: text('url'),
+  coverUrl: text('cover_url'),
+  /** ISO 8601 timestamp of the check that first reported the gallery. */
+  foundAt: text('found_at').notNull(),
+});
+/**
  * Tag/artist profile data for downloaded galleries, powering the daily
  * recommendations. Written when a download resolves its gallery metadata and
  * lazily backfilled for pre-existing downloads, so the recommendation engine

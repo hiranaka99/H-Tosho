@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { getDb, schema, type Db } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinSearchResult, DoujinSource } from '../downloader/types.js';
@@ -42,6 +42,9 @@ const SEEN_PRUNE_TO = 1500;
 const NOTIFY_MAX_LISTED = 10;
 /** Cap on the persisted "new since last check" list shown in the UI. */
 const LAST_RESULTS_MAX = 50;
+/** Cap on the persisted "recently added" feed so the table cannot grow unbounded. */
+const NEW_RETENTION = 1000;
+const NEW_PRUNE_TO = 750;
 
 /** Decode the persisted new-results JSON; malformed payloads degrade to []. */
 function decodeLastResults(json: string | null): WatchedSearchNewResult[] {
@@ -125,12 +128,13 @@ export function addWatchedSearch(source: DoujinSource, query: string): WatchedSe
   return rowToWatch(row);
 }
 
-/** Remove a watch and its seen history. Returns false when the id is unknown. */
+/** Remove a watch, its seen history, and its "recently added" entries. Returns false when the id is unknown. */
 export function removeWatchedSearch(id: number): boolean {
   const db = getDb();
   const row = db.select().from(schema.watchedSearches).where(eq(schema.watchedSearches.id, id)).get();
   if (!row) return false;
   db.delete(schema.watchedSearchSeen).where(eq(schema.watchedSearchSeen.searchId, id)).run();
+  db.delete(schema.watchedSearchNew).where(eq(schema.watchedSearchNew.searchId, id)).run();
   db.delete(schema.watchedSearches).where(eq(schema.watchedSearches.id, id)).run();
   return true;
 }
@@ -252,6 +256,29 @@ export async function checkWatchedSearches(
           .run();
       }
       pruneSeen(s.id, tx);
+      // Persist everything reported as new for the "Recently added" feed; the
+      // unique index idx_watched_search_new_unique keeps re-discoveries from
+      // duplicating rows.
+      if (!firstRun && newIds.length > 0) {
+        const foundAt = new Date().toISOString();
+        tx.insert(schema.watchedSearchNew)
+          .values(newIds.map((id) => {
+            const r = results.find((x) => x.galleryId === id);
+            return {
+              searchId: s.id,
+              source: s.source,
+              query: s.query,
+              galleryId: id,
+              title: r?.title || id,
+              ...(r?.url ? { url: r.url } : {}),
+              ...(r?.coverUrl ? { coverUrl: r.coverUrl } : {}),
+              foundAt,
+            };
+          }))
+          .onConflictDoNothing()
+          .run();
+        pruneNew(tx);
+      }
       tx.update(schema.watchedSearches)
         .set({ lastCheckedAt: new Date().toISOString(), lastResultCount: ids.length, ...(lastResultsJson !== null ? { lastResultsJson } : {}) })
         .where(eq(schema.watchedSearches.id, s.id))
@@ -283,4 +310,69 @@ function pruneSeen(searchId: number, db: Db): void {
     .all();
   const ids = oldest.map((r) => r.id);
   db.delete(schema.watchedSearchSeen).where(inArray(schema.watchedSearchSeen.id, ids)).run();
+}
+
+/** Keep the "recently added" feed bounded: drop the oldest rows beyond the retention cap. */
+function pruneNew(db: Db): void {
+  const counted = db
+    .select({ n: sql<number>`count(*)` })
+    .from(schema.watchedSearchNew)
+    .get();
+  const count = Number(counted?.n ?? 0);
+  if (count <= NEW_RETENTION) return;
+  const excess = count - NEW_PRUNE_TO;
+  const oldest = db
+    .select({ id: schema.watchedSearchNew.id })
+    .from(schema.watchedSearchNew)
+    .orderBy(asc(schema.watchedSearchNew.id))
+    .limit(excess)
+    .all();
+  const ids = oldest.map((r) => r.id);
+  db.delete(schema.watchedSearchNew).where(inArray(schema.watchedSearchNew.id, ids)).run();
+}
+
+/** One gallery in the "recently added" feed. */
+export interface WatchedSearchNewGallery {
+  source: string;
+  galleryId: string;
+  title: string;
+  url?: string;
+  coverUrl?: string;
+  /** The watch query that found the gallery. */
+  query: string;
+  /** ISO 8601 timestamp of the check that first reported it. */
+  foundAt: string;
+}
+
+/**
+ * Newest-first feed of galleries any watch reported as new. A gallery found by
+ * several watches appears once (its newest discovery wins).
+ */
+export function listNewGalleries(limit = 100): WatchedSearchNewGallery[] {
+  const db = getDb();
+  // Fetch a wider window than needed so cross-watch dedupe still fills the page.
+  const rows = db
+    .select()
+    .from(schema.watchedSearchNew)
+    .orderBy(desc(schema.watchedSearchNew.foundAt), desc(schema.watchedSearchNew.id))
+    .limit(limit * 3)
+    .all();
+  const seen = new Set<string>();
+  const out: WatchedSearchNewGallery[] = [];
+  for (const r of rows) {
+    const key = `${r.source}:${r.galleryId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      source: r.source,
+      galleryId: r.galleryId,
+      title: r.title,
+      ...(r.url ? { url: r.url } : {}),
+      ...(r.coverUrl ? { coverUrl: r.coverUrl } : {}),
+      query: r.query,
+      foundAt: r.foundAt,
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
 }

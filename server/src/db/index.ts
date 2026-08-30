@@ -57,9 +57,12 @@ export function initDb(): Db {
   sqlite.pragma('foreign_keys = ON');
   // Tolerate brief lock contention from concurrent readers (SSE snapshots, UI polls).
   sqlite.pragma('busy_timeout = 5000');
-  sqlite.exec(SCHEMA_DDL);
+  // Column migrations run BEFORE the DDL: CREATE INDEX statements resolve
+  // column names, so an old DB missing a migrated column would abort the whole
+  // exec (and every table created earlier in it) otherwise.
   migrateDownloadQueueColumns(sqlite);
   migrateWatchedSearchColumns(sqlite);
+  sqlite.exec(SCHEMA_DDL);
   dropCatalogTable(sqlite);
   pruneOldData(sqlite);
   db = drizzle(sqlite, { schema });
@@ -391,6 +394,17 @@ CREATE TABLE IF NOT EXISTS watched_search_seen (
   gallery_id TEXT NOT NULL,
   first_seen_at TEXT NOT NULL DEFAULT (current_timestamp)
 );
+CREATE TABLE IF NOT EXISTS watched_search_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  search_id INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  query TEXT NOT NULL,
+  gallery_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  url TEXT,
+  cover_url TEXT,
+  found_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS gallery_tags (
   source TEXT NOT NULL,
   gallery_id TEXT NOT NULL,
@@ -413,6 +427,8 @@ CREATE INDEX IF NOT EXISTS idx_job_logs_job_id ON job_logs(job_id);
 CREATE INDEX IF NOT EXISTS idx_sync_history_series ON sync_history(kavita_series_id);
 CREATE INDEX IF NOT EXISTS idx_download_queue_gallery ON download_queue(source, gallery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_watched_search_seen_unique ON watched_search_seen(search_id, source, gallery_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_watched_search_new_unique ON watched_search_new(search_id, source, gallery_id);
+CREATE INDEX IF NOT EXISTS idx_watched_search_new_found ON watched_search_new(found_at, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_tags_unique ON gallery_tags(source, gallery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_owned_galleries_unique ON owned_galleries(source, gallery_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
