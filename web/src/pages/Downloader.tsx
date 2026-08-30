@@ -34,6 +34,8 @@ import {
   CheckSquare,
   Combine,
   Merge,
+  ChevronDown,
+  Plus,
 } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
 import { useDownloadActions, useDownloads } from '../lib/DownloadsContext';
@@ -619,6 +621,130 @@ function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm }: {
   );
 }
 
+// ---------------- Watched searches tab ----------------
+
+/**
+ * Saved searches that ping Discord when they find new galleries. Owns its own
+ * query observer (30s poll — auto-scan results land while the tab is open) so
+ * refetches never re-render the rest of the page; the search tab's Watch
+ * button shares the same cache key.
+ */
+function WatchedTab() {
+  const qc = useQueryClient();
+  const watchesQuery = useQuery({ queryKey: ['watched-searches'], queryFn: api.watchedSearches, refetchInterval: 30_000 });
+  const watches = watchesQuery.data;
+  const [source, setSource] = React.useState<DoujinSource>('hitomi');
+  const [query, setQuery] = React.useState('');
+  const [adding, setAdding] = React.useState(false);
+  const [removeTarget, setRemoveTarget] = React.useState<{ id: number; query: string } | null>(null);
+  const [checking, setChecking] = React.useState(false);
+  const [expanded, setExpanded] = React.useState<Set<number>>(new Set());
+  const toggleExpanded = (id: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  async function add() {
+    const q = query.trim();
+    if (!q) return;
+    setAdding(true);
+    try {
+      await api.addWatchedSearch(source, q);
+      setQuery('');
+      qc.invalidateQueries({ queryKey: ['watched-searches'] });
+    } catch (e) {
+      toast({ tone: 'danger', title: 'Could not add watch', description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function remove(id: number) {
+    try {
+      await api.removeWatchedSearch(id);
+      qc.invalidateQueries({ queryKey: ['watched-searches'] });
+      toast({ tone: 'info', title: 'Watched search removed' });
+    } catch (e) {
+      toast({ tone: 'danger', title: 'Could not remove watch', description: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  async function checkNow() {
+    setChecking(true);
+    try {
+      await api.checkWatchedSearches();
+      toast({ tone: 'success', title: 'Check queued', description: 'Results land in the job log; new galleries ping Discord.' });
+    } catch (e) {
+      toast({ tone: 'danger', title: 'Could not queue check', description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
+        <CardTitle className="flex items-center gap-2">
+          <Star className="h-4 w-4" /> Watched searches
+        </CardTitle>
+        <Button size="sm" variant="outline" onClick={checkNow} disabled={checking}>
+          {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Star className="h-3.5 w-3.5" />} Check now
+        </Button>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        {watchesQuery.isError && <ErrorState title="Could not load watched searches" description={watchesQuery.error instanceof Error ? watchesQuery.error.message : String(watchesQuery.error)} onRetry={() => void watchesQuery.refetch()} />}
+        <p className="text-sm text-muted">Saved doujinshi searches re-run on every auto-scan cycle. New results ping Discord — the first run just records what already exists.</p>
+        {watches && watches.length > 0 ? (
+          <div className="flex flex-col gap-1.5">
+            {watches.map((w) => (
+              <div key={w.id} className="rounded-md border border-border-2 px-3 py-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone="muted">{SOURCE_LABELS[w.source] ?? w.source}</Badge>
+                  <span className="min-w-0 flex-1 truncate font-medium" title={w.query}>{w.query}</span>
+                  {w.lastResults.length > 0 && (
+                    <Button size="sm" variant="ghost" aria-expanded={expanded.has(w.id)} onClick={() => toggleExpanded(w.id)}>
+                      {w.lastResults.length} new
+                      <ChevronDown className={cn('h-3.5 w-3.5 transition-transform duration-150', expanded.has(w.id) && 'rotate-180')} />
+                    </Button>
+                  )}
+                  <Button size="icon" variant="ghost" aria-label={`Remove watch ${w.query}`} onClick={() => setRemoveTarget({ id: w.id, query: w.query })}><X className="h-3.5 w-3.5" /></Button>
+                </div>
+                {w.lastResults.length > 0 && expanded.has(w.id) && (
+                  <div className="mt-2 flex flex-col gap-1.5 border-t border-border pt-2">
+                    {w.lastResults.map((r) => (
+                      <a key={r.galleryId} href={r.url ?? '#'} target="_blank" rel="noreferrer" className="flex items-center gap-2 hover:underline">
+                        {r.coverUrl && <img src={r.coverUrl} alt="" className="h-8 w-6 shrink-0 rounded object-cover" loading="lazy" />}
+                        <span className="truncate">{r.title}</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          watches && <p className="text-sm text-muted">No watched searches yet — add one below, or use the Watch button in the Search tab.</p>
+        )}
+        <form className="flex flex-col gap-2 sm:flex-row sm:items-center" onSubmit={(e) => { e.preventDefault(); void add(); }}>
+          <Select aria-label="Watched search source" value={source} onChange={(e) => setSource(e.target.value as DoujinSource)} className="sm:w-32 sm:shrink-0"><option value="hitomi">Hitomi</option><option value="nhentai">nHentai</option></Select>
+          <Input aria-label="Watched search query" placeholder="Search query, e.g. artist:konboi" value={query} onChange={(e) => setQuery(e.target.value)} className="flex-1" />
+          <Button size="sm" type="submit" disabled={adding || !query.trim()}>{adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add</Button>
+        </form>
+        <ConfirmDialog
+          open={removeTarget !== null}
+          title="Remove watched search?"
+          description={removeTarget ? `Stop watching “${removeTarget.query}”?` : ''}
+          confirmLabel="Remove"
+          onOpenChange={(open) => { if (!open) setRemoveTarget(null); }}
+          onConfirm={() => { if (removeTarget) void remove(removeTarget.id); setRemoveTarget(null); }}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
 // ---------------- Download manager tab ----------------
 
 /**
@@ -828,7 +954,7 @@ export function Downloader() {
   }, [query, source, inputFocused]);
 
   // Top-of-page view tabs: search results vs. the download manager queue.
-  const [tab, setTab] = React.useState<'search' | 'recommend' | 'manager'>('search');
+  const [tab, setTab] = React.useState<'search' | 'recommend' | 'watched' | 'manager'>('search');
   const { data: results, isFetching, isError: searchFailed, error: searchError, refetch: retrySearch } = useQuery({
     queryKey: ['doujin-search', source, searchKey, sort],
     queryFn: () => api.doujinSearch(source, searchKey!, sort),
@@ -1145,7 +1271,7 @@ export function Downloader() {
       <PageHeader icon={<ListVideo className="h-5 w-5" />} title="Doujinshi Downloader" subtitle="Search Hitomi.la and nHentai, then download galleries into your Kavita library." />
 
       <SegmentedTabs
-        items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'Recommended' }, { id: 'manager' as const, label: 'Manager' }]}
+        items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'Recommended' }, { id: 'watched' as const, label: 'Watched' }, { id: 'manager' as const, label: 'Manager' }]}
         value={tab}
         onChange={setTab}
         label="Downloader sections"
@@ -1481,6 +1607,9 @@ export function Downloader() {
           )}
         </div>
       )}
+
+      {/* Watched searches */}
+      {tab === 'watched' && <WatchedTab />}
       {/* Gallery detail modal */}
       {selected && (
         <GalleryDetailModal
