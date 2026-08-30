@@ -279,9 +279,24 @@ export interface KavitaSeriesSignal {
  * archives at scan time. Bounded by KAVITA_SERIES_LIMIT; any failure degrades
  * to an empty signal set so the download-based profile still works.
  */
+// The scan below costs up to KAVITA_SERIES_LIMIT metadata calls and dominates
+// generation time, yet the profile it feeds barely changes between refreshes —
+// memoize it in memory. The key covers everything that can change the result:
+// the connection and the excluded-library list. Failed scans are not cached, so
+// a recovered Kavita is picked up on the next generation.
+const KAVITA_SIGNALS_TTL_MS = 30 * 60_000;
+let kavitaSignalsCache: { key: string; at: number; signals: KavitaSeriesSignal[] } | null = null;
+
 async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
   const conn = getKavitaConnection();
   if (!conn.baseUrl || !conn.apiKey) return [];
+  // Libraries the user excluded from recommendations (e.g. a regular manga
+  // collection that should not feed doujinshi searches). Part of the cache key.
+  const excludedLibraries = new Set(getRecommendationSettings().excludedLibraryIds);
+  const cacheKey = `${conn.baseUrl}|${[...excludedLibraries].sort((a, b) => a - b).join(',')}`;
+  if (kavitaSignalsCache && kavitaSignalsCache.key === cacheKey && Date.now() - kavitaSignalsCache.at < KAVITA_SIGNALS_TTL_MS) {
+    return kavitaSignalsCache.signals;
+  }
   const client = new KavitaClient(conn.baseUrl, conn.apiKey);
   let libraries;
   try {
@@ -291,9 +306,6 @@ async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
     return [];
   }
 
-  // Libraries the user excluded from recommendations (e.g. a regular manga
-  // collection that should not feed doujinshi searches).
-  const excludedLibraries = new Set(getRecommendationSettings().excludedLibraryIds);
   // Phase 1: collect series across all libraries (one bulk call per library).
   const seriesList: KavitaSeries[] = [];
   for (const lib of libraries) {
@@ -332,6 +344,7 @@ async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
     );
     signals.push(...batch);
   }
+  kavitaSignalsCache = { key: cacheKey, at: Date.now(), signals };
   return signals;
 }
 
@@ -953,11 +966,23 @@ function writeCached(set: RecommendationSet): void {
 /** Serialize concurrent generation for the same date (page reloads, SSE-free polling). */
 let inflight: { date: string; promise: Promise<RecommendationSet> } | null = null;
 
+/**
+ * After a generation finds nothing (both sources down or blocked), serve an
+ * empty set cheaply for this long instead of re-running the full pipeline on
+ * every request. A manual refresh bypasses the cooldown.
+ */
+const EMPTY_RETRY_COOLDOWN_MS = 10 * 60_000;
+let emptyCooldownUntil = 0;
+
 function generateFor(date: string, nonce: number): Promise<RecommendationSet> {
   if (inflight && inflight.date === date) return inflight.promise;
   const promise = doGenerate(date, nonce)
     .then((set) => {
-      writeCached(set);
+      if (set.items.length > 0) writeCached(set);
+      // An empty set is not pinned: readCached treats empty as a miss, so
+      // caching it would make every request regenerate — re-running a failing
+      // pipeline for minutes on each one. Back off instead.
+      else emptyCooldownUntil = Date.now() + EMPTY_RETRY_COOLDOWN_MS;
       return set;
     })
     .finally(() => {
@@ -981,7 +1006,15 @@ function withOwned(set: RecommendationSet): RecommendationResponse {
 export function getRecommendations(): Promise<RecommendationResponse> {
   const date = localDate();
   const cached = readCached(date);
-  return (cached ? Promise.resolve(cached) : generateFor(date, 0)).then(withOwned);
+  if (cached) return Promise.resolve(withOwned(cached));
+  if (Date.now() < emptyCooldownUntil) {
+    // The last generation found nothing; don't pay for another full pass on
+    // every refetch while the sources are still down.
+    return Promise.resolve(
+      withOwned({ date, generatedAt: new Date().toISOString(), mode: 'popular', profile: { artists: [], tags: [], series: [], language: null }, items: [] }),
+    );
+  }
+  return generateFor(date, 0).then(withOwned);
 }
 
 /** Monotonic nonce so each refresh draws differently (deterministic, unlike Math.random). */
@@ -990,7 +1023,15 @@ let refreshNonce = 0;
 /** Re-roll today's picks with a fresh seed (manual refresh). */
 export async function refreshRecommendations(): Promise<RecommendationResponse> {
   const date = localDate();
-  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(date))).run();
+  // An explicit re-roll bypasses the empty-set cooldown.
+  emptyCooldownUntil = 0;
+  // If a generation is already running (the day's first pass, another tab),
+  // wait for it and then roll anyway: joining its promise would silently
+  // discard this click's fresh seed and hand back whatever was in flight.
+  if (inflight?.date === date) await inflight.promise.catch(() => {});
+  // No cache pre-delete: a successful generation overwrites today's row, and
+  // keeping the last good set means a failed refresh degrades to stale picks
+  // instead of forcing every request into a full regeneration.
   return withOwned(await generateFor(date, ++refreshNonce));
 }
 

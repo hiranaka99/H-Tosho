@@ -138,3 +138,76 @@ test('exhausted candidate pool recycles previously-served picks instead of going
   const today = localDate(new Date());
   assert.ok(historyRows().every((h) => h.date === today), 'history kept stale serve dates after recycling');
 });
+
+test('manual refresh during an in-flight generation re-rolls instead of joining it', async () => {
+  // The previous test leaves today's cached set behind; clear it so the first
+  // getRecommendations() below actually starts a (gated) generation.
+  const today = localDate(new Date());
+  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${today}`)).run();
+
+  let releaseGate: (() => void) | null = null;
+  const gate = new Promise<void>((r) => { releaseGate = r; });
+  let searchCalls = 0;
+  const gatedProvider = (source: DoujinSource): DoujinProvider => ({
+    id: source,
+    name: source,
+    color: '#000',
+    async search(query: string, limit?: number): Promise<DoujinSearchResult[]> {
+      searchCalls++;
+      await gate;
+      const ids = Array.from({ length: 30 }, (_, i) => `${slug(query)}#${i}`);
+      return ids.slice(0, limit ?? undefined).map((galleryId) => ({ source, galleryId, title: `${source} ${galleryId}`, tags: [], artists: [] }));
+    },
+  });
+  doujinProviders.hitomi = gatedProvider('hitomi');
+  doujinProviders.nhentai = gatedProvider('nhentai');
+
+  const first = recs.getRecommendations(); // starts the day's generation, stuck on the gate
+  const second = recs.refreshRecommendations(); // must wait for it, then run its own roll
+  let callsAfterFirst = -1;
+  const trackedFirst = first.then((set) => { callsAfterFirst = searchCalls; return set; });
+  releaseGate!();
+  const [set1, set2] = await Promise.all([trackedFirst, second]);
+  assert.equal(set1.items.length, 12);
+  assert.equal(set2.items.length, 12);
+  assert.ok(searchCalls > callsAfterFirst, 'refresh joined the in-flight generation instead of running its own roll');
+  assert.equal(overlap(keySet(set1.items), keySet(set2.items)), 0, 'second roll re-served picks from the first');
+});
+
+test('empty generation is not cached and backs off until a manual refresh', async () => {
+  // Fresh boundary: no history to recycle into the (would-be) set.
+  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations-history')).run();
+  const today = localDate(new Date());
+  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${today}`)).run();
+
+  let searchCalls = 0;
+  const emptyProvider = (source: DoujinSource): DoujinProvider => ({
+    id: source,
+    name: source,
+    color: '#000',
+    async search(): Promise<DoujinSearchResult[]> {
+      searchCalls++;
+      return [];
+    },
+  });
+  doujinProviders.hitomi = emptyProvider('hitomi');
+  doujinProviders.nhentai = emptyProvider('nhentai');
+
+  const set1 = await recs.getRecommendations();
+  assert.equal(set1.items.length, 0);
+  assert.ok(
+    !getDb().select().from(schema.keyValueStore).all().some((r) => r.key === `recommendations-v2:${today}`),
+    'empty set was pinned to the day cache',
+  );
+
+  // While the sources stay down, subsequent reads must not re-run the pipeline.
+  const callsAfterFirst = searchCalls;
+  const set2 = await recs.getRecommendations();
+  assert.equal(set2.items.length, 0);
+  assert.equal(searchCalls, callsAfterFirst, 'empty-set cooldown did not prevent regeneration');
+
+  // A manual refresh bypasses the cooldown and re-rolls.
+  const set3 = await recs.refreshRecommendations();
+  assert.equal(set3.items.length, 0);
+  assert.ok(searchCalls > callsAfterFirst, 'manual refresh did not regenerate during the cooldown');
+});
