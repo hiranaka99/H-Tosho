@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { fetchBuffer } from '../lib/http.js';
 import { extractGalleryId, stripTags, toIsoDate } from './util.js';
-import type { DoujinGallery, DoujinProvider, DoujinSearchResult, DoujinSuggestion, DoujinSort } from './types.js';
+import type { DoujinGallery, DoujinProvider, DoujinSearchOptions, DoujinSearchResult, DoujinSuggestion, DoujinSort } from './types.js';
 
 /**
  * Hitomi.la provider.
@@ -598,15 +598,15 @@ const HITOMI_POPULAR_PERIODS: Partial<Record<DoujinSort, 'today' | 'week' | 'yea
   'popular-week': 'week',
   'popular-year': 'year',
 };
-/** Gallery types omitted from search results (hitomi's "image set" / "artist CG"). */
-const EXCLUDED_GALLERY_TYPES: Record<string, true> = { imageset: true, artistcg: true };
+/** Gallery types omitted from every hitomi search result (hitomi's "image set"). */
+const EXCLUDED_GALLERY_TYPES: Record<string, true> = { imageset: true };
 
 export const hitomiProvider: DoujinProvider = {
   id: 'hitomi',
   name: 'Hitomi.la',
   color: '#ff5722',
 
-  async search(query: string, limit = 24, sort?: DoujinSort): Promise<DoujinSearchResult[]> {
+  async search(query: string, limit = 24, sort?: DoujinSort, opts?: DoujinSearchOptions): Promise<DoujinSearchResult[]> {
     const q = query.trim();
     if (!q) return [];
 
@@ -638,11 +638,14 @@ export const hitomiProvider: DoujinProvider = {
     // large result set doesn't open thousands of concurrent connections. `ids`
     // keeps the ordering the index returned (popularity when a popular sort was
     // requested, otherwise newest-first), so batching preserves it. Excluded
-    // types (image sets, artist CG) are dropped during hydration and backfilled
-    // from later candidates so results still fill to `limit` where possible; the
-    // scan caps at 4x the target to bound lookups on type-heavy queries.
+    // types (image sets, plus any caller-specified types) are dropped during
+    // hydration and backfilled from later candidates so results still fill to
+    // `limit` where possible; the scan caps at 4x the target to bound lookups on type-heavy queries.
     const target = Math.max(limit, 1);
     const scanLimit = Math.min(ids.length, target * 4);
+    // Base exclusions plus caller-specified types (recommendations drop artist CGs too).
+    const excludedTypes = new Set(Object.keys(EXCLUDED_GALLERY_TYPES));
+    for (const t of opts?.excludeTypes ?? []) excludedTypes.add(t.toLowerCase().replace(/[^a-z]/g, ''));
     const out: DoujinSearchResult[] = [];
     const BATCH = 25;
     for (let i = 0; i < scanLimit && out.length < target; i += BATCH) {
@@ -652,7 +655,7 @@ export const hitomiProvider: DoujinProvider = {
           try {
             const info = parseGalleryInfo(await fetchText(`${API_BASE}/galleries/${id}.js`));
             const type = typeof info.type === 'string' ? info.type.toLowerCase().replace(/[^a-z]/g, '') : '';
-            if (EXCLUDED_GALLERY_TYPES[type]) return;
+            if (excludedTypes.has(type)) return;
             const gg = await loadGG();
             const files: HitomiFile[] = info.files ?? [];
             out.push({

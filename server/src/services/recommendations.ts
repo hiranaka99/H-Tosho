@@ -386,6 +386,12 @@ async function backfillMissingTags(): Promise<void> {
 // ---------------------------------------------------------------------------
 // Candidate queries
 // ---------------------------------------------------------------------------
+/**
+ * Gallery types recommendations never surface. Image sets are already dropped
+ * by the hitomi provider itself; artist CGs appear in plain search results but
+ * stay out of the daily picks.
+ */
+const EXCLUDED_GALLERY_TYPES = ['imageset', 'artistcg'];
 
 interface QuerySpec {
   source: DoujinSource;
@@ -511,7 +517,7 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
     const provider = getDoujinProvider(spec.source);
     if (!provider) return null;
     try {
-      return await provider.search(spec.query, spec.results, spec.sort);
+      return await provider.search(spec.query, spec.results, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES });
     } catch (err) {
       console.warn(`[h-tosho] recommendations query failed (${spec.source} “${spec.query}”):`, err instanceof Error ? err.message : err);
       return null;
@@ -657,7 +663,7 @@ async function gatherPopular(downloaded: Set<string>, rng: () => number): Promis
       if (!provider) return;
       const spec = POPULAR_FALLBACK[source];
       try {
-        const results = await provider.search(spec.query, PICKS_PER_SOURCE * 2, spec.sort);
+        const results = await provider.search(spec.query, PICKS_PER_SOURCE * 2, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES });
         const pool = results.filter((r) => !downloaded.has(keyOf(r)));
         // Seeded shuffle — popularity order is already quality-ranked; the seed
         // only decides which slice of it the user sees today.
@@ -665,7 +671,8 @@ async function gatherPopular(downloaded: Set<string>, rng: () => number): Promis
           const j = Math.floor(rng() * (i + 1));
           [pool[i], pool[j]] = [pool[j], pool[i]];
         }
-        out.push(...pool.slice(0, PICKS_PER_SOURCE).map((r) => ({ ...r, reasons: [] as string[] })));
+        // doGenerate enforces the fair per-set budget; this only bounds the pool.
+        out.push(...pool.slice(0, TOTAL_PICKS).map((r) => ({ ...r, reasons: [] as string[] })));
       } catch (err) {
         console.warn(`[h-tosho] recommendations popular fetch failed (${source}):`, err instanceof Error ? err.message : err);
       }
@@ -853,11 +860,31 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
   }
 
   // Cold start (or a day when the profile queries came up empty, or the per-term
-  // caps left the panel short): fill with each source's popularity list.
+  // caps left the panel short): fill with each source's popularity list. Fill
+  // round-robin across sources so a thin pool can't starve the other — a
+  // sequential append + slice would trim whichever source lists last and force
+  // the history recycle to top up with previously-served picks while fresh
+  // candidates remained.
   if (items.length < TOTAL_PICKS) {
     const existing = new Set(items.map(keyOf));
-    const extra = (await gatherPopular(excluded, rng)).filter((r) => !existing.has(keyOf(r)));
-    items = [...items, ...extra].slice(0, TOTAL_PICKS);
+    const bySource = new Map<DoujinSource, RecommendationItem[]>();
+    for (const r of await gatherPopular(excluded, rng)) {
+      if (existing.has(keyOf(r))) continue;
+      const list = bySource.get(r.source);
+      if (list) list.push(r);
+      else bySource.set(r.source, [r]);
+    }
+    while (items.length < TOTAL_PICKS) {
+      let added = false;
+      for (const source of SOURCES) {
+        if (items.length >= TOTAL_PICKS) break;
+        const next = bySource.get(source)?.shift();
+        if (!next) continue;
+        items.push(next);
+        added = true;
+      }
+      if (!added) break;
+    }
   }
 
   // The fresh candidate pool is exhausted (tiny pool, many refreshes): top up

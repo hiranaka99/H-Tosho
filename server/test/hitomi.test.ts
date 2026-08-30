@@ -122,8 +122,32 @@ beforeEach(() => {
 // Tests
 // ---------------------------------------------------------------------------
 
-test('search omits image set and artist CG galleries, backfilling to the limit', async () => {
+test('search omits image set galleries but keeps artist CG, backfilling to the limit', async () => {
   const results = await hitomiProvider.search('cat', 5);
+
+  // Image sets (102, 106) are dropped; later candidates backfill so the result
+  // still reaches the requested limit. Artist CG (103) is a normal search hit.
+  assert.deepEqual(
+    results.map((r) => r.galleryId),
+    ['101', '103', '104', '105', '107'],
+  );
+  for (const id of [102, 106]) {
+    // Fetched to learn the type, but never surfaced.
+    assert.ok(fetchedUrls.some((u) => u.endsWith(`/galleries/${id}.js`)), `expected a lookup for ${id}`);
+    assert.ok(!results.some((r) => r.galleryId === String(id)));
+  }
+});
+
+test('search keeps index order when the limit exceeds the kept galleries', async () => {
+  const results = await hitomiProvider.search('cat', 24);
+  assert.deepEqual(
+    results.map((r) => r.galleryId),
+    ['101', '103', '104', '105', '107', '108'],
+  );
+});
+
+test('search honors excludeTypes, dropping artist CG galleries like the recommendations engine does', async () => {
+  const results = await hitomiProvider.search('cat', 5, undefined, { excludeTypes: ['artistcg'] });
 
   // Excluded types (102, 103, 106) are dropped; later candidates backfill so
   // the result still reaches the requested limit.
@@ -136,14 +160,6 @@ test('search omits image set and artist CG galleries, backfilling to the limit',
     assert.ok(fetchedUrls.some((u) => u.endsWith(`/galleries/${id}.js`)), `expected a lookup for ${id}`);
     assert.ok(!results.some((r) => r.galleryId === String(id)));
   }
-});
-
-test('search keeps index order when the limit exceeds the kept galleries', async () => {
-  const results = await hitomiProvider.search('cat', 24);
-  assert.deepEqual(
-    results.map((r) => r.galleryId),
-    ['101', '104', '105', '107', '108'],
-  );
 });
 
 test('search bounds the hydration scan at 4x the limit on type-heavy queries', async () => {

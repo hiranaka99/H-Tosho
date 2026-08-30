@@ -114,6 +114,15 @@ export interface DownloadEnqueueResult {
 }
 
 /**
+ * Optional search modifiers. Like `sort`, providers ignore values they do not
+ * support.
+ */
+export interface DoujinSearchOptions {
+  /** Gallery types to omit from the results (provider-specific type names, e.g. hitomi's `artistcg`). */
+  excludeTypes?: string[];
+}
+
+/**
  * The provider contract each doujin source implements. Analogous to the
  * metadata `MetadataProvider`, but focused on gallery fetch + image list
  * resolution rather than series metadata.
@@ -125,7 +134,7 @@ export interface DoujinProvider {
   /** Lookup by gallery id or URL string. */
   getGallery(idOrUrl: string): Promise<DoujinGallery>;
   /** Keyword/tag/artist search. `sort` is only honored by providers that support it. */
-  search(query: string, limit?: number, sort?: DoujinSort): Promise<DoujinSearchResult[]>;
+  search(query: string, limit?: number, sort?: DoujinSort, opts?: DoujinSearchOptions): Promise<DoujinSearchResult[]>;
   /** Optional tag/artist autocomplete suggestions for a query prefix. */
   suggest?(query: string, limit?: number): Promise<DoujinSuggestion[]>;
 }
