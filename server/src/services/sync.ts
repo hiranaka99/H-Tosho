@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import path from 'node:path';
 import { getDb, schema } from '../db/index.js';
-import { KavitaClient } from '../kavita/client.js';
+import { KavitaClient, kavitaNormalizeName } from '../kavita/client.js';
 import {
   KavitaPublicationStatus,
   type SeriesMetadataPayload,
@@ -114,7 +114,8 @@ export function checkAlignment(
     return sa.size === sb.length && sb.every((x) => sa.has(x));
   };
 
-  if (meta.title && norm(kavita.name) !== norm(meta.title)) mismatched.push('title');
+  // The title compares under Kavita's own normalization: the scanner treats names that normalize identically as one series, and H-Tosho never pushes titles through the API — a punctuation-only difference is steady state, not drift.
+  if (meta.title && kavitaNormalizeName(kavita.name) !== kavitaNormalizeName(meta.title)) mismatched.push('title');
   if (meta.summary !== undefined && norm(k?.summary) !== norm(meta.summary)) mismatched.push('summary');
   if (meta.genres.length && !sameSet((k?.genres ?? []).map((g) => g.title), meta.genres)) mismatched.push('genres');
   if (meta.tags.length) {
@@ -207,9 +208,9 @@ export async function applyToKavita(
     }
   }
 
-  // Kavita v0.9 silently ignores series name updates — the name follows the
-  // folder path and only 0.10+ applies renames via /Series/update. Verify the
-  // write landed so sync history never claims a rename that didn't happen.
+  // Recent Kavita builds apply /Series/update renames (verified on 0.9.1), but
+  // older ones silently ignore the name change — verify the write landed so
+  // sync history never claims a rename that didn't happen.
   if (payload.name !== undefined) {
     try {
       const current = await client.getSeriesById(seriesId);
@@ -217,7 +218,7 @@ export async function applyToKavita(
         const i = pushed.indexOf('name');
         if (i !== -1) pushed.splice(i, 1);
         warnings.push(
-          'Kavita did not apply the series name (v0.9 derives it from the folder path; renaming via API requires 0.10+)',
+          `Kavita did not apply the series rename — it still shows "${current.name ?? '?'}"; retry the sync`,
         );
       }
     } catch {
@@ -415,93 +416,6 @@ export async function enqueueMatchForNewSeries(
   return fresh;
 }
 
-const RENAME_SCAN_TIMEOUT_MS = 5 * 60_000;
-const RENAME_SCAN_POLL_MS = 5_000;
-
-/**
- * Wait for Kavita to register a renamed series after ComicInfo.Series was
- * rewritten in the files. Changing the Series value does not rename the
- * existing record: on its next scan Kavita creates a NEW entry in the same
- * folder and detaches the books from the old one, so the caller must find that
- * new entry before pushing the remaining metadata onto it.
- *
- * Fires a library scan (the only pass Kavita is guaranteed to run that
- * re-groups the folder by ComicInfo.Series), then polls the series list until
- * an entry with a previously unseen id appears in the same folder. When the
- * budget runs out, falls back to the original id if Kavita renamed the record
- * in place; otherwise returns null so the caller can apply to the old entry
- * and report that a manual scan is needed.
- */
-async function waitForRenamedSeriesEntry(
-  client: KavitaClient,
-  libraryId: number,
-  folderPath: string | undefined,
-  oldSeriesId: number,
-  expectedTitle: string,
-  isCancelled?: () => boolean,
-): Promise<{ id: number; name: string; isNew: boolean } | null> {
-  const norm = (p: string): string => path.normalize(p).replace(/\\/g, '/');
-  const target = folderPath ? norm(folderPath) : '';
-  const inFolder = (s: { id: number; folderPath?: string }) => s.id !== oldSeriesId && (!target || (s.folderPath !== undefined && norm(s.folderPath) === target));
-  const wantTitle = expectedTitle.trim().toLowerCase();
-
-  // Snapshot the folder's pre-scan entries so an existing sibling series cannot
-  // be mistaken for the rename.
-  let known: Set<number> | null = null;
-  const deadline = Date.now() + RENAME_SCAN_TIMEOUT_MS;
-  while (known === null) {
-    if (isCancelled?.()) throw new JobCancelled();
-    try {
-      known = new Set((await client.getSeries(libraryId)).filter(inFolder).map((s) => s.id));
-    } catch {
-      if (Date.now() >= deadline) return null;
-      await sleep(RENAME_SCAN_POLL_MS);
-    }
-  }
-
-  try {
-    await client.scanLibrary(libraryId);
-  } catch {
-    /* scan request failed — the poll below times out and the caller falls back */
-  }
-
-  let failures = 0;
-  for (;;) {
-    if (isCancelled?.()) throw new JobCancelled();
-    let series: Array<{ id: number; name?: string | null; folderPath?: string }> | null = null;
-    try {
-      series = await client.getSeries(libraryId);
-      failures = 0;
-    } catch {
-      failures += 1;
-    }
-    if (series) {
-      const candidates = series.filter((s) => inFolder(s) && !known.has(s.id));
-      // Prefer the entry Kavita named after the new Series value. The single-
-      // candidate fallback is only safe when the folder is known, so an unknown
-      // folderPath never adopts an unrelated new series.
-      const pick =
-        candidates.find((s) => (s.name ?? '').trim().toLowerCase() === wantTitle) ??
-        (target && candidates.length === 1 ? candidates[0] : undefined);
-      if (pick) return { id: pick.id, name: pick.name ?? expectedTitle, isNew: true };
-    } else if (failures >= 3 || Date.now() >= deadline) {
-      break; // Kavita unreachable — stop polling and fall back below
-    }
-    if (Date.now() >= deadline) break;
-    await sleep(RENAME_SCAN_POLL_MS);
-  }
-
-  // No new sibling appeared. Kavita may have renamed the record in place
-  // instead of splitting it — then the original id is still the right target.
-  try {
-    const current = await client.getSeriesById(oldSeriesId);
-    if ((current.name ?? '').trim().toLowerCase() === wantTitle) return { id: oldSeriesId, name: current.name, isNew: false };
-  } catch {
-    /* record gone — nothing left to target */
-  }
-  return null;
-}
-
 export interface ApplySeriesOptions {
   seriesId: number;
   providerId: string;
@@ -513,14 +427,12 @@ export interface ApplySeriesOptions {
   cover?: boolean;
   /** Match score from the dialog's candidate; kept on the match row. */
   score?: number | null;
-  /** Job cancellation probe — checked while waiting for Kavita's scan. */
+  /** Job cancellation probe. */
   isCancelled?: () => boolean;
 }
 
 export interface ApplySeriesResult {
-  /** The entry Kavita now uses for this folder (a new id when a rename split it). */
-  effectiveSeriesId: number;
-  /** Name of the effective entry (notifications/history). */
+  /** Name Kavita displays after this sync (notifications/history). */
   name: string;
   pushed: string[];
   errors: string[];
@@ -535,12 +447,14 @@ export interface ApplySeriesResult {
 
 /**
  * Apply a user-selected candidate to one Kavita series — the full flow behind
- * the identify dialog's "Apply & Sync": fetch provider metadata, optionally
- * rewrite ComicInfo.Series in every chapter and wait for Kavita to register
- * the rename as a new entry, push the remaining metadata + covers, verify
- * alignment, and update the local match row. Runs as a background job: the
- * scan wait can take minutes, far longer than any HTTP gateway tolerates on a
- * held-open request (that is what used to surface as "HTTP 504").
+ * the identify dialog's "Apply & Sync": fetch provider metadata, rewrite
+ * ComicInfo.Series in every chapter when the title is selected (the files must
+ * agree with the record or Kavita's next scan would split the folder), rename
+ * the record through /Series/update, push the remaining metadata + covers,
+ * verify alignment, and update the local match row. Runs as a background job:
+ * the CBZ rewrites touch every chapter of the series, far longer than any HTTP
+ * gateway tolerates on a held-open request (that is what used to surface as
+ * "HTTP 504").
  */
 export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOptions): Promise<ApplySeriesResult> {
   const seriesId = opts.seriesId;
@@ -556,17 +470,16 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
   }
   let titleFilesUpdated = 0;
   let titleFilesVerified = 0;
-  // A checked TITLE means "make the series title this". Kavita derives the
-  // display name from ComicInfo.Series, and a changed Series value makes its
-  // next scan register the files as a NEW series entry — it does not rename
-  // the existing record. The order is therefore fixed:
-  //   1. rewrite ComicInfo.Series in every chapter of the series,
-  //   2. scan the library and wait until the new entry appears,
-  //   3. push the remaining metadata onto that new entry (the title itself
-  //      never goes through the API).
-  let effectiveSeriesId = seriesId;
-  let effectiveName = series.name;
-  const renameNotes: string[] = [];
+  // A checked TITLE means "make the series title this". The two halves must
+  // always agree — Kavita's scanner re-parses files by their ComicInfo.Series
+  // value and matches records by normalized name, so a folder whose files and
+  // record carry different titles would split on the next scan:
+  //   1. rewrite ComicInfo.Series in every chapter of the series (first — a
+  //      failed rewrite rolls back and aborts before the record is touched),
+  //   2. rename the Kavita record through /Series/update, applied and verified
+  //      by applyToKavita below. Keeping the record's id preserves read
+  //      progress, ratings and collections — a ComicInfo-only rename cannot
+  //      guarantee that (a genuine rename splits into a new entry).
   const excludedFields = [...(opts.excludedFields ?? [])];
   const newTitle = meta.title.trim();
   if (newTitle && !excludedFields.includes('title') && newTitle !== series.name.trim()) {
@@ -581,52 +494,31 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
     if (!dir) throw new Error(`Could not locate the series folder for "${series.name}" on this machine`);
     const files = listCbzFiles(dir);
     if (files.length === 0) throw new Error(`No CBZ chapters found for "${series.name}"`);
-    // Step 1: every chapter carries the new Series value before Kavita scans.
     const rewrite = await setSeriesTitleInCbzFiles(files, newTitle);
     titleFilesUpdated = rewrite.changed;
     titleFilesVerified = rewrite.verified;
-    excludedFields.push('title');
-    // Step 2: scan the library and wait for Kavita to register the renamed
-    // files as a new entry in the same folder.
-    const fresh = await waitForRenamedSeriesEntry(client, series.libraryId, series.folderPath, seriesId, newTitle, opts.isCancelled);
-    if (fresh?.isNew) {
-      effectiveSeriesId = fresh.id;
-      effectiveName = fresh.name;
-      renameNotes.push(`Kavita registered the rename as a new series entry — metadata is applied to it`);
-      // The old record lost its books on the scan — remove it so the library
-      // keeps one entry for this folder. Guarded: only while it still exists
-      // and holds no books.
-      try {
-        const chapters = await client.getChaptersBySeries(seriesId);
-        if (chapters.length === 0) await client.deleteSeries(seriesId);
-      } catch {
-        /* best-effort — a stale record would linger until the next full scan */
-      }
-    } else if (!fresh) {
-      renameNotes.push('Kavita has not registered the renamed series yet — metadata was applied to the previous entry; run a library scan in Kavita and re-sync');
-    }
   }
   // Per-dialog overrides: deselected fields are skipped, and unchecking Cover
-  // skips the series cover + volume covers.
+  // skips the series cover + volume covers. A selected title goes through
+  // applyToKavita's verified /Series/update rename (excludedFields only ever
+  // carries 'title' when the user deselected it).
   const pushCovers = opts.cover !== false;
-  // Step 3: the remaining metadata lands on the entry Kavita now uses for
-  // this folder — the new one when the rename split it.
-  const result = await applyToKavita(client, effectiveSeriesId, meta, {
+  const result = await applyToKavita(client, seriesId, meta, {
     coverUrl: pushCovers ? meta.coverUrl : undefined,
     volumeCovers: pushCovers ? meta.volumeCovers : undefined,
     excludedFields,
     title: meta.title,
     titleFiles: titleFilesUpdated || undefined,
   });
-  if (renameNotes.length) result.warnings.push(...renameNotes);
-  invalidateSeriesArtists(effectiveSeriesId);
-  if (effectiveSeriesId !== seriesId) invalidateSeriesArtists(seriesId);
+  // History/notifications show the name Kavita displays after this sync.
+  const renamed = !excludedFields.includes('title') && newTitle !== series.name.trim() && result.pushed.includes('name');
+  invalidateSeriesArtists(seriesId);
   // Verify the push against Kavita's live state and record whether every
   // provider-managed field now matches (the "Aligned" flag).
   let aligned = false;
   try {
-    const full = await client.getSeriesById(effectiveSeriesId);
-    const kavitaMeta = await client.getSeriesMetadata(effectiveSeriesId);
+    const full = await client.getSeriesById(seriesId);
+    const kavitaMeta = await client.getSeriesMetadata(seriesId);
     aligned = checkAlignment({ name: full.name, metadata: kavitaMeta }, meta).aligned;
   } catch {
     /* series without a metadata row yet — stays unaligned */
@@ -639,7 +531,7 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
   const matchScore = sentScore ?? existingRow?.matchScore ?? null;
   db.insert(schema.seriesMatches)
     .values({
-      kavitaSeriesId: effectiveSeriesId,
+      kavitaSeriesId: seriesId,
       status: result.errors.length ? 'failed' : 'matched',
       providerId: opts.providerId,
       providerSeriesId: opts.providerSeriesId,
@@ -663,14 +555,8 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
       },
     })
     .run();
-  // The rename moved this series to a new Kavita id — drop the match row that
-  // still points at the old record so it cannot resurface as stale.
-  if (effectiveSeriesId !== seriesId) {
-    db.delete(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).run();
-  }
   return {
-    effectiveSeriesId,
-    name: effectiveName,
+    name: renamed ? newTitle : series.name,
     pushed: result.pushed,
     errors: result.errors,
     warnings: result.warnings,

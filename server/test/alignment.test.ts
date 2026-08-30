@@ -109,6 +109,16 @@ describe('checkAlignment', () => {
     assert.equal(result.aligned, true);
   });
 
+  it('treats a punctuation-only title difference as aligned (Kavita normalization)', () => {
+    // Kavita keeps the pre-existing display name when the new ComicInfo.Series
+    // value normalizes to the same series identity — apostrophes and other
+    // punctuation are invisible to its scanner, so this is steady state.
+    const kavita = { ...alignedKavita, name: "Test Series'!" };
+    const result = checkAlignment(kavita, meta);
+    assert.equal(result.mismatched.includes('title'), false);
+    assert.equal(result.aligned, true);
+  });
+
   it('flags a missing provider tag (tags use subset semantics)', () => {
     const kavita = {
       ...alignedKavita,

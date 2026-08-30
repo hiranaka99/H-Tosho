@@ -333,7 +333,7 @@ describe('KavitaClient', () => {
     });
   });
 
-  it('maps is-task-running responses onto a real boolean', async () => {
+  it('reports scan tasks via 0.9.1 method-scoped is-task-running calls', async () => {
     let body: string = 'false';
     const requests: string[] = [];
     globalThis.fetch = async (input) => {
@@ -350,7 +350,32 @@ describe('KavitaClient', () => {
     body = 'false';
     assert.equal(await client.isTaskRunning(), false);
 
-    assert.equal(requests.every((u) => u === 'https://kavita.example/api/Server/is-task-running'), true);
+    // Every call carries a scan method name and one of the two Hangfire queues.
+    const methods: string[] = [];
+    for (const url of requests) {
+      assert.ok(url.startsWith('https://kavita.example/api/Server/is-task-running?methodName='), url);
+      assert.ok(/&queue=(default|scan)$/.test(url), url);
+      const method = new URL(url).searchParams.get('methodName') ?? '';
+      if (!methods.includes(method)) methods.push(method);
+    }
+    assert.deepEqual(methods.sort(), ['ScanLibraries', 'ScanLibrary', 'ScanSeries']);
+  });
+
+  it('falls back to the bare is-task-running call when no scoped call is answered', async () => {
+    const requests: string[] = [];
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.includes('methodName=')) return new Response('The methodName field is required.', { status: 400 });
+      return new Response('true', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+    const client = new KavitaClient('https://kavita.example', 'secret');
+
+    assert.equal(await client.isTaskRunning(), true);
+    assert.ok(
+      requests.some((url) => url === 'https://kavita.example/api/Server/is-task-running'),
+      'the legacy bare call must be made when every scoped call fails',
+    );
   });
 
   it('stages covers through Kavita (upload-by-url) and applies the staged bytes as base64', async () => {

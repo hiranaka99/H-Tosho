@@ -67,11 +67,12 @@ test('global scan-new triggers a Kavita scan before listing series and skips aut
         { id: 2, name: 'Lib B', type: 0, folders: [dataDir], lastScanned: '2026-08-25T12:00:01' },
       ]);
     }
-    if (url.endsWith('/api/Server/is-task-running')) {
+    if (url.includes('/api/Server/is-task-running?')) {
       taskCalls += 1;
-      // First completion poll: scan still in flight; the next one sees an
-      // idle queue and releases the wait.
-      return Response.json(taskCalls === 1);
+      // Each completion poll is a batch of method-scoped calls (3 scan methods ×
+      // 2 queues); the first round reports the scan in flight, later rounds idle.
+      const round = Math.ceil(taskCalls / 6);
+      return Response.json(round === 1);
     }
     if (url.endsWith('/api/Library/scan-all')) return Response.json({});
     if (url.includes('/api/Series/all-v2?')) {
@@ -88,7 +89,7 @@ test('global scan-new triggers a Kavita scan before listing series and skips aut
   const firstSeriesIndex = requests.findIndex((u) => u.includes('/api/Series/all-v2?'));
   assert.ok(scanAllIndex !== -1 && firstSeriesIndex !== -1, 'expected both scan-all and series listing');
   assert.ok(scanAllIndex < firstSeriesIndex, `Kavita scan (${scanAllIndex}) must precede series listing (${firstSeriesIndex})`);
-  assert.ok(taskCalls >= 2, `completion polled isTaskRunning until it cleared (${taskCalls} polls)`);
+  assert.ok(taskCalls >= 12, `completion polled isTaskRunning until it cleared (${taskCalls} calls = ${Math.ceil(taskCalls / 6)} rounds)`);
   assert.equal(seriesCalls, 2, 'every library is listed so orphaned match rows can be detected');
   assert.deepEqual(summary, { processed: 1, matched: 0, failed: 1, libraries: 2 });
 

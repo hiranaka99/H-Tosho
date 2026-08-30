@@ -100,17 +100,17 @@ describe('applyToKavita field exclusions', () => {
 });
 
 describe('applyToKavita name verification', () => {
-  it('drops name from pushed and warns when Kavita ignored the rename (v0.9)', async () => {
+  it('drops name from pushed and warns when Kavita ignored the rename', async () => {
     const { client, captured } = stubClient([], 'A Fifth of Romance');
     const result = await applyToKavita(client, 1, metadata, {
       cover: null,
       title: 'Test Series',
     });
 
-    // The rename was still sent (0.10+ applies it); the report must not claim it landed.
+    // The rename was still sent (recent builds apply it); the report must not claim it landed.
     assert.equal(captured.patch.name, 'Test Series');
     assert.ok(!result.pushed.includes('name'));
-    assert.match(result.warnings[0] ?? '', /series name/);
+    assert.match(result.warnings[0] ?? '', /rename/);
   });
 
   it('keeps name in pushed when Kavita applied the rename', async () => {

@@ -545,7 +545,7 @@ async function runApplySeries(client: KavitaClient, job: Job, log: LogFn): Promi
     throw new Error(msg);
   }
   const ok = result.errors.length === 0;
-  recordHistory(result.effectiveSeriesId, result.name, ok ? 'updated' : 'failed', {
+  recordHistory(seriesId, result.name, ok ? 'updated' : 'failed', {
     providerId: p.providerId!,
     score: p.score ?? null,
     pushed: result.pushed,
@@ -575,7 +575,6 @@ async function runApplySeries(client: KavitaClient, job: Job, log: LogFn): Promi
   const summary: Record<string, number> = { processed: 1, matched: ok ? 1 : 0, failed: ok ? 0 : 1 };
   if (result.titleFilesUpdated > 0) summary.titleFilesUpdated = result.titleFilesUpdated;
   if (result.titleFilesVerified > 0) summary.titleFilesVerified = result.titleFilesVerified;
-  if (result.effectiveSeriesId !== seriesId) summary.newSeriesId = result.effectiveSeriesId;
   return summary;
 }
 

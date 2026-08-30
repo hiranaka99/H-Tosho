@@ -50,6 +50,22 @@ const LIBRARY_MEDIA_FORMATS: Record<KavitaLibraryType, MediaFormat> = {
 const personCache = new Map<string, { id: number; name: string; at: number }>();
 const PERSON_CACHE_TTL_MS = 60 * 60_000;
 const PERSON_CACHE_MAX_ENTRIES = 5000;
+/** Scan task methods reported by /Server/is-task-running?methodName= (ScannerService, as enqueued by TaskScheduler). */
+const SCAN_TASK_METHODS = ['ScanLibrary', 'ScanLibraries', 'ScanSeries'] as const;
+/** Hangfire queues that can hold scan jobs — 0.9.1 runs scans on a dedicated "scan" queue. */
+const SCAN_TASK_QUEUES = ['default', 'scan'] as const;
+
+/**
+ * Mirror of Kavita's series-name normalization (0.9.x, StringExtensions.ToNormalized):
+ * strip everything except letters, digits and +! (ASCII plus fullwidth), then case-fold.
+ * The scanner matches scanned files to existing records by this value
+ * (WhereSeriesNameMatches over NormalizedName / Localized / Original) and updates the
+ * match in place — it never renames a record. Two titles that normalize identically
+ * therefore can never split into separate series entries on a scan.
+ */
+export function kavitaNormalizeName(name: string): string {
+  return name.replace(/[^\p{L}0-9+＊！＋]/gu, '').trim().toLowerCase();
+}
 
 export interface UpdateMetadataOptions {
   /** When false, pushed fields are written without setting Kavita's field-lock flags. */
@@ -162,15 +178,34 @@ export class KavitaClient {
     return info;
   }
 
+
   /**
-   * GET /api/Server/is-task-running — true while a Kavita task is running or
-   * queued in the default queue (scans, metadata refreshes, backups, ...).
-   * The endpoint answers a bare JSON boolean on current builds but has also
-   * been observed as a quoted string, so both shapes map to a real boolean.
+   * GET /api/Server/is-task-running — true while any of Kavita's scan tasks is
+   * running or queued. Since 0.9.1 the endpoint requires a `methodName` query
+   * parameter and reports one task method at a time (a bare call answers 400),
+   * so the answer ORs all three scan methods on both Hangfire queues: processing
+   * jobs are visible regardless of queue, enqueued jobs only within their own.
+   * The endpoint answers a bare JSON boolean on current builds but has also been
+   * observed as a quoted string, so both shapes map to a real boolean. When no
+   * scoped call is answered (pre-0.9.1 builds expose the endpoint without the
+   * parameter) the legacy bare call is used instead.
    */
   async isTaskRunning(): Promise<boolean> {
+    const parse = (data: unknown): boolean => data === true || data === 'true';
+    const scoped = await Promise.allSettled(
+      SCAN_TASK_METHODS.flatMap((method) =>
+        SCAN_TASK_QUEUES.map((queue) =>
+          this.getJson<boolean | string>(
+            `/Server/is-task-running?methodName=${encodeURIComponent(method)}&queue=${queue}`,
+            'Kavita task status',
+          ),
+        ),
+      ),
+    );
+    const answered = scoped.filter((result): result is PromiseFulfilledResult<boolean | string> => result.status === 'fulfilled');
+    if (answered.length > 0) return answered.some((result) => parse(result.value));
     const data = await this.getJson<boolean | string>('/Server/is-task-running', 'Kavita task status');
-    return data === true || data === 'true';
+    return parse(data);
   }
 
   /** GET /api/Library/libraries */
