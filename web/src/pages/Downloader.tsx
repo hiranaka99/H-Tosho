@@ -646,7 +646,7 @@ function watchIntervalLabel(minutes: number): string {
   return WATCH_INTERVAL_OPTIONS.find((o) => o.minutes === minutes)?.label ?? `${minutes} min`;
 }
 
-function WatchedTab() {
+function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, query: string) => void }) {
   const qc = useQueryClient();
   const watchesQuery = useQuery({ queryKey: ['watched-searches'], queryFn: api.watchedSearches, refetchInterval: 30_000 });
   const watches = watchesQuery.data;
@@ -748,7 +748,7 @@ function WatchedTab() {
               <div key={w.id} className="rounded-md border border-border-2 px-3 py-2 text-xs">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone="muted">{SOURCE_LABELS[w.source] ?? w.source}</Badge>
-                  <span className="min-w-0 flex-1 truncate font-medium" title={w.query}>{w.query}</span>
+                  <button type="button" onClick={() => onOpenSearch(w.source, w.query)} title={`Open in search tab: ${w.query}`} aria-label={`Search “${w.query}” on ${SOURCE_LABELS[w.source] ?? w.source}`} className="min-w-0 flex-1 truncate text-left font-medium text-primary underline-offset-2 hover:underline">{w.query}</button>
                   {w.lastResults.length > 0 && (
                     <Button size="sm" variant="ghost" aria-expanded={expanded.has(w.id)} onClick={() => toggleExpanded(w.id)}>
                       {w.lastResults.length} new
@@ -1655,7 +1655,7 @@ export function Downloader() {
       )}
 
       {/* Watched searches */}
-      {tab === 'watched' && <WatchedTab />}
+      {tab === 'watched' && <WatchedTab onOpenSearch={(src, q) => searchTagFragment(q, src)} />}
       {/* Gallery detail modal */}
       {selected && (
         <GalleryDetailModal
