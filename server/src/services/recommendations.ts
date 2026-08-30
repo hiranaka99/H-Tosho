@@ -2,7 +2,7 @@ import { and, desc, eq, like, ne } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery, DoujinSearchResult, DoujinSource, DoujinSort } from '../downloader/types.js';
-import { mapLimit, sleep } from '../lib/http.js';
+import { mapLimit } from '../lib/http.js';
 import { KavitaClient } from '../kavita/client.js';
 import type { KavitaSeries } from '../kavita/types.js';
 import { getKavitaConnection, getRecommendationSettings, setRecommendationSettings } from './settings.js';
@@ -15,10 +15,10 @@ import { getKavitaConnection, getRecommendationSettings, setRecommendationSettin
  * pre-existing downloads), plus the user's existing Kavita library: each series'
  * title feeds parody/series searches, and the genres/tags/writers Kavita has
  * already indexed from the archives join the artist/tag profile. The engine
- * builds a handful of artist/tag/series queries per source from the top
- * profile terms (the popularity horizon is a seeded per-roll choice, so the
- * candidate pool itself rotates), scores candidates by how strongly they
- * match the profile, drops galleries already in the library or served
+ * builds a handful of artist/tag/series queries from the top profile terms
+ * and searches Hitomi with them (the popularity horizon is a seeded per-roll
+ * choice, so the candidate pool itself rotates), scores candidates by how
+ * strongly they match the profile, drops galleries already in the library or
  * recently, and picks a daily set.
  *
  * Daily rotation: selection is seeded with the local date, so a day always
@@ -30,15 +30,22 @@ import { getKavitaConnection, getRecommendationSettings, setRecommendationSettin
  * same galleries from resurfacing day after day. Picks become eligible again
  * after HISTORY_DAYS, or sooner when the fresh candidate pool is exhausted
  * (oldest history recycles first). When the profile is too thin to be
- * meaningful (cold start), it falls back to each source's popularity list.
+ * meaningful (cold start), it falls back to Hitomi's popularity list.
  */
 
-const SOURCES: DoujinSource[] = ['hitomi', 'nhentai'];
+/**
+ * Sources the daily picks are drawn from — Hitomi only. nHentai stays fully
+ * available in search, watched searches and downloads; it just no longer feeds
+ * the recommender, whose roll of ~9 rate-limited nHentai searches took 30+
+ * seconds per refresh. The taste profile still learns from nHentai galleries
+ * downloaded through the engine (recordGalleryTags at download time).
+ */
+const SOURCES = ['hitomi'] as const;
 
 /** Top-N profile terms turned into one search query each, per source. */
 const ARTIST_QUERIES = 2; // artist terms per source — artists rotate, tags/series carry the set
 const TAG_QUERIES = 4; // top tag terms per source
-const SERIES_QUERIES = 3; // top Kavita series titles per source (parody/series search)
+const SERIES_QUERIES = 3; // top Kavita series titles per source (series search)
 /**
  * How many heaviest terms per kind are eligible for queries. Wide pools are
  * what give later rolls somewhere to rotate to; without them every roll
@@ -49,21 +56,15 @@ const SERIES_QUERIES = 3; // top Kavita series titles per source (parody/series 
 const ARTIST_QUERY_POOL = 12;
 const TAG_QUERY_POOL = 16;
 const SERIES_QUERY_POOL = 12;
-/**
- * Results fetched per candidate query. Hitomi hydration is one request per
- * gallery, so its cap stays tight; nhentai answers from a single API page,
- * so a wider pool there costs nothing.
- */
+/** Results fetched per candidate query — hydration is one request per gallery, so the cap stays tight. */
 const HITOMI_RESULTS_PER_QUERY = 12;
-const NHENTAI_RESULTS_PER_QUERY = 24;
 /**
  * Popularity horizons a roll draws one sort from, per source. All-time lists
  * barely move day to day; pairing them with a weekly horizon keeps the
  * candidate pool itself rotating, not just the terms querying it.
  */
-const SEARCH_SORTS: Record<DoujinSource, DoujinSort[]> = {
+const SEARCH_SORTS: Record<(typeof SOURCES)[number], DoujinSort[]> = {
   hitomi: ['popular-year', 'popular-week'],
-  nhentai: ['popular', 'popular-week'],
 };
 /** Total size of the daily set, split evenly across the registered sources. */
 const TOTAL_PICKS = 12;
@@ -378,8 +379,7 @@ async function backfillMissingTags(): Promise<void> {
     const provider = getDoujinProvider(source);
     if (!provider) continue;
     const rows = missing.filter((r) => r.source === source);
-    // Bounded parallelism; nHentai gets a pause between batches to stay inside
-    // its rate limits (especially without an API key).
+    // Bounded parallelism.
     for (let i = 0; i < rows.length; i += 8) {
       await Promise.all(
         rows.slice(i, i + 8).map(async (row) => {
@@ -391,7 +391,6 @@ async function backfillMissingTags(): Promise<void> {
           }
         }),
       );
-      if (source === 'nhentai' && i + 8 < rows.length) await sleep(500);
     }
   }
 }
@@ -415,29 +414,23 @@ interface QuerySpec {
   sort: DoujinSort;
 }
 
-/** Source-specific search fragment for a profile term (null = not searchable there). */
-function fragmentFor(source: DoujinSource, term: ProfileTerm): string | null {
+/** Hitomi search fragment for a profile term (null = not searchable). */
+function fragmentFor(term: ProfileTerm): string | null {
   const name = term.name.trim();
   if (!name) return null;
-  if (term.kind === 'artist') {
-    // Hitomi namespaces use underscores for spaces; nHentai quotes the value.
-    return source === 'hitomi' ? `artist:${name.replace(/\s+/g, '_')}` : `artist:"${name}"`;
-  }
+  // Hitomi namespaces use underscores for multi-word values.
+  if (term.kind === 'artist') return `artist:${name.replace(/\s+/g, '_')}`;
   if (term.kind === 'series') {
-    // Fan works of a series are indexed under its name on both sources.
-    return source === 'hitomi' ? `series:${name.replace(/\s+/g, '_')}` : `parody:"${name}"`;
+    // Fan works of a series are indexed under its name.
+    return `series:${name.replace(/\s+/g, '_')}`;
   }
-  const ns = term.nsBySource[source] ?? null;
+  const ns = term.nsBySource.hitomi ?? null;
   if (ns === 'language') return null; // language is handled as its own filter
-  if (source === 'hitomi') {
-    const val = name.replace(/\s+/g, '_');
-    return ns ? `${ns}:${val}` : name;
-  }
-  return ns ? `${ns}:"${name}"` : `"${name}"`;
+  return ns ? `${ns}:${name.replace(/\s+/g, '_')}` : name;
 }
 
-function languageFragment(source: DoujinSource, language: string): string {
-  return source === 'hitomi' ? `language:${language.toLowerCase()}` : `language:"${language}"`;
+function languageFragment(language: string): string {
+  return `language:${language.toLowerCase()}`;
 }
 
 /**
@@ -450,7 +443,7 @@ function languageFragment(source: DoujinSource, language: string): string {
 function buildQuerySpecs(profile: TasteProfile, rng: () => number): QuerySpec[] {
   const artists = sampleTerms(profile.terms.filter((t) => t.kind === 'artist'), ARTIST_QUERIES, ARTIST_QUERY_POOL, rng, false);
   const tags = sampleTerms(
-    profile.terms.filter((t) => t.kind === 'tag' && (t.nsBySource.hitomi ?? null) !== 'language' && (t.nsBySource.nhentai ?? null) !== 'language'),
+    profile.terms.filter((t) => t.kind === 'tag' && (t.nsBySource.hitomi ?? null) !== 'language'),
     TAG_QUERIES,
     TAG_QUERY_POOL,
     rng,
@@ -459,14 +452,14 @@ function buildQuerySpecs(profile: TasteProfile, rng: () => number): QuerySpec[] 
   const series = sampleTerms(profile.terms.filter((t) => t.kind === 'series'), SERIES_QUERIES, SERIES_QUERY_POOL, rng, rng() < 0.5);
   const specs: QuerySpec[] = [];
   for (const source of SOURCES) {
-    const lang = profile.language ? languageFragment(source, profile.language) : null;
+    const lang = profile.language ? languageFragment(profile.language) : null;
     for (const term of [...artists, ...tags, ...series]) {
-      const frag = fragmentFor(source, term);
+      const frag = fragmentFor(term);
       if (!frag) continue;
       specs.push({
         source,
         query: [frag, lang].filter(Boolean).join(' '),
-        results: source === 'hitomi' ? HITOMI_RESULTS_PER_QUERY : NHENTAI_RESULTS_PER_QUERY,
+        results: HITOMI_RESULTS_PER_QUERY,
         terms: [term],
         sort: SEARCH_SORTS[source][Math.floor(rng() * SEARCH_SORTS[source].length)],
       });
@@ -536,10 +529,9 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
       return null;
     }
   };
-  // Fire ~18 searches per generation. Run them all at once and the sources'
-  // rate limits answer with 429s (and the downloader's requestDelayMs throttle
-  // is bypassed entirely) — cap each source at 4 concurrent searches; sources
-  // run independently since their limits are independent.
+  // Fire up to ~9 searches per generation. Run them all at once and Hitomi's
+  // CDN answers with 429s (these direct calls bypass the downloader's
+  // requestDelayMs throttle) — cap concurrency at 4.
   const bySource = new Map<DoujinSource, QuerySpec[]>();
   for (const spec of specs) {
     const group = bySource.get(spec.source);
@@ -663,9 +655,8 @@ function pickWithBudget(candidates: Map<string, Candidate>, rng: () => number, t
 // Cold-start popularity fallback
 // ---------------------------------------------------------------------------
 
-const POPULAR_FALLBACK: Record<DoujinSource, { query: string; sort: DoujinSort }> = {
+const POPULAR_FALLBACK: Record<(typeof SOURCES)[number], { query: string; sort: DoujinSort }> = {
   hitomi: { query: 'doujinshi', sort: 'popular-year' },
-  nhentai: { query: 'type:doujinshi', sort: 'popular' },
 };
 
 async function gatherPopular(downloaded: Set<string>, rng: () => number): Promise<RecommendationItem[]> {
@@ -967,7 +958,7 @@ function writeCached(set: RecommendationSet): void {
 let inflight: { date: string; promise: Promise<RecommendationSet> } | null = null;
 
 /**
- * After a generation finds nothing (both sources down or blocked), serve an
+ * After a generation finds nothing (the source is down or blocked), serve an
  * empty set cheaply for this long instead of re-running the full pipeline on
  * every request. A manual refresh bypasses the cooldown.
  */

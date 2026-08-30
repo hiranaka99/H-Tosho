@@ -1587,8 +1587,8 @@ export function Downloader() {
             <CardContent className="flex flex-col gap-2">
               <p className="text-xs text-muted">
                 {recs?.mode === 'popular'
-                  ? 'Not enough library history yet — showing popular galleries from both sources. Downloads you queue (and your Kavita library) will shape future picks.'
-                  : 'Picked from Hitomi.la and nHentai based on your downloaded galleries and your Kavita library. New picks every day; refresh any time for a different selection.'}
+                  ? 'Not enough library history yet — showing popular galleries from Hitomi.la. Downloads you queue (and your Kavita library) will shape future picks.'
+                  : 'Picked from Hitomi.la based on your downloaded galleries and your Kavita library. New picks every day; refresh any time for a different selection.'}
               </p>
               {recs && (recs.profile.artists.length > 0 || recs.profile.tags.length > 0 || (recs.profile.series?.length ?? 0) > 0) && (
                 <div className="flex flex-wrap items-center gap-1">

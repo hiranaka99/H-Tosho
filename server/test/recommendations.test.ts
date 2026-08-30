@@ -81,7 +81,9 @@ test('refreshes never re-serve picks, across refreshes and across days', async (
   // Distinct galleries per query, so every refresh has a large fresh pool.
   const uniquePerQuery = (q: string) => Array.from({ length: 30 }, (_, i) => `${slug(q)}#${i}`);
   doujinProviders.hitomi = stubProvider('hitomi', uniquePerQuery);
-  doujinProviders.nhentai = stubProvider('nhentai', uniquePerQuery);
+  // The recommender must not touch nHentai — picks come from Hitomi only.
+  let nhentaiSearches = 0;
+  doujinProviders.nhentai = { ...originals.nhentai, search: async () => { nhentaiSearches++; return []; } };
 
   const set1 = await recs.getRecommendations();
   assert.equal(set1.items.length, 12);
@@ -112,17 +114,17 @@ test('refreshes never re-serve picks, across refreshes and across days', async (
     0,
     'next-day generation re-served previously-shown picks',
   );
+  assert.equal(nhentaiSearches, 0, 'recommender queried nHentai');
 });
 
 test('exhausted candidate pool recycles previously-served picks instead of going short', async () => {
   // Fresh install boundary: drop the history left by the previous test.
   getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations-history')).run();
 
-  // Twelve galleries per source shared by every query, so the fresh pool
-  // (24) is smaller than three full sets (36).
-  const shared = () => Array.from({ length: 12 }, (_, i) => String(i));
+  // Twenty-four galleries shared by every query — exactly two full sets, so
+  // the third refresh has no fresh candidates left and must recycle.
+  const shared = () => Array.from({ length: 24 }, (_, i) => String(i));
   doujinProviders.hitomi = stubProvider('hitomi', shared);
-  doujinProviders.nhentai = stubProvider('nhentai', shared);
   const set1 = await recs.refreshRecommendations();
   assert.equal(set1.items.length, 12);
   const set2 = await recs.refreshRecommendations();
@@ -160,7 +162,6 @@ test('manual refresh during an in-flight generation re-rolls instead of joining 
     },
   });
   doujinProviders.hitomi = gatedProvider('hitomi');
-  doujinProviders.nhentai = gatedProvider('nhentai');
 
   const first = recs.getRecommendations(); // starts the day's generation, stuck on the gate
   const second = recs.refreshRecommendations(); // must wait for it, then run its own roll
@@ -191,7 +192,6 @@ test('empty generation is not cached and backs off until a manual refresh', asyn
     },
   });
   doujinProviders.hitomi = emptyProvider('hitomi');
-  doujinProviders.nhentai = emptyProvider('nhentai');
 
   const set1 = await recs.getRecommendations();
   assert.equal(set1.items.length, 0);
