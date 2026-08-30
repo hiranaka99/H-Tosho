@@ -376,3 +376,42 @@ export function listNewGalleries(limit = 100): WatchedSearchNewGallery[] {
   }
   return out;
 }
+
+/**
+ * One-shot migration for databases upgraded from a build without the "recently
+ * added" feed: watches whose lastResultsJson was written by an older build never
+ * had their finds persisted to watched_search_new. Replay those entries with
+ * foundAt = the check that reported them (lastCheckedAt). Idempotent — the
+ * unique index makes replays of already-persisted finds no-ops, so this is safe
+ * to run on every startup; it returns how many rows were actually inserted.
+ */
+export function backfillNewGalleries(): number {
+  const db = getDb();
+  const rows = db
+    .select()
+    .from(schema.watchedSearches)
+    .where(sql`${schema.watchedSearches.lastResultsJson} IS NOT NULL`)
+    .all();
+  let inserted = 0;
+  for (const row of rows) {
+    const items = decodeLastResults(row.lastResultsJson);
+    if (items.length === 0) continue;
+    const foundAt = row.lastCheckedAt ?? new Date().toISOString();
+    const res = db
+      .insert(schema.watchedSearchNew)
+      .values(items.map((r) => ({
+        searchId: row.id,
+        source: row.source,
+        query: row.query,
+        galleryId: r.galleryId,
+        title: r.title,
+        ...(r.url ? { url: r.url } : {}),
+        ...(r.coverUrl ? { coverUrl: r.coverUrl } : {}),
+        foundAt,
+      })))
+      .onConflictDoNothing()
+      .run();
+    inserted += Number(res.changes ?? 0);
+  }
+  return inserted;
+}

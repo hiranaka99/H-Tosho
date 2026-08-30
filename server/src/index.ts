@@ -5,7 +5,7 @@ import { createApp } from './app.js';
 import { jobQueue } from './jobs/queue.js';
 import { runJob } from './jobs/executor.js';
 import { getKavitaConnection, getPollIntervalHours, getWatchedSearchIntervalMinutes, onSettingChange } from './services/settings.js';
-import { countWatchedSearches } from './services/watchedSearches.js';
+import { backfillNewGalleries, countWatchedSearches } from './services/watchedSearches.js';
 import { downloadQueue } from './downloader/engine.js';
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -15,6 +15,10 @@ const HOST = process.env.HOST ?? '127.0.0.1';
 
 function main(): void {
   initDb();
+  // Replay "new since last check" finds that older builds never persisted to the
+  // "recently added" feed (no-op on databases already up to date).
+  const backfilled = backfillNewGalleries();
+  if (backfilled > 0) console.log(`[h-tosho] migrated ${backfilled} pre-existing watch find(s) into the recently added feed`);
   // Jobs still marked 'running' were orphaned by a crash or restart (no process
   // is executing them). Mark them failed so the UI doesn't show ghosts that can
   // never be cancelled or completed.

@@ -12,7 +12,7 @@ process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-ws-'));
 // Dynamic imports are required here: the DB module snapshots HTOSHO_DATA_DIR at module load.
 const { diffSeenResults, addWatchedSearch, checkWatchedSearches, listWatchedSearches } = await import('../src/services/watchedSearches.js');
 const { doujinProviders } = await import('../src/downloader/providers.js');
-const { listNewGalleries, removeWatchedSearch } = await import('../src/services/watchedSearches.js');
+const { listNewGalleries, removeWatchedSearch, backfillNewGalleries } = await import('../src/services/watchedSearches.js');
 const { getDb, schema } = await import('../src/db/index.js');
 const originalHitomi = doujinProviders.hitomi;
 
@@ -165,5 +165,33 @@ describe('recently added feed', () => {
       .where(eq(schema.watchedSearchNew.searchId, watchB.id))
       .get();
     assert.equal(Number(rowsForB?.n ?? 0), 0);
+  });
+
+  it('backfills lastResults written by older builds into the feed exactly once', async () => {
+    const watch = addWatchedSearch('hitomi', 'artist:legacy-backfill');
+    // Simulate a pre-feature build: the "N new" list is persisted, but no
+    // watched_search_new rows exist for it.
+    getDb()
+      .update(schema.watchedSearches)
+      .set({ lastCheckedAt: '2026-08-30T09:00:00.000Z', lastResultCount: 1, lastResultsJson: JSON.stringify([{ galleryId: 'legacy-7', title: 'Legacy Seven', url: 'https://hitomi.la/g/7' }]) })
+      .where(eq(schema.watchedSearches.id, watch.id))
+      .run();
+
+    const inserted = backfillNewGalleries();
+    assert.ok(inserted >= 1, 'expected the legacy find to be replayed');
+    const feed = listNewGalleries(500).filter((g) => g.query === 'artist:legacy-backfill');
+    assert.equal(feed.length, 1);
+    assert.equal(feed[0].galleryId, 'legacy-7');
+    assert.equal(feed[0].title, 'Legacy Seven');
+    assert.equal(feed[0].foundAt, '2026-08-30T09:00:00.000Z', 'backfilled rows keep the reporting check\'s timestamp');
+
+    // Re-running (every startup) is a no-op — the unique index dedupes.
+    backfillNewGalleries();
+    const count = getDb()
+      .select({ n: sql<number>`count(*)` })
+      .from(schema.watchedSearchNew)
+      .where(eq(schema.watchedSearchNew.galleryId, 'legacy-7'))
+      .get();
+    assert.equal(Number(count?.n ?? 0), 1);
   });
 });
