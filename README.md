@@ -1,167 +1,148 @@
 # H-Tosho
 
-A modern metadata fetcher & manager for **Kavita**. H-Tosho automatically or
-manually fetches and syncs rich metadata and cover art from multiple
-manga/novel providers directly into a Kavita media server instance — and can
-download doujinshi galleries from Hitomi.la and nHentai straight into your
-libraries.
+A metadata manager for **Kavita** that keeps your manga, light novel and
+doujinshi libraries clean — and helps you find what to read next.
 
-The Kavita integration supports **Kavita server v0.9.x or newer** and uses Auth
-Keys through the `x-api-key` header. The DTOs are generated from the official
-**v0.9.0.22 OpenAPI contract** — note that this is the API *contract* version,
-which is distinct from the Kavita *server* build number (e.g. `0.9.0.2`).
+H-Tosho matches your Kavita series against popular metadata sources (AniList,
+MangaDex, MyAnimeList) and pushes the best title, description, tags, cover art
+and more straight into Kavita. It can also search **Hitomi.la** and **nHentai**,
+download galleries into your libraries, watch for new releases, and suggest
+fresh picks based on what you already own.
 
-## Features
+Works with **Kavita server v0.9.x or newer**.
 
-- **Kavita-exclusive** — talks only to Kavita's REST API. No Komga-style
-  abstraction layer.
-- **Extensible provider engine** — a unified `MetadataProvider` interface plus
-  a registry makes adding/removing metadata sources trivial.
-- **Priority-driven matching** — fuzzy, normalization-aware title matching
-  evaluated in configurable provider order (global plus per-library overrides);
-  the first confident match wins.
-- **Per-field control** — preview exactly what will be pushed as a side-by-side
-  diff and deselect individual fields before applying a match.
-- **Doujinshi downloader** — search Hitomi.la & nHentai, download galleries as
-  `.cbz` archives or image folders through a live queue with pause/resume/
-  cancel/retry, duplicate detection, and an optional Kavita library scan on
-  completion.
-- **Watched searches** — save doujinshi queries to re-run on every auto-scan
-  cycle; new results ping Discord and stay browsable in-app per watch.
-- **Modern dark-mode dashboard** — Libraries, Downloader, Jobs and Settings
-  pages with live job monitoring and drag-and-drop provider prioritization.
-- **Discord notifications** — push formatted updates (with cover art) when
-  items are matched/updated or watched searches find new galleries.
+## What it does
 
-## Supported providers
+- **One-click identification** — browse any Kavita library, pick a series, and
+  H-Tosho finds the best match across your providers. Preview exactly what will
+  change in a side-by-side diff, then apply everything or deselect individual
+  fields (title, description, tags, cover, …).
+- **Automatic matching** — new series added to Kavita are matched on a schedule
+  you control. Matches below 80% confidence are flagged with a badge so you can
+  review them in Libraries instead of being pushed blindly.
+- **Doujinshi downloader** — search Hitomi.la and nHentai by keyword, tag or
+  artist, preview galleries, and download them as `.cbz` archives or image
+  folders. The queue supports pause, resume, cancel and retry, detects
+  duplicates, and can trigger a Kavita scan when finished so new media appears
+  in your server automatically.
+- **Daily recommendations** — a fresh set of twelve picks every day, based on
+  the tags, artists and series in your downloaded library and your Kavita
+  collection. Refresh to re-roll, or mark a pick as owned so it never comes up
+  again.
+- **Watched searches** — save any doujinshi query and H-Tosho re-checks it on a
+  schedule (every 5 minutes to every 24 hours). New galleries land in the
+  "Recently added" feed and ping your Discord channel.
+- **Merging tools** — download several galleries into one folder so they become
+  a single Kavita series, move already-downloaded galleries into an existing
+  series (with chapter numbers), or merge two existing series together.
+- **ComicInfo editor** — edit the `ComicInfo.xml` inside any of your `.cbz`
+  files directly from the Libraries page: fix titles, authors, tags and more,
+  with a raw XML mode for full control.
+- **Discord notifications** — get formatted messages (with cover art) when
+  series are matched or updated, and when watched searches find something new.
+- **Live job monitor** — every match, scan, merge and ComicInfo edit runs as a
+  background job you can watch, cancel or retry from the Jobs page.
 
-| Provider | API | Notes |
-| --- | --- | --- |
-| AniList | GraphQL | Primary source for manga & light novels |
-| MangaDex | REST | No credentials required |
-| MyAnimeList | REST | Requires Client ID |
+## Metadata sources
 
-Doujinshi sources: **Hitomi.la** and **nHentai** (nHentai uses the official
-API v2 — optional API key, client-side rate limiting).
+| Source | Notes |
+| --- | --- |
+| AniList | Primary source for manga & light novels — no setup needed |
+| MangaDex | No credentials required |
+| MyAnimeList | Requires a Client ID (free to create) |
 
-## Tech stack
+Doujinshi sources: **Hitomi.la** and **nHentai**. nHentai accepts an optional
+API key for higher rate limits (Settings → Downloader).
 
-- **Frontend**: Vite + React + TypeScript, Tailwind CSS 4, TanStack Query,
-  Radix UI primitives, Lucide icons.
-- **Backend**: Hono on Node.js (TypeScript), native `fetch`.
-- **Storage**: SQLite via Drizzle ORM using the `better-sqlite3` driver.
-- **Deployment**: Multi-stage Dockerfile + `docker-compose.yml`.
+## Getting started
 
-## Getting started (local dev)
-
-Requires Node.js ≥ 20.
-
-```bash
-npm install
-npm run dev
-```
-
-This starts the API server on http://localhost:8787 and the Vite dev server on
-http://localhost:5173 (the dev server proxies `/api` to the backend).
-
-## Building
-
-```bash
-npm run build
-```
-
-Builds the frontend into `web/dist` and the backend into `server/dist`.
-
-## Running production
-
-The server serves the built frontend from `web/dist` and the API under `/api`,
-so a single process is all you need:
-
-```bash
-npm run build
-node server/dist/index.js
-```
-
-Then open http://localhost:8787.
-
-### Docker
+### Docker (recommended)
 
 ```bash
 docker compose up -d --build
 ```
 
-This exposes port `8787` and persists the SQLite database in the
-`h-tosho-data` volume.
+Then open http://localhost:8787. Your data (settings, match history, download
+queue) is stored in the `h-tosho-data` volume and survives restarts.
 
-To keep state and downloaded galleries on the host instead of in named
-volumes, use the bind-mount example:
+To keep everything as plain folders on your machine instead, use the bind-mount
+example:
 
 ```bash
 docker compose -f docker-compose.example.yml up -d --build
 ```
 
-It mounts `./data` for the SQLite database and `./downloads` as
-`/mnt/downloads`. Set the download directory in **Settings → Downloader** to
-`/mnt/downloads`, and point your Kavita library at the host's `./downloads`.
+It stores the app data in `./data` and exposes `./downloads` inside the
+container at `/mnt/downloads`. In **Settings → Downloader**, set the output
+folder to `/mnt/downloads`, and point a Kavita library at your host's
+`./downloads` folder.
 
-## Configuration
+### Run from source
 
-1. In Kavita, open **User Settings → Manage Auth Keys** and create an Auth Key
-   for an admin account. H-Tosho needs admin access because Kavita protects
-   metadata and cover updates with its admin policy.
-2. Open **Settings → General → Kavita connection**, enter the Kavita server
-   root (for example `http://kavita:5000`, without `/api`) and the Auth Key,
-   then click **Save & test connection**.
-3. In **Settings → Providers**, add provider credentials (e.g. MyAnimeList
-   Client ID), test each provider, and drag to reorder the search priority.
-4. Tune per-library behavior in **Libraries** (auto-match toggle and clearing
-   overrides); deselect individual fields in the identify dialog when applying a match.
-5. In **Settings → Notifications**, configure and test the Discord webhook.
-6. Optional: in **Settings → Downloader**, set the output folder, format,
-   concurrency limits, nHentai API key and banned tags; add watched searches
-   from the Downloader page or the same tab.
-7. In **Libraries**, trigger matching or the scan for newly ingested series;
-   monitor progress in **Jobs**.
+Requires Node.js 20 or newer.
 
-### Environment variables
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `PORT` | `8787` | API/server port |
-| `HOST` | `127.0.0.1` | Bind address — local-only by default; the API has no auth, so set `0.0.0.0` only if you accept LAN exposure |
-| `HTOSHO_DATA_DIR` | `server/data` | SQLite data directory |
-| `NHENTAI_API_KEY` | *(unset)* | Optional nHentai API key fallback; a key set in Settings takes precedence |
-
-## Project layout
-
-```
-server/src/
-  app.ts              # Hono app: API + static SPA serving, CORS, token auth
-  index.ts            # Entrypoint: DB init, job queue, polling, HTTP server
-  db/                 # Drizzle schema + SQLite bootstrap
-  kavita/             # Kavita REST client (auth, libraries, metadata push)
-  providers/          # Provider interface, base class, 3 providers, registry
-  match/              # Normalization, fuzzy matching
-  downloader/         # Hitomi/nHentai sources, download engine, .cbz writer
-  services/           # Settings, sync/apply, watched searches, series artists
-  notify/             # Discord notification dispatcher
-  jobs/               # Queue + job executor
-  routes/             # REST API routes + media proxy (cover Referer handling)
-web/src/
-  components/         # UI primitives, identification modal, sidebar status
-  pages/              # Libraries, Downloader, Jobs, Settings
-  lib/                # API client, download events context, utils
-Dockerfile
-docker-compose.yml
+```bash
+npm install
+npm start
 ```
 
-## Adding a new provider
+This builds the app and starts it on http://localhost:8787 — one process serves
+both the web interface and the API.
 
-1. Create `server/src/providers/<id>.ts` extending `BaseProvider`.
-2. Implement `id`, `name`, `color`, `supportedTypes`, `requiresCredentials`,
-   `providesFields`, `baseUrl`, `search()`, and `getSeriesMetadata()`.
-3. Export a singleton and register it in `server/src/providers/registry.ts`.
+## First run
 
-Doujinshi sources follow the same pattern: implement the `DoujinProvider`
-interface in `server/src/downloader/` and register it in
-`downloader/providers.ts`.
+1. **Create your account** — on first launch you'll be asked to set a username
+   and password (minimum 8 characters). This protects the app; every visit
+   after that signs in with it. Change it anytime in Settings → General →
+   Account security.
+2. **Connect Kavita** — in Kavita, open **User Settings → Manage Auth Keys**
+   and create an Auth Key for an admin account (H-Tosho needs admin rights to
+   update metadata and covers). Then in H-Tosho go to **Settings → General →
+   Kavita connection**, enter the server address (e.g. `http://kavita:5000`,
+   without `/api`) and the Auth Key, and click **Save & test connection**. A
+   green "Kavita connected" indicator in the sidebar confirms it works.
+3. **Pick your providers** — Settings → Providers. Add a MyAnimeList Client ID
+   if you want that source, test each one, and drag them into your preferred
+   search order.
+4. **Set up downloading (optional)** — Settings → Downloader: choose the output
+   folder (point it at a Kavita library folder to auto-pick up new media), the
+   format (`.cbz` recommended), how many downloads can run at once, an optional
+   nHentai API key, and tags to always skip. Toggle **Auto-sync Kavita** to scan
+   your server after each download.
+5. **Notifications (optional)** — Settings → Notifications: paste a Discord
+   webhook URL, choose what to be notified about, and send a test message.
+
+From here, open **Libraries**, pick a library, and start identifying series —
+or head to the **Downloader** to search for new galleries.
+
+## Touring the app
+
+- **Libraries** — browse every Kavita library and its series with match status,
+  confidence scores and cover art. Identify or re-identify any series (the
+  identify dialog also shows each series' match history), review low-confidence
+  matches (the badge in the sidebar counts them), edit a series' ComicInfo
+  files, and merge selected series.
+- **Downloader** — four tabs:
+  - *Search* — find galleries on Hitomi.la or nHentai, sort by newest or
+    popularity, preview page counts, and download single galleries or a whole
+    selection (optionally merged into one series).
+  - *Recommended* — Today's twelve picks with one-click refresh and an "owned"
+    button. You can choose which Kavita libraries feed the recommendations in
+    this tab's settings row.
+  - *Watched* — manage your watched searches, their check schedule, and browse
+    the "Recently added" feed of new finds.
+  - *Manager* — the live download queue: progress, pause/resume/cancel/retry,
+    duplicate badges, and completed history.
+- **Jobs** — every background task (scans, matching, merges, ComicInfo edits,
+  watched-search checks) with status, logs, cancel and retry.
+- **Settings** — Kavita connection, auto-scan interval, appearance (light /
+  dark / system theme), account security, providers, notifications and the
+  downloader.
+
+## Security notes
+
+- The app listens on `127.0.0.1` only by default — nothing is reachable from
+  your network unless you deliberately change that (set `HOST=0.0.0.0` for
+  Docker or remote access).
+- Everything behind the login gate: the web interface and all data endpoints.
+  The login session lasts 30 days; sign out from the sidebar at any time.
