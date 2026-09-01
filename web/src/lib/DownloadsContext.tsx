@@ -133,8 +133,8 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
       const title = t.title ?? `Gallery ${t.galleryId}`;
       if (t.status === 'completed') {
         toast({ tone: 'success', title: 'Download complete', description: title });
-      } else if (t.status === 'failed' && prev !== 'downloading' && prev !== 'queued') {
-        // Only surface genuine failures (not an in-flight cancel that lands as failed).
+      } else if (t.status === 'failed' && t.errorMessage !== 'Cancelled by user') {
+        // Surface genuine failures; a user cancel also lands as "failed" but carries a distinct message.
         toast({ tone: 'danger', title: 'Download failed', description: t.errorMessage ?? title });
       }
     }

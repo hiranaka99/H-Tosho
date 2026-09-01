@@ -62,6 +62,7 @@ export function initDb(): Db {
   // exec (and every table created earlier in it) otherwise.
   migrateDownloadQueueColumns(sqlite);
   migrateWatchedSearchColumns(sqlite);
+  migrateSeriesMatchColumns(sqlite);
   sqlite.exec(SCHEMA_DDL);
   dropCatalogTable(sqlite);
   pruneOldData(sqlite);

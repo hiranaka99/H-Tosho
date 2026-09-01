@@ -947,7 +947,7 @@ function writeCached(set: RecommendationSet): void {
   // Keep only today's cached set (the rolling history row prunes itself), and
   // drop legacy per-day seen rows superseded by the history.
   db.delete(schema.keyValueStore)
-    .where(and(like(schema.keyValueStore.key, 'recommendations:%'), ne(schema.keyValueStore.key, cacheKey(set.date))))
+    .where(and(like(schema.keyValueStore.key, 'recommendations-v2:%'), ne(schema.keyValueStore.key, cacheKey(set.date))))
     .run();
   db.delete(schema.keyValueStore)
     .where(like(schema.keyValueStore.key, 'recommendations-seen:%'))
