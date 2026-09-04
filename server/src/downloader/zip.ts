@@ -149,74 +149,59 @@ export function buildZip(entries: Entry[]): Buffer {
 }
 
 /**
- * Stream a ZIP archive to `destPath` from page files on disk. Each file is
- * read one at a time (peak memory = one image), so multi-hundred-MB galleries
- * no longer need ~2x their size in RAM. Entries are written in the given
- * order; small in-memory entries (e.g. ComicInfo.xml) can be appended after
- * the file-based ones. On failure the partial archive is removed before
- * rethrowing.
+ * Build a ZIP archive at `destPath` from page files on disk. Each file is read
+ * one at a time (peak memory = one image), and positional file-handle writes
+ * avoid stream backpressure/error races. A failed archive is removed.
  */
 export async function buildZipFromFiles(
   files: { name: string; path: string }[],
   destPath: string,
   inlineEntries: Entry[] = [],
 ): Promise<void> {
-  // Promise.withResolvers is unavailable on the ES2022 target, so capture the
-  // resolvers explicitly.
-  let resolveDone!: () => void;
-  let rejectDone!: (e: unknown) => void;
-  const done = new Promise<void>((resolve, reject) => {
-    resolveDone = resolve;
-    rejectDone = reject;
-  });
-  const out = fs.createWriteStream(destPath);
-  out.on('error', (e) => rejectDone(e));
-  out.on('finish', () => resolveDone());
-
-  // Respect the WriteStream's backpressure: buffering the whole archive
-  // in-memory when the destination (NAS, SMR disk) stalls defeats the
-  // one-image peak-memory design.
-  const write = async (buf: Buffer): Promise<void> => {
-    if (!out.write(buf)) await new Promise<void>((resolve) => out.once('drain', resolve));
-  };
-
+  const out = await fs.promises.open(destPath, 'w');
+  let failure: unknown;
   try {
     let offset = 0;
     const central: Buffer[] = [];
     const now = dosDateTime(new Date());
+    const write = async (buf: Buffer): Promise<void> => {
+      let written = 0;
+      while (written < buf.length) {
+        const result = await out.write(buf, written, buf.length - written, offset + written);
+        if (result.bytesWritten <= 0) throw new Error(`Could not write ZIP archive ${destPath}`);
+        written += result.bytesWritten;
+      }
+      offset += buf.length;
+    };
     const append = async (name: string, data: Buffer, tryDeflate: boolean): Promise<void> => {
-      const spec = encodeEntry(name, data, offset, now, tryDeflate);
+      const entryOffset = offset;
+      const spec = encodeEntry(name, data, entryOffset, now, tryDeflate);
       await write(spec.local);
       await write(spec.payload);
       central.push(spec.central);
-      offset += spec.local.length + spec.payload.length;
     };
 
     for (const f of files) {
       const ext = f.name.slice(f.name.lastIndexOf('.') + 1).toLowerCase();
       await append(f.name, await fs.promises.readFile(f.path), !STORE_EXTENSIONS[ext]);
     }
-    for (const e of inlineEntries) {
-      await append(e.name, e.data, true);
-    }
+    for (const e of inlineEntries) await append(e.name, e.data, true);
 
     const centralStart = offset;
     let centralSize = 0;
     for (const c of central) centralSize += c.length;
     for (const c of central) await write(c);
     await write(endOfCentralDirectory(files.length + inlineEntries.length, centralStart, centralSize));
-    out.end();
-  } catch (e) {
-    out.destroy();
-    rejectDone(e instanceof Error ? e : new Error(String(e)));
+  } catch (error) {
+    failure = error;
   }
-
-  let ok = false;
   try {
-    await done;
-    ok = true;
-  } finally {
-    // Never leave a partial archive behind on failure.
-    if (!ok) fs.rmSync(destPath, { force: true });
+    await out.close();
+  } catch (error) {
+    failure ??= error;
+  }
+  if (failure !== undefined) {
+    await fs.promises.rm(destPath, { force: true }).catch(() => {});
+    throw failure;
   }
 }

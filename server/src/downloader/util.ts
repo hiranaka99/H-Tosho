@@ -22,6 +22,15 @@ export function sanitizeFilename(name: string, fallback = 'Gallery'): string {
   return out;
 }
 
+/** Stable, readable filesystem name that cannot collide across galleries. */
+export function galleryFilesystemName(title: string, source: string, galleryId: string): string {
+  const base = sanitizeFilename(title || `Gallery ${galleryId}`, `Gallery-${galleryId}`);
+  const identity = sanitizeFilename(`${source}-${galleryId}`, 'gallery').slice(0, 80);
+  const suffix = ` [${identity}]`;
+  const maxBaseLength = Math.max(1, 220 - suffix.length);
+  return `${base.slice(0, maxBaseLength).trim()}${suffix}`;
+}
+
 /**
  * Pull the first balanced JSON object out of a blob of text (e.g. a JS file
  * containing `var galleryinfo = { ... };`).

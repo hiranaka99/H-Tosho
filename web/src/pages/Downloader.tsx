@@ -203,6 +203,7 @@ function SourceBadge({ source }: { source: DoujinSource }) {
 
 function Cover({ url, title, className }: { url?: string | null; title: string; className?: string }) {
   const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => setFailed(false), [url]);
   const size = className ?? 'h-40 w-full';
   if (!url || failed) {
     return (

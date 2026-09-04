@@ -159,6 +159,23 @@ test('POST /downloads blocks duplicates in flight and already owned, with distin
   assert.equal(ownedBody.error, 'already-downloaded');
   assert.ok(ownedBody.message);
 
+  const removeActive = await api.request(`/downloads/${dupDownloadingId}`, { method: 'DELETE' });
+  assert.equal(removeActive.status, 409);
+  assert.ok(singletonQueue.get(dupDownloadingId), 'active task row remains intact');
+
+  const mergedFolder = await api.request('/downloads', {
+    method: 'POST',
+    body: JSON.stringify({ source: 'hitomi', galleryId: 'folder-merge', format: 'folder', mergeFolder: 'One Series' }),
+  });
+  assert.equal(mergedFolder.status, 400);
+  assert.equal((await mergedFolder.json()).error, 'Merged downloads require CBZ output');
+
+  const invalidFormat = await api.request('/downloads', {
+    method: 'POST',
+    body: JSON.stringify({ source: 'hitomi', galleryId: 'bad-format', format: 'rar' }),
+  });
+  assert.equal(invalidFormat.status, 400);
+
   // A fresh gallery still enqueues, and its optional priority is persisted.
   const res = await api.request('/downloads', {
     method: 'POST',
@@ -246,6 +263,20 @@ test('start resumes interrupted downloading rows from partial pages', async () =
   const task = queue.get(id)!;
   assert.equal(task.status, 'completed');
   assert.equal(task.errorMessage, null);
+});
+
+test('different galleries with the same title get distinct output paths', async () => {
+  stubFetch();
+  const queue = new DownloadQueue(settings);
+  const first = queue.enqueue('hitomi', 'same-title-a', 'Same Title', 'cbz');
+  const second = queue.enqueue('hitomi', 'same-title-b', 'Same Title', 'cbz');
+  await Promise.all([waitForStatus(queue, first, 'completed'), waitForStatus(queue, second, 'completed')]);
+  const firstPath = queue.get(first)?.outputPath;
+  const secondPath = queue.get(second)?.outputPath;
+  assert.ok(firstPath && secondPath);
+  assert.notEqual(firstPath, secondPath);
+  assert.ok(fs.existsSync(firstPath));
+  assert.ok(fs.existsSync(secondPath));
 });
 
 test('removing a task deletes its scratch directory', async () => {

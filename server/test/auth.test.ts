@@ -72,3 +72,22 @@ test('protected routes require login and password changes invalidate old credent
   response = await app.request('/api/health', { headers: { cookie: newSession } });
   assert.equal(response.status, 401);
 });
+
+test('malformed JSON returns a client error instead of an internal failure', async () => {
+  const login = await app.request('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' });
+  assert.equal(login.status, 401, 'login handles its own malformed body without exposing internals');
+
+  const authenticated = await app.request('/api/auth/login', json('POST', { username: 'owner', password: 'new secure password' }));
+  const session = cookie(authenticated);
+  const response = await app.request('/api/doujin/search', { method: 'POST', headers: { 'content-type': 'application/json', cookie: session }, body: '{' });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: 'Invalid JSON body' });
+});
+
+test('authenticated API responses do not opt arbitrary origins into credentialed CORS', async () => {
+  const authenticated = await app.request('/api/auth/login', json('POST', { username: 'owner', password: 'new secure password' }));
+  const session = cookie(authenticated);
+  const response = await app.request('/api/health', { headers: { cookie: session, origin: 'https://attacker.example' } });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('access-control-allow-origin'), null);
+});

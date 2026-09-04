@@ -186,8 +186,9 @@ export async function fetchJsonRetry<T = unknown>(
 }
 
 /**
- * Map over items with at most `limit` fn calls in flight; results keep input
- * order. Used to bound parallelism for network fan-out and disk moves.
+ * Map over items with at most `limit` calls in flight. The first failure stops
+ * workers from claiming new items, but all in-flight calls are awaited before
+ * the error is rethrown so callers can safely release shared cancellation state.
  */
 export async function mapLimit<T, R>(
   items: readonly T[],
@@ -196,14 +197,24 @@ export async function mapLimit<T, R>(
 ): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;
+  let failed = false;
+  let firstError: unknown;
   const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
     for (;;) {
+      if (failed) return;
       const i = next++;
       if (i >= items.length) return;
-      results[i] = await fn(items[i], i);
+      try {
+        results[i] = await fn(items[i], i);
+      } catch (error) {
+        if (!failed) firstError = error;
+        failed = true;
+        return;
+      }
     }
   });
   await Promise.all(workers);
+  if (failed) throw firstError;
   return results;
 }
 

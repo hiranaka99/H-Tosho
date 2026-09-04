@@ -6,7 +6,7 @@ import { pathContains } from '../lib/cbz.js';
 import { fetchToFileStreaming, mapLimit, sleep, type StreamProgressHandlers } from '../lib/http.js';
 import { generateComicInfoXml } from './comicinfo.js';
 import { buildZipFromFiles } from './zip.js';
-import { extFromUrl, padPage, sanitizeFilename } from './util.js';
+import { extFromUrl, galleryFilesystemName, padPage, sanitizeFilename } from './util.js';
 import { getDoujinProvider } from './providers.js';
 import type { DoujinGallery, DoujinSource } from './types.js';
 import { getDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
@@ -206,6 +206,7 @@ function rowToTask(row: DownloadRow): DownloadTask {
 /** A cancellation token checked between each image request. */
 interface RunContext {
   cancelled: boolean;
+  stopped: boolean;
   pauseSignal: {
     paused: boolean;
     /** Resolvers of workers parked on the pause gate; resume()/cancel() settle them. */
@@ -342,6 +343,11 @@ export class DownloadQueue {
     return this.running;
   }
 
+  /** True while this process still owns network or filesystem work for a task. */
+  isRunning(id: number): boolean {
+    return this.activeRuns.has(id);
+  }
+
   private setStatus(id: number, status: DownloadStatus): void {
     const db = getDb();
     if (status === 'downloading') {
@@ -418,21 +424,23 @@ export class DownloadQueue {
     return false;
   }
 
-  /** Resume a paused/failed task back into the queue. */
+  /** Resume a paused task, or retry a settled failed task. */
   resume(id: number): boolean {
     const task = this.get(id);
     if (!task) return false;
-    if (task.status === 'paused' || task.status === 'failed') {
+    if (task.status === 'paused') {
       const run = this.activeRuns.get(id);
       if (run) {
-        // The original worker is still alive, sleeping on the pause signal —
-        // wake it in place instead of re-queueing (which would start a second
-        // download of the same gallery and leak the first run's concurrency slot).
         run.pauseSignal.paused = false;
         wakePaused(run);
         this.setStatus(id, 'downloading');
         return true;
       }
+      this.setStatus(id, 'queued');
+      void this.pump();
+      return true;
+    }
+    if (task.status === 'failed' && !this.activeRuns.has(id)) {
       this.setStatus(id, 'queued');
       void this.pump();
       return true;
@@ -493,11 +501,14 @@ export class DownloadQueue {
     this.retryTimers.set(id, timer);
   }
 
-  /** Re-queue a failed/completed task, resuming from its partial page files. */
+  /** Re-queue a settled failed/completed task, resuming from partial page files. */
   retry(id: number): boolean {
     const task = this.get(id);
     if (!task) return false;
     if (task.status !== 'failed' && task.status !== 'completed') return false;
+    // A cancelled run can remain in-flight until its current request unwinds.
+    // Starting another writer against the same scratch directory would race it.
+    if (this.activeRuns.has(id)) return false;
     this.autoRetries.delete(id);
     const pending = this.retryTimers.get(id);
     if (pending) {
@@ -514,8 +525,10 @@ export class DownloadQueue {
     return true;
   }
 
-  /** Delete a task and its scratch directory. */
+  /** Delete a task and its scratch directory. Active callers must cancel first. */
   remove(id: number): boolean {
+    const task = this.get(id);
+    if (!task) return false;
     getDb().delete(schema.downloadQueue).where(eq(schema.downloadQueue.id, id)).run();
     this.live.delete(id);
     this.autoRetries.delete(id);
@@ -524,9 +537,6 @@ export class DownloadQueue {
       clearTimeout(pending);
       this.retryTimers.delete(id);
     }
-    // The task is gone for good: its scratch space goes with it. Fire-and-forget
-    // so the API call doesn't block on a large recursive delete; the row is
-    // already deleted, so a failure can only be logged, not reported per-task.
     void fs.promises
       .rm(path.join(getTmpDir(), 'downloads', String(id)), { recursive: true, force: true })
       .catch((err) => console.warn('[h-tosho] failed to remove download scratch dir:', err));
@@ -630,7 +640,7 @@ export class DownloadQueue {
   // ---------------- Execution ----------------
 
   private async process(row: DownloadRow): Promise<void> {
-    const ctx: RunContext = { cancelled: false, pauseSignal: { paused: false, waiters: [] } };
+    const ctx: RunContext = { cancelled: false, stopped: false, pauseSignal: { paused: false, waiters: [] } };
     this.activeRuns.set(row.id, ctx);
     // Per-task scratch space: pages stream to disk here so only the in-flight
     // images (bounded by maxImageConcurrency) live in RAM.
@@ -646,6 +656,7 @@ export class DownloadQueue {
       // Resolve the full gallery (metadata + image list).
       this.updateProgress(row.id, { progressCurrent: 0, progressTotal: 0, speed: 0, currentFile: 'Resolving gallery…', bytesCurrent: 0, bytesTotal: 0 }, { force: true });
       const gallery = await retryTransient(() => provider.getGallery(row.galleryId), 4, [2000, 10000, 30000]);
+      if (ctx.cancelled) throw new Error('Cancelled by user');
       // Capture this gallery's tags/artists for the recommendation profile —
       // metadata we already resolved, so the profile never re-fetches it.
       recordGalleryTags(row.source as DoujinSource, gallery);
@@ -659,6 +670,10 @@ export class DownloadQueue {
       // Write to disk (cbz or folder) and record the output path.
       this.updateProgress(row.id, { currentFile: 'Packing archive…' }, { force: true });
       const outputPath = await this.writeOutput(row, gallery, images, settings);
+      if (ctx.cancelled) {
+        await fs.promises.rm(outputPath, { recursive: row.outputFormat === 'folder', force: true });
+        throw new Error('Cancelled by user');
+      }
       getDb().update(schema.downloadQueue).set({ outputPath }).where(eq(schema.downloadQueue.id, row.id)).run();
 
       // The output is final: the scratch pages are no longer needed. On failure
@@ -673,7 +688,9 @@ export class DownloadQueue {
       // Optional Kavita auto-sync.
       if (settings.autoSyncKavita) await this.triggerKavitaScan(outputPath);
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
+      ctx.stopped = true;
+      wakePaused(ctx);
+      const message = ctx.cancelled ? 'Cancelled by user' : e instanceof Error ? e.message : String(e);
       getDb().update(schema.downloadQueue).set({ errorMessage: message, speed: 0 }).where(eq(schema.downloadQueue.id, row.id)).run();
       if (!ctx.cancelled) {
         if (isTransientError(e)) this.scheduleAutoRetry(row.id, message);
@@ -702,7 +719,6 @@ export class DownloadQueue {
     tmpDir: string,
   ): Promise<{ name: string; path: string }[]> {
     const pages = gallery.pages;
-    const fallbacks = gallery.pageFallbacks ?? [];
     const total = pages.length;
     const concurrency = Math.max(1, settings.maxImageConcurrency || 1);
     const delay = Math.max(0, settings.requestDelayMs || 0);
@@ -836,11 +852,14 @@ export class DownloadQueue {
     const worker = async (): Promise<void> => {
       while (true) {
         if (ctx.cancelled) throw new Error('Cancelled by user');
+        if (ctx.stopped) return;
         if (ctx.pauseSignal.paused) {
           // Park until resume()/cancel() settles the pause gate — event-driven,
           // so a paused run costs no polling timers and wakes the instant it
           // is resumed or cancelled.
           await new Promise<void>((resolve) => ctx.pauseSignal.waiters.push(resolve));
+          if (ctx.cancelled) throw new Error('Cancelled by user');
+          if (ctx.stopped) return;
           continue;
         }
         const i = nextIndex++;
@@ -857,9 +876,15 @@ export class DownloadQueue {
         let usedUrl: string | null = null;
         let lastErr: unknown = null;
         for (const force of [false, true]) {
+          if (ctx.cancelled) throw new Error('Cancelled by user');
+          if (ctx.stopped) return;
           if (force) await sleep(30_000); // let a CDN storm clear before re-resolving URLs
+          if (ctx.cancelled) throw new Error('Cancelled by user');
+          if (ctx.stopped) return;
           const candidates = await resolvePageCandidates(gallery, i, force);
           for (const url of candidates) {
+            if (ctx.cancelled) throw new Error('Cancelled by user');
+            if (ctx.stopped) return;
             try {
               size = await fetchPageToFileWithRetry(url, pageHeaders, filePath, {
                 onAttemptStart: () => {
@@ -883,24 +908,26 @@ export class DownloadQueue {
       }
     };
 
-    const workers = Array.from({ length: Math.min(concurrency, total) }, () => worker());
-    await Promise.all(workers);
-    // A resumed run reports its on-disk progress immediately instead of sitting
-    // at 0 until the first new page lands.
-    if (resumedSizes.size > 0) {
-      this.updateProgress(
-        taskId,
-        {
-          progressCurrent: resumedSizes.size,
-          progressTotal: total,
-          speed: 0,
-          currentFile: null,
-          bytesCurrent: Math.round(currentBytes()),
-          bytesTotal: estimateTotal(),
-        },
-        { force: true },
-      );
-    }
+    const workers = Array.from({ length: Math.min(concurrency, total) }, () => worker().catch((error) => {
+      ctx.stopped = true;
+      wakePaused(ctx);
+      throw error;
+    }));
+    const settled = await Promise.allSettled(workers);
+    const failed = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) throw failed.reason;
+    this.updateProgress(
+      taskId,
+      {
+        progressCurrent: bs.completed.size,
+        progressTotal: total,
+        speed: 0,
+        currentFile: null,
+        bytesCurrent: Math.round(currentBytes()),
+        bytesTotal: estimateTotal(),
+      },
+      { force: true },
+    );
     return out;
   }
 
@@ -918,8 +945,11 @@ export class DownloadQueue {
     images: { name: string; path: string }[],
     settings: DownloaderSettings,
   ): Promise<string> {
+    if (row.mergeFolder && row.outputFormat === 'folder') {
+      throw new Error('Merged downloads require CBZ output');
+    }
     const base = path.resolve(settings.downloadDirectory);
-    const galleryName = sanitizeFilename(gallery.title || `Gallery ${gallery.galleryId}`, `Gallery-${gallery.galleryId}`);
+    const galleryName = galleryFilesystemName(gallery.title, row.source, gallery.galleryId);
     const dir = row.mergeFolder
       ? path.join(base, sanitizeFilename(row.mergeFolder, 'merged'))
       : path.join(base, galleryName);

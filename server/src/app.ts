@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -26,7 +25,12 @@ export function createApp(): Hono {
   const app = new Hono();
   const webDist = resolveWebDist();
 
-  app.use('/api/*', cors({ credentials: true, origin: (origin) => origin }));
+  app.onError((error, c) => {
+    if (error instanceof SyntaxError) return c.json({ error: 'Invalid JSON body' }, 400);
+    console.error('[h-tosho] unhandled request error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  });
+
   app.get('/api/auth/status', authStatus);
   app.post('/api/auth/setup', setup);
   app.post('/api/auth/login', login);

@@ -39,14 +39,14 @@ import { testNotification } from '../notify/dispatcher.js';
 import { getDownloaderSettings, parseDownloaderSettings, setDownloaderSettings } from '../services/settings.js';
 import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
-import { rewriteHitomiCover, rewriteMangaDexCoverUrl } from './media.js';
+import { rewriteDoujinCover, rewriteMangaDexCoverUrl } from './media.js';
 import { addWatchedSearch, listNewGalleries, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
 import { getRecommendations, markOwned, refreshRecommendations, setExcludedLibraries } from '../services/recommendations.js';
 import { getRecommendationSettings } from '../services/settings.js';
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
 import { listCbzFiles, readComicInfo, readCoverImage, resolveExistingFile, resolveSeriesHostDir } from '../lib/cbz.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
-import { sanitizeFilename } from '../downloader/util.js';
+import { galleryFilesystemName, sanitizeFilename } from '../downloader/util.js';
 
 const CREDENTIAL_FIELDS: Record<string, { key: string; label: string }[]> = {
   myanimelist: [{ key: 'clientId', label: 'Client ID' }],
@@ -601,7 +601,7 @@ api.post('/doujin/search', async (c) => {
     const results = await provider.search(body.query, 1000, sort);
     // Route hitomi covers through the /media proxy so they carry the Referer
     // their CDN requires (browsers can't send it cross-origin).
-    return c.json(results.map(rewriteHitomiCover));
+    return c.json(results.map(rewriteDoujinCover));
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }
@@ -631,7 +631,7 @@ api.post('/doujin/gallery', async (c) => {
     // Return metadata without exposing the full image URL list (keeps payload small).
     const gallery = await provider.getGallery(body.idOrUrl);
     const { pages, ...meta } = gallery;
-    return c.json({ ...rewriteHitomiCover(meta), pageCount: pages.length });
+    return c.json({ ...rewriteDoujinCover(meta), pageCount: pages.length });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }
@@ -646,6 +646,9 @@ api.post('/downloads', async (c) => {
   // groups them together. mergeFolder is a plain folder name, never a path.
   const mergeFolder = body.mergeFolder?.trim() || undefined;
   if (mergeFolder && /[\\/]/.test(mergeFolder)) return c.json({ error: 'mergeFolder must be a plain folder name' }, 400);
+  const outputFormat = body.format ?? getDownloaderSettings().format;
+  if (outputFormat !== 'cbz' && outputFormat !== 'folder') return c.json({ error: 'format must be cbz or folder' }, 400);
+  if (mergeFolder && outputFormat === 'folder') return c.json({ error: 'Merged downloads require CBZ output' }, 400);
   const chapter = typeof body.chapter === 'number' && Number.isFinite(body.chapter) ? body.chapter : undefined;
   // Duplicate guard: a completed task for this gallery already exists. Re-downloading
   // is possible via the queue's Retry action, which re-runs the stored task.
@@ -657,7 +660,7 @@ api.post('/downloads', async (c) => {
   if (active) return c.json({ error: 'already-queued', message: 'This gallery is already queued or downloading.', status: active.status }, 409);
   // Queue priority: higher runs first; ties keep FIFO order. Defaults to 0.
   const priority = typeof body.priority === 'number' && Number.isFinite(body.priority) ? Math.trunc(body.priority) : 0;
-  const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, body.title ?? null, body.format, mergeFolder, chapter, priority);
+  const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, body.title ?? null, outputFormat, mergeFolder, chapter, priority);
   return c.json({ id, status: 'queued' }, 202);
 });
 
@@ -683,11 +686,18 @@ api.get('/downloads/gallery-files', (c) => {
   } else if (title.trim()) {
     const dl = getDownloaderSettings();
     if (dl.downloadDirectory) {
-      const dir = path.join(path.resolve(dl.downloadDirectory), sanitizeFilename(title, `Gallery-${galleryId}`));
-      try {
-        files = listCbzFiles(dir);
-      } catch {
-        /* no such folder */
+      const base = path.resolve(dl.downloadDirectory);
+      const candidates = [
+        path.join(base, galleryFilesystemName(title, source, galleryId)),
+        path.join(base, sanitizeFilename(title, `Gallery-${galleryId}`)),
+      ];
+      for (const dir of candidates) {
+        try {
+          files = listCbzFiles(dir);
+        } catch {
+          /* try the legacy title-only directory */
+        }
+        if (files.length > 0) break;
       }
     }
   }
@@ -762,6 +772,11 @@ for (const action of DOWNLOAD_ACTIONS) {
 api.delete('/downloads/:id', (c) => {
   const id = intParam(c.req.param('id'));
   if (id === null) return c.json({ error: 'Invalid download id' }, 400);
+  const task = downloadQueue.get(id);
+  if (!task) return c.json({ error: 'Download not found' }, 404);
+  if (downloadQueue.isRunning(id) || task.status === 'queued' || task.status === 'downloading' || task.status === 'paused') {
+    return c.json({ error: 'Active downloads must be cancelled before removal' }, 409);
+  }
   downloadQueue.remove(id);
   return c.json({ ok: true });
 });
@@ -804,7 +819,7 @@ api.get('/watched-searches/new', (c) => {
   const limitParam = Number(c.req.query('limit') ?? '100');
   const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(Math.floor(limitParam), 500) : 100;
   // Hitomi covers need the /media proxy (their CDN requires a Referer the browser can't send).
-  return c.json(listNewGalleries(limit).map(rewriteHitomiCover));
+  return c.json(listNewGalleries(limit).map(rewriteDoujinCover));
 });
 
 api.post('/watched-searches', async (c) => {
@@ -824,10 +839,11 @@ api.delete('/watched-searches/:id', (c) => {
   return c.json({ ok: true });
 });
 
-/** Run all watches now (manual trigger; the poll timer also runs this). */
 api.post('/watched-searches/check', (c) => {
+  const active = jobQueue.active().find((job) => job.type === 'check-watched-searches');
+  if (active) return c.json({ id: active.id, alreadyRunning: true }, 202);
   const id = jobQueue.enqueue('check-watched-searches', {});
-  return c.json({ id }, 202);
+  return c.json({ id, alreadyRunning: false }, 202);
 });
 
 // ---------------- Recommendations ----------------
@@ -838,7 +854,7 @@ api.get('/recommendations', async (c) => {
     const set = await getRecommendations();
     // Hitomi covers need the /media proxy (their CDN requires a Referer the browser can't send).
 
-    return c.json({ ...set, items: set.items.map(rewriteHitomiCover) });
+    return c.json({ ...set, items: set.items.map(rewriteDoujinCover) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
   }
@@ -848,7 +864,7 @@ api.get('/recommendations', async (c) => {
 api.post('/recommendations/refresh', async (c) => {
   try {
     const set = await refreshRecommendations();
-    return c.json({ ...set, items: set.items.map(rewriteHitomiCover) });
+    return c.json({ ...set, items: set.items.map(rewriteDoujinCover) });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
   }

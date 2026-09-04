@@ -58,6 +58,29 @@ describe('media proxy', () => {
     assert.deepEqual(calls, [{ url, referer: 'https://hitomi.la/' }]);
   });
 
+  it('refreshes stale cached Hitomi routes after an upstream 404', async () => {
+    const hash = 'ab'.repeat(32);
+    const stale = `https://a2.gold-usergeneratedcontent.net/old/1/${hash}.avif`;
+    const calls: string[] = [];
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url === stale) return new Response('stale', { status: 404 });
+      if (url.endsWith('/gg.js')) {
+        return new Response('gg.m = function () { return 0; }; gg.s = function () { return "/p/"; }; gg.b = "fresh/";');
+      }
+      if (url === `https://a1.gold-usergeneratedcontent.net/fresh//p//${hash}.avif`) {
+        return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'Content-Type': 'image/avif' } });
+      }
+      return new Response('unexpected', { status: 404 });
+    };
+
+    const res = await mediaRouter().request(proxyRequest(stale));
+    assert.equal(res.status, 200);
+    assert.ok(calls.some((url) => url.endsWith('/gg.js')));
+    assert.ok(calls.some((url) => url.includes('/fresh/')));
+  });
+
   it('rejects invalid media URLs', async () => {
     globalThis.fetch = async () => {
       throw new Error('fetch should not be called');

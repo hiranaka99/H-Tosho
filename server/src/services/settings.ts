@@ -224,6 +224,7 @@ export function getAllLibraryOverrides(): LibraryOverride[] {
 }
 
 const DEFAULT_POLL_INTERVAL_HOURS = 12;
+export const MAX_POLL_INTERVAL_HOURS = 24 * 24;
 
 /** Polling interval (hours) for detecting new series in Kavita. 0 disables. */
 export function getPollIntervalHours(): number {
@@ -232,21 +233,23 @@ export function getPollIntervalHours(): number {
     const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'pollIntervalHours')).get();
     if (!row) return DEFAULT_POLL_INTERVAL_HOURS;
     const parsed = Number(safeParseJson<unknown>(row.valueJson));
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_POLL_INTERVAL_HOURS;
+    return Number.isFinite(parsed) && parsed >= 0 ? Math.min(parsed, MAX_POLL_INTERVAL_HOURS) : DEFAULT_POLL_INTERVAL_HOURS;
   });
 }
 
 export function setPollIntervalHours(hours: number): void {
+  const safeHours = Math.min(Math.max(0, hours), MAX_POLL_INTERVAL_HOURS);
   const db = getDb();
   db.insert(schema.keyValueStore)
-    .values({ key: 'pollIntervalHours', valueJson: JSON.stringify(hours) })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(hours) } })
+    .values({ key: 'pollIntervalHours', valueJson: JSON.stringify(safeHours) })
+    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(safeHours) } })
     .run();
   settingsCache.delete('poll-interval');
   notifySettingChange('poll-interval');
 }
 
 const DEFAULT_WATCHED_SEARCH_INTERVAL_MINUTES = 15;
+export const MAX_WATCHED_SEARCH_INTERVAL_MINUTES = 24 * 60;
 
 /** Interval (minutes) at which watched searches are re-checked. 0 disables auto-checks. */
 export function getWatchedSearchIntervalMinutes(): number {
@@ -255,15 +258,16 @@ export function getWatchedSearchIntervalMinutes(): number {
     const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'watchedSearchIntervalMinutes')).get();
     if (!row) return DEFAULT_WATCHED_SEARCH_INTERVAL_MINUTES;
     const parsed = Number(safeParseJson<unknown>(row.valueJson));
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_WATCHED_SEARCH_INTERVAL_MINUTES;
+    return Number.isFinite(parsed) && parsed >= 0 ? Math.min(parsed, MAX_WATCHED_SEARCH_INTERVAL_MINUTES) : DEFAULT_WATCHED_SEARCH_INTERVAL_MINUTES;
   });
 }
 
 export function setWatchedSearchIntervalMinutes(minutes: number): void {
+  const safeMinutes = Math.min(Math.max(0, minutes), MAX_WATCHED_SEARCH_INTERVAL_MINUTES);
   const db = getDb();
   db.insert(schema.keyValueStore)
-    .values({ key: 'watchedSearchIntervalMinutes', valueJson: JSON.stringify(minutes) })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(minutes) } })
+    .values({ key: 'watchedSearchIntervalMinutes', valueJson: JSON.stringify(safeMinutes) })
+    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(safeMinutes) } })
     .run();
   settingsCache.delete('watched-search-interval');
   notifySettingChange('watched-search-interval');

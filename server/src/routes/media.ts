@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
-import { cors } from 'hono/cors';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DATA_DIR } from '../db/index.js';
+import { refreshHitomiImageUrl } from '../downloader/hitomi.js';
 
 /**
  * Media proxy for CDN cover images that browsers cannot load directly.
@@ -215,7 +215,6 @@ async function readBodyWithCap(res: Response, maxBytes: number): Promise<Buffer>
 
 export function mediaRouter(): Hono {
   const r = new Hono();
-  r.use('*', cors());
 
   r.get('/media', async (c) => {
     const target = decodeUrlParam(c.req.query('u'));
@@ -251,6 +250,16 @@ export function mediaRouter(): Hono {
     let res: Response;
     try {
       res = await fetchWithValidatedRedirects(parsed);
+      // Hitomi cover URLs embed a routing prefix from gg.js that rotates every
+      // few minutes. Recommendation sets are cached for a day, so rebuild a
+      // stale URL on demand instead of returning a broken cover.
+      if (!res.ok && parsed.hostname.endsWith('.gold-usergeneratedcontent.net')) {
+        const refreshed = await refreshHitomiImageUrl(parsed.href);
+        if (refreshed && refreshed !== parsed.href) {
+          const next = new URL(refreshed);
+          if (isAllowedHost(next.hostname)) res = await fetchWithValidatedRedirects(next);
+        }
+      }
     } catch {
       return c.json({ error: 'Upstream fetch failed' }, 502);
     }
@@ -285,7 +294,7 @@ export function mediaProxyUrl(url: string): string {
 }
 
 /** Rewrite hitomi cover URLs to route through the proxy (other sources are untouched). */
-export function rewriteHitomiCover<T extends { source?: string; coverUrl?: string | null }>(r: T): T {
+export function rewriteDoujinCover<T extends { source?: string; coverUrl?: string | null }>(r: T): T {
   if (r.source === 'hitomi' && typeof r.coverUrl === 'string' && r.coverUrl.startsWith('http')) {
     return { ...r, coverUrl: mediaProxyUrl(r.coverUrl) };
   }

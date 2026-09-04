@@ -96,6 +96,7 @@ test('selected MangaDex title rewrites every chapter and renames the record via 
     return kavitaApplyMock(state, seriesDir, 'Old Name')(input, init);
   }) as typeof fetch;
 
+  const historyBefore = getDb().select().from(schema.syncHistory).all().length;
   const summary = await runJob(makeJob(900, {
     seriesId: 42,
     providerId: 'mangadex',
@@ -118,6 +119,7 @@ test('selected MangaDex title rewrites every chapter and renames the record via 
   const row = db.select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, 42)).get();
   assert.ok(row);
   assert.equal(row.status, 'matched');
+  assert.equal(getDb().select().from(schema.syncHistory).all().length, historyBefore + 1, 'one apply creates one history entry');
 });
 
 test('punctuation-only title change rewrites ComicInfo.Series and renames via API without a scan', async () => {

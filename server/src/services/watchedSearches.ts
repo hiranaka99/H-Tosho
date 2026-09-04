@@ -2,7 +2,7 @@ import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { getDb, schema, type Db } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinSearchResult, DoujinSource } from '../downloader/types.js';
-import type { LogFn } from '../jobs/queue.js';
+import { JobCancelled, type LogFn } from '../jobs/queue.js';
 import { notify } from '../notify/dispatcher.js';
 
 /**
@@ -173,7 +173,7 @@ export async function checkWatchedSearches(
   const searches = listWatchedSearches();
   const result: CheckResult = { checked: 0, notified: 0, newGalleries: 0 };
   for (let i = 0; i < searches.length; i++) {
-    if (isCancelled?.()) throw new Error('Job cancelled');
+    if (isCancelled?.()) throw new JobCancelled();
     const s = searches[i];
     onProgress?.(i, searches.length);
     const provider = getDoujinProvider(s.source as DoujinSource);

@@ -10,10 +10,9 @@ import type { SeriesMetadata, VolumeCover } from '../providers/types.js';
 import type { KavitaVolume, KavitaSeriesMetadataDto } from '../kavita/types.js';
 import { fetchProviderMetadata } from '../match/autoMatcher.js';
 import { listCbzFiles, resolveSeriesHostDir, setSeriesTitleInCbzFiles } from '../lib/cbz.js';
-import { mapLimit, sleep } from '../lib/http.js';
+import { mapLimit } from '../lib/http.js';
 import { invalidateSeriesArtists } from './seriesArtists.js';
-import { getKavitaConnection, getNotificationSettings, getCredentialMap, getDownloaderSettings } from './settings.js';
-import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
+import { getCredentialMap, getDownloaderSettings } from './settings.js';
 import { jobQueue, JobCancelled } from '../jobs/queue.js';
 
 /** Fields H-Tosho can push to a Kavita series. */
@@ -253,34 +252,7 @@ export async function applyToKavita(
     if (volResult.updated > 0) pushed.push(`volumeCovers:${volResult.updated}`);
   }
 
-  // Persist history
   const db = getDb();
-  db.insert(schema.syncHistory)
-    .values({
-      kavitaSeriesId: seriesId,
-      seriesTitle: opts.title,
-      action: errors.length ? 'failed' : 'updated',
-      detailsJson: JSON.stringify({ provider: meta.providerId, pushed, coverUpdated, volumeCoversUpdated, ...(opts.titleFiles ? { titleFiles: opts.titleFiles } : {}), errors, warnings }),
-    })
-    .run();
-
-  // Notifications (fire-and-forget)
-  const notif = getNotificationSettings();
-  if (notif.discord.enabled) {
-    const name = providerName(meta.providerId);
-    notify({
-      title: errors.length ? `Sync failed — ${opts.title}` : opts.title,
-      description: meta.url ? `Metadata synced to Kavita from [${name}](${meta.url})` : `Metadata synced to Kavita from ${name}`,
-      fields: [
-        ...(pushed.length ? [{ name: 'Updated', value: formatPushedFields(pushed) }] : []),
-        ...(warnings.length ? [{ name: 'Notes', value: warnings.join('\n') }] : []),
-        ...(errors.length ? [{ name: 'Errors', value: errors.join('\n') }] : []),
-      ],
-      coverUrl: meta.coverUrl ?? undefined,
-      success: errors.length === 0,
-    }).catch(() => {});
-  }
-
   // Update match row
   const row = db.select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
   if (row) {

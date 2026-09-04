@@ -157,6 +157,23 @@ export async function buildHitomiPageUrl(
   return originalUrl(gg, ref.hash, ref.origExt ?? 'jpg');
 }
 
+/** Rebuild a cached Hitomi image URL against the current rotating CDN route. */
+export async function refreshHitomiImageUrl(url: string): Promise<string | null> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (!parsed.hostname.endsWith('.gold-usergeneratedcontent.net')) return null;
+  const match = /\/([0-9a-f]{64})\.(avif|webp)$/i.exec(parsed.pathname);
+  if (!match) return null;
+  return buildHitomiPageUrl(
+    { hash: match[1].toLowerCase(), ext: match[2].toLowerCase() as 'avif' | 'webp' },
+    { forceGgRefresh: true },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Gallery metadata
 // ---------------------------------------------------------------------------

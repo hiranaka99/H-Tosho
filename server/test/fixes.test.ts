@@ -17,12 +17,14 @@ const { initDb, getDb, schema } = await import('../src/db/index.js');
 initDb();
 
 const { fetchJson } = await import('../src/lib/http.js');
-const { isJobType, jobQueue } = await import('../src/jobs/queue.js');
+const { isJobType, jobQueue, JobCancelled } = await import('../src/jobs/queue.js');
 const { testNotification } = await import('../src/notify/dispatcher.js');
-const { getDownloaderSettings, getNotificationSettings, onSettingChange, parseDownloaderSettings, parseNotificationSettings, setNotificationSettings, setPollIntervalHours, setWatchedSearchIntervalMinutes } = await import('../src/services/settings.js');
+const { MAX_POLL_INTERVAL_HOURS, MAX_WATCHED_SEARCH_INTERVAL_MINUTES, getDownloaderSettings, getNotificationSettings, getPollIntervalHours, getWatchedSearchIntervalMinutes, onSettingChange, parseDownloaderSettings, parseNotificationSettings, setNotificationSettings, setPollIntervalHours, setWatchedSearchIntervalMinutes } = await import('../src/services/settings.js');
 const { anilistProvider } = await import('../src/providers/anilist.js');
 const { mediaRouter, mediaProxyUrl } = await import('../src/routes/media.js');
 const { enqueueMatchForNewSeries } = await import('../src/services/sync.js');
+const { mapLimit } = await import('../src/lib/http.js');
+const { addWatchedSearch, checkWatchedSearches } = await import('../src/services/watchedSearches.js');
 const { autoMatch } = await import('../src/match/autoMatcher.js');
 const { titleSearchParts } = await import('../src/match/normalize.js');
 const { api } = await import('../src/routes/api.js');
@@ -141,6 +143,50 @@ describe('runtime settings hooks', () => {
     setWatchedSearchIntervalMinutes(60);
     assert.equal(pollNotifications, 1);
     assert.equal(watchedNotifications, 1);
+  });
+
+  it('clamps cadence values below the Node timer overflow limit', () => {
+    setPollIntervalHours(Number.MAX_SAFE_INTEGER);
+    setWatchedSearchIntervalMinutes(Number.MAX_SAFE_INTEGER);
+    assert.equal(getPollIntervalHours(), MAX_POLL_INTERVAL_HOURS);
+    assert.equal(getWatchedSearchIntervalMinutes(), MAX_WATCHED_SEARCH_INTERVAL_MINUTES);
+    assert.ok(MAX_POLL_INTERVAL_HOURS * 3_600_000 <= 2_147_483_647);
+    assert.ok(MAX_WATCHED_SEARCH_INTERVAL_MINUTES * 60_000 <= 2_147_483_647);
+  });
+});
+
+describe('cooperative worker cancellation', () => {
+  it('stops claiming work and waits for in-flight workers before rejecting', async () => {
+    const started: number[] = [];
+    const { promise: second, resolve: releaseSecond } = Promise.withResolvers<void>();
+    const firstStarted = Promise.withResolvers<void>();
+    const secondStarted = Promise.withResolvers<void>();
+    let settled = false;
+    const run = mapLimit([0, 1, 2, 3], 2, async (item) => {
+      started.push(item);
+      if (item === 0) {
+        firstStarted.resolve();
+        await secondStarted.promise;
+        throw new Error('stop');
+      }
+      if (item === 1) {
+        secondStarted.resolve();
+        await second;
+      }
+      return item;
+    }).finally(() => { settled = true; });
+    await firstStarted.promise;
+    await secondStarted.promise;
+    await Promise.resolve();
+    assert.equal(settled, false, 'the pool waits for already-running work');
+    releaseSecond();
+    await assert.rejects(run, /stop/);
+    assert.deepEqual(started, [0, 1], 'no work is claimed after the first failure');
+  });
+
+  it('uses the queue cancellation sentinel for watched searches', async () => {
+    addWatchedSearch('hitomi', `cancel-${Date.now()}`);
+    await assert.rejects(() => checkWatchedSearches(() => {}, () => true), JobCancelled);
   });
 });
 
