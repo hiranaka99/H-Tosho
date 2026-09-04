@@ -253,6 +253,8 @@ export interface DownloaderSettings {
   nhentaiApiKey: string;
   /** Tag names to exclude from all nHentai searches (e.g. "loli", "big breasts"). */
   nhentaiBannedTags: string[];
+  /** Tag names to exclude from all Hitomi searches (e.g. "loli", "artist:foo"). */
+  hitomiBannedTags: string[];
 }
 
 export type DownloadStatus = 'queued' | 'downloading' | 'completed' | 'failed' | 'paused';

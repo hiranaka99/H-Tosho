@@ -86,6 +86,7 @@ describe('downloader settings persistence', () => {
         autoSyncKavita: false,
         nhentaiApiKey: '',
         nhentaiBannedTags: [],
+        hitomiBannedTags: [],
       }),
     });
     assert.equal(res.status, 200);
@@ -105,11 +106,14 @@ describe('downloader settings persistence', () => {
       autoSyncKavita: false,
       nhentaiApiKey: '',
       nhentaiBannedTags: [],
+      hitomiBannedTags: [],
     };
     assert.equal(parseDownloaderSettings({ ...base, format: 'rar' }), null);
     assert.equal(parseDownloaderSettings({ ...base, maxConcurrentDownloads: 11 }), null);
     assert.equal(parseDownloaderSettings({ ...base, maxImageConcurrency: 0 }), null);
     assert.equal(parseDownloaderSettings({ ...base, requestDelayMs: -1 }), null);
+    assert.equal(parseDownloaderSettings({ ...base, nhentaiBannedTags: ['ok', 42] }), null);
+    assert.equal(parseDownloaderSettings({ ...base, hitomiBannedTags: ['ok', 42] }), null);
 
     const res = await api.request('/settings/downloader', {
       method: 'PUT',

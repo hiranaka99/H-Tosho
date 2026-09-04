@@ -358,6 +358,8 @@ export interface DownloaderSettings {
   nhentaiApiKey: string;
   /** Tag names to exclude from all NHentai searches (e.g. "loli", "big breasts"). */
   nhentaiBannedTags: string[];
+  /** Tag names to exclude from all Hitomi searches (e.g. "loli", "artist:foo"). */
+  hitomiBannedTags: string[];
 }
 
 export const DEFAULT_DOWNLOADER: DownloaderSettings = {
@@ -369,6 +371,7 @@ export const DEFAULT_DOWNLOADER: DownloaderSettings = {
   autoSyncKavita: false,
   nhentaiApiKey: '',
   nhentaiBannedTags: [],
+  hitomiBannedTags: [],
 };
 
 /** Validate the complete downloader configuration accepted from storage or HTTP. */
@@ -383,7 +386,8 @@ export function parseDownloaderSettings(value: unknown): DownloaderSettings | nu
     !Number.isFinite(s.requestDelayMs) || Number(s.requestDelayMs) < 0 || Number(s.requestDelayMs) > 60_000 ||
     typeof s.autoSyncKavita !== 'boolean' ||
     typeof s.nhentaiApiKey !== 'string' ||
-    !Array.isArray(s.nhentaiBannedTags) || s.nhentaiBannedTags.some((tag) => typeof tag !== 'string')
+    !Array.isArray(s.nhentaiBannedTags) || s.nhentaiBannedTags.some((tag) => typeof tag !== 'string') ||
+    !Array.isArray(s.hitomiBannedTags) || s.hitomiBannedTags.some((tag) => typeof tag !== 'string')
   ) return null;
   return {
     downloadDirectory: s.downloadDirectory,
@@ -394,6 +398,7 @@ export function parseDownloaderSettings(value: unknown): DownloaderSettings | nu
     autoSyncKavita: s.autoSyncKavita,
     nhentaiApiKey: s.nhentaiApiKey,
     nhentaiBannedTags: s.nhentaiBannedTags,
+    hitomiBannedTags: s.hitomiBannedTags,
   };
 }
 

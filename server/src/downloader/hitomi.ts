@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { fetchBuffer } from '../lib/http.js';
+import { getDownloaderSettings } from '../services/settings.js';
 import { extractGalleryId, stripTags, toIsoDate } from './util.js';
 import type { DoujinGallery, DoujinProvider, DoujinSearchOptions, DoujinSearchResult, DoujinSuggestion, DoujinSort } from './types.js';
 
@@ -513,6 +514,11 @@ function tokenizeQuery(query: string): { ns?: string; val: string }[] {
  * popularity-ranked list and every term's id set is AND-filtered onto it, so
  * results keep descending-popularity order (the live site's
  * `orderby:popular orderbykey:<period>` behavior).
+ *
+ * Configured banned tags are subtracted from the final id set on both paths.
+ * A query that names a banned tag verbatim is an explicit request and skips
+ * that tag's exclusion, so searching a banned tag still returns results (a
+ * bare gallery-id lookup never reaches this function at all).
  */
 async function searchGalleryIds(query: string, version: string, popularPeriod?: 'today' | 'week' | 'year'): Promise<number[]> {
   const terms = tokenizeQuery(query);
@@ -545,7 +551,8 @@ async function searchGalleryIds(query: string, version: string, popularPeriod?: 
     const popular = await fetchPopularIds(popularPeriod, explicitLanguage ?? 'english');
     if (!popular.length) return [];
     const setOf = sets.map((s) => new Set(s));
-    return popular.filter((id) => setOf.every((s) => s.has(id)));
+    const banned = await bannedIdSet(query, version);
+    return popular.filter((id) => setOf.every((s) => s.has(id)) && !banned?.has(id));
   }
 
   let ids = intersectIds(sets);
@@ -559,7 +566,89 @@ async function searchGalleryIds(query: string, version: string, popularPeriod?: 
     if (english.length) ids = intersectIds([ids, english]);
   }
 
+  // Drop galleries carrying any configured banned tag (see bannedIdSet).
+  if (ids.length) {
+    const banned = await bannedIdSet(query, version);
+    if (banned) ids = ids.filter((id) => !banned.has(id));
+  }
+
   return ids;
+}
+
+// ---------------------------------------------------------------------------
+// Banned-tag exclusion (mirrors the nHentai provider's buildBannedExclusions)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve one configured banned tag into the gallery ids carrying it. The
+ * entry uses the same grammar as search queries: a plain keyword matches
+ * anywhere in the index (like a bare search term), while `ns:tag` (e.g.
+ * `artist:foo`) resolves through the nozomi endpoint, so namespaced bans are
+ * scoped to that area instead of matching every field that mentions the name.
+ * Multi-word entries AND-intersect their terms, mirroring how search combines
+ * them — "aoi kajitsu" excludes galleries tagged with both, not either word.
+ */
+async function resolveBannedEntry(entry: string, version: string): Promise<number[]> {
+  const terms = tokenizeQuery(entry);
+  if (!terms.length) return [];
+  const sets = await Promise.all(
+    terms.map(async (t) => {
+      const f = t.ns ? nozomiFilterFromTerm(`${t.ns}:${t.val}`) : null;
+      return f ? fetchNozomiIds(f) : getGalleryIdsForTerm(t.val.toLowerCase(), version);
+    })
+  );
+  return intersectIds(sets);
+}
+
+/**
+ * The gallery ids carrying any configured banned tag, or null when nothing is
+ * banned for this query. A banned entry whose terms all appear verbatim in the
+ * query was explicitly requested and is skipped, so searching a banned tag
+ * still returns results.
+ *
+ * Resolved entries are immutable for a given galleriesindex version, so they
+ * are cached per version (an index rebuild bumps the version and misses every
+ * entry). Empty resolutions are deliberately not cached: a transient CDN
+ * failure must fail open on the next search instead of silently disabling a
+ * ban until the index changes.
+ */
+let bannedCache: { version: string; entries: Map<string, number[]> } | null = null;
+
+async function bannedIdSet(query: string, version: string): Promise<Set<number> | null> {
+  let rawTags: unknown;
+  try {
+    rawTags = getDownloaderSettings().hitomiBannedTags;
+  } catch {
+    return null; // DB not ready yet — fail open.
+  }
+  if (!Array.isArray(rawTags) || !rawTags.length) return null;
+
+  const termKey = (t: { ns?: string; val: string }) => (t.ns ? `${t.ns.toLowerCase()}:${t.val}` : t.val.toLowerCase());
+  const queryTerms = new Set(tokenizeQuery(query).map(termKey));
+
+  if (!bannedCache || bannedCache.version !== version) {
+    bannedCache = { version, entries: new Map() };
+  }
+  const banned = new Set<number>();
+  for (const raw of rawTags) {
+    const entry = String(raw ?? '').trim();
+    if (!entry) continue;
+    const terms = tokenizeQuery(entry);
+    // Explicitly searched (every term of the entry appears verbatim) — this
+    // ban doesn't apply to the current query.
+    if (terms.length && terms.every((t) => queryTerms.has(termKey(t)))) continue;
+    let ids = bannedCache.entries.get(entry);
+    if (ids === undefined) {
+      try {
+        ids = await resolveBannedEntry(entry, version);
+      } catch {
+        continue; // fail open — a lookup error must not blank the search.
+      }
+      if (ids.length) bannedCache.entries.set(entry, ids);
+    }
+    for (const id of ids) banned.add(id);
+  }
+  return banned.size ? banned : null;
 }
 
 // ---------------------------------------------------------------------------

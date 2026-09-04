@@ -363,8 +363,8 @@ export function Settings() {
   );
 }
 
-/** Tag list editor for nHentai banned tags. Enter adds a tag; comma-separated input adds several at once. */
-function BannedTagsEditor({ value, onChange }: { value: string[]; onChange: (tags: string[]) => void }) {
+/** Tag list editor for a source's banned tags. Enter adds a tag; comma-separated input adds several at once. */
+function BannedTagsEditor({ id, label, hint, value, onChange }: { id: string; label: string; hint: string; value: string[]; onChange: (tags: string[]) => void }) {
   const [draft, setDraft] = React.useState('');
   const addTag = () => {
     const parts = draft.split(',').map((s) => s.trim().replace(/^"+|"+$/g, '')).filter(Boolean);
@@ -376,8 +376,8 @@ function BannedTagsEditor({ value, onChange }: { value: string[]; onChange: (tag
   };
   return (
     <div className="flex flex-col gap-1">
-      <Label htmlFor="banned-tags">nHentai banned tags</Label>
-      <p className="text-sm text-muted">Galleries carrying any of these tags never appear in nHentai searches. Separate multiple tags with commas.</p>
+      <Label htmlFor={id}>{label}</Label>
+      <p className="text-sm text-muted">{hint}</p>
       {value.length > 0 && (
         <div className="flex flex-wrap gap-1.5 py-1">
           {value.map((tag) => (
@@ -389,7 +389,7 @@ function BannedTagsEditor({ value, onChange }: { value: string[]; onChange: (tag
         </div>
       )}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <Input id="banned-tags" value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }} placeholder="e.g. loli, big breasts, nsfw" className="flex-1" />
+        <Input id={id} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }} placeholder="e.g. loli, big breasts, nsfw" className="flex-1" />
         <Button size="sm" variant="outline" onClick={addTag} disabled={!draft.trim()}><Plus className="h-3.5 w-3.5" /> Add</Button>
       </div>
     </div>
@@ -433,7 +433,8 @@ function DownloaderSettingsCard() {
           <div className="flex flex-col gap-1"><Label htmlFor="request-delay">Request delay (ms)</Label><Input id="request-delay" type="number" min={0} step={50} value={dlSettings.requestDelayMs} onChange={(e) => setDlSettings({ ...dlSettings, requestDelayMs: Math.max(0, Number(e.target.value) || 0) })} /></div>
         </div>
         <div className="flex flex-col gap-1"><Label htmlFor="nhentai-api-key">nHentai API key</Label><Input id="nhentai-api-key" type="password" value={dlSettings.nhentaiApiKey} onChange={(e) => setDlSettings({ ...dlSettings, nhentaiApiKey: e.target.value })} placeholder="optional — NHENTAI_API_KEY env var is used as a fallback" autoComplete="off" /><p className="text-sm text-muted">Optional key from nhentai.net for higher API rate limits. Leave blank to use the NHENTAI_API_KEY environment variable, if set.</p></div>
-        <BannedTagsEditor value={dlSettings.nhentaiBannedTags ?? []} onChange={(tags) => setDlSettings({ ...dlSettings, nhentaiBannedTags: tags })} />
+        <BannedTagsEditor id="nhentai-banned-tags" label="nHentai banned tags" hint="Galleries carrying any of these tags never appear in nHentai searches. Separate multiple tags with commas." value={dlSettings.nhentaiBannedTags ?? []} onChange={(tags) => setDlSettings({ ...dlSettings, nhentaiBannedTags: tags })} />
+        <BannedTagsEditor id="hitomi-banned-tags" label="Hitomi banned tags" hint="Galleries carrying any of these tags never appear in Hitomi searches or recommendations. A plain name matches anywhere; a namespace prefix (e.g. artist:foo) scopes the ban to that area. Separate multiple tags with commas." value={dlSettings.hitomiBannedTags ?? []} onChange={(tags) => setDlSettings({ ...dlSettings, hitomiBannedTags: tags })} />
         <div className="flex items-center justify-between rounded-md border border-border bg-surface-2 p-3"><div><p className="text-sm">Auto-sync Kavita</p><p className="text-sm text-muted">Trigger a library scan in Kavita after each download completes.</p></div><Switch aria-label="Auto-sync Kavita after downloads" checked={dlSettings.autoSyncKavita} onCheckedChange={(checked) => setDlSettings({ ...dlSettings, autoSyncKavita: checked })} /></div>
       </CardContent>
     </Card>
