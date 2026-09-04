@@ -28,9 +28,14 @@ import { getKavitaConnection, getRecommendationSettings, setRecommendationSettin
  * (`recommendations-history`): manual refreshes never re-serve it, and
  * neither does the next day's first set — that history is what stops the
  * same galleries from resurfacing day after day. Picks become eligible again
- * after HISTORY_DAYS, or sooner when the fresh candidate pool is exhausted
- * (oldest history recycles first). When the profile is too thin to be
- * meaningful (cold start), it falls back to Hitomi's popularity list.
+ * after HISTORY_DAYS, or sooner when the fresh candidate pool is exhausted —
+ * but only picks served on earlier days ever recycle; a refresh would rather
+ * return a short panel than repeat what the user saw earlier today.
+ * Candidate queries also skip a seeded number of leading results per roll, so
+ * repeated refreshes slide down each (static) popularity ranking instead of
+ * re-querying the same top slice and exhausting the fresh pool. When the
+ * profile is too thin to be meaningful (cold start), it falls back to
+ * Hitomi's popularity list.
  */
 
 /**
@@ -58,6 +63,15 @@ const TAG_QUERY_POOL = 16;
 const SERIES_QUERY_POOL = 12;
 /** Results fetched per candidate query — hydration is one request per gallery, so the cap stays tight. */
 const HITOMI_RESULTS_PER_QUERY = 12;
+/**
+ * Seeded skip window for candidate queries. Popularity-sorted rankings barely
+ * move between rolls, so without rotation every refresh would re-query the
+ * same top slice per term and the fresh pool would dry up after a few sets —
+ * forcing same-day re-serves. Each spec skips a seeded number of leading
+ * results, sliding its sampled window down the ranking as the day's
+ * refreshes accumulate.
+ */
+const ROLL_SKIP_WINDOW = 24;
 /**
  * Popularity horizons a roll draws one sort from, per source. All-time lists
  * barely move day to day; pairing them with a weekly horizon keeps the
@@ -412,6 +426,8 @@ interface QuerySpec {
   results: number;
   terms: ProfileTerm[];
   sort: DoujinSort;
+  /** Leading ranking positions to skip this roll (seeded window rotation). */
+  skip: number;
 }
 
 /** Hitomi search fragment for a profile term (null = not searchable). */
@@ -438,7 +454,9 @@ function languageFragment(language: string): string {
  * taste anchor on only half the rolls (a seeded coin — anchoring every roll
  * re-queries the top term every time and the set converges on it); artists
  * are always fully seeded-sampled from their pool. One query per term, per
- * source (AND-combining would shrink pools too hard).
+ * source (AND-combining would shrink pools too hard). Each spec also draws a
+ * seeded skip so consecutive rolls sample different slices of each static
+ * ranking.
  */
 function buildQuerySpecs(profile: TasteProfile, rng: () => number): QuerySpec[] {
   const artists = sampleTerms(profile.terms.filter((t) => t.kind === 'artist'), ARTIST_QUERIES, ARTIST_QUERY_POOL, rng, false);
@@ -462,6 +480,7 @@ function buildQuerySpecs(profile: TasteProfile, rng: () => number): QuerySpec[] 
         results: HITOMI_RESULTS_PER_QUERY,
         terms: [term],
         sort: SEARCH_SORTS[source][Math.floor(rng() * SEARCH_SORTS[source].length)],
+        skip: Math.floor(rng() * ROLL_SKIP_WINDOW),
       });
     }
   }
@@ -523,7 +542,7 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
     const provider = getDoujinProvider(spec.source);
     if (!provider) return null;
     try {
-      return await provider.search(spec.query, spec.results, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES });
+      return await provider.search(spec.query, spec.results, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES, skip: spec.skip });
     } catch (err) {
       console.warn(`[h-tosho] recommendations query failed (${spec.source} “${spec.query}”):`, err instanceof Error ? err.message : err);
       return null;
@@ -667,7 +686,7 @@ async function gatherPopular(downloaded: Set<string>, rng: () => number): Promis
       if (!provider) return;
       const spec = POPULAR_FALLBACK[source];
       try {
-        const results = await provider.search(spec.query, PICKS_PER_SOURCE * 2, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES });
+        const results = await provider.search(spec.query, PICKS_PER_SOURCE * 2, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES, skip: Math.floor(rng() * ROLL_SKIP_WINDOW) });
         const pool = results.filter((r) => !downloaded.has(keyOf(r)));
         // Seeded shuffle — popularity order is already quality-ranked; the seed
         // only decides which slice of it the user sees today.
@@ -893,9 +912,14 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
 
   // The fresh candidate pool is exhausted (tiny pool, many refreshes): top up
   // with the oldest previously-served picks rather than leaving the panel short.
+  // History is oldest-first, so earlier days recycle first — but a pick served
+  // earlier TODAY is never re-served: after a few same-day refreshes the fresh
+  // pool can dry up, and repeating what the user saw hours ago is worse than a
+  // shorter panel (which heals on the next roll or the next day).
   if (items.length < TOTAL_PICKS) {
     const existing = new Set(items.map(keyOf));
     for (const h of history) {
+      if (h.date === date) continue;
       if (existing.has(h.key)) continue;
       items.push(h.item);
       existing.add(h.key);

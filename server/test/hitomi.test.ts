@@ -162,6 +162,15 @@ test('search honors excludeTypes, dropping artist CG galleries like the recommen
   }
 });
 
+test('search honors skip, sampling a later slice of the ranking without hydrating skipped ids', async () => {
+  const results = await hitomiProvider.search('cat', 3, undefined, { skip: 2 });
+
+  // The ranking is [101..108]; skipping two leading positions starts at 103
+  // (102 is an image set that would be dropped anyway). Kept order preserved.
+  assert.deepEqual(results.map((r) => r.galleryId), ['103', '104', '105']);
+  assert.ok(!fetchedUrls.some((u) => u.endsWith('/galleries/101.js')), 'skipped ids must not be hydrated');
+});
+
 test('search bounds the hydration scan at 4x the limit on type-heavy queries', async () => {
   const results = await hitomiProvider.search('dog', 5);
 

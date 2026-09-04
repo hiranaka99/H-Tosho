@@ -658,8 +658,11 @@ export const hitomiProvider: DoujinProvider = {
     // types (image sets, plus any caller-specified types) are dropped during
     // hydration and backfilled from later candidates so results still fill to
     // `limit` where possible; the scan caps at 4x the target to bound lookups on type-heavy queries.
+    // A `skip` option slides the hydration window down the ranking (recommendations
+    // use it to rotate a static popularity list across refreshes).
     const target = Math.max(limit, 1);
-    const scanLimit = Math.min(ids.length, target * 4);
+    const start = Math.min(Math.max(opts?.skip ?? 0, 0), ids.length);
+    const scanLimit = Math.min(ids.length - start, target * 4);
     // Base exclusions plus caller-specified types (recommendations drop artist CGs too).
     const excludedTypes = new Set(Object.keys(EXCLUDED_GALLERY_TYPES));
     for (const t of opts?.excludeTypes ?? []) excludedTypes.add(t.toLowerCase().replace(/[^a-z]/g, ''));
@@ -667,7 +670,7 @@ export const hitomiProvider: DoujinProvider = {
     const BATCH = 25;
     for (let i = 0; i < scanLimit && out.length < target; i += BATCH) {
       await Promise.all(
-        ids.slice(i, Math.min(i + BATCH, scanLimit)).map(async (id) => {
+        ids.slice(start + i, Math.min(start + i + BATCH, start + scanLimit)).map(async (id) => {
           if (out.length >= target) return;
           try {
             const info = parseGalleryInfo(await fetchText(`${API_BASE}/galleries/${id}.js`));
@@ -694,9 +697,9 @@ export const hitomiProvider: DoujinProvider = {
       );
     }
 
-    // Preserve recency order (ids are newest-first).
+    // Preserve ranking order (popularity when a popular sort was requested, otherwise newest-first).
     const byId = new Map(out.map((r) => [r.galleryId, r]));
-    return ids.map((id) => byId.get(String(id))).filter((r): r is DoujinSearchResult => !!r).slice(0, target);
+    return ids.slice(start).map((id) => byId.get(String(id))).filter((r): r is DoujinSearchResult => !!r).slice(0, target);
   },
 
   /**

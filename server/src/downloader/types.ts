@@ -120,6 +120,12 @@ export interface DownloadEnqueueResult {
 export interface DoujinSearchOptions {
   /** Gallery types to omit from the results (provider-specific type names, e.g. hitomi's `artistcg`). */
   excludeTypes?: string[];
+  /**
+   * Number of leading results to skip before collecting up to `limit` — a
+   * seeded window into a static ranking so repeated rolls sample different
+   * slices instead of the same top N. Providers that cannot skip ignore it.
+   */
+  skip?: number;
 }
 
 /**

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { eq } from 'drizzle-orm';
-import type { DoujinProvider, DoujinSearchResult, DoujinSource } from '../src/downloader/types.js';
+import type { DoujinProvider, DoujinSearchOptions, DoujinSearchResult, DoujinSort, DoujinSource } from '../src/downloader/types.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-recommendations-'));
 process.env.HTOSHO_DATA_DIR = dataDir;
@@ -117,30 +117,6 @@ test('refreshes never re-serve picks, across refreshes and across days', async (
   assert.equal(nhentaiSearches, 0, 'recommender queried nHentai');
 });
 
-test('exhausted candidate pool recycles previously-served picks instead of going short', async () => {
-  // Fresh install boundary: drop the history left by the previous test.
-  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations-history')).run();
-
-  // Twenty-four galleries shared by every query — exactly two full sets, so
-  // the third refresh has no fresh candidates left and must recycle.
-  const shared = () => Array.from({ length: 24 }, (_, i) => String(i));
-  doujinProviders.hitomi = stubProvider('hitomi', shared);
-  const set1 = await recs.refreshRecommendations();
-  assert.equal(set1.items.length, 12);
-  const set2 = await recs.refreshRecommendations();
-  assert.equal(set2.items.length, 12);
-  assert.equal(overlap(keySet(set2.items), keySet(set1.items)), 0, 'second refresh re-served picks while fresh candidates remained');
-
-  const set3 = await recs.refreshRecommendations();
-  assert.equal(set3.items.length, 12, 'panel went short after the fresh pool was exhausted');
-  const served = keySet([...set1.items, ...set2.items]);
-  for (const k of keySet(set3.items)) assert.ok(served.has(k), `recycled set contained an unserved pick ${k}`);
-
-  // Re-serving a recycled pick refreshes its exclusion window.
-  const today = localDate(new Date());
-  assert.ok(historyRows().every((h) => h.date === today), 'history kept stale serve dates after recycling');
-});
-
 test('manual refresh during an in-flight generation re-rolls instead of joining it', async () => {
   // The previous test leaves today's cached set behind; clear it so the first
   // getRecommendations() below actually starts a (gated) generation.
@@ -210,4 +186,85 @@ test('empty generation is not cached and backs off until a manual refresh', asyn
   const set3 = await recs.refreshRecommendations();
   assert.equal(set3.items.length, 0);
   assert.ok(searchCalls > callsAfterFirst, 'manual refresh did not regenerate during the cooldown');
+});
+
+test('same-day exhaustion goes short instead of re-serving today\'s picks', async () => {
+  // Fresh install boundary: drop the history left by the previous tests.
+  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations-history')).run();
+
+  // Twenty-four galleries shared by every query — exactly two full sets, so
+  // the third refresh has no fresh candidates left.
+  const shared = () => Array.from({ length: 24 }, (_, i) => String(i));
+  doujinProviders.hitomi = stubProvider('hitomi', shared);
+  const set1 = await recs.refreshRecommendations();
+  assert.equal(set1.items.length, 12);
+  const set2 = await recs.refreshRecommendations();
+  assert.equal(set2.items.length, 12);
+  assert.equal(overlap(keySet(set2.items), keySet(set1.items)), 0, 'second refresh re-served picks while fresh candidates remained');
+
+  // No fresh candidates and no older history: the panel goes short rather than
+  // repeating what the user already saw today.
+  const set3 = await recs.refreshRecommendations();
+  assert.equal(set3.items.length, 0, 'same-day picks were re-served after the fresh pool was exhausted');
+});
+
+test('exhausted pool recycles previously-served picks from earlier days, never today\'s', async () => {
+  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations-history')).run();
+
+  const shared = () => Array.from({ length: 24 }, (_, i) => String(i));
+  doujinProviders.hitomi = stubProvider('hitomi', shared);
+  const set1 = await recs.refreshRecommendations();
+  const set2 = await recs.refreshRecommendations();
+  assert.equal(set1.items.length, 12);
+  assert.equal(set2.items.length, 12);
+  assert.equal(overlap(keySet(set2.items), keySet(set1.items)), 0, 'second refresh re-served picks while fresh candidates remained');
+
+  // Yesterday's picks sit at the front of the history (oldest first).
+  const yesterday = localDate(new Date(Date.now() - 86_400_000));
+  const older = Array.from({ length: 12 }, (_, i) => ({
+    key: `hitomi:old-${i}`,
+    date: yesterday,
+    item: { source: 'hitomi', galleryId: `old-${i}`, title: `Old ${i}`, tags: [], artists: [], reasons: [] as string[] },
+  }));
+  writeHistoryRows([...older, ...historyRows()]);
+
+  // Fresh pool exhausted → tops up from the oldest entries, which are yesterday's.
+  const set3 = await recs.refreshRecommendations();
+  assert.equal(set3.items.length, 12);
+  const servedToday = keySet([...set1.items, ...set2.items]);
+  for (const it of set3.items) {
+    const k = `${it.source}:${it.galleryId}`;
+    assert.ok(!servedToday.has(k), `same-day re-serve: ${k}`);
+    assert.ok(k.startsWith('hitomi:old-'), `expected a recycled older pick, got ${k}`);
+  }
+
+  // Re-serving a recycled pick refreshes its exclusion window.
+  const today = localDate(new Date());
+  assert.ok(historyRows().every((h) => h.date === today), 'history kept stale serve dates after recycling');
+});
+
+test('repeated refreshes rotate through a static ranking via seeded skips', async () => {
+  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations-history')).run();
+
+  // One long static ranking shared by every query (like Hitomi's popularity
+  // sort for a narrow niche), honoring the skip option like the real provider.
+  const RANK = Array.from({ length: 90 }, (_, i) => `shared-${i}`);
+  doujinProviders.hitomi = {
+    id: 'hitomi',
+    name: 'hitomi',
+    color: '#000',
+    async search(query: string, limit?: number, _sort?: DoujinSort, opts?: DoujinSearchOptions): Promise<DoujinSearchResult[]> {
+      const start = Math.min(opts?.skip ?? 0, RANK.length);
+      return RANK.slice(start, start + (limit ?? 24)).map((galleryId) => ({ source: 'hitomi', galleryId, title: galleryId, tags: [], artists: [] }));
+    },
+  };
+
+  const union = new Set<string>();
+  for (let i = 0; i < 6; i++) {
+    const set = await recs.refreshRecommendations();
+    for (const it of set.items) union.add(`${it.source}:${it.galleryId}`);
+  }
+  // Without window rotation every roll would draw the identical top slice and
+  // the union over six refreshes would be exactly 12.
+  assert.ok(union.size > 12, `rotation not observed: ${union.size} distinct picks over 6 refreshes`);
 });
