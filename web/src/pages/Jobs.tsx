@@ -102,7 +102,7 @@ export function Jobs() {
   const logsQuery = useQuery({ queryKey: ['logs'], queryFn: api.logs, refetchInterval: hasActiveJobs ? 2500 : false });
   const recentLogs = logsQuery.data ?? [];
   const [selected, setSelected] = React.useState<Job | null>(null);
-  const isDesktop = useMediaQuery('(min-width: 768px)');
+  const isDesktop = useMediaQuery('(min-width: 1024px)');
   const { data: jobDetail } = useQuery({
     queryKey: ['job', selected?.id],
     queryFn: () => api.job(selected!.id),
@@ -166,10 +166,10 @@ export function Jobs() {
             !isDesktop ? (
               <div className="flex flex-col gap-2">
                 {visibleJobs.map((job) => (
-                  <button key={job.id} type="button" onClick={() => setSelected(job)} className="rounded-md border border-border p-3 text-left transition-colors duration-150 hover:bg-surface-2/60">
-                    <div className="flex items-start justify-between gap-2"><div><span className="text-xs text-muted">#{job.id}</span><p className="font-medium">{jobLabel(job.type, job.payload)}</p></div><JobStatus status={job.status} /></div>
+                  <button key={job.id} type="button" onClick={() => setSelected(job)} className="min-w-0 rounded-md border border-border p-3 text-left transition-colors duration-150 hover:bg-surface-2/60">
+                    <div className="flex min-w-0 flex-wrap items-start justify-between gap-2"><div className="min-w-0 flex-1"><span className="text-xs text-muted">#{job.id}</span><p className="break-words font-medium">{jobLabel(job.type, job.payload)}</p></div><JobStatus status={job.status} /></div>
                     <div className="mt-2"><ProgressBar label={`${jobLabel(job.type, job.payload)} progress`} value={job.progressCurrent} max={job.progressTotal} className="h-1.5" /></div>
-                    {jobResultText(job) && <p className="mt-2 line-clamp-2 text-xs text-muted">{jobResultText(job)}</p>}
+                    {jobResultText(job) && <p className="mt-2 break-words text-xs text-muted">{jobResultText(job)}</p>}
                     <p className="mt-2 text-xs text-muted">{timeAgo(job.createdAt)}</p>
                   </button>
                 ))}
@@ -236,9 +236,9 @@ export function Jobs() {
               ) : (
                 active.map((j) => (
                   <div key={j.id} className={cn('animate-fade-up rounded-md border p-3 transition-colors', j.status === 'running' ? 'border-primary/40 bg-primary/5' : 'border-border')}>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium">{jobLabel(j.type, j.payload)}</span>
-                      <div className="flex items-center gap-2">
+                    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                      <span className="min-w-0 flex-1 break-words text-sm font-medium">{jobLabel(j.type, j.payload)}</span>
+                      <div className="flex flex-wrap items-center gap-2">
                         <JobStatus status={j.status} />
                         <Button size="sm" variant="ghost" onClick={() => cancelJob(j.id)}>
                           <X className="h-3.5 w-3.5" /> Cancel

@@ -301,7 +301,7 @@ const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, 
           {tags.length > 0 && <div className="flex flex-wrap gap-1">{tags.map((t, i) => <span key={i} className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{t}</span>)}</div>}
         </div>
       </button>
-      <div className="mt-auto flex items-center justify-between gap-2 p-3 pt-2">
+      <div className="mt-auto flex flex-wrap items-center justify-between gap-2 p-3 pt-2">
         <SourceBadge source={item.source} />
         <div className="flex items-center gap-1.5">
           {onMarkOwned && (
@@ -1404,7 +1404,7 @@ export function Downloader() {
       <Card>
         <CardContent className="flex flex-col gap-3">
           <form onSubmit={runSearch} className="flex flex-col gap-2 lg:flex-row">
-            <div role="radiogroup" aria-label="Download source" className="flex overflow-hidden rounded-md border border-border-2">
+            <div role="radiogroup" aria-label="Download source" className="flex max-w-full overflow-x-auto rounded-md border border-border-2">
               {sources.map((s) => (
                 <button
                   key={s.id}
@@ -1422,7 +1422,7 @@ export function Downloader() {
                   }}
                   aria-checked={source === s.id}
                   className={cn(
-                    'h-9 flex-1 px-4 text-sm font-medium transition-colors lg:flex-none',
+                    'h-9 min-w-0 flex-1 px-3 text-sm font-medium transition-colors sm:px-4 lg:flex-none',
                     source === s.id ? 'bg-primary text-white' : 'bg-surface-2 text-muted hover:text-foreground',
                   )}
                 >
@@ -1508,7 +1508,7 @@ export function Downloader() {
                 value={sort}
                 onChange={(e) => setSort(e.target.value as DoujinSort)}
                 title="Sort results"
-                className="w-44 shrink-0"
+                className="w-full shrink-0 sm:w-44"
               >
                 {sortsFor(source).map((s) => (
                   <option key={s.value} value={s.value}>{s.label}</option>
@@ -1544,8 +1544,8 @@ export function Downloader() {
             </div>
           ) : results && results.length > 0 ? (
             <>
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <p className="text-xs text-muted">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="min-w-0 flex-1 break-words text-xs text-muted">
                   {results.length} {results.length === 1 ? 'gallery' : 'galleries'} found on {SOURCE_LABELS[source]}
                   {pageCount > 1 && ` — showing ${(curPage - 1) * RESULTS_PAGE_SIZE + 1}–${Math.min(curPage * RESULTS_PAGE_SIZE, results.length)}`}
                 </p>
@@ -1575,7 +1575,7 @@ export function Downloader() {
                   </div>
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+              <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                 {pageItems.map((item, i) => (
                   <GalleryCard
                     key={item.source + item.galleryId}
@@ -1677,7 +1677,7 @@ export function Downloader() {
               <Spinner /> Building your picks — the first pass of the day can take a minute…
             </div>
           ) : visibleRecs.length > 0 ? (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+            <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
               {visibleRecs.map((item, i) => (
                 <div key={item.source + item.galleryId} className="flex flex-col gap-1 [&>article]:flex-1">
                   <GalleryCard
@@ -1756,7 +1756,7 @@ export function Downloader() {
                     </div>
                   </div>
                 )}
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+                <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                   {feedPageItems.map((item, i) => {
                     const key = `${item.source}:${item.galleryId}`;
                     const meta = feedMetaByKey.get(key);

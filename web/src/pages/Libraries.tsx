@@ -239,7 +239,7 @@ export function Libraries() {
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <PageHeader icon={<BookOpen className="h-5 w-5" />} title="Libraries" subtitle="Review matches and manage Kavita metadata." />
-      <div className="sticky -top-4 z-20 -mx-2 -mt-4 flex flex-col gap-3 bg-background px-2 pb-2 pt-4 sm:-top-6 sm:-mt-6 sm:pt-6 lg:-top-8 lg:-mt-8 lg:pt-8">
+      <div className="sticky -top-3 z-20 -mx-1 -mt-3 flex flex-col gap-3 bg-background px-1 pb-2 pt-3 sm:-top-5 sm:-mt-5 sm:pt-5 lg:-top-8 lg:-mt-8 lg:pt-8">
         {/* View tabs — one per Kavita library. */}
         {libs.isError ? (
           <Card><ErrorState title="Could not load libraries" description={libs.error instanceof Error ? libs.error.message : String(libs.error)} onRetry={() => void libs.refetch()} /></Card>
@@ -277,26 +277,26 @@ export function Libraries() {
                 {matchedInLib} matched · {rows.length - matchedInLib} pending
               </p>
             </div>
-            <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:justify-end">
-              <Button variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit multi-select mode' : 'Multi-select — click cards to select them'}>
+            <div className="grid w-full grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap lg:w-auto lg:justify-end">
+              <Button className="w-full sm:w-auto" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit multi-select mode' : 'Multi-select — click cards to select them'}>
                 <CheckSquare className="h-4 w-4" /> Select
               </Button>
-              <label className="flex h-9 cursor-pointer select-none items-center gap-2 rounded-md border border-border-2 bg-surface px-3 text-xs font-medium text-muted transition-colors duration-150 hover:bg-surface-2">
+              <label className="flex h-9 min-w-0 cursor-pointer select-none items-center justify-between gap-2 rounded-md border border-border-2 bg-surface px-3 text-xs font-medium text-muted transition-colors duration-150 hover:bg-surface-2 sm:justify-start">
                 Auto-match
                 <Switch aria-label="Automatically match new series" checked={override.data?.autoMatch ?? true} onCheckedChange={setAutoMatch} />
               </label>
-              <div className="relative min-w-44 flex-1 sm:flex-none">
+              <div className="relative col-span-2 min-w-0 flex-1 sm:col-span-1 sm:flex-none">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
                 <Input aria-label="Filter series or artists" placeholder="Filter series or artist…" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} className="w-full pl-8 sm:w-52" />
               </div>
-              <Select aria-label="Filter by match status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="w-full sm:w-44">
+              <Select aria-label="Filter by match status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="min-w-0 sm:w-44">
                 <option value="all">All</option>
                 <option value="matched">Matched</option>
                 <option value="unmatched">Unmatched</option>
                 <option value="failed">Failed</option>
                 <option value="low-score">Low confidence (&lt;80%)</option>
               </Select>
-              <div className="flex overflow-hidden rounded-md border border-border-2">
+              <div className="ml-auto flex overflow-hidden rounded-md border border-border-2 sm:ml-0">
                 <button type="button" aria-label="Grid view" aria-pressed={view === 'grid'} onClick={() => setView('grid')} className={cn('flex h-8 w-8 items-center justify-center transition-colors duration-150', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
                   <LayoutGrid className="h-4 w-4" />
                 </button>

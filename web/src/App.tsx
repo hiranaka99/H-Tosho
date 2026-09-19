@@ -107,16 +107,16 @@ export default function App() {
   const [navOpen, setNavOpen] = React.useState(false);
   React.useEffect(() => setNavOpen(false), [location.pathname]);
   return (
-    <div className="flex h-full flex-col lg:flex-row">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-surface px-4 lg:hidden">
+    <div className="flex min-h-0 h-full flex-col overflow-hidden lg:flex-row">
+      <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-surface px-3 pt-[env(safe-area-inset-top)] sm:px-4 lg:hidden">
         <Brand />
         <button type="button" aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} onClick={() => setNavOpen((v) => !v)} className="flex h-9 w-9 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground">
           {navOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
       </header>
-      {navOpen && <button type="button" aria-label="Close navigation" className="fixed inset-0 top-14 z-30 bg-black/40 lg:hidden" onClick={() => setNavOpen(false)} />}
+      {navOpen && <button type="button" aria-label="Close navigation" className="fixed inset-x-0 bottom-0 top-14 z-30 bg-black/40 lg:hidden" onClick={() => setNavOpen(false)} />}
       <aside className={cn(
-        'fixed inset-y-14 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-border bg-surface transition-transform duration-200 ease-out lg:static lg:inset-auto lg:w-60 lg:translate-x-0',
+        'fixed bottom-0 left-0 top-14 z-40 flex w-[min(16rem,calc(100vw-2rem))] shrink-0 flex-col border-r border-border bg-surface pb-[env(safe-area-inset-bottom)] transition-transform duration-200 ease-out lg:static lg:inset-auto lg:w-60 lg:translate-x-0 lg:pb-0',
         navOpen ? 'translate-x-0' : '-translate-x-full',
       )}>
         <div className="hidden h-14 items-center border-b border-border px-4 lg:flex">
@@ -152,10 +152,10 @@ export default function App() {
         <KavitaIndicator />
         <SidebarStatus />
       </aside>
-      <main className="min-w-0 flex-1 overflow-y-auto">
+      <main className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
         {/* Padding lives on an inner wrapper, not on the scroll container itself: sticky
             page elements (tab bars) pin flush to the scrollport edge this way. */}
-        <div className="p-4 sm:p-6 lg:p-8">
+        <div className="p-3 sm:p-5 lg:p-8">
           <div key={location.pathname} className="animate-fade-up">
             <PageErrorBoundary>
               <React.Suspense fallback={<div className="flex h-40 items-center justify-center text-sm text-muted">Loading…</div>}>

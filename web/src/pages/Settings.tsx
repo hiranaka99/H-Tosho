@@ -19,11 +19,11 @@ type SettingsTab = (typeof SETTINGS_TABS)[number]['id'];
 
 function SectionHeader({ icon, title, children }: { icon: React.ReactNode; title: string; children?: React.ReactNode }) {
   return (
-    <CardHeader className="flex-row items-center justify-between">
-      <CardTitle className="flex items-center gap-2">
-        {icon} {title}
+    <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
+      <CardTitle className="flex min-w-0 items-center gap-2">
+        {icon} <span className="break-words">{title}</span>
       </CardTitle>
-      {children}
+      {children ? <div className="flex flex-wrap items-center justify-end gap-2">{children}</div> : null}
     </CardHeader>
   );
 }
@@ -57,7 +57,7 @@ function AppearanceCard() {
     <Card className="animate-fade-up">
       <SectionHeader icon={<Palette className="h-4 w-4" />} title="Appearance" />
       <CardContent>
-        <div role="group" aria-label="Theme" className="flex gap-1 rounded-md border border-border-2 bg-surface p-1">
+        <div role="group" aria-label="Theme" className="grid grid-cols-3 gap-1 rounded-md border border-border-2 bg-surface p-1">
           {options.map((o) => (
             <button key={o.id} type="button" aria-pressed={theme === o.id} onClick={() => setTheme(o.id)}
               className={cn('flex h-8 flex-1 items-center justify-center gap-2 rounded text-sm font-medium transition-colors duration-150', theme === o.id ? 'bg-surface-2 text-foreground' : 'text-muted hover:text-foreground')}>
@@ -267,8 +267,8 @@ export function Settings() {
               {kavitaSave.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Server className="h-3.5 w-3.5" />} Save & test connection
             </Button>
             {kavitaMsg && (
-              <span role="status" className={cn('flex items-center gap-1 text-sm', kavitaMsg.ok ? 'text-success' : 'text-danger')}>
-                {kavitaMsg.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}{kavitaMsg.text}
+              <span role="status" className={cn('flex min-w-0 items-start gap-1 break-words text-sm', kavitaMsg.ok ? 'text-success' : 'text-danger')}>
+                {kavitaMsg.ok ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : <XCircle className="h-4 w-4 shrink-0" />}{kavitaMsg.text}
               </span>
             )}
           </div>
@@ -303,7 +303,7 @@ export function Settings() {
                   onDragStart={() => (dragIndex.current = idx)}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={() => onDrop(idx)}
-                  className="flex items-center gap-3 rounded-md border border-border bg-surface-2 p-2 transition-colors hover:border-border-2"
+                  className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-border bg-surface-2 p-2 transition-colors hover:border-border-2 sm:gap-3"
                 >
                   <GripVertical className="hidden h-4 w-4 shrink-0 cursor-grab text-muted active:cursor-grabbing sm:block" aria-hidden="true" />
                   <span className="w-6 text-center text-xs text-muted">{idx + 1}</span>
@@ -435,7 +435,7 @@ function DownloaderSettingsCard() {
         <div className="flex flex-col gap-1"><Label htmlFor="nhentai-api-key">nHentai API key</Label><Input id="nhentai-api-key" type="password" value={dlSettings.nhentaiApiKey} onChange={(e) => setDlSettings({ ...dlSettings, nhentaiApiKey: e.target.value })} placeholder="optional — NHENTAI_API_KEY env var is used as a fallback" autoComplete="off" /><p className="text-sm text-muted">Optional key from nhentai.net for higher API rate limits. Leave blank to use the NHENTAI_API_KEY environment variable, if set.</p></div>
         <BannedTagsEditor id="nhentai-banned-tags" label="nHentai banned tags" hint="Galleries carrying any of these tags never appear in nHentai searches. Separate multiple tags with commas." value={dlSettings.nhentaiBannedTags ?? []} onChange={(tags) => setDlSettings({ ...dlSettings, nhentaiBannedTags: tags })} />
         <BannedTagsEditor id="hitomi-banned-tags" label="Hitomi banned tags" hint="Galleries carrying any of these tags never appear in Hitomi searches or recommendations. A plain name matches anywhere; a namespace prefix (e.g. artist:foo) scopes the ban to that area. Separate multiple tags with commas." value={dlSettings.hitomiBannedTags ?? []} onChange={(tags) => setDlSettings({ ...dlSettings, hitomiBannedTags: tags })} />
-        <div className="flex items-center justify-between rounded-md border border-border bg-surface-2 p-3"><div><p className="text-sm">Auto-sync Kavita</p><p className="text-sm text-muted">Trigger a library scan in Kavita after each download completes.</p></div><Switch aria-label="Auto-sync Kavita after downloads" checked={dlSettings.autoSyncKavita} onCheckedChange={(checked) => setDlSettings({ ...dlSettings, autoSyncKavita: checked })} /></div>
+        <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-surface-2 p-3"><div className="min-w-0"><p className="text-sm">Auto-sync Kavita</p><p className="break-words text-sm text-muted">Trigger a library scan in Kavita after each download completes.</p></div><Switch className="mt-0.5" aria-label="Auto-sync Kavita after downloads" checked={dlSettings.autoSyncKavita} onCheckedChange={(checked) => setDlSettings({ ...dlSettings, autoSyncKavita: checked })} /></div>
       </CardContent>
     </Card>
   );

@@ -135,15 +135,41 @@
 html,
 body,
 #root {
+  width: 100%;
   height: 100%;
+  height: 100dvh;
+  min-width: 0;
 }
 
 body {
+  margin: 0;
+  overflow: hidden;
   background-color: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+}
+/* User-provided titles, paths, and API errors must never widen the viewport. */
+:where(p, h1, h2, h3, td, th, label) {
+  overflow-wrap: anywhere;
+}
+
+/* Narrow screens cannot reveal hover titles reliably. Show text instead of
+   clipping it; dense desktop tables keep their deliberate truncation. */
+@media (max-width: 1023px) {
+  :where(.truncate):not(table *) {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  :where(.line-clamp-1, .line-clamp-2, .line-clamp-4):not(table *) {
+    display: block;
+    overflow: visible;
+    -webkit-line-clamp: unset;
+  }
 }
 
 ::selection {

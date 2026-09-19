@@ -7,7 +7,7 @@ import { X, Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { cn, PROVIDER_COLORS, PROVIDER_NAMES } from '../lib/utils';
 
 const buttonVariants = cva(
-  'inline-flex select-none items-center justify-center gap-2 rounded-md text-sm font-medium transition-colors duration-150 ' +
+  'inline-flex min-w-0 select-none items-center justify-center gap-2 rounded-md text-center text-sm font-medium leading-tight transition-colors duration-150 ' +
     'disabled:pointer-events-none disabled:opacity-50',
   {
     variants: {
@@ -48,7 +48,7 @@ export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElemen
 }
 
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('flex flex-col gap-1 border-b border-border p-4', className)} {...props} />;
+  return <div className={cn('flex flex-col gap-1 border-b border-border p-3 sm:p-4', className)} {...props} />;
 }
 
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
@@ -56,7 +56,7 @@ export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHead
 }
 
 export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('p-4', className)} {...props} />;
+  return <div className={cn('p-3 sm:p-4', className)} {...props} />;
 }
 
 export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
@@ -219,8 +219,8 @@ export function DialogContent({ children, className, ...props }: React.Component
       <DialogPrimitive.Overlay className="dialog-overlay fixed inset-0 z-50 bg-black/50" />
       <DialogPrimitive.Content
         className={cn(
-          'dialog-content fixed left-1/2 top-1/2 z-50 w-[calc(100vw-1.5rem)] max-w-5xl -translate-x-1/2 -translate-y-1/2',
-          'max-h-[calc(100vh-1.5rem)] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl',
+          'dialog-content fixed left-1/2 top-1/2 z-50 w-[calc(100vw-1rem)] max-w-5xl -translate-x-1/2 -translate-y-1/2 sm:w-[calc(100vw-1.5rem)]',
+          'max-h-[calc(100dvh-1rem)] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl sm:max-h-[calc(100dvh-1.5rem)]',
           className,
         )}
         {...props}
@@ -265,7 +265,7 @@ export function ErrorState({ title = 'Something went wrong', description, onRetr
 
 export function SegmentedTabs<T extends string>({ items, value, onChange, label, panelId, className }: { items: readonly { id: T; label: string }[]; value: T; onChange: (id: T) => void; label: string; panelId: string; className?: string }) {
   return (
-    <div role="tablist" aria-label={label} className={cn('flex max-w-full flex-wrap border-b border-border', className)}>
+    <div role="tablist" aria-label={label} className={cn('flex w-full max-w-full flex-nowrap overflow-x-auto border-b border-border', className)}>
       {items.map((item) => (
         <button
           key={item.id}
@@ -286,7 +286,7 @@ export function SegmentedTabs<T extends string>({ items, value, onChange, label,
             requestAnimationFrame(() => tabs?.[nextIndex]?.focus());
           }}
           className={cn(
-            '-mb-px min-h-9 shrink-0 border-b-2 px-3 text-sm font-medium transition-colors duration-150',
+            '-mb-px min-h-9 shrink-0 border-b-2 px-2.5 text-xs font-medium transition-colors duration-150 sm:px-3 sm:text-sm',
             value === item.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
           )}
         >
@@ -301,17 +301,17 @@ export function ConfirmDialog({ open, title, description, confirmLabel, danger =
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
-        <div className="flex flex-col gap-4 p-5 pr-12">
+        <div className="flex flex-col gap-4 p-4 pr-12 sm:p-5 sm:pr-12">
           <div className="flex items-start gap-3">
             <div className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-full', danger ? 'bg-danger/15 text-danger' : 'bg-primary/15 text-primary')}>
               {danger ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
             </div>
-            <div>
+            <div className="min-w-0">
               <DialogTitle>{title}</DialogTitle>
               <DialogDescription className="mt-1">{description}</DialogDescription>
             </div>
           </div>
-          <div className="flex justify-end gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
             <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
             <Button variant={danger ? 'danger' : 'default'} onClick={onConfirm} disabled={pending}>
               {pending && <Spinner />} {confirmLabel}
@@ -325,10 +325,10 @@ export function ConfirmDialog({ open, title, description, confirmLabel, danger =
 
 export function EmptyState({ icon, title, description }: { icon?: React.ReactNode; title: string; description?: string }) {
   return (
-    <div className="flex animate-fade-in flex-col items-center justify-center gap-2 py-16 text-center">
+    <div className="flex animate-fade-in flex-col items-center justify-center gap-2 px-3 py-12 text-center sm:py-16">
       {icon && <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-full bg-surface-2 text-muted">{icon}</div>}
       <p className="font-medium">{title}</p>
-      {description && <p className="max-w-sm text-sm text-muted">{description}</p>}
+      {description && <p className="max-w-sm break-words text-sm text-muted">{description}</p>}
     </div>
   );
 }
@@ -353,19 +353,19 @@ export function PageHeader({
   className?: string;
 }) {
   return (
-    <div className={cn('flex flex-wrap items-center justify-between gap-3', className)}>
-      <div className="flex min-w-0 items-center gap-3">
+    <div className={cn('flex min-w-0 flex-col items-start justify-between gap-3 sm:flex-row sm:flex-wrap sm:items-center', className)}>
+      <div className="flex min-w-0 items-start gap-3 sm:items-center">
         {icon && (
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
             {icon}
           </div>
         )}
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-          {subtitle && <p className="mt-0.5 text-sm text-muted">{subtitle}</p>}
+          <h1 className="break-words text-xl font-semibold tracking-tight">{title}</h1>
+          {subtitle && <p className="mt-0.5 break-words text-sm text-muted">{subtitle}</p>}
         </div>
       </div>
-      {children ? <div className="flex flex-wrap items-center gap-2">{children}</div> : null}
+      {children ? <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">{children}</div> : null}
     </div>
   );
 }
