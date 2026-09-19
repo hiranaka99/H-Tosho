@@ -238,6 +238,10 @@ export interface DoujinGallery {
   /** Legacy genres slot (Hitomi historically mapped characters here). */
   genres?: string[];
   pageCount: number;
+  /** Ordered same-origin URLs for browsing the gallery before downloading. */
+  previewPages: string[];
+  /** Optional lower-quality or alternate rendition for each preview page. */
+  previewFallbacks?: (string | null)[];
   url?: string;
   /** When the gallery was uploaded/published (ISO 8601 date string). */
   uploadedAt?: string | null;

@@ -39,7 +39,7 @@ import { testNotification } from '../notify/dispatcher.js';
 import { getDownloaderSettings, parseDownloaderSettings, setDownloaderSettings } from '../services/settings.js';
 import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
-import { rewriteDoujinCover, rewriteMangaDexCoverUrl } from './media.js';
+import { rewriteDoujinCover, rewriteDoujinPages, rewriteMangaDexCoverUrl } from './media.js';
 import { addWatchedSearch, listNewGalleries, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
 import { getRecommendations, markOwned, refreshRecommendations, setExcludedLibraries } from '../services/recommendations.js';
 import { getRecommendationSettings } from '../services/settings.js';
@@ -628,10 +628,11 @@ api.post('/doujin/gallery', async (c) => {
   const provider = getDoujinProvider(body.source);
   if (!provider) return c.json({ error: `Unknown source: ${body.source}` }, 400);
   try {
-    // Return metadata without exposing the full image URL list (keeps payload small).
+    // Page URLs stay behind the authenticated, allowlisted media proxy so the
+    // browser never needs provider-specific Referer headers or direct CDN access.
     const gallery = await provider.getGallery(body.idOrUrl);
-    const { pages, ...meta } = gallery;
-    return c.json({ ...rewriteDoujinCover(meta), pageCount: pages.length });
+    const { pages, pageFallbacks, requestHeaders: _requestHeaders, resolvePageUrl: _resolvePageUrl, ...meta } = gallery;
+    return c.json({ ...rewriteDoujinCover(meta), ...rewriteDoujinPages(pages, pageFallbacks), pageCount: pages.length });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

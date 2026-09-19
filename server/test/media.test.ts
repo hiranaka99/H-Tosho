@@ -9,7 +9,7 @@ import { afterEach, describe, it } from 'node:test';
 // level) — otherwise cached test covers leak into the real data dir.
 process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-media-'));
 
-const { mediaRouter, rewriteMangaDexCoverUrl } = await import('../src/routes/media.js');
+const { mediaRouter, rewriteDoujinPages, rewriteMangaDexCoverUrl } = await import('../src/routes/media.js');
 
 const originalFetch = globalThis.fetch;
 
@@ -56,6 +56,25 @@ describe('media proxy', () => {
 
     assert.equal(res.status, 200);
     assert.deepEqual(calls, [{ url, referer: 'https://hitomi.la/' }]);
+  });
+
+  it('proxies nHentai preview images with the provider Referer', async () => {
+    const calls: Array<{ url: string; referer: string | null }> = [];
+    globalThis.fetch = async (input, init) => {
+      const headers = new Headers(init?.headers);
+      calls.push({ url: String(input), referer: headers.get('referer') });
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+    };
+
+    const url = 'https://i2.nhentai.net/galleries/123/1.jpg';
+    const res = await mediaRouter().request(proxyRequest(url));
+    assert.equal(res.status, 200);
+    assert.deepEqual(calls, [{ url, referer: 'https://nhentai.net/' }]);
+  });
+
+  it('rejects non-CDN nHentai hosts', async () => {
+    const res = await mediaRouter().request(proxyRequest('https://nhentai.net/api/v2/galleries/1'));
+    assert.equal(res.status, 400);
   });
 
   it('refreshes stale cached Hitomi routes after an upstream 404', async () => {
@@ -105,5 +124,17 @@ describe('rewriteMangaDexCoverUrl', () => {
     assert.equal(rewriteMangaDexCoverUrl('https://s4.anilist.co/file.jpg'), 'https://s4.anilist.co/file.jpg');
     assert.equal(rewriteMangaDexCoverUrl(undefined), undefined);
     assert.equal(rewriteMangaDexCoverUrl(null), undefined);
+  });
+});
+
+describe('rewriteDoujinPages', () => {
+  it('returns aligned proxy URLs for primary pages and optional fallbacks', () => {
+    const first = 'https://i1.nhentai.net/galleries/1/1.jpg';
+    const second = 'https://i1.nhentai.net/galleries/1/2.jpg';
+    const fallback = 'https://i2.nhentai.net/galleries/1/1.jpg';
+    assert.deepEqual(rewriteDoujinPages([first, second], [fallback, null]), {
+      previewPages: [proxyRequest(first), proxyRequest(second)],
+      previewFallbacks: [proxyRequest(fallback), null],
+    });
   });
 });

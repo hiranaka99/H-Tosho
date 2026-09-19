@@ -52,11 +52,12 @@ const DISK_MAX_FILES = 400;
  * IP literals, other CDNs, and internal service names all fail.
  */
 const ALLOWED_HOSTS = ['uploads.mangadex.org', 'gold-usergeneratedcontent.net'];
+const NHENTAI_CDN_HOST = /^[it]\d+\.nhentai\.net$/i;
 
 function isAllowedHost(hostname: string): boolean {
   const h = hostname.toLowerCase();
   if (!h || h.includes(':')) return false; // reject empty and IPv6-literal hosts
-  return ALLOWED_HOSTS.some((a) => h === a || h.endsWith('.' + a));
+  return ALLOWED_HOSTS.some((a) => h === a || h.endsWith('.' + a)) || NHENTAI_CDN_HOST.test(h);
 }
 
 function isHttpUrl(u: URL): boolean {
@@ -154,7 +155,7 @@ function decodeUrlParam(value: string | undefined): string | null {
  */
 function refererForHost(hostname: string): string | undefined {
   if (hostname === 'uploads.mangadex.org') return undefined;
-  // Hitomi's CDN requires a hitomi.la Referer; the header is harmless for other hosts.
+  if (NHENTAI_CDN_HOST.test(hostname)) return 'https://nhentai.net/';
   return 'https://hitomi.la/';
 }
 
@@ -299,6 +300,14 @@ export function rewriteDoujinCover<T extends { source?: string; coverUrl?: strin
     return { ...r, coverUrl: mediaProxyUrl(r.coverUrl) };
   }
   return r;
+}
+
+/** Convert provider-resolved pages into authenticated same-origin preview URLs. */
+export function rewriteDoujinPages(pages: string[], fallbacks?: (string | null)[]): { previewPages: string[]; previewFallbacks: (string | null)[] } {
+  return {
+    previewPages: pages.map(mediaProxyUrl),
+    previewFallbacks: pages.map((_, index) => fallbacks?.[index] ? mediaProxyUrl(fallbacks[index] as string) : null),
+  };
 }
 
 /** Rewrite MangaDex CDN cover URLs to route through the proxy (other URLs are untouched). */

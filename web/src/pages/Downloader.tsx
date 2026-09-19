@@ -386,8 +386,28 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
     queryFn: () => api.doujinGallery(item.source, item.galleryId),
     staleTime: 5 * 60_000,
   });
+  const [previewPage, setPreviewPage] = React.useState(0);
+  const [previewFailed, setPreviewFailed] = React.useState(false);
 
   const g = gallery;
+  const previewPages = g?.previewPages ?? [];
+  const lastPreviewPage = Math.max(0, previewPages.length - 1);
+  const showPreviewPage = React.useCallback((index: number) => {
+    setPreviewPage(Math.max(0, Math.min(index, lastPreviewPage)));
+    setPreviewFailed(false);
+  }, [lastPreviewPage]);
+
+  React.useEffect(() => {
+    setPreviewPage(0);
+    setPreviewFailed(false);
+  }, [item.source, item.galleryId]);
+
+  React.useEffect(() => {
+    const next = previewPages[previewPage + 1];
+    if (!next) return;
+    const image = new Image();
+    image.src = next;
+  }, [previewPage, previewPages]);
 
   /** Search a single tag/artist value (from the details card) on this source. */
   const searchFor = (value: string, ns?: string | null) => {
@@ -401,12 +421,53 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
   };
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-2xl">
-        <div className="flex max-h-[85vh] flex-col gap-5 overflow-y-auto p-5 sm:flex-row">
-          <div className="w-full shrink-0 sm:w-48">
-            <Cover url={g?.coverUrl ?? item.coverUrl} title={item.title} className="mx-auto aspect-[3/4] w-40 rounded-md border border-border sm:w-full" />
+      <DialogContent className="max-w-5xl">
+        <div className="flex max-h-[calc(100dvh-1rem)] flex-col gap-4 overflow-y-auto p-3 sm:p-5 lg:max-h-[90dvh] lg:flex-row lg:gap-5">
+          <div className="flex min-w-0 flex-col gap-2 lg:w-[min(45vw,28rem)] lg:shrink-0">
+            {previewPages.length > 0 ? (
+              <div
+                className="flex min-h-0 flex-col gap-2"
+                tabIndex={0}
+                aria-label="Doujin page preview. Use left and right arrow keys to change pages."
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowLeft') showPreviewPage(previewPage - 1);
+                  if (event.key === 'ArrowRight') showPreviewPage(previewPage + 1);
+                }}
+              >
+                <div className="flex min-h-64 items-center justify-center overflow-hidden rounded-lg border border-border bg-background lg:h-[min(68dvh,46rem)]">
+                  {previewFailed ? (
+                    <div className="flex flex-col items-center gap-2 p-6 text-center text-sm text-muted"><ImageOff className="h-8 w-8" />This page could not be loaded.</div>
+                  ) : (
+                    <img
+                      key={previewPage}
+                      src={previewPages[previewPage]}
+                      alt={`Page ${previewPage + 1} of ${previewPages.length} from ${g?.title ?? item.title}`}
+                      className="max-h-[68dvh] w-full object-contain"
+                      onError={(event) => {
+                        const fallback = g?.previewFallbacks?.[previewPage];
+                        if (fallback && event.currentTarget.src !== new URL(fallback, window.location.href).href) event.currentTarget.src = fallback;
+                        else setPreviewFailed(true);
+                      }}
+                    />
+                  )}
+                </div>
+                <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
+                  <Button size="sm" variant="outline" disabled={previewPage === 0} onClick={() => showPreviewPage(previewPage - 1)} aria-label="Previous page"><ChevronLeft className="h-4 w-4" /><span className="hidden sm:inline">Previous</span></Button>
+                  <label className="flex min-w-0 items-center justify-center gap-1.5 text-xs text-muted">
+                    <span>Page</span>
+                    <Select aria-label="Preview page" value={previewPage} onChange={(event) => showPreviewPage(Number(event.target.value))} className="h-8 w-auto min-w-16 py-0 pl-2 pr-7 text-xs">
+                      {previewPages.map((_, index) => <option key={index} value={index}>{index + 1}</option>)}
+                    </Select>
+                    <span>of {previewPages.length}</span>
+                  </label>
+                  <Button size="sm" variant="outline" disabled={previewPage === lastPreviewPage} onClick={() => showPreviewPage(previewPage + 1)} aria-label="Next page"><span className="hidden sm:inline">Next</span><ChevronRight className="h-4 w-4" /></Button>
+                </div>
+              </div>
+            ) : (
+              <Cover url={g?.coverUrl ?? item.coverUrl} title={item.title} className="mx-auto aspect-[3/4] w-40 rounded-md border border-border lg:w-48" />
+            )}
             {g?.url && (
-              <a href={g.url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-primary">
+              <a href={g.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 self-start text-xs text-muted transition-colors hover:text-primary">
                 <ExternalLink className="h-3 w-3" /> View on {SOURCE_LABELS[item.source]}
               </a>
             )}
@@ -418,8 +479,8 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
                 <SourceBadge source={item.source} />
                 {g?.language && <Badge tone="info"><Languages className="h-3 w-3" /> {g.language}</Badge>}
               </div>
-              <DialogTitle className="text-lg leading-snug">{g?.title ?? item.title}</DialogTitle>
-              <DialogDescription>Gallery details and download options.</DialogDescription>
+              <DialogTitle className="break-words text-lg leading-snug">{g?.title ?? item.title}</DialogTitle>
+              <DialogDescription>{previewPages.length > 0 ? 'Preview the gallery, review its details, or download it.' : 'Gallery details and download options.'}</DialogDescription>
             </div>
 
             {isPending && (
