@@ -102,16 +102,20 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   );
 
   const invalidate = React.useCallback(() => qc.invalidateQueries({ queryKey: ['downloads'] }), [qc]);
+  const invalidateCompleted = React.useCallback(() => qc.invalidateQueries({ queryKey: ['downloads-completed'] }), [qc]);
 
   const mutationError = (title: string) => (error: unknown) => toast({ tone: 'danger', title, description: error instanceof Error ? error.message : String(error) });
   const start = useMutation({ mutationFn: (input: StartDownloadInput) => api.startDownload(input), onSuccess: invalidate });
   const action = useMutation({
     mutationFn: ({ id, op }: { id: number; op: 'pause' | 'resume' | 'cancel' | 'retry' }) => api.downloadAction(id, op),
-    onSuccess: invalidate,
+    onSuccess: (_result, { op }) => {
+      void invalidate();
+      if (op === 'retry') void invalidateCompleted();
+    },
     onError: mutationError('Download action failed'),
   });
-  const remove = useMutation({ mutationFn: (id: number) => api.deleteDownload(id), onSuccess: () => { invalidate(); toast({ tone: 'info', title: 'Removed from download history' }); }, onError: mutationError('Could not remove download') });
-  const clear = useMutation({ mutationFn: api.clearCompletedDownloads, onSuccess: invalidate, onError: mutationError('Could not clear completed downloads') });
+  const remove = useMutation({ mutationFn: (id: number) => api.deleteDownload(id), onSuccess: () => { void invalidate(); void invalidateCompleted(); toast({ tone: 'info', title: 'Removed from download history' }); }, onError: mutationError('Could not remove download') });
+  const clear = useMutation({ mutationFn: api.clearCompletedDownloads, onSuccess: () => { void invalidate(); void invalidateCompleted(); }, onError: mutationError('Could not clear completed downloads') });
 
   // Toast on status transitions to completed/failed. A completion also makes
   // the Downloaded badges stale, so refresh that query directly instead of
@@ -127,8 +131,8 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
     let completed = false;
     for (const t of tasks) {
       const prev = prevStatuses.current.get(t.id);
-      if (prev === undefined || prev === t.status) continue;
       prevStatuses.current.set(t.id, t.status);
+      if (prev === undefined || prev === t.status) continue;
       if (t.status === 'completed') completed = true;
       const title = t.title ?? `Gallery ${t.galleryId}`;
       if (t.status === 'completed') {

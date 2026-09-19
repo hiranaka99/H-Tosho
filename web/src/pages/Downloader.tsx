@@ -265,8 +265,9 @@ function DownloadStatusBadge({ status }: { status: string }) {
 // ---------------- Gallery card ----------------
 // Handlers take the item they act on (instead of per-card closures) so the
 // memoized card only re-renders when its own data changes.
-const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloading, index = 0, downloadedAt, selectMode = false, selected = false, onToggleSelect, owned = false, onMarkOwned }: { item: DoujinSearchResult; onOpen: (item: DoujinSearchResult) => void; onDownload: (item: DoujinSearchResult) => void; downloading: boolean; index?: number; downloadedAt?: string | null; selectMode?: boolean; selected?: boolean; onToggleSelect?: (item: DoujinSearchResult) => void; owned?: boolean; onMarkOwned?: (item: DoujinSearchResult) => void }) {
+const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, task, starting = false, index = 0, downloadedAt, selectMode = false, selected = false, onToggleSelect, owned = false, onMarkOwned }: { item: DoujinSearchResult; onOpen: (item: DoujinSearchResult) => void; onDownload: (item: DoujinSearchResult) => void; task?: DownloadTask; starting?: boolean; index?: number; downloadedAt?: string | null; selectMode?: boolean; selected?: boolean; onToggleSelect?: (item: DoujinSearchResult) => void; owned?: boolean; onMarkOwned?: (item: DoujinSearchResult) => void }) {
   const tags = [...item.artists, ...item.tags].slice(0, 6);
+  const active = starting || task?.status === 'queued' || task?.status === 'downloading' || task?.status === 'paused';
   return (
     <article
       style={{ animationDelay: `${Math.min(index, 15) * 40}ms` }}
@@ -308,9 +309,9 @@ const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, 
               <Bookmark className={cn('h-3.5 w-3.5', owned && 'fill-current text-primary')} />
             </Button>
           )}
-          <Button size="sm" onClick={() => onDownload(item)} disabled={downloading || !!downloadedAt} aria-label={downloadedAt ? `${item.title} already downloaded` : `Download ${item.title}`}>
-            {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : downloadedAt ? <CheckCircle2 className="h-3.5 w-3.5" /> : <DownloadIcon className="h-3.5 w-3.5" />}
-            {downloadedAt ? 'Downloaded' : 'Download'}
+          <Button size="sm" onClick={() => onDownload(item)} disabled={active || !!downloadedAt} aria-label={active ? `${item.title} is ${task?.status ?? 'starting'}` : downloadedAt ? `${item.title} already downloaded` : `Download ${item.title}`}>
+            {active ? <Loader2 className={cn('h-3.5 w-3.5', task?.status !== 'paused' && 'animate-spin')} /> : downloadedAt ? <CheckCircle2 className="h-3.5 w-3.5" /> : <DownloadIcon className="h-3.5 w-3.5" />}
+            {task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : active ? 'Downloading' : downloadedAt ? 'Downloaded' : 'Download'}
           </Button>
         </div>
       </div>
@@ -915,10 +916,10 @@ function ManagerTab() {
 // ---------------- Page ----------------
 
 export function Downloader() {
-  // Download actions (stable across progress ticks — live task state is
-  // consumed by ManagerTab, not here). Deep links from the Libraries page
-  // override cached search state; ordinary navigation restores the last input,
-  // committed search, and result page.
+  // Search cards consume live tasks so each doujin reflects queued, downloading,
+  // or paused state. Deep links from the Libraries page override cached search
+  // state; ordinary navigation restores the last input, committed search, and
+  // result page.
   const [searchParams] = useSearchParams();
   const initialState = React.useMemo(readDownloaderState, []);
   const linkedQuery = searchParams.get('q');
@@ -970,6 +971,16 @@ export function Downloader() {
   const [mergeIntoOpen, setMergeIntoOpen] = React.useState(false);
 
   const { startDownload } = useDownloadActions();
+  const { tasks } = useDownloads();
+  const activeTasksByGallery = React.useMemo(() => {
+    const byGallery = new Map<string, DownloadTask>();
+    for (const task of tasks) {
+      if (task.status === 'queued' || task.status === 'downloading' || task.status === 'paused') {
+        byGallery.set(`${task.source}:${task.galleryId}`, task);
+      }
+    }
+    return byGallery;
+  }, [tasks]);
   const [suggestions, setSuggestions] = React.useState<DoujinSuggestion[]>([]);
   const [suggLoading, setSuggLoading] = React.useState(false);
   const [inputFocused, setInputFocused] = React.useState(false);
@@ -1166,8 +1177,9 @@ export function Downloader() {
     }
   }
 
-  // Tracks which gallery a start-download is in flight for (for button spinners).
-  const [pendingKey, setPendingKey] = React.useState<string | null>(null);
+  // Tracks every gallery whose start request is in flight. A set preserves the
+  // indicators when downloads are queued concurrently from different surfaces.
+  const [pendingKeys, setPendingKeys] = React.useState<ReadonlySet<string>>(new Set());
 
   // Results are fetched in full (up to ~1000 galleries) and paged client-side —
   // rendering every card at once is the heaviest thing this page can do.
@@ -1190,22 +1202,26 @@ export function Downloader() {
   }, [source, query, searchKey, sort, page]);
 
 
-  // Item-argument style and stable (startDownload is stable, setPendingKey is
-  // a setter) so memoized GalleryCards can keep this reference.
+  // Item-argument style and stable (startDownload is stable, state updates are
+  // functional) so memoized GalleryCards can keep this reference.
   const doStartDownload = React.useCallback(async (item: DoujinSearchResult) => {
     const key = `${item.source}:${item.galleryId}`;
-    setPendingKey(key);
+    setPendingKeys((current) => new Set(current).add(key));
     try {
       await startDownload({ source: item.source, galleryId: item.galleryId, title: item.title ?? undefined });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg === 'already-downloaded') {
         toast({ tone: 'info', title: 'Already downloaded', description: 'This gallery has a completed task — use Retry in the Download Manager to re-download it.' });
-      } else {
+      } else if (msg !== 'already-queued') {
         toast({ tone: 'danger', title: 'Could not start download', description: msg });
       }
     } finally {
-      setPendingKey(null);
+      setPendingKeys((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
     }
   }, [startDownload]);
 
@@ -1569,7 +1585,8 @@ export function Downloader() {
                     selected={selectedGalleries.has(`${item.source}:${item.galleryId}`)}
                     onToggleSelect={toggleGallerySelect}
                     onOpen={setSelected}
-                    downloading={pendingKey === `${item.source}:${item.galleryId}`}
+                    task={activeTasksByGallery.get(`${item.source}:${item.galleryId}`)}
+                    starting={pendingKeys.has(`${item.source}:${item.galleryId}`)}
                     downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
                     onDownload={doStartDownload}
                   />
@@ -1667,7 +1684,8 @@ export function Downloader() {
                     item={item}
                     index={i}
                     onOpen={setSelected}
-                    downloading={pendingKey === `${item.source}:${item.galleryId}`}
+                    task={activeTasksByGallery.get(`${item.source}:${item.galleryId}`)}
+                    starting={pendingKeys.has(`${item.source}:${item.galleryId}`)}
                     downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
                     onDownload={doStartDownload}
                     owned={ownedKeys.has(`${item.source}:${item.galleryId}`)}
@@ -1751,7 +1769,8 @@ export function Downloader() {
                           selected={selectedGalleries.has(key)}
                           onToggleSelect={toggleGallerySelect}
                           onOpen={setSelected}
-                          downloading={pendingKey === key}
+                          task={activeTasksByGallery.get(key)}
+                          starting={pendingKeys.has(key)}
                           downloadedAt={downloadedAt.get(key)}
                           onDownload={doStartDownload}
                         />
@@ -1818,7 +1837,7 @@ export function Downloader() {
         <GalleryDetailModal
           item={selected}
           onClose={() => setSelected(null)}
-          downloading={pendingKey === `${selected.source}:${selected.galleryId}`}
+          downloading={pendingKeys.has(`${selected.source}:${selected.galleryId}`) || activeTasksByGallery.has(`${selected.source}:${selected.galleryId}`)}
           onDownload={() => doStartDownload(selected)}
           onSearchTag={searchTagFragment}
         />

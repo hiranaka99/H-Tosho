@@ -1,4 +1,3 @@
-import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Clock, Download, Pause, Play, XCircle, Ban } from 'lucide-react';
@@ -55,7 +54,7 @@ function TaskIcon({ status }: { status: DownloadTask['status'] }) {
   if (status === 'downloading') return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" />;
   if (status === 'queued') return <Clock className="h-3.5 w-3.5 shrink-0 text-muted" />;
   if (status === 'failed') return <XCircle className="h-3.5 w-3.5 shrink-0 text-danger" />;
-  return <Pause className="h-3.5 w-3.5 shrink-0 text-warning" />; // paused
+  return <Pause className="h-3.5 w-3.5 shrink-0 text-warning" />;
 }
 
 function DownloadRow({ task, onAction }: { task: DownloadTask; onAction: (op: 'pause' | 'resume' | 'cancel', id: number) => void }) {
@@ -98,30 +97,14 @@ function DownloadRow({ task, onAction }: { task: DownloadTask; onAction: (op: 'p
   );
 }
 
-/**
- * Sidebar footer tracker. Shows live progress for active background jobs
- * (scan/match/sync) and downloads on every page. Jobs share the ['jobs'] query
- * with the Jobs page; downloads come from the app-wide DownloadsContext.
- */
+/** Sidebar footer tracker for active background jobs and download controls. */
 export function SidebarStatus() {
   const navigate = useNavigate();
   const { data: jobs = [] } = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, refetchInterval: 2500 });
   const { tasks, pause, resume, cancel } = useDownloads();
-
   const activeJobs = jobs.filter((j) => j.status === 'running' || j.status === 'queued');
-  // Paused tasks are excluded from the context's `active` list; include them here so
-  // a paused download stays visible with its resume control.
   const shownTasks = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
   if (activeJobs.length === 0 && shownTasks.length === 0) return null;
-
-  // Aggregate download progress across non-paused tasks (page-based, falls back to bytes).
-  const running = shownTasks.filter((t) => t.status !== 'paused');
-  const pageTotal = running.reduce((s, t) => s + (t.progressTotal || 0), 0);
-  const pageDone = running.reduce((s, t) => s + (t.progressCurrent || 0), 0);
-  const byteTotal = running.reduce((s, t) => s + (t.bytesTotal || 0), 0);
-  const byteDone = running.reduce((s, t) => s + (t.bytesCurrent || 0), 0);
-  const aggregatePct = pageTotal > 0 ? Math.round((pageDone / pageTotal) * 100) : byteTotal > 0 ? Math.round((byteDone / byteTotal) * 100) : null;
-  const downloadingCount = running.filter((t) => t.status === 'downloading').length;
 
   const onTaskAction = (op: 'pause' | 'resume' | 'cancel', id: number) => {
     if (op === 'pause') pause(id);
@@ -139,11 +122,10 @@ export function SidebarStatus() {
           ))}
         </div>
       )}
-
       {shownTasks.length > 0 && (
         <div className="flex flex-col gap-2">
           <button onClick={() => navigate('/downloader')} title="Open downloader" className="group flex items-center gap-1.5 text-left">
-            {downloadingCount > 0 ? (
+            {shownTasks.some((t) => t.status === 'downloading') ? (
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" />
             ) : (
               <Download className="h-3.5 w-3.5 shrink-0 text-muted" />
@@ -151,11 +133,9 @@ export function SidebarStatus() {
             <span className="min-w-0 flex-1 truncate text-xs font-medium uppercase tracking-wide text-muted group-hover:text-foreground">
               Downloads{shownTasks.length > 1 ? ` · ${shownTasks.length}` : ''}
             </span>
-            {aggregatePct !== null && <span className="shrink-0 text-xs text-muted">{aggregatePct}%</span>}
           </button>
-          {aggregatePct !== null && <ProgressBar value={aggregatePct} max={100} className="h-1.5" />}
-          {shownTasks.slice(0, 6).map((t) => (
-            <DownloadRow key={t.id} task={t} onAction={onTaskAction} />
+          {shownTasks.slice(0, 6).map((task) => (
+            <DownloadRow key={task.id} task={task} onAction={onTaskAction} />
           ))}
         </div>
       )}
