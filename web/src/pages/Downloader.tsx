@@ -1697,13 +1697,13 @@ export function Downloader() {
               </Button>
             </CardHeader>
             <CardContent className="flex flex-col gap-2">
-              <p className="text-xs text-muted">
-                {recs?.mode === 'popular'
-                  ? 'Not enough matching library history yet — showing popular galleries from Hitomi.la. Downloads you queue (and your Kavita library) will shape future picks.'
-                  : recs?.mode === 'mixed'
-                    ? 'Personalized matches from Hitomi.la, topped up with popular galleries for variety.'
-                    : 'Picked from Hitomi.la based on your downloaded galleries and your Kavita library. New picks every day; refresh any time for a different selection.'}
-              </p>
+              {recs?.mode !== 'library' && (
+                <p className="text-xs text-muted">
+                  {recs?.mode === 'popular'
+                    ? 'Not enough matching library history yet — showing popular galleries from Hitomi.la. Downloads you queue (and your Kavita library) will shape future picks.'
+                    : 'Personalized matches from Hitomi.la, topped up with popular galleries for variety.'}
+                </p>
+              )}
               {recs && (recs.profile.artists.length > 0 || recs.profile.tags.length > 0 || (recs.profile.series?.length ?? 0) > 0) && (
                 <div className="flex flex-wrap items-center gap-1">
                   <span className="text-xs text-muted">Based on:</span>
