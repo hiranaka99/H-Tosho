@@ -458,7 +458,7 @@ export const api = {
   recommendations: () => request<RecommendationSet>('/recommendations'),
   /** Re-roll today's picks with a fresh seed. */
   refreshRecommendations: () => request<RecommendationSet>('/recommendations/refresh', { method: 'POST' }),
-  /** Mark a gallery as owned and receive the refilled recommendation set. */
+  /** Mark a gallery owned and promote a pre-generated cached replacement. */
   markGalleryOwned: (body: { source: DoujinSource; galleryId: string }) =>
     request<RecommendationSet>('/recommendations/owned', { method: 'POST', body: JSON.stringify(body) }),
   recommendationSettings: () => request<RecommendationSettings>('/recommendations/settings'),

@@ -871,7 +871,7 @@ api.post('/recommendations/refresh', async (c) => {
   }
 });
 
-/** Mark a gallery as owned and return a refilled recommendation panel. */
+/** Mark a gallery owned and promote a cached replacement without remote work. */
 api.post('/recommendations/owned', async (c) => {
   const body = await c.req.json<{ source?: unknown; galleryId?: unknown }>().catch(() => null);
   const source = body?.source;
@@ -879,12 +879,8 @@ api.post('/recommendations/owned', async (c) => {
   if (source !== 'hitomi' && source !== 'nhentai' || !galleryId) {
     return c.json({ error: 'source (hitomi|nhentai) and galleryId are required' }, 400);
   }
-  try {
-    const set = await markOwnedAndReplace(source, galleryId);
-    return c.json({ ...set, items: set.items.map(rewriteDoujinCover) });
-  } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
-  }
+  const set = markOwnedAndReplace(source, galleryId);
+  return c.json({ ...set, items: set.items.map(rewriteDoujinCover) });
 });
 
 /** Which Kavita libraries feed the recommendation profile. */

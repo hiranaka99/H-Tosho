@@ -76,6 +76,8 @@ const SEARCH_SORTS: Record<(typeof SOURCES)[number], DoujinSort[]> = {
 };
 /** Total size of the daily set, split evenly across the registered sources. */
 const TOTAL_PICKS = 12;
+/** Hydrated spares cached with the visible set for instant owned-card replacement. */
+const RESERVE_PICKS = 12;
 const PICKS_PER_SOURCE = Math.max(1, Math.floor(TOTAL_PICKS / SOURCES.length));
 /** Max picks per set a single tag/series term may dominate. */
 const MAX_PICKS_PER_TERM = 2;
@@ -121,6 +123,10 @@ export interface RecommendationSet {
   repeatedCount: number;
   /** Why fewer than twelve fresh picks could not be supplied. */
   degradedReason: 'same-day-pool-exhausted' | 'insufficient-eligible' | null;
+}
+
+interface CachedRecommendationSet extends RecommendationSet {
+  reserve: RecommendationItem[];
 }
 
 // ---------------------------------------------------------------------------
@@ -685,16 +691,13 @@ async function gatherPopular(downloaded: Set<string>, rng: () => number): Promis
       if (!provider) return;
       const spec = POPULAR_FALLBACK[source];
       try {
-        const results = await provider.search(spec.query, PICKS_PER_SOURCE * 2, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES, skip: Math.floor(rng() * ROLL_SKIP_WINDOW) });
+        const results = await provider.search(spec.query, TOTAL_PICKS + RESERVE_PICKS, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES, skip: Math.floor(rng() * ROLL_SKIP_WINDOW) });
         const pool = results.filter((r) => !downloaded.has(keyOf(r)));
-        // Seeded shuffle — popularity order is already quality-ranked; the seed
-        // only decides which slice of it the user sees today.
         for (let i = pool.length - 1; i > 0; i--) {
           const j = Math.floor(rng() * (i + 1));
           [pool[i], pool[j]] = [pool[j], pool[i]];
         }
-        // doGenerate enforces the fair per-set budget; this only bounds the pool.
-        out.push(...pool.slice(0, TOTAL_PICKS).map((r) => ({ ...r, reasons: [] as string[] })));
+        out.push(...pool.slice(0, TOTAL_PICKS + RESERVE_PICKS).map((r) => ({ ...r, reasons: [] as string[] })));
       } catch (err) {
         console.warn(`[h-tosho] recommendations popular fetch failed (${source}):`, err instanceof Error ? err.message : err);
       }
@@ -888,7 +891,7 @@ function termsFromPicks(items: RecommendationItem[]): { artists: string[]; tags:
   const top = (list: [string, number][]) => list.sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name]) => name);
   return { artists: top(byKind.artist), tags: top(byKind.tag), series: top(byKind.series) };
 }
-async function doGenerate(date: string, nonce: number): Promise<RecommendationSet> {
+async function doGenerate(date: string, nonce: number): Promise<CachedRecommendationSet> {
   const rng = mulberry32(hashSeed(`${date}:${nonce}`));
   await backfillMissingTags();
   const kavitaSignals = await buildKavitaSignals();
@@ -913,16 +916,16 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
   }
 
   // Fresh popular galleries are preferred over relaxing personalized diversity.
+  const popular = await gatherPopular(freshExcluded, rng);
   if (items.length < TOTAL_PICKS) {
     const existing = new Set(items.map(keyOf));
-    for (const item of await gatherPopular(freshExcluded, rng)) {
+    for (const item of popular) {
       if (existing.has(keyOf(item))) continue;
       items.push(item);
       existing.add(keyOf(item));
       if (items.length >= TOTAL_PICKS) break;
     }
   }
-
   // Preserve freshness while relaxing only the per-term diversity caps.
   if (items.length < TOTAL_PICKS && candidates.size > 0) {
     const existing = new Set(items.map(keyOf));
@@ -948,6 +951,21 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
       if (items.length >= TOTAL_PICKS) break;
     }
   }
+  // Keep hydrated, eligible leftovers beside the cached panel. Marking a card
+  // owned can promote one synchronously instead of repeating all remote searches.
+  const visibleKeys = new Set(items.map(keyOf));
+  const reserve: RecommendationItem[] = [];
+  const reserveKeys = new Set<string>();
+  const addReserve = (item: RecommendationItem): void => {
+    const key = keyOf(item);
+    if (reserve.length >= RESERVE_PICKS || hardExcluded.has(key) || visibleKeys.has(key) || reserveKeys.has(key)) return;
+    reserve.push(item);
+    reserveKeys.add(key);
+  };
+  for (const candidate of candidates.values()) addReserve({ ...candidate.result, reasons: candidate.reasons });
+  for (const item of popular) addReserve(item);
+  for (const entry of history) addReserve(entry.item);
+
 
   const popularPicks = items.length - libraryPicks;
   const mode: RecommendationSet['mode'] = libraryPicks === 0 ? 'popular' : popularPicks > 0 ? 'mixed' : 'library';
@@ -964,20 +982,21 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
     items,
     repeatedCount,
     degradedReason,
+    reserve,
   };
 }
 
 const cacheKey = (date: string) => `recommendations-v2:${date}`;
 
-function readCached(date: string): RecommendationSet | null {
+function readCached(date: string): CachedRecommendationSet | null {
   const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(date))).get();
   if (!row) return null;
   try {
     const parsed: unknown = JSON.parse(row.valueJson);
     if (!parsed || typeof parsed !== 'object') return null;
-    const set = parsed as Partial<RecommendationSet>;
-    if (set.date !== date || typeof set.generatedAt !== 'string' || !['library', 'mixed', 'popular'].includes(set.mode ?? '')) return null;
+    const set = parsed as Partial<CachedRecommendationSet>;
     if (!Array.isArray(set.items) || set.items.length === 0 || !set.items.every(isRecommendationItem)) return null;
+    const reserve = Array.isArray(set.reserve) ? set.reserve.filter(isRecommendationItem) : [];
     const profile = set.profile;
     if (!profile || !Array.isArray(profile.artists) || !Array.isArray(profile.tags) || !Array.isArray(profile.series)) return null;
     if (![...profile.artists, ...profile.tags, ...profile.series].every((value) => typeof value === 'string')) return null;
@@ -987,13 +1006,13 @@ function readCached(date: string): RecommendationSet | null {
       ? set.degradedReason
       : null;
     if (set.items.length < TOTAL_PICKS && degradedReason !== 'insufficient-eligible') return null;
-    return { ...set, repeatedCount, degradedReason } as RecommendationSet;
+    return { ...set, reserve, repeatedCount, degradedReason } as CachedRecommendationSet;
   } catch {
     return null;
   }
 }
 
-function writeCached(set: RecommendationSet): void {
+function writeCached(set: CachedRecommendationSet): void {
   const db = getDb();
   const valueJson = JSON.stringify(set);
   db.insert(schema.keyValueStore)
@@ -1011,12 +1030,12 @@ function writeCached(set: RecommendationSet): void {
 }
 
 /** Serialize generation; invalidated profile inputs trigger a fresh pass before commit. */
-let inflight: { date: string; promise: Promise<RecommendationSet> } | null = null;
+let inflight: { date: string; promise: Promise<CachedRecommendationSet> } | null = null;
 
 const EMPTY_RETRY_COOLDOWN_MS = 10 * 60_000;
 let emptyCooldownUntil = 0;
 
-function generateFor(date: string, nonce: number): Promise<RecommendationSet> {
+function generateFor(date: string, nonce: number): Promise<CachedRecommendationSet> {
   if (inflight && inflight.date === date) return inflight.promise;
   const promise = (async () => {
     let generationNonce = nonce;
@@ -1048,7 +1067,8 @@ export interface RecommendationResponse extends RecommendationSet {
 
 function withOwned(set: RecommendationSet): RecommendationResponse {
   const owned = ownedGalleryKeys();
-  return { ...set, items: set.items.filter((it) => !owned.has(keyOf(it))), ownedKeys: [...owned] };
+  const { date, generatedAt, mode, profile, items, repeatedCount, degradedReason } = set;
+  return { date, generatedAt, mode, profile, items: items.filter((item) => !owned.has(keyOf(item))), repeatedCount, degradedReason, ownedKeys: [...owned] };
 }
 
 export function getRecommendations(): Promise<RecommendationResponse> {
@@ -1062,8 +1082,6 @@ export function getRecommendations(): Promise<RecommendationResponse> {
     getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(date))).run();
   }
   if (Date.now() < emptyCooldownUntil) {
-    // The last generation found nothing; don't pay for another full pass on
-    // every refetch while the sources are still down.
     return Promise.resolve(
       withOwned({ date, generatedAt: new Date().toISOString(), mode: 'popular', profile: { artists: [], tags: [], series: [], language: null }, items: [], repeatedCount: 0, degradedReason: 'insufficient-eligible' }),
     );
@@ -1088,12 +1106,35 @@ export async function refreshRecommendations(): Promise<RecommendationResponse> 
   // instead of forcing every request into a full regeneration.
   return withOwned(await generateFor(date, ++refreshNonce));
 }
-
-/** Mark a gallery owned and refill the cached panel in the same operation. */
-export async function markOwnedAndReplace(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
+/** Mark a gallery owned and promote a pre-generated replacement without network work. */
+export function markOwnedAndReplace(source: DoujinSource, galleryId: string): RecommendationResponse {
   markOwned(source, galleryId);
-  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(localDate()))).run();
-  return refreshRecommendations();
+  const date = localDate();
+  const cached = readCached(date);
+  if (!cached) return withOwned({ date, generatedAt: new Date().toISOString(), mode: 'popular', profile: { artists: [], tags: [], series: [], language: null }, items: [], repeatedCount: 0, degradedReason: 'insufficient-eligible' });
+
+  const owned = ownedGalleryKeys();
+  const items = cached.items.filter((item) => !owned.has(keyOf(item)));
+  const itemKeys = new Set(items.map(keyOf));
+  const reserve = cached.reserve.filter((item) => !owned.has(keyOf(item)) && !itemKeys.has(keyOf(item)));
+  const promoted: RecommendationItem[] = [];
+  while (items.length < TOTAL_PICKS && reserve.length > 0) {
+    const replacement = reserve.shift();
+    if (!replacement) break;
+    items.push(replacement);
+    promoted.push(replacement);
+    itemKeys.add(keyOf(replacement));
+  }
+  const updated: CachedRecommendationSet = {
+    ...cached,
+    items,
+    reserve,
+    profile: { ...termsFromPicks(items), language: cached.profile.language },
+    degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' : cached.degradedReason,
+  };
+  writeCached(updated);
+  if (promoted.length > 0) addHistory(date, promoted, pruneHistory());
+  return withOwned(updated);
 }
 
 /** Replace the list of Kavita libraries feeding the profile; today's cached set is re-generated. */

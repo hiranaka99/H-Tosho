@@ -1206,7 +1206,7 @@ export function Downloader() {
     try {
       const replacement = await api.markGalleryOwned({ source: item.source, galleryId: item.galleryId });
       qc.setQueryData(['recommendations'], replacement);
-      toast({ tone: 'success', title: 'Marked as owned', description: 'It was replaced and will never be recommended again.' });
+      toast({ tone: 'success', title: 'Marked as owned', description: 'It will never be recommended again.' });
     } catch (e) {
       toast({ tone: 'danger', title: 'Could not mark as owned', description: e instanceof Error ? e.message : String(e) });
     }

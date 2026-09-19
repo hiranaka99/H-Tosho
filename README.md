@@ -127,8 +127,8 @@ or head to the **Downloader** to search for new galleries.
     popularity, preview page counts, and download single galleries or a whole
     selection (optionally merged into one series).
   - *Recommended* — Twelve personalized, popular, or least-recently-shown picks
-    with one-click refresh and an "owned" button that immediately replaces the
-    card. You can choose which Kavita libraries feed the recommendation profile.
+    with one-click refresh and an "owned" button that uses a cached spare when
+    available. You can choose which Kavita libraries feed the recommendation profile.
   - *Watched* — manage your watched searches, their check schedule, and browse
     the "Recently added" feed of new finds.
   - *Manager* — the live download queue: progress, pause/resume/cancel/retry,

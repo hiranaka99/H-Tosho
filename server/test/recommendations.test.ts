@@ -256,16 +256,22 @@ test('exhausted pool recycles previously-served picks from earlier days, never t
   const today = localDate(new Date());
   assert.ok(historyRows().every((h) => h.date === today), 'history kept stale serve dates after recycling');
 });
-test('marking a recommendation owned returns a refilled twelve-card panel', async () => {
+test('marking a recommendation owned promotes a cached replacement without searching', async () => {
   getDb().delete(schema.recommendationHistory).run();
-  const available = () => Array.from({ length: 48 }, (_, i) => `replacement-${i}`);
+  let searchCalls = 0;
+  const available = () => {
+    searchCalls += 1;
+    return Array.from({ length: 48 }, (_, i) => `replacement-${i}`);
+  };
   doujinProviders.hitomi = stubProvider('hitomi', available);
 
   const initial = await recs.refreshRecommendations();
   assert.equal(initial.items.length, 12);
+  const callsAfterGeneration = searchCalls;
   const owned = initial.items[0];
-  const replacement = await recs.markOwnedAndReplace(owned.source, owned.galleryId);
+  const replacement = recs.markOwnedAndReplace(owned.source, owned.galleryId);
 
+  assert.equal(searchCalls, callsAfterGeneration, 'marking owned performed remote searches');
   assert.equal(replacement.items.length, 12);
   assert.ok(!keySet(replacement.items).has(`${owned.source}:${owned.galleryId}`));
   assert.ok(replacement.ownedKeys.includes(`${owned.source}:${owned.galleryId}`));
