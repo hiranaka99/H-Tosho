@@ -41,7 +41,7 @@ import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
 import { rewriteDoujinCover, rewriteDoujinPages, rewriteMangaDexCoverUrl } from './media.js';
 import { addWatchedSearch, listNewGalleries, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
-import { getRecommendations, markOwned, refreshRecommendations, setExcludedLibraries } from '../services/recommendations.js';
+import { getRecommendations, markOwnedAndReplace, refreshRecommendations, setExcludedLibraries } from '../services/recommendations.js';
 import { getRecommendationSettings } from '../services/settings.js';
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
 import { listCbzFiles, readComicInfo, readCoverImage, resolveExistingFile, resolveSeriesHostDir } from '../lib/cbz.js';
@@ -871,7 +871,7 @@ api.post('/recommendations/refresh', async (c) => {
   }
 });
 
-/** Mark a gallery as owned — it will never be recommended again. */
+/** Mark a gallery as owned and return a refilled recommendation panel. */
 api.post('/recommendations/owned', async (c) => {
   const body = await c.req.json<{ source?: unknown; galleryId?: unknown }>().catch(() => null);
   const source = body?.source;
@@ -879,8 +879,12 @@ api.post('/recommendations/owned', async (c) => {
   if (source !== 'hitomi' && source !== 'nhentai' || !galleryId) {
     return c.json({ error: 'source (hitomi|nhentai) and galleryId are required' }, 400);
   }
-  markOwned(source, galleryId);
-  return c.json({ ok: true });
+  try {
+    const set = await markOwnedAndReplace(source, galleryId);
+    return c.json({ ...set, items: set.items.map(rewriteDoujinCover) });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
+  }
 });
 
 /** Which Kavita libraries feed the recommendation profile. */

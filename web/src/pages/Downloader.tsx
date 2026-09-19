@@ -1178,6 +1178,7 @@ export function Downloader() {
 
   // Daily recommendations: stable per local date (server caches the day's set),
   // so no polling — a manual refresh re-rolls with a fresh seed.
+  const qc = useQueryClient();
   const { data: recs, isFetching: recsLoading, isError: recsFailed, error: recsError, refetch: refetchRecs } = useQuery({
     queryKey: ['recommendations'],
     queryFn: api.recommendations,
@@ -1196,30 +1197,20 @@ export function Downloader() {
     }
   }
 
-  // Galleries marked owned this session; the server is the source of truth and
-  // returns the full owned list (recs.ownedKeys) with every recommendation set.
-  const [ownedExtra, setOwnedExtra] = React.useState<ReadonlySet<string>>(new Set());
   const ownedKeys = React.useMemo(
-    () => new Set([...(recs?.ownedKeys ?? []), ...ownedExtra]),
-    [recs, ownedExtra],
+    () => new Set(recs?.ownedKeys ?? []),
+    [recs],
   );
-  // Owned picks vanish from the grid immediately (the server also filters them
-  // out of every response, so this is just for the click-to-disappear moment).
-  const visibleRecs = React.useMemo(
-    () => (recs ? recs.items.filter((it) => !ownedKeys.has(`${it.source}:${it.galleryId}`)) : []),
-    [recs, ownedKeys],
-  );
-  // Item-argument style + setter-only closure so memoized GalleryCards can
-  // keep this reference.
+  const visibleRecs = recs?.items ?? [];
   const doMarkOwned = React.useCallback(async (item: DoujinSearchResult) => {
     try {
-      await api.markGalleryOwned({ source: item.source, galleryId: item.galleryId });
-      setOwnedExtra((prev) => new Set(prev).add(`${item.source}:${item.galleryId}`));
-      toast({ tone: 'success', title: 'Marked as owned', description: 'It will never be recommended again.' });
+      const replacement = await api.markGalleryOwned({ source: item.source, galleryId: item.galleryId });
+      qc.setQueryData(['recommendations'], replacement);
+      toast({ tone: 'success', title: 'Marked as owned', description: 'It was replaced and will never be recommended again.' });
     } catch (e) {
       toast({ tone: 'danger', title: 'Could not mark as owned', description: e instanceof Error ? e.message : String(e) });
     }
-  }, []);
+  }, [qc]);
 
   // Which Kavita libraries feed the recommendation profile (per-library opt-out).
   const { data: recLibs } = useQuery({ queryKey: ['recommendation-libraries'], queryFn: api.recommendationLibraries });
@@ -1704,6 +1695,12 @@ export function Downloader() {
                     : 'Personalized matches from Hitomi.la, topped up with popular galleries for variety.'}
                 </p>
               )}
+              {recs?.degradedReason === 'same-day-pool-exhausted' && (
+                <p className="text-xs text-muted">Fresh picks are exhausted, so the least recently shown galleries were reused.</p>
+              )}
+              {recs?.degradedReason === 'insufficient-eligible' && (
+                <p className="text-xs text-muted">Fewer than twelve eligible galleries are currently available after your exclusions.</p>
+              )}
               {recs && (recs.profile.artists.length > 0 || recs.profile.tags.length > 0 || (recs.profile.series?.length ?? 0) > 0) && (
                 <div className="flex flex-wrap items-center gap-1">
                   <span className="text-xs text-muted">Based on:</span>
@@ -1764,7 +1761,7 @@ export function Downloader() {
               ))}
             </div>
           ) : (
-            <EmptyState icon={<Sparkles className="h-8 w-8" />} title="No picks today" description="Both sources came up empty — try refreshing, or check back later." />
+            <EmptyState icon={<Sparkles className="h-8 w-8" />} title="No picks available" description="Hitomi returned no eligible galleries — try refreshing, or check back later." />
           )}
         </div>
       )}

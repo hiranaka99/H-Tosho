@@ -42,15 +42,18 @@ const slug = (q: string) => q.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
 const keySet = (items: { source: string; galleryId: string }[]) => new Set(items.map((it) => `${it.source}:${it.galleryId}`));
 const overlap = (a: Set<string>, b: Set<string>) => [...a].filter((k) => b.has(k)).length;
 
-function historyRows(): { key: string; date: string; item: unknown }[] {
+interface TestHistoryEntry { key: string; date: string; servedAt: string; item: unknown }
+
+function historyRows(): TestHistoryEntry[] {
   return getDb().select().from(schema.recommendationHistory).all().map((row) => ({
     key: `${row.source}:${row.galleryId}`,
     date: row.servedDate,
+    servedAt: row.servedAt,
     item: JSON.parse(row.itemJson),
   }));
 }
 
-function writeHistoryRows(history: { key: string; date: string; item: unknown }[]): void {
+function writeHistoryRows(history: TestHistoryEntry[]): void {
   getDb().delete(schema.recommendationHistory).run();
   for (const entry of history) {
     const separator = entry.key.indexOf(':');
@@ -58,6 +61,7 @@ function writeHistoryRows(history: { key: string; date: string; item: unknown }[
       source: entry.key.slice(0, separator),
       galleryId: entry.key.slice(separator + 1),
       servedDate: entry.date,
+      servedAt: entry.servedAt,
       itemJson: JSON.stringify(entry.item),
     }).run();
   }
@@ -71,7 +75,7 @@ for (let i = 0; i < 2; i++) {
   recs.recordGalleryTags('nhentai', { source: 'nhentai', galleryId: `dl${i}`, title: `DL ${i}`, pages: [], artists: ['alpha'], tags: ['vanilla'] });
 }
 
-test('refreshes never re-serve picks, across refreshes and across days', async () => {
+test('fresh picks do not repeat across refreshes and days while candidates remain', async () => {
   // Legacy per-day seen row from the pre-history format: must migrate into the rolling history.
   const today = localDate(new Date());
   getDb()
@@ -195,12 +199,11 @@ test('empty generation is not cached and backs off until a manual refresh', asyn
   assert.ok(searchCalls > callsAfterFirst, 'manual refresh did not regenerate during the cooldown');
 });
 
-test('same-day exhaustion goes short instead of re-serving today\'s picks', async () => {
-  // Fresh install boundary: drop the history left by the previous tests.
+test('same-day exhaustion reuses least-recent picks to keep twelve visible', async () => {
   getDb().delete(schema.recommendationHistory).run();
 
-  // Twenty-four galleries shared by every query — exactly two full sets, so
-  // the third refresh has no fresh candidates left.
+  // Twenty-four galleries shared by every query — two fresh sets, then the
+  // least-recent first set must be reused to preserve the twelve-card contract.
   const shared = () => Array.from({ length: 24 }, (_, i) => String(i));
   doujinProviders.hitomi = stubProvider('hitomi', shared);
   const set1 = await recs.refreshRecommendations();
@@ -209,10 +212,11 @@ test('same-day exhaustion goes short instead of re-serving today\'s picks', asyn
   assert.equal(set2.items.length, 12);
   assert.equal(overlap(keySet(set2.items), keySet(set1.items)), 0, 'second refresh re-served picks while fresh candidates remained');
 
-  // No fresh candidates and no older history: the panel goes short rather than
-  // repeating what the user already saw today.
   const set3 = await recs.refreshRecommendations();
-  assert.equal(set3.items.length, 0, 'same-day picks were re-served after the fresh pool was exhausted');
+  assert.equal(set3.items.length, 12);
+  assert.equal(set3.repeatedCount, 12);
+  assert.equal(set3.degradedReason, 'same-day-pool-exhausted');
+  assert.deepEqual(keySet(set3.items), keySet(set1.items));
 });
 
 test('exhausted pool recycles previously-served picks from earlier days, never today\'s', async () => {
@@ -231,11 +235,12 @@ test('exhausted pool recycles previously-served picks from earlier days, never t
   const older = Array.from({ length: 12 }, (_, i) => ({
     key: `hitomi:old-${i}`,
     date: yesterday,
+    servedAt: `${yesterday}T00:00:${String(i).padStart(2, '0')}.000Z`,
     item: { source: 'hitomi', galleryId: `old-${i}`, title: `Old ${i}`, tags: [], artists: [], reasons: [] as string[] },
   }));
   writeHistoryRows([...older, ...historyRows()]);
 
-  // Fresh pool exhausted → tops up from the oldest entries, which are yesterday's.
+  // Fresh pool exhausted → tops up from the least-recent entries, yesterday's.
   const set3 = await recs.refreshRecommendations();
   assert.equal(set3.items.length, 12);
   const servedToday = keySet([...set1.items, ...set2.items]);
@@ -244,10 +249,26 @@ test('exhausted pool recycles previously-served picks from earlier days, never t
     assert.ok(!servedToday.has(k), `same-day re-serve: ${k}`);
     assert.ok(k.startsWith('hitomi:old-'), `expected a recycled older pick, got ${k}`);
   }
+  assert.equal(set3.repeatedCount, 12);
 
   // Re-serving a recycled pick refreshes its exclusion window.
+
   const today = localDate(new Date());
   assert.ok(historyRows().every((h) => h.date === today), 'history kept stale serve dates after recycling');
+});
+test('marking a recommendation owned returns a refilled twelve-card panel', async () => {
+  getDb().delete(schema.recommendationHistory).run();
+  const available = () => Array.from({ length: 48 }, (_, i) => `replacement-${i}`);
+  doujinProviders.hitomi = stubProvider('hitomi', available);
+
+  const initial = await recs.refreshRecommendations();
+  assert.equal(initial.items.length, 12);
+  const owned = initial.items[0];
+  const replacement = await recs.markOwnedAndReplace(owned.source, owned.galleryId);
+
+  assert.equal(replacement.items.length, 12);
+  assert.ok(!keySet(replacement.items).has(`${owned.source}:${owned.galleryId}`));
+  assert.ok(replacement.ownedKeys.includes(`${owned.source}:${owned.galleryId}`));
 });
 
 test('repeated refreshes rotate through a static ranking via seeded skips', async () => {

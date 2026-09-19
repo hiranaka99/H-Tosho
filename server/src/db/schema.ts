@@ -206,6 +206,7 @@ export const recommendationHistory = sqliteTable('recommendation_history', {
   source: text('source').notNull(),
   galleryId: text('gallery_id').notNull(),
   servedDate: text('served_date').notNull(),
+  servedAt: text('served_at').notNull(),
   itemJson: text('item_json').notNull(),
 });
 

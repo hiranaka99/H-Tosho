@@ -353,6 +353,9 @@ export interface RecommendationSet {
   mode: 'library' | 'mixed' | 'popular';
   profile: { artists: string[]; tags: string[]; series: string[]; language: string | null };
   items: RecommendationItem[];
+  /** Number of least-recently-shown picks reused to keep the panel full. */
+  repeatedCount: number;
+  degradedReason: 'same-day-pool-exhausted' | 'insufficient-eligible' | null;
   /** Keys (`source:galleryId`) of every owned gallery — drives the owned badges. */
   ownedKeys: string[];
 }
@@ -455,9 +458,9 @@ export const api = {
   recommendations: () => request<RecommendationSet>('/recommendations'),
   /** Re-roll today's picks with a fresh seed. */
   refreshRecommendations: () => request<RecommendationSet>('/recommendations/refresh', { method: 'POST' }),
-  /** Mark a gallery as owned — it will never be recommended again. */
+  /** Mark a gallery as owned and receive the refilled recommendation set. */
   markGalleryOwned: (body: { source: DoujinSource; galleryId: string }) =>
-    request<{ ok: boolean }>('/recommendations/owned', { method: 'POST', body: JSON.stringify(body) }),
+    request<RecommendationSet>('/recommendations/owned', { method: 'POST', body: JSON.stringify(body) }),
   recommendationSettings: () => request<RecommendationSettings>('/recommendations/settings'),
   saveRecommendationSettings: (body: RecommendationSettings) =>
     request<RecommendationSettings>('/recommendations/settings', { method: 'POST', body: JSON.stringify(body) }),

@@ -63,6 +63,7 @@ export function initDb(): Db {
   migrateDownloadQueueColumns(sqlite);
   migrateWatchedSearchColumns(sqlite);
   migrateSeriesMatchColumns(sqlite);
+  migrateRecommendationHistoryColumns(sqlite);
   sqlite.exec(SCHEMA_DDL);
   dropCatalogTable(sqlite);
   pruneOldData(sqlite);
@@ -152,6 +153,19 @@ function migrateSeriesMatchColumns(sqlite: Database.Database): void {
   }
 }
 
+/** Add precise serve times so same-day fallback can choose least-recent picks. */
+function migrateRecommendationHistoryColumns(sqlite: Database.Database): void {
+  const existing = new Set(
+    (sqlite.prepare('PRAGMA table_info(recommendation_history)').all() ?? []).map((c) => (c as { name: string }).name),
+  );
+  if (existing.size === 0 || existing.has('served_at')) return;
+  try {
+    sqlite.exec("ALTER TABLE recommendation_history ADD COLUMN served_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
+    sqlite.exec("UPDATE recommendation_history SET served_at = served_date || 'T00:00:00.000Z'");
+  } catch (err) {
+    console.warn('[h-tosho] failed to add recommendation_history served_at:', err);
+  }
+}
 
 /**
  * Consolidate data from any legacy database files into the canonical file.
@@ -424,6 +438,7 @@ CREATE TABLE IF NOT EXISTS recommendation_history (
   source TEXT NOT NULL,
   gallery_id TEXT NOT NULL,
   served_date TEXT NOT NULL,
+  served_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   item_json TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS key_value_store (
@@ -439,7 +454,7 @@ CREATE INDEX IF NOT EXISTS idx_watched_search_new_found ON watched_search_new(fo
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_tags_unique ON gallery_tags(source, gallery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_owned_galleries_unique ON owned_galleries(source, gallery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_recommendation_history_unique ON recommendation_history(source, gallery_id);
-CREATE INDEX IF NOT EXISTS idx_recommendation_history_served ON recommendation_history(served_date);
+CREATE INDEX IF NOT EXISTS idx_recommendation_history_served ON recommendation_history(served_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_download_queue_claim ON download_queue(status, priority);
 CREATE INDEX IF NOT EXISTS idx_jobs_finished_at ON jobs(finished_at);

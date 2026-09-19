@@ -25,17 +25,11 @@ import { getKavitaConnection, getRecommendationSettings, setRecommendationSettin
  * yields the same picks (cached in `key_value_store` under
  * `recommendations-v2:<date>`). "Refresh" busts the cache and re-rolls with a
  * fresh nonce. Every served pick enters a rolling cross-day history
- * (`recommendations-history`): manual refreshes never re-serve it, and
- * neither does the next day's first set — that history is what stops the
- * same galleries from resurfacing day after day. Picks become eligible again
- * after HISTORY_DAYS, or sooner when the fresh candidate pool is exhausted —
- * but only picks served on earlier days ever recycle; a refresh would rather
- * return a short panel than repeat what the user saw earlier today.
- * Candidate queries also skip a seeded number of leading results per roll, so
- * repeated refreshes slide down each (static) popularity ranking instead of
- * re-querying the same top slice and exhausting the fresh pool. When the
- * profile is too thin to be meaningful (cold start), it falls back to
- * Hitomi's popularity list.
+ * (`recommendations-history`). Fresh personalized and popular candidates are
+ * preferred; diversity caps relax only when needed. If those pools cannot fill
+ * twelve slots, previously served picks return least-recently-shown first,
+ * including same-day picks as the final fallback. Downloaded, owned, banned,
+ * invalid, and duplicate galleries remain hard exclusions.
  */
 
 /**
@@ -123,6 +117,10 @@ export interface RecommendationSet {
   mode: 'library' | 'mixed' | 'popular';
   profile: RecommendationProfile;
   items: RecommendationItem[];
+  /** Number of picks reused from recommendation history. */
+  repeatedCount: number;
+  /** Why fewer than twelve fresh picks could not be supplied. */
+  degradedReason: 'same-day-pool-exhausted' | 'insufficient-eligible' | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +619,30 @@ function pickDaily(candidates: Candidate[], count: number, rng: () => number, te
   return out;
 }
 
+/** Weighted selection without diversity caps, used only after fresh popular candidates. */
+function pickWithoutCaps(candidates: Candidate[], count: number, rng: () => number): RecommendationItem[] {
+  const pool = [...candidates];
+  const out: RecommendationItem[] = [];
+  while (out.length < count && pool.length > 0) {
+    let total = 0;
+    for (const candidate of pool) total += candidate.score;
+    let chosenIndex = Math.floor(rng() * pool.length);
+    if (total > 0) {
+      let draw = rng() * total;
+      for (let i = 0; i < pool.length; i++) {
+        draw -= pool[i].score;
+        if (draw <= 0) {
+          chosenIndex = i;
+          break;
+        }
+      }
+    }
+    const [chosen] = pool.splice(chosenIndex, 1);
+    out.push({ ...chosen.result, reasons: chosen.reasons });
+  }
+  return out;
+}
+
 function capReached(c: Candidate, termPicks: Map<string, number>): boolean {
   for (const term of c.matched) {
     const cap = term.startsWith('artist:') ? MAX_PICKS_PER_ARTIST : MAX_PICKS_PER_TERM;
@@ -747,6 +769,7 @@ const MAX_HISTORY = 1200;
 interface HistoryEntry {
   key: string;
   date: string;
+  servedAt: string;
   item: RecommendationItem;
 }
 
@@ -764,7 +787,10 @@ function parseHistoryEntry(value: unknown): HistoryEntry | null {
   const entry = value as Partial<HistoryEntry>;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(entry.date ?? '') || !isRecommendationItem(entry.item)) return null;
   const key = keyOf(entry.item);
-  return entry.key === key ? { key, date: entry.date!, item: entry.item } : null;
+  const servedAt = typeof entry.servedAt === 'string' && !Number.isNaN(Date.parse(entry.servedAt))
+    ? entry.servedAt
+    : `${entry.date}T00:00:00.000Z`;
+  return entry.key === key ? { key, date: entry.date!, servedAt, item: entry.item } : null;
 }
 
 function writeHistory(entries: HistoryEntry[]): void {
@@ -778,8 +804,8 @@ function writeHistory(entries: HistoryEntry[]): void {
   for (const entry of entries) {
     const itemJson = JSON.stringify(entry.item);
     db.insert(schema.recommendationHistory)
-      .values({ source: entry.item.source, galleryId: entry.item.galleryId, servedDate: entry.date, itemJson })
-      .onConflictDoUpdate({ target: [schema.recommendationHistory.source, schema.recommendationHistory.galleryId], set: { servedDate: entry.date, itemJson } })
+      .values({ source: entry.item.source, galleryId: entry.item.galleryId, servedDate: entry.date, servedAt: entry.servedAt, itemJson })
+      .onConflictDoUpdate({ target: [schema.recommendationHistory.source, schema.recommendationHistory.galleryId], set: { servedDate: entry.date, servedAt: entry.servedAt, itemJson } })
       .run();
   }
 }
@@ -787,11 +813,11 @@ function writeHistory(entries: HistoryEntry[]): void {
 /** Read normalized history and migrate the legacy JSON blob once. */
 function readHistory(): HistoryEntry[] {
   const db = getDb();
-  const normalized = db.select().from(schema.recommendationHistory).orderBy(asc(schema.recommendationHistory.servedDate)).all();
+  const normalized = db.select().from(schema.recommendationHistory).orderBy(asc(schema.recommendationHistory.servedAt)).all();
   if (normalized.length) {
     return normalized.flatMap((row) => {
       try {
-        return parseHistoryEntry({ key: `${row.source}:${row.galleryId}`, date: row.servedDate, item: JSON.parse(row.itemJson) }) ?? [];
+        return parseHistoryEntry({ key: `${row.source}:${row.galleryId}`, date: row.servedDate, servedAt: row.servedAt, item: JSON.parse(row.itemJson) }) ?? [];
       } catch {
         return [];
       }
@@ -827,9 +853,10 @@ function pruneHistory(): HistoryEntry[] {
 
 function addHistory(date: string, items: RecommendationItem[], history: HistoryEntry[]): void {
   const entries = new Map(history.map((entry) => [entry.key, entry]));
-  for (const it of readSeenItems(date)) entries.set(keyOf(it), { key: keyOf(it), date, item: it });
-  for (const it of items) entries.set(keyOf(it), { key: keyOf(it), date, item: it });
-  writeHistory([...entries.values()].slice(-MAX_HISTORY));
+  const now = new Date().toISOString();
+  for (const it of readSeenItems(date)) entries.set(keyOf(it), { key: keyOf(it), date, servedAt: now, item: it });
+  for (const it of items) entries.set(keyOf(it), { key: keyOf(it), date, servedAt: now, item: it });
+  writeHistory([...entries.values()].sort((a, b) => a.servedAt.localeCompare(b.servedAt)).slice(-MAX_HISTORY));
   getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, seenKey(date))).run();
 }
 
@@ -866,80 +893,77 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
   await backfillMissingTags();
   const kavitaSignals = await buildKavitaSignals();
   const profile = buildProfile(kavitaSignals);
-  // Galleries already in the library, marked as owned, or served recently —
-  // a fresh set must not re-serve any of them, even across days. That rolling
-  // exclusion is what keeps today's first set from repeating yesterday's.
+  // Downloaded and owned galleries are hard exclusions. History is initially a
+  // freshness exclusion, then becomes the least-recent fallback pool.
   const history = pruneHistory();
-  const excluded = new Set([...completedGalleryKeys(), ...ownedGalleryKeys(), ...history.map((h) => h.key)]);
+  const hardExcluded = new Set([...completedGalleryKeys(), ...ownedGalleryKeys()]);
+  const freshExcluded = new Set([...hardExcluded, ...history.map((h) => h.key)]);
 
   let items: RecommendationItem[] = [];
   let libraryPicks = 0;
   let candidateCount = 0;
+  let candidates = new Map<string, Candidate>();
   if (profile.terms.length >= MIN_PROFILE_TERMS) {
     const termIndex = new Map(profile.terms.map((t) => [`${t.kind}:${t.name.toLowerCase()}`, t]));
     const termPicks = new Map<string, number>();
-    const candidates = await gatherCandidates(buildQuerySpecs(profile, rng), excluded, termIndex, profile.language);
+    candidates = await gatherCandidates(buildQuerySpecs(profile, rng), freshExcluded, termIndex, profile.language);
     candidateCount = candidates.size;
     items = pickWithBudget(candidates, rng, termPicks);
     libraryPicks = items.length;
   }
 
-  // Cold start (or a day when the profile queries came up empty, or the per-term
-  // caps left the panel short): fill with each source's popularity list. Fill
-  // round-robin across sources so a thin pool can't starve the other — a
-  // sequential append + slice would trim whichever source lists last and force
-  // the history recycle to top up with previously-served picks while fresh
-  // candidates remained.
+  // Fresh popular galleries are preferred over relaxing personalized diversity.
   if (items.length < TOTAL_PICKS) {
     const existing = new Set(items.map(keyOf));
-    const bySource = new Map<DoujinSource, RecommendationItem[]>();
-    for (const r of await gatherPopular(excluded, rng)) {
-      if (existing.has(keyOf(r))) continue;
-      const list = bySource.get(r.source);
-      if (list) list.push(r);
-      else bySource.set(r.source, [r]);
-    }
-    while (items.length < TOTAL_PICKS) {
-      let added = false;
-      for (const source of SOURCES) {
-        if (items.length >= TOTAL_PICKS) break;
-        const next = bySource.get(source)?.shift();
-        if (!next) continue;
-        items.push(next);
-        added = true;
-      }
-      if (!added) break;
+    for (const item of await gatherPopular(freshExcluded, rng)) {
+      if (existing.has(keyOf(item))) continue;
+      items.push(item);
+      existing.add(keyOf(item));
+      if (items.length >= TOTAL_PICKS) break;
     }
   }
 
-  // The fresh candidate pool is exhausted (tiny pool, many refreshes): top up
-  // with the oldest previously-served picks rather than leaving the panel short.
-  // History is oldest-first, so earlier days recycle first — but a pick served
-  // earlier TODAY is never re-served: after a few same-day refreshes the fresh
-  // pool can dry up, and repeating what the user saw hours ago is worse than a
-  // shorter panel (which heals on the next roll or the next day).
+  // Preserve freshness while relaxing only the per-term diversity caps.
+  if (items.length < TOTAL_PICKS && candidates.size > 0) {
+    const existing = new Set(items.map(keyOf));
+    const remaining = [...candidates.values()].filter((candidate) => !existing.has(keyOf(candidate.result)));
+    const relaxed = pickWithoutCaps(remaining, TOTAL_PICKS - items.length, rng);
+    items.push(...relaxed);
+    libraryPicks += relaxed.length;
+  }
+
+  // Last resort: recycle valid history least-recently-shown first. Earlier-day
+  // entries naturally precede today's entries; same-day reuse occurs only when
+  // no unseen or older recommendation can fill the panel.
+  let repeatedCount = 0;
+  let repeatedToday = false;
   if (items.length < TOTAL_PICKS) {
     const existing = new Set(items.map(keyOf));
-    for (const h of history) {
-      if (h.date === date) continue;
-      if (existing.has(h.key)) continue;
-      items.push(h.item);
-      existing.add(h.key);
+    for (const entry of history) {
+      if (hardExcluded.has(entry.key) || existing.has(entry.key)) continue;
+      items.push(entry.item);
+      existing.add(entry.key);
+      repeatedCount += 1;
+      repeatedToday ||= entry.date === date;
       if (items.length >= TOTAL_PICKS) break;
     }
   }
 
   const popularPicks = items.length - libraryPicks;
   const mode: RecommendationSet['mode'] = libraryPicks === 0 ? 'popular' : popularPicks > 0 ? 'mixed' : 'library';
+  const degradedReason: RecommendationSet['degradedReason'] = repeatedToday
+    ? 'same-day-pool-exhausted'
+    : items.length < TOTAL_PICKS ? 'insufficient-eligible' : null;
 
-  console.info(`[recommendations] generated mode=${mode} terms=${profile.terms.length} candidates=${candidateCount} library=${libraryPicks} popular=${popularPicks} total=${items.length}`);
+  console.info(`[recommendations] generated mode=${mode} terms=${profile.terms.length} candidates=${candidateCount} library=${libraryPicks} popular=${popularPicks} repeated=${repeatedCount} total=${items.length}`);
   return {
     date,
     generatedAt: new Date().toISOString(),
     mode,
-    // Chips describe this set, not the whole library — they change with every re-roll.
     profile: { ...termsFromPicks(items), language: profile.language },
     items,
+    repeatedCount,
+    degradedReason,
   };
 }
 
@@ -958,7 +982,12 @@ function readCached(date: string): RecommendationSet | null {
     if (!profile || !Array.isArray(profile.artists) || !Array.isArray(profile.tags) || !Array.isArray(profile.series)) return null;
     if (![...profile.artists, ...profile.tags, ...profile.series].every((value) => typeof value === 'string')) return null;
     if (profile.language !== null && typeof profile.language !== 'string') return null;
-    return set as RecommendationSet;
+    const repeatedCount = typeof set.repeatedCount === 'number' ? set.repeatedCount : 0;
+    const degradedReason = set.degradedReason === 'same-day-pool-exhausted' || set.degradedReason === 'insufficient-eligible'
+      ? set.degradedReason
+      : null;
+    if (set.items.length < TOTAL_PICKS && degradedReason !== 'insufficient-eligible') return null;
+    return { ...set, repeatedCount, degradedReason } as RecommendationSet;
   } catch {
     return null;
   }
@@ -1025,12 +1054,18 @@ function withOwned(set: RecommendationSet): RecommendationResponse {
 export function getRecommendations(): Promise<RecommendationResponse> {
   const date = localDate();
   const cached = readCached(date);
-  if (cached) return Promise.resolve(withOwned(cached));
+  if (cached) {
+    const response = withOwned(cached);
+    if (response.items.length === TOTAL_PICKS || response.items.length === cached.items.length && cached.degradedReason === 'insufficient-eligible') {
+      return Promise.resolve(response);
+    }
+    getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(date))).run();
+  }
   if (Date.now() < emptyCooldownUntil) {
     // The last generation found nothing; don't pay for another full pass on
     // every refetch while the sources are still down.
     return Promise.resolve(
-      withOwned({ date, generatedAt: new Date().toISOString(), mode: 'popular', profile: { artists: [], tags: [], series: [], language: null }, items: [] }),
+      withOwned({ date, generatedAt: new Date().toISOString(), mode: 'popular', profile: { artists: [], tags: [], series: [], language: null }, items: [], repeatedCount: 0, degradedReason: 'insufficient-eligible' }),
     );
   }
   return generateFor(date, 0).then(withOwned);
@@ -1052,6 +1087,13 @@ export async function refreshRecommendations(): Promise<RecommendationResponse> 
   // keeping the last good set means a failed refresh degrades to stale picks
   // instead of forcing every request into a full regeneration.
   return withOwned(await generateFor(date, ++refreshNonce));
+}
+
+/** Mark a gallery owned and refill the cached panel in the same operation. */
+export async function markOwnedAndReplace(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
+  markOwned(source, galleryId);
+  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(localDate()))).run();
+  return refreshRecommendations();
 }
 
 /** Replace the list of Kavita libraries feeding the profile; today's cached set is re-generated. */
