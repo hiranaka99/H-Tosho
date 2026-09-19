@@ -42,18 +42,25 @@ const slug = (q: string) => q.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
 const keySet = (items: { source: string; galleryId: string }[]) => new Set(items.map((it) => `${it.source}:${it.galleryId}`));
 const overlap = (a: Set<string>, b: Set<string>) => [...a].filter((k) => b.has(k)).length;
 
-function historyRows(): { key: string; date: string }[] {
-  const row = getDb().select().from(schema.keyValueStore).all().find((r) => r.key === 'recommendations-history');
-  assert.ok(row, 'history row missing');
-  return JSON.parse(row.valueJson);
+function historyRows(): { key: string; date: string; item: unknown }[] {
+  return getDb().select().from(schema.recommendationHistory).all().map((row) => ({
+    key: `${row.source}:${row.galleryId}`,
+    date: row.servedDate,
+    item: JSON.parse(row.itemJson),
+  }));
 }
 
 function writeHistoryRows(history: { key: string; date: string; item: unknown }[]): void {
-  getDb()
-    .update(schema.keyValueStore)
-    .set({ valueJson: JSON.stringify(history) })
-    .where(eq(schema.keyValueStore.key, 'recommendations-history'))
-    .run();
+  getDb().delete(schema.recommendationHistory).run();
+  for (const entry of history) {
+    const separator = entry.key.indexOf(':');
+    getDb().insert(schema.recommendationHistory).values({
+      source: entry.key.slice(0, separator),
+      galleryId: entry.key.slice(separator + 1),
+      servedDate: entry.date,
+      itemJson: JSON.stringify(entry.item),
+    }).run();
+  }
 }
 
 // Taste profile: two artists + two tags across five "downloaded" galleries.
@@ -87,7 +94,7 @@ test('refreshes never re-serve picks, across refreshes and across days', async (
 
   const set1 = await recs.getRecommendations();
   assert.equal(set1.items.length, 12);
-  assert.equal(set1.mode, 'library');
+  assert.equal(set1.mode, 'mixed');
   // Popular fallback may top the set up (the tiny profile saturates its term
   // caps), but library matches with profile reasons must be present.
   assert.ok(set1.items.some((it) => it.reasons.length > 0), 'no library picks in the set');
@@ -153,7 +160,7 @@ test('manual refresh during an in-flight generation re-rolls instead of joining 
 
 test('empty generation is not cached and backs off until a manual refresh', async () => {
   // Fresh boundary: no history to recycle into the (would-be) set.
-  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations-history')).run();
+  getDb().delete(schema.recommendationHistory).run();
   const today = localDate(new Date());
   getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${today}`)).run();
 
@@ -190,7 +197,7 @@ test('empty generation is not cached and backs off until a manual refresh', asyn
 
 test('same-day exhaustion goes short instead of re-serving today\'s picks', async () => {
   // Fresh install boundary: drop the history left by the previous tests.
-  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations-history')).run();
+  getDb().delete(schema.recommendationHistory).run();
 
   // Twenty-four galleries shared by every query — exactly two full sets, so
   // the third refresh has no fresh candidates left.
@@ -209,7 +216,7 @@ test('same-day exhaustion goes short instead of re-serving today\'s picks', asyn
 });
 
 test('exhausted pool recycles previously-served picks from earlier days, never today\'s', async () => {
-  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations-history')).run();
+  getDb().delete(schema.recommendationHistory).run();
 
   const shared = () => Array.from({ length: 24 }, (_, i) => String(i));
   doujinProviders.hitomi = stubProvider('hitomi', shared);
@@ -244,7 +251,7 @@ test('exhausted pool recycles previously-served picks from earlier days, never t
 });
 
 test('repeated refreshes rotate through a static ranking via seeded skips', async () => {
-  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations-history')).run();
+  getDb().delete(schema.recommendationHistory).run();
 
   // One long static ranking shared by every query (like Hitomi's popularity
   // sort for a narrow niche), honoring the skip option like the real provider.
@@ -267,4 +274,92 @@ test('repeated refreshes rotate through a static ranking via seeded skips', asyn
   // Without window rotation every roll would draw the identical top slice and
   // the union over six refreshes would be exactly 12.
   assert.ok(union.size > 12, `rotation not observed: ${union.size} distinct picks over 6 refreshes`);
+});
+
+test('backfills missing metadata after the first ten rows and includes nHentai downloads', async () => {
+  getDb().delete(schema.recommendationHistory).run();
+  getDb().delete(schema.downloadQueue).run();
+  for (let i = 0; i < 11; i++) {
+    recs.recordGalleryTags('hitomi', { source: 'hitomi', galleryId: `existing-${i}`, title: `Existing ${i}`, pages: [], artists: [], tags: ['existing'] });
+  }
+  getDb().insert(schema.downloadQueue).values({ source: 'nhentai', galleryId: 'legacy-nh', title: 'Legacy', status: 'completed' }).run();
+  let hydrated = false;
+  doujinProviders.nhentai = {
+    ...originals.nhentai,
+    async getGallery() {
+      hydrated = true;
+      return { source: 'nhentai', galleryId: 'legacy-nh', title: 'Legacy', pages: ['page'], artists: ['legacy artist'], tags: ['legacy tag'] };
+    },
+  };
+  doujinProviders.hitomi = stubProvider('hitomi', () => []);
+
+  await recs.refreshRecommendations();
+  assert.equal(hydrated, true);
+  assert.ok(getDb().select().from(schema.galleryTags).all().some((row) => row.source === 'nhentai' && row.galleryId === 'legacy-nh'));
+});
+
+test('profile mutation during generation cannot commit the stale set', async () => {
+  getDb().delete(schema.recommendationHistory).run();
+  const today = localDate(new Date());
+  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${today}`)).run();
+  let release: (() => void) | null = null;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let gated = true;
+  doujinProviders.hitomi = {
+    ...stubProvider('hitomi', (query) => Array.from({ length: 30 }, (_, i) => `${slug(query)}-${i}`)),
+    async search(query: string, limit?: number): Promise<DoujinSearchResult[]> {
+      if (gated) {
+        gated = false;
+        await gate;
+      }
+      return Array.from({ length: limit ?? 12 }, (_, i) => ({ source: 'hitomi', galleryId: `${slug(query)}-${i}-${gated}`, title: query, tags: [], artists: [] }));
+    },
+  };
+
+  const pending = recs.refreshRecommendations();
+  recs.setExcludedLibraries([99]);
+  release!();
+  const set = await pending;
+  const cached = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${today}`)).get();
+  assert.ok(cached);
+  assert.deepEqual(JSON.parse(cached.valueJson).items, set.items);
+});
+
+test('reports popular mode when profile searches produce no personalized picks', async () => {
+  getDb().delete(schema.recommendationHistory).run();
+  doujinProviders.hitomi = stubProvider('hitomi', (query) => query === 'doujinshi' ? Array.from({ length: 12 }, (_, i) => `popular-${i}`) : []);
+  const set = await recs.refreshRecommendations();
+  assert.equal(set.mode, 'popular');
+  assert.ok(set.items.every((item) => item.reasons.length === 0));
+});
+
+test('diversity caps apply to every matched artist and language stays a soft preference', async () => {
+  getDb().delete(schema.recommendationHistory).run();
+  const queries: string[] = [];
+  doujinProviders.hitomi = {
+    ...stubProvider('hitomi', () => []),
+    async search(query: string, limit?: number): Promise<DoujinSearchResult[]> {
+      queries.push(query);
+      return Array.from({ length: limit ?? 12 }, (_, i) => ({ source: 'hitomi', galleryId: `${slug(query)}-${i}`, title: query, language: i % 2 ? 'english' : 'japanese', tags: ['vanilla'], artists: ['alpha'] }));
+    },
+  };
+  const set = await recs.refreshRecommendations();
+  assert.ok(queries.every((query) => !query.includes('language:')), 'language preference was used as a hard query filter');
+  assert.ok(set.items.filter((item) => item.reasons.includes('artist alpha')).length <= 1, 'artist diversity cap was bypassed');
+});
+test('recording a completed gallery invalidates the current daily cache', async () => {
+  const today = localDate(new Date());
+  const cachedValue = JSON.stringify({ date: today, generatedAt: new Date().toISOString(), mode: 'popular', profile: { artists: [], tags: [], series: [], language: null }, items: [{ source: 'hitomi', galleryId: 'cached', title: 'Cached', tags: [], artists: [], reasons: [] }] });
+  getDb().insert(schema.keyValueStore).values({ key: `recommendations-v2:${today}`, valueJson: cachedValue }).onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: cachedValue } }).run();
+  recs.recordGalleryTags('hitomi', { source: 'hitomi', galleryId: 'completed-new', title: 'New', pages: [], artists: ['new artist'], tags: ['new tag'] });
+  assert.equal(getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${today}`)).get(), undefined);
+});
+
+test('malformed cached recommendation payloads are regenerated', async () => {
+  getDb().delete(schema.recommendationHistory).run();
+  const today = localDate(new Date());
+  getDb().insert(schema.keyValueStore).values({ key: `recommendations-v2:${today}`, valueJson: JSON.stringify({ date: today, generatedAt: 'bad', mode: 'library', profile: { artists: [], tags: [], series: [], language: null }, items: [{ source: 'hitomi' }] }) }).onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify({ items: [{ source: 'hitomi' }] }) } }).run();
+  doujinProviders.hitomi = stubProvider('hitomi', (query) => query === 'doujinshi' ? ['regenerated'] : []);
+  const set = await recs.getRecommendations();
+  assert.ok(set.items.some((item) => item.galleryId === 'regenerated'));
 });

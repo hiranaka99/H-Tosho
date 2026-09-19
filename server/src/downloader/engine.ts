@@ -657,9 +657,6 @@ export class DownloadQueue {
       this.updateProgress(row.id, { progressCurrent: 0, progressTotal: 0, speed: 0, currentFile: 'Resolving gallery…', bytesCurrent: 0, bytesTotal: 0 }, { force: true });
       const gallery = await retryTransient(() => provider.getGallery(row.galleryId), 4, [2000, 10000, 30000]);
       if (ctx.cancelled) throw new Error('Cancelled by user');
-      // Capture this gallery's tags/artists for the recommendation profile —
-      // metadata we already resolved, so the profile never re-fetches it.
-      recordGalleryTags(row.source as DoujinSource, gallery);
       const total = gallery.pages.length;
       if (!total) throw new Error('Gallery has no downloadable pages.');
       this.updateProgress(row.id, { progressCurrent: 0, progressTotal: total, speed: 0, currentFile: null, bytesCurrent: 0, bytesTotal: 0 }, { force: true });
@@ -683,6 +680,9 @@ export class DownloadQueue {
       await fs.promises.rm(tmpDir, { recursive: true, force: true });
 
       this.setStatus(row.id, 'completed');
+      // Only completed downloads are taste signals. Failed or cancelled work
+      // must not permanently bias the recommendation profile.
+      recordGalleryTags(row.source as DoujinSource, gallery);
       this.updateProgress(row.id, { progressCurrent: total, progressTotal: total, speed: 0, currentFile: null }, { force: true });
 
       // Optional Kavita auto-sync.

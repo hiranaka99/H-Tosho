@@ -349,8 +349,8 @@ export interface RecommendationItem extends DoujinSearchResult {
 export interface RecommendationSet {
   date: string;
   generatedAt: string;
-  /** 'library' = picked from the taste profile; 'popular' = cold-start fallback. */
-  mode: 'library' | 'popular';
+  /** Whether picks came from taste matches, popularity, or both. */
+  mode: 'library' | 'mixed' | 'popular';
   profile: { artists: string[]; tags: string[]; series: string[]; language: string | null };
   items: RecommendationItem[];
   /** Keys (`source:galleryId`) of every owned gallery — drives the owned badges. */

@@ -420,6 +420,12 @@ CREATE TABLE IF NOT EXISTS owned_galleries (
   gallery_id TEXT NOT NULL,
   marked_at TEXT NOT NULL DEFAULT (current_timestamp)
 );
+CREATE TABLE IF NOT EXISTS recommendation_history (
+  source TEXT NOT NULL,
+  gallery_id TEXT NOT NULL,
+  served_date TEXT NOT NULL,
+  item_json TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS key_value_store (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL
@@ -432,6 +438,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_watched_search_new_unique ON watched_searc
 CREATE INDEX IF NOT EXISTS idx_watched_search_new_found ON watched_search_new(found_at, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_tags_unique ON gallery_tags(source, gallery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_owned_galleries_unique ON owned_galleries(source, gallery_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_recommendation_history_unique ON recommendation_history(source, gallery_id);
+CREATE INDEX IF NOT EXISTS idx_recommendation_history_served ON recommendation_history(served_date);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_download_queue_claim ON download_queue(status, priority);
 CREATE INDEX IF NOT EXISTS idx_jobs_finished_at ON jobs(finished_at);

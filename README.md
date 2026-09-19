@@ -25,10 +25,10 @@ Works with **Kavita server v0.9.x or newer**.
   folders. The queue supports pause, resume, cancel and retry, detects
   duplicates, and can trigger a Kavita scan when finished so new media appears
   in your server automatically.
-- **Daily recommendations** — a fresh set of twelve picks every day, based on
-  the tags, artists and series in your downloaded library and your Kavita
-  collection. Refresh to re-roll, or mark a pick as owned so it never comes up
-  again.
+- **Daily recommendations** — a fresh set of twelve picks every day, ranked from
+  the tags, artists, series, and preferred language in your completed downloads
+  and Kavita collection, with popular picks used when personalized candidates
+  run short. Refresh to re-roll, or mark a pick as owned so it never comes up again.
 - **Watched searches** — save any doujinshi query and H-Tosho re-checks it on a
   schedule (every 5 minutes to every 24 hours). New galleries land in the
   "Recently added" feed and ping your Discord channel.
@@ -126,9 +126,9 @@ or head to the **Downloader** to search for new galleries.
   - *Search* — find galleries on Hitomi.la or nHentai, sort by newest or
     popularity, preview page counts, and download single galleries or a whole
     selection (optionally merged into one series).
-  - *Recommended* — Today's twelve picks with one-click refresh and an "owned"
-    button. You can choose which Kavita libraries feed the recommendations in
-    this tab's settings row.
+  - *Recommended* — Today's twelve personalized, popular, or mixed picks with
+    one-click refresh and an "owned" button. You can choose which Kavita
+    libraries feed the recommendations in this tab's settings row.
   - *Watched* — manage your watched searches, their check schedule, and browse
     the "Recently added" feed of new finds.
   - *Manager* — the live download queue: progress, pause/resume/cancel/retry,

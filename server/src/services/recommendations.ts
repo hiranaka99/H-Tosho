@@ -1,4 +1,4 @@
-import { and, desc, eq, like, ne } from 'drizzle-orm';
+import { and, asc, desc, eq, like, lt, ne } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery, DoujinSearchResult, DoujinSource, DoujinSort } from '../downloader/types.js';
@@ -91,7 +91,6 @@ const MAX_PICKS_PER_ARTIST = 1;
 const MIN_PROFILE_TERMS = 3;
 /** Backfill cap per generation, and the tagged-gallery count below which it runs. */
 const BACKFILL_LIMIT = 25;
-const BACKFILL_THRESHOLD = 10;
 // Hard bound on how many Kavita series the library scan touches (one metadata
 // call each), so a very large library cannot stall daily generation.
 const KAVITA_SERIES_LIMIT = 600;
@@ -120,8 +119,8 @@ export interface RecommendationProfile {
 export interface RecommendationSet {
   date: string;
   generatedAt: string;
-  /** 'library' = picked from the taste profile; 'popular' = cold-start fallback. */
-  mode: 'library' | 'popular';
+  /** How the visible set was composed. */
+  mode: 'library' | 'mixed' | 'popular';
   profile: RecommendationProfile;
   items: RecommendationItem[];
 }
@@ -130,13 +129,17 @@ export interface RecommendationSet {
 // gallery_tags persistence
 // ---------------------------------------------------------------------------
 
-/**
- * Persist a resolved gallery's tag/artist data for the recommendation profile.
- * Called by the download engine right after `getGallery` succeeds, so every
- * downloaded gallery contributes to the profile without re-fetching later.
- * Failures are logged and swallowed — tag capture must never break a download.
- */
-export function recordGalleryTags(source: DoujinSource, gallery: DoujinGallery): void {
+let profileRevision = 0;
+
+/** Invalidate today's derived set whenever its taste inputs change. */
+function invalidateProfile(): void {
+  profileRevision += 1;
+  emptyCooldownUntil = 0;
+  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(localDate()))).run();
+}
+
+/** Persist metadata already resolved for a successfully downloaded gallery. */
+function persistGalleryTags(source: DoujinSource, gallery: DoujinGallery, invalidate: boolean): void {
   const tags: GalleryTagEntry[] = (gallery.tags ?? [])
     .map((name, i) => ({ name: String(name ?? '').trim(), ns: gallery.tagNamespaces?.[i] ?? null }))
     .filter((t) => t.name);
@@ -144,29 +147,20 @@ export function recordGalleryTags(source: DoujinSource, gallery: DoujinGallery):
   try {
     getDb()
       .insert(schema.galleryTags)
-      .values({
-        source,
-        galleryId: gallery.galleryId,
-        title: gallery.title,
-        tagsJson: JSON.stringify(tags),
-        artistsJson: JSON.stringify(artists),
-        language: gallery.language ?? null,
-        fetchedAt: new Date().toISOString(),
-      })
+      .values({ source, galleryId: gallery.galleryId, title: gallery.title, tagsJson: JSON.stringify(tags), artistsJson: JSON.stringify(artists), language: gallery.language ?? null, fetchedAt: new Date().toISOString() })
       .onConflictDoUpdate({
         target: [schema.galleryTags.source, schema.galleryTags.galleryId],
-        set: {
-          title: gallery.title,
-          tagsJson: JSON.stringify(tags),
-          artistsJson: JSON.stringify(artists),
-          language: gallery.language ?? null,
-          fetchedAt: new Date().toISOString(),
-        },
+        set: { title: gallery.title, tagsJson: JSON.stringify(tags), artistsJson: JSON.stringify(artists), language: gallery.language ?? null, fetchedAt: new Date().toISOString() },
       })
       .run();
+    if (invalidate) invalidateProfile();
   } catch (err) {
     console.warn('[h-tosho] failed to record gallery tags:', err);
   }
+}
+
+export function recordGalleryTags(source: DoujinSource, gallery: DoujinGallery): void {
+  persistGalleryTags(source, gallery, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -243,13 +237,13 @@ function buildProfile(signals: KavitaSeriesSignal[]): TasteProfile {
     }
   }
 
-  // Existing-library signals: each series' title becomes a 'series' term
-  // (weight = pages Kavita has indexed — a heavily-read series matters more),
-  // and its metadata tags/artists join the profile as plain keyword terms.
+  // Existing-library signals: ownership is one vote per series. Page count is
+  // work length, not preference or engagement, and must not dominate tags from
+  // several genuinely distinct owned works.
   for (const sig of signals) {
     const name = sig.name.trim();
     if (!name) continue;
-    bumpTerm(terms, 'series', name, null, null, sig.weight);
+    bumpTerm(terms, 'series', name, null, null);
     const seenTags = new Set<string>();
     for (const tag of sig.tags) {
       const t = tag.trim();
@@ -279,8 +273,6 @@ function buildProfile(signals: KavitaSeriesSignal[]): TasteProfile {
 /** One Kavita series reduced to recommendation signals. */
 export interface KavitaSeriesSignal {
   name: string;
-  /** Engagement weight — pages Kavita has indexed for the series (≥1). */
-  weight: number;
   tags: string[];
   artists: string[];
 }
@@ -348,12 +340,11 @@ async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
           const meta = await client.getSeriesMetadata(s.id);
           return {
             name: s.name,
-            weight: s.pages ?? 1,
             tags: [...(meta.genres ?? []), ...(meta.tags ?? [])].map((t) => t.title?.trim() ?? '').filter(Boolean),
             artists: (meta.writers ?? []).map((p) => p.name?.trim() ?? '').filter(Boolean),
           };
         } catch {
-          return { name: s.name, weight: 1, tags: [] as string[], artists: [] as string[] };
+          return { name: s.name, tags: [] as string[], artists: [] as string[] };
         }
       }),
     );
@@ -370,8 +361,8 @@ async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
  */
 async function backfillMissingTags(): Promise<void> {
   const db = getDb();
-  const taggedCount = db.select({ source: schema.galleryTags.source }).from(schema.galleryTags).all().length;
-  if (taggedCount >= BACKFILL_THRESHOLD) return;
+  // Always inspect a bounded missing batch. A global row-count threshold would
+  // strand large legacy libraries forever once any ten galleries were tagged.
 
   const tagged = new Set(
     db
@@ -389,17 +380,23 @@ async function backfillMissingTags(): Promise<void> {
   const missing = completed.filter((r) => !tagged.has(`${r.source}:${r.galleryId}`)).slice(0, BACKFILL_LIMIT);
   if (!missing.length) return;
 
-  for (const source of SOURCES) {
+  const bySource = new Map<DoujinSource, typeof missing>();
+  for (const row of missing) {
+    if (row.source !== 'hitomi' && row.source !== 'nhentai') continue;
+    const source = row.source;
+    const rows = bySource.get(source);
+    if (rows) rows.push(row);
+    else bySource.set(source, [row]);
+  }
+  for (const [source, rows] of bySource) {
     const provider = getDoujinProvider(source);
     if (!provider) continue;
-    const rows = missing.filter((r) => r.source === source);
-    // Bounded parallelism.
     for (let i = 0; i < rows.length; i += 8) {
       await Promise.all(
         rows.slice(i, i + 8).map(async (row) => {
           try {
             const gallery = await provider.getGallery(row.galleryId);
-            recordGalleryTags(source, gallery);
+            persistGalleryTags(source, gallery, false);
           } catch {
             /* skip unreachable galleries — they stay untagged until a later pass */
           }
@@ -445,9 +442,7 @@ function fragmentFor(term: ProfileTerm): string | null {
   return ns ? `${ns}:${name.replace(/\s+/g, '_')}` : name;
 }
 
-function languageFragment(language: string): string {
-  return `language:${language.toLowerCase()}`;
-}
+const LANGUAGE_MATCH_BONUS = 1.5;
 
 /**
  * The terms queried this roll. Tags/series keep their #1 heaviest term as a
@@ -470,13 +465,12 @@ function buildQuerySpecs(profile: TasteProfile, rng: () => number): QuerySpec[] 
   const series = sampleTerms(profile.terms.filter((t) => t.kind === 'series'), SERIES_QUERIES, SERIES_QUERY_POOL, rng, rng() < 0.5);
   const specs: QuerySpec[] = [];
   for (const source of SOURCES) {
-    const lang = profile.language ? languageFragment(profile.language) : null;
     for (const term of [...artists, ...tags, ...series]) {
       const frag = fragmentFor(term);
       if (!frag) continue;
       specs.push({
         source,
-        query: [frag, lang].filter(Boolean).join(' '),
+        query: frag,
         results: HITOMI_RESULTS_PER_QUERY,
         terms: [term],
         sort: SEARCH_SORTS[source][Math.floor(rng() * SEARCH_SORTS[source].length)],
@@ -523,18 +517,13 @@ function credit(c: Candidate, termKey: string, reason: string, weight: number): 
   if (!c.reasons.includes(reason)) c.reasons.push(reason);
 }
 
-/**
- * Match weight used for scoring: log-damped library frequency. Raw weight is
- * skewed by design — a series term weighs as many pages as Kavita indexed for
- * it (hundreds) while a tag counts galleries (single digits) — so raw sums
- * would let one series hit outweigh a five-tag profile match.
- */
+/** Match weight uses log-damped ownership frequency so common signals matter without dominating. */
 function termScore(t: ProfileTerm): number {
   return 1 + Math.log2(1 + t.weight);
 }
 
 /** Search every spec and merge candidates by gallery (a gallery hit by several queries sums their weights). */
-async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, termIndex: Map<string, ProfileTerm>): Promise<Map<string, Candidate>> {
+async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, termIndex: Map<string, ProfileTerm>, preferredLanguage: string | null): Promise<Map<string, Candidate>> {
   const out = new Map<string, Candidate>();
   // Run one spec's search, returning its raw results (or null when the query
   // failed — one failing query cannot kill the whole generation).
@@ -586,6 +575,7 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
             const t = termIndex.get(`tag:${tag.toLowerCase()}`);
             if (t) credit(c, `tag:${tag.toLowerCase()}`, `tag ${t.name}`, termScore(t));
           }
+          if (preferredLanguage && r.language?.trim().toLowerCase() === preferredLanguage) c.score += LANGUAGE_MATCH_BONUS;
         }
       }
     }
@@ -602,12 +592,13 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
  * MAX_PICKS_PER_ARTIST), tracked across calls via `termPicks`, so no favorite
  * can dominate the whole set.
  */
-function pickDaily(candidates: Candidate[], count: number, rng: () => number, termIndex: Map<string, ProfileTerm>, termPicks: Map<string, number>): RecommendationItem[] {
+function pickDaily(candidates: Candidate[], count: number, rng: () => number, termPicks: Map<string, number>): RecommendationItem[] {
   const pool = [...candidates];
   const out: RecommendationItem[] = [];
   while (out.length < count && pool.length > 0) {
-    // Candidates whose dominant term already hit its cap for this set are not drawable.
-    const eligible = pool.filter((c) => !capReached(c, termIndex, termPicks));
+    // A pick consumes every term it matches; allowing a heavier tag to hide an
+    // already-saturated artist defeats the advertised diversity cap.
+    const eligible = pool.filter((c) => !capReached(c, termPicks));
     if (!eligible.length) break;
     let total = 0;
     for (const c of eligible) total += c.score;
@@ -623,49 +614,35 @@ function pickDaily(candidates: Candidate[], count: number, rng: () => number, te
         }
       }
     }
-    const dominant = dominantTerm(chosen, termIndex);
-    if (dominant) termPicks.set(dominant, (termPicks.get(dominant) ?? 0) + 1);
+    for (const term of chosen.matched) termPicks.set(term, (termPicks.get(term) ?? 0) + 1);
     out.push({ ...chosen.result, reasons: chosen.reasons });
     pool.splice(pool.indexOf(chosen), 1);
   }
   return out;
 }
 
-/** The candidate's heaviest match — that term "consumes" the pick. */
-function dominantTerm(c: Candidate, termIndex: Map<string, ProfileTerm>): string | null {
-  let dominant: string | null = null;
-  let bestWeight = -1;
-  for (const key of c.matched) {
-    const w = termIndex.get(key)?.weight ?? 0;
-    if (w > bestWeight) {
-      bestWeight = w;
-      dominant = key;
-    }
+function capReached(c: Candidate, termPicks: Map<string, number>): boolean {
+  for (const term of c.matched) {
+    const cap = term.startsWith('artist:') ? MAX_PICKS_PER_ARTIST : MAX_PICKS_PER_TERM;
+    if ((termPicks.get(term) ?? 0) >= cap) return true;
   }
-  return dominant;
-}
-
-function capReached(c: Candidate, termIndex: Map<string, ProfileTerm>, termPicks: Map<string, number>): boolean {
-  const dominant = dominantTerm(c, termIndex);
-  if (!dominant) return false;
-  const cap = dominant.startsWith('artist:') ? MAX_PICKS_PER_ARTIST : MAX_PICKS_PER_TERM;
-  return (termPicks.get(dominant) ?? 0) >= cap;
+  return false;
 }
 
 /** Per-source budget of PICKS_PER_SOURCE, topped up from the leftovers when a source is thin. */
-function pickWithBudget(candidates: Map<string, Candidate>, rng: () => number, termIndex: Map<string, ProfileTerm>, termPicks: Map<string, number>): RecommendationItem[] {
+function pickWithBudget(candidates: Map<string, Candidate>, rng: () => number, termPicks: Map<string, number>): RecommendationItem[] {
   const picked: RecommendationItem[] = [];
   const pickedKeys = new Set<string>();
   for (const source of SOURCES) {
     const pool = [...candidates.values()].filter((c) => c.result.source === source);
-    for (const item of pickDaily(pool, PICKS_PER_SOURCE, rng, termIndex, termPicks)) {
+    for (const item of pickDaily(pool, PICKS_PER_SOURCE, rng, termPicks)) {
       pickedKeys.add(keyOf(item));
       picked.push(item);
     }
   }
   if (picked.length < TOTAL_PICKS) {
     const rest = [...candidates.values()].filter((c) => !pickedKeys.has(keyOf(c.result)));
-    picked.push(...pickDaily(rest, TOTAL_PICKS - picked.length, rng, termIndex, termPicks));
+    picked.push(...pickDaily(rest, TOTAL_PICKS - picked.length, rng, termPicks));
   }
   return picked;
 }
@@ -764,98 +741,122 @@ export function markOwned(source: DoujinSource, galleryId: string): void {
     .run();
 }
 const HISTORY_KEY = 'recommendations-history';
-/** Served picks stay excluded for this many days before they are eligible again. */
 const HISTORY_DAYS = 30;
-/** Hard cap on retained history entries (bounds the row and the recycling pool). */
 const MAX_HISTORY = 1200;
 
-/** One previously-served pick, kept until it ages out of the history window. */
 interface HistoryEntry {
   key: string;
-  /** Local date the pick was last served — drives expiry. */
   date: string;
   item: RecommendationItem;
 }
 
+function isRecommendationItem(value: unknown): value is RecommendationItem {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Partial<RecommendationItem>;
+  return (item.source === 'hitomi' || item.source === 'nhentai')
+    && typeof item.galleryId === 'string' && item.galleryId.length > 0
+    && typeof item.title === 'string' && Array.isArray(item.tags)
+    && Array.isArray(item.artists) && Array.isArray(item.reasons);
+}
+
+function parseHistoryEntry(value: unknown): HistoryEntry | null {
+  if (!value || typeof value !== 'object') return null;
+  const entry = value as Partial<HistoryEntry>;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(entry.date ?? '') || !isRecommendationItem(entry.item)) return null;
+  const key = keyOf(entry.item);
+  return entry.key === key ? { key, date: entry.date!, item: entry.item } : null;
+}
+
+function writeHistory(entries: HistoryEntry[]): void {
+  const db = getDb();
+  const keep = new Set(entries.map((entry) => entry.key));
+  for (const row of db.select().from(schema.recommendationHistory).all()) {
+    if (!keep.has(`${row.source}:${row.galleryId}`)) {
+      db.delete(schema.recommendationHistory).where(and(eq(schema.recommendationHistory.source, row.source), eq(schema.recommendationHistory.galleryId, row.galleryId))).run();
+    }
+  }
+  for (const entry of entries) {
+    const itemJson = JSON.stringify(entry.item);
+    db.insert(schema.recommendationHistory)
+      .values({ source: entry.item.source, galleryId: entry.item.galleryId, servedDate: entry.date, itemJson })
+      .onConflictDoUpdate({ target: [schema.recommendationHistory.source, schema.recommendationHistory.galleryId], set: { servedDate: entry.date, itemJson } })
+      .run();
+  }
+}
+
+/** Read normalized history and migrate the legacy JSON blob once. */
 function readHistory(): HistoryEntry[] {
-  const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, HISTORY_KEY)).get();
-  if (!row) return [];
+  const db = getDb();
+  const normalized = db.select().from(schema.recommendationHistory).orderBy(asc(schema.recommendationHistory.servedDate)).all();
+  if (normalized.length) {
+    return normalized.flatMap((row) => {
+      try {
+        return parseHistoryEntry({ key: `${row.source}:${row.galleryId}`, date: row.servedDate, item: JSON.parse(row.itemJson) }) ?? [];
+      } catch {
+        return [];
+      }
+    });
+  }
+  const legacyRow = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, HISTORY_KEY)).get();
+  if (!legacyRow) return [];
   try {
-    const parsed = JSON.parse(row.valueJson);
-    return Array.isArray(parsed) ? (parsed as HistoryEntry[]) : [];
+    const parsed = JSON.parse(legacyRow.valueJson);
+    if (!Array.isArray(parsed)) return [];
+    const entries = parsed.map(parseHistoryEntry).filter((entry): entry is HistoryEntry => entry !== null);
+    writeHistory(entries);
+    db.delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, HISTORY_KEY)).run();
+    return entries;
   } catch {
     return [];
   }
 }
 
-/** Drop expired entries and enforce the cap (oldest last, so the tail is the newest). */
 function pruneHistory(): HistoryEntry[] {
   const cutoff = localDate(new Date(Date.now() - HISTORY_DAYS * 86_400_000));
-  const history = readHistory().filter((h) => h.date >= cutoff).slice(-MAX_HISTORY);
-  const valueJson = JSON.stringify(history);
-  getDb().insert(schema.keyValueStore)
-    .values({ key: HISTORY_KEY, valueJson })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson } })
-    .run();
+  const db = getDb();
+  db.delete(schema.recommendationHistory).where(lt(schema.recommendationHistory.servedDate, cutoff)).run();
+  const history = readHistory().slice(-MAX_HISTORY);
+  const keep = new Set(history.map((entry) => entry.key));
+  for (const row of db.select().from(schema.recommendationHistory).all()) {
+    if (!keep.has(`${row.source}:${row.galleryId}`)) {
+      db.delete(schema.recommendationHistory).where(and(eq(schema.recommendationHistory.source, row.source), eq(schema.recommendationHistory.galleryId, row.galleryId))).run();
+    }
+  }
   return history;
 }
 
-/**
- * Record today's picks as served (re-serving a recycled pick refreshes its
- * date, restarting its exclusion window). Also migrates the legacy per-day
- * seen row, so a deploy does not re-serve picks shown earlier today. Takes the
- * pruned history doGenerate already read — re-reading the row here would
- * JSON-parse the (up to 1200-entry) payload a second time per generation.
- */
 function addHistory(date: string, items: RecommendationItem[], history: HistoryEntry[]): void {
-  const entries = new Map<string, HistoryEntry>();
-  for (const h of history) entries.set(h.key, h);
-  const legacy = readSeenItems(date);
-  for (const it of legacy) entries.set(keyOf(it), { key: keyOf(it), date, item: it });
-  if (legacy.length) {
-    getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, seenKey(date))).run();
-  }
+  const entries = new Map(history.map((entry) => [entry.key, entry]));
+  for (const it of readSeenItems(date)) entries.set(keyOf(it), { key: keyOf(it), date, item: it });
   for (const it of items) entries.set(keyOf(it), { key: keyOf(it), date, item: it });
-  const trimmed = [...entries.values()].slice(-MAX_HISTORY);
-  const valueJson = JSON.stringify(trimmed);
-  getDb().insert(schema.keyValueStore)
-    .values({ key: HISTORY_KEY, valueJson })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson } })
-    .run();
+  writeHistory([...entries.values()].slice(-MAX_HISTORY));
+  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, seenKey(date))).run();
 }
 
 const seenKey = (date: string) => `recommendations-seen:${date}`;
-/**
- * Legacy per-day seen rows (`recommendations-seen:<date>`), read only for the
- * one-time migration into the rolling history.
- */
+
 function readSeenItems(date: string): RecommendationItem[] {
   const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, seenKey(date))).get();
   if (!row) return [];
   try {
     const parsed = JSON.parse(row.valueJson);
-    return Array.isArray(parsed) ? (parsed as RecommendationItem[]) : [];
+    return Array.isArray(parsed) ? parsed.filter(isRecommendationItem) : [];
   } catch {
     return [];
   }
 }
 
-/**
- * Terms that actually matched today's picks, by match count — drives the
- * "Based on:" chips so they vary with every re-roll. Reasons are generated in
- * the fixed `${kind} ${name}` format, so splitting on the first space is safe.
- */
 function termsFromPicks(items: RecommendationItem[]): { artists: string[]; tags: string[]; series: string[] } {
   const counts = new Map<string, number>();
-  for (const it of items) {
-    for (const reason of it.reasons) counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  for (const item of items) {
+    for (const reason of item.reasons) counts.set(reason, (counts.get(reason) ?? 0) + 1);
   }
   const byKind: Record<'artist' | 'tag' | 'series', [string, number][]> = { artist: [], tag: [], series: [] };
-  for (const [reason, n] of counts) {
-    const i = reason.indexOf(' ');
-    if (i <= 0) continue;
-    const kind = reason.slice(0, i);
-    if (kind === 'artist' || kind === 'tag' || kind === 'series') byKind[kind].push([reason.slice(i + 1), n]);
+  for (const [reason, count] of counts) {
+    const separator = reason.indexOf(' ');
+    if (separator <= 0) continue;
+    const kind = reason.slice(0, separator);
+    if (kind === 'artist' || kind === 'tag' || kind === 'series') byKind[kind].push([reason.slice(separator + 1), count]);
   }
   const top = (list: [string, number][]) => list.sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name]) => name);
   return { artists: top(byKind.artist), tags: top(byKind.tag), series: top(byKind.series) };
@@ -872,14 +873,15 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
   const excluded = new Set([...completedGalleryKeys(), ...ownedGalleryKeys(), ...history.map((h) => h.key)]);
 
   let items: RecommendationItem[] = [];
-  let mode: 'library' | 'popular' = 'popular';
+  let libraryPicks = 0;
+  let candidateCount = 0;
   if (profile.terms.length >= MIN_PROFILE_TERMS) {
-    mode = 'library';
     const termIndex = new Map(profile.terms.map((t) => [`${t.kind}:${t.name.toLowerCase()}`, t]));
-    // Shared across both pick passes so the per-term cap applies to the whole set.
     const termPicks = new Map<string, number>();
-    const candidates = await gatherCandidates(buildQuerySpecs(profile, rng), excluded, termIndex);
-    items = pickWithBudget(candidates, rng, termIndex, termPicks);
+    const candidates = await gatherCandidates(buildQuerySpecs(profile, rng), excluded, termIndex, profile.language);
+    candidateCount = candidates.size;
+    items = pickWithBudget(candidates, rng, termPicks);
+    libraryPicks = items.length;
   }
 
   // Cold start (or a day when the profile queries came up empty, or the per-term
@@ -927,8 +929,10 @@ async function doGenerate(date: string, nonce: number): Promise<RecommendationSe
     }
   }
 
-  addHistory(date, items, history);
+  const popularPicks = items.length - libraryPicks;
+  const mode: RecommendationSet['mode'] = libraryPicks === 0 ? 'popular' : popularPicks > 0 ? 'mixed' : 'library';
 
+  console.info(`[recommendations] generated mode=${mode} terms=${profile.terms.length} candidates=${candidateCount} library=${libraryPicks} popular=${popularPicks} total=${items.length}`);
   return {
     date,
     generatedAt: new Date().toISOString(),
@@ -945,20 +949,19 @@ function readCached(date: string): RecommendationSet | null {
   const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(date))).get();
   if (!row) return null;
   try {
-    const parsed = JSON.parse(row.valueJson) as RecommendationSet;
-    // An empty set means generation found nothing (e.g. both sources were
-    // down) — don't pin that to the rest of the day, regenerate instead.
-    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.items) || parsed.items.length === 0) return null;
-    // Rows written by an older server build lack profile.series — a shape
-    // mismatch means the payload is stale for the current client, so
-    // regenerate instead of serving it.
-    const p = parsed.profile;
-    if (!p || !Array.isArray(p.artists) || !Array.isArray(p.tags) || !Array.isArray(p.series)) return null;
-    return parsed;
+    const parsed: unknown = JSON.parse(row.valueJson);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const set = parsed as Partial<RecommendationSet>;
+    if (set.date !== date || typeof set.generatedAt !== 'string' || !['library', 'mixed', 'popular'].includes(set.mode ?? '')) return null;
+    if (!Array.isArray(set.items) || set.items.length === 0 || !set.items.every(isRecommendationItem)) return null;
+    const profile = set.profile;
+    if (!profile || !Array.isArray(profile.artists) || !Array.isArray(profile.tags) || !Array.isArray(profile.series)) return null;
+    if (![...profile.artists, ...profile.tags, ...profile.series].every((value) => typeof value === 'string')) return null;
+    if (profile.language !== null && typeof profile.language !== 'string') return null;
+    return set as RecommendationSet;
   } catch {
-    /* malformed row — regenerate */
+    return null;
   }
-  return null;
 }
 
 function writeCached(set: RecommendationSet): void {
@@ -978,31 +981,32 @@ function writeCached(set: RecommendationSet): void {
     .run();
 }
 
-/** Serialize concurrent generation for the same date (page reloads, SSE-free polling). */
+/** Serialize generation; invalidated profile inputs trigger a fresh pass before commit. */
 let inflight: { date: string; promise: Promise<RecommendationSet> } | null = null;
 
-/**
- * After a generation finds nothing (the source is down or blocked), serve an
- * empty set cheaply for this long instead of re-running the full pipeline on
- * every request. A manual refresh bypasses the cooldown.
- */
 const EMPTY_RETRY_COOLDOWN_MS = 10 * 60_000;
 let emptyCooldownUntil = 0;
 
 function generateFor(date: string, nonce: number): Promise<RecommendationSet> {
   if (inflight && inflight.date === date) return inflight.promise;
-  const promise = doGenerate(date, nonce)
-    .then((set) => {
+  const promise = (async () => {
+    let generationNonce = nonce;
+    for (;;) {
+      const revision = profileRevision;
+      const set = await doGenerate(date, generationNonce);
+      if (revision !== profileRevision) {
+        generationNonce += 1;
+        continue;
+      }
+      const history = pruneHistory();
+      addHistory(date, set.items, history);
       if (set.items.length > 0) writeCached(set);
-      // An empty set is not pinned: readCached treats empty as a miss, so
-      // caching it would make every request regenerate — re-running a failing
-      // pipeline for minutes on each one. Back off instead.
       else emptyCooldownUntil = Date.now() + EMPTY_RETRY_COOLDOWN_MS;
       return set;
-    })
-    .finally(() => {
-      if (inflight?.date === date) inflight = null;
-    });
+    }
+  })().finally(() => {
+    if (inflight?.date === date) inflight = null;
+  });
   inflight = { date, promise };
   return promise;
 }
@@ -1053,5 +1057,6 @@ export async function refreshRecommendations(): Promise<RecommendationResponse> 
 /** Replace the list of Kavita libraries feeding the profile; today's cached set is re-generated. */
 export function setExcludedLibraries(ids: number[]): void {
   setRecommendationSettings({ excludedLibraryIds: [...new Set(ids)] });
-  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(localDate()))).run();
+  kavitaSignalsCache = null;
+  invalidateProfile();
 }

@@ -1690,6 +1690,7 @@ export function Downloader() {
               <CardTitle className="flex items-center gap-2">
                 <Sparkles className="h-4 w-4" /> Recommended for you
                 {recs?.mode === 'popular' && <Badge tone="muted">Popular fallback</Badge>}
+                {recs?.mode === 'mixed' && <Badge tone="muted">Personalized + popular</Badge>}
               </CardTitle>
               <Button size="sm" variant="outline" onClick={() => void doRefreshRecs()} disabled={recsRefreshing || (recsLoading && !recs)} title="Re-roll today's picks with a fresh selection">
                 <RotateCcw className={cn('h-3.5 w-3.5', (recsRefreshing || (recsLoading && !recs)) && 'animate-spin')} /> Refresh picks
@@ -1698,8 +1699,10 @@ export function Downloader() {
             <CardContent className="flex flex-col gap-2">
               <p className="text-xs text-muted">
                 {recs?.mode === 'popular'
-                  ? 'Not enough library history yet — showing popular galleries from Hitomi.la. Downloads you queue (and your Kavita library) will shape future picks.'
-                  : 'Picked from Hitomi.la based on your downloaded galleries and your Kavita library. New picks every day; refresh any time for a different selection.'}
+                  ? 'Not enough matching library history yet — showing popular galleries from Hitomi.la. Downloads you queue (and your Kavita library) will shape future picks.'
+                  : recs?.mode === 'mixed'
+                    ? 'Personalized matches from Hitomi.la, topped up with popular galleries for variety.'
+                    : 'Picked from Hitomi.la based on your downloaded galleries and your Kavita library. New picks every day; refresh any time for a different selection.'}
               </p>
               {recs && (recs.profile.artists.length > 0 || recs.profile.tags.length > 0 || (recs.profile.series?.length ?? 0) > 0) && (
                 <div className="flex flex-wrap items-center gap-1">

@@ -201,3 +201,11 @@ export const ownedGalleries = sqliteTable('owned_galleries', {
     .default(sql`(current_timestamp)`),
 });
 
+/** Recently served recommendation payloads, one row per gallery. */
+export const recommendationHistory = sqliteTable('recommendation_history', {
+  source: text('source').notNull(),
+  galleryId: text('gallery_id').notNull(),
+  servedDate: text('served_date').notNull(),
+  itemJson: text('item_json').notNull(),
+});
+
