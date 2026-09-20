@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, BookOpen, Unlink, ArrowUpRight, FileText, Combine, Check, CheckSquare, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, BookOpen, Unlink, ArrowUpRight, FileText, Combine, Check, CheckSquare, ChevronLeft, ChevronRight, Grip } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource } from '../lib/api';
 import { Button, Card, Input, Select, Badge, StatusBadge, ProviderBadge, Spinner, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
@@ -109,6 +109,14 @@ export function Libraries() {
   const [query, setQuery] = React.useState(initialState.query ?? '');
   const [statusFilter, setStatusFilter] = React.useState('all');
   const [view, setView] = React.useState<'grid' | 'table'>('grid');
+  // Cover density for the grid view — persisted across sessions.
+  const [density, setDensity] = React.useState<'comfortable' | 'compact'>(() => {
+    try { return localStorage.getItem('h-tosho:grid-density') === 'compact' ? 'compact' : 'comfortable'; } catch { return 'comfortable'; }
+  });
+  const chooseDensity = (d: 'comfortable' | 'compact') => {
+    setDensity(d);
+    try { localStorage.setItem('h-tosho:grid-density', d); } catch { /* storage unavailable */ }
+  };
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
   const [identify, setIdentify] = React.useState<{ id: number; name: string } | null>(null);
   const [comicInfo, setComicInfo] = React.useState<{ id: number; name: string } | null>(null);
@@ -303,6 +311,17 @@ export function Libraries() {
                 <button type="button" aria-label="Table view" aria-pressed={view === 'table'} onClick={() => setView('table')} className={cn('flex h-8 w-8 items-center justify-center transition-colors duration-150', view === 'table' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
                   <Table2 className="h-4 w-4" />
                 </button>
+                {view === 'grid' && (
+                  <>
+                    <span className="w-px self-stretch bg-border-2" aria-hidden />
+                    <button type="button" aria-label="Comfortable covers" aria-pressed={density === 'comfortable'} title="Comfortable covers" onClick={() => chooseDensity('comfortable')} className={cn('flex h-8 w-8 items-center justify-center transition-colors duration-150', density === 'comfortable' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
+                      <LayoutGrid className="h-4 w-4" />
+                    </button>
+                    <button type="button" aria-label="Compact covers" aria-pressed={density === 'compact'} title="Compact covers — smaller covers, more per row" onClick={() => chooseDensity('compact')} className={cn('flex h-8 w-8 items-center justify-center transition-colors duration-150', density === 'compact' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
+                      <Grip className="h-4 w-4" />
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -352,7 +371,7 @@ export function Libraries() {
                 <EmptyState title="No series" description="No series match the current filters." />
               </Card>
             ) : view === 'grid' ? (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+              <div className={cn('grid gap-3', density === 'compact' ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6' : 'grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5')}>
                 {visibleRows.map((r, i) => (
                   <Card
                     key={r.id}
@@ -431,13 +450,13 @@ export function Libraries() {
                           />
                         </label>
                       </th>
-                      <th className="px-3 py-2 text-left font-medium text-muted">Series</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted">Status</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted">Provider</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted">Score</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted">Pages</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted">Synced</th>
-                      <th className="min-w-56 px-3 py-2 text-right font-medium text-muted">Actions</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-muted">Series</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-muted">Status</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-muted">Provider</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-muted">Score</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-muted">Pages</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-muted">Synced</th>
+                      <th className="min-w-56 whitespace-nowrap px-3 py-2 text-right font-medium text-muted">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -457,7 +476,7 @@ export function Libraries() {
                           </div>
                         </td>
                         <td className="px-3 py-2.5">
-                          <StatusBadge status={r.status} />
+                          <StatusBadge status={r.status} className="whitespace-nowrap" />
                           {r.status === 'failed' && r.errorMessage && <p className="mt-1 max-w-48 break-words text-xs text-danger">{r.errorMessage}</p>}
                         </td>
                         <td className="px-3 py-2.5">

@@ -42,7 +42,7 @@ import { useDownloadActions, useDownloads } from '../lib/DownloadsContext';
 import { buildTagSearchFragment, cn, timeAgo, toIsoUtc } from '../lib/utils';
 import { formatBytes, formatSpeed } from '../lib/format';
 import { toast } from '../lib/toast';
-import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, ErrorState, ConfirmDialog } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, ErrorState, ConfirmDialog, Skeleton } from '../components/ui';
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeIntoSeriesDialog } from '../components/MergeIntoSeriesDialog';
 
@@ -241,6 +241,41 @@ function pageList(page: number, count: number): (number | '…')[] {
   if (hi < count - 1) pages.push('…');
   pages.push(count);
   return pages;
+}
+
+/** Prev/next + numbered pager, with a jump-to-page input for long result sets. */
+function Pager({ page, count, onPageChange }: { page: number; count: number; onPageChange: (p: number) => void }) {
+  const [jump, setJump] = React.useState('');
+  if (count <= 1) return null;
+  const commitJump = () => {
+    const n = Math.floor(Number(jump));
+    if (Number.isFinite(n)) onPageChange(Math.min(count, Math.max(1, n)));
+    setJump('');
+  };
+  return (
+    <nav aria-label="Result pages" className="mt-5 flex flex-wrap items-center justify-center gap-1">
+      <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
+        <ChevronLeft className="h-3.5 w-3.5" /> Prev
+      </Button>
+      {pageList(page, count).map((p, i) =>
+        p === '…' ? (
+          <span key={`e${i}`} className="px-1 text-xs text-muted">…</span>
+        ) : (
+          <Button key={p} size="sm" variant={p === page ? 'default' : 'outline'} onClick={() => onPageChange(p)} aria-current={p === page ? 'page' : undefined}>
+            {p}
+          </Button>
+        ),
+      )}
+      <Button size="sm" variant="outline" disabled={page >= count} onClick={() => onPageChange(page + 1)}>
+        Next <ChevronRight className="h-3.5 w-3.5" />
+      </Button>
+      <form className="ml-2 flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); commitJump(); }} aria-label="Jump to page">
+        <label className="sr-only" htmlFor="jump-page">Page number</label>
+        <input id="jump-page" type="number" min={1} max={count} value={jump} onChange={(e) => setJump(e.target.value)} placeholder={`${page}/${count}`} className="h-7 w-16 rounded-md border border-border-2 bg-surface px-2 text-center text-xs tabular-nums text-foreground" />
+        <Button size="sm" variant="ghost" type="submit">Go</Button>
+      </form>
+    </nav>
+  );
 }
 
 /** Format an ISO 8601 date string for display, or undefined when absent/invalid. */
@@ -1150,14 +1185,12 @@ export function Downloader() {
     }
   }
 
-  // Watched tab sub-tabs: the "Recently added" feed (default) and the watch list.
-  const [watchedSubTab, setWatchedSubTab] = React.useState<'recent' | 'list'>('recent');
-  // Galleries the watches reported as new — polled only while the sub-tab is
+  // Galleries the watches reported as new — polled while the Watched tab is
   // visible; a check can land new rows at any time in between.
   const { data: newGalleries, isFetching: feedLoading, isError: feedFailed, error: feedError, refetch: retryFeed } = useQuery({
     queryKey: ['watched-search-new'],
     queryFn: () => api.watchedSearchNew(200),
-    enabled: tab === 'watched' && watchedSubTab === 'recent',
+    enabled: tab === 'watched',
     refetchInterval: 60_000,
   });
   // Feed rows as gallery items for the shared card/selection machinery; the
@@ -1583,6 +1616,13 @@ export function Downloader() {
         </CardContent>
       </Card>
 
+      {/* Before the first search there is nothing below the bar — give it a purpose. */}
+      {searchKey === null && (
+        <Card className="flex items-center justify-center py-16">
+          <EmptyState icon={<Search className="h-8 w-8" />} title="Search for galleries" description="Keyword, tag, artist, gallery ID or URL. Use Watch to keep checking a query — new releases land in the Watched tab and ping Discord." />
+        </Card>
+      )}
+
       {/* Results grid */}
       {searchKey !== null && (
         <div>
@@ -1591,8 +1631,24 @@ export function Downloader() {
           // placeholderData keeps the previous grid mounted during a refetch —
           // the spinner only shows before any results exist.
           ) : isFetching && !results ? (
-            <div className="flex items-center justify-center gap-2 py-16 text-muted">
-              <Spinner /> Searching {SOURCE_LABELS[source]}…
+            <div role="status" aria-label={`Searching ${SOURCE_LABELS[source]}`} className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+              {Array.from({ length: 12 }, (_, i) => (
+                <div key={i} className="overflow-hidden rounded-lg border border-border bg-surface">
+                  <Skeleton className="aspect-[3/4] w-full rounded-none" />
+                  <div className="flex flex-col gap-2 p-3">
+                    <Skeleton className="h-4 w-4/5" />
+                    <div className="flex flex-wrap gap-1">
+                      <Skeleton className="h-5 w-16 rounded-full" />
+                      <Skeleton className="h-5 w-20 rounded-full" />
+                      <Skeleton className="h-5 w-14 rounded-full" />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between p-3 pt-2">
+                    <Skeleton className="h-5 w-20 rounded-full" />
+                    <Skeleton className="h-7 w-24 rounded-md" />
+                  </div>
+                </div>
+              ))}
             </div>
           ) : results && results.length > 0 ? (
             <>
@@ -1644,25 +1700,7 @@ export function Downloader() {
                   />
                 ))}
               </div>
-              {pageCount > 1 && (
-                <div className="mt-5 flex flex-wrap items-center justify-center gap-1">
-                  <Button size="sm" variant="outline" disabled={curPage <= 1} onClick={() => changePage(curPage - 1)}>
-                    <ChevronLeft className="h-3.5 w-3.5" /> Prev
-                  </Button>
-                  {pageList(curPage, pageCount).map((p, i) =>
-                    p === '…' ? (
-                      <span key={`e${i}`} className="px-1 text-xs text-muted">…</span>
-                    ) : (
-                      <Button key={p} size="sm" variant={p === curPage ? 'default' : 'outline'} onClick={() => changePage(p)} aria-current={p === curPage ? 'page' : undefined}>
-                        {p}
-                      </Button>
-                    ),
-                  )}
-                  <Button size="sm" variant="outline" disabled={curPage >= pageCount} onClick={() => changePage(curPage + 1)}>
-                    Next <ChevronRight className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              )}
+              <Pager page={curPage} count={pageCount} onPageChange={changePage} />
             </>
           ) : (
             <EmptyState icon={<Search className="h-8 w-8" />} title="No results" description={`No galleries found for “${searchKey}” on ${SOURCE_LABELS[source]}.`} />
@@ -1766,20 +1804,12 @@ export function Downloader() {
         </div>
       )}
 
-      {/* Watched searches — sub-tabs: the "Recently added" feed and the watch list */}
+      {/* Watched searches — two stacked sections: the "Recently added" feed, then the watch list */}
       {tab === 'watched' && (
         <div className="flex flex-col gap-4">
-          <SegmentedTabs
-            items={[{ id: 'recent' as const, label: 'Recently added' }, { id: 'list' as const, label: 'Watched Searches' }]}
-            value={watchedSubTab}
-            onChange={setWatchedSubTab}
-            label="Watched sections"
-            panelId="watched-panel"
-          />
-          <div id="watched-panel" role="tabpanel" aria-labelledby={`watched-panel-tab-${watchedSubTab}`} className="contents">
-            {watchedSubTab === 'list' ? (
-              <WatchedTab onOpenSearch={(src, q) => searchTagFragment(q, src)} />
-            ) : feedFailed ? (
+          <section aria-label="Recently added" className="flex flex-col gap-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted">Recently added</p>
+            {feedFailed ? (
               <ErrorState title="Could not load recently added galleries" description={feedError instanceof Error ? feedError.message : String(feedError)} onRetry={() => void retryFeed()} />
             ) : !newGalleries && feedLoading ? (
               <div className="flex items-center justify-center gap-2 py-16 text-muted">
@@ -1844,30 +1874,13 @@ export function Downloader() {
                     );
                   })}
                 </div>
-                {feedPageCount > 1 && (
-                  <div className="mt-5 flex flex-wrap items-center justify-center gap-1">
-                    <Button size="sm" variant="outline" disabled={feedCurPage <= 1} onClick={() => { setFeedPage(feedCurPage - 1); document.querySelector('main')?.scrollTo({ top: 0 }); }}>
-                      <ChevronLeft className="h-3.5 w-3.5" /> Prev
-                    </Button>
-                    {pageList(feedCurPage, feedPageCount).map((p, i) =>
-                      p === '…' ? (
-                        <span key={`e${i}`} className="px-1 text-xs text-muted">…</span>
-                      ) : (
-                        <Button key={p} size="sm" variant={p === feedCurPage ? 'default' : 'outline'} onClick={() => { setFeedPage(p); document.querySelector('main')?.scrollTo({ top: 0 }); }} aria-current={p === feedCurPage ? 'page' : undefined}>
-                          {p}
-                        </Button>
-                      ),
-                    )}
-                    <Button size="sm" variant="outline" disabled={feedCurPage >= feedPageCount} onClick={() => { setFeedPage(feedCurPage + 1); document.querySelector('main')?.scrollTo({ top: 0 }); }}>
-                      Next <ChevronRight className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                )}
+                <Pager page={feedCurPage} count={feedPageCount} onPageChange={(p) => { setFeedPage(p); document.querySelector('main')?.scrollTo({ top: 0 }); }} />
               </>
             ) : (
-              <EmptyState icon={<Star className="h-8 w-8" />} title="Nothing new yet" description="New results from your watched searches will appear here after the next check — add a search in the Watched Searches tab if you haven't yet." />
+              <EmptyState icon={<Star className="h-8 w-8" />} title="Nothing new yet" description="New results from your watched searches will appear here after the next check — add a watched search below if you haven't yet." />
             )}
-          </div>
+          </section>
+          <WatchedTab onOpenSearch={(src, q) => searchTagFragment(q, src)} />
         </div>
       )}
       {/* Merged download confirm — reachable from both results grids */}

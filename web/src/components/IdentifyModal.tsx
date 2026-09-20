@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, Sparkles, AlertTriangle, Check, X, ArrowRight, Link2, Unlink, History, RefreshCw } from 'lucide-react';
+import { Search, Sparkles, AlertTriangle, Check, X, ArrowRight, Link2, Unlink, History, RefreshCw, ChevronRight } from 'lucide-react';
 import {
   api,
   type MatchCandidate,
@@ -345,6 +345,8 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     queryFn: () => api.seriesHistory(seriesId),
     staleTime: 60_000,
   });
+  // One expanded history row at a time; the raw detail dump stays out of the way.
+  const [openHistory, setOpenHistory] = React.useState<number | null>(null);
 
   const k = current.metadata;
 
@@ -440,12 +442,18 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
               <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
                 <History className="h-3.5 w-3.5" /> History
               </p>
-              <div className="flex max-h-48 flex-col gap-1 overflow-y-auto">
+              <div className="flex max-h-48 flex-col gap-0.5 overflow-y-auto">
                 {history.data.map((h) => (
-                  <div key={h.id} className="flex items-baseline gap-2 text-xs">
-                    <span className={cn('shrink-0 rounded-md px-1.5 py-0.5 text-2xs font-medium', HISTORY_TONE[h.action] ?? 'bg-surface-2 text-muted')}>{h.action}</span>
-                    <span className="min-w-0 flex-1 break-words text-muted">{detailsText(h.details)}</span>
-                    <span className="shrink-0 text-2xs text-muted">{timeAgo(h.createdAt)}</span>
+                  <div key={h.id}>
+                    <button type="button" onClick={() => setOpenHistory(openHistory === h.id ? null : h.id)} aria-expanded={openHistory === h.id} className="flex w-full items-center gap-2 rounded px-1 py-1 text-left text-xs transition-colors duration-150 hover:bg-surface/70">
+                      <span className={cn('shrink-0 rounded-md px-1.5 py-0.5 text-2xs font-medium', HISTORY_TONE[h.action] ?? 'bg-surface-2 text-muted')}>{h.action}</span>
+                      <span className="min-w-0 flex-1 truncate text-muted">{detailsText(h.details) || '—'}</span>
+                      <span className="shrink-0 text-2xs tabular-nums text-muted">{timeAgo(h.createdAt)}</span>
+                      <ChevronRight className={cn('h-3 w-3 shrink-0 text-muted transition-transform duration-150', openHistory === h.id && 'rotate-90')} />
+                    </button>
+                    {openHistory === h.id && detailsText(h.details) && (
+                      <p className="mb-1 break-words px-1 pb-1 text-xs leading-relaxed text-muted">{detailsText(h.details)}</p>
+                    )}
                   </div>
                 ))}
               </div>

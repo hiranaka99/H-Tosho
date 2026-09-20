@@ -275,12 +275,11 @@ export function Settings() {
         </CardContent>
       </Card>
       <Card className="animate-fade-up" style={{ animationDelay: '60ms' }}>
-        <SectionHeader icon={<Timer className="h-4 w-4" />} title="Auto-scan interval">
-          <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => savePoll.mutate()} disabled={savePoll.isPending || !pollDirty || poll === '' || Number(poll) < 0} />
-        </SectionHeader>
+        <SectionHeader icon={<Timer className="h-4 w-4" />} title="Auto-scan interval" />
         <CardContent className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <Input id="scan-interval" aria-label="Auto-scan interval in hours" type="number" min={0} max={576} value={poll} onChange={(e) => setPoll(e.target.value)} className="w-full sm:w-28" />
           <span className="text-sm text-muted">hours between background scans for newly ingested series (0 disables)</span>
+          <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => savePoll.mutate()} disabled={savePoll.isPending || !pollDirty || poll === '' || Number(poll) < 0} className="sm:ml-auto" />
         </CardContent>
       </Card>
       </div>
