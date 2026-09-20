@@ -27,7 +27,7 @@ const { mapLimit } = await import('../src/lib/http.js');
 const { addWatchedSearch, checkWatchedSearches } = await import('../src/services/watchedSearches.js');
 const { autoMatch } = await import('../src/match/autoMatcher.js');
 const { titleSearchParts } = await import('../src/match/normalize.js');
-const { api } = await import('../src/routes/api.js');
+const { api, kavitaCoverUrl } = await import('../src/routes/api.js');
 
 describe('fetchJson error contract', () => {
   it('throws on non-2xx by default', async () => {
@@ -48,6 +48,18 @@ describe('fetchJson error contract', () => {
       () => fetchJson('https://example.com/api/Image/series-cover?seriesId=1&apiKey=SECRET'),
       (e: Error) => e.message.includes('HTTP 400') && !e.message.includes('SECRET'),
     );
+  });
+});
+
+describe('Kavita cover cache keys', () => {
+  it('changes after a successful sync and stays stable between syncs', () => {
+    const before = kavitaCoverUrl(42, 'series42.png', null);
+    const after = kavitaCoverUrl(42, 'series42.png', '2026-09-20T15:40:00.000Z');
+
+    assert.equal(before, '/api/kavita/series/42/cover?v=series42.png');
+    assert.equal(after, '/api/kavita/series/42/cover?v=2026-09-20T15%3A40%3A00.000Z');
+    assert.notEqual(after, before);
+    assert.equal(kavitaCoverUrl(42, 'series42.png', '2026-09-20T15:40:00.000Z'), after);
   });
 });
 

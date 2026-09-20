@@ -159,6 +159,11 @@ api.get('/kavita/libraries', async (c) => {
   }
 });
 
+/** Stable until a successful sync, then changes so browsers decode the new cover. */
+export function kavitaCoverUrl(seriesId: number, coverImage: string, lastSyncedAt?: string | null): string {
+  return `/api/kavita/series/${seriesId}/cover?v=${encodeURIComponent(lastSyncedAt ?? coverImage)}`;
+}
+
 api.get('/kavita/libraries/:id/series', async (c) => {
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
@@ -182,7 +187,7 @@ api.get('/kavita/libraries/:id/series', async (c) => {
           slug: s.slug,
           bookCount: s.bookCount,
           pageCount: s.pages ?? null,
-          cover: s.cover ? `/api/kavita/series/${s.id}/cover` : null,
+          cover: s.cover ? kavitaCoverUrl(s.id, s.cover, m?.lastSyncedAt) : null,
           status: m?.status ?? 'unmatched',
           providerId: m?.providerId ?? null,
           matchScore: m?.matchScore ?? null,
