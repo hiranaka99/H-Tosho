@@ -12,7 +12,7 @@ process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-sync-apply
 
 import type { KavitaClient } from '../src/kavita/client.js';
 const { initDb } = await import('../src/db/index.js');
-const { applyToKavita } = await import('../src/services/sync.js');
+const { applyToKavita, applyVolumeCovers } = await import('../src/services/sync.js');
 initDb();
 
 interface CapturedPush {
@@ -122,5 +122,42 @@ describe('applyToKavita name verification', () => {
 
     assert.ok(result.pushed.includes('name'));
     assert.deepEqual(result.warnings, []);
+  });
+});
+
+describe('cover locking', () => {
+  it('locks a matched series cover so Kavita scans cannot replace it', async () => {
+    let locked: boolean | undefined;
+    const client = {
+      getSeriesMetadata: async () => ({ tags: [] }),
+      getSeriesById: async () => ({ name: 'Test Series' }),
+      updateSeriesMetadata: async () => undefined,
+      updateSeriesCover: async (_seriesId: number, _image: Buffer, lockCover: boolean) => {
+        locked = lockCover;
+      },
+    } as unknown as KavitaClient;
+
+    const result = await applyToKavita(client, 5, metadata, {
+      cover: Buffer.from('cover'),
+      title: 'Test Series',
+    });
+
+    assert.equal(result.coverUpdated, true);
+    assert.equal(locked, true);
+  });
+
+  it('locks matched volume covers so later chapter additions cannot replace them', async () => {
+    const locks: boolean[] = [];
+    const client = {
+      getVolumes: async () => [{ id: 71, number: 1 }],
+      updateVolumeCoverFromUrl: async (_volumeId: number, _url: string, lockCover: boolean) => {
+        locks.push(lockCover);
+      },
+    } as unknown as KavitaClient;
+
+    const result = await applyVolumeCovers(client, 5, [{ number: 1, url: 'https://cdn.example/vol-1.jpg' }]);
+
+    assert.deepEqual(result, { updated: 1, errors: [] });
+    assert.deepEqual(locks, [true]);
   });
 });

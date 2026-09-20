@@ -153,8 +153,8 @@ const EXCLUDABLE_FIELDS: Record<string, string> = {
 /**
  * Apply matched metadata to a Kavita series:
  * 1. Read/merge/write identity and metadata fields
- * 2. Stage and apply cover image (if enabled + available)
- * 3. Push per-volume covers onto matching Kavita volumes (if enabled + available)
+ * 2. Stage, apply, and lock the cover image (if enabled + available)
+ * 3. Push and lock per-volume covers on matching Kavita volumes (if enabled + available)
  * 4. Record sync history + fire notifications
  */
 export async function applyToKavita(
@@ -231,12 +231,12 @@ export async function applyToKavita(
         await applyCover(
           client,
           opts.coverUrl,
-          (url) => client.updateSeriesCoverFromUrl(seriesId, url, false),
-          (image) => client.updateSeriesCover(seriesId, image, false),
+          (url) => client.updateSeriesCoverFromUrl(seriesId, url, true),
+          (image) => client.updateSeriesCover(seriesId, image, true),
           opts.cover,
         );
       } else {
-        await client.updateSeriesCover(seriesId, opts.cover!, false);
+        await client.updateSeriesCover(seriesId, opts.cover!, true);
       }
       coverUpdated = true;
       pushed.push('cover');
@@ -310,9 +310,9 @@ async function applyCover(
   }
 }
 /**
- * Download and push per-volume covers onto matching Kavita volumes. Failures
- * are reported per volume (never aborting the remaining ones); a missing or
- * unmatched volume simply goes without a cover.
+ * Download, push, and lock per-volume covers onto matching Kavita volumes.
+ * Failures are reported per volume (never aborting the remaining ones); a
+ * missing or unmatched volume simply goes without a cover.
  */
 export async function applyVolumeCovers(
   client: KavitaClient,
@@ -333,8 +333,8 @@ export async function applyVolumeCovers(
       await applyCover(
         client,
         assignment.url,
-        (url) => client.updateVolumeCoverFromUrl(assignment.volumeId, url, false),
-        (image) => client.updateVolumeCover(assignment.volumeId, image, false),
+        (url) => client.updateVolumeCoverFromUrl(assignment.volumeId, url, true),
+        (image) => client.updateVolumeCover(assignment.volumeId, image, true),
       );
       return null;
     } catch (err) {
@@ -442,17 +442,13 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
   }
   let titleFilesUpdated = 0;
   let titleFilesVerified = 0;
-  // A checked TITLE means "make the series title this". The two halves must
-  // always agree — Kavita's scanner re-parses files by their ComicInfo.Series
-  // value and matches records by normalized name, so a folder whose files and
-  // record carry different titles would split on the next scan:
-  //   1. rewrite ComicInfo.Series in every chapter of the series (first — a
-  //      failed rewrite rolls back and aborts before the record is touched),
-  //   2. rename the Kavita record through /Series/update, applied and verified
-  //      by applyToKavita below. Keeping the record's id preserves read
-  //      progress, ratings and collections — a ComicInfo-only rename cannot
-  //      guarantee that (a genuine rename splits into a new entry).
+  // A checked TITLE means "make the series title this". The two halves should
+  // agree: rewrite ComicInfo.Series in every locally accessible chapter, then
+  // rename the Kavita record. If Kavita's files are not mounted into H-Tosho,
+  // skip only the rename rather than failing the entire metadata/cover match;
+  // renaming Kavita alone would let its next scan split the series.
   const excludedFields = [...(opts.excludedFields ?? [])];
+  const preflightWarnings: string[] = [];
   const newTitle = meta.title.trim();
   if (newTitle && !excludedFields.includes('title') && newTitle !== series.name.trim()) {
     const libraries = await client.getLibraries();
@@ -463,17 +459,22 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
       folderPath: series.folderPath,
       anchors: dl.downloadDirectory ? [path.resolve(dl.downloadDirectory)] : [],
     });
-    if (!dir) throw new Error(`Could not locate the series folder for "${series.name}" on this machine`);
-    const files = listCbzFiles(dir);
-    if (files.length === 0) throw new Error(`No CBZ chapters found for "${series.name}"`);
-    const rewrite = await setSeriesTitleInCbzFiles(files, newTitle);
-    titleFilesUpdated = rewrite.changed;
-    titleFilesVerified = rewrite.verified;
+    const files = dir ? listCbzFiles(dir) : [];
+    if (!dir || files.length === 0) {
+      excludedFields.push('title');
+      preflightWarnings.push(
+        `Title was not changed because H-Tosho cannot access this series' CBZ files; metadata and covers were still synced`,
+      );
+    } else {
+      const rewrite = await setSeriesTitleInCbzFiles(files, newTitle);
+      titleFilesUpdated = rewrite.changed;
+      titleFilesVerified = rewrite.verified;
+    }
   }
   // Per-dialog overrides: deselected fields are skipped, and unchecking Cover
-  // skips the series cover + volume covers. A selected title goes through
-  // applyToKavita's verified /Series/update rename (excludedFields only ever
-  // carries 'title' when the user deselected it).
+  // skips the series cover + volume covers. A title is also skipped when its
+  // CBZ files are inaccessible, preventing Kavita's next scan from splitting
+  // the series while still allowing the match and all other fields to apply.
   const pushCovers = opts.cover !== false;
   const result = await applyToKavita(client, seriesId, meta, {
     coverUrl: pushCovers ? meta.coverUrl : undefined,
@@ -482,6 +483,7 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
     title: meta.title,
     titleFiles: titleFilesUpdated || undefined,
   });
+  result.warnings.unshift(...preflightWarnings);
   // History/notifications show the name Kavita displays after this sync.
   const renamed = !excludedFields.includes('title') && newTitle !== series.name.trim() && result.pushed.includes('name');
   invalidateSeriesArtists(seriesId);

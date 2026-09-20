@@ -207,7 +207,7 @@ api.get('/kavita/series/:id/cover', async (c) => {
     const cover = await client.getSeriesCover(seriesId);
     return c.body(new Uint8Array(cover.data), 200, {
       'Content-Type': cover.contentType,
-      'Cache-Control': 'private, max-age=300',
+      'Cache-Control': 'private, no-store',
     });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);

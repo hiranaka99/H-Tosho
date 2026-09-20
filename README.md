@@ -11,12 +11,15 @@ fresh picks based on what you already own.
 
 Works with **Kavita server v0.9.x or newer**.
 
+Current release: **v1.0.0**.
+
 ## What it does
 
 - **One-click identification** — browse any Kavita library, pick a series, and
   H-Tosho finds the best match across your providers. Preview exactly what will
   change in a side-by-side diff, then apply everything or deselect individual
-  fields (title, description, tags, cover, …).
+  fields (title, description, tags, cover, …). Applied series and volume covers
+  are locked in Kavita so later library scans cannot replace them.
 - **Automatic matching** — new series added to Kavita are matched on a schedule
   you control. Matches below 80% confidence are flagged with a badge so you can
   review them in Libraries instead of being pushed blindly.

@@ -8,6 +8,25 @@ import type { MediaType, SeriesMetadata, SearchResult, VolumeCover } from './typ
  */
 const CONTENT_RATINGS = ['safe', 'suggestive', 'erotica', 'pornographic'] as const;
 
+/**
+ * MangaDex title search can return no rows when an English publisher title
+ * differs from the catalog translation and contains many glue words. A second
+ * query with those words removed preserves distinctive terms while allowing
+ * MangaDex's search index to bridge wording changes such as rejected/dumped.
+ */
+const TITLE_SEARCH_STOP_WORDS: Record<string, true> = {
+  a: true, an: true, and: true, at: true, by: true, for: true, from: true,
+  her: true, his: true, in: true, into: true, its: true, me: true, my: true,
+  of: true, on: true, our: true, the: true, their: true, to: true, with: true, your: true,
+};
+
+function fallbackTitleQuery(query: string): string | null {
+  const words = query.match(/[\p{L}\p{N}]+/gu) ?? [];
+  const meaningful = words.filter((word) => word.length > 1 && !TITLE_SEARCH_STOP_WORDS[word.toLowerCase()]);
+  const reduced = meaningful.join(' ');
+  return meaningful.length >= 2 && reduced.toLowerCase() !== query.trim().toLowerCase() ? reduced : null;
+}
+
 /** Raw cover item as returned by the GET /cover collection (only consumed fields). */
 interface CoverListItem {
   id: string;
@@ -331,21 +350,28 @@ class MangaDexProvider extends BaseProvider {
   }
 
   async search(query: string, type?: string): Promise<SearchResult[]> {
-    const params = new URLSearchParams({
-      title: query,
-      limit: '20',
-      'order[relevance]': 'desc',
-    });
-    for (const rating of CONTENT_RATINGS) params.append('contentRating[]', rating);
-    const data = await this.get<{ data?: MangaListItem[] }>(`/manga?${params.toString()}`, {
-      headers: this.headers(),
-    });
+    const search = async (title: string): Promise<MangaListItem[]> => {
+      const params = new URLSearchParams({
+        title,
+        limit: '20',
+        'order[relevance]': 'desc',
+      });
+      for (const rating of CONTENT_RATINGS) params.append('contentRating[]', rating);
+      const data = await this.get<{ data?: MangaListItem[] }>(`/manga?${params.toString()}`, {
+        headers: this.headers(),
+      });
+      return data.data ?? [];
+    };
+
+    let found = await search(query);
+    const fallback = found.length === 0 ? fallbackTitleQuery(query) : null;
+    if (fallback) found = await search(fallback);
 
     // List items only carry cover_art relationship stubs ({id, type}), so the
     // fileNames the CDN actually serves must be resolved through the /cover
     // collection — in bulk (one request per 100 manga) instead of one GET per
     // candidate. A candidate whose cover cannot be resolved keeps no thumbnail.
-    const items = (data.data ?? []).map((m) => {
+    const items = found.map((m) => {
       const attrs = m.attributes ?? {};
       const title = this.pickTitle(attrs);
       return {

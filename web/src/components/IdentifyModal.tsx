@@ -10,6 +10,7 @@ import {
   type KavitaTag,
   type KavitaPerson,
   type SeriesMatch,
+  type SeriesRow,
 } from '../lib/api';
 import { PROVIDER_NAMES, cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
@@ -274,14 +275,18 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
 
 
   const apply = useMutation({
-    mutationFn: (p: { providerId: string; providerSeriesId: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) =>
+    mutationFn: (p: { providerId: string; providerSeriesId: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number; coverUrl?: string }) =>
       api.apply(seriesId, p.providerId, p.providerSeriesId, { selectedTitle: p.selectedTitle, excludedFields: p.excludedFields, cover: p.cover, score: p.score }),
-    onSuccess: () => {
-      // Applying a match can flip the stored alignment flag — refresh the
-      // series row so the match banner is current when the modal closes.
+    onSuccess: (_job, variables) => {
+      // The sync itself runs in the background. Show the selected provider
+      // cover immediately; the jobs transition refreshes this row from Kavita
+      // when the write finishes.
+      if (variables.cover !== false && variables.coverUrl) {
+        qc.setQueriesData<SeriesRow[]>({ queryKey: ['library-series'] }, (rows) =>
+          rows?.map((row) => row.id === seriesId ? { ...row, cover: variables.coverUrl } : row),
+        );
+      }
       qc.invalidateQueries({ queryKey: ['series', seriesId] });
-      // The push runs as a background job (the Kavita scan wait can take minutes);
-      // the sidebar polls ['jobs'] and shows it from here on.
       qc.invalidateQueries({ queryKey: ['jobs'] });
       toast({ tone: 'success', title: 'Sync queued', description: 'Apply & Sync runs in the background — progress shows in the sidebar.' });
       onClose();
@@ -390,7 +395,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
     return { rows, coverCandidate: m?.coverUrl ?? selected.coverUrl };
   }, [selected, preview.data, resolvedTitle, current, k]);
 
-  const doApply = (ids: { providerId: string; providerSeriesId: string }, opts?: { selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) => {
+  const doApply = (ids: { providerId: string; providerSeriesId: string }, opts?: { selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number; coverUrl?: string }) => {
     apply.mutate({ ...ids, ...opts });
   };
 
@@ -490,7 +495,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                     size="sm"
                     onClick={() => autoBest.providerId === 'mangadex'
                       ? setSelectedId(autoBest.providerId + ':' + autoBest.providerSeriesId)
-                      : doApply({ providerId: autoBest.providerId, providerSeriesId: autoBest.providerSeriesId }, { score: autoBest.score })}
+                      : doApply({ providerId: autoBest.providerId, providerSeriesId: autoBest.providerSeriesId }, { score: autoBest.score, coverUrl: autoBest.coverUrl })}
                     disabled={apply.isPending}
                   >
                     {apply.isPending ? <Spinner /> : <ArrowRight className="h-3.5 w-3.5" />} {autoBest.providerId === 'mangadex' ? 'Choose Title & Sync' : 'Apply & Sync'}
@@ -665,7 +670,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                   <X className="h-4 w-4" /> Cancel
                 </Button>
                 <Button
-                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: selected.score })}
+                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: selected.score, coverUrl: diff?.coverCandidate })}
                   disabled={!selected || apply.isPending}
                 >
                   {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} Apply & Sync to Kavita

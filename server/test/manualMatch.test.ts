@@ -8,6 +8,10 @@ describe('parseManualProviderUrl', () => {
       parseManualProviderUrl('https://mangadex.org/title/AB8AB6EC-0B19-444F-8ED3-02AD65D7A834/when-mama-and-papa-aren-t-home'),
       { providerId: 'mangadex', providerSeriesId: 'ab8ab6ec-0b19-444f-8ed3-02ad65d7a834', type: 'MANGA' },
     );
+    assert.deepEqual(
+      parseManualProviderUrl('https://mangadex.org/title/1d2967dd-d157-4cbb-84ed-ea7cf7140d14/yume-de-furarete-hajimaru-yuri?tab=art'),
+      { providerId: 'mangadex', providerSeriesId: '1d2967dd-d157-4cbb-84ed-ea7cf7140d14', type: 'MANGA' },
+    );
     assert.deepEqual(parseManualProviderUrl('https://myanimelist.net/manga/12345/Title'), {
       providerId: 'myanimelist', providerSeriesId: '12345', type: 'MANGA',
     });

@@ -168,12 +168,7 @@ export interface MatchCandidate extends SearchResult {
 
 export interface MatchOutcome {
   matched: boolean;
-  best?: {
-    providerId: string;
-    providerSeriesId: string;
-    score: number;
-    title: string;
-  };
+  best?: MatchCandidate;
   candidates: MatchCandidate[];
   /** Providers that were actually consulted, in evaluation order. */
   searchedProviders: string[];

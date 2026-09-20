@@ -446,7 +446,7 @@ describe('KavitaClient', () => {
     assert.deepEqual(JSON.parse(String(seriesCover.init?.body)), {
       id: 42,
       url: Buffer.from('local-image').toString('base64'),
-      lockCover: false,
+      lockCover: true,
     });
     assert.equal(
       requests.some((r) => r.url.includes('/api/Image/cover-upload')),

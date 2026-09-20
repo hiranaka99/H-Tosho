@@ -242,6 +242,30 @@ test('alternate English title (not display or romanized) is accepted as selected
   for (const file of files) assert.equal(parseComicInfo((await readComicInfo(file))!).fields.Series, 'Demon-Hentai - Shrine of One Hundred Wives');
 });
 
+test('inaccessible CBZ files skip only the rename and still apply the match', async () => {
+  const state = { requests: [] as RequestLog[] };
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('api.mangadex.org/manga/00faf1ea-5086-4d75-9621-5a597e523e21?')) {
+      return Response.json({ data: { id: '00faf1ea-5086-4d75-9621-5a597e523e21', attributes: { title: { 'ja-ro': 'Live!: Soto de Koubi Shiyou!' }, status: 'completed', originalLanguage: 'ja' }, relationships: [] } });
+    }
+    if (url.includes('api.mangadex.org/cover?')) return Response.json({ response: 'collection', data: [] });
+    return kavitaApplyMock(state, path.join(dataDir, 'not-mounted'), 'Old Name')(input, init);
+  }) as typeof fetch;
+
+  const result = await runJob(makeJob(905, {
+    seriesId: 42,
+    providerId: 'mangadex',
+    providerSeriesId: '00faf1ea-5086-4d75-9621-5a597e523e21',
+    cover: false,
+  }), () => {});
+
+  assert.deepEqual(result, { processed: 1, matched: 1, failed: 0 });
+  assert.equal(state.requests.some((request) => request.url.endsWith('/api/Series/update')), false);
+  const row = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, 42)).get();
+  assert.equal(row?.status, 'matched');
+});
+
 test('a rejected selectedTitle fails the job without touching files or the match row', async () => {
   const rejDir = path.join(dataDir, 'Rejected Title');
   fs.mkdirSync(rejDir);

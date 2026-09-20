@@ -83,6 +83,42 @@ describe('MangaDexProvider cover URLs', () => {
     assert.equal(coverParams.get('limit'), '100');
   });
 
+  it('retries an empty long-title search without glue words', async () => {
+    const searchQueries: string[] = [];
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.startsWith('https://api.mangadex.org/manga?')) {
+        const title = new URL(url).searchParams.get('title') ?? '';
+        searchQueries.push(title);
+        if (searchQueries.length === 1) return Response.json({ result: 'ok', response: 'collection', data: [] });
+        return Response.json({
+          result: 'ok',
+          response: 'collection',
+          data: [{
+            id: '1d2967dd-d157-4cbb-84ed-ea7cf7140d14',
+            attributes: {
+              title: { 'ja-ro': 'Yume de Furarete Hajimaru Yuri' },
+              altTitles: [{ en: 'A Yuri Love Story That Begins with Getting Dumped in a Dream' }],
+            },
+            relationships: [],
+          }],
+        });
+      }
+      if (url.startsWith('https://api.mangadex.org/cover?')) {
+        return Response.json({ result: 'ok', response: 'collection', data: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    const results = await mangaDexProvider.search('Our Yuri Started with Me Getting Rejected in a Dream');
+
+    assert.deepEqual(searchQueries, [
+      'Our Yuri Started with Me Getting Rejected in a Dream',
+      'Yuri Started Getting Rejected Dream',
+    ]);
+    assert.equal(results[0]?.providerSeriesId, '1d2967dd-d157-4cbb-84ed-ea7cf7140d14');
+  });
+
   it('builds series metadata cover URLs from the resolved fileName without query params', async () => {
     globalThis.fetch = async (input) => {
       const url = String(input);
