@@ -1,9 +1,9 @@
 import * as React from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, BookOpen, Unlink, ArrowUpRight, FileText, Combine, Check, CheckSquare, ChevronLeft, ChevronRight, Grip } from 'lucide-react';
+import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, BookOpen, Unlink, ArrowUpRight, FileText, Combine, Check, CheckSquare, ChevronLeft, ChevronRight, EllipsisVertical } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource } from '../lib/api';
-import { Button, Card, Input, Select, Badge, StatusBadge, ProviderBadge, Spinner, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog } from '../components/ui';
+import { Button, Card, Input, Select, Badge, StatusBadge, ProviderBadge, Skeleton, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeSeriesModal } from '../components/MergeSeriesModal';
@@ -17,6 +17,8 @@ const LIBRARY_STATE_KEY = 'h-tosho:library-state';
 
 interface LibraryStateCache {
   query?: string;
+  statusFilter?: string;
+  view?: 'grid' | 'table';
   pages?: Record<string, number>;
 }
 
@@ -54,15 +56,8 @@ const ARTIST_SOURCE_META: Record<DoujinSource, { label: string; color: string }>
   nhentai: { label: 'nHentai', color: '#e91e63' },
 };
 
-/**
- * One-click deep link into the Downloader with an artist search pre-filled for
- * this series. Uses the first artist (doujin titles are usually a single
- * circle); the tooltip lists every known artist.
- *
- * variant "pill" — always-visible bordered pill (table view).
- * variant "icon" — always-visible source icon (grid card).
- */
-function ArtistSearchButton({ source, artists, variant = 'pill' }: { source: DoujinSource; artists: string[]; variant?: 'pill' | 'icon' }) {
+/** One-click deep link into the Downloader with an artist search pre-filled. */
+function ArtistSearchButton({ source, artists }: { source: DoujinSource; artists: string[] }) {
   const navigate = useNavigate();
   const primary = artists[0];
   const fragment = buildTagSearchFragment(primary, 'artist', source);
@@ -70,19 +65,6 @@ function ArtistSearchButton({ source, artists, variant = 'pill' }: { source: Dou
   const meta = ARTIST_SOURCE_META[source];
   const target = artists.length > 1 ? `${artists.join(', ')} (first: ${primary})` : `“${primary}”`;
   const title = `Search artist ${target} on ${meta.label}`;
-  if (variant === 'icon') {
-    return (
-      <button
-        type="button"
-        onClick={() => navigate(`/downloader?source=${source}&q=${encodeURIComponent(fragment)}`)}
-        title={title}
-        aria-label={title}
-        className="relative z-30 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/20 bg-black/75 transition-colors duration-150 hover:border-primary hover:bg-black"
-      >
-        <img src={`/${source}.png`} alt="" className="h-5 w-5 rounded object-contain" aria-hidden="true" />
-      </button>
-    );
-  }
   return (
     <button
       type="button"
@@ -99,6 +81,62 @@ function ArtistSearchButton({ source, artists, variant = 'pill' }: { source: Dou
   );
 }
 
+function CardActionMenu({ row, onEdit }: { row: SeriesRow; onEdit: () => void }) {
+  const navigate = useNavigate();
+  const [open, setOpen] = React.useState(false);
+  const root = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [open]);
+
+  const searchArtist = (source: DoujinSource) => {
+    const artist = row.artists?.[0];
+    const fragment = artist ? buildTagSearchFragment(artist, 'artist', source) : null;
+    if (fragment) navigate(`/downloader?source=${source}&q=${encodeURIComponent(fragment)}`);
+  };
+
+  return (
+    <div ref={root} className="absolute right-1.5 top-1.5 z-30">
+      <button type="button" aria-label={`Actions for ${row.name}`} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)} className="flex h-11 w-11 items-center justify-center rounded-md border border-white/20 bg-black/75 text-white transition-colors duration-150 hover:border-primary hover:bg-black">
+        <EllipsisVertical className="h-5 w-5" />
+      </button>
+      {open && (
+        <div role="menu" className="absolute right-0 top-full mt-1 w-52 overflow-hidden rounded-md border border-border bg-surface p-1 text-foreground shadow-xl">
+          {row.artists?.length ? (['hitomi', 'nhentai'] as const).map((source) => (
+            <button key={source} type="button" role="menuitem" onClick={() => searchArtist(source)} className="flex min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2">
+              <img src={`/${source}.png`} alt="" className="h-5 w-5 rounded object-contain" aria-hidden="true" />
+              Search {ARTIST_SOURCE_META[source].label}
+            </button>
+          )) : null}
+          <button type="button" role="menuitem" onClick={() => { setOpen(false); onEdit(); }} className="flex min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2">
+            <FileText className="h-4 w-4" /> Edit ComicInfo.xml
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PaginationControls({ currentPage, pageCount, firstVisible, lastVisible, total, compact = false, onChange }: { currentPage: number; pageCount: number; firstVisible: number; lastVisible: number; total: number; compact?: boolean; onChange: (page: number) => void }) {
+  return (
+    <nav aria-label={compact ? 'Series pages above results' : 'Series pages'} className="flex flex-wrap items-center justify-center gap-2">
+      <Button size="sm" variant="outline" disabled={currentPage === 1} onClick={() => onChange(Math.max(1, currentPage - 1))} aria-label={compact ? 'Previous series page' : undefined}>
+        <ChevronLeft className="h-3.5 w-3.5" /> {!compact && 'Previous'}
+      </Button>
+      <span className="text-xs tabular-nums text-muted sm:text-sm">{compact ? `${firstVisible}–${lastVisible} of ${total}` : `Page ${currentPage} of ${pageCount} · ${firstVisible}–${lastVisible} of ${total}`}</span>
+      <Button size="sm" variant="outline" disabled={currentPage === pageCount} onClick={() => onChange(Math.min(pageCount, currentPage + 1))} aria-label={compact ? 'Next series page' : undefined}>
+        {!compact && 'Next'} <ChevronRight className="h-3.5 w-3.5" />
+      </Button>
+    </nav>
+  );
+}
+
 export function Libraries() {
   const { libraryId } = useParams();
   const navigate = useNavigate();
@@ -107,16 +145,8 @@ export function Libraries() {
   const initialState = React.useMemo(readLibraryState, []);
   const [selected, setSelected] = React.useState<number | null>(libraryId ? Number(libraryId) : null);
   const [query, setQuery] = React.useState(initialState.query ?? '');
-  const [statusFilter, setStatusFilter] = React.useState('all');
-  const [view, setView] = React.useState<'grid' | 'table'>('grid');
-  // Cover density for the grid view — persisted across sessions.
-  const [density, setDensity] = React.useState<'comfortable' | 'compact'>(() => {
-    try { return localStorage.getItem('h-tosho:grid-density') === 'compact' ? 'compact' : 'comfortable'; } catch { return 'comfortable'; }
-  });
-  const chooseDensity = (d: 'comfortable' | 'compact') => {
-    setDensity(d);
-    try { localStorage.setItem('h-tosho:grid-density', d); } catch { /* storage unavailable */ }
-  };
+  const [statusFilter, setStatusFilter] = React.useState(() => initialState.statusFilter ?? 'all');
+  const [view, setView] = React.useState<'grid' | 'table'>(() => initialState.view ?? 'grid');
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
   const [identify, setIdentify] = React.useState<{ id: number; name: string } | null>(null);
   const [comicInfo, setComicInfo] = React.useState<{ id: number; name: string } | null>(null);
@@ -198,7 +228,9 @@ export function Libraries() {
   const pageCount = React.useMemo(() => Math.max(1, Math.ceil(filtered.length / SERIES_PAGE_SIZE)), [filtered.length]);
   const currentPage = Math.min(page, pageCount);
   const visibleRows = filtered.slice((currentPage - 1) * SERIES_PAGE_SIZE, currentPage * SERIES_PAGE_SIZE);
-  React.useEffect(() => writeLibraryState({ query }), [query]);
+  const firstVisible = filtered.length === 0 ? 0 : (currentPage - 1) * SERIES_PAGE_SIZE + 1;
+  const lastVisible = Math.min(currentPage * SERIES_PAGE_SIZE, filtered.length);
+  React.useEffect(() => writeLibraryState({ query, statusFilter, view }), [query, statusFilter, view]);
   const changePage = (nextPage: number) => {
     setPage(nextPage);
     document.querySelector('main')?.scrollTo({ top: 0 });
@@ -278,24 +310,20 @@ export function Libraries() {
         )}
 
         {selected !== null && (
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h2>
-              <p className="text-sm text-muted">
-                {matchedInLib} matched · {rows.length - matchedInLib} pending
-              </p>
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-end justify-between gap-2">
+              <div>
+                <h2 className="text-lg font-semibold">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h2>
+                <p className="text-sm text-muted">{matchedInLib} matched · {rows.length - matchedInLib} pending</p>
+              </div>
+              {filtered.length > SERIES_PAGE_SIZE && (
+                <PaginationControls currentPage={currentPage} pageCount={pageCount} firstVisible={firstVisible} lastVisible={lastVisible} total={filtered.length} compact onChange={changePage} />
+              )}
             </div>
-            <div className="grid w-full grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap lg:w-auto lg:justify-end">
-              <Button className="w-full sm:w-auto" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit multi-select mode' : 'Multi-select — click cards to select them'}>
-                <CheckSquare className="h-4 w-4" /> Select
-              </Button>
-              <label className="flex h-9 min-w-0 cursor-pointer select-none items-center justify-between gap-2 rounded-md border border-border-2 bg-surface px-3 text-xs font-medium text-muted transition-colors duration-150 hover:bg-surface-2 sm:justify-start">
-                Auto-match
-                <Switch aria-label="Automatically match new series" checked={override.data?.autoMatch ?? true} onCheckedChange={setAutoMatch} />
-              </label>
-              <div className="relative col-span-2 min-w-0 flex-1 sm:col-span-1 sm:flex-none">
+            <div className="grid w-full grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap">
+              <div className="relative col-span-2 min-w-0 flex-1">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
-                <Input aria-label="Filter series or artists" placeholder="Filter series or artist…" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} className="w-full pl-8 sm:w-52" />
+                <Input aria-label="Filter series or artists" placeholder="Filter series or artist…" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} className="w-full pl-8" />
               </div>
               <Select aria-label="Filter by match status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="min-w-0 sm:w-44">
                 <option value="all">All</option>
@@ -304,24 +332,16 @@ export function Libraries() {
                 <option value="failed">Failed</option>
                 <option value="low-score">Low confidence (&lt;80%)</option>
               </Select>
+              <Button className="w-full sm:w-auto" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit multi-select mode' : 'Multi-select — click cards to select them'}>
+                <CheckSquare className="h-4 w-4" /> Select
+              </Button>
+              <label className="flex h-9 min-w-0 cursor-pointer select-none items-center justify-between gap-2 rounded-md border border-border-2 bg-surface px-3 text-xs font-medium text-muted transition-colors duration-150 hover:bg-surface-2 sm:justify-start">
+                Auto-match
+                <Switch aria-label="Automatically match new series" checked={override.data?.autoMatch ?? true} onCheckedChange={setAutoMatch} />
+              </label>
               <div className="ml-auto flex overflow-hidden rounded-md border border-border-2 sm:ml-0">
-                <button type="button" aria-label="Grid view" aria-pressed={view === 'grid'} onClick={() => setView('grid')} className={cn('flex h-8 w-8 items-center justify-center transition-colors duration-150', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
-                  <LayoutGrid className="h-4 w-4" />
-                </button>
-                <button type="button" aria-label="Table view" aria-pressed={view === 'table'} onClick={() => setView('table')} className={cn('flex h-8 w-8 items-center justify-center transition-colors duration-150', view === 'table' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
-                  <Table2 className="h-4 w-4" />
-                </button>
-                {view === 'grid' && (
-                  <>
-                    <span className="w-px self-stretch bg-border-2" aria-hidden />
-                    <button type="button" aria-label="Comfortable covers" aria-pressed={density === 'comfortable'} title="Comfortable covers" onClick={() => chooseDensity('comfortable')} className={cn('flex h-8 w-8 items-center justify-center transition-colors duration-150', density === 'comfortable' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
-                      <LayoutGrid className="h-4 w-4" />
-                    </button>
-                    <button type="button" aria-label="Compact covers" aria-pressed={density === 'compact'} title="Compact covers — smaller covers, more per row" onClick={() => chooseDensity('compact')} className={cn('flex h-8 w-8 items-center justify-center transition-colors duration-150', density === 'compact' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}>
-                      <Grip className="h-4 w-4" />
-                    </button>
-                  </>
-                )}
+                <button type="button" aria-label="Grid view" aria-pressed={view === 'grid'} onClick={() => setView('grid')} className={cn('flex h-9 w-9 items-center justify-center transition-colors duration-150', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}><LayoutGrid className="h-4 w-4" /></button>
+                <button type="button" aria-label="Table view" aria-pressed={view === 'table'} onClick={() => setView('table')} className={cn('flex h-9 w-9 items-center justify-center transition-colors duration-150', view === 'table' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}><Table2 className="h-4 w-4" /></button>
               </div>
             </div>
           </div>
@@ -363,71 +383,51 @@ export function Libraries() {
             {series.isError ? (
               <Card><ErrorState title="Could not load series" description={series.error instanceof Error ? series.error.message : String(series.error)} onRetry={() => void series.refetch()} /></Card>
             ) : series.isLoading ? (
-              <div className="flex flex-1 items-center justify-center gap-2 py-16 text-muted">
-                <Spinner /> Loading series…
+              <div role="status" aria-label="Loading series" className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+                {Array.from({ length: 12 }, (_, index) => (
+                  <Card key={index} className="overflow-hidden"><Skeleton className="aspect-[3/4] w-full rounded-none" /></Card>
+                ))}
               </div>
             ) : filtered.length === 0 ? (
               <Card className="flex flex-1 items-center justify-center">
                 <EmptyState title="No series" description="No series match the current filters." />
               </Card>
             ) : view === 'grid' ? (
-              <div className={cn('grid gap-3', density === 'compact' ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6' : 'grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5')}>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                 {visibleRows.map((r, i) => (
                   <Card
                     key={r.id}
                     style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
                     className={cn(
-                      'group relative animate-fade-up cursor-pointer overflow-hidden transition-colors duration-200 hover:border-border-2',
-                      r.aligned && 'ring-2 ring-success',
-                      checked.has(r.id) && 'border-primary/60 ring-1 ring-primary',
+                      'group relative z-0 animate-fade-up cursor-pointer transition-colors duration-200 hover:border-border-2 focus-within:z-40',
+                      checked.has(r.id) && 'border-primary/60 ring-2 ring-primary',
                     )}
                   >
                     <button
                       className={cn('absolute inset-0 rounded-xl', selectMode ? 'z-30' : 'z-10')}
-                      onClick={(e) => {
-                        e.stopPropagation();
+                      onClick={(event) => {
+                        event.stopPropagation();
                         if (selectMode) toggleCheck(r.id);
                         else setIdentify({ id: r.id, name: r.name });
                       }}
                       title={selectMode ? (checked.has(r.id) ? 'Deselect series' : 'Select series') : `Identify ${r.name}`}
                       aria-label={selectMode ? (checked.has(r.id) ? `Deselect ${r.name}` : `Select ${r.name}`) : `Identify ${r.name}`}
                     />
+                    <span className={cn('absolute left-2 top-2 z-20 h-3 w-3 rounded-full border-2 border-black/60 shadow-sm', r.status === 'matched' ? 'bg-success' : r.status === 'failed' ? 'bg-danger' : r.status === 'syncing' ? 'bg-warning' : 'bg-muted')} title={`Status: ${r.status}`} aria-hidden="true" />
                     {checked.has(r.id) && (
-                      <div className="pointer-events-none absolute bottom-2 left-2 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-primary bg-primary text-white" aria-hidden>
-                        <Check className="h-3.5 w-3.5" />
-                      </div>
+                      <div className="pointer-events-none absolute bottom-2 left-2 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-primary bg-primary text-white" aria-hidden><Check className="h-3.5 w-3.5" /></div>
                     )}
-                    <div className="absolute right-1.5 top-1.5 z-30 flex items-center gap-1.5">
-                      {!selectMode && r.artists?.length ? (
-                        <>
-                          <ArtistSearchButton source="hitomi" artists={r.artists} variant="icon" />
-                          <ArtistSearchButton source="nhentai" artists={r.artists} variant="icon" />
-                        </>
-                      ) : null}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setComicInfo({ id: r.id, name: r.name });
-                        }}
-                        title="Edit ComicInfo.xml"
-                        className="flex h-8 w-8 items-center justify-center rounded-md border border-white/15 bg-black/70 text-white transition-colors duration-150 hover:border-primary hover:bg-primary"
-                        aria-label={`Edit ComicInfo.xml for ${r.name}`}
-                      >
-                        <FileText className="h-4 w-4" />
-                      </button>
-                    </div>
-                    <div className="aspect-[3/4] w-full overflow-hidden">
+                    {!selectMode && <CardActionMenu row={r} onEdit={() => setComicInfo({ id: r.id, name: r.name })} />}
+                    <div className="aspect-[3/4] w-full overflow-hidden rounded-lg">
                       <Cover src={r.cover} name={r.name} className="transition-transform duration-300 ease-out group-hover:scale-105" />
                     </div>
                     <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-1 bg-gradient-to-t from-black/90 to-transparent p-2 pt-6">
-                      <p className="truncate text-xs font-semibold text-white [text-shadow:1px_0_0_rgba(0,0,0,0.85),-1px_0_0_rgba(0,0,0,0.85),0_1px_0_rgba(0,0,0,0.85),0_-1px_0_rgba(0,0,0,0.85),0_2px_3px_rgba(0,0,0,0.6)]">{r.name}</p>
+                      <p className="min-h-8 overflow-hidden text-xs font-semibold leading-4 text-white [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [text-shadow:1px_0_0_rgba(0,0,0,0.85),-1px_0_0_rgba(0,0,0,0.85),0_1px_0_rgba(0,0,0,0.85),0_-1px_0_rgba(0,0,0,0.85),0_2px_3px_rgba(0,0,0,0.6)]">{r.name}</p>
                       <div className="flex flex-wrap items-center gap-1">
                         {r.providerId && <ProviderBadge id={r.providerId} solid />}
                         <StatusBadge status={r.status} className="bg-black/70" />
-                        {typeof r.pageCount === 'number' && r.pageCount > 0 && (
-                          <span className="rounded bg-black/70 px-1.5 py-0.5 text-2xs font-medium tabular-nums text-white/80">{r.pageCount} pages</span>
-                        )}
+                        {r.aligned && <span className="rounded bg-success/90 px-1.5 py-0.5 text-2xs font-medium text-white">Aligned</span>}
+                        {typeof r.pageCount === 'number' && r.pageCount > 0 && <span className="rounded bg-black/70 px-1.5 py-0.5 text-2xs font-medium tabular-nums text-white/80">{r.pageCount} pages</span>}
                       </div>
                       {r.status === 'failed' && r.errorMessage && <span className="line-clamp-2 text-2xs text-red-200">{r.errorMessage}</span>}
                     </div>
@@ -531,15 +531,9 @@ export function Libraries() {
               </Card>
             )}
             {filtered.length > SERIES_PAGE_SIZE && (
-              <nav aria-label="Series pages" className="flex flex-wrap items-center justify-center gap-2 pt-2">
-                <Button size="sm" variant="outline" disabled={currentPage === 1} onClick={() => changePage(Math.max(1, currentPage - 1))}>
-                  <ChevronLeft className="h-3.5 w-3.5" /> Previous
-                </Button>
-                <span className="text-sm tabular-nums text-muted">Page {currentPage} of {pageCount}</span>
-                <Button size="sm" variant="outline" disabled={currentPage === pageCount} onClick={() => changePage(Math.min(pageCount, currentPage + 1))}>
-                  Next <ChevronRight className="h-3.5 w-3.5" />
-                </Button>
-              </nav>
+              <div className="pt-2">
+                <PaginationControls currentPage={currentPage} pageCount={pageCount} firstVisible={firstVisible} lastVisible={lastVisible} total={filtered.length} onChange={changePage} />
+              </div>
             )}
           </>
         )}
