@@ -148,12 +148,13 @@ export function Libraries() {
   const [statusFilter, setStatusFilter] = React.useState(() => initialState.statusFilter ?? 'all');
   const [view, setView] = React.useState<'grid' | 'table'>(() => initialState.view ?? 'grid');
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
-  const [identify, setIdentify] = React.useState<{ id: number; name: string } | null>(null);
+  const [identify, setIdentify] = React.useState<{ id: number; name: string; cover?: string | null } | null>(null);
   const [comicInfo, setComicInfo] = React.useState<{ id: number; name: string } | null>(null);
   const [mergeOpen, setMergeOpen] = React.useState(false);
   const [selectMode, setSelectMode] = React.useState(false);
   const [page, setPage] = React.useState(() => libraryId ? initialState.pages?.[libraryId] ?? 1 : 1);
   const [unmatchTarget, setUnmatchTarget] = React.useState<SeriesRow | null>(null);
+  const [pendingCovers, setPendingCovers] = React.useState<Record<number, { url: string; jobId: number }>>({});
 
   React.useEffect(() => {
     if (!libraryId) return;
@@ -178,20 +179,23 @@ export function Libraries() {
     () => (jobs ?? []).filter((j) => j.status === 'queued' || j.status === 'running').length,
     [jobs],
   );
-  const hadActiveJobs = React.useRef(false);
+  const pendingCoverEntries = React.useMemo(() => Object.entries(pendingCovers), [pendingCovers]);
   React.useEffect(() => {
-    const wasActive = hadActiveJobs.current;
-    hadActiveJobs.current = activeJobs > 0;
-    if (wasActive && activeJobs === 0 && selected !== null) {
-      void qc.invalidateQueries({ queryKey: ['library-series', selected] });
-    }
-  }, [activeJobs, selected, qc]);
+    if (!jobs || pendingCoverEntries.length === 0) return;
+    const settled = pendingCoverEntries
+      .filter(([, pending]) => jobs.some((job) => job.id === pending.jobId && job.status !== 'queued' && job.status !== 'running'))
+      .map(([seriesId]) => Number(seriesId));
+    if (settled.length === 0) return;
+    const settledSet = new Set(settled);
+    setPendingCovers((current) => Object.fromEntries(Object.entries(current).filter(([seriesId]) => !settledSet.has(Number(seriesId)))));
+    if (selected !== null) void qc.invalidateQueries({ queryKey: ['library-series', selected] });
+  }, [jobs, pendingCoverEntries, qc, selected]);
 
   const series = useQuery({
     queryKey: ['library-series', selected],
     queryFn: () => api.librarySeries(selected!),
     enabled: selected !== null,
-    refetchInterval: activeJobs > 0 ? 5000 : false,
+    refetchInterval: activeJobs > 0 && !identify ? 5000 : false,
   });
   const currentMeta = useQuery({
     queryKey: ['series', identify?.id],
@@ -212,7 +216,10 @@ export function Libraries() {
     }
   }, [libs.data, selected, navigate]);
 
-  const rows = series.data ?? [];
+  const rows = React.useMemo(
+    () => (series.data ?? []).map((row) => pendingCovers[row.id] ? { ...row, cover: pendingCovers[row.id].url } : row),
+    [series.data, pendingCovers],
+  );
 
   const filtered = React.useMemo(() => {
     const q = query.toLowerCase();
@@ -408,7 +415,7 @@ export function Libraries() {
                       onClick={(event) => {
                         event.stopPropagation();
                         if (selectMode) toggleCheck(r.id);
-                        else setIdentify({ id: r.id, name: r.name });
+                        else setIdentify({ id: r.id, name: r.name, cover: r.cover });
                       }}
                       title={selectMode ? (checked.has(r.id) ? 'Deselect series' : 'Select series') : `Identify ${r.name}`}
                       aria-label={selectMode ? (checked.has(r.id) ? `Deselect ${r.name}` : `Select ${r.name}`) : `Identify ${r.name}`}
@@ -519,7 +526,7 @@ export function Libraries() {
                             <Button size="sm" variant="ghost" onClick={() => setComicInfo({ id: r.id, name: r.name })} title="Edit the ComicInfo.xml of this series' .cbz files">
                               <FileText className="h-3.5 w-3.5" /> ComicInfo
                             </Button>
-                            <Button size="sm" variant="outline" onClick={() => setIdentify({ id: r.id, name: r.name })}>
+                            <Button size="sm" variant="outline" onClick={() => setIdentify({ id: r.id, name: r.name, cover: r.cover })}>
                               <Sparkles className="h-3.5 w-3.5" /> Identify
                             </Button>
                           </div>
@@ -557,6 +564,13 @@ export function Libraries() {
             metadata: currentMeta.data?.kavita ?? null,
           }}
           match={currentMeta.data?.match ?? null}
+          currentCover={identify.cover}
+          onCoverApplied={(coverUrl, jobId) => {
+            setPendingCovers((current) => ({ ...current, [identify.id]: { url: coverUrl, jobId } }));
+            qc.setQueryData<SeriesRow[]>(['library-series', selected], (rows) =>
+              rows?.map((row) => row.id === identify.id ? { ...row, cover: coverUrl } : row),
+            );
+          }}
           onClose={() => setIdentify(null)}
         />
       )}

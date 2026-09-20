@@ -10,7 +10,6 @@ import {
   type KavitaTag,
   type KavitaPerson,
   type SeriesMatch,
-  type SeriesRow,
 } from '../lib/api';
 import { PROVIDER_NAMES, cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
@@ -64,6 +63,8 @@ interface IdentifyModalProps {
   current: CurrentKavita;
   /** Existing local match row (from GET /series/:id), if any. */
   match: SeriesMatch | null;
+  currentCover?: string | null;
+  onCoverApplied: (coverUrl: string, jobId: number) => void;
   onClose: () => void;
 }
 
@@ -247,8 +248,7 @@ function CandidateCover({ src }: { src?: string }) {
   if (!src || failed) return <Search className="h-4 text-muted" />;
   return <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} className="h-full w-full object-cover" />;
 }
-
-export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyModalProps) {
+export function IdentifyModal({ seriesId, current, match, currentCover, onCoverApplied, onClose }: IdentifyModalProps) {
   const qc = useQueryClient();
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [manualUrl, setManualUrl] = React.useState('');
@@ -277,15 +277,12 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
   const apply = useMutation({
     mutationFn: (p: { providerId: string; providerSeriesId: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number; coverUrl?: string }) =>
       api.apply(seriesId, p.providerId, p.providerSeriesId, { selectedTitle: p.selectedTitle, excludedFields: p.excludedFields, cover: p.cover, score: p.score }),
-    onSuccess: (_job, variables) => {
-      // The sync itself runs in the background. Show the selected provider
-      // cover immediately; the jobs transition refreshes this row from Kavita
-      // when the write finishes.
-      if (variables.cover !== false && variables.coverUrl) {
-        qc.setQueriesData<SeriesRow[]>({ queryKey: ['library-series'] }, (rows) =>
-          rows?.map((row) => row.id === seriesId ? { ...row, cover: variables.coverUrl } : row),
-        );
-      }
+    onSuccess: (job, variables) => {
+      // The sync itself runs in the background. The Libraries page keeps this
+      // provider cover pinned until this specific job settles, so its polling
+      // cannot overwrite the optimistic image with Kavita's old cover.
+      const optimisticCover = variables.cover !== false ? variables.coverUrl : undefined;
+      if (optimisticCover) onCoverApplied(optimisticCover, job.id);
       qc.invalidateQueries({ queryKey: ['series', seriesId] });
       qc.invalidateQueries({ queryKey: ['jobs'] });
       toast({ tone: 'success', title: 'Sync queued', description: 'Apply & Sync runs in the background — progress shows in the sidebar.' });
@@ -652,7 +649,7 @@ export function IdentifyModal({ seriesId, current, match, onClose }: IdentifyMod
                         Cover
                       </label>
                       <div>
-                        <CoverThumb src={`/api/kavita/series/${seriesId}/cover`} alt="Current cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
+                        <CoverThumb src={currentCover ?? `/api/kavita/series/${seriesId}/cover`} alt="Current cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
                       </div>
                       <div className="flex items-center gap-1.5">
                         <CoverThumb src={diff.coverCandidate} alt="Candidate cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
