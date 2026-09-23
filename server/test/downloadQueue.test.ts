@@ -107,3 +107,45 @@ test('a task keeps its enqueue-time output format when settings later change', a
     globalThis.fetch = originalFetch;
   }
 });
+
+test('resuming a failed task clears its old failure before downloading again', async () => {
+  let releaseGallery!: () => void;
+  const galleryGate = new Promise<void>((resolve) => { releaseGallery = resolve; });
+  doujinProviders.hitomi = {
+    ...originalHitomi,
+    async getGallery(idOrUrl) {
+      await galleryGate;
+      return { source: 'hitomi', galleryId: idOrUrl, title: 'Resumed', tags: [], artists: [], pages: ['https://example.test/page.jpg'] };
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(Buffer.from('image'))) as typeof fetch;
+  const id = Number(getDb().insert(schema.downloadQueue).values({
+    source: 'hitomi', galleryId: 'resume-failed', status: 'failed', outputFormat: 'cbz',
+    errorMessage: 'Previous CDN error', finishedAt: '2024-01-01T00:00:00.000Z',
+  }).run().lastInsertRowid);
+  const queue = new DownloadQueue(() => ({
+    downloadDirectory: outputDir,
+    format: 'cbz',
+    maxConcurrentDownloads: 1,
+    maxImageConcurrency: 1,
+    requestDelayMs: 0,
+    autoSyncKavita: false,
+    nhentaiApiKey: '',
+    nhentaiBannedTags: [],
+  }));
+  const completed = waitForStatus(queue, id, 'completed');
+  try {
+    assert.equal(queue.resume(id), true);
+    assert.equal(queue.get(id)?.status, 'downloading');
+    assert.equal(queue.get(id)?.errorMessage, null);
+    assert.equal(queue.get(id)?.finishedAt, null);
+    releaseGallery();
+    await completed;
+    assert.equal(queue.get(id)?.errorMessage, null);
+  } finally {
+    releaseGallery();
+    await completed;
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -147,8 +147,8 @@ export function toIsoDate(raw: unknown): string | undefined {
     d = new Date(ms);
   } else {
     let norm = String(raw).trim().replace(' ', 'T');
-    // Expand a short "±HH" trailing offset into "±HH:00".
-    norm = norm.replace(/([+-]\d{2})$/, '$1:00');
+    // Only expand an offset on a time; a date-only YYYY-MM-DD ends in -DD.
+    norm = norm.replace(/(\d{2}:\d{2}(?::\d{2})?)([+-]\d{2})$/, '$1$2:00');
     d = new Date(norm);
   }
   if (Number.isNaN(d.getTime())) return undefined;

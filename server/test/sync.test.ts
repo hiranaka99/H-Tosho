@@ -89,6 +89,18 @@ describe('matchVolumeCovers', () => {
       { volumeId: 31, number: 1, url: 'https://cdn.example/vol1-en.jpg' },
     ]);
   });
+
+  it('does not put a numbered cover on a fractional volume when the exact volume exists', () => {
+    const volumes = [
+      { id: 41, name: 'Volume 1.5', minNumber: 1.5, maxNumber: 1.5, number: 1.5 },
+      { id: 42, name: 'Volume 2', minNumber: 2, maxNumber: 2, number: 2 },
+    ];
+    const covers = [{ number: 2, url: 'https://cdn.example/vol2.jpg' }];
+
+    assert.deepEqual(matchVolumeCovers(volumes, covers), [
+      { volumeId: 42, number: 2, url: 'https://cdn.example/vol2.jpg' },
+    ]);
+  });
 });
 
 describe('mergeTagLists', () => {

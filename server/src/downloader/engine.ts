@@ -440,11 +440,7 @@ export class DownloadQueue {
       void this.pump();
       return true;
     }
-    if (task.status === 'failed' && !this.activeRuns.has(id)) {
-      this.setStatus(id, 'queued');
-      void this.pump();
-      return true;
-    }
+    if (task.status === 'failed') return this.retry(id);
     return false;
   }
 

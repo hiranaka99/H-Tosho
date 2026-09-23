@@ -160,6 +160,16 @@ describe('checkAlignment', () => {
     assert.deepEqual(result.mismatched.sort(), ['artists', 'writers']);
   });
 
+  it('flags a different Japanese writer instead of treating both names as empty', () => {
+    const kavita = {
+      ...alignedKavita,
+      metadata: { ...alignedKavita.metadata, writers: [{ id: 6, name: '山田花子' }] } as KavitaSeriesMetadataDto,
+    };
+    const result = checkAlignment(kavita, { ...meta, writers: ['田中太郎'] });
+    assert.deepEqual(result.mismatched, ['writers']);
+    assert.equal(result.aligned, false);
+  });
+
   it('skips fields the provider does not supply', () => {
     const sparse: SeriesMetadata = {
       providerId: 'mangadex',

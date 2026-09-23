@@ -104,9 +104,9 @@ export function checkAlignment(
   const k = kavita.metadata;
   const mismatched: string[] = [];
   const norm = (s?: string | null) => (s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
-  // List items are compared after stripping non-alphanumerics, so apostrophe
-  // placement and punctuation variants do not count as drift.
-  const listKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  // Preserve letters from every script: stripping everything outside ASCII
+  // makes distinct Japanese/Chinese/Korean names compare as the empty string.
+  const listKey = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
   const sameSet = (a: Array<string | null>, b: string[]) => {
     const sa = new Set(a.map((x) => listKey(x ?? '')).filter(Boolean));
     const sb = b.map(listKey).filter(Boolean);
@@ -355,7 +355,7 @@ export function matchVolumeCovers(volumes: KavitaVolume[], covers: VolumeCover[]
   const used = new Set<number>();
   for (const cover of covers) {
     const vol = volumes.find(
-      (v) => !used.has(v.id) && v.number !== undefined && Number.isFinite(v.number) && Math.round(v.number) === cover.number,
+      (v) => !used.has(v.id) && v.number !== undefined && Number.isFinite(v.number) && v.number === cover.number,
     );
     if (!vol) continue;
     used.add(vol.id);

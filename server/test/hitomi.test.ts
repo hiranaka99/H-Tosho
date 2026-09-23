@@ -101,7 +101,7 @@ function galleryInfo(id: number): string {
     title: `Cat Gallery ${id}`,
     language: 'english',
     type: TYPE_BY_ID[id],
-    date: '2026-08-01 00:00:00',
+    date: id === 101 ? '2026-08-01' : '2026-08-01 00:00:00',
     files: [{ name: 'page1.jpg', hash: 'ab'.repeat(32), haswebp: 1 }],
     tags: [],
     artists: [],
@@ -153,6 +153,7 @@ test('search omits image set galleries but keeps artist CG, backfilling to the l
     results.map((r) => r.galleryId),
     ['101', '103', '104', '105', '107'],
   );
+  assert.equal(results[0].uploadedAt, '2026-08-01T00:00:00.000Z');
   for (const id of [102, 106]) {
     // Fetched to learn the type, but never surfaced.
     assert.ok(fetchedUrls.some((u) => u.endsWith(`/galleries/${id}.js`)), `expected a lookup for ${id}`);

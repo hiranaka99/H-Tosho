@@ -37,6 +37,7 @@ function writeLibraryState(update: Partial<LibraryStateCache>) {
 
 function Cover({ src, name, className }: { src?: string | null; name: string; className?: string }) {
   const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => setFailed(false), [src]);
   // Covers may be absolute provider URLs or same-origin relative paths
   // (e.g. the Kavita proxy at /api/kavita/series/{id}/cover). Fall back to a
   // letter placeholder when there is no URL or the image fails to load

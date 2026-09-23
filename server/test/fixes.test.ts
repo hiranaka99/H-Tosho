@@ -83,6 +83,21 @@ describe('notification settings validation', () => {
   });
 });
 
+describe('provider priority updates', () => {
+  it('rejects duplicate providers without losing the saved search order', async () => {
+    const original = (await (await api.request('/settings')).json()).priorities as string[];
+    const chosen = [...original].reverse();
+    const request = (priorities: string[]) => api.request('/settings/priorities', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ priorities }),
+    });
+    assert.equal((await request(chosen)).status, 200);
+    assert.equal((await request([chosen[0], chosen[0]])).status, 400);
+    assert.deepEqual((await (await api.request('/settings')).json()).priorities, chosen);
+  });
+});
+
 describe('downloader settings persistence', () => {
   it('saves the submitted output directory', async () => {
     const downloadDirectory = path.join(process.env.HTOSHO_DATA_DIR!, 'downloads');

@@ -622,6 +622,7 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onCoverA
                     <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs text-danger">
                       <AlertTriangle className="h-3.5 w-3.5" />
                       Couldn't load candidate metadata: {preview.error instanceof Error ? preview.error.message : String(preview.error)}
+                      <Button size="sm" variant="outline" onClick={() => void preview.refetch()}>Retry preview</Button>
                     </div>
                   )}
                   <div className="px-3 pb-1">
@@ -668,7 +669,7 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onCoverA
                 </Button>
                 <Button
                   onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: selected.score, coverUrl: diff?.coverCandidate })}
-                  disabled={!selected || apply.isPending}
+                  disabled={preview.isPending || preview.isError || apply.isPending}
                 >
                   {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} Apply & Sync to Kavita
                 </Button>

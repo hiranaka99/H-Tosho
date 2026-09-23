@@ -133,6 +133,24 @@ function splitTerms(query: string): string[] {
   return terms;
 }
 
+/** Bounds of the token at the caret; whitespace inside quotes belongs to the same token. */
+function activeTermBounds(full: string, caret: number): { start: number; end: number } {
+  let start = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < full.length; i++) {
+    const ch = full[i];
+    if (!quote && /\s/.test(ch)) {
+      if (i >= caret) return { start, end: i };
+      start = i + 1;
+    } else if (ch === quote) {
+      quote = null;
+    } else if (!quote && (ch === '"' || ch === "'")) {
+      quote = ch;
+    }
+  }
+  return { start, end: full.length };
+}
+
 /**
  * Translate a search query from one doujin source's syntax to the other's so a
  * search can be re-run against the new source. nHentai uses quoted values and
@@ -1092,10 +1110,8 @@ export function Downloader() {
     const el = inputRef.current;
     const full = el ? el.value : query;
     const caret = el && document.activeElement === el ? (el.selectionStart ?? full.length) : full.length;
-    const before = full.slice(0, caret);
-    let idx = before.length;
-    while (idx > 0 && !/\s/.test(before[idx - 1])) idx--;
-    let seed = before.slice(idx);
+    const { start } = activeTermBounds(full, caret);
+    let seed = full.slice(start, caret);
     if (seed.includes(':')) seed = seed.slice(seed.indexOf(':') + 1);
     return seed.replace(/^[\s"']+|[\s"']+$/g, '');
   }
@@ -1360,28 +1376,21 @@ export function Downloader() {
     const q = s.filter ?? s.name;
     const full = el ? el.value : query;
     const caret = el && document.activeElement === el ? (el.selectionStart ?? full.length) : full.length;
-    const before = full.slice(0, caret);
-    let idx = before.length;
-    while (idx > 0 && !/\s/.test(before[idx - 1])) idx--;
-    const prefix = before.slice(0, idx);
-    const rest = full.slice(caret);
-    const needsLead = prefix.length > 0 && !/\s$/.test(prefix);
-    let newQuery = prefix + (needsLead ? ' ' : '') + q;
-    if (rest.trim().length > 0) {
-      newQuery += /\s$/.test(newQuery) || /^\s/.test(rest) ? rest : ` ${rest}`;
-    } else {
-      newQuery += ' '; // trailing space so the next tag can be typed immediately
-    }
+    const { start, end } = activeTermBounds(full, caret);
+    const prefix = full.slice(0, start);
+    const suffix = full.slice(end);
+    const newQuery = prefix + q + suffix + (suffix ? '' : ' ');
+    const nextCaret = prefix.length + q.length + (suffix ? 0 : 1);
     setQuery(newQuery);
     setSuggestions([]);
     setHighlight(-1);
-    // Keep focus and park the caret after the inserted filter so more tags can be added.
+    // Keep focus and park the caret after the inserted filter, before any later terms.
     requestAnimationFrame(() => {
       const node = inputRef.current;
       if (!node) return;
       node.focus();
       try {
-        node.setSelectionRange(newQuery.length, newQuery.length);
+        node.setSelectionRange(nextCaret, nextCaret);
       } catch {
         /* ignore */
       }

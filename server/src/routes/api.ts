@@ -541,8 +541,12 @@ api.get('/settings', (c) => {
 });
 
 api.put('/settings/priorities', async (c) => {
-  const body = (await c.req.json()) as { priorities: string[] };
-  setProviderPriorities(body.priorities);
+  const body = (await c.req.json().catch(() => null)) as { priorities?: unknown } | null;
+  const priorities = body?.priorities;
+  if (!Array.isArray(priorities) || priorities.some((id) => typeof id !== 'string' || !getProvider(id)) || new Set(priorities).size !== priorities.length) {
+    return c.json({ error: 'priorities must contain unique known providers' }, 400);
+  }
+  setProviderPriorities(priorities);
   return c.json({ ok: true });
 });
 
