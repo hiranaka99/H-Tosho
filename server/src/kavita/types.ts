@@ -124,6 +124,8 @@ export interface KavitaChapterFileDto {
 /** One book of a series as returned by /api/Search/chapters-by-series. */
 export interface KavitaChapterDto {
   id: number;
+  /** Chapter number Kavita parsed for this book (e.g. "3", "4.5"). */
+  number?: string | null;
   files?: KavitaChapterFileDto[] | null;
 }
 

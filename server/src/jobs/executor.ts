@@ -19,6 +19,7 @@ import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
 import { listCbzFiles, mergeCbzFiles, pathContains, readComicInfo, resolveExistingFile, resolveSeriesHostDir, rewriteZipEntry } from '../lib/cbz.js';
 import { mapLimit, sleep } from '../lib/http.js';
 import { parseComicInfo, renderComicInfoXml } from '../downloader/comicinfo.js';
+import type { KavitaChapterDto } from '../kavita/types.js';
 
 interface Target {
   id: number;
@@ -221,18 +222,22 @@ async function rescanLibraryContainingDir(dir: string, log: LogFn, seriesName?: 
     const client = new KavitaClient(conn.baseUrl, conn.apiKey);
     const libraries = await client.getLibraries();
     const candidates = new Set<string>();
-    let d = dir;
-    for (let i = 0; i < 3; i++) {
-      const seg = lastSegment(d);
-      if (!seg) break;
-      candidates.add(seg.toLowerCase());
-      const parent = path.dirname(d);
-      if (parent === d) break;
-      d = parent;
+    // Walk both the literal path and its realpath: symlinked mount points resolve to one real path.
+    for (const start of [dir, safeRealpath(dir)]) {
+      let d = start;
+      for (let i = 0; i < 3; i++) {
+        const seg = lastSegment(d);
+        if (!seg) break;
+        candidates.add(seg.toLowerCase());
+        const parent = path.dirname(d);
+        if (parent === d) break;
+        d = parent;
+      }
     }
+    const realDir = safeRealpath(dir);
 
     for (const lib of libraries) {
-      const directLibrary = Boolean(lib.path && pathContains(lib.path, dir));
+      const directLibrary = Boolean(lib.path && pathContains(safeRealpath(lib.path), realDir));
       const libRootName = lib.path ? lastSegment(lib.path).toLowerCase() : '';
       const matchingLibrary = directLibrary || Boolean(libRootName && candidates.has(libRootName));
       let series;
@@ -270,6 +275,123 @@ const SCAN_STATUS_POLL_MS = 5_000;
  * much time for the task to appear in the queue before trusting an idle read.
  */
 const SCAN_TASK_GRACE_MS = 15_000;
+
+/** Budget for waiting until a ComicInfo edit shows up in Kavita. Must outlive Kavita's 10-minute deferral of a series scan that arrives while another scan is still in flight, or the wait always times out before the deferred scan can run. */
+function editVerifyTimeoutMs(): number {
+  const v = Number(process.env.HTOSHO_EDIT_VERIFY_TIMEOUT_MS);
+  return Number.isFinite(v) && v > 0 ? v : 20 * 60_000;
+}
+
+/** fs.realpathSync that tolerates missing paths (bind mounts and not-yet-created dirs). */
+function safeRealpath(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * Poll Kavita's task queue until no scan task is running or queued. An idle
+ * answer right after a scan request is not proof the scan finished — the task
+ * may not have appeared yet — so an idle reading only counts once a task was
+ * observed, or once the grace window has passed. Returns true when the queue
+ * drained (or status is unavailable), false when the deadline hit first.
+ */
+async function waitForKavitaTasksToDrain(
+  client: KavitaClient,
+  log: LogFn,
+  what: string,
+  deadline: number,
+): Promise<boolean> {
+  const graceUntil = Date.now() + SCAN_TASK_GRACE_MS;
+  let sawTask = false;
+  for (;;) {
+    let running: boolean;
+    try {
+      running = await client.isTaskRunning();
+    } catch (e) {
+      log('warn', `Kavita task status unavailable (${e instanceof Error ? e.message : String(e)}); proceeding without waiting`);
+      return true;
+    }
+    if (running) {
+      sawTask = true;
+    } else if (sawTask || Date.now() >= graceUntil) {
+      return true;
+    }
+    if (Date.now() >= deadline) {
+      log('warn', `Kavita scan for ${what} not confirmed complete after waiting — continuing`);
+      return false;
+    }
+    await sleep(SCAN_STATUS_POLL_MS);
+  }
+}
+
+/** True when Kavita's chapter number for a file equals the one we wrote (numeric comparison, so "3" matches "3.0"). */
+function chapterNumberMatches(actual: string, expected: string): boolean {
+  const a = actual.trim();
+  const e = expected.trim();
+  if (a === e) return true;
+  const na = Number(a);
+  const ne = Number(e);
+  return Number.isFinite(na) && Number.isFinite(ne) && na === ne;
+}
+
+/**
+ * Rescan a series until Kavita indexes `file` under the chapter number we just
+ * wrote into its ComicInfo. A bare scan request is not enough: Kavita defers a
+ * series scan by 10 minutes when another scan (a download-triggered or periodic
+ * library scan) is still in flight, so "requested" can stay stale for a long
+ * time — exactly how a renumbered archive kept its old chapter and merged into
+ * a neighbor's. The wait must outlive that deferral; the check reads the
+ * chapters-by-series list, which reflects what Kavita actually has.
+ */
+async function rescanAndVerifyChapter(
+  client: KavitaClient,
+  libraryId: number,
+  seriesId: number,
+  file: string,
+  expectedNumber: string | null,
+  log: LogFn,
+): Promise<void> {
+  const fileName = path.basename(file).toLowerCase();
+  const deadline = Date.now() + editVerifyTimeoutMs();
+  for (;;) {
+    await client.scanSeries(libraryId, seriesId);
+    log('info', `Requested Kavita rescan of series ${seriesId}`);
+    await waitForKavitaTasksToDrain(client, log, `series ${seriesId}`, deadline);
+    if (expectedNumber === null) return; // scan cycle complete; no number to check
+    let chapters: KavitaChapterDto[] | null = null;
+    try {
+      chapters = await client.getChaptersBySeries(seriesId);
+    } catch {
+      /* chapter list unavailable — treat as not yet indexed */
+    }
+    if (chapters) {
+      let found: string | null = null;
+      outer: for (const ch of chapters) {
+        for (const f of ch.files ?? []) {
+          if (f.filePath && path.basename(f.filePath).toLowerCase() === fileName) {
+            found = String(ch.number ?? '');
+            break outer;
+          }
+        }
+      }
+      if (found !== null && chapterNumberMatches(found, expectedNumber)) {
+        log('success', `Kavita has indexed ${fileName} as chapter ${expectedNumber}`);
+        return;
+      }
+      log('info', found === null
+        ? `${fileName} not indexed in Kavita yet — waiting for the scan`
+        : `Kavita still shows ${fileName} as chapter "${found}" (expected "${expectedNumber}") — requesting another scan`);
+    }
+    if (Date.now() >= deadline) {
+      log('warn', `Kavita did not index ${fileName} as chapter ${expectedNumber} within ${Math.round(editVerifyTimeoutMs() / 60_000)} minutes — run a manual scan in Kavita`);
+      return;
+    }
+    await sleep(SCAN_STATUS_POLL_MS);
+  }
+}
 
 /**
  * Trigger a Kavita library scan and wait for it to finish so newly ingested
@@ -370,39 +492,57 @@ async function removeSourceSeriesFromKavita(seriesIds: number[], log: LogFn): Pr
     log('warn', `Kavita series cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
-const MERGE_VERIFY_TIMEOUT_MS = 5 * 60_000;
+/** Budget for merge verification. Kavita defers a series scan arriving while another scan is in flight by 10 minutes, so this must outlive that deferral plus a typical library scan — a shorter budget times out before the deferred scan can ever run. */
+const MERGE_VERIFY_TIMEOUT_MS = 25 * 60_000;
 
 /**
  * Rescan the merged folder and verify that every moved archive actually lands in
  * Kavita.
  *
- * Kavita scans are asynchronous, and a scan request for a library that is already
- * scanning is dropped — e.g. the auto-sync scan fired by the last chapter's
- * download may still be running when a merge starts. Moving files while such a
- * scan walks the tree can leave later files behind: the in-flight pass has
- * already enumerated the target folder, and removeSourceSeriesFromKavita deletes
- * the stale source series records. So fire the scan, wait for Kavita to finish
- * it, check which of the moved files are indexed by name, and repeat until every
- * file is present (or the budget runs out).
+ * Kavita scans are asynchronous, and a series scan requested while another scan is
+ * in flight (e.g. the auto-sync scan fired by the last chapter's download) is
+ * deferred by 10 minutes. Moving files while such a scan walks the tree can leave
+ * later files behind: the in-flight pass has already enumerated the target folder,
+ * and removeSourceSeriesFromKavita deletes the stale source series records. So fire
+ * the scan, wait for Kavita's task queue to drain, check which of the moved files
+ * are indexed by name, and repeat until every file is present (or the budget runs
+ * out).
+ *
+ * `opts` carries the target series known from the job payload. When merging into an
+ * existing Kavita series its library is authoritative: H-Tosho's host paths can
+ * differ from Kavita's library path (bind mounts), where path matching alone never
+ * finds the library and the rescan would be skipped silently.
  */
-async function rescanAndVerifyMerge(targetDir: string, movedFiles: string[], log: LogFn): Promise<void> {
+async function rescanAndVerifyMerge(
+  targetDir: string,
+  movedFiles: string[],
+  log: LogFn,
+  opts?: { seriesId?: number | null; libraryId?: number | null },
+): Promise<void> {
   try {
     const conn = getKavitaConnection();
     if (!conn.baseUrl || !conn.apiKey) return;
     const client = new KavitaClient(conn.baseUrl, conn.apiKey);
     const libraries = await client.getLibraries();
-    let lib = libraries.find((l) => l.path && pathContains(l.path, targetDir));
+    let lib = opts?.libraryId != null ? libraries.find((l) => l.id === opts.libraryId) : undefined;
+    if (!lib) {
+      // Path matching with realpath normalization: symlinked mount points resolve to one real path.
+      const realTarget = safeRealpath(targetDir);
+      lib = libraries.find((l) => l.path && pathContains(safeRealpath(l.path), realTarget));
+    }
     if (!lib) {
       // Fall back to folder-name matching, like rescanLibraryContainingDir.
       const candidates = new Set<string>();
-      let d = targetDir;
-      for (let i = 0; i < 3; i++) {
-        const seg = lastSegment(d);
-        if (!seg) break;
-        candidates.add(seg.toLowerCase());
-        const parent = path.dirname(d);
-        if (parent === d) break;
-        d = parent;
+      for (const start of [targetDir, safeRealpath(targetDir)]) {
+        let d = start;
+        for (let i = 0; i < 3; i++) {
+          const seg = lastSegment(d);
+          if (!seg) break;
+          candidates.add(seg.toLowerCase());
+          const parent = path.dirname(d);
+          if (parent === d) break;
+          d = parent;
+        }
       }
       lib = libraries.find((l) => l.path && candidates.has(lastSegment(l.path).toLowerCase()));
     }
@@ -413,7 +553,15 @@ async function rescanAndVerifyMerge(targetDir: string, movedFiles: string[], log
     const library = lib;
 
     const targetName = lastSegment(targetDir).toLowerCase();
-    const findSeries = async () => {
+    const findSeries = async (): Promise<{ id: number; name: string } | undefined> => {
+      if (opts?.seriesId != null) {
+        try {
+          const s = await client.getSeriesById(opts.seriesId);
+          return { id: s.id, name: s.name };
+        } catch {
+          return undefined;
+        }
+      }
       const series = await client.getSeries(library.id);
       return series.find((s) => s.folderPath && lastSegment(s.folderPath).toLowerCase() === targetName);
     };
@@ -440,23 +588,11 @@ async function rescanAndVerifyMerge(targetDir: string, movedFiles: string[], log
       } else {
         await client.scanLibrary(library.id);
         log('info', `Requested Kavita rescan of "${library.name}"`);
-        // Library scans are queued asynchronously and their completion is not
-        // otherwise observable: wait for Kavita's task queue to drain before
-        // trusting the file list. The scan may finish before the first poll,
-        // so give the task the usual grace window to show up.
-        const graceUntil = Date.now() + SCAN_TASK_GRACE_MS;
-        let sawTask = false;
-        for (;;) {
-          const running = await client.isTaskRunning();
-          if (running) {
-            sawTask = true;
-          } else if (sawTask || Date.now() >= graceUntil) {
-            break;
-          }
-          if (Date.now() >= deadline) break;
-          await sleep(SCAN_STATUS_POLL_MS);
-        }
       }
+      // Wait for the scan to actually run: a check right after the request reads
+      // stale state (Kavita defers requests while another scan is in flight), and
+      // the loop would only re-request until the budget runs out.
+      await waitForKavitaTasksToDrain(client, log, `series "${library.name}"`, deadline);
 
       const after = await findSeries().catch(() => undefined);
       let missing: string[] | null = null;
@@ -597,7 +733,8 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
 
 
   // ComicInfo edits rewrite a local archive — no Kavita connection needed for
-  // the write itself; the rescan below is best-effort.
+  // the write itself. The rescan below waits until Kavita has indexed the change
+  // (when the series is known) so the job never reports success over stale data.
   if (job.type === 'edit-comicinfo') {
     const p = job.payload.path;
     if (!p) throw new Error('path required');
@@ -621,6 +758,7 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
     await rewriteZipEntry(file, 'ComicInfo.xml', Buffer.from(xml, 'utf8'));
     log('info', `Wrote ComicInfo.xml into ${file}`);
     const editedSeriesName = parseComicInfo(xml).fields.Series?.trim();
+    const writtenNumber = parseComicInfo(xml).fields.Number?.trim() ?? '';
     if (job.payload.seriesId !== undefined) {
       const client = connectedClientOrNull();
       if (client) {
@@ -629,8 +767,11 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
           await client.updateSeriesMetadata(series.id, { name: editedSeriesName });
           log('info', `Updated Kavita series name to "${editedSeriesName}"`);
         }
-        await client.scanSeries(series.libraryId, series.id);
-        log('info', `Requested Kavita rescan of series "${editedSeriesName || series.name}"`);
+        // A bare scan request is not enough: Kavita defers it by 10 minutes while
+        // another scan is in flight, and a job that reports success while Kavita
+        // still shows the old chapter number is how renumbered archives end up
+        // merged into their neighbor's chapter.
+        await rescanAndVerifyChapter(client, series.libraryId, series.id, file, writtenNumber || null, log);
       }
     } else {
       await rescanLibraryContainingDir(path.dirname(file), log, editedSeriesName);
@@ -650,6 +791,7 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
     if (sourceFiles.length < 1) throw new Error('At least one .cbz file is required');
     let targetDir = job.payload.targetDir;
     let stampName: string | undefined;
+    let targetLibraryId: number | null = null;
     if (job.payload.seriesId != null) {
       const client = connectedClientOrNull();
       if (!client) throw new Error('Kavita is not configured');
@@ -671,6 +813,7 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
         throw new Error(`Could not locate the series folder for "${s.name}" on this machine`);
       }
       targetDir = dir;
+      targetLibraryId = s.libraryId;
       // Match the Series value the existing files carry so Kavita groups the
       // merged files with them; fall back to the series name when unknown.
       stampName = (await pickSeriesStampName(dir, new Set(sourceFiles.map((f) => path.resolve(f))))) ?? s.name;
@@ -683,7 +826,7 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
     if (r.moved.length === 0) throw new Error('No files could be moved — check the source paths');
     log('success', `Moved ${r.moved.length} file(s) into one folder as "${stampName ?? lastSegment(targetDir)}"; stamped chapter numbers on ${r.chaptered.length}`);
     await removeSourceSeriesFromKavita(sourceSeriesIds, log);
-    await rescanAndVerifyMerge(targetDir, r.moved, log);
+    await rescanAndVerifyMerge(targetDir, r.moved, log, { seriesId: job.payload.seriesId ?? null, libraryId: targetLibraryId });
     return { processed: r.moved.length, matched: 0, failed: r.failed.length };
   }
 
