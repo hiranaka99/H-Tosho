@@ -11,7 +11,7 @@ fresh picks based on what you already own.
 
 Works with **Kavita server v0.9.x or newer**.
 
-Current release: **v1.4.0**.
+Current release: **v1.5.0**.
 
 ## What it does
 
