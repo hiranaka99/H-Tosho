@@ -197,7 +197,6 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const [selectMode, setSelectMode] = React.useState(false);
   const [page, setPage] = React.useState(() => libraryId ? initialState.pages?.[libraryId] ?? 1 : 1);
   const [unmatchTarget, setUnmatchTarget] = React.useState<SeriesRow | null>(null);
-  const [pendingCovers, setPendingCovers] = React.useState<Record<number, { url: string; jobId: number }>>({});
 
   React.useEffect(() => {
     if (!libraryId) return;
@@ -224,17 +223,6 @@ export function Libraries({ review = false }: { review?: boolean }) {
     () => (jobs ?? []).filter((j) => j.status === 'queued' || j.status === 'running').length,
     [jobs],
   );
-  const pendingCoverEntries = React.useMemo(() => Object.entries(pendingCovers), [pendingCovers]);
-  React.useEffect(() => {
-    if (!jobs || pendingCoverEntries.length === 0) return;
-    const settled = pendingCoverEntries
-      .filter(([, pending]) => jobs.some((job) => job.id === pending.jobId && job.status !== 'queued' && job.status !== 'running'))
-      .map(([seriesId]) => Number(seriesId));
-    if (settled.length === 0) return;
-    const settledSet = new Set(settled);
-    setPendingCovers((current) => Object.fromEntries(Object.entries(current).filter(([seriesId]) => !settledSet.has(Number(seriesId)))));
-    if (selected !== null) void qc.invalidateQueries({ queryKey: ['library-series', selected] });
-  }, [jobs, pendingCoverEntries, qc, selected]);
 
   const series = useQuery({
     queryKey: ['library-series', review ? 'review' : selected],
@@ -261,10 +249,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
     }
   }, [libs.data, selected, navigate, review]);
 
-  const rows = React.useMemo(
-    () => (series.data ?? []).map((row) => pendingCovers[row.id] ? { ...row, cover: pendingCovers[row.id].url } : row),
-    [series.data, pendingCovers],
-  );
+  const rows = series.data ?? [];
 
   const filtered = React.useMemo(() => {
     const q = query.toLowerCase();
@@ -625,12 +610,6 @@ export function Libraries({ review = false }: { review?: boolean }) {
           }}
           match={currentMeta.data?.match ?? null}
           currentCover={identify.cover}
-          onCoverApplied={(coverUrl, jobId) => {
-            setPendingCovers((current) => ({ ...current, [identify.id]: { url: coverUrl, jobId } }));
-            qc.setQueryData<SeriesRow[]>(['library-series', review ? 'review' : selected], (rows) =>
-              rows?.map((row) => row.id === identify.id ? { ...row, cover: coverUrl } : row),
-            );
-          }}
           onClose={() => setIdentify(null)}
         />
       )}

@@ -91,13 +91,15 @@ volumes:
   - /mnt/NAS/Manga:/mnt/manga
 ```
 
-In **Settings → Downloader → Library folder mappings**, add a row for each
-library. **Kavita folder** is the library's path inside Kavita (for example
-`/media/Manga`); **H-Tosho folder** is that same folder inside H-Tosho (in this
-example, `/mnt/manga`). Save the settings, then retry Apply & Sync. You can
-add multiple roots for a library, and a more specific mapping takes precedence
-over a parent mapping. Mappings also apply to the ComicInfo browser and series
-merges. The output folder remains the destination for new downloads.
+In **Settings → General → Kavita library folders**, H-Tosho lists every
+Kavita library root. For each root, enter the absolute path to that **same
+folder as seen by H-Tosho** (for example `/media/Manga` in Kavita maps to
+`/mnt/manga` in H-Tosho), then click **Save folders**. A library may have
+multiple roots; configure each one you need to edit. Use **Add another folder**
+for a nested mount or a root Kavita does not list. Leave a folder empty when
+Kavita's path is already accessible from H-Tosho. Settings → Downloader →
+Output folder still controls new downloads only. These mappings also let the
+ComicInfo browser and series merges find existing CBZ files.
 
 When a title cannot be changed, the job shows **Done with warnings**, records
 the reason in its log and match history, and labels the Discord notification
@@ -127,6 +129,9 @@ both the web interface and the API.
    Kavita connection**, enter the server address (e.g. `http://kavita:5000`,
    without `/api`) and the Auth Key, and click **Save & test connection**. A
    green "Kavita connected" indicator in the sidebar confirms it works.
+   In **Settings → General → Kavita library folders**, set each library's
+   H-Tosho path when its Kavita path is not directly accessible (mount the
+   library with write access first to edit CBZ files).
 3. **Pick your providers** — Settings → Providers. Add a MyAnimeList Client ID
    if you want that source, test each one, and drag them into your preferred
    search order.
@@ -140,6 +145,10 @@ both the web interface and the API.
 
 From here, open **Libraries**, pick a library, and start identifying series —
 or head to the **Downloader** to search for new galleries.
+
+**Apply & Sync** queues a background job. The Libraries page continues showing
+Kavita's current cover until the job finishes and Kavita reports the new one;
+check **Jobs** for cover-upload errors if it does not change.
 
 ## Touring the app
 

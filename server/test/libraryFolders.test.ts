@@ -31,6 +31,12 @@ test('saves multiple mappings and preserves them when an older client saves down
   const { libraryPathMappings: _ignored, ...legacy } = DEFAULT_DOWNLOADER;
   assert.equal((await save({ ...legacy, downloadDirectory: downloads })).status, 200);
   assert.deepEqual((await (await api.request('/settings/downloader')).json()).libraryPathMappings, mappings);
+  const mapSave = (body: unknown) => api.request('/settings/library-path-mappings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await mapSave({ libraryPathMappings: [{ kavitaPath: '/kavita/Manga', localPath: manga }] })).status, 200);
+  assert.deepEqual(await (await api.request('/settings/downloader')).json(), { ...DEFAULT_DOWNLOADER, downloadDirectory: downloads, libraryPathMappings: [{ kavitaPath: '/kavita/Manga', localPath: manga }] });
+  assert.equal((await mapSave({ libraryPathMappings: [{ kavitaPath: '/kavita/Manga', localPath: 'relative' }] })).status, 400);
+  assert.equal((await mapSave({})).status, 400);
+  assert.deepEqual((await (await api.request('/settings/downloader')).json()).libraryPathMappings, [{ kavitaPath: '/kavita/Manga', localPath: manga }]);
 });
 
 test('validates mapping paths and duplicate roots while accepting older configurations', () => {
@@ -48,7 +54,8 @@ test('locates and renames mapped Manga archives without changing an identically 
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'Chapter 1.cbz'), buildZip([{ name: 'ComicInfo.xml', data: Buffer.from(`<ComicInfo><Series>${title}</Series></ComicInfo>`) }]));
   }
-  setDownloaderSettings({ ...DEFAULT_DOWNLOADER, downloadDirectory: downloads, libraryPathMappings: mappings });
+  setDownloaderSettings({ ...DEFAULT_DOWNLOADER, downloadDirectory: downloads });
+  assert.equal((await api.request('/settings/library-path-mappings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ libraryPathMappings: mappings }) })).status, 200);
   setKavitaConnection({ baseUrl: 'https://kavita.test', apiKey: 'test-key' });
   let name = title;
   globalThis.fetch = (async (input: unknown, init?: RequestInit) => {

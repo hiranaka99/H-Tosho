@@ -630,6 +630,18 @@ api.put('/settings/downloader', async (c) => {
   return c.json({ ok: true, settings });
 });
 
+/** Update library mounts without replacing unrelated downloader settings. */
+api.put('/settings/library-path-mappings', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!Array.isArray(body?.libraryPathMappings)) {
+    return c.json({ error: 'Invalid library folder mappings' }, 400);
+  }
+  const settings = parseDownloaderSettings({ ...getDownloaderSettings(), libraryPathMappings: body.libraryPathMappings });
+  if (!settings) return c.json({ error: 'Invalid library folder mappings' }, 400);
+  setDownloaderSettings(settings);
+  return c.json({ libraryPathMappings: settings.libraryPathMappings });
+});
+
 /** List the available doujinshi sources for the UI source selector. */
 api.get('/doujin/providers', (c) => c.json(listDoujinProviders()));
 

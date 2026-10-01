@@ -9,6 +9,7 @@ export interface KavitaLibrary {
   id: number;
   name: string;
   path?: string;
+  paths?: string[];
   mediaFormat?: string;
   monitor?: boolean;
   seriesCount?: number;
@@ -250,7 +251,7 @@ export interface DoujinGallery {
 
 export interface DownloaderSettings {
   downloadDirectory: string;
-  libraryPathMappings?: { kavitaPath: string; localPath: string }[];
+  libraryPathMappings?: LibraryPathMapping[];
   format: 'cbz' | 'folder';
   maxConcurrentDownloads: number;
   maxImageConcurrency: number;
@@ -261,6 +262,11 @@ export interface DownloaderSettings {
   nhentaiBannedTags: string[];
   /** Tag names to exclude from all Hitomi searches (e.g. "loli", "artist:foo"). */
   hitomiBannedTags: string[];
+}
+
+export interface LibraryPathMapping {
+  kavitaPath: string;
+  localPath: string;
 }
 
 export type DownloadStatus = 'queued' | 'downloading' | 'completed' | 'failed' | 'paused';
@@ -505,10 +511,15 @@ export const api = {
 
   // ---------------- Doujinshi downloader ----------------
   downloaderSettings: () => request<DownloaderSettings>('/settings/downloader'),
-  saveDownloaderSettings: (s: DownloaderSettings) =>
+  saveDownloaderSettings: ({ libraryPathMappings: _mappings, ...settings }: DownloaderSettings) =>
     request<{ ok: boolean; settings: DownloaderSettings }>('/settings/downloader', {
       method: 'PUT',
-      body: JSON.stringify(s),
+      body: JSON.stringify(settings),
+    }),
+  saveLibraryPathMappings: (libraryPathMappings: LibraryPathMapping[]) =>
+    request<{ libraryPathMappings: LibraryPathMapping[] }>('/settings/library-path-mappings', {
+      method: 'PUT',
+      body: JSON.stringify({ libraryPathMappings }),
     }),
   doujinProviders: () => request<DoujinProvider[]>('/doujin/providers'),
   doujinSearch: (source: DoujinSource, query: string, sort?: DoujinSort) =>

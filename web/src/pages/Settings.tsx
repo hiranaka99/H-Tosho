@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, ArrowUp, ArrowDown, LockKeyhole, Monitor, Moon, Sun, Palette, ChevronDown } from 'lucide-react';
-import { api, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings } from '../lib/api';
+import { api, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type LibraryPathMapping } from '../lib/api';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader, ErrorState, SegmentedTabs } from '../components/ui';
 import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
@@ -277,6 +277,7 @@ export function Settings() {
           </div>
         </CardContent>
       </Card>
+      <KavitaLibraryFoldersCard connected={Boolean(kavita?.data?.configured && !kavita.data.error)} />
       <Card className="animate-fade-up" style={{ animationDelay: '60ms' }}>
         <SectionHeader icon={<Timer className="h-4 w-4" />} title="Auto-scan interval" />
         <CardContent className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -367,6 +368,79 @@ export function Settings() {
   );
 }
 
+/** Kavita reports its own mount paths; local folders are where H-Tosho can actually edit CBZs. */
+function KavitaLibraryFoldersCard({ connected }: { connected: boolean }) {
+  const qc = useQueryClient();
+  const libs = useQuery({ queryKey: ['libraries'], queryFn: api.libraries, enabled: connected });
+  const dl = useQuery({ queryKey: ['downloader-settings'], queryFn: api.downloaderSettings });
+  const [draft, setDraft] = React.useState<LibraryPathMapping[] | null>(null);
+  React.useEffect(() => {
+    if (dl.data && draft === null) setDraft(dl.data.libraryPathMappings ?? []);
+  }, [dl.data, draft]);
+  const flash = useFlash();
+  const save = useMutation({
+    mutationFn: api.saveLibraryPathMappings,
+    onSuccess: ({ libraryPathMappings }) => {
+      setDraft(libraryPathMappings);
+      qc.setQueryData<DownloaderSettings>(['downloader-settings'], (current) => current ? { ...current, libraryPathMappings } : current);
+      void qc.invalidateQueries({ queryKey: ['cbz-roots'] });
+      void qc.invalidateQueries({ queryKey: ['cbz-series-files'] });
+      flash.flash();
+    },
+    onError: (error) => toast({ tone: 'danger', title: 'Could not save library folders', description: error instanceof Error ? error.message : String(error) }),
+  });
+  const rootKey = (value: string) => {
+    const root = value.replace(/\\/g, '/').replace(/\/+$/, '');
+    return /^[a-z]:\//i.test(root) || root.startsWith('//') ? root.toLowerCase() : root;
+  };
+  const libraryPaths = (libs.data ?? []).flatMap((lib) => (lib.paths ?? (lib.path ? [lib.path] : [])).map((remote) => ({ id: lib.id, name: lib.name, remote })));
+  const known = new Set(libraryPaths.map(({ remote }) => rootKey(remote)));
+  const other = (draft ?? []).map((mapping, index) => ({ mapping, index })).filter(({ mapping }) => !known.has(rootKey(mapping.kavitaPath)));
+  const setPath = (remote: string, local: string) => {
+    setDraft((current) => {
+      const next = [...(current ?? [])];
+      const index = next.findIndex((mapping) => rootKey(mapping.kavitaPath) === rootKey(remote));
+      if (index < 0 && local) next.push({ kavitaPath: remote, localPath: local });
+      else if (index >= 0 && !local) next.splice(index, 1);
+      else if (index >= 0) next[index] = { kavitaPath: remote, localPath: local };
+      return next;
+    });
+  };
+  const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(dl.data?.libraryPathMappings ?? []);
+
+  return (
+    <Card className="animate-fade-up">
+      <SectionHeader icon={<Server className="h-4 w-4" />} title="Kavita library folders">
+        <SaveButton label={flash.saved ? 'Saved' : 'Save folders'} onClick={() => draft && save.mutate(draft)} disabled={save.isPending || !dirty || draft?.some((m) => !m.kavitaPath.trim() || !m.localPath.trim())} />
+      </SectionHeader>
+      <CardContent className="flex flex-col gap-3">
+        <p className="text-sm text-muted">Set the absolute folder path as seen by H-Tosho for each Kavita library root. These folders must be mounted with write access for CBZ editing and title updates. This does not change the download output folder.</p>
+        {dl.isError ? <ErrorState title="Could not load library folders" description={dl.error instanceof Error ? dl.error.message : String(dl.error)} onRetry={() => void dl.refetch()} /> : !draft ? <p className="text-sm text-muted">Loading library folders…</p> : (
+          <>
+            {!connected && <p className="text-sm text-muted">Connect Kavita above to see its library folders.</p>}
+            {libs.isError && <p role="alert" className="text-sm text-danger">Could not load Kavita libraries: {libs.error instanceof Error ? libs.error.message : String(libs.error)}</p>}
+            {libraryPaths.map(({ id, name, remote }) => (
+              <div key={`${id}:${remote}`} className="flex flex-col gap-1">
+                <Label htmlFor={`library-folder-${id}-${remote}`}>{name} · {remote}</Label>
+                <Input id={`library-folder-${id}-${remote}`} aria-label={`H-Tosho folder for ${name}: ${remote}`} value={draft.find((mapping) => rootKey(mapping.kavitaPath) === rootKey(remote))?.localPath ?? ''} onChange={(e) => setPath(remote, e.target.value)} placeholder="Absolute folder path inside H-Tosho" />
+              </div>
+            ))}
+            {other.map(({ mapping, index }) => (
+              <div key={index} className="grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-[1fr_1fr_auto]">
+                <div className="min-w-0"><Label htmlFor={`extra-kavita-path-${index}`}>Kavita folder</Label><Input id={`extra-kavita-path-${index}`} value={mapping.kavitaPath} onChange={(e) => setDraft(draft.map((m, i) => i === index ? { ...m, kavitaPath: e.target.value } : m))} placeholder="/media/Manga" /></div>
+                <div className="min-w-0"><Label htmlFor={`extra-local-path-${index}`}>H-Tosho folder</Label><Input id={`extra-local-path-${index}`} value={mapping.localPath} onChange={(e) => setDraft(draft.map((m, i) => i === index ? { ...m, localPath: e.target.value } : m))} placeholder="/mnt/manga" /></div>
+                <Button type="button" variant="ghost" aria-label={`Remove extra folder mapping ${index + 1}`} onClick={() => setDraft(draft.filter((_, i) => i !== index))}><X className="h-4 w-4" /> Remove</Button>
+              </div>
+            ))}
+            <Button type="button" variant="secondary" className="self-start" onClick={() => setDraft([...draft, { kavitaPath: '', localPath: '' }])}><Plus className="h-4 w-4" /> Add another folder</Button>
+            <p className="text-xs text-muted">Leave a library folder empty to use Kavita's path directly when it is accessible from H-Tosho. Add another folder for a nested mount or a root Kavita does not list.</p>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 /** Tag list editor for a source's banned tags. Enter adds a tag; comma-separated input adds several at once. */
 function BannedTagsEditor({ id, label, hint, value, onChange }: { id: string; label: string; hint: string; value: string[]; onChange: (tags: string[]) => void }) {
   const [draft, setDraft] = React.useState('');
@@ -421,7 +495,9 @@ function DownloaderSettingsCard() {
 
   if (dl.isError) return <Card><ErrorState title="Could not load downloader settings" description={dl.error instanceof Error ? dl.error.message : String(dl.error)} onRetry={() => void dl.refetch()} /></Card>;
   if (!dlSettings) return <Card><SectionHeader icon={<Download className="h-4 w-4" />} title="Doujinshi downloader" /><CardContent className="flex items-center gap-2 text-muted"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</CardContent></Card>;
-  const downloaderDirty = Boolean(dl.data && JSON.stringify(dlSettings) !== JSON.stringify(dl.data));
+  const { libraryPathMappings: _draftMappings, ...downloadDraft } = dlSettings;
+  const { libraryPathMappings: _storedMappings, ...downloadStored } = dl.data ?? dlSettings;
+  const downloaderDirty = Boolean(dl.data && JSON.stringify(downloadDraft) !== JSON.stringify(downloadStored));
 
   return (
     <Card className="animate-fade-up">
@@ -430,18 +506,6 @@ function DownloaderSettingsCard() {
       </SectionHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-col gap-1"><Label htmlFor="download-directory">Output folder</Label><Input id="download-directory" value={dlSettings.downloadDirectory} onChange={(e) => setDlSettings({ ...dlSettings, downloadDirectory: e.target.value })} placeholder="/path/to/kavita/library or /downloads" /><p className="text-sm text-muted">Absolute path on this machine. Point it at a Kavita library folder to have new media picked up automatically.</p></div>
-        <fieldset className="flex min-w-0 flex-col gap-3 rounded-md border border-border p-3">
-          <legend className="px-1 text-sm font-medium">Library folder mappings</legend>
-          <p className="text-sm text-muted">Map each Kavita library folder to the same folder inside H-Tosho. Mount these folders with write access in Docker to update CBZ titles. Downloaded galleries continue to use the output folder above.</p>
-          {(dlSettings.libraryPathMappings ?? []).map((mapping, index) => (
-            <div key={index} className="grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-[1fr_1fr_auto]">
-              <div className="min-w-0"><Label htmlFor={`library-kavita-path-${index}`}>Kavita folder</Label><Input id={`library-kavita-path-${index}`} value={mapping.kavitaPath} placeholder="/media/Manga" onChange={(e) => setDlSettings({ ...dlSettings, libraryPathMappings: (dlSettings.libraryPathMappings ?? []).map((m, i) => i === index ? { ...m, kavitaPath: e.target.value } : m) })} /></div>
-              <div className="min-w-0"><Label htmlFor={`library-local-path-${index}`}>H-Tosho folder</Label><Input id={`library-local-path-${index}`} value={mapping.localPath} placeholder="/mnt/manga" onChange={(e) => setDlSettings({ ...dlSettings, libraryPathMappings: (dlSettings.libraryPathMappings ?? []).map((m, i) => i === index ? { ...m, localPath: e.target.value } : m) })} /></div>
-              <Button type="button" variant="ghost" aria-label={`Remove library folder mapping ${index + 1}`} onClick={() => setDlSettings({ ...dlSettings, libraryPathMappings: (dlSettings.libraryPathMappings ?? []).filter((_, i) => i !== index) })}><X className="h-4 w-4" /><span className="sm:sr-only">Remove</span></Button>
-            </div>
-          ))}
-          <Button type="button" variant="secondary" className="self-start" onClick={() => setDlSettings({ ...dlSettings, libraryPathMappings: [...(dlSettings.libraryPathMappings ?? []), { kavitaPath: '', localPath: '' }] })}><Plus className="h-4 w-4" /> Add library folder</Button>
-        </fieldset>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="flex flex-col gap-1"><Label htmlFor="download-format">Output format</Label><Select id="download-format" value={dlSettings.format} onChange={(e) => setDlSettings({ ...dlSettings, format: e.target.value as 'cbz' | 'folder' })}><option value="cbz">Compressed .cbz archive (recommended)</option><option value="folder">Raw image folder</option></Select></div>
           <div className="flex flex-col gap-1"><Label htmlFor="download-concurrency">Max concurrent downloads</Label><Input id="download-concurrency" type="number" min={1} max={10} value={dlSettings.maxConcurrentDownloads} onChange={(e) => setDlSettings({ ...dlSettings, maxConcurrentDownloads: Math.max(1, Number(e.target.value) || 1) })} /></div>

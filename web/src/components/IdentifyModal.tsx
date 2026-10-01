@@ -64,7 +64,6 @@ interface IdentifyModalProps {
   /** Existing local match row (from GET /series/:id), if any. */
   match: SeriesMatch | null;
   currentCover?: string | null;
-  onCoverApplied: (coverUrl: string, jobId: number) => void;
   onClose: () => void;
 }
 
@@ -248,7 +247,7 @@ function CandidateCover({ src }: { src?: string }) {
   if (!src || failed) return <Search className="h-4 text-muted" />;
   return <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} className="h-full w-full object-cover" />;
 }
-export function IdentifyModal({ seriesId, current, match, currentCover, onCoverApplied, onClose }: IdentifyModalProps) {
+export function IdentifyModal({ seriesId, current, match, currentCover, onClose }: IdentifyModalProps) {
   const qc = useQueryClient();
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [manualUrl, setManualUrl] = React.useState('');
@@ -283,17 +282,14 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onCoverA
 
 
   const apply = useMutation({
-    mutationFn: (p: { providerId: string; providerSeriesId: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number; coverUrl?: string }) =>
+    mutationFn: (p: { providerId: string; providerSeriesId: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) =>
       api.apply(seriesId, p.providerId, p.providerSeriesId, { selectedTitle: p.selectedTitle, excludedFields: p.excludedFields, cover: p.cover, score: p.score }),
-    onSuccess: (job, variables) => {
-      // The sync itself runs in the background. The Libraries page keeps this
-      // provider cover pinned until this specific job settles, so its polling
-      // cannot overwrite the optimistic image with Kavita's old cover.
-      const optimisticCover = variables.cover !== false ? variables.coverUrl : undefined;
-      if (optimisticCover) onCoverApplied(optimisticCover, job.id);
+    onSuccess: () => {
+      // A queued job has not changed Kavita yet. Keep showing Kavita's cover;
+      // SidebarStatus refreshes the series list when the job settles.
       qc.invalidateQueries({ queryKey: ['series', seriesId] });
       qc.invalidateQueries({ queryKey: ['jobs'] });
-      toast({ tone: 'success', title: 'Sync queued', description: 'Apply & Sync runs in the background — progress shows in the sidebar.' });
+      toast({ tone: 'info', title: 'Sync queued', description: 'Cover stays unchanged until sync finishes. Check Jobs for errors.' });
       onClose();
     },
     onError: (e) => toast({ tone: 'danger', title: 'Could not queue sync', description: e instanceof Error ? e.message : String(e) }),
@@ -401,7 +397,7 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onCoverA
     return { rows, coverCandidate: m?.coverUrl ?? selected.coverUrl };
   }, [selected, preview.data, resolvedTitle, current, k]);
 
-  const doApply = (ids: { providerId: string; providerSeriesId: string }, opts?: { selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number; coverUrl?: string }) => {
+  const doApply = (ids: { providerId: string; providerSeriesId: string }, opts?: { selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) => {
     apply.mutate({ ...ids, ...opts });
   };
 
@@ -510,7 +506,7 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onCoverA
                     size="sm"
                     onClick={() => autoBest.providerId === 'mangadex'
                       ? setSelectedId(autoBest.providerId + ':' + autoBest.providerSeriesId)
-                      : doApply({ providerId: autoBest.providerId, providerSeriesId: autoBest.providerSeriesId }, { score: autoBest.score, coverUrl: autoBest.coverUrl })}
+                      : doApply({ providerId: autoBest.providerId, providerSeriesId: autoBest.providerSeriesId }, { score: autoBest.score })}
                     disabled={apply.isPending}
                   >
                     {apply.isPending ? <Spinner /> : <ArrowRight className="h-3.5 w-3.5" />} {autoBest.providerId === 'mangadex' ? 'Choose Title & Sync' : 'Apply & Sync'}
@@ -686,7 +682,7 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onCoverA
                   <X className="h-4 w-4" /> Cancel
                 </Button>
                 <Button
-                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: selected.score, coverUrl: diff?.coverCandidate })}
+                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: selected.score })}
                   disabled={preview.isPending || preview.isError || apply.isPending}
                 >
                   {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} Apply & Sync to Kavita
