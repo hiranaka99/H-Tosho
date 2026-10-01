@@ -220,8 +220,10 @@ export async function applyToKavita(
           `Kavita did not apply the series rename — it still shows "${current.name ?? '?'}"; retry the sync`,
         );
       }
-    } catch {
-      /* verification is best-effort; keep the reported push */
+    } catch (err) {
+      const i = pushed.indexOf('name');
+      if (i !== -1) pushed.splice(i, 1);
+      warnings.push(`Could not verify the title in Kavita: ${err instanceof Error ? err.message : String(err)}. Check the series title before retrying.`);
     }
   }
 
@@ -458,12 +460,13 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
       libraryPath: library?.path,
       folderPath: series.folderPath,
       anchors: dl.downloadDirectory ? [path.resolve(dl.downloadDirectory)] : [],
+      mappings: dl.libraryPathMappings,
     });
     const files = dir ? listCbzFiles(dir) : [];
     if (!dir || files.length === 0) {
       excludedFields.push('title');
       preflightWarnings.push(
-        `Title was not changed because H-Tosho cannot access this series' CBZ files; metadata and covers were still synced`,
+        `Title was not changed because H-Tosho cannot access this series' CBZ files. Kavita folder: ${series.folderPath ?? '(not reported)'}. H-Tosho download directory: ${dl.downloadDirectory || '(not configured)'}. Mount the series' library folder into H-Tosho (or configure the shared download directory), then retry Apply & Sync. Other selected metadata and covers were still synced.`,
       );
     } else {
       const rewrite = await setSeriesTitleInCbzFiles(files, newTitle);
@@ -503,6 +506,8 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
   const existingRow = db.select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
   const sentScore = typeof opts.score === 'number' && Number.isFinite(opts.score) ? Math.min(1, Math.max(0, opts.score)) : undefined;
   const matchScore = sentScore ?? existingRow?.matchScore ?? null;
+  const sameCandidate = existingRow?.providerId === opts.providerId && existingRow?.providerSeriesId === opts.providerSeriesId;
+  const confirmed = result.errors.length === 0 || (sameCandidate && existingRow?.confirmed === true);
   db.insert(schema.seriesMatches)
     .values({
       kavitaSeriesId: seriesId,
@@ -510,6 +515,7 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
       providerId: opts.providerId,
       providerSeriesId: opts.providerSeriesId,
       matchScore,
+      confirmed,
       aligned,
       metadataJson: JSON.stringify(meta),
       errorMessage: result.errors.length ? result.errors.join('; ') : null,
@@ -522,6 +528,7 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
         providerId: opts.providerId,
         providerSeriesId: opts.providerSeriesId,
         matchScore,
+        confirmed,
         aligned,
         metadataJson: JSON.stringify(meta),
         errorMessage: result.errors.length ? result.errors.join('; ') : null,

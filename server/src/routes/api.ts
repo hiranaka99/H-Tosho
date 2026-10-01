@@ -191,6 +191,7 @@ api.get('/kavita/libraries/:id/series', async (c) => {
           status: m?.status ?? 'unmatched',
           providerId: m?.providerId ?? null,
           matchScore: m?.matchScore ?? null,
+          confirmed: m?.confirmed ?? false,
           aligned: m?.aligned ?? false,
           lastSyncedAt: m?.lastSyncedAt ?? null,
           errorMessage: m?.errorMessage ?? null,
@@ -229,7 +230,7 @@ api.get('/series/low-confidence', (c) => {
   const row = getDb()
     .select({ n: sql<number>`count(*)` })
     .from(schema.seriesMatches)
-    .where(and(eq(schema.seriesMatches.status, 'matched'), lt(schema.seriesMatches.matchScore, LOW_CONFIDENCE_THRESHOLD)))
+    .where(and(eq(schema.seriesMatches.status, 'matched'), eq(schema.seriesMatches.confirmed, false), lt(schema.seriesMatches.matchScore, LOW_CONFIDENCE_THRESHOLD)))
     .get();
   return c.json({ count: Number(row?.n ?? 0), threshold: LOW_CONFIDENCE_THRESHOLD });
 });
@@ -239,7 +240,7 @@ api.get('/series/needs-review', async (c) => {
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
   const matches = getDb().select().from(schema.seriesMatches)
-    .where(and(eq(schema.seriesMatches.status, 'matched'), lt(schema.seriesMatches.matchScore, LOW_CONFIDENCE_THRESHOLD))).all();
+    .where(and(eq(schema.seriesMatches.status, 'matched'), eq(schema.seriesMatches.confirmed, false), lt(schema.seriesMatches.matchScore, LOW_CONFIDENCE_THRESHOLD))).all();
   if (matches.length === 0) return c.json([]);
   const byId = new Map(matches.map((match) => [match.kavitaSeriesId, match]));
   try {
@@ -255,6 +256,7 @@ api.get('/series/needs-review', async (c) => {
           bookCount: s.bookCount, pageCount: s.pages ?? null,
           cover: s.cover ? kavitaCoverUrl(s.id, s.cover, match.lastSyncedAt) : null,
           status: match.status, providerId: match.providerId, matchScore: match.matchScore,
+          confirmed: match.confirmed,
           aligned: match.aligned, lastSyncedAt: match.lastSyncedAt,
           artists: artistsFromMetadata(match.metadataJson),
         };
@@ -617,7 +619,10 @@ api.get('/settings/downloader', (c) => c.json(getDownloaderSettings()));
 
 api.put('/settings/downloader', async (c) => {
   const body = await c.req.json().catch(() => null);
-  const settings = parseDownloaderSettings(body);
+  // Older clients omit mappings; preserve saved library access in that case.
+  const settings = parseDownloaderSettings(body && typeof body === 'object' && !Array.isArray(body)
+    ? { ...body, libraryPathMappings: body.libraryPathMappings === undefined ? getDownloaderSettings().libraryPathMappings : body.libraryPathMappings }
+    : body);
   if (!settings) {
     return c.json({ error: 'Invalid downloader settings' }, 400);
   }
@@ -957,11 +962,12 @@ api.get('/cbz/roots', async (c) => {
   const roots: string[] = [];
   const dl = getDownloaderSettings();
   if (dl.downloadDirectory) roots.push(path.resolve(dl.downloadDirectory));
+  for (const mapping of dl.libraryPathMappings ?? []) roots.push(path.resolve(mapping.localPath));
   const client = connectedClient();
   if (client) {
     try {
       for (const lib of await client.getLibraries()) {
-        if (lib.path) roots.push(lib.path);
+        roots.push(...(lib.paths ?? (lib.path ? [lib.path] : [])));
       }
     } catch {
       /* Kavita unreachable — the download directory is still a valid root */
@@ -1044,6 +1050,7 @@ api.get('/cbz/series/:id', async (c) => {
     libraryPath: lib?.path,
     folderPath: s.folderPath,
     anchors: dl.downloadDirectory ? [path.resolve(dl.downloadDirectory)] : [],
+    mappings: dl.libraryPathMappings,
   });
   if (!dir || !fs.existsSync(dir)) {
     return c.json({ seriesId: id, name: s.name, dir: null, reason: 'Could not locate this series on this machine — type a path manually.', files: [] });

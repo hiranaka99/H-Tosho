@@ -28,6 +28,8 @@ export interface SeriesRow {
   status: string;
   providerId?: string | null;
   matchScore?: number | null;
+  /** A user explicitly accepted this candidate. */
+  confirmed?: boolean;
   /** All provider-managed metadata fields match Kavita's current values. */
   aligned?: boolean;
   lastSyncedAt?: string | null;
@@ -45,6 +47,8 @@ export interface SeriesMatch {
   providerId?: string | null;
   providerSeriesId?: string | null;
   matchScore?: number | null;
+  /** A user explicitly accepted this candidate. */
+  confirmed?: boolean;
   /** All provider-managed metadata fields match Kavita's current values. */
   aligned?: boolean;
   metadataJson?: string | null;
@@ -246,6 +250,7 @@ export interface DoujinGallery {
 
 export interface DownloaderSettings {
   downloadDirectory: string;
+  libraryPathMappings?: { kavitaPath: string; localPath: string }[];
   format: 'cbz' | 'folder';
   maxConcurrentDownloads: number;
   maxImageConcurrency: number;

@@ -30,4 +30,8 @@ services:
       # an existing Kavita library instead, bind that folder at the same
       # absolute path, e.g. - /srv/manga/doujin:/srv/manga/doujin
       - ./downloads:/mnt/downloads
+      # Optional additional libraries: mount each with write access, then add
+      # its Kavita folder -> H-Tosho folder mapping in Settings -> Downloader.
+      # - /mnt/NAS/Manga:/mnt/manga
+      # - /mnt/NAS/Novels:/mnt/novels
     restart: unless-stopped

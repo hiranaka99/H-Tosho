@@ -446,6 +446,34 @@ describe('resolveSeriesHostDir', () => {
     assert.equal(resolveSeriesHostDir({ libraryPath: nativeLib, folderPath: null, anchors: [anchor] }), null);
     assert.equal(resolveSeriesHostDir({ libraryPath: null, folderPath: '/x/y', anchors: [anchor] }), null);
   });
+
+  it('uses an explicit library mapping instead of a same-named download folder', () => {
+    assert.equal(resolveSeriesHostDir({
+      libraryPath: '/kavita/Manga', folderPath: '/kavita/Manga/Series A', anchors: [zMount],
+      mappings: [{ kavitaPath: '/kavita/Manga', localPath: anchor }],
+    }), path.join(anchor, 'Series A'));
+  });
+
+  it('prefers the most specific mapping and supports foreign Windows paths', () => {
+    assert.equal(resolveSeriesHostDir({
+      folderPath: 'z:\\Manga\\Genre\\Series B', anchors: [],
+      mappings: [{ kavitaPath: 'Z:\\Manga', localPath: zMount }, { kavitaPath: 'Z:\\Manga\\Genre', localPath: path.join(anchor, 'Genre') }],
+    }), path.join(anchor, 'Genre', 'Series B'));
+  });
+
+  it('does not fall back to a different library when an explicit mount is unavailable', () => {
+    assert.equal(resolveSeriesHostDir({
+      libraryPath: '/media/Manga', folderPath: '/media/Manga/Series A', anchors: [anchor],
+      mappings: [{ kavitaPath: '/media/Manga', localPath: path.join(base, 'missing-mount') }],
+    }), null);
+  });
+
+  it('maps library roots and rejects traversal and partial prefix matches', () => {
+    const mappings = [{ kavitaPath: '/media/Manga', localPath: anchor }];
+    assert.equal(resolveSeriesHostDir({ folderPath: '/media/Manga', anchors: [], mappings }), anchor);
+    assert.equal(resolveSeriesHostDir({ folderPath: '/media/Manga/../Doujins', anchors: [], mappings }), null);
+    assert.equal(resolveSeriesHostDir({ folderPath: '/media/Manga-extra/Series A', anchors: [], mappings }), null);
+  });
 });
 
 /**

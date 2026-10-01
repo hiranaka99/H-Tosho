@@ -430,6 +430,18 @@ function DownloaderSettingsCard() {
       </SectionHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-col gap-1"><Label htmlFor="download-directory">Output folder</Label><Input id="download-directory" value={dlSettings.downloadDirectory} onChange={(e) => setDlSettings({ ...dlSettings, downloadDirectory: e.target.value })} placeholder="/path/to/kavita/library or /downloads" /><p className="text-sm text-muted">Absolute path on this machine. Point it at a Kavita library folder to have new media picked up automatically.</p></div>
+        <fieldset className="flex min-w-0 flex-col gap-3 rounded-md border border-border p-3">
+          <legend className="px-1 text-sm font-medium">Library folder mappings</legend>
+          <p className="text-sm text-muted">Map each Kavita library folder to the same folder inside H-Tosho. Mount these folders with write access in Docker to update CBZ titles. Downloaded galleries continue to use the output folder above.</p>
+          {(dlSettings.libraryPathMappings ?? []).map((mapping, index) => (
+            <div key={index} className="grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-[1fr_1fr_auto]">
+              <div className="min-w-0"><Label htmlFor={`library-kavita-path-${index}`}>Kavita folder</Label><Input id={`library-kavita-path-${index}`} value={mapping.kavitaPath} placeholder="/media/Manga" onChange={(e) => setDlSettings({ ...dlSettings, libraryPathMappings: (dlSettings.libraryPathMappings ?? []).map((m, i) => i === index ? { ...m, kavitaPath: e.target.value } : m) })} /></div>
+              <div className="min-w-0"><Label htmlFor={`library-local-path-${index}`}>H-Tosho folder</Label><Input id={`library-local-path-${index}`} value={mapping.localPath} placeholder="/mnt/manga" onChange={(e) => setDlSettings({ ...dlSettings, libraryPathMappings: (dlSettings.libraryPathMappings ?? []).map((m, i) => i === index ? { ...m, localPath: e.target.value } : m) })} /></div>
+              <Button type="button" variant="ghost" aria-label={`Remove library folder mapping ${index + 1}`} onClick={() => setDlSettings({ ...dlSettings, libraryPathMappings: (dlSettings.libraryPathMappings ?? []).filter((_, i) => i !== index) })}><X className="h-4 w-4" /><span className="sm:sr-only">Remove</span></Button>
+            </div>
+          ))}
+          <Button type="button" variant="secondary" className="self-start" onClick={() => setDlSettings({ ...dlSettings, libraryPathMappings: [...(dlSettings.libraryPathMappings ?? []), { kavitaPath: '', localPath: '' }] })}><Plus className="h-4 w-4" /> Add library folder</Button>
+        </fieldset>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="flex flex-col gap-1"><Label htmlFor="download-format">Output format</Label><Select id="download-format" value={dlSettings.format} onChange={(e) => setDlSettings({ ...dlSettings, format: e.target.value as 'cbz' | 'folder' })}><option value="cbz">Compressed .cbz archive (recommended)</option><option value="folder">Raw image folder</option></Select></div>
           <div className="flex flex-col gap-1"><Label htmlFor="download-concurrency">Max concurrent downloads</Label><Input id="download-concurrency" type="number" min={1} max={10} value={dlSettings.maxConcurrentDownloads} onChange={(e) => setDlSettings({ ...dlSettings, maxConcurrentDownloads: Math.max(1, Number(e.target.value) || 1) })} /></div>

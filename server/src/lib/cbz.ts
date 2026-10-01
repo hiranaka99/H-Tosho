@@ -500,8 +500,43 @@ export function listCbzFiles(dir: string, maxDepth = 3): string[] {
  * Every candidate is verified to exist before being returned; null means no
  * host-side location could be determined.
  */
-export function resolveSeriesHostDir(opts: { libraryPath?: string | null; folderPath?: string | null; anchors: string[] }): string | null {
+export interface LibraryPathMapping {
+  /** Absolute folder path as seen by Kavita. */
+  kavitaPath: string;
+  /** The same folder as mounted into H-Tosho. */
+  localPath: string;
+}
+
+/** Translate a Kavita path using the most specific configured root. */
+export function mapKavitaPathToLocalPath(kavitaPath: string, mappings: LibraryPathMapping[] = []): string | null {
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
+  const remote = norm(kavitaPath);
+  const matches = mappings.filter((mapping) => {
+    const root = norm(mapping.kavitaPath);
+    const windowsPath = /^[a-z]:\//i.test(root) || root.startsWith('//');
+    const a = windowsPath ? remote.toLowerCase() : remote;
+    const b = windowsPath ? root.toLowerCase() : root;
+    return a === b || a.startsWith(b + '/');
+  }).sort((a, b) => norm(b.kavitaPath).length - norm(a.kavitaPath).length);
+  const mapping = matches[0];
+  if (!mapping) return null;
+  const relative = remote.slice(norm(mapping.kavitaPath).length).replace(/^\/+/, '');
+  if (relative.split('/').some((segment) => segment === '..' || segment === '.')) return null;
+  const local = path.resolve(mapping.localPath, ...relative.split('/'));
+  return pathContains(path.resolve(mapping.localPath), local) ? local : null;
+}
+
+export function resolveSeriesHostDir(opts: { libraryPath?: string | null; folderPath?: string | null; anchors: string[]; mappings?: LibraryPathMapping[] }): string | null {
   const { libraryPath, folderPath, anchors } = opts;
+  if (folderPath) {
+    if (folderPath.replace(/\\/g, '/').split('/').some((segment) => segment === '..' || segment === '.')) return null;
+    const mapped = mapKavitaPathToLocalPath(folderPath, opts.mappings);
+    if (mapped) {
+      // An explicit mapping takes precedence over guessed download folders.
+      // A missing mount must not redirect a rename to another library.
+      try { return fs.statSync(mapped).isDirectory() ? mapped : null; } catch { return null; }
+    }
+  }
   if (!libraryPath || !folderPath) return null;
   // Series subpath = folderPath with the library prefix stripped (Kavita-side paths).
   const norm = (p: string): string => p.replace(/\\/g, '/');

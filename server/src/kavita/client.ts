@@ -215,6 +215,7 @@ export class KavitaClient {
       id: library.id,
       name: library.name?.trim() || `Library ${library.id}`,
       path: library.folders?.[0] ?? undefined,
+      paths: library.folders ?? [],
       monitor: library.folderWatching ?? false,
       mediaFormat: LIBRARY_MEDIA_FORMATS[library.type] ?? 'other',
       lastModified: library.lastScanned,

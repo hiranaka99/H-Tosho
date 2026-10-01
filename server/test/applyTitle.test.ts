@@ -16,7 +16,7 @@ const { initDb, getDb, schema } = await import('../src/db/index.js');
 const { buildZip } = await import('../src/downloader/zip.js');
 const { parseComicInfo } = await import('../src/downloader/comicinfo.js');
 const { readComicInfo } = await import('../src/lib/cbz.js');
-const { setKavitaConnection, setDownloaderSettings, DEFAULT_DOWNLOADER } = await import('../src/services/settings.js');
+const { setKavitaConnection, setDownloaderSettings, DEFAULT_DOWNLOADER, setNotificationSettings, DEFAULT_NOTIFICATIONS } = await import('../src/services/settings.js');
 const { runJob } = await import('../src/jobs/executor.js');
 const { jobQueue } = await import('../src/jobs/queue.js');
 const { api } = await import('../src/routes/api.js');
@@ -28,6 +28,7 @@ const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  setNotificationSettings(DEFAULT_NOTIFICATIONS);
 });
 
 interface RequestLog {
@@ -42,17 +43,17 @@ const EMPTY_METADATA = { id: 1, seriesId: 42, summary: '', genres: [], tags: [],
  * `oldName`; a POST /Series/update carrying a name renames it in place — what
  * real Kavita 0.9.x does. No scans, no sibling entries.
  */
-function kavitaApplyMock(state: { requests: RequestLog[] }, dir: string, oldName: string) {
-  let currentName = oldName;
+function kavitaApplyMock(state: { requests: RequestLog[]; currentName?: string }, dir: string, oldName: string) {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     state.requests.push({ url, init });
     if (url.endsWith('/api/Series/update')) {
       const body = JSON.parse(String(init?.body));
-      if (typeof body.name === 'string' && body.name.trim()) currentName = body.name;
+      if (typeof body.name === 'string' && body.name.trim()) state.currentName = body.name;
       return Response.json({ ok: true });
     }
     if (url.endsWith('/api/Series/42')) {
+      const currentName = state.currentName ?? oldName;
       return Response.json({ id: 42, libraryId: 7, name: currentName, sortName: currentName, folderPath: dir });
     }
     if (url.includes('/api/Library/libraries')) return Response.json([{ id: 7, name: 'Test', type: 0, folders: [dataDir] }]);
@@ -104,6 +105,7 @@ test('selected MangaDex title rewrites every chapter and renames the record via 
     selectedTitle: 'Live!: Soto de Koubi Shiyou!',
     excludedFields: ['summary', 'genres', 'tags', 'writers', 'artists', 'releaseDate', 'language', 'status', 'url'],
     cover: false,
+    score: 0.39,
   }), () => {});
 
   assert.deepEqual(summary, { processed: 1, matched: 1, failed: 0, titleFilesUpdated: 2, titleFilesVerified: 2 });
@@ -119,6 +121,10 @@ test('selected MangaDex title rewrites every chapter and renames the record via 
   const row = db.select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, 42)).get();
   assert.ok(row);
   assert.equal(row.status, 'matched');
+  assert.equal(row.confirmed, true, 'applying a candidate records the user approval');
+  assert.equal(row.matchScore, 0.39, 'approval must not inflate the automatic confidence');
+  assert.equal((await (await api.request('/series/low-confidence')).json()).count, 0);
+  assert.deepEqual(await (await api.request('/series/needs-review')).json(), []);
   assert.equal(getDb().select().from(schema.syncHistory).all().length, historyBefore + 1, 'one apply creates one history entry');
 });
 
@@ -243,9 +249,16 @@ test('alternate English title (not display or romanized) is accepted as selected
 });
 
 test('inaccessible CBZ files skip only the rename and still apply the match', async () => {
+  const logs: Array<{ level: string; message: string }> = [];
+  const notifications: Array<{ embeds: Array<{ title: string; fields: Array<{ name: string; value: string }> }> }> = [];
+  setNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://discord.test/webhook' } });
   const state = { requests: [] as RequestLog[] };
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (url === 'https://discord.test/webhook') {
+      notifications.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
     if (url.includes('api.mangadex.org/manga/00faf1ea-5086-4d75-9621-5a597e523e21?')) {
       return Response.json({ data: { id: '00faf1ea-5086-4d75-9621-5a597e523e21', attributes: { title: { 'ja-ro': 'Live!: Soto de Koubi Shiyou!' }, status: 'completed', originalLanguage: 'ja' }, relationships: [] } });
     }
@@ -258,9 +271,14 @@ test('inaccessible CBZ files skip only the rename and still apply the match', as
     providerId: 'mangadex',
     providerSeriesId: '00faf1ea-5086-4d75-9621-5a597e523e21',
     cover: false,
-  }), () => {});
+  }), (level, message) => logs.push({ level, message }));
 
-  assert.deepEqual(result, { processed: 1, matched: 1, failed: 0 });
+  assert.deepEqual(result, { processed: 1, matched: 1, failed: 0, warnings: 1 });
+  assert.ok(logs.some((entry) => entry.level === 'warn' && entry.message.includes('Title was not changed')));
+  const history = await (await api.request('/series/42/history')).json();
+  assert.match(history[0].details.warnings[0], /Mount.*retry Apply & Sync/);
+  assert.match(notifications[0].embeds[0].title, /^Synced with warnings/);
+  assert.match(notifications[0].embeds[0].fields.find((field) => field.name === 'Notes')!.value, /Title was not changed/);
   assert.equal(state.requests.some((request) => request.url.endsWith('/api/Series/update')), false);
   const row = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, 42)).get();
   assert.equal(row?.status, 'matched');

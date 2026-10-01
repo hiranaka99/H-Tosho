@@ -21,8 +21,9 @@ Current release: **v1.4.0**.
   fields (title, description, tags, cover, …). Applied series and volume covers
   are locked in Kavita so later library scans cannot replace them.
 - **Automatic matching** — new series added to Kavita are matched on a schedule
-  you control. Matches below 80% confidence are flagged with a badge so you can
-  review them in Libraries instead of being pushed blindly.
+  you control. Automatic matches below 80% confidence are flagged for review.
+  Applying a candidate confirms it and clears the review badge, while retaining
+  the original confidence score.
 - **Doujinshi downloader** — search Hitomi.la and nHentai by keyword, tag or
   artist, preview galleries, and download them as `.cbz` archives or image
   folders. The queue supports pause, resume, cancel and retry, detects
@@ -79,6 +80,28 @@ It stores the app data in `./data` and exposes `./downloads` inside the
 container at `/mnt/downloads`. In **Settings → Downloader**, set the output
 folder to `/mnt/downloads`, and point a Kavita library at your host's
 `./downloads` folder.
+
+To edit CBZ files in several existing libraries, mount each library into
+H-Tosho with write access. For example, alongside your current Doujin mount:
+
+```yaml
+volumes:
+  - h-tosho-data:/data
+  - /mnt/NAS/Doujins:/mnt/downloads
+  - /mnt/NAS/Manga:/mnt/manga
+```
+
+In **Settings → Downloader → Library folder mappings**, add a row for each
+library. **Kavita folder** is the library's path inside Kavita (for example
+`/media/Manga`); **H-Tosho folder** is that same folder inside H-Tosho (in this
+example, `/mnt/manga`). Save the settings, then retry Apply & Sync. You can
+add multiple roots for a library, and a more specific mapping takes precedence
+over a parent mapping. Mappings also apply to the ComicInfo browser and series
+merges. The output folder remains the destination for new downloads.
+
+When a title cannot be changed, the job shows **Done with warnings**, records
+the reason in its log and match history, and labels the Discord notification
+**Synced with warnings**. Other selected metadata and covers can still sync.
 
 ### Run from source
 

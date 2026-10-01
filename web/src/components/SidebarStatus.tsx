@@ -105,15 +105,22 @@ export function SidebarStatus() {
   const { data: jobs = [] } = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, refetchInterval: 2500 });
   const { tasks, pause, resume, cancel } = useDownloads();
   const activeJobs = jobs.filter((j) => j.status === 'running' || j.status === 'queued');
-  const previousActive = React.useRef<number[]>([]);
+  const previousJobs = React.useRef<Map<number, string> | null>(null);
   React.useEffect(() => {
-    const activeIds = jobs.filter((j) => j.status === 'running' || j.status === 'queued').map((j) => j.id);
-    if (previousActive.current.some((id) => !activeIds.includes(id))) {
+    // A short apply can finish between polls without ever appearing as active.
+    // Refresh on newly observed terminal states too, so its approval is visible.
+    const previous = previousJobs.current;
+    const current = new Map(jobs.map((j) => [j.id, j.status]));
+    if (previous && (jobs.some((j) =>
+      ['completed', 'failed', 'cancelled'].includes(j.status) && previous.get(j.id) !== j.status,
+    ) || [...previous].some(([id, status]) =>
+      (status === 'running' || status === 'queued') && !current.has(id),
+    ))) {
       void qc.invalidateQueries({ queryKey: ['library-series'] });
       void qc.invalidateQueries({ queryKey: ['libraries'] });
       void qc.invalidateQueries({ queryKey: ['low-confidence'] });
     }
-    previousActive.current = activeIds;
+    previousJobs.current = current;
   }, [jobs, qc]);
   const shownTasks = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
   if (activeJobs.length === 0 && shownTasks.length === 0) return null;

@@ -2,6 +2,8 @@ import { eq } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { allProviderIds, getProvider } from '../providers/registry.js';
 import type { ProviderCredentials } from '../providers/types.js';
+import path from 'node:path';
+import type { LibraryPathMapping } from '../lib/cbz.js';
 
 export interface KavitaConnection {
   baseUrl: string;
@@ -344,6 +346,8 @@ export type DownloadFormat = 'cbz' | 'folder';
 export interface DownloaderSettings {
   /** Directory galleries are written to (absolute path). */
   downloadDirectory: string;
+  /** Kavita library roots mapped to folders accessible by H-Tosho. */
+  libraryPathMappings?: LibraryPathMapping[];
   /** Save as compressed .cbz archive or a raw image folder. */
   format: DownloadFormat;
   /** Max number of galleries downloaded in parallel. */
@@ -364,6 +368,7 @@ export interface DownloaderSettings {
 
 export const DEFAULT_DOWNLOADER: DownloaderSettings = {
   downloadDirectory: '',
+  libraryPathMappings: [],
   format: 'cbz',
   maxConcurrentDownloads: 2,
   maxImageConcurrency: 4,
@@ -378,6 +383,19 @@ export const DEFAULT_DOWNLOADER: DownloaderSettings = {
 export function parseDownloaderSettings(value: unknown): DownloaderSettings | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const s = value as Record<string, unknown>;
+  const mappings = s.libraryPathMappings === undefined ? [] : s.libraryPathMappings;
+  if (!Array.isArray(mappings) || mappings.some((m) =>
+    !m || typeof m !== 'object' || typeof m.kavitaPath !== 'string' || typeof m.localPath !== 'string'
+    || !(path.posix.isAbsolute(m.kavitaPath.trim()) || path.win32.isAbsolute(m.kavitaPath.trim()))
+    || !path.isAbsolute(m.localPath.trim()) || m.kavitaPath.includes('\0') || m.localPath.includes('\0')
+    || m.kavitaPath.replace(/\\/g, '/').split('/').some((segment: string) => segment === '..' || segment === '.')
+  )) return null;
+  const libraryPathMappings: LibraryPathMapping[] = mappings.map((m) => ({ kavitaPath: m.kavitaPath.trim(), localPath: m.localPath.trim() }));
+  const rootKey = (p: string) => {
+    const normalized = p.replace(/\\/g, '/').replace(/\/+$/, '');
+    return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
+  };
+  if (new Set(libraryPathMappings.map((m) => rootKey(m.kavitaPath))).size !== libraryPathMappings.length) return null;
   if (
     typeof s.downloadDirectory !== 'string' ||
     (s.format !== 'cbz' && s.format !== 'folder') ||
@@ -391,6 +409,7 @@ export function parseDownloaderSettings(value: unknown): DownloaderSettings | nu
   ) return null;
   return {
     downloadDirectory: s.downloadDirectory,
+    libraryPathMappings,
     format: s.format,
     maxConcurrentDownloads: Number(s.maxConcurrentDownloads),
     maxImageConcurrency: Number(s.maxImageConcurrency),

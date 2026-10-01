@@ -226,6 +226,7 @@ export interface KavitaLibrary {
   id: number;
   name: string;
   path?: string;
+  paths?: string[];
   monitor: boolean;
   mediaFormat: MediaFormat;
   lastModified?: string;

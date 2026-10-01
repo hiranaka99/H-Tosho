@@ -145,11 +145,37 @@ function migrateSeriesMatchColumns(sqlite: Database.Database): void {
   const existing = new Set(
     (sqlite.prepare('PRAGMA table_info(series_matches)').all() ?? []).map((c) => (c as { name: string }).name),
   );
-  if (existing.size === 0 || existing.has('aligned')) return;
-  try {
-    sqlite.exec('ALTER TABLE series_matches ADD COLUMN aligned INTEGER NOT NULL DEFAULT 0');
-  } catch (err) {
-    console.warn('[h-tosho] failed to add series_matches column aligned:', err);
+  if (existing.size === 0) return;
+  for (const column of ['aligned', 'confirmed']) {
+    if (existing.has(column)) continue;
+    sqlite.exec(`ALTER TABLE series_matches ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!existing.has('confirmed')) {
+    // Recover explicit approvals from retained apply jobs. History alone is
+    // ambiguous: automatic re-syncs also use the "updated" action. Require the
+    // exact candidate and the current row's sync timestamp within that job.
+    const hasJobs = sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'").get();
+    if (!hasJobs) return;
+    const jobs = sqlite.prepare("SELECT payload_json, result_json, started_at, finished_at FROM jobs WHERE type = 'apply-series' AND status = 'completed'").all() as {
+      payload_json: string; result_json: string | null; started_at: string | null; finished_at: string | null;
+    }[];
+    const findMatch = sqlite.prepare('SELECT provider_id, provider_series_id, last_synced_at FROM series_matches WHERE kavita_series_id = ? AND status = ?');
+    const confirm = sqlite.prepare('UPDATE series_matches SET confirmed = 1 WHERE kavita_series_id = ?');
+    sqlite.transaction(() => {
+      for (const job of jobs) {
+        try {
+          const payload = JSON.parse(job.payload_json);
+          const result = JSON.parse(job.result_json ?? '{}');
+          if (!payload?.providerId || !payload.providerSeriesId || result?.matched !== 1 || result.failed !== 0) continue;
+          const row = findMatch.get(payload.seriesId, 'matched') as { provider_id: string; provider_series_id: string; last_synced_at: string } | undefined;
+          if (!row || row.provider_id !== payload.providerId || row.provider_series_id !== payload.providerSeriesId) continue;
+          const syncedAt = Date.parse(row.last_synced_at);
+          if (syncedAt >= Date.parse(job.started_at ?? '') && syncedAt <= Date.parse(job.finished_at ?? '')) confirm.run(payload.seriesId);
+        } catch {
+          // Malformed legacy job records cannot establish an approval.
+        }
+      }
+    })();
   }
 }
 
@@ -336,6 +362,7 @@ CREATE TABLE IF NOT EXISTS series_matches (
   provider_id TEXT,
   provider_series_id TEXT,
   match_score REAL,
+  confirmed INTEGER NOT NULL DEFAULT 0,
   aligned INTEGER NOT NULL DEFAULT 0,
   metadata_json TEXT,
   error_message TEXT,

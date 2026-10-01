@@ -123,6 +123,14 @@ describe('applyToKavita name verification', () => {
     assert.ok(result.pushed.includes('name'));
     assert.deepEqual(result.warnings, []);
   });
+
+  it('does not report a title as updated when verification fails', async () => {
+    const { client } = stubClient([]);
+    client.getSeriesById = async () => { throw new Error('Kavita unavailable'); };
+    const result = await applyToKavita(client, 2, metadata, { cover: null, title: 'Test Series' });
+    assert.ok(!result.pushed.includes('name'));
+    assert.match(result.warnings[0], /Could not verify the title.*Kavita unavailable/);
+  });
 });
 
 describe('cover locking', () => {

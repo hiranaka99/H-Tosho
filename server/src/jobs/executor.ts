@@ -1,4 +1,4 @@
-import { inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import path from 'node:path';
 import fs from 'node:fs';
 import { getDb, schema } from '../db/index.js';
@@ -16,7 +16,7 @@ import { applyToKavita, applySeriesMatch, checkAlignment, type ApplySeriesResult
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
-import { listCbzFiles, mergeCbzFiles, pathContains, readComicInfo, resolveExistingFile, resolveSeriesHostDir, rewriteZipEntry } from '../lib/cbz.js';
+import { listCbzFiles, mapKavitaPathToLocalPath, mergeCbzFiles, pathContains, readComicInfo, resolveExistingFile, resolveSeriesHostDir, rewriteZipEntry } from '../lib/cbz.js';
 import { mapLimit, sleep } from '../lib/http.js';
 import { parseComicInfo, renderComicInfoXml } from '../downloader/comicinfo.js';
 import type { KavitaChapterDto } from '../kavita/types.js';
@@ -46,6 +46,15 @@ function upsertMatch(r: {
   errorMessage: string | null;
   aligned?: boolean;
 }): void {
+  const existing = getDb().select({
+    confirmed: schema.seriesMatches.confirmed,
+    providerId: schema.seriesMatches.providerId,
+    providerSeriesId: schema.seriesMatches.providerSeriesId,
+  }).from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, r.kavitaSeriesId)).get();
+  // Re-matching may select a different candidate; an approval belongs only to
+  // the exact provider identity. Re-syncing that identity preserves it.
+  const confirmed = Boolean(r.providerId && r.providerSeriesId && existing?.confirmed
+    && existing.providerId === r.providerId && existing.providerSeriesId === r.providerSeriesId);
   getDb()
     .insert(schema.seriesMatches)
     .values({
@@ -54,6 +63,7 @@ function upsertMatch(r: {
       providerId: r.providerId,
       providerSeriesId: r.providerSeriesId,
       matchScore: r.matchScore,
+      confirmed,
       metadataJson: r.metadataJson,
       errorMessage: r.errorMessage,
       aligned: r.aligned ?? false,
@@ -66,6 +76,7 @@ function upsertMatch(r: {
         providerId: r.providerId,
         providerSeriesId: r.providerSeriesId,
         matchScore: r.matchScore,
+        confirmed,
         metadataJson: r.metadataJson,
         errorMessage: r.errorMessage,
         aligned: r.aligned ?? false,
@@ -235,18 +246,25 @@ async function rescanLibraryContainingDir(dir: string, log: LogFn, seriesName?: 
       }
     }
     const realDir = safeRealpath(dir);
+    const mappings = getDownloaderSettings().libraryPathMappings ?? [];
+    const inMappedRoot = mappings.some((m) => pathContains(safeRealpath(m.localPath), realDir));
 
     for (const lib of libraries) {
-      const directLibrary = Boolean(lib.path && pathContains(safeRealpath(lib.path), realDir));
+      const directLibrary = (lib.paths ?? (lib.path ? [lib.path] : [])).some((root) =>
+        pathContains(safeRealpath(mapKavitaPathToLocalPath(root, mappings) ?? root), realDir));
       const libRootName = lib.path ? lastSegment(lib.path).toLowerCase() : '';
-      const matchingLibrary = directLibrary || Boolean(libRootName && candidates.has(libRootName));
+      const matchingLibrary = directLibrary || (!inMappedRoot && Boolean(libRootName && candidates.has(libRootName)));
       let series;
       try {
         series = await client.getSeries(lib.id);
       } catch {
         continue;
       }
-      const hit = series.find((s) => s.folderPath && candidates.has(lastSegment(s.folderPath).toLowerCase()));
+      const hit = series.find((s) => {
+        if (!s.folderPath) return false;
+        const mapped = mapKavitaPathToLocalPath(s.folderPath, mappings);
+        return mapped ? safeRealpath(mapped) === realDir : !inMappedRoot && candidates.has(lastSegment(s.folderPath).toLowerCase());
+      });
       if (hit) {
         if (seriesName) {
           await client.updateSeriesMetadata(hit.id, { name: seriesName });
@@ -447,7 +465,8 @@ async function sourceSeriesIdsForMerge(sourceFiles: string[], targetDir: string,
     const target = norm(targetDir);
     const sourceDirs = new Set(sourceFiles.map((file) => norm(path.dirname(file))).filter((dir) => dir !== target && !target.startsWith(`${dir}/`)));
     if (sourceDirs.size === 0) return [];
-    const downloadDirectory = getDownloaderSettings().downloadDirectory;
+    const dl = getDownloaderSettings();
+    const downloadDirectory = dl.downloadDirectory;
     const anchors = [...sourceDirs].map((dir) => path.dirname(dir));
     if (downloadDirectory) anchors.push(path.resolve(downloadDirectory));
     const ids: number[] = [];
@@ -459,7 +478,7 @@ async function sourceSeriesIdsForMerge(sourceFiles: string[], targetDir: string,
         continue;
       }
       for (const item of series) {
-        const hostDir = resolveSeriesHostDir({ libraryPath: lib.path, folderPath: item.folderPath, anchors });
+        const hostDir = resolveSeriesHostDir({ libraryPath: lib.path, folderPath: item.folderPath, anchors, mappings: dl.libraryPathMappings });
         if (hostDir && sourceDirs.has(norm(hostDir))) ids.push(item.id);
       }
     }
@@ -528,7 +547,9 @@ async function rescanAndVerifyMerge(
     if (!lib) {
       // Path matching with realpath normalization: symlinked mount points resolve to one real path.
       const realTarget = safeRealpath(targetDir);
-      lib = libraries.find((l) => l.path && pathContains(safeRealpath(l.path), realTarget));
+      const mappings = getDownloaderSettings().libraryPathMappings ?? [];
+      lib = libraries.find((l) => (l.paths ?? (l.path ? [l.path] : [])).some((root) =>
+        pathContains(safeRealpath(mapKavitaPathToLocalPath(root, mappings) ?? root), realTarget)));
     }
     if (!lib) {
       // Fall back to folder-name matching, like rescanLibraryContainingDir.
@@ -683,6 +704,7 @@ async function runApplySeries(client: KavitaClient, job: Job, log: LogFn): Promi
     throw new Error(msg);
   }
   const ok = result.errors.length === 0;
+  for (const warning of result.warnings) log('warn', warning);
   recordHistory(seriesId, result.name, ok ? 'updated' : 'failed', {
     providerId: p.providerId!,
     score: p.score ?? null,
@@ -690,13 +712,14 @@ async function runApplySeries(client: KavitaClient, job: Job, log: LogFn): Promi
     coverUpdated: result.coverUpdated,
     volumeCoversUpdated: result.volumeCoversUpdated,
     errors: result.errors,
+    warnings: result.warnings,
   });
   // Notification failures must not flip an already-applied match to failed —
   // the metadata push succeeded by the time we get here.
   try {
     const name = providerName(p.providerId!);
     await notify({
-      title: ok ? result.name : `Sync failed — ${result.name}`,
+      title: ok ? (result.warnings.length ? `Synced with warnings — ${result.name}` : result.name) : `Sync failed — ${result.name}`,
       description: `Applied to ${result.meta.url ? `[${name}](${result.meta.url})` : name}`,
       fields: [
         ...(result.pushed.length ? [{ name: 'Updated', value: formatPushedFields(result.pushed) }] : []),
@@ -709,8 +732,9 @@ async function runApplySeries(client: KavitaClient, job: Job, log: LogFn): Promi
   } catch (e) {
     log('warn', `Notification failed for ${result.name}: ${e instanceof Error ? e.message : String(e)}`);
   }
-  log(ok ? 'success' : 'warn', `${result.name} -> ${p.providerId!}${ok ? '' : ` — ${result.errors.join('; ')}`}`);
+  log(ok && result.warnings.length === 0 ? 'success' : 'warn', `${result.name} -> ${p.providerId!}${ok ? '' : ` — ${result.errors.join('; ')}`}`);
   const summary: Record<string, number> = { processed: 1, matched: ok ? 1 : 0, failed: ok ? 0 : 1 };
+  if (result.warnings.length > 0) summary.warnings = result.warnings.length;
   if (result.titleFilesUpdated > 0) summary.titleFilesUpdated = result.titleFilesUpdated;
   if (result.titleFilesVerified > 0) summary.titleFilesVerified = result.titleFilesVerified;
   return summary;
@@ -808,6 +832,7 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
         libraryPath: lib?.path ?? null,
         folderPath: s.folderPath ?? null,
         anchors: dl.downloadDirectory ? [path.resolve(dl.downloadDirectory)] : [],
+        mappings: dl.libraryPathMappings,
       });
       if (!dir || !fs.existsSync(dir)) {
         throw new Error(`Could not locate the series folder for "${s.name}" on this machine`);

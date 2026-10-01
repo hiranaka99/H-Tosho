@@ -6,7 +6,10 @@ import { Card, CardContent, CardHeader, CardTitle, Badge, Button, EmptyState, Pr
 import { cn, timeAgo, shortDate, toIsoUtc, jobLabel } from '../lib/utils';
 import { toast } from '../lib/toast';
 
-function JobStatus({ status }: { status: string }) {
+function JobStatus({ job }: { job: Job }) {
+  const { status } = job;
+  const warnings = job.result && typeof job.result === 'object' && !Array.isArray(job.result)
+    ? Number((job.result as Record<string, unknown>).warnings) || 0 : 0;
   if (status === 'running')
     return (
       <Badge tone="info">
@@ -21,8 +24,8 @@ function JobStatus({ status }: { status: string }) {
     );
   if (status === 'completed')
     return (
-      <Badge tone="success">
-        <CheckCircle2 className="h-3 w-3" /> Done
+      <Badge tone={warnings > 0 ? 'warning' : 'success'}>
+        <CheckCircle2 className="h-3 w-3" /> {warnings > 0 ? 'Done with warnings' : 'Done'}
       </Badge>
     );
   if (status === 'cancelled')
@@ -167,7 +170,7 @@ export function Jobs() {
               <div className="flex flex-col gap-2">
                 {visibleJobs.map((job) => (
                   <button key={job.id} type="button" onClick={() => setSelected(job)} className="min-w-0 rounded-md border border-border p-3 text-left transition-colors duration-150 hover:bg-surface-2/60">
-                    <div className="flex min-w-0 flex-wrap items-start justify-between gap-2"><div className="min-w-0 flex-1"><span className="text-xs text-muted">#{job.id}</span><p className="break-words font-medium">{jobLabel(job.type, job.payload)}</p></div><JobStatus status={job.status} /></div>
+                    <div className="flex min-w-0 flex-wrap items-start justify-between gap-2"><div className="min-w-0 flex-1"><span className="text-xs text-muted">#{job.id}</span><p className="break-words font-medium">{jobLabel(job.type, job.payload)}</p></div><JobStatus job={job} /></div>
                     {jobResultText(job) && <p className="mt-2 break-words text-xs text-muted">{jobResultText(job)}</p>}
                     <p className="mt-2 text-xs text-muted">{timeAgo(job.createdAt)}</p>
                   </button>
@@ -180,7 +183,7 @@ export function Jobs() {
                   <tbody>
                     {visibleJobs.map((j) => (
                       <tr key={j.id} tabIndex={0} aria-label={`Open details for ${jobLabel(j.type, j.payload)}`} className="cursor-pointer border-b border-border last:border-0 transition-colors hover:bg-surface-2/60" onClick={() => setSelected(j)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelected(j); } }}>
-                        <td className="px-3 py-2.5 text-muted">#{j.id}</td><td className="px-3 py-2.5 font-medium">{jobLabel(j.type, j.payload)}</td><td className="px-3 py-2.5"><JobStatus status={j.status} /></td><td className="max-w-xs truncate px-3 py-2.5 text-xs text-muted">{jobResultText(j)}</td><td className="px-3 py-2.5 text-xs text-muted">{timeAgo(j.createdAt)}</td><td className="px-3 py-2.5">{(j.status === 'running' || j.status === 'queued') && <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); cancelJob(j.id); }}>Cancel</Button>}{j.status === 'failed' && <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); retryJob(j.id); }}><RotateCcw className="h-3.5 w-3.5" /> Retry</Button>}</td>
+                        <td className="px-3 py-2.5 text-muted">#{j.id}</td><td className="px-3 py-2.5 font-medium">{jobLabel(j.type, j.payload)}</td><td className="px-3 py-2.5"><JobStatus job={j} /></td><td className="max-w-xs truncate px-3 py-2.5 text-xs text-muted">{jobResultText(j)}</td><td className="px-3 py-2.5 text-xs text-muted">{timeAgo(j.createdAt)}</td><td className="px-3 py-2.5">{(j.status === 'running' || j.status === 'queued') && <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); cancelJob(j.id); }}>Cancel</Button>}{j.status === 'failed' && <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); retryJob(j.id); }}><RotateCcw className="h-3.5 w-3.5" /> Retry</Button>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -238,7 +241,7 @@ export function Jobs() {
                     <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                       <span className="min-w-0 flex-1 break-words text-sm font-medium">{jobLabel(j.type, j.payload)}</span>
                       <div className="flex flex-wrap items-center gap-2">
-                        <JobStatus status={j.status} />
+                        <JobStatus job={j} />
                         <Button size="sm" variant="ghost" onClick={() => cancelJob(j.id)}>
                           <X className="h-3.5 w-3.5" /> Cancel
                         </Button>

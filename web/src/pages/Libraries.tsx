@@ -11,6 +11,9 @@ import { buildTagSearchFragment, cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
 /** Matches below this score are surfaced for review (mirrors the server's threshold). */
 const LOW_CONFIDENCE = 0.8;
+function needsReview(row: SeriesRow): boolean {
+  return row.status === 'matched' && !row.confirmed && typeof row.matchScore === 'number' && row.matchScore < LOW_CONFIDENCE;
+}
 const SERIES_PAGE_SIZE = 40;
 
 const LIBRARY_STATE_KEY = 'h-tosho:library-state';
@@ -268,7 +271,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
     return rows.filter((r) => {
       const okStatus =
         review || statusFilter === 'all' ? true :
-        statusFilter === 'low-score' ? (r.status === 'matched' && typeof r.matchScore === 'number' && r.matchScore < LOW_CONFIDENCE) :
+        statusFilter === 'low-score' ? needsReview(r) :
         r.status === statusFilter;
       const okQuery = query ? r.name.toLowerCase().includes(q) || (r.artists ?? []).some((a) => a.toLowerCase().includes(q)) : true;
       return okStatus && okQuery;
@@ -486,8 +489,8 @@ export function Libraries({ review = false }: { review?: boolean }) {
                         <p className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">{r.name}</p>
                         {review && <p className="text-xs text-muted">{r.libraryName}</p>}
                         <div className="mt-auto flex flex-wrap items-center gap-1">
-                          {r.status === 'matched' && typeof r.matchScore === 'number' && r.matchScore < LOW_CONFIDENCE
-                            ? <Badge tone="warning">Needs review · {Math.round(r.matchScore * 100)}%</Badge>
+                          {needsReview(r)
+                            ? <Badge tone="warning">Needs review · {Math.round(r.matchScore! * 100)}%</Badge>
                             : <StatusBadge status={r.status} />}
                         </div>
                       </div>
@@ -538,8 +541,8 @@ export function Libraries({ review = false }: { review?: boolean }) {
                           </div>
                         </td>
                         <td className="px-3 py-2.5">
-                          {r.status === 'matched' && typeof r.matchScore === 'number' && r.matchScore < LOW_CONFIDENCE
-                            ? <Badge tone="warning">Needs review · {Math.round(r.matchScore * 100)}%</Badge>
+                          {needsReview(r)
+                            ? <Badge tone="warning">Needs review · {Math.round(r.matchScore! * 100)}%</Badge>
                             : <StatusBadge status={r.status} className="whitespace-nowrap" />}
                           {r.status === 'failed' && r.errorMessage && <p className="mt-1 max-w-48 break-words text-xs text-danger">{r.errorMessage}</p>}
                         </td>
@@ -556,8 +559,8 @@ export function Libraries({ review = false }: { review?: boolean }) {
                         <td className="px-3 py-2.5 text-muted">
                           {typeof r.matchScore === 'number' ? (
                             <span
-                              className={cn('tabular-nums', r.status === 'matched' && r.matchScore < LOW_CONFIDENCE && 'font-medium text-warning')}
-                              title={r.status === 'matched' && r.matchScore < LOW_CONFIDENCE ? `Needs review (${Math.round(r.matchScore * 100)}% confidence)` : undefined}
+                              className={cn('tabular-nums', needsReview(r) && 'font-medium text-warning')}
+                              title={needsReview(r) ? `Needs review (${Math.round(r.matchScore * 100)}% confidence)` : r.confirmed ? 'Manually confirmed match' : undefined}
                             >
                               {Math.round(r.matchScore * 100)}%
                             </span>

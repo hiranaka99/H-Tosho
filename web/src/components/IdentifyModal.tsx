@@ -448,6 +448,15 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onCoverA
             </div>
           )}
 
+          {Array.isArray(history.data?.[0]?.details?.warnings) && history.data[0].details.warnings.length > 0 && (
+            <div role="status" className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+              <p className="font-medium">Last sync finished with warnings</p>
+              {history.data[0].details.warnings.filter((warning): warning is string => typeof warning === 'string').map((warning, i) => (
+                <p key={i} className="mt-1 break-words">{warning}</p>
+              ))}
+            </div>
+          )}
+
           {history.data && history.data.length > 0 && (
             <div className="rounded-lg border border-border-2 bg-surface-2 p-3">
               <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
@@ -614,7 +623,7 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onCoverA
                       >
                         {preview.data!.titleOptions!.map((title) => <option key={title} value={title}>{title}</option>)}
                       </select>
-                      <p className="mt-1 text-xs text-muted">Applying the title rewrites the Series field in every CBZ, then requests a Kavita rescan.</p>
+                      <p className="mt-1 text-xs text-muted">Applying the title updates Kavita and the Series field in every CBZ. H-Tosho needs access to the series’ CBZ files to change its title.</p>
                     </div>
                   )}
                   <div className="rounded-md border border-border">

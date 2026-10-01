@@ -67,6 +67,17 @@ describe('review queue', () => {
     assert.deepEqual(await response.json(), []);
   });
 
+  it('excludes confirmed low scores from both the review queue and sidebar count', async () => {
+    mockLibraries();
+    getDb().insert(schema.seriesMatches).values([
+      { kavitaSeriesId: 1, status: 'matched', matchScore: 0.39, confirmed: true },
+      { kavitaSeriesId: 2, status: 'matched', matchScore: 0.62 },
+    ]).run();
+    const rows = await (await api.request('/series/needs-review')).json();
+    assert.deepEqual(rows.map((row: { id: number }) => row.id), [2]);
+    assert.equal((await (await api.request('/series/low-confidence')).json()).count, 1);
+  });
+
   it('reports an unavailable library instead of silently showing a partial queue', async () => {
     mockLibraries(true);
     getDb().insert(schema.seriesMatches).values({ kavitaSeriesId: 1, status: 'matched', matchScore: 0.5 }).run();
