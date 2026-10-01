@@ -273,6 +273,14 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onCoverA
     staleTime: 60_000,
   });
 
+  // Identification can update the saved confidence score even before applying.
+  React.useEffect(() => {
+    if (!identify.dataUpdatedAt) return;
+    void qc.invalidateQueries({ queryKey: ['low-confidence'] });
+    void qc.invalidateQueries({ queryKey: ['library-series'] });
+    void qc.invalidateQueries({ queryKey: ['series', seriesId] });
+  }, [identify.dataUpdatedAt, qc, seriesId]);
+
 
   const apply = useMutation({
     mutationFn: (p: { providerId: string; providerSeriesId: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number; coverUrl?: string }) =>
@@ -306,6 +314,7 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onCoverA
       qc.invalidateQueries({ queryKey: ['series', seriesId] });
       qc.invalidateQueries({ queryKey: ['library-series'] });
       qc.invalidateQueries({ queryKey: ['libraries'] });
+      qc.invalidateQueries({ queryKey: ['low-confidence'] });
       setConfirmUnmatch(false);
       toast({ tone: 'success', title: res.removed ? 'Unmatched' : 'No match to remove', description: current.name });
     },

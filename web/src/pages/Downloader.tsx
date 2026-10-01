@@ -329,29 +329,30 @@ const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, 
         selected ? 'border-primary/60 ring-2 ring-primary' : 'border-border',
       )}
     >
-      <button type="button" onClick={() => (selectMode ? onToggleSelect?.(item) : onOpen(item))} className="text-left" aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
+      <button type="button" onClick={() => (selectMode ? onToggleSelect?.(item) : onOpen(item))} className="grid min-w-0 grid-cols-[5rem_minmax(0,1fr)] text-left min-[420px]:block" aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
         <div className="relative overflow-hidden">
           <Cover url={item.coverUrl} title={item.title} className="aspect-[3/4] w-full transition-transform duration-300 ease-out group-hover:scale-105" />
           {item.language && (
-            <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">
+            <span className="absolute left-2 top-2 hidden items-center gap-1 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white min-[420px]:inline-flex">
               <Languages className="h-3 w-3" /> {item.language}
             </span>
           )}
-          {item.pageCount ? <span className="absolute right-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">{item.pageCount}p</span> : null}
+          {item.pageCount ? <span className="absolute right-2 top-2 hidden rounded-full bg-black/70 px-2 py-0.5 text-xs text-white min-[420px]:inline">{item.pageCount}p</span> : null}
           {selectMode && selected && (
-            <span className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white">
+            <span className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-primary-button text-white">
               <CheckSquare className="h-3.5 w-3.5" />
             </span>
           )}
           <div className="pointer-events-none absolute inset-0 flex items-end justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-            <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-white">
+            <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-primary-button px-3 py-1 text-xs font-medium text-white">
               {selectMode ? (<><CheckSquare className="h-3 w-3" /> {selected ? 'Selected' : 'Select'}</>) : (<><Search className="h-3 w-3" /> Details</>)}
             </span>
           </div>
         </div>
-        <div className="flex flex-col gap-2 p-3 pb-0">
-          <p className="line-clamp-2 text-sm font-medium" title={item.title}>{item.title}</p>
-          {tags.length > 0 && <div className="flex flex-wrap gap-1">{tags.map((t, i) => <span key={i} className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{t}</span>)}</div>}
+        <div className="flex min-w-0 flex-col gap-2 p-3 pb-0">
+          <p className="overflow-hidden text-sm font-medium [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]" title={item.title}>{item.title}</p>
+          <p className="text-xs text-muted min-[420px]:hidden">{[item.language, item.pageCount ? `${item.pageCount} pages` : null].filter(Boolean).join(' · ')}</p>
+          {tags.length > 0 && <div className="flex flex-wrap gap-1">{tags.map((t, i) => <span key={i} className={cn('rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted', i > 1 && 'hidden min-[420px]:inline')}>{t}</span>)}</div>}
         </div>
       </button>
       <div className="mt-auto flex flex-wrap items-center justify-between gap-2 p-3 pt-2">
@@ -643,7 +644,7 @@ const QueueRow = React.memo(function QueueRow({ task, onAction, onEditComicInfo,
           <div className="flex shrink-0 items-center gap-1">
             {task.status === 'downloading' && <Button size="icon" variant="ghost" aria-label="Pause download" onClick={() => onAction(task.id, 'pause')}><Pause className="h-4 w-4" /></Button>}
             {task.status === 'paused' && <Button size="icon" variant="ghost" aria-label="Resume download" onClick={() => onAction(task.id, 'resume')}><Play className="h-4 w-4" /></Button>}
-            {task.status === 'failed' && <Button size="icon" variant="ghost" aria-label="Retry download" onClick={() => onAction(task.id, 'retry')}><RotateCcw className="h-4 w-4" /></Button>}
+            {task.status === 'failed' && <Button size="sm" variant="outline" aria-label={`Retry ${task.title ?? 'download'}`} onClick={() => onAction(task.id, 'retry')}><RotateCcw className="h-4 w-4" /> Retry</Button>}
             {task.status === 'completed' && <Button size="icon" variant="ghost" aria-label="Download again" onClick={() => onAction(task.id, 'retry')}><RotateCcw className="h-4 w-4" /></Button>}
             {(task.status === 'downloading' || task.status === 'queued') && <Button size="icon" variant="ghost" aria-label="Cancel download" onClick={() => onAction(task.id, 'cancel')}><XCircle className="h-4 w-4" /></Button>}
             {onDelete && <Button size="icon" variant="ghost" aria-label="Remove download from history" onClick={() => onDelete(task.id)}><Trash2 className="h-4 w-4" /></Button>}
@@ -952,7 +953,8 @@ function ManagerTab() {
   const [comicInfo, setComicInfo] = React.useState<{ path?: string } | null>(null);
 
   const currentTasks = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
-  const finished = tasks.filter((t) => t.status === 'completed' || t.status === 'failed');
+  const failed = tasks.filter((t) => t.status === 'failed');
+  const finished = tasks.filter((t) => t.status === 'completed');
   const removeTarget = removeTargetId !== null ? tasks.find((t) => t.id === removeTargetId) ?? null : null;
 
   const act = React.useCallback((id: number, a: 'pause' | 'resume' | 'cancel' | 'retry') => {
@@ -970,7 +972,7 @@ function ManagerTab() {
       <Card>
         <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
           <CardTitle className="flex items-center gap-2">
-            <DownloadIcon className="h-4 w-4" /> Download Manager
+            <DownloadIcon className="h-4 w-4" /> Downloads
             {liveConnected && <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" /> Live</span>}
             {currentTasks.length > 0 && <Badge tone="info">{currentTasks.length} current</Badge>}
           </CardTitle>
@@ -983,6 +985,15 @@ function ManagerTab() {
             <EmptyState icon={<DownloadIcon className="h-8 w-8" />} title="No downloads yet" description="Click Download on a gallery to queue it. Set the output folder in Settings first." />
           ) : (
             <>
+              {failed.length > 0 && (
+                <section className="flex flex-col gap-2" aria-labelledby="failed-downloads">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 id="failed-downloads" className="text-sm font-semibold text-danger">Needs attention</h3>
+                    <Badge tone="danger">{failed.length} failed</Badge>
+                  </div>
+                  {failed.map((task) => <QueueRow key={task.id} task={task} onAction={act} onDelete={removeFromHistory} />)}
+                </section>
+              )}
               {currentTasks.length > 0 && (
                 <section className="flex flex-col gap-2" aria-labelledby="current-downloads">
                   <p id="current-downloads" className="text-xs font-semibold uppercase tracking-wide text-muted">Current</p>
@@ -992,7 +1003,7 @@ function ManagerTab() {
               {finished.length > 0 && (
                 <section className="flex flex-col gap-2" aria-labelledby="download-history">
                   <div className="flex items-center justify-between">
-                    <p id="download-history" className="text-xs font-semibold uppercase tracking-wide text-muted">History</p>
+                    <p id="download-history" className="text-xs font-semibold uppercase tracking-wide text-muted">Completed</p>
                     {finished.length > HISTORY_PREVIEW && <Button size="sm" variant="ghost" onClick={() => setShowAllHistory((value) => !value)}>{showAllHistory ? 'Show less' : `Show all (${finished.length})`}</Button>}
                   </div>
                   {(showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW)).map((task) => <QueueRow key={task.id} task={task} onAction={act} onEditComicInfo={openComicInfo} onDelete={removeFromHistory} />)}
@@ -1017,7 +1028,7 @@ function ManagerTab() {
       <ConfirmDialog
         open={confirmClear}
         title="Clear completed downloads?"
-        description="This removes every completed download from the manager history. Downloaded files are not deleted."
+        description="This removes every completed download from history. Downloaded files are not deleted."
         confirmLabel="Clear completed"
         danger
         onOpenChange={setConfirmClear}
@@ -1034,7 +1045,7 @@ export function Downloader() {
   // or paused state. Deep links from the Libraries page override cached search
   // state; ordinary navigation restores the last input, committed search, and
   // result page.
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const initialState = React.useMemo(readDownloaderState, []);
   const linkedQuery = searchParams.get('q');
   const [source, setSource] = React.useState<DoujinSource>(() => {
@@ -1058,7 +1069,7 @@ export function Downloader() {
   // Result ordering for nHentai searches (ignored by other sources). Persisted
   // across source switches so it applies the next time nHentai is searched.
   const [sort, setSort] = React.useState<DoujinSort>(() => sortsFor(source).some((option) => option.value === initialState.sort) ? initialState.sort! : 'default');
-  const deepLink = searchParams.toString();
+  const deepLink = JSON.stringify([searchParams.get('source'), linkedQuery]);
   const previousDeepLink = React.useRef(deepLink);
   React.useEffect(() => {
     if (deepLink === previousDeepLink.current) return;
@@ -1150,7 +1161,17 @@ export function Downloader() {
   }, [query, source, inputFocused]);
 
   // Top-of-page view tabs: search results vs. the download manager queue.
-  const [tab, setTab] = React.useState<'search' | 'recommend' | 'watched' | 'manager'>('search');
+  type DownloaderTab = 'search' | 'recommend' | 'watched' | 'manager';
+  const requestedTab = searchParams.get('tab');
+  const tab: DownloaderTab = requestedTab === 'downloads' ? 'manager' : requestedTab === 'recommend' || requestedTab === 'watched' ? requestedTab : 'search';
+  const setTab = (next: DownloaderTab) => {
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      if (next === 'search') params.delete('tab');
+      else params.set('tab', next === 'manager' ? 'downloads' : next);
+      return params;
+    }, { replace: true });
+  };
   const { data: results, isFetching, isError: searchFailed, error: searchError, refetch: retrySearch } = useQuery({
     queryKey: ['doujin-search', source, searchKey, sort],
     queryFn: () => api.doujinSearch(source, searchKey!, sort),
@@ -1313,7 +1334,7 @@ export function Downloader() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg === 'already-downloaded') {
-        toast({ tone: 'info', title: 'Already downloaded', description: 'This gallery has a completed task — use Retry in the Download Manager to re-download it.' });
+        toast({ tone: 'info', title: 'Already downloaded', description: 'This gallery has already been downloaded. Open Downloads and choose Download again to get another copy.' });
       } else if (msg !== 'already-queued') {
         toast({ tone: 'danger', title: 'Could not start download', description: msg });
       }
@@ -1483,7 +1504,7 @@ export function Downloader() {
       <PageHeader icon={<ListVideo className="h-5 w-5" />} title="Doujinshi Downloader" subtitle="Search Hitomi.la and nHentai, then download galleries into your Kavita library." />
 
       <SegmentedTabs
-        items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'Recommended' }, { id: 'watched' as const, label: 'Watched' }, { id: 'manager' as const, label: 'Manager' }]}
+        items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'Recommended' }, { id: 'watched' as const, label: 'Watched' }, { id: 'manager' as const, label: 'Downloads' }]}
         value={tab}
         onChange={setTab}
         label="Downloader sections"
@@ -1498,129 +1519,125 @@ export function Downloader() {
       <Card>
         <CardContent className="flex flex-col gap-3">
           <form onSubmit={runSearch} className="flex flex-col gap-2 lg:flex-row">
-            <div role="radiogroup" aria-label="Download source" className="flex max-w-full overflow-x-auto rounded-md border border-border-2">
-              {sources.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  role="radio"
-                  onClick={() => switchSource(s.id)}
-                  onKeyDown={(event) => {
-                    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-                    event.preventDefault();
-                    const group = event.currentTarget.parentElement;
-                    const idx = sources.findIndex((x) => x.id === source);
-                    const neighbor = sources[(idx + (event.key === 'ArrowRight' ? 1 : sources.length - 1)) % sources.length];
-                    if (neighbor) switchSource(neighbor.id);
-                    requestAnimationFrame(() => group?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus());
-                  }}
-                  aria-checked={source === s.id}
-                  className={cn(
-                    'h-9 min-w-0 flex-1 px-3 text-sm font-medium transition-colors sm:px-4 lg:flex-none',
-                    source === s.id ? 'bg-primary text-white' : 'bg-surface-2 text-muted hover:text-foreground',
-                  )}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
-              <Input
-                ref={inputRef}
-                role="combobox"
-                aria-label="Search galleries"
-                aria-expanded={showDropdown}
-                aria-controls="doujin-suggestions"
-                aria-activedescendant={highlight >= 0 ? `doujin-suggestion-${highlight}` : undefined}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={onInputKeyDown}
-                onFocus={() => setInputFocused(true)}
-                onBlur={() => { setInputFocused(false); setHighlight(-1); }}
-                placeholder="Search by keyword, tag, artist, gallery ID or URL…"
-                className="pl-9 pr-9"
-              />
-              {query && (
-                <button
-                  type="button"
-                  onClick={() => setQuery('')}
-                  aria-label="Clear search input"
-                  className="absolute right-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded text-muted hover:text-foreground"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              )}
+            <div className="flex min-w-0 flex-1 gap-2">
+              <div className="relative min-w-0 flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+                <Input
+                  ref={inputRef}
+                  role="combobox"
+                  aria-label="Search galleries"
+                  aria-expanded={showDropdown}
+                  aria-controls="doujin-suggestions"
+                  aria-activedescendant={highlight >= 0 ? `doujin-suggestion-${highlight}` : undefined}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={onInputKeyDown}
+                  onFocus={() => setInputFocused(true)}
+                  onBlur={() => { setInputFocused(false); setHighlight(-1); }}
+                  placeholder="Search by keyword, tag, artist, gallery ID or URL…"
+                  className="pl-9 pr-9"
+                />
+                {query && (
+                  <button
+                    type="button"
+                    onClick={() => setQuery('')}
+                    aria-label="Clear search input"
+                    className="absolute right-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded text-muted hover:text-foreground"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
 
-              {showDropdown && (
-                <div id="doujin-suggestions" role="listbox" className="absolute left-0 right-0 top-full z-50 mt-1 origin-top animate-scale-in overflow-hidden rounded-md border border-border bg-surface shadow-lg">
-                  {suggLoading && suggestions.length === 0 ? (
-                    <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted">
-                      <Spinner /> Searching tags…
-                    </div>
-                  ) : (
-                    <div className="max-h-80 overflow-y-auto py-1">
-                      {suggestions.map((s, i) => (
-                        <button
-                          key={`${s.type}-${s.name}`}
-                          type="button"
-                          id={`doujin-suggestion-${i}`}
-                          role="option"
-                          aria-selected={i === highlight}
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            selectSuggestion(s);
-                          }}
-                          onMouseEnter={() => setHighlight(i)}
-                          className={cn(
-                            'flex w-full items-center gap-2 px-3 py-2 text-left text-sm',
-                            i === highlight ? 'bg-surface-2' : 'hover:bg-surface-2',
-                          )}
-                        >
-                          <span
+                {showDropdown && (
+                  <div id="doujin-suggestions" role="listbox" className="absolute left-0 right-0 top-full z-50 mt-1 origin-top animate-scale-in overflow-hidden rounded-md border border-border bg-surface shadow-lg">
+                    {suggLoading && suggestions.length === 0 ? (
+                      <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted">
+                        <Spinner /> Searching tags…
+                      </div>
+                    ) : (
+                      <div className="max-h-80 overflow-y-auto py-1">
+                        {suggestions.map((s, i) => (
+                          <button
+                            key={`${s.type}-${s.name}`}
+                            type="button"
+                            id={`doujin-suggestion-${i}`}
+                            role="option"
+                            aria-selected={i === highlight}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              selectSuggestion(s);
+                            }}
+                            onMouseEnter={() => setHighlight(i)}
                             className={cn(
-                              'shrink-0 rounded px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide',
-                              SUGG_TYPE_STYLES[s.type] ?? 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/20 dark:text-slate-300',
+                              'flex w-full items-center gap-2 px-3 py-2 text-left text-sm',
+                              i === highlight ? 'bg-surface-2' : 'hover:bg-surface-2',
                             )}
                           >
-                            {s.type}
-                          </span>
-                          <span className="truncate">{s.name}</span>
-                          {typeof s.count === 'number' && <span className="text-xs text-muted">{s.count}</span>}
-                          <ArrowRight className="ml-auto h-3.5 w-3.5 shrink-0 text-muted" />
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                            <span
+                              className={cn(
+                                'shrink-0 rounded px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide',
+                                SUGG_TYPE_STYLES[s.type] ?? 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/20 dark:text-slate-300',
+                              )}
+                            >
+                              {s.type}
+                            </span>
+                            <span className="truncate">{s.name}</span>
+                            {typeof s.count === 'number' && <span className="text-xs text-muted">{s.count}</span>}
+                            <ArrowRight className="ml-auto h-3.5 w-3.5 shrink-0 text-muted" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              <Button className="shrink-0" type="submit" disabled={isFetching || !query.trim()}>
+                {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
+              </Button>
+            </div>
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.7fr)] gap-2 lg:flex lg:shrink-0">
+              <div role="radiogroup" aria-label="Download source" className="flex min-w-0 max-w-full rounded-md border border-border-2">
+                {sources.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    role="radio"
+                    onClick={() => switchSource(s.id)}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                      event.preventDefault();
+                      const group = event.currentTarget.parentElement;
+                      const idx = sources.findIndex((x) => x.id === source);
+                      const neighbor = sources[(idx + (event.key === 'ArrowRight' ? 1 : sources.length - 1)) % sources.length];
+                      if (neighbor) switchSource(neighbor.id);
+                      requestAnimationFrame(() => group?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus());
+                    }}
+                    aria-checked={source === s.id}
+                    tabIndex={source === s.id ? 0 : -1}
+                    className={cn(
+                      'h-9 min-w-0 flex-1 px-2 text-xs sm:text-sm font-medium transition-colors sm:px-4 lg:flex-none',
+                      source === s.id ? 'bg-primary-button text-white' : 'bg-surface-2 text-muted hover:text-foreground',
+                    )}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+              {/* Popularity ordering — mirrors each source's own sort controls. The
+                  sort travels as a separate field, so its syntax never appears in the search box. */}
+              {sortsFor(source).length > 1 && (
+                <Select
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value as DoujinSort)}
+                  aria-label="Sort results"
+                  className="min-w-0 w-full shrink-0 text-xs sm:text-sm lg:w-40"
+                >
+                  {sortsFor(source).map((s) => (
+                    <option key={s.value} value={s.value}>{s.label}</option>
+                  ))}
+                </Select>
               )}
             </div>
-            {/* Popularity ordering — mirrors each source's own sort controls. The
-                sort travels as a separate field, so its syntax never appears in the search box. */}
-            {sortsFor(source).length > 1 && (
-              <Select
-                value={sort}
-                onChange={(e) => setSort(e.target.value as DoujinSort)}
-                title="Sort results"
-                className="w-full shrink-0 sm:w-44"
-              >
-                {sortsFor(source).map((s) => (
-                  <option key={s.value} value={s.value}>{s.label}</option>
-                ))}
-              </Select>
-            )}
-            <Button type="submit" disabled={isFetching || !query.trim()}>
-              {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
-            </Button>
-            <Button
-              type="button"
-              variant={currentWatch ? 'secondary' : 'outline'}
-              onClick={() => void toggleWatch()}
-              disabled={!watchedQuery}
-              title={currentWatch ? `Stop watching “${watchedQuery}”` : watchedQuery ? `Watch the displayed results for “${watchedQuery}”` : 'Search first to watch these results'}
-            >
-              <Star className={cn('h-4 w-4', currentWatch && 'fill-current')} /> Watch
-            </Button>
           </form>
         </CardContent>
       </Card>
@@ -1635,6 +1652,30 @@ export function Downloader() {
       {/* Results grid */}
       {searchKey !== null && (
         <div>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p role="status" className="min-w-0 flex-1 text-xs text-muted">
+              {isFetching ? 'Searching…' : results ? results.length + (results.length === 1 ? ' gallery' : ' galleries') + ' found on ' + SOURCE_LABELS[source] : 'Search results'}
+              {!isFetching && pageCount > 1 && ' · ' + ((curPage - 1) * RESULTS_PAGE_SIZE + 1) + '–' + Math.min(curPage * RESULTS_PAGE_SIZE, results?.length ?? 0)}
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                aria-pressed={!!currentWatch}
+                variant={currentWatch ? 'secondary' : 'outline'}
+                onClick={() => void toggleWatch()}
+                disabled={!watchedQuery}
+                title={currentWatch ? `Stop watching “${watchedQuery}”` : watchedQuery ? `Watch the displayed results for “${watchedQuery}”` : 'Search first to watch these results'}
+              >
+                <Star className={cn('h-4 w-4', currentWatch && 'fill-current')} /> {currentWatch ? 'Watching' : 'Watch'}
+              </Button>
+              {!!results?.length && (
+                <Button size="sm" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit selection mode' : 'Select multiple galleries for a merged download'}>
+                  <CheckSquare className="h-3.5 w-3.5" /> Select
+                </Button>
+              )}
+            </div>
+          </div>
           {searchFailed ? (
             <ErrorState title="Search failed" description={searchError instanceof Error ? searchError.message : String(searchError)} onRetry={() => void retrySearch()} />
           // placeholderData keeps the previous grid mounted during a refetch —
@@ -1661,15 +1702,6 @@ export function Downloader() {
             </div>
           ) : results && results.length > 0 ? (
             <>
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <p className="min-w-0 flex-1 break-words text-xs text-muted">
-                  {results.length} {results.length === 1 ? 'gallery' : 'galleries'} found on {SOURCE_LABELS[source]}
-                  {pageCount > 1 && ` — showing ${(curPage - 1) * RESULTS_PAGE_SIZE + 1}–${Math.min(curPage * RESULTS_PAGE_SIZE, results.length)}`}
-                </p>
-                <Button size="sm" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit selection mode' : 'Select multiple galleries for a merged download'}>
-                  <CheckSquare className="h-3.5 w-3.5" /> Select
-                </Button>
-              </div>
               {(selectMode || selectedGalleries.size > 0) && (
                 <div className={cn('mb-4 flex animate-scale-in flex-wrap items-center gap-2 rounded-lg border p-2', selectMode ? 'border-primary/50 bg-primary/10' : 'border-border-2 bg-surface-2')}>
                   {selectMode ? (

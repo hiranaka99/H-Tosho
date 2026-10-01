@@ -12,7 +12,7 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: 'bg-primary text-white hover:bg-primary-hover',
+        default: 'bg-primary-button text-white hover:bg-primary-button-hover',
         outline: 'border border-border-2 bg-surface text-foreground hover:bg-surface-2',
         ghost: 'text-muted hover:bg-surface-2 hover:text-foreground',
         danger: 'bg-danger text-white hover:opacity-90',
@@ -265,7 +265,7 @@ export function ErrorState({ title = 'Something went wrong', description, onRetr
 
 export function SegmentedTabs<T extends string>({ items, value, onChange, label, panelId, className }: { items: readonly { id: T; label: string }[]; value: T; onChange: (id: T) => void; label: string; panelId: string; className?: string }) {
   return (
-    <div role="tablist" aria-label={label} className={cn('flex w-full max-w-full flex-nowrap overflow-x-auto border-b border-border', className)}>
+    <div role="tablist" aria-label={label} className={cn('flex w-full max-w-full flex-nowrap overflow-x-auto border-b border-border p-1', className)}>
       {items.map((item) => (
         <button
           key={item.id}
@@ -286,7 +286,7 @@ export function SegmentedTabs<T extends string>({ items, value, onChange, label,
             requestAnimationFrame(() => tabs?.[nextIndex]?.focus());
           }}
           className={cn(
-            '-mb-px min-h-9 shrink-0 border-b-2 px-2.5 text-xs font-medium transition-colors duration-150 sm:px-3 sm:text-sm',
+            'min-h-9 shrink-0 border-b-2 px-1 text-xs font-medium transition-colors duration-150 min-[360px]:px-1.5 sm:px-3 sm:text-sm',
             value === item.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
           )}
         >

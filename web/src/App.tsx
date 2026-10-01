@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { Library, Settings as SettingsIcon, ListChecks, BookOpenText, Download, Menu, X, LogOut, Monitor, Sun, Moon } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './lib/api';
@@ -14,14 +14,15 @@ import { Button } from './components/ui';
 import { cn } from './lib/utils';
 import { useAuth } from './lib/AuthContext';
 import { useTheme } from './lib/theme';
+import { useMediaQuery } from './lib/useMediaQuery';
 
 function LowConfidenceBadge() {
   const { data } = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, refetchInterval: 60_000 });
   if (!data || data.count === 0) return null;
   return (
-    <span className="ml-auto rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-warning" title={`${data.count} matched series below ${Math.round(data.threshold * 100)}% confidence — review them in Libraries (filter: Low confidence)`}>
-      {data.count}
-    </span>
+    <Link to="/libraries/review" className="absolute right-1 top-0 flex h-9 min-w-9 items-center justify-center rounded-md" aria-label={`Review ${data.count} uncertain matches across all libraries`} title={`Review matches below ${Math.round(data.threshold * 100)}% confidence`}>
+      <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-warning">{data.count}</span>
+    </Link>
   );
 }
 
@@ -105,41 +106,70 @@ export default function App() {
   const { username, logout } = useAuth();
 
   const [navOpen, setNavOpen] = React.useState(false);
-  React.useEffect(() => setNavOpen(false), [location.pathname]);
+  const isDesktop = useMediaQuery('(min-width: 1024px)');
+  const sidebarRef = React.useRef<HTMLElement>(null);
+  const mainRef = React.useRef<HTMLElement>(null);
+  const navToggleRef = React.useRef<HTMLButtonElement>(null);
+  React.useEffect(() => setNavOpen(false), [location.pathname, location.search, isDesktop]);
+  React.useLayoutEffect(() => {
+    if (sidebarRef.current) sidebarRef.current.inert = !isDesktop && !navOpen;
+    if (mainRef.current) mainRef.current.inert = !isDesktop && navOpen;
+    if (!navOpen || isDesktop) return;
+    sidebarRef.current?.querySelector<HTMLElement>('a[aria-current="page"], nav a')?.focus();
+    return () => { navToggleRef.current?.focus(); };
+  }, [navOpen, isDesktop]);
+
+  const onNavKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (isDesktop || !navOpen) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setNavOpen(false);
+    } else if (event.key === 'Tab') {
+      const controls = Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), [tabindex="0"]') ?? []).filter((el) => el.getClientRects().length > 0);
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }
+  };
   return (
     <div className="flex min-h-0 h-full flex-col overflow-hidden lg:flex-row">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-surface px-3 pt-[env(safe-area-inset-top)] sm:px-4 lg:hidden">
+      <header aria-hidden={navOpen && !isDesktop ? true : undefined} className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-surface px-3 pt-[env(safe-area-inset-top)] sm:px-4 lg:hidden">
         <Brand />
-        <button type="button" aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} onClick={() => setNavOpen((v) => !v)} className="flex h-9 w-9 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground">
+        <button ref={navToggleRef} type="button" aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="app-navigation" tabIndex={navOpen ? -1 : 0} onClick={() => setNavOpen((v) => !v)} className="flex h-9 w-9 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground">
           {navOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
       </header>
-      {navOpen && <button type="button" aria-label="Close navigation" className="fixed inset-x-0 bottom-0 top-14 z-30 bg-black/40 lg:hidden" onClick={() => setNavOpen(false)} />}
-      <aside className={cn(
+      {navOpen && <div aria-hidden="true" className="fixed inset-x-0 bottom-0 top-14 z-30 bg-black/40 lg:hidden" onClick={() => setNavOpen(false)} />}
+      <aside ref={sidebarRef} id="app-navigation" role={!isDesktop && navOpen ? 'dialog' : undefined} aria-modal={!isDesktop && navOpen ? true : undefined} aria-label="Navigation" onKeyDown={onNavKeyDown} className={cn(
         'fixed bottom-0 left-0 top-14 z-40 flex w-[min(16rem,calc(100vw-2rem))] shrink-0 flex-col border-r border-border bg-surface pb-[env(safe-area-inset-bottom)] transition-transform duration-200 ease-out lg:static lg:inset-auto lg:w-60 lg:translate-x-0 lg:pb-0',
-        navOpen ? 'translate-x-0' : '-translate-x-full',
+        navOpen ? 'visible translate-x-0' : 'invisible -translate-x-full lg:visible',
       )}>
+        <div className="flex justify-end px-3 pt-2 lg:hidden">
+          <button type="button" aria-label="Close navigation" onClick={() => setNavOpen(false)} className="flex h-11 w-11 items-center justify-center rounded-md text-muted hover:bg-surface-2"><X className="h-5 w-5" /></button>
+        </div>
         <div className="hidden h-14 items-center border-b border-border px-4 lg:flex">
           <Brand />
         </div>
         <nav aria-label="Primary navigation" className="flex flex-1 flex-col gap-1 p-3">
           {NAV.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) => cn(
-                'group flex h-9 items-center gap-2.5 rounded-md px-3 text-sm transition-colors duration-150',
-                isActive ? 'bg-surface-2 font-medium text-foreground' : 'text-muted hover:bg-surface-2/70 hover:text-foreground',
-              )}
-            >
-              {({ isActive }) => (
-                <>
-                  <item.icon className={cn('h-4 w-4 shrink-0 transition-colors duration-150', isActive ? 'text-primary' : 'text-muted group-hover:text-foreground')} />
-                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                  {item.to === '/libraries' && <LowConfidenceBadge />}
-                </>
-              )}
-            </NavLink>
+            <div key={item.to} className="relative">
+              <NavLink
+                to={item.to}
+                className={({ isActive }) => cn(
+                  'group flex h-9 items-center gap-2.5 rounded-md px-3 pr-11 text-sm transition-colors duration-150',
+                  isActive ? 'bg-surface-2 font-medium text-foreground' : 'text-muted hover:bg-surface-2/70 hover:text-foreground',
+                )}
+              >
+                {({ isActive }) => (
+                  <>
+                    <item.icon className={cn('h-4 w-4 shrink-0 transition-colors duration-150', isActive ? 'text-primary' : 'text-muted group-hover:text-foreground')} />
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  </>
+                )}
+              </NavLink>
+              {item.to === '/libraries' && <LowConfidenceBadge />}
+            </div>
           ))}
         </nav>
         <div className="flex items-center gap-1 border-t border-border px-3 py-2">
@@ -152,7 +182,7 @@ export default function App() {
         <KavitaIndicator />
         <SidebarStatus />
       </aside>
-      <main className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
+      <main ref={mainRef} className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
         {/* Padding lives on an inner wrapper, not on the scroll container itself: sticky
             page elements (tab bars) pin flush to the scrollport edge this way. */}
         <div className="p-3 sm:p-5 lg:p-8">
@@ -162,6 +192,7 @@ export default function App() {
                 <Routes>
                   <Route path="/" element={<Navigate to="/libraries" replace />} />
                   <Route path="/libraries" element={<Libraries />} />
+                  <Route path="/libraries/review" element={<Libraries review />} />
                   <Route path="/libraries/:libraryId" element={<Libraries />} />
                   <Route path="/downloader" element={<Downloader />} />
                   <Route path="/jobs" element={<Jobs />} />

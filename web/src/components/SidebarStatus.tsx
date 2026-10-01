@@ -1,3 +1,4 @@
+import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Clock, Download, Pause, Play, XCircle, Ban } from 'lucide-react';
@@ -100,9 +101,20 @@ function DownloadRow({ task, onAction }: { task: DownloadTask; onAction: (op: 'p
 /** Sidebar footer tracker for active background jobs and download controls. */
 export function SidebarStatus() {
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const { data: jobs = [] } = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, refetchInterval: 2500 });
   const { tasks, pause, resume, cancel } = useDownloads();
   const activeJobs = jobs.filter((j) => j.status === 'running' || j.status === 'queued');
+  const previousActive = React.useRef<number[]>([]);
+  React.useEffect(() => {
+    const activeIds = jobs.filter((j) => j.status === 'running' || j.status === 'queued').map((j) => j.id);
+    if (previousActive.current.some((id) => !activeIds.includes(id))) {
+      void qc.invalidateQueries({ queryKey: ['library-series'] });
+      void qc.invalidateQueries({ queryKey: ['libraries'] });
+      void qc.invalidateQueries({ queryKey: ['low-confidence'] });
+    }
+    previousActive.current = activeIds;
+  }, [jobs, qc]);
   const shownTasks = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
   if (activeJobs.length === 0 && shownTasks.length === 0) return null;
 
@@ -124,7 +136,7 @@ export function SidebarStatus() {
       )}
       {shownTasks.length > 0 && (
         <div className="flex flex-col gap-2">
-          <button onClick={() => navigate('/downloader')} title="Open downloader" className="group flex items-center gap-1.5 text-left">
+          <button onClick={() => navigate('/downloader?tab=downloads')} title="Open downloads" className="group flex items-center gap-1.5 text-left">
             {shownTasks.some((t) => t.status === 'downloading') ? (
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" />
             ) : (

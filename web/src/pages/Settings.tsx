@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, ArrowUp, ArrowDown, LockKeyhole, Monitor, Moon, Sun, Palette } from 'lucide-react';
+import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, ArrowUp, ArrowDown, LockKeyhole, Monitor, Moon, Sun, Palette, ChevronDown } from 'lucide-react';
 import { api, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings } from '../lib/api';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader, ErrorState, SegmentedTabs } from '../components/ui';
 import { cn, timeAgo } from '../lib/utils';
@@ -102,20 +102,25 @@ function AccountSettingsCard() {
   return (
     <Card className="animate-fade-up">
       <SectionHeader icon={<LockKeyhole className="h-4 w-4" />} title="Account security" />
-      <CardContent>
-        <form className="flex max-w-xl flex-col gap-3" onSubmit={submit}>
-          <div className="flex flex-col gap-1"><Label htmlFor="account-username">Username</Label><Input id="account-username" autoComplete="username" required maxLength={100} value={username} onChange={(event) => setUsername(event.target.value)} /></div>
-          <div className="flex flex-col gap-1"><Label htmlFor="current-password">Current password</Label><Input id="current-password" type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="flex flex-col gap-1"><Label htmlFor="new-password">New password</Label><Input id="new-password" type="password" autoComplete="new-password" required minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} /></div>
-            <div className="flex flex-col gap-1"><Label htmlFor="confirm-new-password">Confirm new password</Label><Input id="confirm-new-password" type="password" autoComplete="new-password" required minLength={8} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></div>
-          </div>
-          {error && <p role="alert" className="text-sm text-danger">{error}</p>}
-          <Button type="submit" className="self-start" disabled={change.isPending || !username.trim() || password.length < 8 || confirmPassword.length < 8}>
-            {change.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Update account
-          </Button>
-        </form>
-      </CardContent>
+      <details className="group">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 rounded-md p-3 text-sm font-medium sm:p-4 [&::-webkit-details-marker]:hidden">
+          Change credentials <ChevronDown className="h-4 w-4 text-muted transition-transform group-open:rotate-180" />
+        </summary>
+        <CardContent>
+          <form className="flex max-w-xl flex-col gap-3" onSubmit={submit}>
+            <div className="flex flex-col gap-1"><Label htmlFor="account-username">Username</Label><Input id="account-username" autoComplete="username" required maxLength={100} value={username} onChange={(event) => setUsername(event.target.value)} /></div>
+            <div className="flex flex-col gap-1"><Label htmlFor="current-password">Current password</Label><Input id="current-password" type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="flex flex-col gap-1"><Label htmlFor="new-password">New password</Label><Input id="new-password" type="password" autoComplete="new-password" required minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} /></div>
+              <div className="flex flex-col gap-1"><Label htmlFor="confirm-new-password">Confirm new password</Label><Input id="confirm-new-password" type="password" autoComplete="new-password" required minLength={8} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></div>
+            </div>
+            {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+            <Button type="submit" className="self-start" disabled={change.isPending || !username.trim() || password.length < 8 || confirmPassword.length < 8}>
+              {change.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Update account
+            </Button>
+          </form>
+        </CardContent>
+      </details>
     </Card>
   );
 }
@@ -239,9 +244,7 @@ export function Settings() {
 
       <div id="settings-panel" role="tabpanel" aria-labelledby={`settings-panel-tab-${tab}`} className="contents">
       <div hidden={tab !== 'general'} className="flex flex-col gap-4">
-      <AppearanceCard />
-      <AccountSettingsCard />
-      <Card className="animate-fade-up">
+      <Card id="kavita-connection" className="animate-fade-up scroll-mt-16">
         <SectionHeader icon={<Server className="h-4 w-4" />} title="Kavita connection">
           <Badge tone={kavita?.data?.configured && !kavita.data.error ? 'success' : kavita?.data?.configured ? 'danger' : 'muted'}>
             {kavita?.data?.configured
@@ -282,6 +285,8 @@ export function Settings() {
           <SaveButton label={pollFlash.saved ? 'Saved' : 'Save'} onClick={() => savePoll.mutate()} disabled={savePoll.isPending || !pollDirty || poll === '' || Number(poll) < 0} className="sm:ml-auto" />
         </CardContent>
       </Card>
+      <AppearanceCard />
+      <AccountSettingsCard />
       </div>
 
       <div hidden={tab !== 'providers'} className="flex flex-col gap-4">

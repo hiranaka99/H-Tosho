@@ -17,6 +17,8 @@ export interface KavitaLibrary {
 
 export interface SeriesRow {
   id: number;
+  libraryId?: number;
+  libraryName?: string;
   name: string;
   slug?: string;
   bookCount?: number;
@@ -437,6 +439,7 @@ export const api = {
   unmatch: (id: number) => request<{ ok: boolean; removed: boolean }>(`/series/${id}/match`, { method: 'DELETE' }),
   /** Matched series whose confidence is below the review threshold (local DB only). */
   lowConfidenceCount: () => request<{ count: number; threshold: number }>('/series/low-confidence'),
+  reviewSeries: () => request<SeriesRow[]>('/series/needs-review'),
   /** Recent sync/match history for one series (newest first). */
   seriesHistory: (id: number) => request<SyncHistoryEntry[]>(`/series/${id}/history`),
 

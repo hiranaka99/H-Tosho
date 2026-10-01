@@ -34,6 +34,8 @@
   --muted: #71717a;
   --primary: #ea580c;
   --primary-hover: #c2410c;
+  --primary-button: #c2410c;
+  --primary-button-hover: #9a3412;
   --success: #15803d;
   --warning: #b45309;
   --danger: #dc2626;
@@ -53,6 +55,8 @@
   --muted: #a1a1aa;
   --primary: #f97316;
   --primary-hover: #fb923c;
+  --primary-button: #c2410c;
+  --primary-button-hover: #9a3412;
   --success: #22c55e;
   --warning: #fbbf24;
   --danger: #f87171;
@@ -126,6 +130,8 @@
   --color-muted: var(--muted);
   --color-primary: var(--primary);
   --color-primary-hover: var(--primary-hover);
+  --color-primary-button: var(--primary-button);
+  --color-primary-button-hover: var(--primary-button-hover);
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-danger: var(--danger);
@@ -195,7 +201,7 @@ body {
 
 /* Single source of keyboard-focus indication for every interactive element.
    Components must not add their own ring/outline classes on top of this. */
-:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
   outline: 2px solid color-mix(in srgb, var(--primary) 70%, transparent);
   outline-offset: 2px;
 }

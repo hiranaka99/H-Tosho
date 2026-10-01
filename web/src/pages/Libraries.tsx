@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { Search, LayoutGrid, Table2, Sparkles, RefreshCw, Play, BookOpen, Unlink, ArrowUpRight, FileText, Combine, Check, CheckSquare, ChevronLeft, ChevronRight, EllipsisVertical } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource } from '../lib/api';
@@ -86,36 +86,75 @@ function CardActionMenu({ row, onEdit }: { row: SeriesRow; onEdit: () => void })
   const navigate = useNavigate();
   const [open, setOpen] = React.useState(false);
   const root = React.useRef<HTMLDivElement>(null);
+  const trigger = React.useRef<HTMLButtonElement>(null);
+  const menuId = React.useId();
+  const focusLast = React.useRef(false);
 
   React.useEffect(() => {
     if (!open) return;
+    const menu = root.current?.querySelector<HTMLElement>('[role="menu"]');
+    if (menu) {
+      const bounds = menu.getBoundingClientRect();
+      const offset = bounds.left < 8 ? 8 - bounds.left : Math.min(0, window.innerWidth - 8 - bounds.right);
+      menu.style.transform = `translateX(${offset}px)`;
+    }
+    const items = root.current?.querySelectorAll<HTMLElement>('[role="menuitem"]');
+    (focusLast.current ? items?.[items.length - 1] : items?.[0])?.focus();
     const close = (event: PointerEvent) => {
       if (!root.current?.contains(event.target as Node)) setOpen(false);
     };
     document.addEventListener('pointerdown', close);
-    return () => document.removeEventListener('pointerdown', close);
+    const resize = () => setOpen(false);
+    window.addEventListener('resize', resize);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      window.removeEventListener('resize', resize);
+    };
   }, [open]);
 
   const searchArtist = (source: DoujinSource) => {
     const artist = row.artists?.[0];
     const fragment = artist ? buildTagSearchFragment(artist, 'artist', source) : null;
+    setOpen(false);
     if (fragment) navigate(`/downloader?source=${source}&q=${encodeURIComponent(fragment)}`);
   };
 
+  const menuKeys = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      trigger.current?.focus();
+      return;
+    }
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+    const index = items.indexOf(document.activeElement as HTMLElement);
+    let next = -1;
+    if (event.key === 'ArrowDown') next = (index + 1) % items.length;
+    if (event.key === 'ArrowUp') next = (index + items.length - 1) % items.length;
+    if (event.key === 'Home') next = 0;
+    if (event.key === 'End') next = items.length - 1;
+    if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      const match = [...items.slice(index + 1), ...items.slice(0, index + 1)].find((item) => item.textContent?.trim().toLowerCase().startsWith(event.key.toLowerCase()));
+      if (match) next = items.indexOf(match);
+    }
+    if (next >= 0) { event.preventDefault(); items[next]?.focus(); }
+  };
+
   return (
-    <div ref={root} className="absolute right-1.5 top-1.5 z-30">
-      <button type="button" aria-label={`Actions for ${row.name}`} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)} className="flex h-11 w-11 items-center justify-center rounded-md border border-white/20 bg-black/75 text-white transition-colors duration-150 hover:border-primary hover:bg-black">
+    <div ref={root} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }} className="absolute right-1.5 top-1.5 z-30">
+      <button ref={trigger} type="button" aria-label={`Actions for ${row.name}`} aria-haspopup="menu" aria-controls={open ? menuId : undefined} aria-expanded={open} onClick={() => { focusLast.current = false; setOpen((value) => !value); }} onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); focusLast.current = event.key === 'ArrowUp'; setOpen(true); } }} className="flex h-11 w-11 items-center justify-center rounded-md border border-white/20 bg-black/75 text-white transition-colors duration-150 hover:border-primary hover:bg-black">
         <EllipsisVertical className="h-5 w-5" />
       </button>
       {open && (
-        <div role="menu" className="absolute right-0 top-full mt-1 w-52 overflow-hidden rounded-md border border-border bg-surface p-1 text-foreground shadow-xl">
+        <div id={menuId} role="menu" aria-label={`Actions for ${row.name}`} onKeyDown={menuKeys} className="absolute right-0 top-full mt-1 w-52 overflow-hidden rounded-md border border-border bg-surface p-1 text-foreground shadow-xl">
           {row.artists?.length ? (['hitomi', 'nhentai'] as const).map((source) => (
-            <button key={source} type="button" role="menuitem" onClick={() => searchArtist(source)} className="flex min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2">
+            <button key={source} type="button" role="menuitem" tabIndex={-1} onClick={() => searchArtist(source)} className="flex min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2">
               <img src={`/${source}.png`} alt="" className="h-5 w-5 rounded object-contain" aria-hidden="true" />
               Search {ARTIST_SOURCE_META[source].label}
             </button>
           )) : null}
-          <button type="button" role="menuitem" onClick={() => { setOpen(false); onEdit(); }} className="flex min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2">
+          <button type="button" role="menuitem" tabIndex={-1} onClick={() => { setOpen(false); trigger.current?.focus(); onEdit(); }} className="flex min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2">
             <FileText className="h-4 w-4" /> Edit ComicInfo.xml
           </button>
         </div>
@@ -138,15 +177,15 @@ function PaginationControls({ currentPage, pageCount, firstVisible, lastVisible,
   );
 }
 
-export function Libraries() {
+export function Libraries({ review = false }: { review?: boolean }) {
   const { libraryId } = useParams();
   const navigate = useNavigate();
   const qc = useQueryClient();
 
   const initialState = React.useMemo(readLibraryState, []);
   const [selected, setSelected] = React.useState<number | null>(libraryId ? Number(libraryId) : null);
-  const [query, setQuery] = React.useState(initialState.query ?? '');
-  const [statusFilter, setStatusFilter] = React.useState(() => initialState.statusFilter ?? 'all');
+  const [query, setQuery] = React.useState(review ? '' : initialState.query ?? '');
+  const [statusFilter, setStatusFilter] = React.useState(() => review ? 'all' : initialState.statusFilter ?? 'all');
   const [view, setView] = React.useState<'grid' | 'table'>(() => initialState.view ?? 'grid');
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
   const [identify, setIdentify] = React.useState<{ id: number; name: string; cover?: string | null } | null>(null);
@@ -170,7 +209,9 @@ export function Libraries() {
     navigate(`/libraries/${id}`);
   };
 
-  const libs = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
+  const connection = useQuery({ queryKey: ['kavita-status'], queryFn: api.kavitaStatus });
+  const needsConnection = connection.data?.configured === false;
+  const libs = useQuery({ queryKey: ['libraries'], queryFn: api.libraries, enabled: !needsConnection });
   // The full series list is expensive server-side (Kavita fan-out per request),
   // so only refresh it while a job is actually running — the sidebar's always-on
   // ['jobs'] poll drives this. When the last active job finishes, one explicit
@@ -193,9 +234,9 @@ export function Libraries() {
   }, [jobs, pendingCoverEntries, qc, selected]);
 
   const series = useQuery({
-    queryKey: ['library-series', selected],
-    queryFn: () => api.librarySeries(selected!),
-    enabled: selected !== null,
+    queryKey: ['library-series', review ? 'review' : selected],
+    queryFn: () => review ? api.reviewSeries() : api.librarySeries(selected!),
+    enabled: !needsConnection && (review || selected !== null),
     refetchInterval: activeJobs > 0 && !identify ? 5000 : false,
   });
   const currentMeta = useQuery({
@@ -206,16 +247,16 @@ export function Libraries() {
   const override = useQuery({
     queryKey: ['library-override', selected],
     queryFn: () => api.libraryOverride(selected!),
-    enabled: selected !== null,
+    enabled: !review && selected !== null,
   });
 
 
   // /libraries no longer has an "all" view — land on the first library once loaded.
   React.useEffect(() => {
-    if (selected === null && libs.data && libs.data.length > 0) {
+    if (!review && selected === null && libs.data && libs.data.length > 0) {
       navigate(`/libraries/${libs.data[0].id}`, { replace: true });
     }
-  }, [libs.data, selected, navigate]);
+  }, [libs.data, selected, navigate, review]);
 
   const rows = React.useMemo(
     () => (series.data ?? []).map((row) => pendingCovers[row.id] ? { ...row, cover: pendingCovers[row.id].url } : row),
@@ -226,19 +267,19 @@ export function Libraries() {
     const q = query.toLowerCase();
     return rows.filter((r) => {
       const okStatus =
-        statusFilter === 'all' ? true :
+        review || statusFilter === 'all' ? true :
         statusFilter === 'low-score' ? (r.status === 'matched' && typeof r.matchScore === 'number' && r.matchScore < LOW_CONFIDENCE) :
         r.status === statusFilter;
       const okQuery = query ? r.name.toLowerCase().includes(q) || (r.artists ?? []).some((a) => a.toLowerCase().includes(q)) : true;
       return okStatus && okQuery;
     });
-  }, [rows, statusFilter, query]);
+  }, [rows, statusFilter, query, review]);
   const pageCount = React.useMemo(() => Math.max(1, Math.ceil(filtered.length / SERIES_PAGE_SIZE)), [filtered.length]);
   const currentPage = Math.min(page, pageCount);
   const visibleRows = filtered.slice((currentPage - 1) * SERIES_PAGE_SIZE, currentPage * SERIES_PAGE_SIZE);
   const firstVisible = filtered.length === 0 ? 0 : (currentPage - 1) * SERIES_PAGE_SIZE + 1;
   const lastVisible = Math.min(currentPage * SERIES_PAGE_SIZE, filtered.length);
-  React.useEffect(() => writeLibraryState({ query, statusFilter, view }), [query, statusFilter, view]);
+  React.useEffect(() => writeLibraryState(review ? { view } : { query, statusFilter, view }), [query, statusFilter, view, review]);
   const changePage = (nextPage: number) => {
     setPage(nextPage);
     document.querySelector('main')?.scrollTo({ top: 0 });
@@ -276,6 +317,7 @@ export function Libraries() {
     onSuccess: (_res, row) => {
       qc.invalidateQueries({ queryKey: ['library-series'] });
       qc.invalidateQueries({ queryKey: ['libraries'] });
+      qc.invalidateQueries({ queryKey: ['low-confidence'] });
       setUnmatchTarget(null);
       toast({ tone: 'success', title: 'Unmatched', description: row.name });
     },
@@ -284,32 +326,43 @@ export function Libraries() {
 
   const matchedInLib = rows.filter((r) => r.status === 'matched').length;
 
+  if (needsConnection) {
+    return <div className="flex flex-col gap-4">
+      <PageHeader icon={<BookOpen className="h-5 w-5" />} title="Libraries" subtitle="Review matches and manage Kavita metadata." />
+      <Card className="flex flex-col items-center pb-8">
+        <EmptyState icon={<BookOpen className="h-8 w-8" />} title="Connect your Kavita library" description="Connect Kavita to browse your series, identify matches, and keep metadata up to date." />
+        <Button asChild><Link to="/settings#kavita-connection">Connect Kavita</Link></Button>
+      </Card>
+    </div>;
+  }
+
   return (
     <div className="flex min-w-0 flex-col gap-4">
-      <PageHeader icon={<BookOpen className="h-5 w-5" />} title="Libraries" subtitle="Review matches and manage Kavita metadata." />
-      <div className="sticky -top-3 z-20 -mx-1 -mt-3 flex flex-col gap-3 bg-background px-1 pb-2 pt-3 sm:-top-5 sm:-mt-5 sm:pt-5 lg:-top-8 lg:-mt-8 lg:pt-8">
+      <PageHeader icon={<BookOpen className="h-5 w-5" />} title={review ? 'Needs review' : 'Libraries'} subtitle={review ? 'Review uncertain matches across all your libraries.' : 'Review matches and manage Kavita metadata.'} />
+      <div className="sticky top-0 z-20 -mx-1 flex flex-col gap-3 bg-background px-1 py-2">
         {/* View tabs — one per Kavita library. */}
         {libs.isError ? (
           <Card><ErrorState title="Could not load libraries" description={libs.error instanceof Error ? libs.error.message : String(libs.error)} onRetry={() => void libs.refetch()} /></Card>
         ) : libs.data && libs.data.length > 0 ? (
           <div className="flex flex-col gap-2 border-b border-border-2 lg:flex-row lg:items-end">
-            <div role="group" aria-label="Kavita library" className="flex max-w-full gap-4 overflow-x-auto">
+            <div role="group" aria-label="Kavita library" className="flex min-w-0 max-w-full gap-4 overflow-x-auto p-1">
               {libs.data.map((lib) => (
                 <button
                   key={lib.id}
                   type="button"
-                  aria-pressed={selected === lib.id}
+                  aria-pressed={!review && selected === lib.id}
                   onClick={() => pickLibrary(lib.id)}
-                  className={cn('-mb-px shrink-0 border-b-2 px-1 pb-2 text-sm font-medium transition-colors duration-150', selected === lib.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground')}
+                  className={cn('shrink-0 border-b-2 px-1 pb-2 text-sm font-medium transition-colors duration-150', !review && selected === lib.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground')}
                 >
                   {lib.name}
                 </button>
               ))}
+              <Link to="/libraries/review" aria-current={review ? 'page' : undefined} className={cn('shrink-0 border-b-2 px-1 pb-2 text-sm font-medium', review ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground')}>Needs review</Link>
             </div>
-            <div className="flex flex-wrap items-center gap-2 pb-2 lg:ml-auto lg:flex-nowrap">
+            {!review && <div className="flex shrink-0 flex-wrap items-center gap-2 pb-2 lg:ml-auto lg:flex-nowrap">
               <Button size="sm" variant="outline" className="flex-1 sm:flex-none" onClick={() => enqueue('match-unmatched', { libraryId: selected })} disabled={selected === null}><Play className="h-3.5 w-3.5" /> Match all unmatched</Button>
               <Button size="sm" className="flex-1 sm:flex-none" onClick={() => enqueue('scan-new', { libraryId: selected })} disabled={selected === null}><RefreshCw className="h-3.5 w-3.5" /> Refresh library</Button>
-            </div>
+            </div>}
           </div>
         ) : (
           <div className="self-start border-b border-border-2 pb-2 text-sm text-muted">
@@ -317,12 +370,12 @@ export function Libraries() {
           </div>
         )}
 
-        {selected !== null && (
+        {(review || selected !== null) && (
           <div className="flex flex-col gap-2">
             <div className="flex flex-wrap items-end justify-between gap-2">
               <div>
                 <h2 className="text-lg font-semibold">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h2>
-                <p className="text-sm text-muted">{matchedInLib} matched · {rows.length - matchedInLib} pending</p>
+                <p className="text-sm text-muted">{review ? 'Matches below 80% confidence · All libraries' : `${matchedInLib} matched · ${rows.length - matchedInLib} pending`}</p>
               </div>
               {filtered.length > SERIES_PAGE_SIZE && (
                 <PaginationControls currentPage={currentPage} pageCount={pageCount} firstVisible={firstVisible} lastVisible={lastVisible} total={filtered.length} compact onChange={changePage} />
@@ -333,20 +386,20 @@ export function Libraries() {
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
                 <Input aria-label="Filter series or artists" placeholder="Filter series or artist…" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} className="w-full pl-8" />
               </div>
-              <Select aria-label="Filter by match status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="min-w-0 sm:w-44">
+              {!review && <Select aria-label="Filter by match status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="min-w-0 sm:w-44">
                 <option value="all">All</option>
                 <option value="matched">Matched</option>
                 <option value="unmatched">Unmatched</option>
                 <option value="failed">Failed</option>
-                <option value="low-score">Low confidence (&lt;80%)</option>
-              </Select>
-              <Button className="w-full sm:w-auto" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit multi-select mode' : 'Multi-select — click cards to select them'}>
+                <option value="low-score">Needs review (&lt;80%)</option>
+              </Select>}
+              {!review && <Button className="w-full sm:w-auto" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode((m) => !m)} title={selectMode ? 'Exit multi-select mode' : 'Multi-select — click cards to select them'}>
                 <CheckSquare className="h-4 w-4" /> Select
-              </Button>
-              <label className="flex h-9 min-w-0 cursor-pointer select-none items-center justify-between gap-2 rounded-md border border-border-2 bg-surface px-3 text-xs font-medium text-muted transition-colors duration-150 hover:bg-surface-2 sm:justify-start">
+              </Button>}
+              {!review && <label className="flex h-9 min-w-0 cursor-pointer select-none items-center justify-between gap-2 rounded-md border border-border-2 bg-surface px-3 text-xs font-medium text-muted transition-colors duration-150 hover:bg-surface-2 sm:justify-start">
                 Auto-match
                 <Switch aria-label="Automatically match new series" checked={override.data?.autoMatch ?? true} onCheckedChange={setAutoMatch} />
-              </label>
+              </label>}
               <div className="ml-auto flex overflow-hidden rounded-md border border-border-2 sm:ml-0">
                 <button type="button" aria-label="Grid view" aria-pressed={view === 'grid'} onClick={() => setView('grid')} className={cn('flex h-9 w-9 items-center justify-center transition-colors duration-150', view === 'grid' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}><LayoutGrid className="h-4 w-4" /></button>
                 <button type="button" aria-label="Table view" aria-pressed={view === 'table'} onClick={() => setView('table')} className={cn('flex h-9 w-9 items-center justify-center transition-colors duration-150', view === 'table' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2')}><Table2 className="h-4 w-4" /></button>
@@ -357,7 +410,7 @@ export function Libraries() {
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col gap-3">
-        {selected === null ? (
+        {!review && selected === null ? (
           <Card className="flex flex-1 items-center justify-center">
             <EmptyState icon={<BookOpen className="h-8 w-8" />} title="Select a library" description="Pick a Kavita library above to browse and identify its series." />
           </Card>
@@ -398,7 +451,7 @@ export function Libraries() {
               </div>
             ) : filtered.length === 0 ? (
               <Card className="flex flex-1 items-center justify-center">
-                <EmptyState title="No series" description="No series match the current filters." />
+                <EmptyState title={review && !query ? 'All caught up' : 'No series'} description={review && !query ? 'No matches need review. New uncertain matches will appear here.' : 'No series match the current filters.'} />
               </Card>
             ) : view === 'grid' ? (
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
@@ -412,7 +465,8 @@ export function Libraries() {
                     )}
                   >
                     <button
-                      className={cn('absolute inset-0 rounded-xl', selectMode ? 'z-30' : 'z-10')}
+                      type="button"
+                      className="flex h-full w-full flex-col rounded-lg text-left"
                       onClick={(event) => {
                         event.stopPropagation();
                         if (selectMode) toggleCheck(r.id);
@@ -420,25 +474,25 @@ export function Libraries() {
                       }}
                       title={selectMode ? (checked.has(r.id) ? 'Deselect series' : 'Select series') : `Identify ${r.name}`}
                       aria-label={selectMode ? (checked.has(r.id) ? `Deselect ${r.name}` : `Select ${r.name}`) : `Identify ${r.name}`}
-                    />
-                    <span className={cn('absolute left-2 top-2 z-20 h-3 w-3 rounded-full border-2 border-black/60 shadow-sm', r.status === 'matched' ? 'bg-success' : r.status === 'failed' ? 'bg-danger' : r.status === 'syncing' ? 'bg-warning' : 'bg-muted')} title={`Status: ${r.status}`} aria-hidden="true" />
-                    {checked.has(r.id) && (
-                      <div className="pointer-events-none absolute bottom-2 left-2 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-primary bg-primary text-white" aria-hidden><Check className="h-3.5 w-3.5" /></div>
-                    )}
-                    {!selectMode && <CardActionMenu row={r} onEdit={() => setComicInfo({ id: r.id, name: r.name })} />}
-                    <div className="aspect-[3/4] w-full overflow-hidden rounded-lg">
-                      <Cover src={r.cover} name={r.name} className="transition-transform duration-300 ease-out group-hover:scale-105" />
-                    </div>
-                    <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-1 bg-gradient-to-t from-black/90 to-transparent p-2 pt-6">
-                      <p className="min-h-8 overflow-hidden text-xs font-semibold leading-4 text-white [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [text-shadow:1px_0_0_rgba(0,0,0,0.85),-1px_0_0_rgba(0,0,0,0.85),0_1px_0_rgba(0,0,0,0.85),0_-1px_0_rgba(0,0,0,0.85),0_2px_3px_rgba(0,0,0,0.6)]">{r.name}</p>
-                      <div className="flex flex-wrap items-center gap-1">
-                        {r.providerId && <ProviderBadge id={r.providerId} solid />}
-                        <StatusBadge status={r.status} className="bg-black/70" />
-                        {r.aligned && <span className="rounded bg-success/90 px-1.5 py-0.5 text-2xs font-medium text-white">Aligned</span>}
-                        {typeof r.pageCount === 'number' && r.pageCount > 0 && <span className="rounded bg-black/70 px-1.5 py-0.5 text-2xs font-medium tabular-nums text-white/80">{r.pageCount} pages</span>}
+                      aria-pressed={selectMode ? checked.has(r.id) : undefined}
+                    >
+                      {checked.has(r.id) && (
+                        <span className="pointer-events-none absolute left-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-full bg-primary-button text-white" aria-hidden><Check className="h-4 w-4" /></span>
+                      )}
+                      <div className="aspect-[3/4] w-full overflow-hidden rounded-t-lg">
+                        <Cover src={r.cover} name={r.name} className="transition-transform duration-300 ease-out group-hover:scale-105" />
                       </div>
-                      {r.status === 'failed' && r.errorMessage && <span className="line-clamp-2 text-2xs text-red-200">{r.errorMessage}</span>}
-                    </div>
+                      <div className="flex w-full flex-1 flex-col gap-2 p-3">
+                        <p className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">{r.name}</p>
+                        {review && <p className="text-xs text-muted">{r.libraryName}</p>}
+                        <div className="mt-auto flex flex-wrap items-center gap-1">
+                          {r.status === 'matched' && typeof r.matchScore === 'number' && r.matchScore < LOW_CONFIDENCE
+                            ? <Badge tone="warning">Needs review · {Math.round(r.matchScore * 100)}%</Badge>
+                            : <StatusBadge status={r.status} />}
+                        </div>
+                      </div>
+                    </button>
+                    {!selectMode && <CardActionMenu row={r} onEdit={() => setComicInfo({ id: r.id, name: r.name })} />}
                   </Card>
                 ))}
               </div>
@@ -447,7 +501,7 @@ export function Libraries() {
                 <table className="min-w-[760px] w-full text-sm">
                   <thead className="border-b border-border">
                     <tr>
-                      <th className="px-3 py-2">
+                      {!review && <th className="px-3 py-2">
                         <label className="flex h-9 w-9 cursor-pointer items-center justify-center">
                           <input
                             type="checkbox"
@@ -457,7 +511,7 @@ export function Libraries() {
                             className="h-4 w-4 accent-[var(--color-primary)]"
                           />
                         </label>
-                      </th>
+                      </th>}
                       <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-muted">Series</th>
                       <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-muted">Status</th>
                       <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-muted">Provider</th>
@@ -470,21 +524,23 @@ export function Libraries() {
                   <tbody>
                     {visibleRows.map((r) => (
                       <tr key={r.id} className="border-b border-border last:border-0 transition-colors hover:bg-surface-2/60">
-                        <td className="px-3 py-2.5">
+                        {!review && <td className="px-3 py-2.5">
                           <label className="flex h-9 w-9 cursor-pointer items-center justify-center">
                             <input type="checkbox" aria-label={`Select ${r.name}`} checked={checked.has(r.id)} onChange={() => toggleCheck(r.id)} className="h-4 w-4 accent-[var(--color-primary)]" />
                           </label>
-                        </td>
+                        </td>}
                         <td className="px-3 py-2.5">
                           <div className="flex items-center gap-2">
                             <div className="h-9 w-6 overflow-hidden rounded border border-border bg-surface-2">
                               <Cover src={r.cover} name={r.name} />
                             </div>
-                            <span className="font-medium">{r.name}</span>
+                            <div><span className="font-medium">{r.name}</span>{review && <p className="text-xs text-muted">{r.libraryName}</p>}</div>
                           </div>
                         </td>
                         <td className="px-3 py-2.5">
-                          <StatusBadge status={r.status} className="whitespace-nowrap" />
+                          {r.status === 'matched' && typeof r.matchScore === 'number' && r.matchScore < LOW_CONFIDENCE
+                            ? <Badge tone="warning">Needs review · {Math.round(r.matchScore * 100)}%</Badge>
+                            : <StatusBadge status={r.status} className="whitespace-nowrap" />}
                           {r.status === 'failed' && r.errorMessage && <p className="mt-1 max-w-48 break-words text-xs text-danger">{r.errorMessage}</p>}
                         </td>
                         <td className="px-3 py-2.5">
@@ -501,7 +557,7 @@ export function Libraries() {
                           {typeof r.matchScore === 'number' ? (
                             <span
                               className={cn('tabular-nums', r.status === 'matched' && r.matchScore < LOW_CONFIDENCE && 'font-medium text-warning')}
-                              title={r.status === 'matched' && r.matchScore < LOW_CONFIDENCE ? `Low confidence (${Math.round(r.matchScore * 100)}%) — review via the “Low confidence” filter` : undefined}
+                              title={r.status === 'matched' && r.matchScore < LOW_CONFIDENCE ? `Needs review (${Math.round(r.matchScore * 100)}% confidence)` : undefined}
                             >
                               {Math.round(r.matchScore * 100)}%
                             </span>
@@ -568,7 +624,7 @@ export function Libraries() {
           currentCover={identify.cover}
           onCoverApplied={(coverUrl, jobId) => {
             setPendingCovers((current) => ({ ...current, [identify.id]: { url: coverUrl, jobId } }));
-            qc.setQueryData<SeriesRow[]>(['library-series', selected], (rows) =>
+            qc.setQueryData<SeriesRow[]>(['library-series', review ? 'review' : selected], (rows) =>
               rows?.map((row) => row.id === identify.id ? { ...row, cover: coverUrl } : row),
             );
           }}

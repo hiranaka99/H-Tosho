@@ -122,8 +122,8 @@ or head to the **Downloader** to search for new galleries.
 
 - **Libraries** — browse every Kavita library and its series with match status,
   confidence scores and cover art. Identify or re-identify any series (the
-  identify dialog also shows each series' match history), review low-confidence
-  matches (the badge in the sidebar counts them), edit a series' ComicInfo
+  identify dialog also shows each series' match history), review uncertain
+  matches (the sidebar badge opens Needs review across all libraries), edit a series' ComicInfo
   files, and merge selected series.
 - **Downloader** — four tabs:
   - *Search* — find galleries on Hitomi.la or nHentai, sort by newest or
@@ -134,8 +134,8 @@ or head to the **Downloader** to search for new galleries.
     available. You can choose which Kavita libraries feed the recommendation profile.
   - *Watched* — manage your watched searches, their check schedule, and browse
     the "Recently added" feed of new finds.
-  - *Manager* — the live download queue: progress, pause/resume/cancel/retry,
-    duplicate badges, and completed history.
+  - *Downloads* — the live download queue: progress, pause/resume/cancel/retry,
+    a separate Needs attention section for failures, and completed history.
 - **Jobs** — every background task (scans, matching, merges, ComicInfo edits,
   watched-search checks) with status, logs, cancel and retry.
 - **Settings** — Kavita connection, auto-scan interval, appearance (light /

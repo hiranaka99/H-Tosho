@@ -234,6 +234,38 @@ api.get('/series/low-confidence', (c) => {
   return c.json({ count: Number(row?.n ?? 0), threshold: LOW_CONFIDENCE_THRESHOLD });
 });
 
+/** Review only uncertain matches, using live names and library membership. */
+api.get('/series/needs-review', async (c) => {
+  const client = connectedClient();
+  if (!client) return c.json({ error: 'Kavita not configured' }, 503);
+  const matches = getDb().select().from(schema.seriesMatches)
+    .where(and(eq(schema.seriesMatches.status, 'matched'), lt(schema.seriesMatches.matchScore, LOW_CONFIDENCE_THRESHOLD))).all();
+  if (matches.length === 0) return c.json([]);
+  const byId = new Map(matches.map((match) => [match.kavitaSeriesId, match]));
+  try {
+    const libraries = await client.getLibraries();
+    // Fetch identities only, avoiding the metadata fan-out of the library view.
+    // Fail visibly if any library cannot be read rather than report a partial queue.
+    const results = await Promise.all(libraries.map(async (library) => {
+      const series = await client.getSeries(library.id);
+      return series.filter((s) => byId.has(s.id)).map((s) => {
+        const match = byId.get(s.id)!;
+        return {
+          id: s.id, name: s.name, libraryId: library.id, libraryName: library.name,
+          bookCount: s.bookCount, pageCount: s.pages ?? null,
+          cover: s.cover ? kavitaCoverUrl(s.id, s.cover, match.lastSyncedAt) : null,
+          status: match.status, providerId: match.providerId, matchScore: match.matchScore,
+          aligned: match.aligned, lastSyncedAt: match.lastSyncedAt,
+          artists: artistsFromMetadata(match.metadataJson),
+        };
+      });
+    }));
+    return c.json(results.flat().sort((a, b) => a.matchScore! - b.matchScore! || a.name.localeCompare(b.name)));
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
 api.get('/series/:id', async (c) => {
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
