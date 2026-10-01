@@ -97,6 +97,7 @@ export function setKavitaConnection(conn: KavitaConnection): void {
     .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(conn) } })
     .run();
   settingsCache.delete('kavita-connection');
+  notifySettingChange('kavita-connection');
 }
 
 export function getProviderSettings(): Record<string, ProviderSetting> {
@@ -438,6 +439,7 @@ export function setDownloaderSettings(s: DownloaderSettings): void {
     .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(s) } })
     .run();
   settingsCache.delete('downloader');
+  notifySettingChange('downloader');
 }
 
 // ---------------- Recommendations ----------------

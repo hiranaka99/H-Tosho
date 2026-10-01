@@ -36,13 +36,14 @@ import {
   Merge,
   ChevronDown,
   Plus,
+  ThumbsDown,
 } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
 import { useDownloadActions, useDownloads } from '../lib/DownloadsContext';
 import { buildTagSearchFragment, cn, timeAgo, toIsoUtc } from '../lib/utils';
 import { formatBytes, formatSpeed } from '../lib/format';
 import { toast } from '../lib/toast';
-import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, ErrorState, ConfirmDialog, Skeleton } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, SegmentedControl, Disclosure, ErrorState, ConfirmDialog, Skeleton } from '../components/ui';
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeIntoSeriesDialog } from '../components/MergeIntoSeriesDialog';
 
@@ -273,13 +274,13 @@ function Pager({ page, count, onPageChange }: { page: number; count: number; onP
   return (
     <nav aria-label="Result pages" className="mt-5 flex flex-wrap items-center justify-center gap-1">
       <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
-        <ChevronLeft className="h-3.5 w-3.5" /> Prev
+        <ChevronLeft className="h-3.5 w-3.5" /> Previous
       </Button>
       {pageList(page, count).map((p, i) =>
         p === '…' ? (
           <span key={`e${i}`} className="px-1 text-xs text-muted">…</span>
         ) : (
-          <Button key={p} size="sm" variant={p === page ? 'default' : 'outline'} onClick={() => onPageChange(p)} aria-current={p === page ? 'page' : undefined}>
+          <Button key={p} size="sm" variant="outline" className={p === page ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15' : undefined} onClick={() => onPageChange(p)} aria-current={p === page ? 'page' : undefined}>
             {p}
           </Button>
         ),
@@ -289,7 +290,7 @@ function Pager({ page, count, onPageChange }: { page: number; count: number; onP
       </Button>
       <form className="ml-2 flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); commitJump(); }} aria-label="Jump to page">
         <label className="sr-only" htmlFor="jump-page">Page number</label>
-        <input id="jump-page" type="number" min={1} max={count} value={jump} onChange={(e) => setJump(e.target.value)} placeholder={`${page}/${count}`} className="h-7 w-16 rounded-md border border-border-2 bg-surface px-2 text-center text-xs tabular-nums text-foreground" />
+        <Input id="jump-page" type="number" min={1} max={count} value={jump} onChange={(e) => setJump(e.target.value)} placeholder={`${page}/${count}`} className="w-16 px-2 text-center text-xs tabular-nums" />
         <Button size="sm" variant="ghost" type="submit">Go</Button>
       </form>
     </nav>
@@ -318,14 +319,32 @@ function DownloadStatusBadge({ status }: { status: string }) {
 // ---------------- Gallery card ----------------
 // Handlers take the item they act on (instead of per-card closures) so the
 // memoized card only re-renders when its own data changes.
-const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, task, starting = false, index = 0, downloadedAt, selectMode = false, selected = false, onToggleSelect, owned = false, onMarkOwned }: { item: DoujinSearchResult; onOpen: (item: DoujinSearchResult) => void; onDownload: (item: DoujinSearchResult) => void; task?: DownloadTask; starting?: boolean; index?: number; downloadedAt?: string | null; selectMode?: boolean; selected?: boolean; onToggleSelect?: (item: DoujinSearchResult) => void; owned?: boolean; onMarkOwned?: (item: DoujinSearchResult) => void }) {
-  const tags = [...item.artists, ...item.tags].slice(0, 6);
+interface GalleryCardProps {
+  item: DoujinSearchResult;
+  onOpen: (item: DoujinSearchResult) => void;
+  onDownload: (item: DoujinSearchResult) => void;
+  task?: DownloadTask;
+  starting?: boolean;
+  index?: number;
+  downloadedAt?: string | null;
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (item: DoujinSearchResult) => void;
+  owned?: boolean;
+  onDismissGallery?: (item: DoujinSearchResult) => void;
+  dismissing?: boolean;
+  showSource?: boolean;
+  showTags?: boolean;
+}
+
+const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, task, starting = false, index = 0, downloadedAt, selectMode = false, selected = false, onToggleSelect, owned = false, onDismissGallery, dismissing = false, showSource = true, showTags = true }: GalleryCardProps) {
+  const tags = item.tags.slice(0, 4);
   const active = starting || task?.status === 'queued' || task?.status === 'downloading' || task?.status === 'paused';
   return (
     <article
       style={{ animationDelay: `${Math.min(index, 15) * 40}ms` }}
       className={cn(
-        'group flex animate-fade-up flex-col overflow-hidden rounded-lg border bg-surface transition-colors duration-200 hover:border-border-2',
+        '@container group flex min-w-0 animate-fade-up flex-col overflow-hidden rounded-lg border bg-surface transition-colors duration-200 hover:border-border-2',
         selected ? 'border-primary/60 ring-2 ring-primary' : 'border-border',
       )}
     >
@@ -350,23 +369,33 @@ const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, 
           </div>
         </div>
         <div className="flex min-w-0 flex-col gap-2 p-3 pb-0">
-          <p className="overflow-hidden text-sm font-medium [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]" title={item.title}>{item.title}</p>
+          <p className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]" title={item.title}>{item.title}</p>
           <p className="text-xs text-muted min-[420px]:hidden">{[item.language, item.pageCount ? `${item.pageCount} pages` : null].filter(Boolean).join(' · ')}</p>
-          {tags.length > 0 && <div className="flex flex-wrap gap-1">{tags.map((t, i) => <span key={i} className={cn('rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted', i > 1 && 'hidden min-[420px]:inline')}>{t}</span>)}</div>}
+          {item.artists.length > 0 && (
+            <p className="truncate text-xs font-medium text-foreground" title={`Artists: ${item.artists.join(', ')}`}>
+              <span className="text-muted">Artist{item.artists.length > 1 ? 's' : ''} · </span>{item.artists.join(', ')}
+            </p>
+          )}
+          {showTags && tags.length > 0 && <div className="flex max-h-12 flex-wrap gap-1 overflow-hidden" aria-label="Tags">{tags.map((tag, i) => <span key={i} className="max-w-full truncate rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{tag}</span>)}</div>}
         </div>
       </button>
-      <div className="mt-auto flex flex-wrap items-center justify-between gap-2 p-3 pt-2">
-        <SourceBadge source={item.source} />
-        <div className="flex items-center gap-1.5">
-          {onMarkOwned && (
-            <Button size="sm" variant="outline" onClick={() => void onMarkOwned(item)} disabled={owned} title={owned ? 'Marked as owned — never recommended again' : 'Mark as owned — never recommended again'} aria-label={owned ? `${item.title} is marked as owned` : `Mark ${item.title} as owned`}>
-              <Bookmark className={cn('h-3.5 w-3.5', owned && 'fill-current text-primary')} />
+      <div className="mt-auto flex min-w-0 flex-col gap-2 p-3">
+        {(showSource || owned) && (
+          <div className="flex min-h-6 flex-wrap items-center gap-2">
+            {showSource && <SourceBadge source={item.source} />}
+            {owned && <Badge tone="muted"><Bookmark className="h-3 w-3" /> Owned</Badge>}
+          </div>
+        )}
+        <div className="flex min-w-0 items-stretch gap-2">
+          <Button size="sm" className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1" onClick={() => onDownload(item)} disabled={active || !!downloadedAt} aria-label={active ? `${item.title} is ${task?.status ?? 'starting'}` : downloadedAt ? `${item.title} already downloaded` : `Download ${item.title}`}>
+            {active ? <Loader2 className={cn('h-3.5 w-3.5 shrink-0', task?.status !== 'paused' && 'animate-spin')} /> : downloadedAt ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <DownloadIcon className="h-3.5 w-3.5 shrink-0" />}
+            <span className="truncate">{task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : active ? 'Downloading' : downloadedAt ? 'Downloaded' : 'Download'}</span>
+          </Button>
+          {onDismissGallery && (
+            <Button size="icon" variant="outline" className="max-lg:min-h-11 max-lg:min-w-11 pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 text-muted hover:text-foreground" onClick={() => void onDismissGallery(item)} disabled={dismissing} title="Don't recommend this gallery again" aria-label={`Don't recommend ${item.title} again`}>
+              <ThumbsDown className="h-3.5 w-3.5 shrink-0" />
             </Button>
           )}
-          <Button size="sm" onClick={() => onDownload(item)} disabled={active || !!downloadedAt} aria-label={active ? `${item.title} is ${task?.status ?? 'starting'}` : downloadedAt ? `${item.title} already downloaded` : `Download ${item.title}`}>
-            {active ? <Loader2 className={cn('h-3.5 w-3.5', task?.status !== 'paused' && 'animate-spin')} /> : downloadedAt ? <CheckCircle2 className="h-3.5 w-3.5" /> : <DownloadIcon className="h-3.5 w-3.5" />}
-            {task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : active ? 'Downloading' : downloadedAt ? 'Downloaded' : 'Download'}
-          </Button>
         </div>
       </div>
     </article>
@@ -410,7 +439,7 @@ function TagList({ label, items, namespaces, icon, onSearch, titleFor }: {
               onClick={() => onSearch?.(t, ns)}
               title={titleFor ? titleFor(t, ns) : onSearch ? `Search for “${t}”` : undefined}
               className={cn(
-                'rounded-full px-2.5 py-1 text-xs transition-all',
+                'max-lg:min-h-11 pointer-coarse:min-h-11 rounded-full px-2.5 py-1 text-xs transition-all',
                 style,
                 onSearch && 'cursor-pointer hover:brightness-125',
               )}
@@ -509,7 +538,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
                   <Button size="sm" variant="outline" disabled={previewPage === 0} onClick={() => showPreviewPage(previewPage - 1)} aria-label="Previous page"><ChevronLeft className="h-4 w-4" /><span className="hidden sm:inline">Previous</span></Button>
                   <label className="flex min-w-0 items-center justify-center gap-1.5 text-xs text-muted">
                     <span>Page</span>
-                    <Select aria-label="Preview page" value={previewPage} onChange={(event) => showPreviewPage(Number(event.target.value))} className="h-8 w-auto min-w-16 py-0 pl-2 pr-7 text-xs">
+                    <Select aria-label="Preview page" value={previewPage} onChange={(event) => showPreviewPage(Number(event.target.value))} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-auto min-w-16 py-0 pl-2 pr-7 text-xs">
                       {previewPages.map((_, index) => <option key={index} value={index}>{index + 1}</option>)}
                     </Select>
                     <span>of {previewPages.length}</span>
@@ -521,7 +550,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
               <Cover url={g?.coverUrl ?? item.coverUrl} title={item.title} className="mx-auto aspect-[3/4] w-40 rounded-md border border-border lg:w-48" />
             )}
             {g?.url && (
-              <a href={g.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 self-start text-xs text-muted transition-colors hover:text-primary">
+              <a href={g.url} target="_blank" rel="noreferrer" className="inline-flex max-lg:min-h-11 pointer-coarse:min-h-11 items-center gap-1.5 self-start text-xs text-muted transition-colors hover:text-primary">
                 <ExternalLink className="h-3 w-3" /> View on {SOURCE_LABELS[item.source]}
               </a>
             )}
@@ -570,7 +599,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
                       type="button"
                       onClick={() => searchFor(g.series ?? '', 'series')}
                       title={searchTitle(g.series ?? '', 'series')}
-                      className="w-fit cursor-pointer rounded-full bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-700 transition-all hover:brightness-125 dark:bg-cyan-400/20 dark:text-cyan-300"
+                      className="max-lg:min-h-11 pointer-coarse:min-h-11 w-fit cursor-pointer rounded-full bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-700 transition-all hover:brightness-125 dark:bg-cyan-400/20 dark:text-cyan-300"
                     >
                       {g.series}
                     </button>
@@ -633,11 +662,11 @@ const QueueRow = React.memo(function QueueRow({ task, onAction, onEditComicInfo,
   const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : 0;
   const showCover = task.status === 'completed' && !!task.outputPath;
   return (
-    <div className="flex animate-fade-up gap-3 rounded-md border border-border p-3 transition-colors">
+    <div className="flex min-w-0 animate-fade-up gap-3 rounded-lg border border-border p-3 transition-colors duration-150 sm:p-4">
       {showCover && <TaskCover id={task.id} />}
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <DownloadStatusBadge status={task.status} />
             <span className="truncate text-sm font-medium" title={task.title ?? ''}>{task.title ?? `Gallery ${task.galleryId}`}</span>
           </div>
@@ -868,7 +897,7 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
           <Star className="h-4 w-4" /> Watched searches
         </CardTitle>
         <div className="flex items-center gap-2">
-          <Select aria-label="Watched search check interval" value={String(intervalMinutes)} onChange={(e) => void saveInterval(Number(e.target.value))} disabled={savingInterval} className="h-8 w-32 shrink-0">
+          <Select aria-label="Watched search check interval" value={String(intervalMinutes)} onChange={(e) => void saveInterval(Number(e.target.value))} disabled={savingInterval} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-32 shrink-0">
             {WATCH_INTERVAL_OPTIONS.map((o) => (
               <option key={o.minutes} value={o.minutes}>{o.label}</option>
             ))}
@@ -891,7 +920,7 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
               <div key={w.id} className="rounded-md border border-border-2 px-3 py-2 text-xs">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone="muted">{SOURCE_LABELS[w.source] ?? w.source}</Badge>
-                  <button type="button" onClick={() => onOpenSearch(w.source, w.query)} title={`Open in search tab: ${w.query}`} aria-label={`Search “${w.query}” on ${SOURCE_LABELS[w.source] ?? w.source}`} className="min-w-0 flex-1 truncate text-left font-medium text-primary underline-offset-2 hover:underline">{w.query}</button>
+                  <button type="button" onClick={() => onOpenSearch(w.source, w.query)} title={`Open in search tab: ${w.query}`} aria-label={`Search “${w.query}” on ${SOURCE_LABELS[w.source] ?? w.source}`} className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 truncate text-left font-medium text-primary underline-offset-2 hover:underline">{w.query}</button>
                   {w.lastResults.length > 0 && (
                     <Button size="sm" variant="ghost" aria-expanded={expanded.has(w.id)} onClick={() => toggleExpanded(w.id)}>
                       {w.lastResults.length} new
@@ -903,7 +932,7 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
                 {w.lastResults.length > 0 && expanded.has(w.id) && (
                   <div className="mt-2 flex flex-col gap-1.5 border-t border-border pt-2">
                     {w.lastResults.map((r) => (
-                      <a key={r.galleryId} href={r.url ?? '#'} target="_blank" rel="noreferrer" className="flex items-center gap-2 hover:underline">
+                      <a key={r.galleryId} href={r.url ?? '#'} target="_blank" rel="noreferrer" className="flex max-lg:min-h-11 pointer-coarse:min-h-11 items-center gap-2 hover:underline">
                         {r.coverUrl && <img src={r.coverUrl} alt="" className="h-8 w-6 shrink-0 rounded object-cover" loading="lazy" />}
                         <span className="truncate">{r.title}</span>
                       </a>
@@ -943,6 +972,17 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
  */
 function ManagerTab() {
   const { tasks, liveConnected, error: downloadsError, refetch: refetchDownloads, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedStatus = searchParams.get('status');
+  const status = requestedStatus === 'failed' || requestedStatus === 'active' ? requestedStatus : 'all';
+  const setStatus = (next: string) => {
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      params.set('tab', 'downloads');
+      params.set('status', next);
+      return params;
+    });
+  };
   const [confirmClear, setConfirmClear] = React.useState(false);
   // The id (not the task row) is held so the delete callback stays stable for
   // memoized QueueRows; the row itself is resolved from the task list for the
@@ -974,18 +1014,28 @@ function ManagerTab() {
           <CardTitle className="flex items-center gap-2">
             <DownloadIcon className="h-4 w-4" /> Downloads
             {liveConnected && <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" /> Live</span>}
-            {currentTasks.length > 0 && <Badge tone="info">{currentTasks.length} current</Badge>}
+            {currentTasks.length > 0 && <Badge tone="info">{currentTasks.length} active</Badge>}
           </CardTitle>
           {finished.some((task) => task.status === 'completed') && <Button size="sm" variant="outline" onClick={() => setConfirmClear(true)}><Trash2 className="h-3.5 w-3.5" /> Clear completed</Button>}
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <label htmlFor="download-status" className="text-sm font-medium">Show</label>
+            <Select id="download-status" value={status} onChange={(event) => setStatus(event.target.value)} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-full sm:w-64">
+              <option value="all">All downloads ({tasks.length})</option>
+              <option value="active">Active ({currentTasks.length})</option>
+              <option value="failed">Failed ({failed.length})</option>
+            </Select>
+          </div>
           {downloadsError ? (
             <ErrorState title="Could not load downloads" description={downloadsError.message} onRetry={() => void refetchDownloads()} />
           ) : tasks.length === 0 ? (
             <EmptyState icon={<DownloadIcon className="h-8 w-8" />} title="No downloads yet" description="Click Download on a gallery to queue it. Set the output folder in Settings first." />
+          ) : (status === 'failed' && failed.length === 0) || (status === 'active' && currentTasks.length === 0) ? (
+            <EmptyState icon={status === 'failed' ? <CheckCircle2 className="h-8 w-8" /> : <DownloadIcon className="h-8 w-8" />} title={status === 'failed' ? 'No failed downloads' : 'No active downloads'} description="Choose All downloads to view the rest of your queue and history." />
           ) : (
             <>
-              {failed.length > 0 && (
+              {status !== 'active' && failed.length > 0 && (
                 <section className="flex flex-col gap-2" aria-labelledby="failed-downloads">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 id="failed-downloads" className="text-sm font-semibold text-danger">Needs attention</h3>
@@ -994,16 +1044,16 @@ function ManagerTab() {
                   {failed.map((task) => <QueueRow key={task.id} task={task} onAction={act} onDelete={removeFromHistory} />)}
                 </section>
               )}
-              {currentTasks.length > 0 && (
+              {status !== 'failed' && currentTasks.length > 0 && (
                 <section className="flex flex-col gap-2" aria-labelledby="current-downloads">
-                  <p id="current-downloads" className="text-xs font-semibold uppercase tracking-wide text-muted">Current</p>
+                  <h3 id="current-downloads" className="text-sm font-semibold">Active downloads</h3>
                   {currentTasks.map((task) => <QueueRow key={task.id} task={task} onAction={act} onEditComicInfo={openComicInfo} />)}
                 </section>
               )}
-              {finished.length > 0 && (
+              {status === 'all' && finished.length > 0 && (
                 <section className="flex flex-col gap-2" aria-labelledby="download-history">
                   <div className="flex items-center justify-between">
-                    <p id="download-history" className="text-xs font-semibold uppercase tracking-wide text-muted">Completed</p>
+                    <h3 id="download-history" className="text-sm font-semibold">Completed</h3>
                     {finished.length > HISTORY_PREVIEW && <Button size="sm" variant="ghost" onClick={() => setShowAllHistory((value) => !value)}>{showAllHistory ? 'Show less' : `Show all (${finished.length})`}</Button>}
                   </div>
                   {(showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW)).map((task) => <QueueRow key={task.id} task={task} onAction={act} onEditComicInfo={openComicInfo} onDelete={removeFromHistory} />)}
@@ -1252,13 +1302,14 @@ export function Downloader() {
   const { data: recs, isFetching: recsLoading, isError: recsFailed, error: recsError, refetch: refetchRecs } = useQuery({
     queryKey: ['recommendations'],
     queryFn: api.recommendations,
+    enabled: tab === 'recommend',
   });
   const [recsRefreshing, setRecsRefreshing] = React.useState(false);
   async function doRefreshRecs() {
     setRecsRefreshing(true);
     try {
-      await api.refreshRecommendations();
-      await refetchRecs();
+      const refreshed = await api.refreshRecommendations();
+      qc.setQueryData(['recommendations'], refreshed);
       toast({ tone: 'success', title: 'Fresh picks ready' });
     } catch (e) {
       toast({ tone: 'danger', title: 'Could not refresh recommendations', description: e instanceof Error ? e.message : String(e) });
@@ -1272,20 +1323,54 @@ export function Downloader() {
     [recs],
   );
   const visibleRecs = recs?.items ?? [];
-  const doMarkOwned = React.useCallback(async (item: DoujinSearchResult) => {
+  const [dismissedGalleries, setDismissedGalleries] = React.useState<DoujinSearchResult[]>([]);
+  const [feedbackPending, setFeedbackPending] = React.useState<string | null>(null);
+  const doDismissGallery = React.useCallback(async (item: DoujinSearchResult) => {
+    const key = `${item.source}:${item.galleryId}`;
+    setFeedbackPending(key);
     try {
-      const replacement = await api.markGalleryOwned({ source: item.source, galleryId: item.galleryId });
+      const replacement = await api.dismissGallery({ source: item.source, galleryId: item.galleryId });
       qc.setQueryData(['recommendations'], replacement);
-      toast({ tone: 'success', title: 'Marked as owned', description: 'It will never be recommended again.' });
+      setDismissedGalleries((current) => [...current.filter((gallery) => `${gallery.source}:${gallery.galleryId}` !== key), item]);
     } catch (e) {
-      toast({ tone: 'danger', title: 'Could not mark as owned', description: e instanceof Error ? e.message : String(e) });
+      toast({ tone: 'danger', title: 'Could not dismiss gallery', description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setFeedbackPending(null);
     }
   }, [qc]);
+  async function undoDismissGallery(item: DoujinSearchResult) {
+    const key = `${item.source}:${item.galleryId}`;
+    setFeedbackPending(key);
+    try {
+      const replacement = await api.undoDismissGallery({ source: item.source, galleryId: item.galleryId });
+      qc.setQueryData(['recommendations'], replacement);
+      setDismissedGalleries((current) => current.filter((gallery) => `${gallery.source}:${gallery.galleryId}` !== key));
+      toast({ tone: 'success', title: 'Dismissal undone', description: 'This gallery can be recommended again.' });
+    } catch (e) {
+      toast({ tone: 'danger', title: 'Could not undo dismissal', description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setFeedbackPending(null);
+    }
+  }
+
+  // Completed-download changes can affect eligibility and the taste profile.
+  // Invalidate inactive recommendations without fetching until the tab opens.
+  const completedFingerprint = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!completed) return;
+    const next = completed.map((gallery) => `${gallery.source}:${gallery.galleryId}:${gallery.finishedAt}`).sort().join('|');
+    if (completedFingerprint.current !== null && completedFingerprint.current !== next) {
+      void qc.invalidateQueries({ queryKey: ['recommendations'] });
+    }
+    completedFingerprint.current = next;
+  }, [completed, qc]);
 
   // Which Kavita libraries feed the recommendation profile (per-library opt-out).
-  const { data: recLibs } = useQuery({ queryKey: ['recommendation-libraries'], queryFn: api.recommendationLibraries });
-  const { data: recSettings, refetch: refetchRecSettings } = useQuery({ queryKey: ['recommendation-settings'], queryFn: api.recommendationSettings });
+  const { data: recLibs } = useQuery({ queryKey: ['recommendation-libraries'], queryFn: api.recommendationLibraries, enabled: tab === 'recommend' });
+  const { data: recSettings, refetch: refetchRecSettings } = useQuery({ queryKey: ['recommendation-settings'], queryFn: api.recommendationSettings, enabled: tab === 'recommend' });
+  const [recLibraryPending, setRecLibraryPending] = React.useState<number | null>(null);
   async function toggleRecLibrary(lib: { id: number; name: string }) {
+    setRecLibraryPending(lib.id);
     const excluded = new Set(recSettings?.excludedLibraryIds ?? []);
     if (excluded.has(lib.id)) excluded.delete(lib.id);
     else excluded.add(lib.id);
@@ -1293,9 +1378,11 @@ export function Downloader() {
       await api.saveRecommendationSettings({ excludedLibraryIds: [...excluded] });
       // The server invalidates today's cached set — refetching re-rolls the picks.
       await Promise.all([refetchRecSettings(), refetchRecs()]);
-      toast({ tone: 'success', title: `“${lib.name}” ${excluded.has(lib.id) ? 'excluded from' : 'added to'} recommendations`, description: "Today's picks were re-rolled." });
+      toast({ tone: 'success', title: `“${lib.name}” ${excluded.has(lib.id) ? 'excluded from' : 'added to'} recommendations`, description: 'Your picks now use the selected libraries.' });
     } catch (e) {
       toast({ tone: 'danger', title: 'Could not update libraries', description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setRecLibraryPending(null);
     }
   }
 
@@ -1535,14 +1622,14 @@ export function Downloader() {
                   onFocus={() => setInputFocused(true)}
                   onBlur={() => { setInputFocused(false); setHighlight(-1); }}
                   placeholder="Search by keyword, tag, artist, gallery ID or URL…"
-                  className="pl-9 pr-9"
+                  className="pl-9 pr-11"
                 />
                 {query && (
                   <button
                     type="button"
                     onClick={() => setQuery('')}
                     aria-label="Clear search input"
-                    className="absolute right-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded text-muted hover:text-foreground"
+                    className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded text-muted hover:text-foreground"
                   >
                     <X className="h-4 w-4" />
                   </button>
@@ -1563,13 +1650,11 @@ export function Downloader() {
                             id={`doujin-suggestion-${i}`}
                             role="option"
                             aria-selected={i === highlight}
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              selectSuggestion(s);
-                            }}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => selectSuggestion(s)}
                             onMouseEnter={() => setHighlight(i)}
                             className={cn(
-                              'flex w-full items-center gap-2 px-3 py-2 text-left text-sm',
+                              'flex max-lg:min-h-11 pointer-coarse:min-h-11 w-full items-center gap-2 px-3 py-2 text-left text-sm',
                               i === highlight ? 'bg-surface-2' : 'hover:bg-surface-2',
                             )}
                           >
@@ -1596,33 +1681,7 @@ export function Downloader() {
               </Button>
             </div>
             <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.7fr)] gap-2 lg:flex lg:shrink-0">
-              <div role="radiogroup" aria-label="Download source" className="flex min-w-0 max-w-full rounded-md border border-border-2">
-                {sources.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    role="radio"
-                    onClick={() => switchSource(s.id)}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-                      event.preventDefault();
-                      const group = event.currentTarget.parentElement;
-                      const idx = sources.findIndex((x) => x.id === source);
-                      const neighbor = sources[(idx + (event.key === 'ArrowRight' ? 1 : sources.length - 1)) % sources.length];
-                      if (neighbor) switchSource(neighbor.id);
-                      requestAnimationFrame(() => group?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus());
-                    }}
-                    aria-checked={source === s.id}
-                    tabIndex={source === s.id ? 0 : -1}
-                    className={cn(
-                      'h-9 min-w-0 flex-1 px-2 text-xs sm:text-sm font-medium transition-colors sm:px-4 lg:flex-none',
-                      source === s.id ? 'bg-primary-button text-white' : 'bg-surface-2 text-muted hover:text-foreground',
-                    )}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
+              <SegmentedControl items={sources} value={source} onChange={switchSource} label="Download source" className="lg:shrink-0" itemClassName="px-2 text-xs sm:px-3 sm:text-sm" />
               {/* Popularity ordering — mirrors each source's own sort controls. The
                   sort travels as a separate field, so its syntax never appears in the search box. */}
               {sortsFor(source).length > 1 && (
@@ -1644,7 +1703,7 @@ export function Downloader() {
 
       {/* Before the first search there is nothing below the bar — give it a purpose. */}
       {searchKey === null && (
-        <Card className="flex items-center justify-center py-16">
+        <Card className="flex items-center justify-center">
           <EmptyState icon={<Search className="h-8 w-8" />} title="Search for galleries" description="Keyword, tag, artist, gallery ID or URL. Use Watch to keep checking a query — new releases land in the Watched tab and ping Discord." />
         </Card>
       )}
@@ -1755,60 +1814,78 @@ export function Downloader() {
       {/* Daily recommendations */}
       {tab === 'recommend' && (
         <div className="flex flex-col gap-4">
-          <Card>
-            <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
-              <CardTitle className="flex items-center gap-2">
-                <Sparkles className="h-4 w-4" /> Recommended for you
-                {recs?.mode === 'popular' && <Badge tone="muted">Popular fallback</Badge>}
-                {recs?.mode === 'mixed' && <Badge tone="muted">Personalized + popular</Badge>}
-              </CardTitle>
-              <Button size="sm" variant="outline" onClick={() => void doRefreshRecs()} disabled={recsRefreshing || (recsLoading && !recs)} title="Re-roll today's picks with a fresh selection">
-                <RotateCcw className={cn('h-3.5 w-3.5', (recsRefreshing || (recsLoading && !recs)) && 'animate-spin')} /> Refresh picks
-              </Button>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              {recs?.mode !== 'library' && (
-                <p className="text-xs text-muted">
-                  {recs?.mode === 'popular'
-                    ? 'Not enough matching library history yet — showing popular galleries from Hitomi.la. Downloads you queue (and your Kavita library) will shape future picks.'
-                    : 'Personalized matches from Hitomi.la, topped up with popular galleries for variety.'}
-                </p>
-              )}
-              {recs?.degradedReason === 'same-day-pool-exhausted' && (
-                <p className="text-xs text-muted">Fresh picks are exhausted, so the least recently shown galleries were reused.</p>
-              )}
-              {recs?.degradedReason === 'insufficient-eligible' && (
-                <p className="text-xs text-muted">Fewer than twelve eligible galleries are currently available after your exclusions.</p>
-              )}
-              {recs && (recs.profile.artists.length > 0 || recs.profile.tags.length > 0 || (recs.profile.series?.length ?? 0) > 0) && (
-                <div className="flex flex-wrap items-center gap-1">
-                  <span className="text-xs text-muted">Based on:</span>
-                  {[...recs.profile.artists, ...recs.profile.tags, ...(recs.profile.series ?? [])].map((t) => (
-                    <span key={t} className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{t}</span>
-                  ))}
-                </div>
-              )}
+          <Card className="flex min-w-0 flex-col gap-3 p-3 sm:p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               {recLibs && recLibs.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1">
-                  <span className="text-xs text-muted">Kavita libraries:</span>
+                <div role="group" aria-label="Libraries used for recommendations" className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="mr-1 text-xs font-medium text-muted">Use libraries</span>
                   {recLibs.map((lib) => {
                     const excluded = (recSettings?.excludedLibraryIds ?? []).includes(lib.id);
                     return (
-                      <button
+                      <Button
                         key={lib.id}
-                        type="button"
+                        size="sm"
+                        variant="outline"
+                        aria-pressed={!excluded}
+                        disabled={!recSettings || recLibraryPending !== null || recsRefreshing || feedbackPending !== null || recsLoading}
                         onClick={() => void toggleRecLibrary(lib)}
-                        title={excluded ? `“${lib.name}” is excluded from recommendations — click to include it` : `“${lib.name}” feeds the recommendation profile — click to exclude it`}
-                        className={cn('rounded-full px-2 py-0.5 text-xs transition-colors', excluded ? 'bg-surface-2 text-muted line-through' : 'bg-primary/15 text-primary')}
+                        title={excluded ? `Include ${lib.name} in your recommendations` : `Exclude ${lib.name} from your recommendations`}
+                        className={cn('min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 max-w-full', excluded ? 'text-muted' : 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15')}
                       >
-                        {lib.name}
-                      </button>
+                        {recLibraryPending === lib.id ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <CheckCircle2 className={cn('h-3.5 w-3.5 shrink-0', excluded && 'opacity-0')} aria-hidden="true" />}
+                        <span className="truncate">{lib.name}</span>
+                      </Button>
                     );
                   })}
                 </div>
               )}
-            </CardContent>
+              <div className="flex shrink-0 flex-wrap items-center gap-2 sm:ml-auto">
+                {recs?.mode === 'popular' && <Badge tone="muted">Popular picks</Badge>}
+                {recs?.mode === 'mixed' && <Badge tone="muted">Personalized + popular</Badge>}
+                <Button size="sm" variant="outline" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 ml-auto sm:ml-0" onClick={() => void doRefreshRecs()} disabled={recsRefreshing || recLibraryPending !== null || feedbackPending !== null || recsLoading} title="Get a fresh selection of recommendations">
+                  <RotateCcw className={cn('h-3.5 w-3.5 shrink-0', recsRefreshing && 'animate-spin')} /> {recsRefreshing ? 'Refreshing…' : 'Refresh picks'}
+                </Button>
+              </div>
+            </div>
+            {recs?.degradedReason === 'same-day-pool-exhausted' && (
+              <p className="text-xs text-muted">You’ve seen all of today’s fresh picks. Some earlier recommendations may appear again.</p>
+            )}
+            {recs?.degradedReason === 'insufficient-eligible' && (
+              <p className="text-xs text-muted">Only {recs.items.length} picks are available with your current preferences and exclusions.</p>
+            )}
+            {recs && (recs.profile.artists.length > 0 || recs.profile.tags.length > 0 || (recs.profile.series?.length ?? 0) > 0) && (
+              <Disclosure label="What shapes these picks" className="border-t border-border pt-2" summaryClassName="px-0 text-xs">
+                <div className="flex flex-col gap-2 pt-2">
+                  {[
+                    { label: 'Artists', values: recs.profile.artists },
+                    { label: 'Tags', values: recs.profile.tags },
+                    { label: 'Series', values: recs.profile.series ?? [] },
+                  ].filter((group) => group.values.length > 0).map((group) => (
+                    <div key={group.label} className="flex min-w-0 flex-wrap items-center gap-1.5">
+                      <span className="mr-1 text-xs text-muted">{group.label}</span>
+                      {group.values.map((value) => <span key={value} className="max-w-full truncate rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted" title={value}>{value}</span>)}
+                    </div>
+                  ))}
+                </div>
+              </Disclosure>
+            )}
           </Card>
+
+          <p className="sr-only" role="status">{dismissedGalleries.length > 0 ? `${dismissedGalleries.length} dismissed galleries. Expand Dismissed galleries to undo.` : ''}</p>
+          {dismissedGalleries.length > 0 && (
+            <Disclosure label={<>Dismissed galleries <Badge tone="muted">{dismissedGalleries.length}</Badge></>} className="rounded-lg border border-border bg-surface" summaryClassName="p-3">
+              <ul className="max-h-64 overflow-y-auto border-t border-border px-3">
+                {dismissedGalleries.map((item) => (
+                  <li key={`${item.source}:${item.galleryId}`} className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-b-0">
+                    <p className="min-w-0 flex-1 truncate text-sm" title={item.title}>{item.title}</p>
+                    <Button size="sm" variant="ghost" className="max-lg:min-h-11 pointer-coarse:min-h-11 shrink-0" onClick={() => void undoDismissGallery(item)} disabled={feedbackPending !== null || recsRefreshing} aria-label={`Undo dismissal of ${item.title}`}>
+                      {feedbackPending === `${item.source}:${item.galleryId}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />} Undo
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </Disclosure>
+          )}
 
           {recsFailed ? (
             <ErrorState title="Recommendations failed" description={recsError instanceof Error ? recsError.message : String(recsError)} onRetry={() => void refetchRecs()} />
@@ -1829,13 +1906,11 @@ export function Downloader() {
                     downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
                     onDownload={doStartDownload}
                     owned={ownedKeys.has(`${item.source}:${item.galleryId}`)}
-                    onMarkOwned={doMarkOwned}
+                    onDismissGallery={doDismissGallery}
+                    dismissing={feedbackPending !== null || recsRefreshing}
+                    showSource={false}
+                    showTags={false}
                   />
-                  {item.reasons.length > 0 && (
-                    <p className="px-1 text-xs leading-snug text-muted" title={`Matched: ${item.reasons.join(', ')}`}>
-                      Because: {item.reasons.slice(0, 3).join(', ')}{item.reasons.length > 3 ? '…' : ''}
-                    </p>
-                  )}
                 </div>
               ))}
             </div>
@@ -1849,7 +1924,7 @@ export function Downloader() {
       {tab === 'watched' && (
         <div className="flex flex-col gap-4">
           <section aria-label="Recently added" className="flex flex-col gap-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted">Recently added</p>
+            <h3 className="text-sm font-semibold">Recently added</h3>
             {feedFailed ? (
               <ErrorState title="Could not load recently added galleries" description={feedError instanceof Error ? feedError.message : String(feedError)} onRetry={() => void retryFeed()} />
             ) : !newGalleries && feedLoading ? (

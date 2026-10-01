@@ -11,7 +11,7 @@ fresh picks based on what you already own.
 
 Works with **Kavita server v0.9.x or newer**.
 
-Current release: **v1.5.1**.
+Current release: **v2.0.0**. See [release notes](CHANGELOG.md).
 
 ## What it does
 
@@ -29,10 +29,21 @@ Current release: **v1.5.1**.
   folders. The queue supports pause, resume, cancel and retry, detects
   duplicates, and can trigger a Kavita scan when finished so new media appears
   in your server automatically.
-- **Daily recommendations** — twelve picks ranked from the tags, artists,
-  series, and preferred language in your completed downloads and Kavita
-  collection. Popular picks fill thin personalized pools; least-recent picks
-  return only after fresh options run out. Marking a pick owned replaces it.
+  Downloads are staged before publishing: cancellation preserves existing files,
+  and failed CBZ replacements leave the previous archive intact. Cancellation is
+  unavailable once the output commit begins. Deleting history or clearing completed
+  downloads updates other connected clients without reloading.
+- **Daily recommendations** — up to twelve picks ranked from completed downloads
+  and Kavita libraries. Common tags are downweighted; tag/series overlap receives
+  a soft diversity penalty, while artists and reliably identified language editions
+  do not repeat within a set. Popular picks fill thin personalized pools; older
+  picks return only after fresh options run out. “Don't recommend this gallery
+  again” dismisses that gallery without marking it owned, with an Undo control.
+  Downloaded ownership survives clearing queue history. Current bans apply to fresh
+  picks, cached cards, replacements and recycled history; automatic searches never
+  override bans. Recommendations load only when their tab opens, and refreshes
+  reuse a bounded 30-minute candidate pool while fresh candidates remain. Kavita
+  signals are sampled across libraries and updated incrementally after metadata edits.
 - **Watched searches** — save any doujinshi query and H-Tosho re-checks it on a
   schedule (every 5 minutes to every 24 hours). New galleries land in the
   "Recently added" feed and ping your Discord channel.
@@ -44,8 +55,18 @@ Current release: **v1.5.1**.
   with a raw XML mode for full control.
 - **Discord notifications** — get formatted messages (with cover art) when
   series are matched or updated, and when watched searches find something new.
-- **Live job monitor** — every match, scan, merge and ComicInfo edit runs as a
-  background job you can watch, cancel or retry from the Jobs page.
+- **Activity & Jobs** — every match, scan, merge and ComicInfo edit runs as a
+  background job. The Jobs page leads with clickable Active / Needs attention /
+  Completed counts, orders running work first, and opens a detail drawer (a
+  full-screen sheet on mobile) with the target, timing, progress, readable
+  results and warnings, retry and cancel, and filterable logs with a
+  follow-latest toggle that never yanks your scroll position. Sidebar counts for
+  active jobs, failed jobs and failed downloads link straight to the matching
+  filtered view.
+- **Safe settings** — unsaved changes show per-section status and are kept while
+  you move around the app (in memory only; secrets are never written to browser
+  storage). Leaving Settings or closing the tab with unsaved changes offers
+  Save & leave, Discard or Stay.
 
 ## Metadata sources
 
@@ -161,9 +182,10 @@ check **Jobs** for cover-upload errors if it does not change.
   - *Search* — find galleries on Hitomi.la or nHentai, sort by newest or
     popularity, preview page counts, and download single galleries or a whole
     selection (optionally merged into one series).
-  - *Recommended* — Twelve personalized, popular, or least-recently-shown picks
-    with one-click refresh and an "owned" button that uses a cached spare when
-    available. You can choose which Kavita libraries feed the recommendation profile.
+  - *Recommended* — Up to twelve personalized, popular, or least-recently-shown
+    picks with one-click refresh and a thumbs-down button to dismiss a gallery
+    without marking it owned, with Undo and a cached replacement when available.
+    You can choose which Kavita libraries feed the recommendation profile.
   - *Watched* — manage your watched searches, their check schedule, and browse
     the "Recently added" feed of new finds.
   - *Downloads* — the live download queue: progress, pause/resume/cancel/retry,

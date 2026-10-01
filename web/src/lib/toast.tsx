@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { CheckCircle2, XCircle, Info, X } from 'lucide-react';
 import { cn } from './utils';
+import { Button } from '../components/ui';
 
 export type ToastTone = 'success' | 'danger' | 'info';
 
@@ -61,7 +62,7 @@ export function Toaster() {
         <div
           key={t.id}
           className={cn(
-            'pointer-events-auto relative flex animate-slide-in-right items-start gap-3 overflow-hidden rounded-md border border-border bg-surface p-3 shadow-lg',
+            'pointer-events-auto relative flex animate-slide-in-right items-start gap-3 overflow-hidden rounded-lg border border-border bg-surface p-3 shadow-lg',
             'border-l-4',
             TONE_STYLE[t.tone].border,
           )}
@@ -72,14 +73,15 @@ export function Toaster() {
             <p className="text-sm font-medium">{t.title}</p>
             {t.description && <p className={cn('mt-0.5 text-xs text-muted', t.tone === 'danger' ? 'line-clamp-4' : 'truncate')} title={t.description}>{t.description}</p>}
           </div>
-          <button
-            type="button"
+          <Button
+            size="icon"
+            variant="ghost"
             onClick={() => setItems((prev) => prev.filter((x) => x.id !== t.id))}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground"
+            className="shrink-0"
             aria-label={`Dismiss ${t.title}`}
           >
             <X className="h-3.5 w-3.5" />
-          </button>
+          </Button>
           {/* Auto-dismiss countdown (matches the per-tone timeout above). */}
           <div className={cn('absolute bottom-0 left-0 h-0.5 w-full origin-left animate-toast-progress', t.tone === 'success' ? 'bg-success/50' : t.tone === 'danger' ? 'bg-danger/50' : 'bg-primary/40')} style={{ animationDuration: TONE_LIFETIME_MS[t.tone] + 'ms' }} />
         </div>

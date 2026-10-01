@@ -20,7 +20,7 @@ function LowConfidenceBadge() {
   const { data } = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, refetchInterval: 60_000 });
   if (!data || data.count === 0) return null;
   return (
-    <Link to="/libraries/review" className="absolute right-1 top-0 flex h-9 min-w-9 items-center justify-center rounded-md" aria-label={`Review ${data.count} uncertain matches across all libraries`} title={`Review matches below ${Math.round(data.threshold * 100)}% confidence`}>
+    <Link to="/libraries/review" className="absolute right-1 top-0 flex h-9 min-w-9 items-center justify-center rounded-md" aria-label={`Needs review · ${data.count}`} title={`Review matches below ${Math.round(data.threshold * 100)}% confidence`}>
       <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-warning">{data.count}</span>
     </Link>
   );
@@ -66,7 +66,7 @@ class PageErrorBoundary extends React.Component<{ children: React.ReactNode }, {
 function Brand() {
   return (
     <div className="flex min-w-0 items-center gap-2.5">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-white">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary-button text-white">
         <BookOpenText className="h-4 w-4" />
       </div>
       <div className="min-w-0">
@@ -82,15 +82,16 @@ function ThemeToggle() {
   const Icon = theme === 'light' ? Sun : theme === 'dark' ? Moon : Monitor;
   const label = theme === 'system' ? 'System' : theme === 'light' ? 'Light' : 'Dark';
   return (
-    <button
-      type="button"
+    <Button
+      size="icon"
+      variant="ghost"
       onClick={cycle}
       aria-label={`Theme: ${label}. Switch to next theme.`}
       title={`Theme: ${label}`}
-      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground"
+      className="shrink-0"
     >
       <Icon className="h-4 w-4" />
-    </button>
+    </Button>
   );
 }
 
@@ -134,19 +135,19 @@ export default function App() {
   };
   return (
     <div className="flex min-h-0 h-full flex-col overflow-hidden lg:flex-row">
-      <header aria-hidden={navOpen && !isDesktop ? true : undefined} className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-surface px-3 pt-[env(safe-area-inset-top)] sm:px-4 lg:hidden">
+      <header aria-hidden={navOpen && !isDesktop ? true : undefined} className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-sidebar px-3 pt-[env(safe-area-inset-top)] sm:px-4 lg:hidden">
         <Brand />
-        <button ref={navToggleRef} type="button" aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="app-navigation" tabIndex={navOpen ? -1 : 0} onClick={() => setNavOpen((v) => !v)} className="flex h-9 w-9 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground">
+        <Button ref={navToggleRef} size="icon" variant="ghost" aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="app-navigation" tabIndex={navOpen ? -1 : 0} onClick={() => setNavOpen((v) => !v)}>
           {navOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-        </button>
+        </Button>
       </header>
       {navOpen && <div aria-hidden="true" className="fixed inset-x-0 bottom-0 top-14 z-30 bg-black/40 lg:hidden" onClick={() => setNavOpen(false)} />}
       <aside ref={sidebarRef} id="app-navigation" role={!isDesktop && navOpen ? 'dialog' : undefined} aria-modal={!isDesktop && navOpen ? true : undefined} aria-label="Navigation" onKeyDown={onNavKeyDown} className={cn(
-        'fixed bottom-0 left-0 top-14 z-40 flex w-[min(16rem,calc(100vw-2rem))] shrink-0 flex-col border-r border-border bg-surface pb-[env(safe-area-inset-bottom)] transition-transform duration-200 ease-out lg:static lg:inset-auto lg:w-60 lg:translate-x-0 lg:pb-0',
+        'fixed bottom-0 left-0 top-14 z-40 flex w-[min(16rem,calc(100vw-2rem))] shrink-0 flex-col border-r border-border bg-sidebar pb-[env(safe-area-inset-bottom)] transition-transform duration-200 ease-out lg:static lg:inset-auto lg:w-60 lg:translate-x-0 lg:pb-0',
         navOpen ? 'visible translate-x-0' : 'invisible -translate-x-full lg:visible',
       )}>
         <div className="flex justify-end px-3 pt-2 lg:hidden">
-          <button type="button" aria-label="Close navigation" onClick={() => setNavOpen(false)} className="flex h-11 w-11 items-center justify-center rounded-md text-muted hover:bg-surface-2"><X className="h-5 w-5" /></button>
+          <Button size="icon" variant="ghost" aria-label="Close navigation" onClick={() => setNavOpen(false)}><X className="h-5 w-5" /></Button>
         </div>
         <div className="hidden h-14 items-center border-b border-border px-4 lg:flex">
           <Brand />
@@ -158,7 +159,7 @@ export default function App() {
                 to={item.to}
                 className={({ isActive }) => cn(
                   'group flex h-9 items-center gap-2.5 rounded-md px-3 pr-11 text-sm transition-colors duration-150',
-                  isActive ? 'bg-surface-2 font-medium text-foreground' : 'text-muted hover:bg-surface-2/70 hover:text-foreground',
+                  isActive ? 'bg-primary/10 font-medium text-primary' : 'text-muted hover:bg-surface-2/70 hover:text-foreground',
                 )}
               >
                 {({ isActive }) => (
@@ -175,9 +176,9 @@ export default function App() {
         <div className="flex items-center gap-1 border-t border-border px-3 py-2">
           <span className="min-w-0 flex-1 truncate text-xs text-muted" title={username ?? undefined}>{username}</span>
           <ThemeToggle />
-          <button type="button" onClick={() => void logout()} aria-label="Sign out" title="Sign out" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground">
+          <Button size="icon" variant="ghost" onClick={() => void logout()} aria-label="Sign out" title="Sign out" className="shrink-0">
             <LogOut className="h-4 w-4" />
-          </button>
+          </Button>
         </div>
         <KavitaIndicator />
         <SidebarStatus />

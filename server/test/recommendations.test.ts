@@ -13,6 +13,7 @@ process.env.HTOSHO_DATA_DIR = dataDir;
 const { initDb, getDb, schema } = await import('../src/db/index.js');
 const { doujinProviders } = await import('../src/downloader/providers.js');
 const recs = await import('../src/services/recommendations.js');
+const { DEFAULT_DOWNLOADER, setDownloaderSettings } = await import('../src/services/settings.js');
 
 initDb();
 const originals: Record<string, DoujinProvider> = { ...doujinProviders };
@@ -98,9 +99,6 @@ test('fresh picks do not repeat across refreshes and days while candidates remai
 
   const set1 = await recs.getRecommendations();
   assert.equal(set1.items.length, 12);
-  assert.equal(set1.mode, 'mixed');
-  // Popular fallback may top the set up (the tiny profile saturates its term
-  // caps), but library matches with profile reasons must be present.
   assert.ok(set1.items.some((it) => it.reasons.length > 0), 'no library picks in the set');
 
   const set2 = await recs.refreshRecommendations();
@@ -152,13 +150,10 @@ test('manual refresh during an in-flight generation re-rolls instead of joining 
 
   const first = recs.getRecommendations(); // starts the day's generation, stuck on the gate
   const second = recs.refreshRecommendations(); // must wait for it, then run its own roll
-  let callsAfterFirst = -1;
-  const trackedFirst = first.then((set) => { callsAfterFirst = searchCalls; return set; });
   releaseGate!();
-  const [set1, set2] = await Promise.all([trackedFirst, second]);
+  const [set1, set2] = await Promise.all([first, second]);
   assert.equal(set1.items.length, 12);
   assert.equal(set2.items.length, 12);
-  assert.ok(searchCalls > callsAfterFirst, 'refresh joined the in-flight generation instead of running its own roll');
   assert.equal(overlap(keySet(set1.items), keySet(set2.items)), 0, 'second roll re-served picks from the first');
 });
 
@@ -256,7 +251,7 @@ test('exhausted pool recycles previously-served picks from earlier days, never t
   const today = localDate(new Date());
   assert.ok(historyRows().every((h) => h.date === today), 'history kept stale serve dates after recycling');
 });
-test('marking a recommendation owned promotes a cached replacement without searching', async () => {
+test('dismissal promotes a replacement without changing ownership and supports undo', async () => {
   getDb().delete(schema.recommendationHistory).run();
   let searchCalls = 0;
   const available = () => {
@@ -269,12 +264,16 @@ test('marking a recommendation owned promotes a cached replacement without searc
   assert.equal(initial.items.length, 12);
   const callsAfterGeneration = searchCalls;
   const owned = initial.items[0];
-  const replacement = recs.markOwnedAndReplace(owned.source, owned.galleryId);
+  const replacement = await recs.dismissAndReplace(owned.source, owned.galleryId);
 
   assert.equal(searchCalls, callsAfterGeneration, 'marking owned performed remote searches');
   assert.equal(replacement.items.length, 12);
   assert.ok(!keySet(replacement.items).has(`${owned.source}:${owned.galleryId}`));
-  assert.ok(replacement.ownedKeys.includes(`${owned.source}:${owned.galleryId}`));
+  assert.ok(replacement.dismissedKeys.includes(`${owned.source}:${owned.galleryId}`));
+  assert.ok(!replacement.ownedKeys.includes(`${owned.source}:${owned.galleryId}`));
+  const restored = await recs.undoDismiss(owned.source, owned.galleryId);
+  assert.ok(keySet(restored.items).has(`${owned.source}:${owned.galleryId}`));
+  assert.ok(!restored.dismissedKeys.includes(`${owned.source}:${owned.galleryId}`));
 });
 
 test('repeated refreshes rotate through a static ranking via seeded skips', async () => {
@@ -389,4 +388,42 @@ test('malformed cached recommendation payloads are regenerated', async () => {
   doujinProviders.hitomi = stubProvider('hitomi', (query) => query === 'doujinshi' ? ['regenerated'] : []);
   const set = await recs.getRecommendations();
   assert.ok(set.items.some((item) => item.galleryId === 'regenerated'));
+});
+
+test('current bans exclude cached and recycled recommendation cards', async () => {
+  getDb().delete(schema.recommendationHistory).run();
+  const today = localDate(new Date());
+  const item = { source: 'hitomi', galleryId: 'banned-history', title: 'Blocked gallery', tags: ['blocked'], artists: [], reasons: [] };
+  writeHistoryRows([{ key: 'hitomi:banned-history', date: today, servedAt: new Date().toISOString(), item }]);
+  setDownloaderSettings({ ...DEFAULT_DOWNLOADER, hitomiBannedTags: ['blocked'] });
+  doujinProviders.hitomi = stubProvider('hitomi', () => []);
+  try {
+    const set = await recs.refreshRecommendations();
+    assert.equal(set.items.some((pick) => pick.galleryId === 'banned-history'), false);
+    assert.equal((await recs.getRecommendations()).items.some((pick) => pick.galleryId === 'banned-history'), false);
+  } finally {
+    setDownloaderSettings(DEFAULT_DOWNLOADER);
+  }
+});
+
+test('download ownership survives queue clearing and warm refresh needs no new search', async () => {
+  getDb().delete(schema.recommendationHistory).run();
+  recs.recordGalleryTags('hitomi', { source: 'hitomi', galleryId: 'durable-owned', title: 'Owned', tags: [], artists: [], pages: [] });
+  getDb().delete(schema.downloadQueue).run();
+  let searches = 0;
+  doujinProviders.hitomi = {
+    ...stubProvider('hitomi', () => []),
+    async search(query, limit) {
+      searches += 1;
+      return ['durable-owned', ...Array.from({ length: 100 }, (_, i) => `${slug(query)}-warm-${i}`)].slice(0, limit ?? 24).map((galleryId) => ({ source: 'hitomi', galleryId, title: galleryId, tags: [], artists: [] }));
+    },
+  };
+  const first = await recs.refreshRecommendations();
+  const calls = searches;
+  const second = await recs.refreshRecommendations();
+  assert.equal(first.items.some((item) => item.galleryId === 'durable-owned'), false);
+  assert.equal(second.items.some((item) => item.galleryId === 'durable-owned'), false);
+  assert.ok(second.ownedKeys.includes('hitomi:durable-owned'));
+  assert.equal(searches, calls);
+  assert.equal(overlap(keySet(first.items), keySet(second.items)), 0);
 });

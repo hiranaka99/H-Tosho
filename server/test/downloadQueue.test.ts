@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
+import { galleryFilesystemName } from '../src/downloader/util.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-download-queue-'));
 const outputDir = path.join(dataDir, 'output');
@@ -146,6 +147,54 @@ test('resuming a failed task clears its old failure before downloading again', a
   } finally {
     releaseGallery();
     await completed;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('cancelling staged folder output preserves existing media and unrelated files', async () => {
+  const target = path.join(outputDir, galleryFilesystemName('Existing gallery', 'hitomi', 'cancel-staged'));
+  fs.mkdirSync(target, { recursive: true });
+  fs.writeFileSync(path.join(target, '001.jpg'), 'old image');
+  fs.writeFileSync(path.join(target, 'user-notes.txt'), 'keep my notes');
+  doujinProviders.hitomi = {
+    ...originalHitomi,
+    async getGallery(idOrUrl) {
+      return { source: 'hitomi', galleryId: idOrUrl, title: 'Existing gallery', tags: [], artists: [], pages: ['https://example.test/page.jpg'] };
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  const copyFile = fs.promises.copyFile;
+  let releaseCopy!: () => void;
+  let reachedCopy!: () => void;
+  const copyGate = new Promise<void>((resolve) => { releaseCopy = resolve; });
+  const stagingStarted = new Promise<void>((resolve) => { reachedCopy = resolve; });
+  fs.promises.copyFile = async (...args) => {
+    reachedCopy();
+    await copyGate;
+    return copyFile(...args);
+  };
+  globalThis.fetch = (async () => new Response(Buffer.from('new image'))) as typeof fetch;
+  const queue = new DownloadQueue(() => ({ downloadDirectory: outputDir, format: 'folder', maxConcurrentDownloads: 1, maxImageConcurrency: 1, requestDelayMs: 0, autoSyncKavita: false, nhentaiApiKey: '', nhentaiBannedTags: [] }));
+  let unsubscribe = () => {};
+  const settled = new Promise<void>((resolve) => {
+    unsubscribe = queue.subscribe((task) => {
+      if (task.galleryId === 'cancel-staged' && task.status === 'failed' && !queue.isRunning(task.id)) resolve();
+    });
+  });
+  try {
+    const id = queue.enqueue('hitomi', 'cancel-staged', null, 'folder');
+    await stagingStarted;
+    assert.equal(queue.cancel(id), true);
+    releaseCopy();
+    await settled;
+    assert.equal(queue.get(id)?.errorMessage, 'Cancelled by user');
+    assert.equal(fs.readFileSync(path.join(target, '001.jpg'), 'utf8'), 'old image');
+    assert.equal(fs.readFileSync(path.join(target, 'user-notes.txt'), 'utf8'), 'keep my notes');
+    assert.equal(fs.readdirSync(outputDir).some((name) => name.startsWith('.htosho-download-')), false);
+  } finally {
+    releaseCopy();
+    unsubscribe();
+    fs.promises.copyFile = copyFile;
     globalThis.fetch = originalFetch;
   }
 });

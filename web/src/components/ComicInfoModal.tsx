@@ -4,7 +4,7 @@ import { FileText, FolderOpen, FileArchive, ArrowUp, Save, Code2, PencilLine, Ha
 import { api } from '../lib/api';
 import { cn } from '../lib/utils';
 import { toast } from '../lib/toast';
-import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, EmptyState } from './ui';
+import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, EmptyState, SegmentedControl } from './ui';
 
 /** Fields offered in the form editor, mirroring the server's COMICINFO_EDITOR_FIELDS. */
 const EDITOR_FIELDS = [
@@ -309,22 +309,10 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
               {!doc.data.hasEntry && mode === 'form' && (
                 <p className="text-xs text-muted">This archive has no ComicInfo.xml yet — saving will create one.</p>
               )}
-              <div className="flex items-center gap-1 self-start rounded-lg border border-border-2 p-0.5">
-                <button
-                  type="button"
-                  onClick={() => patchDraft({ mode: 'form' })}
-                  className={cn('flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors', mode === 'form' ? 'bg-primary/10 text-primary' : 'text-muted hover:text-foreground')}
-                >
-                  <PencilLine className="h-3.5 w-3.5" /> Fields
-                </button>
-                <button
-                  type="button"
-                  onClick={() => patchDraft({ mode: 'raw' })}
-                  className={cn('flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors', mode === 'raw' ? 'bg-primary/10 text-primary' : 'text-muted hover:text-foreground')}
-                >
-                  <Code2 className="h-3.5 w-3.5" /> Raw XML
-                </button>
-              </div>
+              <SegmentedControl items={[
+                { id: 'form' as const, label: 'Fields', icon: <PencilLine className="h-4 w-4 shrink-0" /> },
+                { id: 'raw' as const, label: 'Raw XML', icon: <Code2 className="h-4 w-4 shrink-0" /> },
+              ]} value={mode} onChange={(mode) => patchDraft({ mode })} label="ComicInfo editor mode" className="self-start" />
 
               {mode === 'form' ? (
                 <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
@@ -340,7 +328,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                             value={values[f] ?? ''}
                             onChange={(e) => patchDraft({ values: { ...values, [f]: e.target.value } })}
                             rows={4}
-                            className={cn('w-full rounded-md border bg-surface px-3 py-2 text-sm transition-colors', isChanged ? 'border-warning/60' : 'border-border-2')}
+                            className={cn('w-full rounded-md border bg-surface-2 px-3 py-2 text-sm transition-colors', isChanged ? 'border-warning/60' : 'border-border-2')}
                           />
                         ) : (
                           <Input id={id} value={values[f] ?? ''} onChange={(e) => patchDraft({ values: { ...values, [f]: e.target.value } })} className={isChanged ? 'border-warning/60 bg-warning/10' : undefined} />
@@ -364,7 +352,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                   onChange={(e) => patchDraft({ rawText: e.target.value })}
                   rows={14}
                   spellCheck={false}
-                  className={cn('w-full rounded-md border bg-surface px-3 py-2 font-mono text-xs leading-relaxed transition-colors', draft && rawText !== draft.origRaw ? 'border-warning/60' : 'border-border-2')}
+                  className={cn('w-full rounded-md border bg-surface-2 px-3 py-2 font-mono text-xs leading-relaxed transition-colors', draft && rawText !== draft.origRaw ? 'border-warning/60' : 'border-border-2')}
                 />
               )}
             </>

@@ -207,6 +207,7 @@ function rowToTask(row: DownloadRow): DownloadTask {
 interface RunContext {
   cancelled: boolean;
   stopped: boolean;
+  committing: boolean;
   pauseSignal: {
     paused: boolean;
     /** Resolvers of workers parked on the pause gate; resume()/cancel() settle them. */
@@ -239,6 +240,7 @@ export class DownloadQueue {
   /** id -> pending cooldown timer that will re-queue the task. */
   private retryTimers = new Map<number, NodeJS.Timeout>();
   private listeners = new Set<(task: DownloadTask) => void>();
+  private removalListeners = new Set<(ids: number[]) => void>();
   private settingsProvider: () => DownloaderSettings;
 
   constructor(settingsProvider: () => DownloaderSettings) {
@@ -273,6 +275,23 @@ export class DownloadQueue {
         l(task);
       } catch {
         /* a misbehaving listener must never break the pipeline */
+      }
+    }
+  }
+
+  /** Subscribe to removed task ids, including bulk history clears. */
+  subscribeRemovals(listener: (ids: number[]) => void): () => void {
+    this.removalListeners.add(listener);
+    return () => this.removalListeners.delete(listener);
+  }
+
+  private broadcastRemovals(ids: number[]): void {
+    if (ids.length === 0) return;
+    for (const listener of this.removalListeners) {
+      try {
+        listener(ids);
+      } catch {
+        /* subscribers cannot interrupt queue mutations */
       }
     }
   }
@@ -448,6 +467,7 @@ export class DownloadQueue {
   cancel(id: number): boolean {
     const task = this.get(id);
     if (!task) return false;
+    if (this.activeRuns.get(id)?.committing) return false;
     if (task.status === 'queued' || task.status === 'downloading' || task.status === 'paused') {
       const run = this.activeRuns.get(id);
       if (run) {
@@ -536,14 +556,18 @@ export class DownloadQueue {
     void fs.promises
       .rm(path.join(getTmpDir(), 'downloads', String(id)), { recursive: true, force: true })
       .catch((err) => console.warn('[h-tosho] failed to remove download scratch dir:', err));
+    this.broadcastRemovals([id]);
     return true;
   }
 
   /** Delete all completed tasks. */
   clearCompleted(): number {
     const db = getDb();
-    const res = db.delete(schema.downloadQueue).where(eq(schema.downloadQueue.status, 'completed')).run();
-    return Number(res.changes ?? 0);
+    const removed = db.delete(schema.downloadQueue).where(eq(schema.downloadQueue.status, 'completed'))
+      .returning({ id: schema.downloadQueue.id }).all();
+    for (const { id } of removed) this.live.delete(id);
+    this.broadcastRemovals(removed.map((row) => row.id));
+    return removed.length;
   }
   /** Most recent completed task for a gallery (duplicate-download guard). */
   findCompleted(source: DoujinSource, galleryId: string): DownloadTask | null {
@@ -636,7 +660,7 @@ export class DownloadQueue {
   // ---------------- Execution ----------------
 
   private async process(row: DownloadRow): Promise<void> {
-    const ctx: RunContext = { cancelled: false, stopped: false, pauseSignal: { paused: false, waiters: [] } };
+    const ctx: RunContext = { cancelled: false, stopped: false, committing: false, pauseSignal: { paused: false, waiters: [] } };
     this.activeRuns.set(row.id, ctx);
     // Per-task scratch space: pages stream to disk here so only the in-flight
     // images (bounded by maxImageConcurrency) live in RAM.
@@ -662,11 +686,7 @@ export class DownloadQueue {
 
       // Write to disk (cbz or folder) and record the output path.
       this.updateProgress(row.id, { currentFile: 'Packing archive…' }, { force: true });
-      const outputPath = await this.writeOutput(row, gallery, images, settings);
-      if (ctx.cancelled) {
-        await fs.promises.rm(outputPath, { recursive: row.outputFormat === 'folder', force: true });
-        throw new Error('Cancelled by user');
-      }
+      const outputPath = await this.writeOutput(row, gallery, images, settings, ctx);
       getDb().update(schema.downloadQueue).set({ outputPath }).where(eq(schema.downloadQueue.id, row.id)).run();
 
       // The output is final: the scratch pages are no longer needed. On failure
@@ -940,6 +960,7 @@ export class DownloadQueue {
     gallery: DoujinGallery,
     images: { name: string; path: string }[],
     settings: DownloaderSettings,
+    ctx: RunContext,
   ): Promise<string> {
     if (row.mergeFolder && row.outputFormat === 'folder') {
       throw new Error('Merged downloads require CBZ output');
@@ -949,23 +970,37 @@ export class DownloadQueue {
     const dir = row.mergeFolder
       ? path.join(base, sanitizeFilename(row.mergeFolder, 'merged'))
       : path.join(base, galleryName);
-    fs.mkdirSync(dir, { recursive: true });
+    if (ctx.cancelled) throw new Error('Cancelled by user');
+    fs.mkdirSync(base, { recursive: true });
+    // Stage on the destination volume; cancellation never touches published files.
+    const stagingDir = await fs.promises.mkdtemp(path.join(base, '.htosho-download-'));
     const comicInfo = generateComicInfoXml(gallery, this.mergeOptions(row));
+    try {
+      if (row.outputFormat === 'folder') {
+        await mapLimit(images, 4, (img) => fs.promises.copyFile(img.path, path.join(stagingDir, img.name)));
+        await fs.promises.writeFile(path.join(stagingDir, 'ComicInfo.xml'), comicInfo);
+        if (ctx.cancelled) throw new Error('Cancelled by user');
+        ctx.committing = true;
+        fs.mkdirSync(dir, { recursive: true });
+        // Preserve unrelated files in an existing gallery folder.
+        for (const name of [...images.map((img) => img.name), 'ComicInfo.xml']) {
+          await fs.promises.rename(path.join(stagingDir, name), path.join(dir, name));
+        }
+        return dir;
+      }
 
-    if (row.outputFormat === 'folder') {
-      // Page moves are independent (unique destinations, no shared ordering
-      // state), so run a few at a time. mapLimit rethrows the first failure,
-      // keeping the old semantics: one failed page fails the whole write.
-      await mapLimit(images, 4, (img) => moveIntoPlace(img.path, path.join(dir, img.name)));
-      fs.writeFileSync(path.join(dir, 'ComicInfo.xml'), comicInfo);
-      return dir;
+      const chapterPrefix = row.chapterNumber != null ? `ch${String(row.chapterNumber).padStart(2, '0')} ` : '';
+      const file = path.join(dir, `${chapterPrefix}${galleryName}.cbz`);
+      const stagedFile = path.join(stagingDir, 'archive.cbz');
+      await buildZipFromFiles(images, stagedFile, [{ name: 'ComicInfo.xml', data: Buffer.from(comicInfo, 'utf8') }]);
+      if (ctx.cancelled) throw new Error('Cancelled by user');
+      ctx.committing = true;
+      fs.mkdirSync(dir, { recursive: true });
+      await fs.promises.rename(stagedFile, file);
+      return file;
+    } finally {
+      await fs.promises.rm(stagingDir, { recursive: true, force: true });
     }
-
-    // cbz: stream all pages + ComicInfo.xml into a single archive inside the folder.
-    const chapterPrefix = row.chapterNumber != null ? `ch${String(row.chapterNumber).padStart(2, '0')} ` : '';
-    const file = path.join(dir, `${chapterPrefix}${galleryName}.cbz`);
-    await buildZipFromFiles(images, file, [{ name: 'ComicInfo.xml', data: Buffer.from(comicInfo, 'utf8') }]);
-    return file;
   }
 
   /** ComicInfo overrides for merged downloads: shared series name + manual chapter number. */
@@ -1026,15 +1061,6 @@ export class DownloadQueue {
   }
 }
 
-/** Move a temp page into its final location, copying across volumes where rename cannot. */
-async function moveIntoPlace(src: string, dest: string): Promise<void> {
-  try {
-    await fs.promises.rename(src, dest);
-  } catch {
-    await fs.promises.copyFile(src, dest);
-    await fs.promises.unlink(src);
-  }
-}
 
 function pickLiveFields(t: DownloadTask): LiveFields {
   return {

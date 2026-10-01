@@ -1,5 +1,6 @@
 import { deflateRawSync } from 'node:zlib';
 import fs from 'node:fs';
+import path from 'node:path';
 import { crc32 } from '../lib/crc.js';
 
 /**
@@ -151,14 +152,22 @@ export function buildZip(entries: Entry[]): Buffer {
 /**
  * Build a ZIP archive at `destPath` from page files on disk. Each file is read
  * one at a time (peak memory = one image), and positional file-handle writes
- * avoid stream backpressure/error races. A failed archive is removed.
+ * avoid stream backpressure/error races. Only a complete archive replaces the destination.
  */
 export async function buildZipFromFiles(
   files: { name: string; path: string }[],
   destPath: string,
   inlineEntries: Entry[] = [],
 ): Promise<void> {
-  const out = await fs.promises.open(destPath, 'w');
+  const stagingDir = await fs.promises.mkdtemp(path.join(path.dirname(destPath), '.htosho-zip-'));
+  const stagingPath = path.join(stagingDir, 'archive.cbz');
+  let out: fs.promises.FileHandle;
+  try {
+    out = await fs.promises.open(stagingPath, 'wx');
+  } catch (error) {
+    await fs.promises.rm(stagingDir, { recursive: true, force: true });
+    throw error;
+  }
   let failure: unknown;
   try {
     let offset = 0;
@@ -200,8 +209,10 @@ export async function buildZipFromFiles(
   } catch (error) {
     failure ??= error;
   }
-  if (failure !== undefined) {
-    await fs.promises.rm(destPath, { force: true }).catch(() => {});
-    throw failure;
+  try {
+    if (failure !== undefined) throw failure;
+    await fs.promises.rename(stagingPath, destPath);
+  } finally {
+    await fs.promises.rm(stagingDir, { recursive: true, force: true });
   }
 }

@@ -7,7 +7,7 @@ import { crc32, deflateRawSync } from 'node:zlib';
 import { describe, it } from 'node:test';
 
 import { pathContains, readComicInfo, readCoverImage, readZipEntries, readZipEntry, rewriteZipEntry, mergeCbzFiles, resolveSeriesHostDir } from '../src/lib/cbz.js';
-import { buildZip } from '../src/downloader/zip.js';
+import { buildZip, buildZipFromFiles } from '../src/downloader/zip.js';
 import { parseComicInfo, renderComicInfoXml } from '../src/downloader/comicinfo.js';
 
 const dir = mkdtempSync(path.join(tmpdir(), 'htosho-cbz-'));
@@ -40,6 +40,26 @@ describe('pathContains', () => {
     assert.equal(pathContains('/media/manga', '/media/manga/title/book.cbz'), true);
     assert.equal(pathContains('/media/manga', '/media/manga-archive/title/book.cbz'), false);
     assert.equal(pathContains('C:\\Manga', 'C:\\Manga\\Title\\book.cbz'), true);
+  });
+});
+
+describe('file-based archive replacement', () => {
+  it('preserves the previous archive on packing failure and replaces it on success', async () => {
+    const fixture = mkdtempSync(path.join(tmpdir(), 'htosho-zip-replace-'));
+    try {
+      const destination = path.join(fixture, 'existing.cbz');
+      const previous = buildZip([{ name: '001.jpg', data: Buffer.from('old image') }]);
+      writeFileSync(destination, previous);
+      await assert.rejects(buildZipFromFiles([{ name: '001.jpg', path: path.join(fixture, 'missing') }], destination), { code: 'ENOENT' });
+      assert.deepEqual(readFileSync(destination), previous);
+      const page = path.join(fixture, 'page');
+      writeFileSync(page, 'replacement image');
+      await buildZipFromFiles([{ name: '001.jpg', path: page }], destination);
+      assert.equal(readZipEntry(readFileSync(destination), '001.jpg')?.toString(), 'replacement image');
+      assert.deepEqual(readdirSync(fixture).sort(), ['existing.cbz', 'page']);
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
   });
 });
 

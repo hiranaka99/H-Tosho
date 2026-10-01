@@ -46,6 +46,10 @@ export function useDownloadEvents(): boolean {
           qc.setQueryData<DownloadTask[]>(['downloads'], msg.tasks);
         } else if (msg.type === 'task') {
           upsertTask(msg.task);
+        } else if (msg.type === 'removed') {
+          const removed = new Set(msg.ids);
+          qc.setQueryData<DownloadTask[]>(['downloads'], (prev) => prev?.filter((task) => !removed.has(task.id)));
+          void qc.invalidateQueries({ queryKey: ['downloads-completed'] });
         }
       } catch {
         /* ignore malformed frames */

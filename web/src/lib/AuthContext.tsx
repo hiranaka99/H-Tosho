@@ -84,7 +84,7 @@ function AuthScreen({ setupRequired, onAuthenticated }: { setupRequired: boolean
     <main className="flex h-full min-h-0 items-center justify-center overflow-y-auto p-3 sm:p-4">
       <Card className="w-full max-w-md overflow-hidden shadow-lg">
         <div className="flex flex-col items-center gap-3 border-b border-border bg-surface-2/50 px-6 py-7 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary text-white">
+          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary-button text-white">
             <BookOpenText className="h-6 w-6" />
           </div>
           <div>

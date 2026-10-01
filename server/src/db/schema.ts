@@ -203,6 +203,13 @@ export const ownedGalleries = sqliteTable('owned_galleries', {
     .default(sql`(current_timestamp)`),
 });
 
+/** Explicit recommendation feedback, separate from ownership and taste. */
+export const dismissedGalleries = sqliteTable('dismissed_galleries', {
+  source: text('source').notNull(),
+  galleryId: text('gallery_id').notNull(),
+  dismissedAt: text('dismissed_at').notNull().default(sql`(current_timestamp)`),
+});
+
 /** Recently served recommendation payloads, one row per gallery. */
 export const recommendationHistory = sqliteTable('recommendation_history', {
   source: text('source').notNull(),

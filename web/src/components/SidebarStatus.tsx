@@ -123,7 +123,9 @@ export function SidebarStatus() {
     previousJobs.current = current;
   }, [jobs, qc]);
   const shownTasks = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
-  if (activeJobs.length === 0 && shownTasks.length === 0) return null;
+  const failedJobs = jobs.filter((job) => job.status === 'failed');
+  const failedDownloads = tasks.filter((task) => task.status === 'failed' && task.errorMessage !== 'Cancelled by user');
+  if (activeJobs.length === 0 && shownTasks.length === 0 && failedJobs.length === 0 && failedDownloads.length === 0) return null;
 
   const onTaskAction = (op: 'pause' | 'resume' | 'cancel', id: number) => {
     if (op === 'pause') pause(id);
@@ -133,9 +135,14 @@ export function SidebarStatus() {
 
   return (
     <div className="flex max-h-1/2 min-h-0 flex-col gap-3 overflow-y-auto border-t border-border p-3">
+      <nav aria-label="Activity shortcuts" className="flex flex-col gap-1">
+        {activeJobs.length > 0 && <button type="button" onClick={() => navigate('/jobs?filter=active')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-primary hover:bg-surface-2">Active jobs · {activeJobs.length}</button>}
+        {failedJobs.length > 0 && <button type="button" onClick={() => navigate('/jobs?filter=failed')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Failed jobs · {failedJobs.length}</button>}
+        {failedDownloads.length > 0 && <button type="button" onClick={() => navigate('/downloader?tab=downloads&status=failed')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Failed downloads · {failedDownloads.length}</button>}
+      </nav>
       {activeJobs.length > 0 && (
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted">Jobs</span>
+          <span className="text-xs font-medium uppercase tracking-wide text-muted">Running & queued</span>
           {activeJobs.map((j) => (
             <JobRow key={j.id} job={j} />
           ))}
@@ -143,7 +150,7 @@ export function SidebarStatus() {
       )}
       {shownTasks.length > 0 && (
         <div className="flex flex-col gap-2">
-          <button onClick={() => navigate('/downloader?tab=downloads')} title="Open downloads" className="group flex items-center gap-1.5 text-left">
+          <button type="button" onClick={() => navigate('/downloader?tab=downloads&status=active')} title="Open active downloads" className="group flex items-center gap-1.5 text-left">
             {shownTasks.some((t) => t.status === 'downloading') ? (
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" />
             ) : (

@@ -3,15 +3,19 @@ import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery, DoujinSearchResult, DoujinSource, DoujinSort } from '../downloader/types.js';
 import { mapLimit } from '../lib/http.js';
-import { KavitaClient } from '../kavita/client.js';
-import type { KavitaSeries } from '../kavita/types.js';
-import { getKavitaConnection, getRecommendationSettings, setRecommendationSettings } from './settings.js';
+import { getDownloaderSettings, onSettingChange, setRecommendationSettings } from './settings.js';
+import { buildKavitaSignals, clearRecommendationSignals, onRecommendationSeriesChange } from './recommendationSignals.js';
+import type { KavitaSeriesSignal } from './recommendationSignals.js';
+import { eligibleRecommendations } from './recommendationEligibility.js';
+import type { DoujinProvider } from '../downloader/types.js';
+import { rankCandidates, selectRecommendations } from './recommendationRanking.js';
+import type { Candidate } from './recommendationRanking.js';
 
 /**
  * Daily doujinshi recommendations based on the user's downloaded library.
  *
  * Signal: the tag/artist profile of downloaded galleries (the `gallery_tags`
- * table — written when a download resolves its metadata, lazily backfilled for
+ * table — written after a successful download, lazily backfilled for
  * pre-existing downloads), plus the user's existing Kavita library: each series'
  * title feeds parody/series searches, and the genres/tags/writers Kavita has
  * already indexed from the archives join the artist/tag profile. The engine
@@ -23,13 +27,13 @@ import { getKavitaConnection, getRecommendationSettings, setRecommendationSettin
  *
  * Daily rotation: selection is seeded with the local date, so a day always
  * yields the same picks (cached in `key_value_store` under
- * `recommendations-v2:<date>`). "Refresh" busts the cache and re-rolls with a
- * fresh nonce. Every served pick enters a rolling cross-day history
- * (`recommendations-history`). Fresh personalized and popular candidates are
- * preferred; diversity caps relax only when needed. If those pools cannot fill
- * twelve slots, previously served picks return least-recently-shown first,
- * including same-day picks as the final fallback. Downloaded, owned, banned,
- * invalid, and duplicate galleries remain hard exclusions.
+ * `recommendations-v2:<date>`). Refresh resamples a bounded hydrated pool with a
+ * fresh nonce, fetching more only when its fresh candidates run low or expire.
+ * Every served pick enters rolling cross-day history. Tag/series overlap reduces
+ * selection weight; actual artists and reliably identified editions never repeat.
+ * When fresh pools cannot fill twelve slots, history returns least-recently-shown first,
+ * including same-day picks as the final fallback. Downloaded, owned, dismissed,
+ * banned, invalid, and duplicate galleries remain hard exclusions on every path.
  */
 
 /**
@@ -74,24 +78,14 @@ const ROLL_SKIP_WINDOW = 24;
 const SEARCH_SORTS: Record<(typeof SOURCES)[number], DoujinSort[]> = {
   hitomi: ['popular-year', 'popular-week'],
 };
-/** Total size of the daily set, split evenly across the registered sources. */
+/** Target size; strict eligibility and artist/work diversity may yield fewer. */
 const TOTAL_PICKS = 12;
-/** Hydrated spares cached with the visible set for instant owned-card replacement. */
+/** Hydrated spares cached for instant dismissed-card replacement. */
 const RESERVE_PICKS = 12;
-const PICKS_PER_SOURCE = Math.max(1, Math.floor(TOTAL_PICKS / SOURCES.length));
-/** Max picks per set a single tag/series term may dominate. */
-const MAX_PICKS_PER_TERM = 2;
-/** Artists get a stricter cap — one favorite artist should surface at most once per set. */
-const MAX_PICKS_PER_ARTIST = 1;
 /** Fewer profile terms than this → cold-start popularity fallback. */
 const MIN_PROFILE_TERMS = 3;
-/** Backfill cap per generation, and the tagged-gallery count below which it runs. */
+/** Maximum legacy download metadata backfills per generation. */
 const BACKFILL_LIMIT = 25;
-// Hard bound on how many Kavita series the library scan touches (one metadata
-// call each), so a very large library cannot stall daily generation.
-const KAVITA_SERIES_LIMIT = 600;
-/** Concurrent per-series metadata fetches against Kavita. */
-const METADATA_PARALLELISM = 8;
 
 export interface GalleryTagEntry {
   name: string;
@@ -129,16 +123,23 @@ interface CachedRecommendationSet extends RecommendationSet {
   reserve: RecommendationItem[];
 }
 
+const CANDIDATE_POOL_TTL_MS = 30 * 60_000;
+let candidatePool: { key: string; at: number; provider: DoujinProvider | null; candidates: Map<string, Candidate>; popular: RecommendationItem[] } | null = null;
+
 // ---------------------------------------------------------------------------
 // gallery_tags persistence
 // ---------------------------------------------------------------------------
 
 let profileRevision = 0;
+onSettingChange('downloader', invalidateProfile);
+onSettingChange('kavita-connection', invalidateProfile);
+onRecommendationSeriesChange(invalidateProfile);
 
 /** Invalidate today's derived set whenever its taste inputs change. */
 function invalidateProfile(): void {
   profileRevision += 1;
   emptyCooldownUntil = 0;
+  candidatePool = null;
   getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(localDate()))).run();
 }
 
@@ -157,6 +158,7 @@ function persistGalleryTags(source: DoujinSource, gallery: DoujinGallery, invali
         set: { title: gallery.title, tagsJson: JSON.stringify(tags), artistsJson: JSON.stringify(artists), language: gallery.language ?? null, fetchedAt: new Date().toISOString() },
       })
       .run();
+    getDb().insert(schema.ownedGalleries).values({ source, galleryId: gallery.galleryId }).onConflictDoNothing().run();
     if (invalidate) invalidateProfile();
   } catch (err) {
     console.warn('[h-tosho] failed to record gallery tags:', err);
@@ -274,89 +276,6 @@ function buildProfile(signals: KavitaSeriesSignal[]): TasteProfile {
   return { terms: [...terms.values()].sort((a, b) => b.weight - a.weight), language };
 }
 
-/** One Kavita series reduced to recommendation signals. */
-export interface KavitaSeriesSignal {
-  name: string;
-  tags: string[];
-  artists: string[];
-}
-
-/**
- * Fetch recommendation signals from the user's existing Kavita library via the
- * Kavita API — no local file access, so a large library (even on a network
- * drive) stays fast. Each series contributes its title (doujinshi sources
- * index fan works under the parody/series tag, so a series you own is a search
- * term) plus the genres/tags and writers Kavita already indexed from the
- * archives at scan time. Bounded by KAVITA_SERIES_LIMIT; any failure degrades
- * to an empty signal set so the download-based profile still works.
- */
-// The scan below costs up to KAVITA_SERIES_LIMIT metadata calls and dominates
-// generation time, yet the profile it feeds barely changes between refreshes —
-// memoize it in memory. The key covers everything that can change the result:
-// the connection and the excluded-library list. Failed scans are not cached, so
-// a recovered Kavita is picked up on the next generation.
-const KAVITA_SIGNALS_TTL_MS = 30 * 60_000;
-let kavitaSignalsCache: { key: string; at: number; signals: KavitaSeriesSignal[] } | null = null;
-
-async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
-  const conn = getKavitaConnection();
-  if (!conn.baseUrl || !conn.apiKey) return [];
-  // Libraries the user excluded from recommendations (e.g. a regular manga
-  // collection that should not feed doujinshi searches). Part of the cache key.
-  const excludedLibraries = new Set(getRecommendationSettings().excludedLibraryIds);
-  const cacheKey = `${conn.baseUrl}|${[...excludedLibraries].sort((a, b) => a - b).join(',')}`;
-  if (kavitaSignalsCache && kavitaSignalsCache.key === cacheKey && Date.now() - kavitaSignalsCache.at < KAVITA_SIGNALS_TTL_MS) {
-    return kavitaSignalsCache.signals;
-  }
-  const client = new KavitaClient(conn.baseUrl, conn.apiKey);
-  let libraries;
-  try {
-    libraries = await client.getLibraries();
-  } catch (err) {
-    console.warn('[recommendations] Kavita library scan skipped:', err instanceof Error ? err.message : err);
-    return [];
-  }
-
-  // Phase 1: collect series across all libraries (one bulk call per library).
-  const seriesList: KavitaSeries[] = [];
-  for (const lib of libraries) {
-    if (excludedLibraries.has(lib.id)) continue;
-    let series: KavitaSeries[];
-    try {
-      series = await client.getSeries(lib.id);
-    } catch (err) {
-      console.warn(`[recommendations] Kavita series list skipped for library "${lib.name}":`, err instanceof Error ? err.message : err);
-      continue;
-    }
-    for (const s of series) {
-      if (seriesList.length >= KAVITA_SERIES_LIMIT) break;
-      seriesList.push(s);
-    }
-  }
-
-  // Phase 2 (bounded parallelism): one metadata call per series. A failed
-  // lookup still keeps the series title — it is a valid search term on its own.
-  const signals: KavitaSeriesSignal[] = [];
-  for (let i = 0; i < seriesList.length; i += METADATA_PARALLELISM) {
-    const batch = await Promise.all(
-      seriesList.slice(i, i + METADATA_PARALLELISM).map(async (s) => {
-        try {
-          const meta = await client.getSeriesMetadata(s.id);
-          return {
-            name: s.name,
-            tags: [...(meta.genres ?? []), ...(meta.tags ?? [])].map((t) => t.title?.trim() ?? '').filter(Boolean),
-            artists: (meta.writers ?? []).map((p) => p.name?.trim() ?? '').filter(Boolean),
-          };
-        } catch {
-          return { name: s.name, tags: [] as string[], artists: [] as string[] };
-        }
-      }),
-    );
-    signals.push(...batch);
-  }
-  kavitaSignalsCache = { key: cacheKey, at: Date.now(), signals };
-  return signals;
-}
 
 /**
  * Fill in tag data for completed downloads that predate the gallery_tags table
@@ -446,7 +365,6 @@ function fragmentFor(term: ProfileTerm): string | null {
   return ns ? `${ns}:${name.replace(/\s+/g, '_')}` : name;
 }
 
-const LANGUAGE_MATCH_BONUS = 1.5;
 
 /**
  * The terms queried this roll. Tags/series keep their #1 heaviest term as a
@@ -505,29 +423,18 @@ function sampleTerms(terms: ProfileTerm[], count: number, poolSize: number, rng:
 // Scoring + daily selection
 // ---------------------------------------------------------------------------
 
-interface Candidate {
-  result: DoujinSearchResult;
-  score: number;
-  reasons: string[];
-  matched: Set<string>;
-}
 
 const keyOf = (r: { source: string; galleryId: string }) => `${r.source}:${r.galleryId}`;
 
-function credit(c: Candidate, termKey: string, reason: string, weight: number): void {
+function credit(c: Candidate, termKey: string, reason: string): void {
   if (c.matched.has(termKey)) return;
   c.matched.add(termKey);
-  c.score += weight;
   if (!c.reasons.includes(reason)) c.reasons.push(reason);
 }
 
-/** Match weight uses log-damped ownership frequency so common signals matter without dominating. */
-function termScore(t: ProfileTerm): number {
-  return 1 + Math.log2(1 + t.weight);
-}
 
 /** Search every spec and merge candidates by gallery (a gallery hit by several queries sums their weights). */
-async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, termIndex: Map<string, ProfileTerm>, preferredLanguage: string | null): Promise<Map<string, Candidate>> {
+async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, termIndex: Map<string, ProfileTerm>): Promise<Map<string, Candidate>> {
   const out = new Map<string, Candidate>();
   // Run one spec's search, returning its raw results (or null when the query
   // failed — one failing query cannot kill the whole generation).
@@ -535,7 +442,7 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
     const provider = getDoujinProvider(spec.source);
     if (!provider) return null;
     try {
-      return await provider.search(spec.query, spec.results, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES, skip: spec.skip });
+      return await provider.search(spec.query, spec.results, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES, skip: spec.skip, strictExclusions: true });
     } catch (err) {
       console.warn(`[h-tosho] recommendations query failed (${spec.source} “${spec.query}”):`, err instanceof Error ? err.message : err);
       return null;
@@ -568,18 +475,17 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
           c = { result: r, score: 0, reasons: [], matched: new Set() };
           out.set(key, c);
         }
-        for (const t of spec.terms) credit(c, `${t.kind}:${t.name.toLowerCase()}`, `${t.kind} ${t.name}`, termScore(t));
+        for (const t of spec.terms) credit(c, `${t.kind}:${t.name.toLowerCase()}`, `${t.kind} ${t.name}`);
         // Hitomi results carry their own tag/artist lists — credit extra profile terms they share.
         if (r.source === 'hitomi') {
           for (const a of r.artists ?? []) {
             const t = termIndex.get(`artist:${a.toLowerCase()}`);
-            if (t) credit(c, `artist:${a.toLowerCase()}`, `artist ${t.name}`, termScore(t));
+            if (t) credit(c, `artist:${a.toLowerCase()}`, `artist ${t.name}`);
           }
           for (const tag of r.tags ?? []) {
             const t = termIndex.get(`tag:${tag.toLowerCase()}`);
-            if (t) credit(c, `tag:${tag.toLowerCase()}`, `tag ${t.name}`, termScore(t));
+            if (t) credit(c, `tag:${tag.toLowerCase()}`, `tag ${t.name}`);
           }
-          if (preferredLanguage && r.language?.trim().toLowerCase() === preferredLanguage) c.score += LANGUAGE_MATCH_BONUS;
         }
       }
     }
@@ -587,93 +493,6 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
   return out;
 }
 
-/**
- * Draws `count` picks by weighted sampling without replacement — draw
- * probability is proportional to a candidate's score, so top matches surface
- * most rolls without the same scoreboard winning every time (a sorted list
- * with small jitter could not: top scores always out-ranked the jitter). A
- * single term may contribute at most MAX_PICKS_PER_TERM picks (artists:
- * MAX_PICKS_PER_ARTIST), tracked across calls via `termPicks`, so no favorite
- * can dominate the whole set.
- */
-function pickDaily(candidates: Candidate[], count: number, rng: () => number, termPicks: Map<string, number>): RecommendationItem[] {
-  const pool = [...candidates];
-  const out: RecommendationItem[] = [];
-  while (out.length < count && pool.length > 0) {
-    // A pick consumes every term it matches; allowing a heavier tag to hide an
-    // already-saturated artist defeats the advertised diversity cap.
-    const eligible = pool.filter((c) => !capReached(c, termPicks));
-    if (!eligible.length) break;
-    let total = 0;
-    for (const c of eligible) total += c.score;
-    // Roulette draw ∝ score; falls back to uniform when every score is 0.
-    let chosen = eligible[Math.floor(rng() * eligible.length)];
-    if (total > 0) {
-      let r = rng() * total;
-      for (const c of eligible) {
-        r -= c.score;
-        if (r <= 0) {
-          chosen = c;
-          break;
-        }
-      }
-    }
-    for (const term of chosen.matched) termPicks.set(term, (termPicks.get(term) ?? 0) + 1);
-    out.push({ ...chosen.result, reasons: chosen.reasons });
-    pool.splice(pool.indexOf(chosen), 1);
-  }
-  return out;
-}
-
-/** Weighted selection without diversity caps, used only after fresh popular candidates. */
-function pickWithoutCaps(candidates: Candidate[], count: number, rng: () => number): RecommendationItem[] {
-  const pool = [...candidates];
-  const out: RecommendationItem[] = [];
-  while (out.length < count && pool.length > 0) {
-    let total = 0;
-    for (const candidate of pool) total += candidate.score;
-    let chosenIndex = Math.floor(rng() * pool.length);
-    if (total > 0) {
-      let draw = rng() * total;
-      for (let i = 0; i < pool.length; i++) {
-        draw -= pool[i].score;
-        if (draw <= 0) {
-          chosenIndex = i;
-          break;
-        }
-      }
-    }
-    const [chosen] = pool.splice(chosenIndex, 1);
-    out.push({ ...chosen.result, reasons: chosen.reasons });
-  }
-  return out;
-}
-
-function capReached(c: Candidate, termPicks: Map<string, number>): boolean {
-  for (const term of c.matched) {
-    const cap = term.startsWith('artist:') ? MAX_PICKS_PER_ARTIST : MAX_PICKS_PER_TERM;
-    if ((termPicks.get(term) ?? 0) >= cap) return true;
-  }
-  return false;
-}
-
-/** Per-source budget of PICKS_PER_SOURCE, topped up from the leftovers when a source is thin. */
-function pickWithBudget(candidates: Map<string, Candidate>, rng: () => number, termPicks: Map<string, number>): RecommendationItem[] {
-  const picked: RecommendationItem[] = [];
-  const pickedKeys = new Set<string>();
-  for (const source of SOURCES) {
-    const pool = [...candidates.values()].filter((c) => c.result.source === source);
-    for (const item of pickDaily(pool, PICKS_PER_SOURCE, rng, termPicks)) {
-      pickedKeys.add(keyOf(item));
-      picked.push(item);
-    }
-  }
-  if (picked.length < TOTAL_PICKS) {
-    const rest = [...candidates.values()].filter((c) => !pickedKeys.has(keyOf(c.result)));
-    picked.push(...pickDaily(rest, TOTAL_PICKS - picked.length, rng, termPicks));
-  }
-  return picked;
-}
 
 // ---------------------------------------------------------------------------
 // Cold-start popularity fallback
@@ -691,7 +510,7 @@ async function gatherPopular(downloaded: Set<string>, rng: () => number): Promis
       if (!provider) return;
       const spec = POPULAR_FALLBACK[source];
       try {
-        const results = await provider.search(spec.query, TOTAL_PICKS + RESERVE_PICKS, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES, skip: Math.floor(rng() * ROLL_SKIP_WINDOW) });
+        const results = await provider.search(spec.query, TOTAL_PICKS + RESERVE_PICKS, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES, skip: Math.floor(rng() * ROLL_SKIP_WINDOW), strictExclusions: true });
         const pool = results.filter((r) => !downloaded.has(keyOf(r)));
         for (let i = pool.length - 1; i > 0; i--) {
           const j = Math.floor(rng() * (i + 1));
@@ -757,14 +576,6 @@ function ownedGalleryKeys(): Set<string> {
   return new Set(rows.map((r) => `${r.source}:${r.galleryId}`));
 }
 
-/** Mark a gallery as owned (idempotent). */
-export function markOwned(source: DoujinSource, galleryId: string): void {
-  getDb()
-    .insert(schema.ownedGalleries)
-    .values({ source, galleryId })
-    .onConflictDoNothing()
-    .run();
-}
 const HISTORY_KEY = 'recommendations-history';
 const HISTORY_DAYS = 30;
 const MAX_HISTORY = 1200;
@@ -899,41 +710,41 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
   // Downloaded and owned galleries are hard exclusions. History is initially a
   // freshness exclusion, then becomes the least-recent fallback pool.
   const history = pruneHistory();
-  const hardExcluded = new Set([...completedGalleryKeys(), ...ownedGalleryKeys()]);
+  const hardExcluded = new Set([...completedGalleryKeys(), ...ownedGalleryKeys(), ...getDb().select().from(schema.dismissedGalleries).all().map(keyOf)]);
   const freshExcluded = new Set([...hardExcluded, ...history.map((h) => h.key)]);
 
   let items: RecommendationItem[] = [];
   let libraryPicks = 0;
   let candidateCount = 0;
-  let candidates = new Map<string, Candidate>();
-  if (profile.terms.length >= MIN_PROFILE_TERMS) {
-    const termIndex = new Map(profile.terms.map((t) => [`${t.kind}:${t.name.toLowerCase()}`, t]));
-    const termPicks = new Map<string, number>();
-    candidates = await gatherCandidates(buildQuerySpecs(profile, rng), freshExcluded, termIndex, profile.language);
-    candidateCount = candidates.size;
-    items = pickWithBudget(candidates, rng, termPicks);
-    libraryPicks = items.length;
+  const poolKey = JSON.stringify([profile, getDownloaderSettings().hitomiBannedTags]);
+  const provider = getDoujinProvider('hitomi');
+  if (!candidatePool || candidatePool.key !== poolKey || candidatePool.provider !== provider || Date.now() - candidatePool.at >= CANDIDATE_POOL_TTL_MS) {
+    candidatePool = { key: poolKey, at: Date.now(), provider, candidates: new Map(), popular: [] };
   }
-
-  // Fresh popular galleries are preferred over relaxing personalized diversity.
-  const popular = await gatherPopular(freshExcluded, rng);
-  if (items.length < TOTAL_PICKS) {
-    const existing = new Set(items.map(keyOf));
-    for (const item of popular) {
-      if (existing.has(keyOf(item))) continue;
-      items.push(item);
-      existing.add(keyOf(item));
-      if (items.length >= TOTAL_PICKS) break;
+  const pool = candidatePool;
+  const unseen = new Set([...pool.candidates.keys(), ...pool.popular.map(keyOf)].filter((key) => !freshExcluded.has(key)));
+  if (unseen.size < TOTAL_PICKS + RESERVE_PICKS) {
+    if (profile.terms.length >= MIN_PROFILE_TERMS) {
+      const termIndex = new Map(profile.terms.map((term) => [`${term.kind}:${term.name.toLowerCase()}`, term]));
+      const fetched = await gatherCandidates(buildQuerySpecs(profile, rng), hardExcluded, termIndex);
+      for (const [key, candidate] of fetched) pool.candidates.set(key, candidate);
     }
+    const fetchedPopular = await gatherPopular(hardExcluded, rng);
+    const popularByKey = new Map(pool.popular.map((item) => [keyOf(item), item]));
+    for (const item of fetchedPopular) popularByKey.set(keyOf(item), item);
+    pool.popular = [...popularByKey.values()].slice(-240);
+    pool.candidates = new Map([...pool.candidates].slice(-480));
   }
-  // Preserve freshness while relaxing only the per-term diversity caps.
-  if (items.length < TOTAL_PICKS && candidates.size > 0) {
-    const existing = new Set(items.map(keyOf));
-    const remaining = [...candidates.values()].filter((candidate) => !existing.has(keyOf(candidate.result)));
-    const relaxed = pickWithoutCaps(remaining, TOTAL_PICKS - items.length, rng);
-    items.push(...relaxed);
-    libraryPicks += relaxed.length;
-  }
+  const eligible = await eligibleRecommendations([...pool.candidates.values()].map((candidate) => candidate.result));
+  const eligibleKeys = new Set(eligible.map(keyOf));
+  const candidates = new Map([...pool.candidates].filter(([key]) => eligibleKeys.has(key) && !freshExcluded.has(key)));
+  candidateCount = candidates.size;
+  rankCandidates([...candidates.values()], new Map(profile.terms.map((term) => [`${term.kind}:${term.name.toLowerCase()}`, term.weight])), profile.language);
+  items = selectRecommendations([...candidates.values()], TOTAL_PICKS, rng);
+  libraryPicks = items.length;
+  const popular = (await eligibleRecommendations(pool.popular)).filter((item) => !freshExcluded.has(keyOf(item)));
+  const asCandidate = (item: RecommendationItem): Candidate => ({ result: item, score: 1, reasons: item.reasons, matched: new Set() });
+  items.push(...selectRecommendations(popular.map(asCandidate), TOTAL_PICKS - items.length, rng, items));
 
   // Last resort: recycle valid history least-recently-shown first. Earlier-day
   // entries naturally precede today's entries; same-day reuse occurs only when
@@ -941,30 +752,22 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
   let repeatedCount = 0;
   let repeatedToday = false;
   if (items.length < TOTAL_PICKS) {
-    const existing = new Set(items.map(keyOf));
-    for (const entry of history) {
-      if (hardExcluded.has(entry.key) || existing.has(entry.key)) continue;
-      items.push(entry.item);
-      existing.add(entry.key);
+    const eligibleHistory = await eligibleRecommendations(history.map((entry) => entry.item));
+    for (const item of eligibleHistory) {
+      // Preserve least-recent ordering while enforcing artist/work exclusions.
+      const selected = selectRecommendations([asCandidate(item)], 1, rng, items);
+      if (!selected.length) continue;
+      items.push(item);
       repeatedCount += 1;
-      repeatedToday ||= entry.date === date;
+      repeatedToday ||= history.find((entry) => entry.key === keyOf(item))?.date === date;
       if (items.length >= TOTAL_PICKS) break;
     }
   }
-  // Keep hydrated, eligible leftovers beside the cached panel. Marking a card
-  // owned can promote one synchronously instead of repeating all remote searches.
+  // Reserves are ranked independently; promotion rechecks current diversity.
   const visibleKeys = new Set(items.map(keyOf));
-  const reserve: RecommendationItem[] = [];
-  const reserveKeys = new Set<string>();
-  const addReserve = (item: RecommendationItem): void => {
-    const key = keyOf(item);
-    if (reserve.length >= RESERVE_PICKS || hardExcluded.has(key) || visibleKeys.has(key) || reserveKeys.has(key)) return;
-    reserve.push(item);
-    reserveKeys.add(key);
-  };
-  for (const candidate of candidates.values()) addReserve({ ...candidate.result, reasons: candidate.reasons });
-  for (const item of popular) addReserve(item);
-  for (const entry of history) addReserve(entry.item);
+  const leftovers = [...candidates.values()].filter((candidate) => !visibleKeys.has(keyOf(candidate.result)));
+  const reserve = selectRecommendations(leftovers, RESERVE_PICKS, rng);
+  reserve.push(...selectRecommendations(popular.map(asCandidate), RESERVE_PICKS - reserve.length, rng, reserve));
 
 
   const popularPicks = items.length - libraryPicks;
@@ -1063,19 +866,23 @@ function generateFor(date: string, nonce: number): Promise<CachedRecommendationS
 export interface RecommendationResponse extends RecommendationSet {
   /** Keys (`source:galleryId`) of every owned gallery, for the UI's owned badges. */
   ownedKeys: string[];
+  dismissedKeys: string[];
 }
 
-function withOwned(set: RecommendationSet): RecommendationResponse {
+async function withOwned(set: RecommendationSet): Promise<RecommendationResponse> {
   const owned = ownedGalleryKeys();
-  const { date, generatedAt, mode, profile, items, repeatedCount, degradedReason } = set;
-  return { date, generatedAt, mode, profile, items: items.filter((item) => !owned.has(keyOf(item))), repeatedCount, degradedReason, ownedKeys: [...owned] };
+  const dismissed = getDb().select().from(schema.dismissedGalleries).all().map(keyOf);
+  const { date, generatedAt, mode, profile, repeatedCount, degradedReason } = set;
+  const eligible = await eligibleRecommendations(set.items);
+  const items = selectRecommendations(eligible.map((item) => ({ result: item, score: 1, reasons: item.reasons, matched: new Set<string>() })), TOTAL_PICKS, () => 0);
+  return { date, generatedAt, mode, profile, items, repeatedCount, degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' : degradedReason, ownedKeys: [...owned], dismissedKeys: dismissed };
 }
 
-export function getRecommendations(): Promise<RecommendationResponse> {
+export async function getRecommendations(): Promise<RecommendationResponse> {
   const date = localDate();
   const cached = readCached(date);
   if (cached) {
-    const response = withOwned(cached);
+    const response = await withOwned(cached);
     if (response.items.length === TOTAL_PICKS || response.items.length === cached.items.length && cached.degradedReason === 'insufficient-eligible') {
       return Promise.resolve(response);
     }
@@ -1106,40 +913,46 @@ export async function refreshRecommendations(): Promise<RecommendationResponse> 
   // instead of forcing every request into a full regeneration.
   return withOwned(await generateFor(date, ++refreshNonce));
 }
-/** Mark a gallery owned and promote a pre-generated replacement without network work. */
-export function markOwnedAndReplace(source: DoujinSource, galleryId: string): RecommendationResponse {
-  markOwned(source, galleryId);
+/** Explicit feedback excludes only this gallery; it never becomes an ownership/taste vote. */
+export async function dismissAndReplace(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
+  getDb().insert(schema.dismissedGalleries).values({ source, galleryId }).onConflictDoNothing().run();
+  profileRevision += 1;
   const date = localDate();
   const cached = readCached(date);
-  if (!cached) return withOwned({ date, generatedAt: new Date().toISOString(), mode: 'popular', profile: { artists: [], tags: [], series: [], language: null }, items: [], repeatedCount: 0, degradedReason: 'insufficient-eligible' });
-
-  const owned = ownedGalleryKeys();
-  const items = cached.items.filter((item) => !owned.has(keyOf(item)));
-  const itemKeys = new Set(items.map(keyOf));
-  const reserve = cached.reserve.filter((item) => !owned.has(keyOf(item)) && !itemKeys.has(keyOf(item)));
-  const promoted: RecommendationItem[] = [];
-  while (items.length < TOTAL_PICKS && reserve.length > 0) {
-    const replacement = reserve.shift();
-    if (!replacement) break;
-    items.push(replacement);
-    promoted.push(replacement);
-    itemKeys.add(keyOf(replacement));
-  }
-  const updated: CachedRecommendationSet = {
-    ...cached,
-    items,
-    reserve,
-    profile: { ...termsFromPicks(items), language: cached.profile.language },
-    degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' : cached.degradedReason,
-  };
+  if (!cached) return getRecommendations();
+  const items = await eligibleRecommendations(cached.items);
+  const keys = new Set(items.map(keyOf));
+  const reserve = (await eligibleRecommendations(cached.reserve)).filter((item) => !keys.has(keyOf(item)));
+  const promoted = selectRecommendations(reserve.map((item) => ({ result: item, score: 1, reasons: item.reasons, matched: new Set<string>() })), Math.max(0, TOTAL_PICKS - items.length), () => 0, items);
+  const promotedKeys = new Set(promoted.map(keyOf));
+  items.push(...promoted);
+  const updated: CachedRecommendationSet = { ...cached, items, reserve: reserve.filter((item) => !promotedKeys.has(keyOf(item))), profile: { ...termsFromPicks(items), language: cached.profile.language }, degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' : cached.degradedReason };
   writeCached(updated);
-  if (promoted.length > 0) addHistory(date, promoted, pruneHistory());
+  if (promoted.length) addHistory(date, promoted, pruneHistory());
   return withOwned(updated);
+}
+
+/** Undo removes feedback, not true ownership; restore the original card when still eligible. */
+export async function undoDismiss(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
+  getDb().delete(schema.dismissedGalleries).where(and(eq(schema.dismissedGalleries.source, source), eq(schema.dismissedGalleries.galleryId, galleryId))).run();
+  profileRevision += 1;
+  const cached = readCached(localDate());
+  const original = readHistory().find((entry) => entry.key === `${source}:${galleryId}`)?.item;
+  if (cached && original && (await eligibleRecommendations([original])).length) {
+    const remaining = cached.items.filter((item) => keyOf(item) !== keyOf(original));
+    const items = [original, ...selectRecommendations(remaining.map((item) => ({ result: item, score: 1, reasons: item.reasons, matched: new Set<string>() })), TOTAL_PICKS - 1, () => 0, [original])];
+    const kept = new Set(items.map(keyOf));
+    const reserve = [...remaining.filter((item) => !kept.has(keyOf(item))), ...cached.reserve.filter((item) => !kept.has(keyOf(item)))];
+    const updated = { ...cached, items, reserve, profile: { ...termsFromPicks(items), language: cached.profile.language } };
+    writeCached(updated);
+    return withOwned(updated);
+  }
+  return getRecommendations();
 }
 
 /** Replace the list of Kavita libraries feeding the profile; today's cached set is re-generated. */
 export function setExcludedLibraries(ids: number[]): void {
   setRecommendationSettings({ excludedLibraryIds: [...new Set(ids)] });
-  kavitaSignalsCache = null;
+  clearRecommendationSignals();
   invalidateProfile();
 }

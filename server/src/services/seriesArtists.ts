@@ -1,4 +1,5 @@
 import type { KavitaSeriesMetadataDto } from '../kavita/types.js';
+import { invalidateRecommendationSeries } from './recommendationSignals.js';
 
 /** Minimal client surface the cache needs — satisfied by KavitaClient. */
 export interface MetadataSource {
@@ -29,6 +30,7 @@ const cache = new Map<number, Entry>();
 /** Drop one series' cached names (call after Kavita metadata is rewritten). */
 export function invalidateSeriesArtists(seriesId: number): void {
   cache.delete(seriesId);
+  invalidateRecommendationSeries(seriesId);
 }
 
 /** Roles treated as "artist" for search purposes, in display priority order. */

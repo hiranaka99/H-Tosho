@@ -126,6 +126,8 @@ export interface DoujinSearchOptions {
    * slices instead of the same top N. Providers that cannot skip ignore it.
    */
   skip?: number;
+  /** Automatic recommendations never override configured bans. */
+  strictExclusions?: boolean;
 }
 
 /**
@@ -143,4 +145,6 @@ export interface DoujinProvider {
   search(query: string, limit?: number, sort?: DoujinSort, opts?: DoujinSearchOptions): Promise<DoujinSearchResult[]>;
   /** Optional tag/artist autocomplete suggestions for a query prefix. */
   suggest?(query: string, limit?: number): Promise<DoujinSuggestion[]>;
+  /** Recheck cached/history candidates against current provider exclusions. */
+  filterRecommendations?(items: DoujinSearchResult[]): Promise<DoujinSearchResult[]>;
 }

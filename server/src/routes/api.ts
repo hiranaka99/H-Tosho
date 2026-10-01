@@ -41,7 +41,7 @@ import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
 import { rewriteDoujinCover, rewriteDoujinPages, rewriteMangaDexCoverUrl } from './media.js';
 import { addWatchedSearch, listNewGalleries, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
-import { getRecommendations, markOwnedAndReplace, refreshRecommendations, setExcludedLibraries } from '../services/recommendations.js';
+import { getRecommendations, dismissAndReplace, undoDismiss, refreshRecommendations, setExcludedLibraries } from '../services/recommendations.js';
 import { getRecommendationSettings } from '../services/settings.js';
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
 import { listCbzFiles, readComicInfo, readCoverImage, resolveExistingFile, resolveSeriesHostDir } from '../lib/cbz.js';
@@ -777,6 +777,9 @@ api.get('/downloads/events', (c) =>
     const unsubscribe = downloadQueue.subscribe((task) => {
       void sse.write(`data: ${JSON.stringify({ type: 'task', task })}\n\n`).catch(() => {});
     });
+    const unsubscribeRemovals = downloadQueue.subscribeRemovals((ids) => {
+      void sse.write(`data: ${JSON.stringify({ type: 'removed', ids })}\n\n`).catch(() => {});
+    });
 
     // Keep the connection alive so proxies/clients don't time out during idle.
     const heartbeat = setInterval(() => {
@@ -789,6 +792,7 @@ api.get('/downloads/events', (c) =>
 
     clearInterval(heartbeat);
     unsubscribe();
+    unsubscribeRemovals();
   }),
 );
 
@@ -929,15 +933,24 @@ api.post('/recommendations/refresh', async (c) => {
   }
 });
 
-/** Mark a gallery owned and promote a cached replacement without remote work. */
-api.post('/recommendations/owned', async (c) => {
+/** Permanently dismiss a gallery and promote a cached replacement. */
+api.post('/recommendations/dismiss', async (c) => {
   const body = await c.req.json<{ source?: unknown; galleryId?: unknown }>().catch(() => null);
   const source = body?.source;
   const galleryId = typeof body?.galleryId === 'string' ? body.galleryId.trim() : '';
   if (source !== 'hitomi' && source !== 'nhentai' || !galleryId) {
     return c.json({ error: 'source (hitomi|nhentai) and galleryId are required' }, 400);
   }
-  const set = markOwnedAndReplace(source, galleryId);
+  const set = await dismissAndReplace(source, galleryId);
+  return c.json({ ...set, items: set.items.map(rewriteDoujinCover) });
+});
+
+api.post('/recommendations/undo-dismiss', async (c) => {
+  const body = await c.req.json<{ source?: unknown; galleryId?: unknown }>().catch(() => null);
+  const source = body?.source;
+  const galleryId = typeof body?.galleryId === 'string' ? body.galleryId.trim() : '';
+  if (source !== 'hitomi' && source !== 'nhentai' || !galleryId) return c.json({ error: 'source (hitomi|nhentai) and galleryId are required' }, 400);
+  const set = await undoDismiss(source, galleryId);
   return c.json({ ...set, items: set.items.map(rewriteDoujinCover) });
 });
 

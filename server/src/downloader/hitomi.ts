@@ -425,12 +425,16 @@ function parseNozomiIds(buf: Buffer): number[] {
 }
 
 /** Fetch the big-endian int32 gallery-id list from a nozomi filter. */
-async function fetchNozomiIds(f: NozomiFilter): Promise<number[]> {
+async function fetchNozomiIds(f: NozomiFilter, strict = false): Promise<number[]> {
   try {
     const r = await fetch(nozomiUrl(f), { headers: { ...headers() } });
-    if (r.status !== 200) return [];
+    if (r.status !== 200) {
+      if (strict && r.status !== 404) throw new Error(`Hitomi exclusion index HTTP ${r.status}`);
+      return [];
+    }
     return parseNozomiIds(Buffer.from(await r.arrayBuffer()));
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return [];
   }
 }
@@ -520,7 +524,7 @@ function tokenizeQuery(query: string): { ns?: string; val: string }[] {
  * that tag's exclusion, so searching a banned tag still returns results (a
  * bare gallery-id lookup never reaches this function at all).
  */
-async function searchGalleryIds(query: string, version: string, popularPeriod?: 'today' | 'week' | 'year'): Promise<number[]> {
+async function searchGalleryIds(query: string, version: string, popularPeriod?: 'today' | 'week' | 'year', strictExclusions = false): Promise<number[]> {
   const terms = tokenizeQuery(query);
   if (!terms.length) return [];
 
@@ -551,7 +555,7 @@ async function searchGalleryIds(query: string, version: string, popularPeriod?: 
     const popular = await fetchPopularIds(popularPeriod, explicitLanguage ?? 'english');
     if (!popular.length) return [];
     const setOf = sets.map((s) => new Set(s));
-    const banned = await bannedIdSet(query, version);
+    const banned = await bannedIdSet(strictExclusions ? '' : query, version, strictExclusions);
     return popular.filter((id) => setOf.every((s) => s.has(id)) && !banned?.has(id));
   }
 
@@ -568,7 +572,7 @@ async function searchGalleryIds(query: string, version: string, popularPeriod?: 
 
   // Drop galleries carrying any configured banned tag (see bannedIdSet).
   if (ids.length) {
-    const banned = await bannedIdSet(query, version);
+    const banned = await bannedIdSet(strictExclusions ? '' : query, version, strictExclusions);
     if (banned) ids = ids.filter((id) => !banned.has(id));
   }
 
@@ -588,13 +592,13 @@ async function searchGalleryIds(query: string, version: string, popularPeriod?: 
  * Multi-word entries AND-intersect their terms, mirroring how search combines
  * them — "aoi kajitsu" excludes galleries tagged with both, not either word.
  */
-async function resolveBannedEntry(entry: string, version: string): Promise<number[]> {
+async function resolveBannedEntry(entry: string, version: string, strict = false): Promise<number[]> {
   const terms = tokenizeQuery(entry);
   if (!terms.length) return [];
   const sets = await Promise.all(
     terms.map(async (t) => {
       const f = t.ns ? nozomiFilterFromTerm(`${t.ns}:${t.val}`) : null;
-      return f ? fetchNozomiIds(f) : getGalleryIdsForTerm(t.val.toLowerCase(), version);
+      return f ? fetchNozomiIds(f, strict) : getGalleryIdsForTerm(t.val.toLowerCase(), version);
     })
   );
   return intersectIds(sets);
@@ -614,7 +618,7 @@ async function resolveBannedEntry(entry: string, version: string): Promise<numbe
  */
 let bannedCache: { version: string; entries: Map<string, number[]> } | null = null;
 
-async function bannedIdSet(query: string, version: string): Promise<Set<number> | null> {
+async function bannedIdSet(query: string, version: string, strict = false): Promise<Set<number> | null> {
   let rawTags: unknown;
   try {
     rawTags = getDownloaderSettings().hitomiBannedTags;
@@ -636,13 +640,14 @@ async function bannedIdSet(query: string, version: string): Promise<Set<number> 
     const terms = tokenizeQuery(entry);
     // Explicitly searched (every term of the entry appears verbatim) — this
     // ban doesn't apply to the current query.
-    if (terms.length && terms.every((t) => queryTerms.has(termKey(t)))) continue;
+    if (!strict && terms.length && terms.every((t) => queryTerms.has(termKey(t)))) continue;
     let ids = bannedCache.entries.get(entry);
     if (ids === undefined) {
       try {
-        ids = await resolveBannedEntry(entry, version);
-      } catch {
-        continue; // fail open — a lookup error must not blank the search.
+        ids = await resolveBannedEntry(entry, version, strict);
+      } catch (error) {
+        if (strict) throw error;
+        continue; // manual search can still fail open
       }
       if (ids.length) bannedCache.entries.set(entry, ids);
     }
@@ -737,7 +742,7 @@ export const hitomiProvider: DoujinProvider = {
     }
 
     const version = await getGalleriesIndexVersion();
-    const ids = await searchGalleryIds(q, version, HITOMI_POPULAR_PERIODS[sort ?? 'default']);
+    const ids = await searchGalleryIds(q, version, HITOMI_POPULAR_PERIODS[sort ?? 'default'], opts?.strictExclusions);
     if (!ids.length) return [];
 
     // Hydrate results with metadata (one request each), in bounded batches so a
@@ -789,6 +794,13 @@ export const hitomiProvider: DoujinProvider = {
     // Preserve ranking order (popularity when a popular sort was requested, otherwise newest-first).
     const byId = new Map(out.map((r) => [r.galleryId, r]));
     return ids.slice(start).map((id) => byId.get(String(id))).filter((r): r is DoujinSearchResult => !!r).slice(0, target);
+  },
+
+  async filterRecommendations(items: DoujinSearchResult[]): Promise<DoujinSearchResult[]> {
+    if (!getDownloaderSettings().hitomiBannedTags.length) return items;
+    const version = await getGalleriesIndexVersion();
+    const banned = await bannedIdSet('', version, true);
+    return items.filter((item) => !banned?.has(Number(item.galleryId)));
   },
 
   /**

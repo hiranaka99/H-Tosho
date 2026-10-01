@@ -3,7 +3,7 @@ import { Slot } from '@radix-ui/react-slot';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import * as SwitchPrimitive from '@radix-ui/react-switch';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { X, Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { X, Loader2, AlertTriangle, CheckCircle2, ChevronDown } from 'lucide-react';
 import { cn, PROVIDER_COLORS, PROVIDER_NAMES } from '../lib/utils';
 
 const buttonVariants = cva(
@@ -15,14 +15,14 @@ const buttonVariants = cva(
         default: 'bg-primary-button text-white hover:bg-primary-button-hover',
         outline: 'border border-border-2 bg-surface text-foreground hover:bg-surface-2',
         ghost: 'text-muted hover:bg-surface-2 hover:text-foreground',
-        danger: 'bg-danger text-white hover:opacity-90',
+        danger: 'bg-danger text-white hover:opacity-90 dark:text-background',
         secondary: 'bg-surface-2 text-foreground hover:bg-border/60',
       },
       size: {
         default: 'h-9 px-3',
-        sm: 'h-8 px-2.5 text-xs',
+        sm: 'h-9 px-2.5 text-xs',
         lg: 'h-10 px-4',
-        icon: 'h-8 w-8 p-0',
+        icon: 'h-9 w-9 p-0',
       },
     },
     defaultVariants: { variant: 'default', size: 'default' },
@@ -44,7 +44,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 Button.displayName = 'Button';
 
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('rounded-lg border border-border bg-surface', className)} {...props} />;
+  return <div className={cn('min-w-0 rounded-lg border border-border bg-surface', className)} {...props} />;
 }
 
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
@@ -52,7 +52,7 @@ export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDiv
 }
 
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn('text-sm font-semibold tracking-tight', className)} {...props} />;
+  return <h3 className={cn('min-w-0 text-sm font-semibold tracking-tight', className)} {...props} />;
 }
 
 export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
@@ -64,7 +64,7 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
     <input
       ref={ref}
       className={cn(
-        'flex h-9 w-full rounded-md border border-border-2 bg-surface px-3 text-sm placeholder:text-muted/70',
+        'flex h-9 w-full rounded-md border border-border-2 bg-surface-2 px-3 text-sm placeholder:text-muted/70',
         'transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
@@ -83,7 +83,7 @@ export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttrib
     <select
       ref={ref}
       className={cn(
-        'flex h-9 w-full rounded-md border border-border-2 bg-surface px-3 text-sm',
+        'flex h-9 w-full rounded-md border border-border-2 bg-surface-2 px-3 text-sm',
         'transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
@@ -110,13 +110,14 @@ export function Switch({
       onCheckedChange={onCheckedChange}
       aria-label={props['aria-label'] ?? 'Toggle'}
       className={cn(
-        'inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-150',
-        'data-[state=checked]:bg-primary data-[state=unchecked]:bg-border-2',
+        'group inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full bg-transparent transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
       {...props}
     >
-      <SwitchPrimitive.Thumb className="block h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-150 data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0.5" />
+      <span aria-hidden="true" className="flex h-6 w-11 items-center rounded-full bg-border-2 transition-colors group-data-[state=checked]:bg-primary-button">
+        <SwitchPrimitive.Thumb className="block h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-150 data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0.5" />
+      </span>
     </SwitchPrimitive.Root>
   );
 }
@@ -226,7 +227,7 @@ export function DialogContent({ children, className, ...props }: React.Component
         {...props}
       >
         {children}
-        <DialogPrimitive.Close aria-label="Close dialog" className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground">
+        <DialogPrimitive.Close aria-label="Close dialog" className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground">
           <X className="h-4 w-4" />
         </DialogPrimitive.Close>
       </DialogPrimitive.Content>
@@ -252,10 +253,10 @@ DialogDescription.displayName = DialogPrimitive.Description.displayName;
 
 export function ErrorState({ title = 'Something went wrong', description, onRetry }: { title?: string; description?: string; onRetry?: () => void }) {
   return (
-    <div role="alert" className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+    <div role="alert" className="flex min-w-0 flex-col items-center justify-center gap-3 px-3 py-12 text-center sm:py-16">
       <AlertTriangle className="h-6 w-6 text-danger" />
       <div>
-        <p className="font-medium">{title}</p>
+        <p className="text-sm font-medium">{title}</p>
         {description && <p className="mt-1 max-w-lg break-words text-sm text-muted">{description}</p>}
       </div>
       {onRetry && <Button size="sm" variant="outline" onClick={onRetry}>Retry</Button>}
@@ -287,13 +288,58 @@ export function SegmentedTabs<T extends string>({ items, value, onChange, label,
           }}
           className={cn(
             'min-h-9 shrink-0 border-b-2 px-1 text-xs font-medium transition-colors duration-150 min-[360px]:px-1.5 sm:px-3 sm:text-sm',
-            value === item.id ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
+            value === item.id ? 'border-primary text-primary' : 'border-transparent text-muted hover:text-foreground',
           )}
         >
           {item.label}
         </button>
       ))}
     </div>
+  );
+}
+
+/** Mutually exclusive choices share one appearance and keyboard behavior. */
+export function SegmentedControl<T extends string | number>({ items, value, onChange, label, className, itemClassName }: { items: readonly { id: T; label: string; icon?: React.ReactNode }[]; value: T | null; onChange: (id: T) => void; label: string; className?: string; itemClassName?: string }) {
+  const selectedIndex = items.findIndex((item) => item.id === value);
+  return (
+    <div role="radiogroup" aria-label={label} className={cn('flex min-w-0 max-w-full items-center gap-1 overflow-x-auto rounded-lg bg-surface-2 p-0.5', className)}>
+      {items.map((item, index) => (
+        <button
+          key={item.id}
+          type="button"
+          role="radio"
+          aria-checked={item.id === value}
+          tabIndex={index === Math.max(0, selectedIndex) ? 0 : -1}
+          onClick={() => onChange(item.id)}
+          onKeyDown={(event) => {
+            if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+            onChange(items[nextIndex].id);
+            requestAnimationFrame(() => {
+              const group = Array.from(document.querySelectorAll('[role="radiogroup"]')).find((element) => element.getAttribute('aria-label') === label);
+              group?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[nextIndex]?.focus();
+            });
+          }}
+          className={cn('flex min-h-8 shrink-0 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium transition-colors duration-150', item.id === value ? 'bg-surface text-primary shadow-sm' : 'text-muted hover:bg-surface hover:text-foreground', itemClassName)}
+        >
+          {item.icon}{item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Native disclosure with a consistent, visible open/closed indicator. */
+export function Disclosure({ label, children, className, summaryClassName, ...props }: React.ComponentPropsWithoutRef<'details'> & { label: React.ReactNode; summaryClassName?: string }) {
+  return (
+    <details className={cn('group/disclosure min-w-0', className)} {...props}>
+      <summary className={cn('flex min-h-9 cursor-pointer list-none items-center justify-between gap-2 rounded-md px-3 py-2 text-sm font-medium text-muted transition-colors duration-150 hover:text-foreground [&::-webkit-details-marker]:hidden', summaryClassName)}>
+        <span className="min-w-0 flex-1">{label}</span>
+        <ChevronDown className="h-4 w-4 shrink-0 transition-transform duration-150 group-open/disclosure:rotate-180" aria-hidden="true" />
+      </summary>
+      {children}
+    </details>
   );
 }
 
@@ -327,7 +373,7 @@ export function EmptyState({ icon, title, description }: { icon?: React.ReactNod
   return (
     <div className="flex animate-fade-in flex-col items-center justify-center gap-2 px-3 py-12 text-center sm:py-16">
       {icon && <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-full bg-surface-2 text-muted">{icon}</div>}
-      <p className="font-medium">{title}</p>
+      <p className="text-sm font-medium">{title}</p>
       {description && <p className="max-w-sm break-words text-sm text-muted">{description}</p>}
     </div>
   );

@@ -65,6 +65,10 @@ export function initDb(): Db {
   migrateSeriesMatchColumns(sqlite);
   migrateRecommendationHistoryColumns(sqlite);
   sqlite.exec(SCHEMA_DDL);
+  // Ownership survives clearing queue history, including legacy tagged downloads.
+  sqlite.exec(`INSERT OR IGNORE INTO owned_galleries (source, gallery_id)
+    SELECT source, gallery_id FROM gallery_tags
+    UNION SELECT source, gallery_id FROM download_queue WHERE status = 'completed'`);
   dropCatalogTable(sqlite);
   pruneOldData(sqlite);
   db = drizzle(sqlite, { schema });
@@ -461,6 +465,11 @@ CREATE TABLE IF NOT EXISTS owned_galleries (
   gallery_id TEXT NOT NULL,
   marked_at TEXT NOT NULL DEFAULT (current_timestamp)
 );
+CREATE TABLE IF NOT EXISTS dismissed_galleries (
+  source TEXT NOT NULL,
+  gallery_id TEXT NOT NULL,
+  dismissed_at TEXT NOT NULL DEFAULT (current_timestamp)
+);
 CREATE TABLE IF NOT EXISTS recommendation_history (
   source TEXT NOT NULL,
   gallery_id TEXT NOT NULL,
@@ -480,6 +489,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_watched_search_new_unique ON watched_searc
 CREATE INDEX IF NOT EXISTS idx_watched_search_new_found ON watched_search_new(found_at, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_tags_unique ON gallery_tags(source, gallery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_owned_galleries_unique ON owned_galleries(source, gallery_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dismissed_galleries_unique ON dismissed_galleries(source, gallery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_recommendation_history_unique ON recommendation_history(source, gallery_id);
 CREATE INDEX IF NOT EXISTS idx_recommendation_history_served ON recommendation_history(served_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);

@@ -296,7 +296,8 @@ export interface DownloadTask {
 /** A single frame pushed over the download SSE stream. */
 export type DownloadEvent =
   | { type: 'snapshot'; tasks: DownloadTask[] }
-  | { type: 'task'; task: DownloadTask };
+  | { type: 'task'; task: DownloadTask }
+  | { type: 'removed'; ids: number[] };
 
 /** A gallery with a completed download task (duplicate-download guard). */
 export interface DownloadedGallery {
@@ -366,6 +367,8 @@ export interface RecommendationSet {
   degradedReason: 'same-day-pool-exhausted' | 'insufficient-eligible' | null;
   /** Keys (`source:galleryId`) of every owned gallery — drives the owned badges. */
   ownedKeys: string[];
+  /** Keys (`source:galleryId`) permanently excluded by recommendation feedback. */
+  dismissedKeys: string[];
 }
 
 export interface RecommendationSettings {
@@ -467,9 +470,12 @@ export const api = {
   recommendations: () => request<RecommendationSet>('/recommendations'),
   /** Re-roll today's picks with a fresh seed. */
   refreshRecommendations: () => request<RecommendationSet>('/recommendations/refresh', { method: 'POST' }),
-  /** Mark a gallery owned and promote a pre-generated cached replacement. */
-  markGalleryOwned: (body: { source: DoujinSource; galleryId: string }) =>
-    request<RecommendationSet>('/recommendations/owned', { method: 'POST', body: JSON.stringify(body) }),
+  /** Exclude a gallery from recommendations without marking it owned. */
+  dismissGallery: (body: { source: DoujinSource; galleryId: string }) =>
+    request<RecommendationSet>('/recommendations/dismiss', { method: 'POST', body: JSON.stringify(body) }),
+  /** Reallow a previously dismissed gallery. */
+  undoDismissGallery: (body: { source: DoujinSource; galleryId: string }) =>
+    request<RecommendationSet>('/recommendations/undo-dismiss', { method: 'POST', body: JSON.stringify(body) }),
   recommendationSettings: () => request<RecommendationSettings>('/recommendations/settings'),
   saveRecommendationSettings: (body: RecommendationSettings) =>
     request<RecommendationSettings>('/recommendations/settings', { method: 'POST', body: JSON.stringify(body) }),
