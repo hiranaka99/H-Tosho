@@ -198,3 +198,39 @@ test('cancelling staged folder output preserves existing media and unrelated fil
     globalThis.fetch = originalFetch;
   }
 });
+
+test('re-download replaces an existing CBZ when the platform does not overwrite on rename', async () => {
+  const title = 'Replace existing archive';
+  const galleryId = 'replace-existing';
+  const targetDir = path.join(outputDir, galleryFilesystemName(title, 'hitomi', galleryId));
+  const targetFile = path.join(targetDir, `${galleryFilesystemName(title, 'hitomi', galleryId)}.cbz`);
+  fs.mkdirSync(targetDir, { recursive: true });
+  fs.writeFileSync(targetFile, 'old archive');
+  doujinProviders.hitomi = {
+    ...originalHitomi,
+    async getGallery(idOrUrl) {
+      return { source: 'hitomi', galleryId: idOrUrl, title, tags: [], artists: [], pages: ['https://example.test/page.jpg'] };
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  const rename = fs.promises.rename;
+  globalThis.fetch = (async () => new Response(Buffer.from('new image'))) as typeof fetch;
+  // Model Windows' rename behavior: publishing directly over an existing file
+  // is rejected, while moving the old file aside first is permitted.
+  fs.promises.rename = async (from, to) => {
+    if (fs.existsSync(to)) {
+      const error = Object.assign(new Error('destination exists'), { code: 'EEXIST' });
+      throw error;
+    }
+    return rename(from, to);
+  };
+  try {
+    const queue = new DownloadQueue(() => ({ downloadDirectory: outputDir, format: 'cbz', maxConcurrentDownloads: 1, maxImageConcurrency: 1, requestDelayMs: 0, autoSyncKavita: false, nhentaiApiKey: '', nhentaiBannedTags: [] }));
+    const id = queue.enqueue('hitomi', galleryId, null, 'cbz');
+    await waitForStatus(queue, id, 'completed');
+    assert.notEqual(fs.readFileSync(targetFile, 'utf8'), 'old archive');
+  } finally {
+    fs.promises.rename = rename;
+    globalThis.fetch = originalFetch;
+  }
+});

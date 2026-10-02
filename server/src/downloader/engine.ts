@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, getTmpDir, schema } from '../db/index.js';
@@ -123,6 +124,35 @@ async function resolvePageCandidates(
   const primary = gallery.pages[i];
   const fallback = gallery.pageFallbacks?.[i];
   return [primary, fallback].filter((u): u is string => typeof u === 'string' && u.length > 0);
+}
+
+/**
+ * Replace a published file with a staged file without relying on POSIX rename
+ * semantics. Windows refuses `rename(staged, destination)` when destination
+ * already exists, which made retries and re-downloads fail at the final
+ * publish step. Keep the previous file until the staged replacement has been
+ * put in place, and restore it if that step fails.
+ */
+async function replacePublishedFile(staged: string, destination: string): Promise<void> {
+  let backup: string | null = null;
+  try {
+    try {
+      await fs.promises.access(destination);
+      backup = path.join(path.dirname(destination), `.${path.basename(destination)}.htosho-backup-${randomUUID()}`);
+      await fs.promises.rename(destination, backup);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    try {
+      await fs.promises.rename(staged, destination);
+    } catch (error) {
+      if (backup) await fs.promises.rename(backup, destination).catch(() => {});
+      throw error;
+    }
+    if (backup) await fs.promises.rm(backup, { force: true }).catch(() => {});
+  } catch (error) {
+    throw error;
+  }
 }
 
 export type DownloadStatus = 'queued' | 'downloading' | 'completed' | 'failed' | 'paused';
@@ -984,7 +1014,7 @@ export class DownloadQueue {
         fs.mkdirSync(dir, { recursive: true });
         // Preserve unrelated files in an existing gallery folder.
         for (const name of [...images.map((img) => img.name), 'ComicInfo.xml']) {
-          await fs.promises.rename(path.join(stagingDir, name), path.join(dir, name));
+          await replacePublishedFile(path.join(stagingDir, name), path.join(dir, name));
         }
         return dir;
       }
@@ -996,7 +1026,7 @@ export class DownloadQueue {
       if (ctx.cancelled) throw new Error('Cancelled by user');
       ctx.committing = true;
       fs.mkdirSync(dir, { recursive: true });
-      await fs.promises.rename(stagedFile, file);
+      await replacePublishedFile(stagedFile, file);
       return file;
     } finally {
       await fs.promises.rm(stagingDir, { recursive: true, force: true });

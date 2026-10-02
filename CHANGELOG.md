@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.1.1
+
+### Downloads
+
+- Fix re-downloads and retries on Windows when replacing an existing CBZ archive
+  or gallery image. Existing output is moved aside during publishing and restored
+  if the replacement cannot be completed.
+
 ## v2.1.0
 
 H-Tosho 2.1 adds actionable job failures, library-aware duplicate detection,
