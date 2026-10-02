@@ -1,5 +1,7 @@
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
+import { jobRecovery, type JobRecovery } from './recovery.js';
+import { invalidateLibraryOwnership } from '../services/libraryOwnership.js';
 
 /** Types of background jobs the queue can run. */
 export const JOB_TYPES = [
@@ -65,6 +67,7 @@ export interface Job {
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  recovery?: JobRecovery;
 }
 
 export interface JobLog {
@@ -115,6 +118,7 @@ function rowToJob(row: JobRow): Job {
     createdAt: row.createdAt,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt,
+    recovery: jobRecovery({ status: row.status, type: row.type, payload: safeParse(row.payloadJson, {}), errorMessage: row.errorMessage }),
   };
 }
 
@@ -215,6 +219,18 @@ class JobQueue {
     return newId;
   }
 
+  /** Remove failed history and its logs atomically; never delete active or successful work. */
+  clearFailed(id?: number): number {
+    const failed = id === undefined
+      ? eq(schema.jobs.status, 'failed')
+      : and(eq(schema.jobs.id, id), eq(schema.jobs.status, 'failed'));
+    return getDb().transaction((tx) => {
+      const failedIds = tx.select({ id: schema.jobs.id }).from(schema.jobs).where(failed);
+      tx.delete(schema.jobLogs).where(inArray(schema.jobLogs.jobId, failedIds)).run();
+      return tx.delete(schema.jobs).where(failed).run().changes;
+    });
+  }
+
   /** Whether cancellation has been requested for a running job. */
   isCancelRequested(id: number): boolean {
     return this.cancelRequested.has(id);
@@ -275,6 +291,7 @@ class JobQueue {
         .where(eq(schema.jobs.id, job.id))
         .run();
       this.log(job.id, 'success', `Completed ${job.type}`);
+      if (job.type !== 'check-watched-searches') invalidateLibraryOwnership();
     } catch (e) {
       if (e instanceof JobCancelled) {
         db.update(schema.jobs).set({ status: 'cancelled', finishedAt: new Date().toISOString() }).where(eq(schema.jobs.id, job.id)).run();

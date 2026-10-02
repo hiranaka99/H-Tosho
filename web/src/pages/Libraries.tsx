@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { Search, RefreshCw, Play, BookOpen, Unlink, FileText, Combine, Check, CheckSquare, ChevronLeft, ChevronRight, EllipsisVertical } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource } from '../lib/api';
@@ -161,6 +161,7 @@ function PaginationControls({ currentPage, pageCount, firstVisible, lastVisible,
 
 export function Libraries({ review = false }: { review?: boolean }) {
   const { libraryId } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const qc = useQueryClient();
 
@@ -175,6 +176,32 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const [selectMode, setSelectMode] = React.useState(false);
   const [page, setPage] = React.useState(() => libraryId ? initialState.pages?.[libraryId] ?? 1 : 1);
   const [unmatchTarget, setUnmatchTarget] = React.useState<SeriesRow | null>(null);
+  const [recoveryFile, setRecoveryFile] = React.useState<string | null>(null);
+  const requestedSeries = Number(searchParams.get('series'));
+  const linkedSeriesId = Number.isSafeInteger(requestedSeries) && requestedSeries > 0 ? requestedSeries : null;
+  const linkedSeries = useQuery({ queryKey: ['series', linkedSeriesId], queryFn: () => api.series(linkedSeriesId!), enabled: linkedSeriesId !== null });
+  const handledLink = React.useRef('');
+  React.useEffect(() => {
+    const key = searchParams.toString();
+    if (key === handledLink.current) return;
+    if (searchParams.get('file') && !linkedSeriesId) {
+      setRecoveryFile(searchParams.get('file'));
+      handledLink.current = key;
+    } else if (linkedSeries.data && linkedSeriesId !== null) {
+      const series = linkedSeries.data.series;
+      setSelected(series.libraryId);
+      setQuery(searchParams.get('q') ?? series.name);
+      setStatusFilter('all');
+      setPage(1);
+      const target = { id: series.id, name: series.name, cover: series.cover };
+      if (searchParams.get('action') === 'identify') setIdentify(target);
+      if (searchParams.get('action') === 'comicinfo') setComicInfo(target);
+      handledLink.current = key;
+    } else if (!linkedSeriesId) {
+      if (searchParams.has('q')) { setQuery(searchParams.get('q') ?? ''); setStatusFilter('all'); setPage(1); }
+      handledLink.current = key;
+    }
+  }, [searchParams, linkedSeries.data, linkedSeriesId]);
 
   React.useEffect(() => {
     if (!libraryId) return;
@@ -223,10 +250,11 @@ export function Libraries({ review = false }: { review?: boolean }) {
 
   // /libraries no longer has an "all" view — land on the first library once loaded.
   React.useEffect(() => {
-    if (!review && selected === null && libs.data && libs.data.length > 0) {
-      navigate(`/libraries/${libs.data[0].id}`, { replace: true });
+    if (!review && selected === null && linkedSeriesId === null && libs.data && libs.data.length > 0) {
+      if (searchParams.has('file')) setSelected(libs.data[0].id);
+      else navigate(`/libraries/${libs.data[0].id}${searchParams.size ? `?${searchParams}` : ''}`, { replace: true });
     }
-  }, [libs.data, selected, navigate, review]);
+  }, [libs.data, selected, navigate, review, linkedSeriesId, searchParams]);
 
   const rows = series.data ?? [];
 
@@ -312,6 +340,8 @@ export function Libraries({ review = false }: { review?: boolean }) {
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <PageHeader icon={<BookOpen className="h-5 w-5" />} title={review ? 'Needs review' : 'Libraries'} subtitle={review ? 'Review uncertain matches across all your libraries.' : 'Review matches and manage Kavita metadata.'} />
+      {linkedSeriesId && linkedSeries.isPending && <p role="status" className="text-sm text-muted">Opening series…</p>}
+      {linkedSeries.isError && <ErrorState title="Could not open series" description={linkedSeries.error.message} onRetry={() => void linkedSeries.refetch()} />}
       <Card className="min-w-0">
         <div className="flex min-w-0 flex-col gap-3 border-b border-border px-3 py-3 sm:px-4 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex min-w-0 flex-wrap items-center gap-3">
@@ -486,6 +516,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
       {comicInfo && (
         <ComicInfoModal seriesId={comicInfo.id} onClose={() => setComicInfo(null)} />
       )}
+      {recoveryFile && <ComicInfoModal initialPath={recoveryFile} onClose={() => setRecoveryFile(null)} />}
 
       {mergeOpen && (
         <MergeSeriesModal

@@ -10,6 +10,7 @@ import { eligibleRecommendations } from './recommendationEligibility.js';
 import type { DoujinProvider } from '../downloader/types.js';
 import { rankCandidates, selectRecommendations } from './recommendationRanking.js';
 import type { Candidate } from './recommendationRanking.js';
+import { getRecommendationFeedback, normalizeArtist, saveRecommendationFeedback, type FeedbackAction, type RecommendationFeedback } from './recommendationFeedback.js';
 
 /**
  * Daily doujinshi recommendations based on the user's downloaded library.
@@ -265,6 +266,15 @@ function buildProfile(signals: KavitaSeriesSignal[]): TasteProfile {
       bumpTerm(terms, 'artist', a, null, null);
     }
   }
+
+  const feedback = getRecommendationFeedback();
+  const muted = new Set(feedback.mutedArtists.map(normalizeArtist));
+  for (const item of feedback.liked) {
+    // A positive signal strengthens similar work without marking this gallery owned.
+    for (const artist of new Set(item.artists)) bumpTerm(terms, 'artist', artist, item.source, 'artist', 3);
+    for (const tag of new Set(item.tags)) bumpTerm(terms, 'tag', tag, item.source, null, 2);
+  }
+  for (const [key, term] of terms) if (term.kind === 'artist' && muted.has(normalizeArtist(term.name))) terms.delete(key);
 
   let language: string | null = null;
   if (taggedWithLang >= 5) {
@@ -724,7 +734,7 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
   const pool = candidatePool;
   const unseen = new Set([...pool.candidates.keys(), ...pool.popular.map(keyOf)].filter((key) => !freshExcluded.has(key)));
   if (unseen.size < TOTAL_PICKS + RESERVE_PICKS) {
-    if (profile.terms.length >= MIN_PROFILE_TERMS) {
+    if (profile.terms.length >= MIN_PROFILE_TERMS || getRecommendationFeedback().liked.length > 0) {
       const termIndex = new Map(profile.terms.map((term) => [`${term.kind}:${term.name.toLowerCase()}`, term]));
       const fetched = await gatherCandidates(buildQuerySpecs(profile, rng), hardExcluded, termIndex);
       for (const [key, candidate] of fetched) pool.candidates.set(key, candidate);
@@ -936,6 +946,10 @@ export async function dismissAndReplace(source: DoujinSource, galleryId: string)
 export async function undoDismiss(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
   getDb().delete(schema.dismissedGalleries).where(and(eq(schema.dismissedGalleries.source, source), eq(schema.dismissedGalleries.galleryId, galleryId))).run();
   profileRevision += 1;
+  return restoreHistoryItem(source, galleryId);
+}
+
+async function restoreHistoryItem(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
   const cached = readCached(localDate());
   const original = readHistory().find((entry) => entry.key === `${source}:${galleryId}`)?.item;
   if (cached && original && (await eligibleRecommendations([original])).length) {
@@ -943,11 +957,48 @@ export async function undoDismiss(source: DoujinSource, galleryId: string): Prom
     const items = [original, ...selectRecommendations(remaining.map((item) => ({ result: item, score: 1, reasons: item.reasons, matched: new Set<string>() })), TOTAL_PICKS - 1, () => 0, [original])];
     const kept = new Set(items.map(keyOf));
     const reserve = [...remaining.filter((item) => !kept.has(keyOf(item))), ...cached.reserve.filter((item) => !kept.has(keyOf(item)))];
-    const updated = { ...cached, items, reserve, profile: { ...termsFromPicks(items), language: cached.profile.language } };
+    const updated = { ...cached, items, reserve, profile: { ...termsFromPicks(items), language: cached.profile.language }, degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' as const : cached.degradedReason };
     writeCached(updated);
     return withOwned(updated);
   }
   return getRecommendations();
+}
+
+/** Use server-side history/provider metadata, not client-supplied taste signals. */
+export async function applyRecommendationFeedback(action: FeedbackAction, target: { source: DoujinSource; galleryId: string; artist?: string; days?: 7 | 30 }): Promise<{ feedback: RecommendationFeedback; recommendations: RecommendationResponse }> {
+  let item: DoujinSearchResult | undefined;
+  if (action === 'like' || action === 'mute-artist' || action === 'snooze') {
+    item = readHistory().find(entry => entry.key === `${target.source}:${target.galleryId}`)?.item;
+    if (!item) {
+      const provider = getDoujinProvider(target.source);
+      if (!provider?.getGallery) throw new Error('Gallery metadata is unavailable');
+      item = await provider.getGallery(target.galleryId);
+    }
+  }
+  const feedback = saveRecommendationFeedback(action, target, item);
+  profileRevision++;
+  candidatePool = null;
+  emptyCooldownUntil = 0;
+  let recommendations: RecommendationResponse;
+  if (action === 'unsnooze') recommendations = await restoreHistoryItem(target.source, target.galleryId);
+  else {
+    // Revalidate visible cards and promote spares immediately. Preference boosts
+    // affect the next refresh; leave existing good cards in place after a like.
+    const cached = readCached(localDate());
+    if (cached) {
+      const items = await eligibleRecommendations(cached.items);
+      const reserves = await eligibleRecommendations(cached.reserve);
+      const keys = new Set(items.map(keyOf));
+      const promoted = selectRecommendations(reserves.filter(i => !keys.has(keyOf(i))).map(i => ({ result: i, score: 1, reasons: i.reasons, matched: new Set<string>() })), TOTAL_PICKS - items.length, () => 0, items);
+      items.push(...promoted);
+      const used = new Set(items.map(keyOf));
+      const updated: CachedRecommendationSet = { ...cached, items, reserve: reserves.filter(i => !used.has(keyOf(i))), degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' : cached.degradedReason };
+      writeCached(updated);
+      if (promoted.length) addHistory(cached.date, promoted, pruneHistory());
+      recommendations = await withOwned(updated);
+    } else recommendations = await getRecommendations();
+  }
+  return { feedback, recommendations };
 }
 
 /** Replace the list of Kavita libraries feeding the profile; today's cached set is re-generated. */

@@ -1,9 +1,9 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
-import { Activity, AlertTriangle, ArrowDown, Ban, CheckCircle2, Circle, Copy, Download, ListChecks, RotateCcw, Search, Terminal, XCircle } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Activity, AlertTriangle, ArrowDown, Ban, CheckCircle2, Circle, Copy, Download, ListChecks, RotateCcw, Search, Terminal, Trash2, XCircle } from 'lucide-react';
 import { api, type Job, type JobLog } from '../lib/api';
-import { Badge, Button, Card, CardContent, Dialog, DialogContent, DialogDescription, DialogTitle, EmptyState, ErrorState, Input, Label, PageHeader, ProgressBar, Select, Spinner, Disclosure } from '../components/ui';
+import { Badge, Button, Card, CardContent, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle, EmptyState, ErrorState, Input, Label, PageHeader, ProgressBar, Select, Spinner, Disclosure } from '../components/ui';
 import { cn, timeAgo, toIsoUtc, jobLabel } from '../lib/utils';
 import { toast } from '../lib/toast';
 
@@ -83,6 +83,14 @@ function JobStatus({ job }: { job: Job }) {
     : <Badge tone="success"><CheckCircle2 className="h-3 w-3" /> Completed</Badge>;
   if (job.status === 'cancelled') return <Badge tone="muted"><Ban className="h-3 w-3" /> Cancelled</Badge>;
   return <Badge tone="danger"><XCircle className="h-3 w-3" /> {fieldLabel(job.status)}</Badge>;
+}
+
+function RecoveryActions({ job }: { job: Job }) {
+  if (!job.recovery) return null;
+  return <div className="mt-3 space-y-2 rounded-md border border-border bg-surface/60 p-3">
+    <p className="text-sm text-muted">{job.recovery.explanation}</p>
+    <div className="flex flex-wrap gap-2">{job.recovery.actions.map(action => <Button asChild variant="outline" size="sm" className={controlClass} key={action.href}><Link to={action.href}>{action.label}</Link></Button>)}</div>
+  </div>;
 }
 
 function StructuredValue({ value }: { value: unknown }) {
@@ -178,6 +186,7 @@ export function Jobs() {
   const selectedId = rawId && /^\d+$/.test(rawId) && Number(rawId) > 0 && Number.isSafeInteger(Number(rawId)) ? Number(rawId) : null;
   const [search, setSearch] = React.useState('');
   const [type, setType] = React.useState('all');
+  const [clearTarget, setClearTarget] = React.useState<number | 'all' | null>(null);
   const qc = useQueryClient();
   const jobsQuery = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, refetchInterval: 2500 });
   const jobs = jobsQuery.data ?? [];
@@ -222,9 +231,24 @@ export function Jobs() {
     },
     onError: (error) => toast({ tone: 'danger', title: 'Could not retry job', description: error.message }),
   });
+  const clearMutation = useMutation({
+    mutationFn: (target: number | 'all') => target === 'all' ? api.clearFailedJobs() : api.removeFailedJob(target),
+    onSuccess: async (result, target) => {
+      setClearTarget(null);
+      if (selectedId === target || (target === 'all' && selectedJob?.status === 'failed')) updateUrl({ job: null });
+      await qc.cancelQueries({ queryKey: ['jobs'] });
+      qc.setQueryData<Job[]>(['jobs'], (previous) => previous?.filter((job) => target === 'all' ? job.status !== 'failed' : job.id !== target));
+      await Promise.all([qc.invalidateQueries({ queryKey: ['jobs'] }), qc.invalidateQueries({ queryKey: ['job'] }), qc.invalidateQueries({ queryKey: ['logs'] })]);
+      toast({ tone: 'success', title: result.removed === 1 ? 'Failed job cleared' : `${result.removed} failed jobs cleared` });
+    },
+    onError: (error) => toast({ tone: 'danger', title: 'Could not clear failed jobs', description: error.message }),
+  });
   const actions = (job: Job) => (
     <>
-      {job.status === 'failed' && <Button className={controlClass} variant="outline" disabled={retryMutation.isPending} onClick={() => retryMutation.mutate(job.id)}>{retryMutation.isPending && retryMutation.variables === job.id ? <Spinner /> : <RotateCcw className="h-4 w-4" />}{retryMutation.isPending && retryMutation.variables === job.id ? 'Retrying…' : 'Retry job'}</Button>}
+      {job.status === 'failed' && <>
+        <Button className={controlClass} variant="outline" disabled={retryMutation.isPending || clearMutation.isPending} onClick={() => retryMutation.mutate(job.id)}>{retryMutation.isPending && retryMutation.variables === job.id ? <Spinner /> : <RotateCcw className="h-4 w-4" />}{retryMutation.isPending && retryMutation.variables === job.id ? 'Retrying…' : 'Retry job'}</Button>
+        <Button className={controlClass} variant="outline" disabled={retryMutation.isPending || clearMutation.isPending} onClick={() => setClearTarget(job.id)}><Trash2 className="h-4 w-4" /> Clear job</Button>
+      </>}
       {isActive(job) && <Button className={controlClass} variant="outline" disabled={cancelMutation.isPending} onClick={() => cancelMutation.mutate(job.id)}>{cancelMutation.isPending && cancelMutation.variables === job.id ? <Spinner /> : <Ban className="h-4 w-4" />}{cancelMutation.isPending && cancelMutation.variables === job.id ? 'Cancelling…' : 'Cancel job'}</Button>}
     </>
   );
@@ -244,7 +268,9 @@ export function Jobs() {
   ];
   return (
     <div className="flex min-w-0 flex-col gap-4">
-      <PageHeader icon={<ListChecks className="h-5 w-5" />} title="Jobs" subtitle="Track active work, resolve failures, and inspect what happened." />
+      <PageHeader icon={<ListChecks className="h-5 w-5" />} title="Jobs" subtitle="Track active work, resolve failures, and inspect what happened.">
+        {jobs.some((job) => job.status === 'failed') && <Button variant="outline" className={controlClass} disabled={clearMutation.isPending || retryMutation.isPending} onClick={() => setClearTarget('all')}><Trash2 className="h-4 w-4" /> Clear failed jobs</Button>}
+      </PageHeader>
       <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-3">
         {summaries.map((summary) => <button key={summary.filter} type="button" aria-pressed={filter === summary.filter} onClick={() => updateUrl({ filter: summary.filter })} className={cn('min-h-24 min-w-0 rounded-lg border bg-surface p-4 text-left transition-colors hover:bg-surface-2', filter === summary.filter ? 'border-primary ring-1 ring-primary/30' : 'border-border')}>
           <div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{summary.label}</span><span className={summary.color}>{summary.icon}</span></div>
@@ -272,6 +298,7 @@ export function Jobs() {
               </div>
               {isActive(job) && <div className="mt-3 space-y-1.5"><ProgressBar value={job.progressCurrent} max={job.progressTotal} active /><p className="text-xs text-muted">{job.progressTotal > 0 ? `${job.progressCurrent} of ${job.progressTotal} · ${Math.min(100, Math.round(job.progressCurrent / job.progressTotal * 100))}%` : job.status === 'queued' ? 'Waiting for a worker' : 'Working…'}</p></div>}
               {job.errorMessage && <p className="mt-3 whitespace-pre-wrap break-words text-sm text-danger [overflow-wrap:anywhere]">{job.errorMessage}</p>}
+              <RecoveryActions job={job} />
               {job.result !== null && job.result !== undefined && <p className="mt-3 line-clamp-3 break-words text-sm text-muted [overflow-wrap:anywhere]">{readableValue(job.result)}</p>}
               <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-muted"><time dateTime={toIsoUtc(job.createdAt)} title={timestamp(job.createdAt)}>{timeAgo(job.createdAt)}</time> · {duration(job)}</p><div className="flex flex-wrap gap-2">{actions(job)}<Button variant="ghost" className={controlClass} onClick={() => updateUrl({ job: job.id })}>View details</Button></div></div>
             </article>
@@ -288,6 +315,7 @@ export function Jobs() {
               {selectedJob && <>
                 <section className="space-y-3"><h3 className="text-sm font-semibold">Target & progress</h3><p className="break-words text-sm [overflow-wrap:anywhere]">{jobTarget(selectedJob)}</p><ProgressBar value={selectedJob.progressCurrent} max={selectedJob.progressTotal} active={isActive(selectedJob)} /><p className="text-xs text-muted">{selectedJob.progressTotal > 0 ? `${selectedJob.progressCurrent} of ${selectedJob.progressTotal}` : isActive(selectedJob) ? 'Progress not yet reported' : 'No item count reported'} · {duration(selectedJob)}</p><dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">{[['Created', selectedJob.createdAt], ['Started', selectedJob.startedAt], ['Finished', selectedJob.finishedAt]].map(([label, value]) => <div key={label}><dt className="text-xs text-muted">{label}</dt><dd className="mt-1 break-words">{timestamp(value)}</dd></div>)}</dl><div className="flex flex-wrap gap-2">{actions(selectedJob)}</div></section>
                 {selectedJob.errorMessage && <section role="alert" className="rounded-lg border border-danger/30 bg-danger/5 p-3"><h3 className="mb-2 text-sm font-semibold text-danger">Failure</h3><p className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{selectedJob.errorMessage}</p></section>}
+                <RecoveryActions job={selectedJob} />
                 <section className="space-y-3"><h3 className="text-sm font-semibold">Result</h3>{selectedJob.result === null || selectedJob.result === undefined ? <p className="text-sm text-muted">{isActive(selectedJob) ? 'Results will appear when this job finishes.' : 'No result was reported.'}</p> : <StructuredValue value={selectedJob.result} />}</section>
                 <Disclosure label={`Payload context · ${Object.keys(selectedJob.payload).length} fields`} className="rounded-lg border border-border"><div className="border-t border-border p-3"><StructuredValue value={selectedJob.payload} /></div></Disclosure>
               </>}
@@ -296,6 +324,18 @@ export function Jobs() {
           </div>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        open={clearTarget !== null}
+        title={clearTarget === 'all' ? 'Clear all failed jobs?' : `Clear failed job #${clearTarget}?`}
+        description={clearTarget === 'all'
+          ? 'Permanently remove all failed jobs and their logs, including those outside the current filters or loaded history. Active, completed, and cancelled jobs are kept. This cannot be undone.'
+          : 'Permanently remove this failed job and its logs from history. This does not change your library or files and cannot be undone.'}
+        confirmLabel={clearMutation.isPending ? 'Clearing…' : clearTarget === 'all' ? 'Clear failed jobs' : 'Clear job'}
+        danger
+        pending={clearMutation.isPending}
+        onOpenChange={(open) => { if (!open && !clearMutation.isPending) setClearTarget(null); }}
+        onConfirm={() => { if (clearTarget !== null) clearMutation.mutate(clearTarget); }}
+      />
     </div>
   );
 }

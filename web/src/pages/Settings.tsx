@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, ArrowUp, ArrowDown, LockKeyhole, Monitor, Moon, Sun, Palette } from 'lucide-react';
 import { api, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type LibraryPathMapping } from '../lib/api';
@@ -99,6 +100,8 @@ function AccountSettingsCard() {
 }
 
 export function Settings() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const qc = useQueryClient();
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const providers = useQuery({ queryKey: ['providers'], queryFn: api.providers });
@@ -185,7 +188,18 @@ export function Settings() {
     },
     onError: (error, v) => toast({ tone: 'danger', title: `Could not update ${v.name}`, description: error instanceof Error ? error.message : String(error) }),
   });
-  const [tab, setTab] = React.useState<SettingsTab>('general');
+  const requestedTab = searchParams.get('tab');
+  const tab: SettingsTab = SETTINGS_TABS.some(item => item.id === requestedTab) ? requestedTab as SettingsTab : 'general';
+  const setTab = (next: SettingsTab) => setSearchParams(previous => { const params = new URLSearchParams(previous); params.set('tab', next); return params; });
+  React.useEffect(() => {
+    if (!s || !['#kavita-connection', '#library-folders'].includes(location.hash) || tab !== 'general') return;
+    const timer = window.setTimeout(() => {
+      const section = document.getElementById(location.hash.slice(1));
+      section?.scrollIntoView({ block: 'start' });
+      section?.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true });
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [s, location.hash, tab]);
 
   if (settings.isError) {
     return <ErrorState title="Could not load settings" description={settings.error instanceof Error ? settings.error.message : String(settings.error)} onRetry={() => void settings.refetch()} />;
@@ -369,7 +383,7 @@ function KavitaLibraryFoldersCard({ connected }: { connected: boolean }) {
   };
 
   return (
-    <Card className="animate-fade-up">
+    <Card id="library-folders" className="animate-fade-up scroll-mt-16">
       <SectionHeader icon={<Server className="h-4 w-4" />} title="Kavita library folders">
         <DraftFeedback draft={folders} />
         <SaveButton label={folders.status === 'saved' ? 'Saved' : 'Save folders'} onClick={folders.submit} disabled={!folders.canSave} />

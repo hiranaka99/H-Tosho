@@ -130,6 +130,7 @@ export interface Job {
   createdAt: string;
   startedAt?: string | null;
   finishedAt?: string | null;
+  recovery?: { explanation: string; actions: { label: string; href: string }[] };
 }
 
 export interface JobLog {
@@ -207,6 +208,7 @@ export interface DoujinSearchResult {
   pageCount?: number | null;
   /** When the gallery was uploaded/published (ISO 8601 date string). */
   uploadedAt?: string | null;
+  libraryMatch?: LibraryMatch;
 }
 
 export interface DoujinSuggestion {
@@ -219,6 +221,7 @@ export interface DoujinSuggestion {
 }
 
 export interface DoujinGallery {
+  libraryMatch?: LibraryMatch;
   source: DoujinSource;
   galleryId: string;
   title: string;
@@ -376,12 +379,33 @@ export interface RecommendationSettings {
   excludedLibraryIds: number[];
 }
 
+export interface LibraryMatch {
+  seriesId: number; libraryId: number; libraryName: string; name: string;
+  reason: 'provider-id' | 'metadata';
+}
+export interface LibraryOwnershipStatus {
+  configured: boolean; checking: boolean; complete: boolean; checkedAt: string | null;
+  scanned: number; total: number; error: string | null;
+}
+export interface RecommendationFeedback {
+  liked: DoujinSearchResult[];
+  mutedArtists: string[];
+  snoozed: { source: DoujinSource; galleryId: string; title: string; until: string }[];
+}
+export interface FeedbackRequest {
+  action: 'like' | 'unlike' | 'mute-artist' | 'unmute-artist' | 'snooze' | 'unsnooze';
+  source: DoujinSource; galleryId: string; artist?: string; days?: 7 | 30;
+}
+
 export interface AuthStatus {
   setupRequired: boolean;
   authenticated: boolean;
   username: string | null;
 }
 
+export class ApiError extends Error {
+  constructor(message: string, public readonly details: Record<string, unknown>, public readonly status: number) { super(message); }
+}
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch('/api' + path, {
     ...init,
@@ -394,13 +418,15 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event('htosho:unauthorized'));
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
+    let details: Record<string, unknown> = {};
     try {
       const body = await res.json();
+      if (body && typeof body === 'object') details = body;
       if (body && body.error) message = body.error;
     } catch {
       /* ignore */
     }
-    throw new Error(message);
+    throw new ApiError(message, details, res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -477,6 +503,10 @@ export const api = {
   undoDismissGallery: (body: { source: DoujinSource; galleryId: string }) =>
     request<RecommendationSet>('/recommendations/undo-dismiss', { method: 'POST', body: JSON.stringify(body) }),
   recommendationSettings: () => request<RecommendationSettings>('/recommendations/settings'),
+  recommendationFeedback: () => request<RecommendationFeedback>('/recommendations/feedback'),
+  saveRecommendationFeedback: (body: FeedbackRequest) => request<{ feedback: RecommendationFeedback; recommendations: RecommendationSet }>('/recommendations/feedback', { method: 'POST', body: JSON.stringify(body) }),
+  libraryOwnership: () => request<LibraryOwnershipStatus>('/library-ownership'),
+  refreshLibraryOwnership: () => request<LibraryOwnershipStatus>('/library-ownership/refresh', { method: 'POST' }),
   saveRecommendationSettings: (body: RecommendationSettings) =>
     request<RecommendationSettings>('/recommendations/settings', { method: 'POST', body: JSON.stringify(body) }),
   /** Light Kavita library list (id + name) for the recommendation settings row. */
@@ -513,6 +543,8 @@ export const api = {
   job: (id: number) => request<{ job: Job; logs: JobLog[] }>(`/jobs/${id}`),
   cancelJob: (id: number) => request<{ ok: boolean }>(`/jobs/${id}/cancel`, { method: 'POST' }),
   retryJob: (id: number) => request<{ ok: boolean; id: number }>(`/jobs/${id}/retry`, { method: 'POST' }),
+  removeFailedJob: (id: number) => request<{ removed: number }>(`/jobs/${id}`, { method: 'DELETE' }),
+  clearFailedJobs: () => request<{ removed: number }>('/jobs/failed', { method: 'DELETE' }),
   logs: () => request<JobLog[]>('/logs'),
 
   // ---------------- Doujinshi downloader ----------------

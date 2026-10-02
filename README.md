@@ -11,7 +11,7 @@ fresh picks based on what you already own.
 
 Works with **Kavita server v0.9.x or newer**.
 
-Current release: **v2.0.0**. See [release notes](CHANGELOG.md).
+Current release: **v2.1.0**. See [release notes](CHANGELOG.md).
 
 ## What it does
 
@@ -186,15 +186,45 @@ check **Jobs** for cover-upload errors if it does not change.
     picks with one-click refresh and a thumbs-down button to dismiss a gallery
     without marking it owned, with Undo and a cached replacement when available.
     You can choose which Kavita libraries feed the recommendation profile.
+    Use the card's **Tune recommendations** menu for More like this, artist muting,
+    or a 7-/30-day snooze. The **Recommendation feedback** section lets you undo
+    preferences, unmute artists, or end snoozes, including after a reload.
   - *Watched* — manage your watched searches, their check schedule, and browse
     the "Recently added" feed of new finds.
   - *Downloads* — the live download queue: progress, pause/resume/cancel/retry,
     a separate Needs attention section for failures, and completed history.
 - **Jobs** — every background task (scans, matching, merges, ComicInfo edits,
   watched-search checks) with status, logs, cancel and retry.
+  Known failures link to the relevant folder mappings, connection settings, or
+  series/title editor. Failed jobs can be cleared individually or in bulk, with
+  confirmation; this removes their history and logs, not library files.
 - **Settings** — Kavita connection, auto-scan interval, appearance (light /
   dark / system theme), account security, providers, notifications and the
   downloader.
+
+## Library ownership checks
+
+Search results identify galleries already in Kavita and link to the matching
+series. Downloads are checked on the server using provider metadata, and owned
+galleries are excluded from every recommendation path, including cached cards.
+Ownership checks use **all** Kavita libraries, even libraries excluded from your
+recommendation taste profile.
+
+Provider links in Kavita metadata and explicit `[hitomi-ID]` / `[nhentai-ID]`
+folder identifiers establish gallery identity. Without those, H-Tosho requires
+matching title, artist set, page count, and language; a similar title alone is
+never enough. Galleries lacking that information may not be recognized.
+
+The ownership index is cached for ten minutes and invalidated after library
+jobs or connection changes. The first scan can take time for large libraries;
+**Check library** refreshes the index manually and reports scan progress or
+connection problems. When a configured Kavita connection cannot be fully checked,
+new downloads wait for you to resolve the connection rather than silently bypass
+duplicate protection. Downloading without a configured Kavita connection still works.
+
+More like this adds a preference vote without marking a gallery owned. It affects
+the next refresh. Artist mutes and snoozes apply immediately; snoozes expire
+automatically, and all three types of feedback survive app restarts.
 
 ## Security notes
 
