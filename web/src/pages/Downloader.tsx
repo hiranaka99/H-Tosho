@@ -49,6 +49,7 @@ import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeIntoSeriesDialog } from '../components/MergeIntoSeriesDialog';
 import { GalleryFeedbackDialog, RecommendationFeedbackManager } from '../components/RecommendationFeedback';
 import { LibraryOwnershipNotice } from '../components/LibraryOwnershipNotice';
+import { PageCountPill } from '../components/PageCountPill';
 
 /** Source list fallback (rendered before the server's provider list resolves). */
 const FALLBACK_SOURCES: { id: DoujinSource; label: string }[] = [
@@ -360,7 +361,7 @@ const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, 
               <Languages className="h-3 w-3" /> {item.language}
             </span>
           )}
-          {item.pageCount ? <span className="absolute right-2 top-2 hidden rounded-full bg-black/70 px-2 py-0.5 text-xs text-white min-[420px]:inline">{item.pageCount}p</span> : null}
+          <PageCountPill pageCount={item.pageCount} className="absolute right-2 top-2" />
           {selectMode && selected && (
             <span className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-primary-button text-white">
               <CheckSquare className="h-3.5 w-3.5" />
@@ -374,7 +375,7 @@ const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, 
         </div>
         <div className="flex min-w-0 flex-col gap-2 p-3 pb-0">
           <p className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]" title={item.title}>{item.title}</p>
-          <p className="text-xs text-muted min-[420px]:hidden">{[item.language, item.pageCount ? `${item.pageCount} pages` : null].filter(Boolean).join(' · ')}</p>
+          {item.language && <p className="text-xs text-muted min-[420px]:hidden">{item.language}</p>}
           {item.artists.length > 0 && (
             <p className="truncate text-xs font-medium text-foreground" title={`Artists: ${item.artists.join(', ')}`}>
               <span className="text-muted">Artist{item.artists.length > 1 ? 's' : ''} · </span>{item.artists.join(', ')}
@@ -943,7 +944,7 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
                       <a key={r.galleryId} href={r.url ?? '#'} target="_blank" rel="noreferrer" className="flex max-lg:min-h-11 pointer-coarse:min-h-11 items-center gap-2 hover:underline">
                         {r.coverUrl && <img src={r.coverUrl} alt="" className="h-8 w-6 shrink-0 rounded object-cover" loading="lazy" />}
                         <span className="min-w-0 flex-1 truncate">{r.title}</span>
-                        {r.pageCount != null && r.pageCount > 0 && <span className="shrink-0 tabular-nums text-muted">{r.pageCount} {r.pageCount === 1 ? 'page' : 'pages'}</span>}
+                        <PageCountPill pageCount={r.pageCount} />
                       </a>
                     ))}
                   </div>

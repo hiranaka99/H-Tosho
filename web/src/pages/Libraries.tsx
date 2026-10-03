@@ -7,6 +7,7 @@ import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, 
 import { IdentifyModal } from '../components/IdentifyModal';
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeSeriesModal } from '../components/MergeSeriesModal';
+import { PageCountPill } from '../components/PageCountPill';
 import { buildTagSearchFragment, cn } from '../lib/utils';
 import { toast } from '../lib/toast';
 /** Matches below this score are surfaced for review (mirrors the server's threshold). */
@@ -458,8 +459,9 @@ export function Libraries({ review = false }: { review?: boolean }) {
                       {checked.has(r.id) && (
                         <span className="pointer-events-none absolute left-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-full bg-primary-button text-white" aria-hidden><Check className="h-4 w-4" /></span>
                       )}
-                      <div className="aspect-[3/4] w-full overflow-hidden rounded-t-lg">
+                      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-t-lg">
                         <Cover src={r.cover} name={r.name} className="transition-transform duration-300 ease-out group-hover:scale-105" />
+                        <PageCountPill pageCount={r.pageCount} className="absolute bottom-2 right-2" />
                       </div>
                       <div className="flex min-w-0 w-full flex-1 flex-col gap-2 p-3">
                         <p className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]" title={r.name}>{r.name}</p>
@@ -469,7 +471,6 @@ export function Libraries({ review = false }: { review?: boolean }) {
                           </p>
                         )}
                         {review && <p className="text-xs text-muted">{r.libraryName}</p>}
-                        {r.pageCount != null && r.pageCount > 0 && <p className="text-xs tabular-nums text-muted">{r.pageCount} {r.pageCount === 1 ? 'page' : 'pages'}</p>}
                         <div className="mt-auto flex flex-wrap items-center gap-1">
                           {needsReview(r)
                             ? <Badge tone="warning">Needs review · {Math.round(r.matchScore! * 100)}%</Badge>

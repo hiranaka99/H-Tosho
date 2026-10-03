@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.1.3
+
+### Page-count pills
+
+- Display page counts as compact pills such as `24p`, matching Recommended,
+  across library cards and watched items, including on mobile.
+- Place library pills at the bottom-right of covers to keep the action menu clear.
+- Share the pill component across library, search, recommended, and watched views,
+  with full page-count labels for accessibility and tooltips.
+
 ## v2.1.2
 
 ### Library and watched items
