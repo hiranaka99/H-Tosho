@@ -30,6 +30,12 @@ export interface WatchedSearchNewResult {
   title: string;
   url?: string;
   coverUrl?: string;
+  pageCount?: number;
+}
+
+/** Unknown or invalid provider counts stay absent rather than displaying zero pages. */
+function pageCountMetadata(value: unknown): { pageCount?: number } {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? { pageCount: value } : {};
 }
 
 const SOURCE_LABELS: Record<string, string> = { hitomi: 'Hitomi.la', nhentai: 'nHentai' };
@@ -62,6 +68,7 @@ function decodeLastResults(json: string | null): WatchedSearchNewResult[] {
         title: r.title,
         ...(typeof r.url === 'string' ? { url: r.url } : {}),
         ...(typeof r.coverUrl === 'string' ? { coverUrl: r.coverUrl } : {}),
+        ...pageCountMetadata(r.pageCount),
       });
     }
     return out.slice(0, LAST_RESULTS_MAX);
@@ -238,6 +245,7 @@ export async function checkWatchedSearches(
             title: r?.title || id,
             ...(r?.url ? { url: r.url } : {}),
             ...(r?.coverUrl ? { coverUrl: r.coverUrl } : {}),
+            ...pageCountMetadata(r?.pageCount),
           };
         });
     const lastResultsJson = firstRun || lastResults.length > 0 ? JSON.stringify(lastResults) : null;
@@ -272,6 +280,7 @@ export async function checkWatchedSearches(
               title: r?.title || id,
               ...(r?.url ? { url: r.url } : {}),
               ...(r?.coverUrl ? { coverUrl: r.coverUrl } : {}),
+              ...pageCountMetadata(r?.pageCount),
               foundAt,
             };
           }))
@@ -338,6 +347,7 @@ export interface WatchedSearchNewGallery {
   title: string;
   url?: string;
   coverUrl?: string;
+  pageCount?: number;
   /** The watch query that found the gallery. */
   query: string;
   /** ISO 8601 timestamp of the check that first reported it. */
@@ -369,6 +379,7 @@ export function listNewGalleries(limit = 100): WatchedSearchNewGallery[] {
       title: r.title,
       ...(r.url ? { url: r.url } : {}),
       ...(r.coverUrl ? { coverUrl: r.coverUrl } : {}),
+      ...pageCountMetadata(r.pageCount),
       query: r.query,
       foundAt: r.foundAt,
     });
@@ -407,6 +418,7 @@ export function backfillNewGalleries(): number {
         title: r.title,
         ...(r.url ? { url: r.url } : {}),
         ...(r.coverUrl ? { coverUrl: r.coverUrl } : {}),
+        ...pageCountMetadata(r.pageCount),
         foundAt,
       })))
       .onConflictDoNothing()

@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.1.2
+
+### Library and watched items
+
+- Display page counts on library cards, watched gallery feed cards, and expanded
+  watched search results when available.
+- Preserve provider page counts when saving new watched results. Existing
+  databases gain the page-count column automatically on startup; entries without
+  saved counts remain readable and omit the count.
+
 ## v2.1.1
 
 ### Downloads

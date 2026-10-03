@@ -469,6 +469,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
                           </p>
                         )}
                         {review && <p className="text-xs text-muted">{r.libraryName}</p>}
+                        {r.pageCount != null && r.pageCount > 0 && <p className="text-xs tabular-nums text-muted">{r.pageCount} {r.pageCount === 1 ? 'page' : 'pages'}</p>}
                         <div className="mt-auto flex flex-wrap items-center gap-1">
                           {needsReview(r)
                             ? <Badge tone="warning">Needs review · {Math.round(r.matchScore! * 100)}%</Badge>

@@ -942,7 +942,8 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
                     {w.lastResults.map((r) => (
                       <a key={r.galleryId} href={r.url ?? '#'} target="_blank" rel="noreferrer" className="flex max-lg:min-h-11 pointer-coarse:min-h-11 items-center gap-2 hover:underline">
                         {r.coverUrl && <img src={r.coverUrl} alt="" className="h-8 w-6 shrink-0 rounded object-cover" loading="lazy" />}
-                        <span className="truncate">{r.title}</span>
+                        <span className="min-w-0 flex-1 truncate">{r.title}</span>
+                        {r.pageCount != null && r.pageCount > 0 && <span className="shrink-0 tabular-nums text-muted">{r.pageCount} {r.pageCount === 1 ? 'page' : 'pages'}</span>}
                       </a>
                     ))}
                   </div>
@@ -1291,7 +1292,7 @@ export function Downloader() {
   // Feed rows as gallery items for the shared card/selection machinery; the
   // detail modal fetches full metadata itself.
   const feedItems = React.useMemo<DoujinSearchResult[]>(
-    () => (newGalleries ?? []).map((g) => ({ source: g.source, galleryId: g.galleryId, title: g.title, coverUrl: g.coverUrl ?? null, tags: [], artists: [] })),
+    () => (newGalleries ?? []).map((g) => ({ source: g.source, galleryId: g.galleryId, title: g.title, coverUrl: g.coverUrl ?? null, pageCount: g.pageCount, tags: [], artists: [] })),
     [newGalleries],
   );
   const feedMetaByKey = React.useMemo(() => {

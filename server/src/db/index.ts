@@ -62,6 +62,7 @@ export function initDb(): Db {
   // exec (and every table created earlier in it) otherwise.
   migrateDownloadQueueColumns(sqlite);
   migrateWatchedSearchColumns(sqlite);
+  migrateWatchedSearchNewColumns(sqlite);
   migrateSeriesMatchColumns(sqlite);
   migrateRecommendationHistoryColumns(sqlite);
   sqlite.exec(SCHEMA_DDL);
@@ -134,6 +135,15 @@ function migrateWatchedSearchColumns(sqlite: Database.Database): void {
   } catch (err) {
     console.warn('[h-tosho] failed to add watched_searches column last_results_json:', err);
   }
+}
+
+/** Preserve page counts in feeds created before this column existed. */
+function migrateWatchedSearchNewColumns(sqlite: Database.Database): void {
+  const existing = new Set(
+    (sqlite.prepare('PRAGMA table_info(watched_search_new)').all() ?? []).map((c) => (c as { name: string }).name),
+  );
+  if (existing.size === 0 || existing.has('page_count')) return;
+  sqlite.exec('ALTER TABLE watched_search_new ADD COLUMN page_count INTEGER');
 }
 
 /** Drop the legacy MangaDex adult catalog table (feature removed; live title search covers it). */
@@ -449,6 +459,7 @@ CREATE TABLE IF NOT EXISTS watched_search_new (
   title TEXT NOT NULL,
   url TEXT,
   cover_url TEXT,
+  page_count INTEGER,
   found_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS gallery_tags (

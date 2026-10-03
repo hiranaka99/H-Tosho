@@ -336,6 +336,7 @@ export interface WatchedSearchResultItem {
   title: string;
   url?: string;
   coverUrl?: string;
+  pageCount?: number;
 }
 
 /** One gallery in the "recently added" feed (reported new by a watched search). */
@@ -345,6 +346,7 @@ export interface WatchedNewGallery {
   title: string;
   url?: string | null;
   coverUrl?: string | null;
+  pageCount?: number;
   /** The watch query that found the gallery. */
   query: string;
   /** ISO 8601 timestamp of the check that first reported it. */

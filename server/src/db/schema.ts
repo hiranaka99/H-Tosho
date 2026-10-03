@@ -166,6 +166,7 @@ export const watchedSearchNew = sqliteTable('watched_search_new', {
   title: text('title').notNull(),
   url: text('url'),
   coverUrl: text('cover_url'),
+  pageCount: integer('page_count'),
   /** ISO 8601 timestamp of the check that first reported the gallery. */
   foundAt: text('found_at').notNull(),
 });
