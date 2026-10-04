@@ -3,7 +3,7 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, ArrowUp, ArrowDown, LockKeyhole, Monitor, Moon, Sun, Palette } from 'lucide-react';
 import { api, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type LibraryPathMapping } from '../lib/api';
-import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader, ErrorState, SegmentedTabs, SegmentedControl, Disclosure } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader, ErrorState, SegmentedTabs, SegmentedControl, TabPanel, Disclosure } from '../components/ui';
 import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { useAuth } from '../lib/AuthContext';
@@ -217,7 +217,7 @@ export function Settings() {
       <PageHeader icon={<SlidersHorizontal className="h-5 w-5" />} title="Settings" subtitle="Connect Kavita, configure providers and notifications." />
       <SegmentedTabs items={SETTINGS_TABS} value={tab} onChange={setTab} label="Settings sections" panelId="settings-panel" className="sticky top-0 z-10 self-start bg-background" />
 
-      <div id="settings-panel" role="tabpanel" aria-labelledby={`settings-panel-tab-${tab}`} className="contents">
+      <TabPanel value={tab} id="settings-panel" role="tabpanel" aria-labelledby={`settings-panel-tab-${tab}`}>
       <div hidden={tab !== 'general'} className="flex flex-col gap-4">
       <Card id="kavita-connection" className="animate-fade-up scroll-mt-16">
         <SectionHeader icon={<Server className="h-4 w-4" />} title="Kavita connection">
@@ -341,7 +341,7 @@ export function Settings() {
       <div hidden={tab !== 'downloader'} className="flex flex-col gap-4">
         <DownloaderSettingsCard />
       </div>
-      </div>
+      </TabPanel>
     </div>
   );
 }

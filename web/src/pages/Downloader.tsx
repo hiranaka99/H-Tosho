@@ -44,7 +44,7 @@ import { useDownloadActions, useDownloads } from '../lib/DownloadsContext';
 import { buildTagSearchFragment, cn, timeAgo, toIsoUtc } from '../lib/utils';
 import { formatBytes, formatSpeed } from '../lib/format';
 import { toast } from '../lib/toast';
-import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, SegmentedControl, Disclosure, ErrorState, ConfirmDialog, Skeleton } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, ErrorState, ConfirmDialog, Skeleton } from '../components/ui';
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeIntoSeriesDialog } from '../components/MergeIntoSeriesDialog';
 import { GalleryFeedbackDialog, RecommendationFeedbackManager } from '../components/RecommendationFeedback';
@@ -349,7 +349,7 @@ const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, 
     <article
       style={{ animationDelay: `${Math.min(index, 15) * 40}ms` }}
       className={cn(
-        '@container group flex min-w-0 animate-fade-up flex-col overflow-hidden rounded-lg border bg-surface transition-colors duration-200 hover:border-border-2',
+        'ui-card ui-card-interactive @container group flex min-w-0 animate-fade-up flex-col overflow-hidden rounded-xl border bg-surface transition-colors duration-200 hover:border-border-2',
         selected ? 'border-primary/60 ring-2 ring-primary' : 'border-border',
       )}
     >
@@ -1628,7 +1628,7 @@ export function Downloader() {
         panelId="downloader-panel"
         className="sticky top-0 z-10 self-start bg-background"
       />
-      <div id="downloader-panel" role="tabpanel" aria-labelledby={`downloader-panel-tab-${tab}`} className="contents">
+      <TabPanel value={tab} id="downloader-panel" role="tabpanel" aria-labelledby={`downloader-panel-tab-${tab}`}>
 
       {tab === 'search' && (<>
 
@@ -2070,7 +2070,7 @@ export function Downloader() {
       {/* Download manager — own component so live task ticks never re-render the page */}
       {tab === 'manager' && <ManagerTab />}
 
-      </div>
+      </TabPanel>
     </div>
   );
 }

@@ -5,24 +5,25 @@ import * as SwitchPrimitive from '@radix-ui/react-switch';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { X, Loader2, AlertTriangle, CheckCircle2, ChevronDown } from 'lucide-react';
 import { cn, PROVIDER_COLORS, PROVIDER_NAMES } from '../lib/utils';
+import { useSelectionIndicator } from '../lib/useSelectionIndicator';
 
 const buttonVariants = cva(
-  'inline-flex min-w-0 select-none items-center justify-center gap-2 rounded-md text-center text-sm font-medium leading-tight transition-colors duration-150 ' +
+  'ui-button inline-flex min-w-0 select-none items-center justify-center gap-2 rounded-lg text-center text-sm font-medium leading-tight ' +
     'disabled:pointer-events-none disabled:opacity-50',
   {
     variants: {
       variant: {
-        default: 'bg-primary-button text-white hover:bg-primary-button-hover',
-        outline: 'border border-border-2 bg-surface text-foreground hover:bg-surface-2',
+        default: 'ui-button-raised bg-primary-button text-white hover:bg-primary-button-hover',
+        outline: 'ui-button-raised border border-border-2 bg-surface text-foreground hover:bg-surface-2',
         ghost: 'text-muted hover:bg-surface-2 hover:text-foreground',
-        danger: 'bg-danger text-white hover:opacity-90 dark:text-background',
-        secondary: 'bg-surface-2 text-foreground hover:bg-border/60',
+        danger: 'ui-button-raised bg-danger text-white hover:opacity-90 dark:text-background',
+        secondary: 'ui-button-raised bg-surface-2 text-foreground hover:bg-border/60',
       },
       size: {
         default: 'h-9 px-3',
         sm: 'h-9 px-2.5 text-xs',
         lg: 'h-10 px-4',
-        icon: 'h-9 w-9 p-0',
+        icon: 'ui-button-icon h-9 w-9 p-0',
       },
     },
     defaultVariants: { variant: 'default', size: 'default' },
@@ -44,7 +45,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 Button.displayName = 'Button';
 
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('min-w-0 rounded-lg border border-border bg-surface', className)} {...props} />;
+  return <div className={cn('ui-card min-w-0 rounded-xl border border-border bg-surface', className)} {...props} />;
 }
 
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
@@ -64,7 +65,7 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
     <input
       ref={ref}
       className={cn(
-        'flex h-9 w-full rounded-md border border-border-2 bg-surface-2 px-3 text-sm placeholder:text-muted/70',
+        'ui-field flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-sm placeholder:text-muted/70 focus:border-primary focus:bg-surface',
         'transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
@@ -83,7 +84,7 @@ export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttrib
     <select
       ref={ref}
       className={cn(
-        'flex h-9 w-full rounded-md border border-border-2 bg-surface-2 px-3 text-sm',
+        'ui-field flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-sm focus:border-primary focus:bg-surface',
         'transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
@@ -221,13 +222,13 @@ export function DialogContent({ children, className, ...props }: React.Component
       <DialogPrimitive.Content
         className={cn(
           'dialog-content fixed left-1/2 top-1/2 z-50 w-[calc(100vw-1rem)] max-w-5xl -translate-x-1/2 -translate-y-1/2 sm:w-[calc(100vw-1.5rem)]',
-          'max-h-[calc(100dvh-1rem)] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl sm:max-h-[calc(100dvh-1.5rem)]',
+          'max-h-[calc(100dvh-1rem)] overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl sm:max-h-[calc(100dvh-1.5rem)]',
           className,
         )}
         {...props}
       >
         {children}
-        <DialogPrimitive.Close aria-label="Close dialog" className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground">
+        <DialogPrimitive.Close aria-label="Close dialog" className="ui-button ui-button-icon absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground">
           <X className="h-4 w-4" />
         </DialogPrimitive.Close>
       </DialogPrimitive.Content>
@@ -265,8 +266,10 @@ export function ErrorState({ title = 'Something went wrong', description, onRetr
 }
 
 export function SegmentedTabs<T extends string>({ items, value, onChange, label, panelId, className }: { items: readonly { id: T; label: string }[]; value: T; onChange: (id: T) => void; label: string; panelId: string; className?: string }) {
+  const { ref, indicatorStyle } = useSelectionIndicator(value, items);
   return (
-    <div role="tablist" aria-label={label} className={cn('flex w-full max-w-full flex-nowrap overflow-x-auto border-b border-border p-1', className)}>
+    <div ref={ref} role="tablist" aria-label={label} className={cn('ui-tablist relative flex w-full max-w-full flex-nowrap overflow-x-auto border-b border-border p-1', className)}>
+      <span aria-hidden="true" className="ui-tab-indicator pointer-events-none absolute bottom-1 left-0 h-0.5 rounded-full bg-primary" style={indicatorStyle} />
       {items.map((item) => (
         <button
           key={item.id}
@@ -287,8 +290,8 @@ export function SegmentedTabs<T extends string>({ items, value, onChange, label,
             requestAnimationFrame(() => tabs?.[nextIndex]?.focus());
           }}
           className={cn(
-            'min-h-9 shrink-0 border-b-2 px-1 text-xs font-medium transition-colors duration-150 min-[360px]:px-1.5 sm:px-3 sm:text-sm',
-            value === item.id ? 'border-primary text-primary' : 'border-transparent text-muted hover:text-foreground',
+            'ui-choice relative min-h-9 shrink-0 border-b-2 border-transparent px-1 text-xs font-medium transition-colors duration-150 min-[360px]:px-1.5 sm:px-3 sm:text-sm',
+            value === item.id ? 'text-primary' : 'text-muted hover:text-foreground',
           )}
         >
           {item.label}
@@ -298,11 +301,31 @@ export function SegmentedTabs<T extends string>({ items, value, onChange, label,
   );
 }
 
+/** Animate content changes without remounting forms or losing their drafts. */
+export function TabPanel({ value, className, ...props }: React.ComponentPropsWithoutRef<'div'> & { value: string }) {
+  const ref = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const panel = ref.current;
+    const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
+    if (!panel || preference.matches || typeof panel.animate !== 'function') return;
+    const animation = panel.animate(
+      [{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'translateY(0)' }],
+      { duration: 220, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' },
+    );
+    const onPreferenceChange = () => { if (preference.matches) animation.cancel(); };
+    preference.addEventListener('change', onPreferenceChange);
+    return () => { animation.cancel(); preference.removeEventListener('change', onPreferenceChange); };
+  }, [value]);
+  return <div ref={ref} className={cn('ui-tab-panel flex min-w-0 flex-col gap-4', className)} {...props} />;
+}
+
 /** Mutually exclusive choices share one appearance and keyboard behavior. */
 export function SegmentedControl<T extends string | number>({ items, value, onChange, label, className, itemClassName }: { items: readonly { id: T; label: string; icon?: React.ReactNode }[]; value: T | null; onChange: (id: T) => void; label: string; className?: string; itemClassName?: string }) {
   const selectedIndex = items.findIndex((item) => item.id === value);
+  const { ref, indicatorStyle } = useSelectionIndicator(value, items);
   return (
-    <div role="radiogroup" aria-label={label} className={cn('flex min-w-0 max-w-full items-center gap-1 overflow-x-auto rounded-lg bg-surface-2 p-0.5', className)}>
+    <div ref={ref} role="radiogroup" aria-label={label} className={cn('relative flex min-w-0 max-w-full items-center gap-1 overflow-x-auto rounded-lg bg-surface-2 p-0.5', className)}>
+      <span aria-hidden="true" className="ui-tab-indicator pointer-events-none absolute bottom-0.5 left-0 top-0.5 rounded-md bg-surface shadow-sm" style={indicatorStyle} />
       {items.map((item, index) => (
         <button
           key={item.id}
@@ -321,7 +344,7 @@ export function SegmentedControl<T extends string | number>({ items, value, onCh
               group?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[nextIndex]?.focus();
             });
           }}
-          className={cn('flex min-h-8 shrink-0 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium transition-colors duration-150', item.id === value ? 'bg-surface text-primary shadow-sm' : 'text-muted hover:bg-surface hover:text-foreground', itemClassName)}
+          className={cn('ui-choice relative z-10 flex min-h-8 shrink-0 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium transition-colors duration-150', item.id === value ? 'text-primary' : 'text-muted hover:bg-surface/60 hover:text-foreground', itemClassName)}
         >
           {item.icon}{item.label}
         </button>
@@ -402,12 +425,12 @@ export function PageHeader({
     <div className={cn('flex min-w-0 flex-col items-start justify-between gap-3 sm:flex-row sm:flex-wrap sm:items-center', className)}>
       <div className="flex min-w-0 items-start gap-3 sm:items-center">
         {icon && (
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
             {icon}
           </div>
         )}
         <div className="min-w-0">
-          <h1 className="break-words text-xl font-semibold tracking-tight">{title}</h1>
+          <h1 className="break-words text-2xl font-semibold tracking-tight">{title}</h1>
           {subtitle && <p className="mt-0.5 break-words text-sm text-muted">{subtitle}</p>}
         </div>
       </div>

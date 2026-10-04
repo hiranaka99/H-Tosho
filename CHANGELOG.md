@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.3.0
+
+### Appearance and interaction
+
+- Refine the familiar layout with softer corners, subtle shadows, clearer focus
+  states, and larger page headings while retaining the Sakura pink and plum themes.
+- Add hover and press feedback to buttons and selection controls, sliding tab
+  indicators, and smooth content transitions in Settings, Downloader, and Libraries.
+- Respect reduced-motion preferences, including when they change during an animation.
+- Keep Settings forms mounted across tab changes so unsaved drafts remain intact.
+
+### Library switching
+
+- Update only the series content when switching libraries, keeping the header,
+  library controls, search focus, and filters in place.
+- Preserve each library's pagination and cached results, including when navigating
+  Back and Forward. Clear selected series and close the merge dialog on library changes.
+
+### Upgrading
+
+Update the source checkout and rebuild your deployment. For Docker installations,
+run `docker compose up -d --build` with your existing data volume and library mounts.
+
 ## v2.2.0
 
 ### Sakura branding and appearance

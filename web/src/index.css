@@ -44,6 +44,8 @@
   --info: #79518f;
   --skeleton-base: #f7e8ef;
   --skeleton-hi: #eed9e3;
+  --control-shadow: rgb(92 35 64 / 0.12);
+  --card-shadow: rgb(92 35 64 / 0.045);
 }
 
 .dark {
@@ -66,6 +68,8 @@
   --info: #d3adeb;
   --skeleton-base: #322335;
   --skeleton-hi: #48324b;
+  --control-shadow: rgb(0 0 0 / 0.28);
+  --card-shadow: rgb(0 0 0 / 0.12);
 }
 
 @theme {
@@ -282,7 +286,82 @@ select {
   animation: dialog-out 0.16s ease both;
 }
 
+/* Feedback stays local to the control: no layout movement or looping effects. */
+.ui-button,
+.ui-choice {
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    opacity 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms var(--ease-out-soft);
+}
+
+.ui-button-raised {
+  box-shadow: 0 1px 2px var(--control-shadow);
+}
+
+.ui-button:active:not(:disabled):not([aria-disabled="true"]),
+.ui-choice:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: scale(0.98);
+  box-shadow: none;
+  transition-duration: 80ms;
+}
+
+.ui-button-icon:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: scale(0.94);
+}
+
+.ui-card {
+  box-shadow: 0 2px 6px var(--card-shadow);
+}
+
+.ui-card-interactive {
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.ui-field {
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+.ui-tab-indicator {
+  transition: transform 220ms var(--ease-out-soft), width 220ms var(--ease-out-soft), opacity 160ms ease;
+}
+
+/* The whole panel enters together, rather than animating each nested card twice. */
+.ui-tab-panel .animate-fade-up {
+  animation: none;
+}
+
+/* Touch controls press in place; hover lift is reserved for precise pointers. */
+@media (hover: hover) and (pointer: fine) {
+  .ui-button-raised:hover:not(:disabled):not([aria-disabled="true"]) {
+    transform: translateY(-1px);
+    box-shadow: 0 3px 8px var(--control-shadow);
+  }
+
+  .ui-button-raised:active:not(:disabled):not([aria-disabled="true"]) {
+    transform: scale(0.98);
+    box-shadow: none;
+  }
+
+  .ui-card-interactive:hover {
+    box-shadow: 0 4px 14px var(--control-shadow);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .ui-tab-indicator {
+    transition: none !important;
+  }
+
+  .ui-button,
+  .ui-choice {
+    transform: none !important;
+  }
+
   *,
   *::before,
   *::after {

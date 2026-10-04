@@ -103,6 +103,9 @@ const NAV = [
 export default function App() {
   const location = useLocation();
   const { username, logout } = useAuth();
+  // Library IDs select content within one page; keep its controls mounted.
+  const isLibraryPage = location.pathname === '/libraries' || (location.pathname.startsWith('/libraries/') && location.pathname !== '/libraries/review');
+  const pageKey = isLibraryPage ? '/libraries' : location.pathname;
 
   const [navOpen, setNavOpen] = React.useState(false);
   const isDesktop = useMediaQuery('(min-width: 1024px)');
@@ -156,7 +159,7 @@ export default function App() {
               <NavLink
                 to={item.to}
                 className={({ isActive }) => cn(
-                  'group flex h-9 items-center gap-2.5 rounded-md px-3 pr-11 text-sm transition-colors duration-150',
+                  'ui-choice group flex h-9 items-center gap-2.5 rounded-lg px-3 pr-11 text-sm transition-colors duration-150',
                   isActive ? 'bg-primary/10 font-medium text-primary' : 'text-muted hover:bg-surface-2/70 hover:text-foreground',
                 )}
               >
@@ -185,7 +188,7 @@ export default function App() {
         {/* Padding lives on an inner wrapper, not on the scroll container itself: sticky
             page elements (tab bars) pin flush to the scrollport edge this way. */}
         <div className="p-3 sm:p-5 lg:p-8">
-          <div key={location.pathname} className="animate-fade-up">
+          <div key={pageKey} className="animate-fade-up">
             <PageErrorBoundary>
               <React.Suspense fallback={<div className="flex h-40 items-center justify-center text-sm text-muted">Loading…</div>}>
                 <Routes>

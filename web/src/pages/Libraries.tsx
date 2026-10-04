@@ -3,7 +3,7 @@ import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { Search, RefreshCw, Play, BookOpen, Unlink, FileText, Combine, Check, CheckSquare, ChevronLeft, ChevronRight, EllipsisVertical } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource } from '../lib/api';
-import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog, SegmentedControl } from '../components/ui';
+import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog, SegmentedControl, TabPanel } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeSeriesModal } from '../components/MergeSeriesModal';
@@ -208,6 +208,8 @@ export function Libraries({ review = false }: { review?: boolean }) {
     if (!libraryId) return;
     setSelected(Number(libraryId));
     setPage(readLibraryState().pages?.[libraryId] ?? 1);
+    setChecked(new Set());
+    setMergeOpen(false);
   }, [libraryId]);
 
   const pickLibrary = (id: number) => {
@@ -413,7 +415,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
         </div>
       )}
 
-      <div className="flex min-w-0 flex-1 flex-col gap-3">
+      <TabPanel value={`${review ? 'review' : selected}:${series.isLoading ? 'loading' : 'ready'}`} role="region" aria-label="Library series" className="flex-1 gap-3">
         {!review && selected === null ? (
           <Card className="flex flex-1 items-center justify-center">
             <EmptyState icon={<BookOpen className="h-8 w-8" />} title="Select a library" description="Pick a Kavita library above to browse and identify its series." />
@@ -440,13 +442,13 @@ export function Libraries({ review = false }: { review?: boolean }) {
                     key={r.id}
                     style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
                     className={cn(
-                      'group relative z-0 min-w-0 animate-fade-up cursor-pointer transition-colors duration-200 hover:border-border-2 focus-within:z-40',
+                      'ui-card-interactive group relative z-0 min-w-0 animate-fade-up cursor-pointer transition-colors duration-200 hover:border-border-2 focus-within:z-40',
                       checked.has(r.id) && 'border-primary/60 ring-2 ring-primary',
                     )}
                   >
                     <button
                       type="button"
-                      className="flex h-full w-full flex-col rounded-lg text-left"
+                      className="flex h-full w-full flex-col rounded-xl text-left"
                       onClick={(event) => {
                         event.stopPropagation();
                         if (selectMode) toggleCheck(r.id);
@@ -459,7 +461,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
                       {checked.has(r.id) && (
                         <span className="pointer-events-none absolute left-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-full bg-primary-button text-white" aria-hidden><Check className="h-4 w-4" /></span>
                       )}
-                      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-t-lg">
+                      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-t-xl">
                         <Cover src={r.cover} name={r.name} className="transition-transform duration-300 ease-out group-hover:scale-105" />
                         <PageCountPill pageCount={r.pageCount} className="absolute bottom-2 right-2" />
                       </div>
@@ -490,7 +492,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
             )}
           </>
         )}
-      </div>
+      </TabPanel>
 
       <ConfirmDialog
         open={unmatchTarget !== null}
