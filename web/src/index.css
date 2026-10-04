@@ -22,49 +22,50 @@
 
 /* Design tokens — semantic colors per theme. The `@theme inline` block below maps
    them onto Tailwind's color utilities, so every `bg-surface`, `text-muted`,
-   `border-border`, … class is theme-aware without a `dark:` prefix in component code. */
+   `border-border`, … class is theme-aware without a `dark:` prefix in component code.
+   Sakura pink accents, moonlit blush surfaces, and plum neutrals echo the app icon. */
 :root {
   color-scheme: light;
-  --background: #f3f6fc;
-  --sidebar: #f9fbff;
+  --background: #fcf4f7;
+  --sidebar: #fff8fb;
   --surface: #ffffff;
-  --surface-2: #e9eef8;
-  --border: #dde5f0;
-  --border-2: #c2cede;
-  --foreground: #18263d;
-  --muted: #586b84;
-  --primary: #275fc5;
-  --primary-hover: #1e4fa9;
-  --primary-button: #275fc5;
-  --primary-button-hover: #1e4fa9;
+  --surface-2: #f7e8ef;
+  --border: #eed9e3;
+  --border-2: #d9b8c8;
+  --foreground: #392333;
+  --muted: #795d70;
+  --primary: #aa386a;
+  --primary-hover: #902a57;
+  --primary-button: #aa386a;
+  --primary-button-hover: #902a57;
   --success: #0b7d66;
   --warning: #aa6b15;
   --danger: #b8364c;
-  --info: #24638f;
-  --skeleton-base: #e9eef8;
-  --skeleton-hi: #dde5f0;
+  --info: #79518f;
+  --skeleton-base: #f7e8ef;
+  --skeleton-hi: #eed9e3;
 }
 
 .dark {
   color-scheme: dark;
-  --background: #0b0e14;
-  --sidebar: #10141d;
-  --surface: #141b27;
-  --surface-2: #1b2433;
-  --border: #232c3b;
-  --border-2: #354258;
-  --foreground: #e7eef9;
-  --muted: #9aa9bd;
-  --primary: #79a9ff;
-  --primary-hover: #9abfff;
-  --primary-button: #346bcb;
-  --primary-button-hover: #3b73d4;
+  --background: #160f18;
+  --sidebar: #1d1420;
+  --surface: #251a29;
+  --surface-2: #322335;
+  --border: #453047;
+  --border-2: #634760;
+  --foreground: #faeaf2;
+  --muted: #c4a6ba;
+  --primary: #f39cbd;
+  --primary-hover: #ffc0d7;
+  --primary-button: #b33b70;
+  --primary-button-hover: #c0457d;
   --success: #38cba6;
   --warning: #e5b454;
   --danger: #f07d8a;
-  --info: #83b6ef;
-  --skeleton-base: #1b2433;
-  --skeleton-hi: #29364a;
+  --info: #d3adeb;
+  --skeleton-base: #322335;
+  --skeleton-hi: #48324b;
 }
 
 @theme {
@@ -233,7 +234,7 @@ body {
    (the open dropdown stays OS-native on purpose — no custom listbox to maintain). */
 select {
   appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23586b84' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23795d70' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 0.6rem center;
   background-size: 1rem 1rem;
@@ -241,7 +242,7 @@ select {
 }
 
 .dark select {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239aa9bd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23c4a6ba' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 /* Shimmering placeholder for loading content. */

@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.2.0
+
+### Sakura branding and appearance
+
+- Use the Sakura Torii Under a Glowing Moon artwork as the app icon in the
+  desktop sidebar, mobile header, sign-in screen, browser tab, and touch icon.
+- Refresh both light and dark themes with sakura pink accents, blush surfaces,
+  and plum neutrals, including buttons, navigation, focus outlines, and loading
+  placeholders. Main text and button labels retain at least 4.5:1 contrast.
+- Version icon URLs so browsers refresh cached artwork after upgrading.
+
+### Upgrading
+
+Update the source checkout and rebuild your deployment. For Docker installations,
+run `docker compose up -d --build` with your existing data volume and library mounts.
+
 ## v2.1.3
 
 ### Page-count pills

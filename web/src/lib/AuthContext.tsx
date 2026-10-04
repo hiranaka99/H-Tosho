@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { BookOpenText, Loader2, LockKeyhole } from 'lucide-react';
+import { Loader2, LockKeyhole } from 'lucide-react';
 import { api, type AuthStatus } from './api';
 import { Button, Card, CardContent, Input, Label } from '../components/ui';
 
@@ -84,9 +84,7 @@ function AuthScreen({ setupRequired, onAuthenticated }: { setupRequired: boolean
     <main className="flex h-full min-h-0 items-center justify-center overflow-y-auto p-3 sm:p-4">
       <Card className="w-full max-w-md overflow-hidden shadow-lg">
         <div className="flex flex-col items-center gap-3 border-b border-border bg-surface-2/50 px-6 py-7 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary-button text-white">
-            <BookOpenText className="h-6 w-6" />
-          </div>
+          <img src="/h-tosho-icon.png?v=199908e7" alt="H-Tosho" width={64} height={64} className="h-16 w-16 rounded-xl object-contain" />
           <div>
             <h1 className="text-xl font-semibold tracking-tight">{setupRequired ? 'Set up H-Tosho' : 'Welcome back'}</h1>
             <p className="mt-1 text-sm text-muted">{setupRequired ? 'Create the account used to protect this installation.' : 'Sign in to manage your library.'}</p>

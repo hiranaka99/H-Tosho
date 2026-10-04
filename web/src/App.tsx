@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { Library, Settings as SettingsIcon, ListChecks, BookOpenText, Download, Menu, X, LogOut, Monitor, Sun, Moon } from 'lucide-react';
+import { Library, Settings as SettingsIcon, ListChecks, Download, Menu, X, LogOut, Monitor, Sun, Moon } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './lib/api';
 // Route-level code splitting: each page (and the modals only it imports) loads
@@ -66,9 +66,7 @@ class PageErrorBoundary extends React.Component<{ children: React.ReactNode }, {
 function Brand() {
   return (
     <div className="flex min-w-0 items-center gap-2.5">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary-button text-white">
-        <BookOpenText className="h-4 w-4" />
-      </div>
+      <img src="/h-tosho-icon.png?v=199908e7" alt="" aria-hidden="true" width={32} height={32} className="h-8 w-8 shrink-0 rounded-lg object-contain" />
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold leading-tight tracking-tight">H-Tosho</div>
       </div>
