@@ -43,7 +43,6 @@ import { rewriteDoujinCover, rewriteDoujinPages, rewriteMangaDexCoverUrl } from 
 import { addWatchedSearch, listNewGalleries, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
 import { getRecommendations, dismissAndReplace, undoDismiss, refreshRecommendations, setExcludedLibraries, applyRecommendationFeedback } from '../services/recommendations.js';
 import { getRecommendationFeedback, type FeedbackAction } from '../services/recommendationFeedback.js';
-import { annotateLibraryOwnership, libraryMatches, libraryOwnershipStatus, refreshLibraryOwnership } from '../services/libraryOwnership.js';
 import { getRecommendationSettings } from '../services/settings.js';
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
 import { listCbzFiles, readComicInfo, readCoverImage, resolveExistingFile, resolveSeriesHostDir } from '../lib/cbz.js';
@@ -661,7 +660,7 @@ api.post('/doujin/search', async (c) => {
     const results = await provider.search(body.query, 1000, sort);
     // Route hitomi covers through the /media proxy so they carry the Referer
     // their CDN requires (browsers can't send it cross-origin).
-    return c.json((await annotateLibraryOwnership(results)).map(rewriteDoujinCover));
+    return c.json(results.map(rewriteDoujinCover));
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }
@@ -692,8 +691,7 @@ api.post('/doujin/gallery', async (c) => {
     // browser never needs provider-specific Referer headers or direct CDN access.
     const gallery = await provider.getGallery(body.idOrUrl);
     const { pages, pageFallbacks, requestHeaders: _requestHeaders, resolvePageUrl: _resolvePageUrl, ...meta } = gallery;
-    const [ownedMeta] = await annotateLibraryOwnership([{ ...meta, pageCount: pages.length }]);
-    return c.json({ ...rewriteDoujinCover(ownedMeta), ...rewriteDoujinPages(pages, pageFallbacks), pageCount: pages.length });
+    return c.json({ ...rewriteDoujinCover(meta), ...rewriteDoujinPages(pages, pageFallbacks), pageCount: pages.length });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }
@@ -722,19 +720,6 @@ api.post('/downloads', async (c) => {
   if (active) return c.json({ error: 'already-queued', message: 'This gallery is already queued or downloading.', status: active.status }, 409);
   const owned = getDb().select().from(schema.ownedGalleries).where(and(eq(schema.ownedGalleries.source, body.source), eq(schema.ownedGalleries.galleryId, body.galleryId))).get();
   if (owned) return c.json({ error: 'already-downloaded', message: 'This gallery is already owned, even if its download history was cleared.' }, 409);
-  if (libraryOwnershipStatus().configured) {
-    const provider = getDoujinProvider(body.source)!;
-    if (!provider.getGallery) return c.json({ error: 'Gallery metadata is unavailable' }, 502);
-    let gallery;
-    try { gallery = await provider.getGallery(body.galleryId); }
-    catch (error) { return c.json({ error: errMsg(error) }, 502); }
-    const match = (await libraryMatches([{ ...gallery, pageCount: gallery.pages.length }])).get(`${body.source}:${gallery.galleryId}`);
-    if (match) return c.json({ error: 'already-in-library', message: `Already in ${match.libraryName}: ${match.name}`, libraryMatch: match }, 409);
-    if (!libraryOwnershipStatus().complete) return c.json({ error: 'Library ownership check is unavailable. Check the Kavita connection before downloading.' }, 503);
-    // Metadata and ownership lookups await network work; re-check queue state.
-    if (downloadQueue.findActive(body.source as DoujinSource, body.galleryId)) return c.json({ error: 'already-queued' }, 409);
-    if (downloadQueue.findCompleted(body.source as DoujinSource, body.galleryId)) return c.json({ error: 'already-downloaded' }, 409);
-  }
   // Queue priority: higher runs first; ties keep FIFO order. Defaults to 0.
   const priority = typeof body.priority === 'number' && Number.isFinite(body.priority) ? Math.trunc(body.priority) : 0;
   const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, body.title ?? null, outputFormat, mergeFolder, chapter, priority);
@@ -745,12 +730,6 @@ api.get('/downloads', (c) => c.json(downloadQueue.list(100)));
 
 /** Completed galleries (source + galleryId + finish time) for duplicate badges. */
 api.get('/downloads/completed', (c) => c.json(downloadQueue.completedGalleries()));
-
-api.get('/library-ownership', (c) => c.json(libraryOwnershipStatus()));
-api.post('/library-ownership/refresh', async (c) => {
-  await refreshLibraryOwnership();
-  return c.json(libraryOwnershipStatus());
-});
 
 /**
  * Resolve the .cbz file(s) on disk for a gallery. Completed task rows win; when
@@ -984,13 +963,12 @@ api.get('/recommendations/settings', (c) => c.json(getRecommendationSettings()))
 api.get('/recommendations/feedback', (c) => c.json(getRecommendationFeedback()));
 api.post('/recommendations/feedback', async (c) => {
   const body = await c.req.json().catch(() => null);
-  const actions: FeedbackAction[] = ['like', 'unlike', 'mute-artist', 'unmute-artist', 'snooze', 'unsnooze'];
+  const actions: FeedbackAction[] = ['like', 'unlike', 'mute-artist', 'unmute-artist'];
   if (!body || !actions.includes(body.action) || body.source !== 'hitomi'
     || typeof body.galleryId !== 'string' || !body.galleryId.trim() || body.galleryId.length > 200
-    || (body.action.includes('artist') && (typeof body.artist !== 'string' || !body.artist.trim() || body.artist.length > 200))
-    || (body.action === 'snooze' && body.days !== 7 && body.days !== 30)) return c.json({ error: 'Invalid recommendation feedback' }, 400);
+    || (body.action.includes('artist') && (typeof body.artist !== 'string' || !body.artist.trim() || body.artist.length > 200))) return c.json({ error: 'Invalid recommendation feedback' }, 400);
   try {
-    const result = await applyRecommendationFeedback(body.action, { source: body.source, galleryId: body.galleryId.trim(), artist: body.artist, days: body.days });
+    const result = await applyRecommendationFeedback(body.action, { source: body.source, galleryId: body.galleryId.trim(), artist: body.artist });
     return c.json({ ...result, recommendations: { ...result.recommendations, items: result.recommendations.items.map(rewriteDoujinCover) } });
   } catch (error) { return c.json({ error: errMsg(error) }, 400); }
 });

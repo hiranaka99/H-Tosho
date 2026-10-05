@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.4.0
+
+### Recommendation controls
+
+- Move Recommendation feedback into a compact **Feedback** button beside
+  **Refresh picks**, with saved likes and artist mutes in a dialog.
+- Remove gallery snoozing from the interface and API. Existing saved snoozes
+  no longer hide galleries; saved likes and artist mutes remain intact.
+- Explain that **More like this** favors a gallery's artists and tags after
+  refreshing picks, while **Mute** immediately hides recommendations listing
+  that artist until unmuted.
+- Remove automatic Kavita library ownership scans, the **Check library** bar,
+  library-match labels, and download blocking based on Kavita ownership.
+- Use thumbs down to dismiss galleries manually, with persistent dismissals
+  and Undo. Selected libraries still inform recommendation preferences, and
+  H-Tosho still tracks its own completed downloads and prevents queue duplicates.
+
+### Focus appearance
+
+- Merge the focused field border and outline into one visible indicator,
+  fixing the double outline on the sign-in screen.
+
+### Upgrading
+
+Update the source checkout and rebuild your deployment. For Docker installations,
+run `docker compose up -d --build` with your existing data volume and library mounts.
+
 ## v2.3.0
 
 ### Appearance and interaction

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import {
   Search,
   Loader2,
@@ -39,7 +39,7 @@ import {
   ThumbsDown,
   EllipsisVertical,
 } from 'lucide-react';
-import { api, ApiError, type FeedbackRequest, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
+import { api, type FeedbackRequest, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
 import { useDownloadActions, useDownloads } from '../lib/DownloadsContext';
 import { buildTagSearchFragment, cn, timeAgo, toIsoUtc } from '../lib/utils';
 import { formatBytes, formatSpeed } from '../lib/format';
@@ -48,7 +48,6 @@ import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select,
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeIntoSeriesDialog } from '../components/MergeIntoSeriesDialog';
 import { GalleryFeedbackDialog, RecommendationFeedbackManager } from '../components/RecommendationFeedback';
-import { LibraryOwnershipNotice } from '../components/LibraryOwnershipNotice';
 import { PageCountPill } from '../components/PageCountPill';
 
 /** Source list fallback (rendered before the server's provider list resolves). */
@@ -385,17 +384,16 @@ const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, 
         </div>
       </button>
       <div className="mt-auto flex min-w-0 flex-col gap-2 p-3">
-        {(showSource || owned || item.libraryMatch) && (
+        {(showSource || owned) && (
           <div className="flex min-h-6 flex-wrap items-center gap-2">
             {showSource && <SourceBadge source={item.source} />}
             {owned && <Badge tone="muted"><Bookmark className="h-3 w-3" /> Owned</Badge>}
-            {item.libraryMatch && <Link className="max-w-full truncate text-xs text-primary hover:underline" to={`/libraries?series=${item.libraryMatch.seriesId}`} title={`Already in ${item.libraryMatch.libraryName}: ${item.libraryMatch.name}`}>In {item.libraryMatch.libraryName}</Link>}
           </div>
         )}
         <div className="flex min-w-0 items-stretch gap-2">
-          <Button size="sm" className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1" onClick={() => onDownload(item)} disabled={active || !!downloadedAt || !!item.libraryMatch} aria-label={item.libraryMatch ? `${item.title} already in Kavita` : active ? `${item.title} is ${task?.status ?? 'starting'}` : downloadedAt ? `${item.title} already downloaded` : `Download ${item.title}`}>
+          <Button size="sm" className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1" onClick={() => onDownload(item)} disabled={active || !!downloadedAt} aria-label={active ? `${item.title} is ${task?.status ?? 'starting'}` : downloadedAt ? `${item.title} already downloaded` : `Download ${item.title}`}>
             {active ? <Loader2 className={cn('h-3.5 w-3.5 shrink-0', task?.status !== 'paused' && 'animate-spin')} /> : downloadedAt ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <DownloadIcon className="h-3.5 w-3.5 shrink-0" />}
-            <span className="truncate">{item.libraryMatch ? 'In library' : task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : active ? 'Downloading' : downloadedAt ? 'Downloaded' : 'Download'}</span>
+            <span className="truncate">{task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : active ? 'Downloading' : downloadedAt ? 'Downloaded' : 'Download'}</span>
           </Button>
           {onDismissGallery && (
             <Button size="icon" variant="outline" className="max-lg:min-h-11 max-lg:min-w-11 pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 text-muted hover:text-foreground" onClick={() => void onDismissGallery(item)} disabled={dismissing} title="Don't recommend this gallery again" aria-label={`Don't recommend ${item.title} again`}>
@@ -480,7 +478,6 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
   const [previewFailed, setPreviewFailed] = React.useState(false);
 
   const g = gallery;
-  const libraryMatch = gallery?.libraryMatch ?? item.libraryMatch;
   const previewPages = g?.previewPages ?? [];
   const lastPreviewPage = Math.max(0, previewPages.length - 1);
   const showPreviewPage = React.useCallback((index: number) => {
@@ -621,9 +618,8 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
                   <Button variant="ghost" onClick={onClose}>
                     <X className="h-4 w-4" /> Close
                   </Button>
-                  {libraryMatch && <Button asChild variant="outline"><Link to={`/libraries?series=${libraryMatch.seriesId}`}>View in {libraryMatch.libraryName}</Link></Button>}
-                  <Button onClick={onDownload} disabled={downloading || !!libraryMatch}>
-                    {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <DownloadIcon className="h-4 w-4" />} {libraryMatch ? 'In library' : 'Download'}
+                  <Button onClick={onDownload} disabled={downloading}>
+                    {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <DownloadIcon className="h-4 w-4" />} Download
                   </Button>
                 </div>
               </>
@@ -631,7 +627,7 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
 
             {!g && (
               <div className="mt-auto flex flex-wrap items-center justify-end gap-2 pt-2">
-                <Button onClick={onDownload} disabled={downloading || !!libraryMatch}>
+                <Button onClick={onDownload} disabled={downloading}>
                   {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <DownloadIcon className="h-4 w-4" />} Download
                 </Button>
               </div>
@@ -1344,7 +1340,7 @@ export function Downloader() {
       qc.setQueryData(['recommendation-feedback'], result.feedback);
       qc.setQueryData(['recommendations'], result.recommendations);
       setFeedbackItem(null);
-      const title = { like: 'More like this saved', unlike: 'Preference removed', 'mute-artist': 'Artist muted', 'unmute-artist': 'Artist unmuted', snooze: 'Gallery snoozed', unsnooze: 'Snooze ended' }[request.action];
+      const title = { like: 'More like this saved', unlike: 'Preference removed', 'mute-artist': 'Artist muted', 'unmute-artist': 'Artist unmuted' }[request.action];
       toast({ tone: 'success', title, description: request.action === 'like' || request.action === 'unlike' ? 'Refresh picks to use your updated preferences.' : undefined });
     } catch (error) {
       toast({ tone: 'danger', title: 'Could not save recommendation feedback', description: error instanceof Error ? error.message : String(error) });
@@ -1447,10 +1443,6 @@ export function Downloader() {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg === 'already-downloaded') {
         toast({ tone: 'info', title: 'Already downloaded', description: 'This gallery has already been downloaded. Open Downloads and choose Download again to get another copy.' });
-      } else if (msg === 'already-in-library') {
-        toast({ tone: 'info', title: 'Already in your Kavita library', description: e instanceof ApiError && typeof e.details.message === 'string' ? e.details.message : 'This gallery was not queued again.' });
-        void qc.invalidateQueries({ queryKey: ['doujin-search'] });
-        void qc.invalidateQueries({ queryKey: ['recommendations'] });
       } else if (msg !== 'already-queued') {
         toast({ tone: 'danger', title: 'Could not start download', description: msg });
       }
@@ -1497,7 +1489,7 @@ export function Downloader() {
         queued++;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        if (msg === 'already-downloaded' || msg === 'already-in-library' || msg === 'already-queued') skipped++;
+        if (msg === 'already-downloaded' || msg === 'already-queued') skipped++;
         else toast({ tone: 'danger', title: `Could not queue ${item.title}`, description: msg });
       }
     }
@@ -1618,7 +1610,6 @@ export function Downloader() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader icon={<ListVideo className="h-5 w-5" />} title="Doujinshi Downloader" subtitle="Search Hitomi.la and nHentai, then download galleries into your Kavita library." />
-      {tab !== 'manager' && <LibraryOwnershipNotice />}
 
       <SegmentedTabs
         items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'Recommended' }, { id: 'watched' as const, label: 'Watched' }, { id: 'manager' as const, label: 'Downloads' }]}
@@ -1872,6 +1863,7 @@ export function Downloader() {
               <div className="flex shrink-0 flex-wrap items-center gap-2 sm:ml-auto">
                 {recs?.mode === 'popular' && <Badge tone="muted">Popular picks</Badge>}
                 {recs?.mode === 'mixed' && <Badge tone="muted">Personalized + popular</Badge>}
+                <RecommendationFeedbackManager feedback={feedbackQuery.data} pending={feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading} onAction={request => void updateFeedback(request)} />
                 <Button size="sm" variant="outline" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 ml-auto sm:ml-0" onClick={() => void doRefreshRecs()} disabled={recsRefreshing || recLibraryPending !== null || feedbackPending !== null || recsLoading} title="Get a fresh selection of recommendations">
                   <RotateCcw className={cn('h-3.5 w-3.5 shrink-0', recsRefreshing && 'animate-spin')} /> {recsRefreshing ? 'Refreshing…' : 'Refresh picks'}
                 </Button>
@@ -1902,7 +1894,6 @@ export function Downloader() {
           </Card>
 
           {feedbackQuery.isError && <ErrorState title="Could not load recommendation feedback" description={feedbackQuery.error.message} onRetry={() => void feedbackQuery.refetch()} />}
-          <RecommendationFeedbackManager feedback={feedbackQuery.data} pending={feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading} onAction={request => void updateFeedback(request)} />
           <p className="sr-only" role="status">{dismissedGalleries.length > 0 ? `${dismissedGalleries.length} dismissed galleries. Expand Dismissed galleries to undo.` : ''}</p>
           {dismissedGalleries.length > 0 && (
             <Disclosure label={<>Dismissed galleries <Badge tone="muted">{dismissedGalleries.length}</Badge></>} className="rounded-lg border border-border bg-surface" summaryClassName="p-3">

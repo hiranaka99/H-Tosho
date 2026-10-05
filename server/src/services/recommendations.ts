@@ -965,9 +965,9 @@ async function restoreHistoryItem(source: DoujinSource, galleryId: string): Prom
 }
 
 /** Use server-side history/provider metadata, not client-supplied taste signals. */
-export async function applyRecommendationFeedback(action: FeedbackAction, target: { source: DoujinSource; galleryId: string; artist?: string; days?: 7 | 30 }): Promise<{ feedback: RecommendationFeedback; recommendations: RecommendationResponse }> {
+export async function applyRecommendationFeedback(action: FeedbackAction, target: { source: DoujinSource; galleryId: string; artist?: string }): Promise<{ feedback: RecommendationFeedback; recommendations: RecommendationResponse }> {
   let item: DoujinSearchResult | undefined;
-  if (action === 'like' || action === 'mute-artist' || action === 'snooze') {
+  if (action === 'like' || action === 'mute-artist') {
     item = readHistory().find(entry => entry.key === `${target.source}:${target.galleryId}`)?.item;
     if (!item) {
       const provider = getDoujinProvider(target.source);
@@ -980,24 +980,21 @@ export async function applyRecommendationFeedback(action: FeedbackAction, target
   candidatePool = null;
   emptyCooldownUntil = 0;
   let recommendations: RecommendationResponse;
-  if (action === 'unsnooze') recommendations = await restoreHistoryItem(target.source, target.galleryId);
-  else {
-    // Revalidate visible cards and promote spares immediately. Preference boosts
-    // affect the next refresh; leave existing good cards in place after a like.
-    const cached = readCached(localDate());
-    if (cached) {
-      const items = await eligibleRecommendations(cached.items);
-      const reserves = await eligibleRecommendations(cached.reserve);
-      const keys = new Set(items.map(keyOf));
-      const promoted = selectRecommendations(reserves.filter(i => !keys.has(keyOf(i))).map(i => ({ result: i, score: 1, reasons: i.reasons, matched: new Set<string>() })), TOTAL_PICKS - items.length, () => 0, items);
-      items.push(...promoted);
-      const used = new Set(items.map(keyOf));
-      const updated: CachedRecommendationSet = { ...cached, items, reserve: reserves.filter(i => !used.has(keyOf(i))), degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' : cached.degradedReason };
-      writeCached(updated);
-      if (promoted.length) addHistory(cached.date, promoted, pruneHistory());
-      recommendations = await withOwned(updated);
-    } else recommendations = await getRecommendations();
-  }
+  // Revalidate visible cards and promote spares immediately. Preference boosts
+  // affect the next refresh; leave existing good cards in place after a like.
+  const cached = readCached(localDate());
+  if (cached) {
+    const items = await eligibleRecommendations(cached.items);
+    const reserves = await eligibleRecommendations(cached.reserve);
+    const keys = new Set(items.map(keyOf));
+    const promoted = selectRecommendations(reserves.filter(i => !keys.has(keyOf(i))).map(i => ({ result: i, score: 1, reasons: i.reasons, matched: new Set<string>() })), TOTAL_PICKS - items.length, () => 0, items);
+    items.push(...promoted);
+    const used = new Set(items.map(keyOf));
+    const updated: CachedRecommendationSet = { ...cached, items, reserve: reserves.filter(i => !used.has(keyOf(i))), degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' : cached.degradedReason };
+    writeCached(updated);
+    if (promoted.length) addHistory(cached.date, promoted, pruneHistory());
+    recommendations = await withOwned(updated);
+  } else recommendations = await getRecommendations();
   return { feedback, recommendations };
 }
 

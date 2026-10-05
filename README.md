@@ -11,7 +11,7 @@ fresh picks based on what you already own.
 
 Works with **Kavita server v0.9.x or newer**.
 
-Current release: **v2.3.0**. See [release notes](CHANGELOG.md).
+Current release: **v2.4.0**. See [release notes](CHANGELOG.md).
 
 ## What it does
 
@@ -186,9 +186,9 @@ check **Jobs** for cover-upload errors if it does not change.
     picks with one-click refresh and a thumbs-down button to dismiss a gallery
     without marking it owned, with Undo and a cached replacement when available.
     You can choose which Kavita libraries feed the recommendation profile.
-    Use the card's **Tune recommendations** menu for More like this, artist muting,
-    or a 7-/30-day snooze. The **Recommendation feedback** section lets you undo
-    preferences, unmute artists, or end snoozes, including after a reload.
+    Use the card's **Tune recommendations** menu for More like this or artist muting.
+    The **Feedback** button beside **Refresh picks** opens your saved preferences,
+    where you can undo likes or unmute artists, including after a reload.
   - *Watched* — manage your watched searches, their check schedule, and browse
     the "Recently added" feed of new finds.
   - *Downloads* — the live download queue: progress, pause/resume/cancel/retry,
@@ -202,29 +202,28 @@ check **Jobs** for cover-upload errors if it does not change.
   dark / system theme), account security, providers, notifications and the
   downloader.
 
-## Library ownership checks
+## Recommendation feedback
 
-Search results identify galleries already in Kavita and link to the matching
-series. Downloads are checked on the server using provider metadata, and owned
-galleries are excluded from every recommendation path, including cached cards.
-Ownership checks use **all** Kavita libraries, even libraries excluded from your
-recommendation taste profile.
+Use the thumbs-down button to stop recommending a gallery you already own or do
+not want. Dismissals persist across restarts and can be undone under **Dismissed
+galleries**. A dismissal affects only that gallery and does not change your taste
+profile or mark it owned.
 
-Provider links in Kavita metadata and explicit `[hitomi-ID]` / `[nhentai-ID]`
-folder identifiers establish gallery identity. Without those, H-Tosho requires
-matching title, artist set, page count, and language; a similar title alone is
-never enough. Galleries lacking that information may not be recognized.
+H-Tosho does not scan Kavita for ownership, label external library matches, or
+block downloads based on your Kavita library. Selected libraries still inform
+your recommendation preferences. Galleries already downloaded through H-Tosho
+remain excluded, and its download queue still prevents duplicate downloads.
 
-The ownership index is cached for ten minutes and invalidated after library
-jobs or connection changes. The first scan can take time for large libraries;
-**Check library** refreshes the index manually and reports scan progress or
-connection problems. When a configured Kavita connection cannot be fully checked,
-new downloads wait for you to resolve the connection rather than silently bypass
-duplicate protection. Downloading without a configured Kavita connection still works.
+More like this saves one preference per gallery and boosts its artists and tags
+in the next refresh: each artist adds 3 profile votes and each tag adds 2, compared
+with 1 per downloaded gallery or library series. These votes guide discovery and
+ranking; they do not guarantee particular picks. Clicking again undoes the preference.
+Liking a gallery does not download it or mark it owned.
 
-More like this adds a preference vote without marking a gallery owned. It affects
-the next refresh. Artist mutes and snoozes apply immediately; snoozes expire
-automatically, and all three types of feedback survive app restarts.
+Artist mutes immediately exclude all recommendations listing that artist, including
+collaborations, and remove the artist from the discovery profile until unmuted.
+They do not affect search results, downloads, or your library. Both likes and mutes
+survive app restarts and can be undone in **Feedback**. Legacy snoozes are ignored.
 
 ## Security notes
 

@@ -229,6 +229,12 @@ body {
   outline-offset: 2px;
 }
 
+/* Merge the focus outline with the field border into a single indicator. */
+.ui-field:focus-visible {
+  outline-color: var(--primary);
+  outline-offset: -1px;
+}
+
 /* Keep keyboard focus visible inside horizontally scrollable choice groups. */
 :where([role='radiogroup'], [role='tablist']) :focus-visible {
   outline-offset: -2px;

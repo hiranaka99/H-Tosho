@@ -1,7 +1,6 @@
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { jobRecovery, type JobRecovery } from './recovery.js';
-import { invalidateLibraryOwnership } from '../services/libraryOwnership.js';
 
 /** Types of background jobs the queue can run. */
 export const JOB_TYPES = [
@@ -291,7 +290,6 @@ class JobQueue {
         .where(eq(schema.jobs.id, job.id))
         .run();
       this.log(job.id, 'success', `Completed ${job.type}`);
-      if (job.type !== 'check-watched-searches') invalidateLibraryOwnership();
     } catch (e) {
       if (e instanceof JobCancelled) {
         db.update(schema.jobs).set({ status: 'cancelled', finishedAt: new Date().toISOString() }).where(eq(schema.jobs.id, job.id)).run();

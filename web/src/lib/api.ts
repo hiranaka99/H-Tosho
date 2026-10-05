@@ -208,7 +208,6 @@ export interface DoujinSearchResult {
   pageCount?: number | null;
   /** When the gallery was uploaded/published (ISO 8601 date string). */
   uploadedAt?: string | null;
-  libraryMatch?: LibraryMatch;
 }
 
 export interface DoujinSuggestion {
@@ -221,7 +220,6 @@ export interface DoujinSuggestion {
 }
 
 export interface DoujinGallery {
-  libraryMatch?: LibraryMatch;
   source: DoujinSource;
   galleryId: string;
   title: string;
@@ -381,22 +379,13 @@ export interface RecommendationSettings {
   excludedLibraryIds: number[];
 }
 
-export interface LibraryMatch {
-  seriesId: number; libraryId: number; libraryName: string; name: string;
-  reason: 'provider-id' | 'metadata';
-}
-export interface LibraryOwnershipStatus {
-  configured: boolean; checking: boolean; complete: boolean; checkedAt: string | null;
-  scanned: number; total: number; error: string | null;
-}
 export interface RecommendationFeedback {
   liked: DoujinSearchResult[];
   mutedArtists: string[];
-  snoozed: { source: DoujinSource; galleryId: string; title: string; until: string }[];
 }
 export interface FeedbackRequest {
-  action: 'like' | 'unlike' | 'mute-artist' | 'unmute-artist' | 'snooze' | 'unsnooze';
-  source: DoujinSource; galleryId: string; artist?: string; days?: 7 | 30;
+  action: 'like' | 'unlike' | 'mute-artist' | 'unmute-artist';
+  source: DoujinSource; galleryId: string; artist?: string;
 }
 
 export interface AuthStatus {
@@ -507,8 +496,6 @@ export const api = {
   recommendationSettings: () => request<RecommendationSettings>('/recommendations/settings'),
   recommendationFeedback: () => request<RecommendationFeedback>('/recommendations/feedback'),
   saveRecommendationFeedback: (body: FeedbackRequest) => request<{ feedback: RecommendationFeedback; recommendations: RecommendationSet }>('/recommendations/feedback', { method: 'POST', body: JSON.stringify(body) }),
-  libraryOwnership: () => request<LibraryOwnershipStatus>('/library-ownership'),
-  refreshLibraryOwnership: () => request<LibraryOwnershipStatus>('/library-ownership/refresh', { method: 'POST' }),
   saveRecommendationSettings: (body: RecommendationSettings) =>
     request<RecommendationSettings>('/recommendations/settings', { method: 'POST', body: JSON.stringify(body) }),
   /** Light Kavita library list (id + name) for the recommendation settings row. */

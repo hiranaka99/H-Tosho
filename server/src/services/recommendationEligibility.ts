@@ -3,7 +3,6 @@ import { getDownloaderSettings } from './settings.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinSearchResult } from '../downloader/types.js';
 import { getRecommendationFeedback, normalizeArtist } from './recommendationFeedback.js';
-import { libraryMatches } from './libraryOwnership.js';
 
 /** Every selection source passes this policy, including cached cards and history. */
 export async function eligibleRecommendations<T extends DoujinSearchResult>(items: T[]): Promise<T[]> {
@@ -15,12 +14,11 @@ export async function eligibleRecommendations<T extends DoujinSearchResult>(item
   ].map((row) => `${row.source}:${row.galleryId}`));
   const settings = getDownloaderSettings();
   const feedback = getRecommendationFeedback();
-  const snoozed = new Set(feedback.snoozed.map(row => `${row.source}:${row.galleryId}`));
   const muted = new Set(feedback.mutedArtists.map(normalizeArtist));
   const normalize = (value: string) => value.trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
   const allowed = items.filter((item) => {
     if (item.source !== 'hitomi' || !item.galleryId || !item.title || !Array.isArray(item.tags) || !Array.isArray(item.artists) || excluded.has(`${item.source}:${item.galleryId}`)) return false;
-    if (snoozed.has(`${item.source}:${item.galleryId}`) || item.artists.some(a => muted.has(normalizeArtist(a)))) return false;
+    if (item.artists.some(a => muted.has(normalizeArtist(a)))) return false;
     const fields = new Set([...item.tags, ...item.artists, item.title].map(normalize));
     const artists = new Set(item.artists.map(normalize));
     for (const raw of settings.hitomiBannedTags) {
@@ -32,15 +30,13 @@ export async function eligibleRecommendations<T extends DoujinSearchResult>(item
     }
     return true;
   });
-  const duplicates = await libraryMatches(allowed);
-  const unowned = allowed.filter(item => !duplicates.has(`${item.source}:${item.galleryId}`));
-  if (unowned.length === 0 || settings.hitomiBannedTags.length === 0) return unowned;
+  if (allowed.length === 0 || settings.hitomiBannedTags.length === 0) return allowed;
   const provider = getDoujinProvider('hitomi');
-  if (!provider?.filterRecommendations) return unowned;
+  if (!provider?.filterRecommendations) return allowed;
   try {
-    const filtered = await provider.filterRecommendations(unowned);
+    const filtered = await provider.filterRecommendations(allowed);
     const keys = new Set(filtered.map((item) => `${item.source}:${item.galleryId}`));
-    return unowned.filter((item) => keys.has(`${item.source}:${item.galleryId}`));
+    return allowed.filter((item) => keys.has(`${item.source}:${item.galleryId}`));
   } catch (error) {
     // A failed exclusion lookup is not permission to recommend excluded content.
     console.warn('[recommendations] exclusion check unavailable:', error);

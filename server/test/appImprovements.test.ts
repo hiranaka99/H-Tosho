@@ -11,13 +11,13 @@ process.env.HTOSHO_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-impr
 const { initDb, getDb, schema } = await import('../src/db/index.js');
 const { KavitaClient } = await import('../src/kavita/client.js');
 const settings = await import('../src/services/settings.js');
-const ownership = await import('../src/services/libraryOwnership.js');
 const feedback = await import('../src/services/recommendationFeedback.js');
 const recs = await import('../src/services/recommendations.js');
 const { eligibleRecommendations } = await import('../src/services/recommendationEligibility.js');
 const { jobRecovery } = await import('../src/jobs/recovery.js');
 const { api } = await import('../src/routes/api.js');
 const { doujinProviders } = await import('../src/downloader/providers.js');
+const { downloadQueue } = await import('../src/downloader/engine.js');
 initDb();
 const originalProvider = doujinProviders.hitomi;
 const originalMethods = { getLibraries: KavitaClient.prototype.getLibraries, getSeries: KavitaClient.prototype.getSeries, getSeriesMetadata: KavitaClient.prototype.getSeriesMetadata };
@@ -25,82 +25,66 @@ after(() => { doujinProviders.hitomi = originalProvider; Object.assign(KavitaCli
 const item = (id = '123'): DoujinSearchResult => ({ source: 'hitomi', galleryId: id, title: 'A precise title', artists: ['Sample Artist'], tags: ['adventure'], language: 'English', pageCount: 20 });
 const series = { id: 1, libraryId: 7, name: 'A precise title', slug: '1', bookCount: 1, pages: 20 };
 const metadata = (patch: Partial<KavitaSeriesMetadataDto> = {}) => ({ writers: [{ id: 1, name: 'Sample Artist' }], pencillers: [], inkers: [], tags: [], genres: [], webLinks: '', language: 'English', ...patch } as KavitaSeriesMetadataDto);
-const entry = (patch = {}, meta = metadata()) => ({ series: { ...series, ...patch }, libraryName: 'External downloads', metadata: meta });
 function resetFeedback() {
   getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendation-feedback-v1')).run();
 }
 function mockLibraries() {
-  let metadataCalls = 0;
-  KavitaClient.prototype.getLibraries = async () => [{ id: 7, name: 'External downloads', monitor: true, mediaFormat: 'manga' }];
-  KavitaClient.prototype.getSeries = async () => [series];
-  KavitaClient.prototype.getSeriesMetadata = async () => { metadataCalls++; return metadata({ webLinks: 'https://hitomi.la/galleries/123.html' }); };
+  let calls = 0;
+  KavitaClient.prototype.getLibraries = async () => { calls++; return [{ id: 7, name: 'External downloads', monitor: true, mediaFormat: 'manga' }]; };
+  KavitaClient.prototype.getSeries = async () => { calls++; return [series]; };
+  KavitaClient.prototype.getSeriesMetadata = async () => { calls++; return metadata({ webLinks: 'https://hitomi.la/galleries/123.html' }); };
   settings.setKavitaConnection({ baseUrl: 'http://kavita.test', apiKey: 'test-key' });
-  return () => metadataCalls;
+  return () => calls;
 }
 
-test('ownership recognizes only valid provider links and explicit filesystem identity', () => {
-  assert.deepEqual([...ownership.galleryKeysFromLinks('https://hitomi.la/galleries/123.html https://nhentai.net/g/456/ https://hitomi.la/doujinshi/title-789.html')], ['hitomi:123', 'nhentai:456', 'hitomi:789']);
-  assert.equal(ownership.galleryKeysFromLinks('https://hitomi.la.evil/galleries/123.html https://evil/hitomi.la/galleries/123.html').size, 0);
-  assert.equal(ownership.matchLibraryGallery(item(), [entry({ name: 'Renamed work' }, metadata({ webLinks: 'https://hitomi.la/galleries/123.html' }))])?.reason, 'provider-id');
-  assert.equal(ownership.matchLibraryGallery(item(), [entry({ name: 'Renamed work', folderPath: '/books/Work [hitomi-123]/' })])?.reason, 'provider-id');
-});
-
-test('metadata duplicates require matching title, artist sets, pages, and language', () => {
-  assert.equal(ownership.matchLibraryGallery(item(), [entry()])?.reason, 'metadata');
-  assert.equal(ownership.matchLibraryGallery({ ...item(), source: 'nhentai' }, [entry()])?.reason, 'metadata');
-  for (const candidate of [
-    { ...item(), title: 'A precise title Vol 2' }, { ...item(), artists: ['Different Artist'] },
-    { ...item(), artists: [] }, { ...item(), language: 'Japanese' }, { ...item(), language: undefined }, { ...item(), pageCount: 21 },
-  ]) assert.equal(ownership.matchLibraryGallery(candidate, [entry()]), null);
-  assert.equal(ownership.matchLibraryGallery(item(), [entry({ pages: 80 })]), null, 'merged series is not a single gallery');
-});
-
-test('ownership scans every library, ignores taste opt-outs, coalesces calls and invalidates on connection changes', async () => {
-  let calls = 0;
-  mockLibraries();
-  settings.setRecommendationSettings({ excludedLibraryIds: [7] });
-  KavitaClient.prototype.getSeries = async () => Array.from({ length: 605 }, (_, i) => ({ ...series, id: i + 1, name: `Series ${i}` }));
-  KavitaClient.prototype.getSeriesMetadata = async id => { calls++; return metadata({ webLinks: id === 605 ? 'https://hitomi.la/galleries/123.html' : '' }); };
-  const [a, b] = await Promise.all([ownership.libraryMatches([item()]), ownership.libraryMatches([item()])]);
-  assert.equal(a.get('hitomi:123')?.seriesId, 605);
-  assert.equal(b.get('hitomi:123')?.seriesId, 605);
-  assert.equal(calls, 605, 'one shared scan, not the 600-series recommendation sample');
-  assert.equal(ownership.libraryOwnershipStatus().complete, true);
-  settings.setKavitaConnection({ baseUrl: '', apiKey: '' });
-  assert.equal((await ownership.libraryMatches([item()])).size, 0, 'old connection ownership cannot leak');
-});
-
-test('search marks owned galleries and recommendation eligibility excludes external library ownership', async () => {
+test('search, gallery details, and recommendation eligibility do not scan Kavita ownership', async () => {
   const count = mockLibraries();
   doujinProviders.hitomi = { id: 'hitomi', name: 'Hitomi', color: '#000', async search() { return [item()]; }, async getGallery() { return { ...item(), pages: Array.from({ length: 20 }, (_, i) => `page-${i}`) }; } };
   const response = await api.request('/doujin/search', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: 'hitomi', query: 'sample' }) });
   assert.equal(response.status, 200);
-  assert.equal((await response.json())[0].libraryMatch.seriesId, 1);
-  assert.deepEqual(await eligibleRecommendations([item()]), []);
-  assert.equal(count(), 1, 'warm eligibility shares the ownership index');
+  assert.equal(Object.hasOwn((await response.json())[0], 'libraryMatch'), false);
+  const gallery = await api.request('/doujin/gallery', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: 'hitomi', idOrUrl: '123' }) });
+  assert.equal(gallery.status, 200);
+  const body = await gallery.json();
+  assert.equal(body.pageCount, 20);
+  assert.equal(Object.hasOwn(body, 'libraryMatch'), false);
+  assert.deepEqual(await eligibleRecommendations([item()]), [item()]);
+  assert.equal(count(), 0);
 });
 
-test('download guard uses provider metadata rather than client titles, and queues nothing for duplicates', async () => {
-  mockLibraries();
-  const before = getDb().select().from(schema.downloadQueue).all().length;
-  const response = await api.request('/downloads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: 'hitomi', galleryId: '123', title: 'Spoofed client title' }) });
-  assert.equal(response.status, 409);
+test('thumbs-down dismisses a gallery manually without changing ownership or scanning Kavita', async () => {
+  const count = mockLibraries();
+  const now = new Date();
+  const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const key = `recommendations-v2:${date}`;
+  const cache = { date, generatedAt: now.toISOString(), mode: 'popular', profile: { artists: [], tags: [], series: [], language: null }, items: [{ ...item(), reasons: [] }], reserve: [{ ...item('456'), artists: ['Replacement Artist'], reasons: [] }], repeatedCount: 0, degradedReason: 'insufficient-eligible' };
+  getDb().insert(schema.keyValueStore).values({ key, valueJson: JSON.stringify(cache) }).run();
+  const before = getDb().select().from(schema.ownedGalleries).all();
+  const response = await api.request('/recommendations/dismiss', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: 'hitomi', galleryId: '123' }) });
+  assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.error, 'already-in-library');
-  assert.equal(body.libraryMatch.seriesId, 1);
-  assert.equal(getDb().select().from(schema.downloadQueue).all().length, before);
+  assert.deepEqual(body.dismissedKeys, ['hitomi:123']);
+  assert.equal(body.items[0].galleryId, '456');
+  assert.deepEqual(await eligibleRecommendations([item()]), []);
+  assert.deepEqual(getDb().select().from(schema.ownedGalleries).all(), before);
+  assert.equal(count(), 0);
+  getDb().delete(schema.dismissedGalleries).run();
+  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, key)).run();
 });
 
-test('partial ownership scans surface an error, retain proven duplicates, and block unchecked downloads', async () => {
-  mockLibraries();
-  KavitaClient.prototype.getSeriesMetadata = async () => { throw new Error('HTTP 503'); };
-  KavitaClient.prototype.getSeries = async () => [{ ...series, folderPath: '/library/Work [hitomi-123]' }];
-  assert.equal((await ownership.libraryMatches([item()])).get('hitomi:123')?.reason, 'provider-id');
-  assert.equal(ownership.libraryOwnershipStatus().complete, false);
-  assert.ok(ownership.libraryOwnershipStatus().error);
-  doujinProviders.hitomi.getGallery = async id => ({ ...item(id), title: 'Not owned', pages: [] });
-  const response = await api.request('/downloads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: 'hitomi', galleryId: 'other' }) });
-  assert.equal(response.status, 503);
+test('downloads enqueue without checking Kavita, including when Kavita is unavailable', async t => {
+  const count = mockLibraries();
+  const enqueue = t.mock.method(downloadQueue, 'enqueue', () => 100);
+  const getGallery = t.mock.method(doujinProviders.hitomi, 'getGallery', async () => { throw new Error('Metadata should be resolved by the download worker'); });
+  for (const unavailable of [false, true]) {
+    if (unavailable) KavitaClient.prototype.getLibraries = async () => { throw new Error('HTTP 503'); };
+    const response = await api.request('/downloads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: 'hitomi', galleryId: '123' }) });
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), { id: 100, status: 'queued' });
+  }
+  assert.equal(enqueue.mock.callCount(), 2);
+  assert.equal(getGallery.mock.callCount(), 0);
+  assert.equal(count(), 0);
   settings.setKavitaConnection({ baseUrl: '', apiKey: '' });
 });
 
@@ -117,24 +101,32 @@ test('feedback is persistent, idempotent, reversible, and separate from ownershi
   assert.throws(() => feedback.saveRecommendationFeedback('mute-artist', { ...target, artist: 'Not an artist' }, item()));
   feedback.saveRecommendationFeedback('unmute-artist', { ...target, artist: 'Sample Artist' });
   feedback.saveRecommendationFeedback('unlike', target);
-  assert.deepEqual(feedback.getRecommendationFeedback(), { liked: [], mutedArtists: [], snoozed: [] });
+  assert.deepEqual(feedback.getRecommendationFeedback(), { liked: [], mutedArtists: [] });
 });
 
-test('snoozes expire automatically, can end early, and artist muting covers all eligibility paths', async () => {
+test('legacy snoozes no longer hide galleries while saved likes and artist mutes remain intact', async () => {
   resetFeedback();
   const target = { source: 'hitomi' as const, galleryId: '123' };
-  feedback.saveRecommendationFeedback('snooze', { ...target, days: 7 }, item());
-  assert.deepEqual(await eligibleRecommendations([item()]), []);
-  const stored = feedback.getRecommendationFeedback();
-  stored.snoozed[0].until = new Date(Date.now() - 1).toISOString();
-  getDb().update(schema.keyValueStore).set({ valueJson: JSON.stringify(stored) }).where(eq(schema.keyValueStore.key, 'recommendation-feedback-v1')).run();
+  const saved = { liked: [item()], mutedArtists: ['other artist'] };
+  getDb().insert(schema.keyValueStore).values({
+    key: 'recommendation-feedback-v1',
+    valueJson: JSON.stringify({ ...saved, snoozed: [{ ...target, title: item().title, until: new Date(Date.now() + 30 * 86_400_000).toISOString() }] }),
+  }).run();
+  assert.deepEqual(feedback.getRecommendationFeedback(), saved);
   assert.equal((await eligibleRecommendations([item()])).length, 1);
-  feedback.saveRecommendationFeedback('snooze', { ...target, days: 30 }, item());
-  feedback.saveRecommendationFeedback('unsnooze', target);
-  assert.equal((await eligibleRecommendations([item()])).length, 1);
+  assert.deepEqual(await eligibleRecommendations([{ ...item('999'), artists: ['Other Artist'] }]), []);
+  feedback.saveRecommendationFeedback('unmute-artist', { ...target, artist: 'Other Artist' });
+  const stored = JSON.parse(getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendation-feedback-v1')).get()!.valueJson);
+  assert.deepEqual(stored, { liked: [item()], mutedArtists: [] });
+});
+
+test('artist muting excludes collaborations and unmuting restores eligibility', async () => {
+  resetFeedback();
+  const target = { source: 'hitomi' as const, galleryId: '123' };
   feedback.saveRecommendationFeedback('mute-artist', { ...target, artist: 'Sample Artist' }, item());
   assert.deepEqual(await eligibleRecommendations([item(), { ...item('999'), artists: ['Coartist', 'SAMPLE_ARTIST'] }]), []);
   feedback.saveRecommendationFeedback('unmute-artist', { ...target, artist: 'Sample Artist' });
+  assert.equal((await eligibleRecommendations([item()])).length, 1);
 });
 
 test('more-like-this adds query signals even for a cold-start profile without recording ownership', async () => {
@@ -151,8 +143,8 @@ test('more-like-this adds query signals even for a cold-start profile without re
   assert.equal(getDb().select().from(schema.ownedGalleries).all().length, 0);
 });
 
-test('feedback API rejects unsupported actions, durations, sources, and unlisted artists', async () => {
-  for (const patch of [{ action: 'unknown' }, { source: 'nhentai' }, { galleryId: '' }, { action: 'snooze', days: 2 }, { action: 'mute-artist', artist: 'Fake artist' }]) {
+test('feedback API rejects removed snooze actions, unsupported actions, sources, and unlisted artists', async () => {
+  for (const patch of [{ action: 'unknown' }, { source: 'nhentai' }, { galleryId: '' }, { action: 'snooze', days: 7 }, { action: 'snooze', days: 30 }, { action: 'unsnooze' }, { action: 'mute-artist', artist: 'Fake artist' }]) {
     const response = await api.request('/recommendations/feedback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'like', source: 'hitomi', galleryId: '123', ...patch }) });
     assert.equal(response.status, 400);
   }
