@@ -1,234 +1,274 @@
 # H-Tosho
 
-A metadata manager for **Kavita** that keeps your manga, light novel and
-doujinshi libraries clean — and helps you find what to read next.
+**Give your Kavita library better titles, descriptions, tags, and covers.**
 
-H-Tosho matches your Kavita series against popular metadata sources (AniList,
-MangaDex, MyAnimeList) and pushes the best title, description, tags, cover art
-and more straight into Kavita. It can also search **Hitomi.la** and **nHentai**,
-download galleries into your libraries, watch for new releases, and suggest
-fresh picks based on what you already own.
+H-Tosho helps you identify manga and light novels, review metadata before applying
+it, and keep new additions organized. It also includes a doujinshi downloader,
+recommendations, and watched searches for new releases.
 
-Works with **Kavita server v0.9.x or newer**.
+Works with **Kavita v0.9.x or newer**. Current version: **v2.5.0** ·
+[Release notes](CHANGELOG.md)
 
-Current release: **v2.4.0**. See [release notes](CHANGELOG.md).
+![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
 
-## What it does
+*The actual interface with a sample library. Covers are from the official VIZ
+shop; counts, match results, and metadata are example data.
+[Screenshot details and cover credits](docs/screenshots/README.md).*
 
-- **One-click identification** — browse any Kavita library, pick a series, and
-  H-Tosho finds the best match across your providers. Preview exactly what will
-  change in a side-by-side diff, then apply everything or deselect individual
-  fields (title, description, tags, cover, …). Applied series and volume covers
-  are locked in Kavita so later library scans cannot replace them.
-- **Automatic matching** — new series added to Kavita are matched on a schedule
-  you control. Automatic matches below 80% confidence are flagged for review.
-  Applying a candidate confirms it and clears the review badge, while retaining
-  the original confidence score.
-- **Doujinshi downloader** — search Hitomi.la and nHentai by keyword, tag or
-  artist, preview galleries, and download them as `.cbz` archives or image
-  folders. The queue supports pause, resume, cancel and retry, detects
-  duplicates, and can trigger a Kavita scan when finished so new media appears
-  in your server automatically.
-  Downloads are staged before publishing: cancellation preserves existing files,
-  and failed CBZ replacements leave the previous archive intact. Cancellation is
-  unavailable once the output commit begins. Deleting history or clearing completed
-  downloads updates other connected clients without reloading.
-- **Daily recommendations** — up to twelve picks ranked from completed downloads
-  and Kavita libraries. Common tags are downweighted; tag/series overlap receives
-  a soft diversity penalty, while artists and reliably identified language editions
-  do not repeat within a set. Popular picks fill thin personalized pools; older
-  picks return only after fresh options run out. “Don't recommend this gallery
-  again” dismisses that gallery without marking it owned, with an Undo control.
-  Downloaded ownership survives clearing queue history. Current bans apply to fresh
-  picks, cached cards, replacements and recycled history; automatic searches never
-  override bans. Recommendations load only when their tab opens, and refreshes
-  reuse a bounded 30-minute candidate pool while fresh candidates remain. Kavita
-  signals are sampled across libraries and updated incrementally after metadata edits.
-- **Watched searches** — save any doujinshi query and H-Tosho re-checks it on a
-  schedule (every 5 minutes to every 24 hours). New galleries land in the
-  "Recently added" feed and ping your Discord channel.
-- **Merging tools** — download several galleries into one folder so they become
-  a single Kavita series, move already-downloaded galleries into an existing
-  series (with chapter numbers), or merge two existing series together.
-- **ComicInfo editor** — edit the `ComicInfo.xml` inside any of your `.cbz`
-  files directly from the Libraries page: fix titles, authors, tags and more,
-  with a raw XML mode for full control.
-- **Discord notifications** — get formatted messages (with cover art) when
-  series are matched or updated, and when watched searches find something new.
-- **Activity & Jobs** — every match, scan, merge and ComicInfo edit runs as a
-  background job. The Jobs page leads with clickable Active / Needs attention /
-  Completed counts, orders running work first, and opens a detail drawer (a
-  full-screen sheet on mobile) with the target, timing, progress, readable
-  results and warnings, retry and cancel, and filterable logs with a
-  follow-latest toggle that never yanks your scroll position. Sidebar counts for
-  active jobs, failed jobs and failed downloads link straight to the matching
-  filtered view.
-- **Safe settings** — unsaved changes show per-section status and are kept while
-  you move around the app (in memory only; secrets are never written to browser
-  storage). Leaving Settings or closing the tab with unsaved changes offers
-  Save & leave, Discard or Stay.
+[Install](#install) · [First setup](#first-setup) ·
+[Use your library](#use-your-library) · [Discover and download](#discover-and-download) ·
+[Help](#help)
 
-## Metadata sources
+## What you can do
 
-| Source | Notes |
-| --- | --- |
-| AniList | Primary source for manga & light novels — no setup needed |
-| MangaDex | No credentials required |
-| MyAnimeList | Requires a Client ID (free to create) |
+- **Clean up your library.** Find a series through AniList, MangaDex, or
+  MyAnimeList, compare it with your current Kavita metadata, and choose what to
+  update.
+- **Keep new series organized.** Enable automatic matching and review uncertain
+  results in **Needs review**.
+- **Discover and download doujinshi.** Search Hitomi.la or nHentai, preview
+  galleries, and save them as CBZ files or image folders.
+- **Follow artists and searches.** Save a query and see new finds in
+  **Recently added**, with optional Discord notifications.
+- **Get recommendations you can tune.** Ask for more like a gallery, mute an
+  artist, or dismiss a pick you do not want.
+- **Fix files and organize series.** Edit ComicInfo.xml inside CBZ files and
+  merge related series.
 
-Doujinshi sources: **Hitomi.la** and **nHentai**. nHentai accepts an optional
-API key for higher rate limits (Settings → Downloader).
+## Install
 
-## Getting started
+### Docker
 
-### Docker (recommended)
+Install Docker with Docker Compose, then download or clone this repository:
 
 ```bash
+git clone https://github.com/hiranaka99/H-Tosho.git
+cd H-Tosho
 docker compose up -d --build
 ```
 
-Then open http://localhost:8787. Your data (settings, match history, download
-queue) is stored in the `h-tosho-data` volume and survives restarts.
+Open **http://localhost:8787**. If Docker runs on another machine, use that
+machine's address with port `8787`.
 
-To keep everything as plain folders on your machine instead, use the bind-mount
-example:
+Your account, settings, and history are saved in the `h-tosho-data` volume.
+Keep this volume when updating or recreating the container.
 
-```bash
-docker compose -f docker-compose.example.yml up -d --build
-```
+If you want to download galleries or edit existing CBZ files, also set up the
+[library folders](#make-your-library-folders-accessible) below.
 
-It stores the app data in `./data` and exposes `./downloads` inside the
-container at `/mnt/downloads`. In **Settings → Downloader**, set the output
-folder to `/mnt/downloads`, and point a Kavita library at your host's
-`./downloads` folder.
+### Without Docker
 
-To edit CBZ files in several existing libraries, mount each library into
-H-Tosho with write access. For example, alongside your current Doujin mount:
-
-```yaml
-volumes:
-  - h-tosho-data:/data
-  - /mnt/NAS/Doujins:/mnt/downloads
-  - /mnt/NAS/Manga:/mnt/manga
-```
-
-In **Settings → General → Kavita library folders**, H-Tosho lists every
-Kavita library root. For each root, enter the absolute path to that **same
-folder as seen by H-Tosho** (for example `/media/Manga` in Kavita maps to
-`/mnt/manga` in H-Tosho), then click **Save folders**. A library may have
-multiple roots; configure each one you need to edit. Use **Add another folder**
-for a nested mount or a root Kavita does not list. Leave a folder empty when
-Kavita's path is already accessible from H-Tosho. Settings → Downloader →
-Output folder still controls new downloads only. These mappings also let the
-ComicInfo browser and series merges find existing CBZ files.
-
-When a title cannot be changed, the job shows **Done with warnings**, records
-the reason in its log and match history, and labels the Discord notification
-**Synced with warnings**. Other selected metadata and covers can still sync.
-
-### Run from source
-
-Requires Node.js 20 or newer.
+Install **Node.js 22 or newer**, download or clone the repository, and run these
+commands from its folder:
 
 ```bash
 npm install
 npm start
 ```
 
-This builds the app and starts it on http://localhost:8787 — one process serves
-both the web interface and the API.
+Open **http://localhost:8787**. App data is saved in `server/data` by default;
+`HTOSHO_DATA_DIR` lets you choose another location.
 
-## First run
+## First setup
 
-1. **Create your account** — on first launch you'll be asked to set a username
-   and password (minimum 8 characters). This protects the app; every visit
-   after that signs in with it. Change it anytime in Settings → General →
-   Account security.
-2. **Connect Kavita** — in Kavita, open **User Settings → Manage Auth Keys**
-   and create an Auth Key for an admin account (H-Tosho needs admin rights to
-   update metadata and covers). Then in H-Tosho go to **Settings → General →
-   Kavita connection**, enter the server address (e.g. `http://kavita:5000`,
-   without `/api`) and the Auth Key, and click **Save & test connection**. A
-   green "Kavita connected" indicator in the sidebar confirms it works.
-   In **Settings → General → Kavita library folders**, set each library's
-   H-Tosho path when its Kavita path is not directly accessible (mount the
-   library with write access first to edit CBZ files).
-3. **Pick your providers** — Settings → Providers. Add a MyAnimeList Client ID
-   if you want that source, test each one, and drag them into your preferred
-   search order.
-4. **Set up downloading (optional)** — Settings → Downloader: choose the output
-   folder (point it at a Kavita library folder to auto-pick up new media), the
-   format (`.cbz` recommended), how many downloads can run at once, an optional
-   nHentai API key, and tags to always skip. Toggle **Auto-sync Kavita** to scan
-   your server after each download.
-5. **Notifications (optional)** — Settings → Notifications: paste a Discord
-   webhook URL, choose what to be notified about, and send a test message.
+1. **Create your H-Tosho account.** Choose a username and a password of at least
+   eight characters. You will use this account to sign in to this installation.
+2. **Connect Kavita.** Create an Auth Key for a Kavita admin account under
+   **User Settings → Manage Auth Keys**. In H-Tosho, open
+   **Settings → General → Kavita connection**, enter your Kavita address
+   without `/api` and the Auth Key, then choose **Save & test connection**.
+   The sidebar shows the connection status.
+3. **Choose your metadata sources.** Open **Settings → Providers**. AniList and
+   MangaDex work without credentials. MyAnimeList needs a Client ID. Enable the
+   sources you want and arrange their search order.
+4. **Open Libraries.** Select a library and click a series to identify it.
 
-From here, open **Libraries**, pick a library, and start identifying series —
-or head to the **Downloader** to search for new galleries.
+For Docker, the Kavita address must be reachable **from the H-Tosho container**.
+Use a hostname such as `http://kavita:5000` when both containers share a Docker
+network, or your Kavita server's network address. `localhost` inside the
+H-Tosho container refers to H-Tosho itself.
 
-**Apply & Sync** queues a background job. The Libraries page continues showing
-Kavita's current cover until the job finishes and Kavita reports the new one;
-check **Jobs** for cover-upload errors if it does not change.
+### Make your library folders accessible
 
-## Touring the app
+Metadata matching uses your Kavita connection. Renaming series through their
+CBZ metadata, editing ComicInfo.xml, and moving or merging files also need
+access to the library folders with write permission.
 
-- **Libraries** — browse every Kavita library and its series with match status,
-  confidence scores and cover art. Identify or re-identify any series (the
-  identify dialog also shows each series' match history), review uncertain
-  matches (the sidebar badge opens Needs review across all libraries), edit a series' ComicInfo
-  files, and merge selected series.
-- **Downloader** — four tabs:
-  - *Search* — find galleries on Hitomi.la or nHentai, sort by newest or
-    popularity, preview page counts, and download single galleries or a whole
-    selection (optionally merged into one series).
-  - *Recommended* — Up to twelve personalized, popular, or least-recently-shown
-    picks with one-click refresh and a thumbs-down button to dismiss a gallery
-    without marking it owned, with Undo and a cached replacement when available.
-    You can choose which Kavita libraries feed the recommendation profile.
-    Use the card's **Tune recommendations** menu for More like this or artist muting.
-    The **Feedback** button beside **Refresh picks** opens your saved preferences,
-    where you can undo likes or unmute artists, including after a reload.
-  - *Watched* — manage your watched searches, their check schedule, and browse
-    the "Recently added" feed of new finds.
-  - *Downloads* — the live download queue: progress, pause/resume/cancel/retry,
-    a separate Needs attention section for failures, and completed history.
-- **Jobs** — every background task (scans, matching, merges, ComicInfo edits,
-  watched-search checks) with status, logs, cancel and retry.
-  Known failures link to the relevant folder mappings, connection settings, or
-  series/title editor. Failed jobs can be cleared individually or in bulk, with
-  confirmation; this removes their history and logs, not library files.
-- **Settings** — Kavita connection, auto-scan interval, appearance (light /
-  dark / system theme), account security, providers, notifications and the
-  downloader.
+For Docker, add your folders to the `volumes` list in `docker-compose.yml`:
 
-## Recommendation feedback
+```yaml
+volumes:
+  - h-tosho-data:/data
+  - /srv/books/manga:/mnt/manga
+  - /srv/books/doujinshi:/mnt/downloads
+```
 
-Use the thumbs-down button to stop recommending a gallery you already own or do
-not want. Dismissals persist across restarts and can be undone under **Dismissed
-galleries**. A dismissal affects only that gallery and does not change your taste
-profile or mark it owned.
+Replace the paths on the left with folders on your Docker host. Restart with
+`docker compose up -d`, then open
+**Settings → General → Kavita library folders**. Map each Kavita folder to the
+same folder as H-Tosho sees it:
 
-H-Tosho does not scan Kavita for ownership, label external library matches, or
-block downloads based on your Kavita library. Selected libraries still inform
-your recommendation preferences. Galleries already downloaded through H-Tosho
-remain excluded, and its download queue still prevents duplicate downloads.
+| Folder shown by Kavita | Folder available to H-Tosho |
+| --- | --- |
+| `/media/Manga` | `/mnt/manga` |
+| `/media/Doujinshi` | `/mnt/downloads` |
 
-More like this saves one preference per gallery and boosts its artists and tags
-in the next refresh: each artist adds 3 profile votes and each tag adds 2, compared
-with 1 per downloaded gallery or library series. These votes guide discovery and
-ranking; they do not guarantee particular picks. Clicking again undoes the preference.
-Liking a gallery does not download it or mark it owned.
+Choose **Save folders**. Leave a mapping empty if Kavita's path is already
+accessible from H-Tosho. Map every root you need when a library has several
+folders.
 
-Artist mutes immediately exclude all recommendations listing that artist, including
-collaborations, and remove the artist from the discovery profile until unmuted.
-They do not affect search results, downloads, or your library. Both likes and mutes
-survive app restarts and can be undone in **Feedback**. Legacy snoozes are ignored.
+For new downloads, set **Settings → Downloader → Output folder** to
+`/mnt/downloads` and make sure Kavita also has a library pointed at that shared
+folder. Enable **Auto-sync Kavita** to request a scan after downloads finish.
 
-## Security notes
+Prefer app data and downloads in local folders? The included
+[bind-mount example](docker-compose.example.yml) uses `./data` and `./downloads`:
 
-- The app listens on `127.0.0.1` only by default — nothing is reachable from
-  your network unless you deliberately change that (set `HOST=0.0.0.0` for
-  Docker or remote access).
-- Everything behind the login gate: the web interface and all data endpoints.
-  The login session lasts 30 days; sign out from the sidebar at any time.
+```bash
+docker compose -f docker-compose.example.yml up -d --build
+```
+
+With this example, use `/mnt/downloads` as H-Tosho's output folder.
+
+## Use your library
+
+### Identify a series and review the changes
+
+1. Open **Libraries**, choose a library, and click a series cover.
+2. Select a candidate to compare its metadata with the current Kavita values.
+3. Uncheck any fields you want to keep, and choose a title if alternatives are
+   offered.
+4. Choose **Apply & Sync**. H-Tosho applies your selection in the background;
+   **Jobs** shows its progress and any warnings.
+
+![Dark-theme metadata preview for Spy x Family, showing current and proposed fields, cover art, and Apply & Sync](docs/screenshots/metadata-preview.png)
+
+*Review the title, description, creators, tags, and cover before applying them.
+This preview uses sample metadata and real cover art.*
+
+If the suggested match is wrong, paste the series' AniList, MangaDex, or
+MyAnimeList URL into **Match by provider URL** and choose **Load**.
+
+Applied series and volume covers are locked in Kavita so later scans keep them.
+Changing a title also updates the Series field in the series' CBZ files, so
+configure your library folders before renaming.
+
+### Match new additions automatically
+
+Turn on **Auto-match new series** for the libraries you want to monitor. Set
+the check frequency under **Settings → General → Auto-scan interval**.
+Use **Match all unmatched** to work through an existing library.
+
+Unconfirmed matches below 80% confidence appear in **Needs review**. Open a
+result, review the candidate, and apply it to confirm the match.
+
+Choose **Sort · Date added** to see the newest series in your Kavita library first.
+
+### Edit metadata or merge series
+
+Open a series card's **⋮** menu and choose **Edit ComicInfo.xml** to edit its
+CBZ metadata. Use raw XML mode when you need a field beyond the form.
+
+To combine related series, choose **Select series**, select the ones to combine,
+and use the merge action. H-Tosho needs writable access to their files.
+
+<details>
+<summary>See the mobile interface</summary>
+
+<p>The same library tools are available on a phone, with navigation in the menu.</p>
+<img src="docs/screenshots/libraries-mobile.png" alt="H-Tosho mobile library view with Chainsaw Man and Dandadan covers" width="360">
+
+</details>
+
+## Discover and download
+
+Open **Downloader** to access four tabs:
+
+| Tab | What to do here |
+| --- | --- |
+| **Search** | Search Hitomi.la or nHentai by keyword, tag, artist, or gallery ID. Preview a result, then download it or select several. |
+| **Recommended** | Browse up to twelve picks, select the Kavita libraries that inform your preferences, and use **Refresh picks** for another set. |
+| **Watched** | Manage saved searches and browse new finds in **Recently added**. |
+| **Downloads** | Track progress, pause or resume downloads, retry failures, and view completed downloads. |
+
+Before downloading, open **Settings → Downloader** and choose your output
+folder and format. **CBZ** puts each gallery in an archive; **Folder** saves its
+images in a directory. You can also set download concurrency, excluded tags,
+and an optional nHentai API key.
+
+H-Tosho prevents duplicate queued downloads and remembers galleries downloaded
+through the app. For galleries obtained elsewhere, use the thumbs-down button
+to remove unwanted recommendations.
+
+### Tune your recommendations
+
+Use a card's **Tune recommendations** menu to choose **More like this** or mute
+an artist. More like this influences the next refresh; a mute immediately hides
+recommendations featuring that artist, including collaborations.
+
+The **Feedback** button beside **Refresh picks** lets you undo saved preferences
+or unmute artists. Use thumbs down to dismiss a single gallery, and
+**Dismissed galleries** to undo dismissals. These choices survive restarts.
+
+### Watch for new releases
+
+Run a search, then choose **Watch** to save that query. Under **Watched**, choose
+how often to check it or use **Check now** to check manually.
+
+The first check records the existing results quietly. Later checks add new
+finds to **Recently added** and send Discord messages if notifications are
+enabled. Results with a known upload date older than fourteen days are skipped
+to keep old galleries from being announced as new. Results without a usable
+upload date are still eligible.
+
+Watches find galleries for you; choose the ones you want to download from the
+feed.
+
+### Enable Discord notifications
+
+Open **Settings → Notifications**, enable Discord, paste your channel's webhook
+URL, save, and send a test message. Notifications include metadata updates and
+new watched-search results.
+
+## Help
+
+| Problem | What to check |
+| --- | --- |
+| **Kavita will not connect** | Test the connection in Settings. Check the server address and admin Auth Key. In Docker, use an address reachable from the container. |
+| **A title will not change, or a CBZ cannot be edited** | Check write permissions and **Kavita library folders**. The mapped path must point to the same files Kavita uses. Open the job for the specific warning. |
+| **The cover has not updated** | Wait for **Apply & Sync** to finish. Check **Jobs** for cover-upload errors, then refresh the library. |
+| **A download failed** | Open **Downloads → Needs attention** for the error. Check the output folder and source settings, then retry. An nHentai API key can help with rate limits. |
+| **A watch has no new results** | Its first check is silent. Check the saved query and interval, or use **Check now**. Old uploads are suppressed when their date is known. |
+
+**Jobs** contains the results and logs for scans, matches, merges, edits, and
+watched-search checks. Failed jobs offer retry and, where available, a link to
+the relevant setting. Clearing failed-job history removes its logs, not library
+files.
+
+### Update and back up
+
+For a Git checkout running in Docker:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+If you use the bind-mount example, include `-f docker-compose.example.yml` in
+the Compose command. For a source installation, stop the app, update the
+checkout, run `npm install`, and restart with `npm start`.
+
+Back up your app data and library folders. Stop H-Tosho before copying its data
+folder or Docker volume for a consistent backup. Keep the existing data volume
+when upgrading; do not use `docker compose down -v` unless you intend to erase
+the saved app data.
+
+### Access from another device
+
+The included Docker configuration exposes port `8787` on the host. A source
+installation listens on `127.0.0.1` by default; set `HOST=0.0.0.0` when you want
+to reach it over your network. Sign in with your H-Tosho account on each device.
+
+Found a problem? [Open an issue](https://github.com/hiranaka99/H-Tosho/issues)
+with your H-Tosho version, what you expected, and the relevant job error. Remove
+passwords, Auth Keys, and webhook URLs from anything you share.

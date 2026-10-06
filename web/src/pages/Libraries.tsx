@@ -22,6 +22,7 @@ const LIBRARY_STATE_KEY = 'h-tosho:library-state';
 interface LibraryStateCache {
   query?: string;
   statusFilter?: string;
+  sortBy?: 'name' | 'date-added';
   pages?: Record<string, number>;
 }
 
@@ -170,6 +171,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const [selected, setSelected] = React.useState<number | null>(libraryId ? Number(libraryId) : null);
   const [query, setQuery] = React.useState(review ? '' : initialState.query ?? '');
   const [statusFilter, setStatusFilter] = React.useState(() => review ? 'all' : initialState.statusFilter ?? 'all');
+  const [sortBy, setSortBy] = React.useState<'name' | 'date-added'>(review ? 'name' : initialState.sortBy ?? 'name');
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
   const [identify, setIdentify] = React.useState<{ id: number; name: string; cover?: string | null } | null>(null);
   const [comicInfo, setComicInfo] = React.useState<{ id: number; name: string } | null>(null);
@@ -263,7 +265,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
 
   const filtered = React.useMemo(() => {
     const q = query.toLowerCase();
-    return rows.filter((r) => {
+    const list = rows.filter((r) => {
       const okStatus =
         review || statusFilter === 'all' ? true :
         statusFilter === 'low-score' ? needsReview(r) :
@@ -271,15 +273,21 @@ export function Libraries({ review = false }: { review?: boolean }) {
       const okQuery = query ? r.name.toLowerCase().includes(q) || (r.artists ?? []).some((a) => a.toLowerCase().includes(q)) : true;
       return okStatus && okQuery;
     });
-  }, [rows, statusFilter, query, review]);
+    // Explicit ordering: Kavita's own order is not stable across versions, and
+    // the date-added view needs newest-first with unknown dates last.
+    list.sort(sortBy === 'date-added'
+      ? (a, b) => (Date.parse(b.dateAdded ?? '') || 0) - (Date.parse(a.dateAdded ?? '') || 0) || a.name.localeCompare(b.name)
+      : (a, b) => a.name.localeCompare(b.name));
+    return list;
+  }, [rows, statusFilter, query, review, sortBy]);
   const pageCount = React.useMemo(() => Math.max(1, Math.ceil(filtered.length / SERIES_PAGE_SIZE)), [filtered.length]);
   const currentPage = Math.min(page, pageCount);
   const visibleRows = filtered.slice((currentPage - 1) * SERIES_PAGE_SIZE, currentPage * SERIES_PAGE_SIZE);
   const firstVisible = filtered.length === 0 ? 0 : (currentPage - 1) * SERIES_PAGE_SIZE + 1;
   const lastVisible = Math.min(currentPage * SERIES_PAGE_SIZE, filtered.length);
   React.useEffect(() => {
-    if (!review) writeLibraryState({ query, statusFilter });
-  }, [query, statusFilter, review]);
+    if (!review) writeLibraryState({ query, statusFilter, sortBy });
+  }, [query, statusFilter, sortBy, review]);
   const changePage = (nextPage: number) => {
     setPage(nextPage);
     document.querySelector('main')?.scrollTo({ top: 0 });
@@ -386,6 +394,10 @@ export function Libraries({ review = false }: { review?: boolean }) {
                 <option value="unmatched">Unmatched</option>
                 <option value="failed">Failed</option>
                 <option value="low-score">Needs review (&lt;80%)</option>
+              </Select>}
+              {!review && <Select aria-label="Sort series" value={sortBy} onChange={(e) => { setSortBy(e.target.value as 'name' | 'date-added'); setPage(1); }} className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 sm:min-h-9 sm:w-44">
+                <option value="name">Sort · A–Z</option>
+                <option value="date-added">Sort · Date added</option>
               </Select>}
               {!review && !selectMode && checked.size === 0 && (
                 <Button variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11 shrink-0 sm:min-h-9" onClick={() => setSelectMode(true)}><CheckSquare className="h-4 w-4" /> Select series</Button>

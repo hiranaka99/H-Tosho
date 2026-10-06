@@ -34,6 +34,8 @@ export interface SeriesRow {
   /** All provider-managed metadata fields match Kavita's current values. */
   aligned?: boolean;
   lastSyncedAt?: string | null;
+  /** When the series was added to Kavita (Kavita's series creation date). */
+  dateAdded?: string | null;
   errorMessage?: string | null;
   /** Provider artist names from the stored match metadata (empty when unmatched or unknown). */
   artists?: string[];
@@ -424,6 +426,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
   authStatus: () => request<AuthStatus>('/auth/status'),
+  version: () => request<{ version: string | null }>('/version'),
   setup: (username: string, password: string) => request<{ authenticated: true; username: string }>('/auth/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),
   login: (username: string, password: string) => request<{ authenticated: true; username: string }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request<{ authenticated: false }>('/auth/logout', { method: 'POST' }),

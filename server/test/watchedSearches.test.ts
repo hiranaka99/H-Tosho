@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { after, describe, it } from 'node:test';
+import { after, describe, it, type TestContext } from 'node:test';
 import { eq, sql } from 'drizzle-orm';
 import Database from 'better-sqlite3';
 
@@ -24,14 +24,15 @@ legacy.exec(`
 legacy.close();
 
 // Dynamic imports are required here: the DB module snapshots HTOSHO_DATA_DIR at module load.
-const { diffSeenResults, addWatchedSearch, checkWatchedSearches, listWatchedSearches } = await import('../src/services/watchedSearches.js');
+const { diffSeenResults, addWatchedSearch, checkWatchedSearches, listWatchedSearches, isStaleUpload } = await import('../src/services/watchedSearches.js');
 const { doujinProviders } = await import('../src/downloader/providers.js');
 const { listNewGalleries, removeWatchedSearch, backfillNewGalleries } = await import('../src/services/watchedSearches.js');
 const { getDb, schema } = await import('../src/db/index.js');
+const { getNotificationSettings, setNotificationSettings } = await import('../src/services/settings.js');
 const originalHitomi = doujinProviders.hitomi;
 
 // Stub the hitomi provider so the full check pipeline runs against fixture data.
-let searchResults: { source: string; galleryId: string; title: string; tags: string[]; artists: string[]; url?: string; coverUrl?: string; pageCount?: number }[] = [];
+let searchResults: { source: string; galleryId: string; title: string; tags: string[]; artists: string[]; url?: string; coverUrl?: string; pageCount?: number; uploadedAt?: string }[] = [];
 doujinProviders.hitomi = {
   id: 'hitomi',
   name: 'Hitomi.la',
@@ -228,5 +229,126 @@ describe('recently added feed', () => {
       .where(eq(schema.watchedSearchNew.galleryId, 'legacy-7'))
       .get();
     assert.equal(Number(count?.n ?? 0), 1);
+  });
+});
+
+describe('stale upload suppression (provider index hiccup)', () => {
+  const STALE_QUERY = 'artist:stalegate';
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const daysAgo = (n: number, now = Date.now()) => new Date(now - n * DAY_MS).toISOString();
+
+  function captureDiscord(t: TestContext) {
+    const settings = getNotificationSettings();
+    t.after(() => setNotificationSettings(settings));
+    setNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://discord.com/api/webhooks/test' } });
+    const embeds: { description: string; thumbnail?: { url: string } }[] = [];
+    t.mock.method(globalThis, 'fetch', async (_input: unknown, init?: RequestInit) => {
+      embeds.push(...JSON.parse(String(init?.body)).embeds);
+      return new Response(null, { status: 204 });
+    });
+    return embeds;
+  }
+
+  it('classifies by upload age and fails open on unknown dates', () => {
+    const now = Date.now();
+    assert.equal(isStaleUpload(undefined, now), false);
+    assert.equal(isStaleUpload('', now), false);
+    assert.equal(isStaleUpload('not-a-date', now), false);
+    assert.equal(isStaleUpload(daysAgo(-1, now), now), false, 'future uploads are not stale');
+    assert.equal(isStaleUpload(daysAgo(1, now), now), false);
+    assert.equal(isStaleUpload(daysAgo(14, now), now), false, 'exactly at the threshold is not stale');
+    assert.equal(isStaleUpload(new Date(now - 14 * DAY_MS - 1).toISOString(), now), true);
+    assert.equal(isStaleUpload(new Date(now - 14 * DAY_MS + 1).toISOString(), now), false);
+    assert.equal(isStaleUpload(daysAgo(15, now), now), true);
+  });
+
+  it('suppresses old "new" results from pings and feeds but remembers them as seen', async (t) => {
+    const embeds = captureDiscord(t);
+    const watch = addWatchedSearch('hitomi', STALE_QUERY);
+    searchResults = [
+      { source: 'hitomi', galleryId: 's-seed', title: 'Seed', tags: [], artists: [] },
+    ];
+    await checkWatchedSearches(log); // seed run
+    assert.equal(embeds.some((e) => e.description.includes(STALE_QUERY)), false, 'seed runs never ping');
+    embeds.length = 0;
+
+    // The provider window now holds one fresh upload plus two old galleries that
+    // re-entered the top-N — the shape of a mid-rebuild index hiccup.
+    searchResults = [
+      { source: 'hitomi', galleryId: 's-old-1', title: 'Old One', tags: [], artists: [], uploadedAt: daysAgo(400), coverUrl: 'https://img.test/old.jpg' },
+      { source: 'hitomi', galleryId: 's-fresh', title: 'Fresh', tags: [], artists: [], uploadedAt: daysAgo(1), url: 'https://hitomi.la/g/fresh', coverUrl: 'https://img.test/fresh.jpg' },
+      { source: 'hitomi', galleryId: 's-old-2', title: 'Old Two', tags: [], artists: [], uploadedAt: daysAgo(2000) },
+    ];
+    const messages: string[] = [];
+    const checked = await checkWatchedSearches((_level, message) => messages.push(message));
+    assert.equal(checked.newGalleries, checked.checked, 'each seeded watch finds only one fresh gallery');
+    const [embed] = embeds.filter((e) => e.description.includes(STALE_QUERY));
+    assert.ok(embed, 'expected a Discord notification for the fresh find');
+    assert.match(embed.description, /^1 new result\(s\)/);
+    assert.ok(embed.description.includes('**[Fresh](https://hitomi.la/g/fresh)**'));
+    assert.doesNotMatch(embed.description, /Old One|Old Two|more/);
+    assert.equal(embed.thumbnail?.url, 'https://img.test/fresh.jpg');
+    assert.ok(messages.some((m) => m.includes(STALE_QUERY) && m.includes('suppressed 2')));
+
+    // The per-watch "new since last check" list holds only the fresh find.
+    assert.deepEqual(
+      listWatchedSearches().find((w) => w.id === watch.id)!.lastResults.map((r) => r.galleryId),
+      ['s-fresh'],
+    );
+
+    // The Recently added feed gets no rows for the stale galleries.
+    const feed = listNewGalleries(500).filter((g) => g.query === STALE_QUERY);
+    assert.deepEqual(feed.map((g) => g.galleryId), ['s-fresh']);
+
+    // All three are remembered as seen, so a settled index does not re-report them.
+    const seen = getDb()
+      .select({ galleryId: schema.watchedSearchSeen.galleryId })
+      .from(schema.watchedSearchSeen)
+      .where(eq(schema.watchedSearchSeen.searchId, watch.id))
+      .all()
+      .map((r) => r.galleryId);
+    assert.deepEqual(seen.sort(), ['s-fresh', 's-old-1', 's-old-2', 's-seed']);
+
+    // The next check over the same window reports nothing new.
+    const again = await checkWatchedSearches(log);
+    assert.equal(again.newGalleries, 0);
+    assert.equal(again.notified, 0);
+
+    // A later stale-only batch stays silent and preserves previous fresh finds.
+    embeds.length = 0;
+    searchResults = [
+      { source: 'hitomi', galleryId: 's-old-3', title: 'Old Three', tags: [], artists: [], uploadedAt: daysAgo(30) },
+    ];
+    const staleOnly = await checkWatchedSearches(log);
+    assert.equal(staleOnly.newGalleries, 0);
+    assert.equal(staleOnly.notified, 0);
+    assert.deepEqual(embeds, []);
+    assert.deepEqual(listWatchedSearches().find((w) => w.id === watch.id)!.lastResults.map((r) => r.galleryId), ['s-fresh']);
+    assert.deepEqual(listNewGalleries(500).filter((g) => g.query === STALE_QUERY).map((g) => g.galleryId), ['s-fresh']);
+    assert.ok(getDb().select().from(schema.watchedSearchSeen)
+      .where(eq(schema.watchedSearchSeen.searchId, watch.id)).all().some((r) => r.galleryId === 's-old-3'));
+    removeWatchedSearch(watch.id);
+  });
+
+  it('reports missing, invalid, and future upload dates through notifications and feeds', async (t) => {
+    const embeds = captureDiscord(t);
+    const query = 'artist:unknown-upload';
+    const watch = addWatchedSearch('hitomi', query);
+    searchResults = [];
+    await checkWatchedSearches(log);
+    embeds.length = 0;
+    searchResults = [
+      { source: 'hitomi', galleryId: 'u-missing', title: 'Missing Date', tags: [], artists: [] },
+      { source: 'hitomi', galleryId: 'u-invalid', title: 'Invalid Date', tags: [], artists: [], uploadedAt: 'not-a-date' },
+      { source: 'hitomi', galleryId: 'u-future', title: 'Future Date', tags: [], artists: [], uploadedAt: daysAgo(-1) },
+    ];
+    await checkWatchedSearches(log);
+    const [embed] = embeds.filter((e) => e.description.includes(query));
+    assert.ok(embed);
+    assert.match(embed.description, /^3 new result\(s\)/);
+    for (const r of searchResults) assert.ok(embed.description.includes(r.title));
+    assert.deepEqual(listWatchedSearches().find((w) => w.id === watch.id)!.lastResults.map((r) => r.galleryId), searchResults.map((r) => r.galleryId));
+    assert.deepEqual(listNewGalleries(500).filter((g) => g.query === query).map((g) => g.galleryId).sort(), searchResults.map((r) => r.galleryId).sort());
+    removeWatchedSearch(watch.id);
   });
 });

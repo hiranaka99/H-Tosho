@@ -248,6 +248,7 @@ export class KavitaClient {
       pages: series.pages ?? undefined,
       totalChapterCount: 0,
       lastAdded: series.lastChapterAddedUtc ?? series.lastChapterAdded,
+      created: series.created ?? undefined,
       // The filename is not a public URL; its presence enables our proxy.
       cover: series.coverImage ?? undefined,
       folderPath: series.folderPath ?? undefined,

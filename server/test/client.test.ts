@@ -134,7 +134,7 @@ describe('KavitaClient', () => {
         ]);
       }
       return Response.json([
-        { id: 42, libraryId: 2, name: 'Example', sortName: 'Example', coverImage: 'series42.png' },
+        { id: 42, libraryId: 2, name: 'Example', sortName: 'Example', coverImage: 'series42.png', created: '2026-09-15T10:00:00Z' },
       ]);
     };
 
@@ -146,6 +146,7 @@ describe('KavitaClient', () => {
     assert.deepEqual(libraries.map((library) => library.mediaFormat), ['manga', 'book', 'comic']);
     assert.equal(series[0]?.name, 'Example');
     assert.equal(series[0]?.cover, 'series42.png');
+    assert.equal(series[0]?.created, '2026-09-15T10:00:00Z');
     assert.match(requests[1]?.url ?? '', /\/api\/Series\/all-v2\?PageNumber=1&PageSize=0/);
     assert.deepEqual(JSON.parse(String(requests[1]?.init?.body)), {
       statements: [{ comparison: 5, field: 19, value: '2' }],

@@ -165,6 +165,21 @@ export function diffSeenResults(firstRun: boolean, currentIds: string[], seenIds
   return currentIds.filter((id) => !seenIds.has(id));
 }
 
+/**
+ * Upload-age threshold for "new" results. Provider index hiccups (e.g. hitomi.la
+ * serving a mid-rebuild search window) can push old galleries back into the top-N;
+ * those are not real releases, so results uploaded longer ago are suppressed from
+ * pings and feeds. Unknown dates fail open — a missing field never hides a find.
+ */
+const STALE_UPLOAD_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** True when the result's upload date is older than the staleness threshold; unknown dates are not stale. */
+export function isStaleUpload(uploadedAt: string | undefined, now: number = Date.now()): boolean {
+  if (!uploadedAt) return false;
+  const t = Date.parse(uploadedAt);
+  return !Number.isNaN(t) && now - t > STALE_UPLOAD_MAX_AGE_MS;
+}
+
 interface CheckResult {
   checked: number;
   notified: number;
@@ -209,21 +224,32 @@ export async function checkWatchedSearches(
         .map((r) => r.galleryId),
     );
     const newIds = diffSeenResults(firstRun, ids, seenIds);
-    result.newGalleries += newIds.length;
-    if (!firstRun && newIds.length > 0) {
+    // Provider index hiccups (e.g. hitomi.la serving a mid-rebuild search window)
+    // can push old galleries back into the top-N; those are not real releases.
+    // Suppress them from pings and feeds — the seen insert below still remembers
+    // them, so a settled index does not re-report them.
+    const uploadedById: Record<string, string | undefined> = {};
+    for (const r of results) uploadedById[r.galleryId] = r.uploadedAt;
+    const staleIds = new Set(newIds.filter((id) => isStaleUpload(uploadedById[id])));
+    const freshNewIds = newIds.filter((id) => !staleIds.has(id));
+    if (staleIds.size > 0) {
+      log('warn', `Watch ${s.id} "${s.query}": suppressed ${staleIds.size} old upload(s) re-entering the result window (provider index hiccup)`);
+    }
+    result.newGalleries += freshNewIds.length;
+    if (!firstRun && freshNewIds.length > 0) {
       const label = SOURCE_LABELS[s.source] ?? s.source;
       // Markdown links render as clean clickable titles in Discord; raw URLs cluttered the embed.
-      const lines = newIds.slice(0, NOTIFY_MAX_LISTED).map((id) => {
+      const lines = freshNewIds.slice(0, NOTIFY_MAX_LISTED).map((id) => {
         const r = results.find((x) => x.galleryId === id);
         const title = r?.title || id;
         return r?.url ? `**[${title}](${r.url})**` : `**${title}**`;
       });
-      if (newIds.length > NOTIFY_MAX_LISTED) lines.push(`*+${newIds.length - NOTIFY_MAX_LISTED} more*`);
-      const cover = results.find((x) => newIds.includes(x.galleryId))?.coverUrl;
+      if (freshNewIds.length > NOTIFY_MAX_LISTED) lines.push(`*+${freshNewIds.length - NOTIFY_MAX_LISTED} more*`);
+      const cover = results.find((x) => freshNewIds.includes(x.galleryId))?.coverUrl;
       try {
         await notify({
           title: `New on ${label}`,
-          description: `${newIds.length} new result(s) for \`${s.query}\`\n\n${lines.join('\n')}`,
+          description: `${freshNewIds.length} new result(s) for \`${s.query}\`\n\n${lines.join('\n')}`,
           coverUrl: cover,
           success: true,
         });
@@ -238,7 +264,7 @@ export async function checkWatchedSearches(
     // the previous finds stay visible across quiet checks.
     const lastResults: WatchedSearchNewResult[] = firstRun
       ? []
-      : newIds.slice(0, LAST_RESULTS_MAX).map((id) => {
+      : freshNewIds.slice(0, LAST_RESULTS_MAX).map((id) => {
           const r = results.find((x) => x.galleryId === id);
           return {
             galleryId: id,
@@ -267,10 +293,10 @@ export async function checkWatchedSearches(
       // Persist everything reported as new for the "Recently added" feed; the
       // unique index idx_watched_search_new_unique keeps re-discoveries from
       // duplicating rows.
-      if (!firstRun && newIds.length > 0) {
+      if (!firstRun && freshNewIds.length > 0) {
         const foundAt = new Date().toISOString();
         tx.insert(schema.watchedSearchNew)
-          .values(newIds.map((id) => {
+          .values(freshNewIds.map((id) => {
             const r = results.find((x) => x.galleryId === id);
             return {
               searchId: s.id,
@@ -293,7 +319,7 @@ export async function checkWatchedSearches(
         .where(eq(schema.watchedSearches.id, s.id))
         .run();
     });
-    log(firstRun ? 'info' : 'success', `Watch ${s.id} "${s.query}": ${ids.length} result(s), ${newIds.length} new${firstRun ? ' (seeded)' : ''}`);
+    log(firstRun ? 'info' : 'success', `Watch ${s.id} "${s.query}": ${ids.length} result(s), ${freshNewIds.length} new${firstRun ? ' (seeded)' : ''}`);
   }
   onProgress?.(searches.length, searches.length);
   return result;

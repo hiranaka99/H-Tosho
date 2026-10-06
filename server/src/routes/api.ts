@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
@@ -94,6 +95,19 @@ function artistsFromMetadata(metadataJson: string | null | undefined): string[] 
 export const api = new Hono();
 
 api.get('/health', (c) => c.json({ ok: true, name: 'h-tosho', time: new Date().toISOString() }));
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+/** App version shown in the UI; read once at startup (static per deployment). */
+const APP_VERSION: string | null = (() => {
+  try {
+    // <server>/<src|dist>/routes/ → two levels up is the server package root.
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8')) as { version?: unknown };
+    return typeof pkg.version === 'string' ? pkg.version : null;
+  } catch {
+    return null;
+  }
+})();
+
+api.get('/version', (c) => c.json({ version: APP_VERSION }));
 
 // ---------------- Kavita connection ----------------
 
@@ -185,6 +199,7 @@ api.get('/kavita/libraries/:id/series', async (c) => {
         return {
           id: s.id,
           name: s.name,
+          dateAdded: s.created ?? null,
           slug: s.slug,
           bookCount: s.bookCount,
           pageCount: s.pages ?? null,

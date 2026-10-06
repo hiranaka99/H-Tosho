@@ -64,11 +64,13 @@ class PageErrorBoundary extends React.Component<{ children: React.ReactNode }, {
 
 /** Brand mark + wordmark, shared by the mobile header and the desktop sidebar. */
 function Brand() {
+  const { data } = useQuery({ queryKey: ['app-version'], queryFn: api.version, staleTime: Infinity });
   return (
     <div className="flex min-w-0 items-center gap-2.5">
       <img src="/h-tosho-icon.png?v=199908e7" alt="" aria-hidden="true" width={32} height={32} className="h-8 w-8 shrink-0 rounded-lg object-contain" />
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold leading-tight tracking-tight">H-Tosho</div>
+        {data?.version && <div className="text-[10px] leading-tight text-muted">v{data.version}</div>}
       </div>
     </div>
   );

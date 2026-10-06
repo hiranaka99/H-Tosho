@@ -1,5 +1,38 @@
 # Changelog
 
+## v2.5.0
+
+### Watched searches
+
+- Suppress watched-search notifications for results whose upload date is older
+  than fourteen days. Provider index hiccups (e.g. hitomi.la serving a
+  mid-rebuild search window) can push old galleries back into the result list;
+  those are now remembered as seen without pinging Discord or the Recently
+  added feed. Results without an upload date are unaffected, and each
+  suppression is logged with the watch's query.
+- Discord notification counts include only eligible new galleries, matching
+  the listed results and the Recently added feed.
+
+### Interface
+
+- Show the running app version under the H-Tosho brand in the sidebar and
+  mobile header. The server serves its own package version, so the label
+  always matches the deployment.
+- Libraries page: sort the series list by **Date added** (newest first) in
+  addition to the default A–Z order. The date is Kavita's series creation
+  date; series without one sort last. The choice persists for the session.
+
+### Documentation
+
+- Rewrite the README around installation, first setup, library management,
+  downloading, and troubleshooting, with desktop and mobile screenshots using
+  real manga cover art and credited sources.
+
+### Upgrading
+
+Update the source checkout and rebuild your deployment. For Docker installations,
+run `docker compose up -d --build` with your existing data volume and library mounts.
+
 ## v2.4.0
 
 ### Recommendation controls

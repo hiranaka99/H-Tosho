@@ -86,6 +86,8 @@ export interface KavitaSeriesDto {
   coverImageLocked?: boolean;
   lastChapterAdded?: string;
   lastChapterAddedUtc?: string;
+  /** When the series was added to Kavita (series creation date). */
+  created?: string;
   totalReads?: number;
   userRating?: number;
   hasUserRated?: boolean;
@@ -242,6 +244,8 @@ export interface KavitaSeries {
   pages?: number;
   totalChapterCount?: number;
   lastAdded?: string;
+  /** When the series was added to Kavita (series creation date). */
+  created?: string;
   cover?: string;
   /** Series folder as seen by Kavita (container path under Docker). */
   folderPath?: string;

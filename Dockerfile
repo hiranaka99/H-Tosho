@@ -37,6 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 
 # npm workspaces hoist all runtime dependencies to the root node_modules.
 COPY package.json ./
+COPY server/package.json ./server/
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/server/dist ./server/dist
 COPY --from=build /app/web/dist ./web/dist
