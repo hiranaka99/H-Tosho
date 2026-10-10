@@ -53,7 +53,7 @@ function readableValue(value: unknown): string {
 function jobTarget(job: Job): string {
   const series = job.context?.series ?? [];
   if (series.length === 1) return series[0].name;
-  if (series.length > 1) return `${series.length} series: ${series.slice(0, 3).map((item) => item.name).join(', ')}${series.length > 3 ? '…' : ''}`;
+  if (series.length > 1) return `${job.context?.libraryName ? `${job.context.libraryName} · ` : ''}${series.length} series`;
   if (job.context?.libraryName) return job.context.libraryName;
   const payload = job.payload;
   const name = payload.title ?? payload.name ?? payload.path ?? payload.targetDir ?? payload.target ?? payload.query;
@@ -62,6 +62,60 @@ function jobTarget(job: Job): string {
   if (Array.isArray(payload.seriesIds) && payload.seriesIds.length) return `${payload.seriesIds.length} series · names not recorded`;
   if (payload.libraryId !== undefined) return `Library #${payload.libraryId} · name not recorded`;
   return job.type === 'check-watched-searches' ? 'All watched searches' : 'All libraries';
+}
+
+function jobSeries(job: Job): { id: number; name: string }[] {
+  const targets = job.context?.series ?? [];
+  const ids = [job.payload.seriesId, ...(Array.isArray(job.payload.seriesIds) ? job.payload.seriesIds : [])];
+  const series = new Map(targets.map((target) => [target.id, target]));
+  for (const id of ids) {
+    if (typeof id === 'number' && Number.isSafeInteger(id) && id > 0 && !series.has(id)) {
+      series.set(id, { id, name: `Series #${id}` });
+    }
+  }
+  return [...series.values()];
+}
+
+/** Reuse Kavita's authenticated image proxy; polling never remounts images. */
+function SeriesCover({ series, version, className }: { series?: { id: number; name: string }; version: string; className?: string }) {
+  const src = series ? `/api/kavita/series/${series.id}/cover?v=${encodeURIComponent(version)}` : undefined;
+  const [failedSrc, setFailedSrc] = React.useState<string>();
+  return (
+    <div aria-hidden="true" className={cn('aspect-[3/4] w-12 shrink-0 overflow-hidden rounded-md bg-surface-2', className)}>
+      {src && failedSrc !== src ? (
+        <img src={src} alt="" width={48} height={64} loading="lazy" decoding="async" className="h-full w-full object-cover" onError={() => setFailedSrc(src)} />
+      ) : (
+        <div className="flex h-full items-center justify-center text-sm font-semibold text-muted">
+          {series ? series.name.charAt(0).toUpperCase() : <ListChecks className="h-5 w-5" />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function JobCover({ job }: { job: Job }) {
+  const series = jobSeries(job);
+  return (
+    <div className="relative shrink-0" title={series.length > 1 ? `${series.length} affected series` : series[0]?.name}>
+      <SeriesCover series={series[0]} version={job.finishedAt ?? job.startedAt ?? job.createdAt} />
+      {series.length > 1 && <span aria-hidden="true" className="absolute bottom-1 right-1 rounded bg-black/70 px-1 py-0.5 text-2xs font-medium tabular-nums text-white">+{series.length - 1}</span>}
+    </div>
+  );
+}
+
+function AffectedSeries({ job }: { job: Job }) {
+  const series = jobSeries(job);
+  if (!series.length) return null;
+  return (
+    <ul className="space-y-2 py-2 text-sm">
+      {series.map((target) => (
+        <li key={target.id} className="flex min-w-0 items-center gap-2">
+          <SeriesCover series={target} version={job.finishedAt ?? job.startedAt ?? job.createdAt} className="w-6 rounded" />
+          <span className="min-w-0 break-words">{target.name} <span className="text-xs text-muted">· Series #{target.id}</span></span>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 const JOB_PURPOSE: Record<string, string> = {
@@ -105,6 +159,26 @@ function jobOutcome(job: Job): string {
   if (typeof result.warnings === 'number' && result.warnings > 0) parts.push(`${result.warnings} warnings`);
   if (typeof result.titleFilesUpdated === 'number' && result.titleFilesUpdated > 0) parts.push(`${result.titleFilesUpdated} archive titles updated`);
   return parts.length ? `${parts.join(' · ')}.` : 'Finished. Open the recorded result for details.';
+}
+
+/** Only surface outcomes that add something beyond the action and status. */
+function jobSummary(job: Job): string | null {
+  if (job.status === 'failed') return job.recovery?.explanation ?? job.errorMessage?.split('\n')[0] ?? 'Open details for the error.';
+  if (job.status !== 'completed' || !job.result || typeof job.result !== 'object' || Array.isArray(job.result)) return null;
+  const result = job.result as Record<string, unknown>;
+  if (job.type === 'check-watched-searches' && typeof result.newGalleries === 'number') {
+    return result.newGalleries ? `${result.newGalleries} new ${result.newGalleries === 1 ? 'gallery' : 'galleries'}` : 'No new galleries';
+  }
+  if (job.type === 'delete-series' && typeof result.deleted === 'number') return `${result.deleted} ${result.deleted === 1 ? 'archive' : 'archives'} deleted`;
+  if (job.type === 'merge-series' && typeof result.processed === 'number') {
+    return `${result.processed} ${result.processed === 1 ? 'archive' : 'archives'} merged${typeof result.failed === 'number' && result.failed > 0 ? ` · ${result.failed} failed` : ''}`;
+  }
+  const parts: string[] = [];
+  const batch = jobSeries(job).length > 1 || (typeof result.processed === 'number' && result.processed > 1);
+  if (batch && typeof result.matched === 'number') parts.push(`${result.matched} matched`);
+  if (typeof result.failed === 'number' && result.failed > 0) parts.push(`${result.failed} failed`);
+  if (!parts.length && batch && typeof result.processed === 'number') parts.push(`${result.processed} processed`);
+  return parts.length ? parts.join(' · ') : null;
 }
 
 function duration(job: Job): string {
@@ -302,13 +376,13 @@ export function Jobs() {
     },
     onError: (error) => toast({ tone: 'danger', title: 'Could not clear failed jobs', description: error.message }),
   });
-  const actions = (job: Job) => (
+  const actions = (job: Job, compact = false) => (
     <>
       {job.status === 'failed' && <>
-        <Button className={controlClass} variant="outline" disabled={retryMutation.isPending || clearMutation.isPending} onClick={() => retryMutation.mutate(job.id)}>{retryMutation.isPending && retryMutation.variables === job.id ? <Spinner /> : <RotateCcw className="h-4 w-4" />}{retryMutation.isPending && retryMutation.variables === job.id ? 'Retrying…' : 'Retry job'}</Button>
-        <Button className={controlClass} variant="outline" disabled={retryMutation.isPending || clearMutation.isPending} onClick={() => setClearTarget(job.id)}><Trash2 className="h-4 w-4" /> Clear job</Button>
+        <Button className={controlClass} size={compact ? 'sm' : 'default'} variant="outline" disabled={retryMutation.isPending || clearMutation.isPending} onClick={() => retryMutation.mutate(job.id)}>{retryMutation.isPending && retryMutation.variables === job.id ? <Spinner /> : <RotateCcw className="h-4 w-4" />}{retryMutation.isPending && retryMutation.variables === job.id ? 'Retrying…' : compact ? 'Retry' : 'Retry job'}</Button>
+        {!compact && <Button className={controlClass} variant="outline" disabled={retryMutation.isPending || clearMutation.isPending} onClick={() => setClearTarget(job.id)}><Trash2 className="h-4 w-4" /> Clear job</Button>}
       </>}
-      {isActive(job) && <Button className={controlClass} variant="outline" disabled={cancelMutation.isPending} onClick={() => cancelMutation.mutate(job.id)}>{cancelMutation.isPending && cancelMutation.variables === job.id ? <Spinner /> : <Ban className="h-4 w-4" />}{cancelMutation.isPending && cancelMutation.variables === job.id ? 'Cancelling…' : 'Cancel job'}</Button>}
+      {isActive(job) && <Button className={controlClass} size={compact ? 'sm' : 'default'} variant="outline" disabled={cancelMutation.isPending} onClick={() => cancelMutation.mutate(job.id)}>{cancelMutation.isPending && cancelMutation.variables === job.id ? <Spinner /> : <Ban className="h-4 w-4" />}{cancelMutation.isPending && cancelMutation.variables === job.id ? 'Cancelling…' : compact ? 'Cancel' : 'Cancel job'}</Button>}
     </>
   );
   const types = Array.from(new Set(jobs.map((job) => job.type))).sort();
@@ -329,39 +403,44 @@ export function Jobs() {
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
-      <PageHeader icon={<ListChecks className="h-5 w-5" />} title="Jobs" subtitle="Track active work, resolve failures, and inspect what happened.">
+      <PageHeader icon={<ListChecks className="h-5 w-5" />} title="Jobs" subtitle="Background work and recent results.">
         {jobs.some((job) => job.status === 'failed') && <Button variant="outline" className={controlClass} disabled={clearMutation.isPending || retryMutation.isPending} onClick={() => setClearTarget('all')}><Trash2 className="h-4 w-4" /> Clear failed jobs</Button>}
       </PageHeader>
       <Card className="min-w-0">
         <div className="space-y-3 border-b border-border p-3 sm:p-4">
-          <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-[200px_1fr_200px]">
+          <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
             <div className="space-y-1"><Label htmlFor="jobs-status">Status</Label><Select id="jobs-status" value={filter} onChange={(event) => updateUrl({ filter: event.target.value as JobFilter })} className={controlClass}>{FILTERS.map((item) => <option key={item.id} value={item.id}>{item.label} ({jobsQuery.isPending || (jobsQuery.isError && !jobsQuery.data) ? '—' : statusCounts[item.id]})</option>)}</Select></div>
             <div className="space-y-1"><Label htmlFor="jobs-search">Search activity</Label><div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" /><Input id="jobs-search" type="search" placeholder="Job, target, result, or ID…" value={search} onChange={(event) => setSearch(event.target.value)} className="max-lg:min-h-11 pointer-coarse:min-h-11 pl-9" /></div></div>
-            <Disclosure label={type === 'all' ? 'Job type' : `Job type: ${jobLabel(type)}`} className="sm:hidden"><div className="mt-2"><Select aria-label="Job type" value={type} onChange={(event) => setType(event.target.value)} className={controlClass}><option value="all">All job types</option>{types.map((value) => <option key={value} value={value}>{jobLabel(value)}</option>)}</Select></div></Disclosure>
-            <div className="hidden space-y-1 sm:block"><Label htmlFor="jobs-type">Job type</Label><Select id="jobs-type" value={type} onChange={(event) => setType(event.target.value)} className={controlClass}><option value="all">All job types</option>{types.map((value) => <option key={value} value={value}>{jobLabel(value)}</option>)}</Select></div>
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted"><p>{visibleJobs.length} of {jobs.length} jobs</p>{filter !== 'all' && <Button variant="ghost" size="sm" className={controlClass} onClick={() => updateUrl({ filter: 'all' })}>View all history</Button>}</div>
+          <div className="flex flex-wrap items-start justify-between gap-2 text-xs text-muted">
+            <p className="py-2">{visibleJobs.length} of {jobs.length} jobs</p>
+            <Disclosure label={type === 'all' ? 'Job type' : `Job type: ${jobLabel(type)}`} className="max-w-full" summaryClassName="px-0 text-xs">
+              <div className="pb-1 pt-2"><Select aria-label="Job type" value={type} onChange={(event) => setType(event.target.value)} className={cn(controlClass, 'w-full sm:w-48')}><option value="all">All job types</option>{types.map((value) => <option key={value} value={value}>{jobLabel(value)}</option>)}</Select></div>
+            </Disclosure>
+          </div>
         </div>
         <CardContent className="!p-0 divide-y divide-border">
           {jobsQuery.isError && <ErrorState title="Could not load activity" description={jobsQuery.error.message} onRetry={() => void jobsQuery.refetch()} />}
           {jobsQuery.isPending ? <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted" role="status"><Spinner /> Loading activity…</div> : !visibleJobs.length && !jobsQuery.isError ? <div><EmptyState icon={<ListChecks className="h-8 w-8" />} title={jobs.length ? 'No matching jobs' : 'No activity yet'} description={jobs.length ? 'Try another status, job type, or search.' : 'Scans, matching, and other background work appear here.'} />{jobs.length > 0 && <div className="flex justify-center"><Button variant="outline" className={controlClass} onClick={() => { setSearch(''); setType('all'); updateUrl({ filter: 'all' }); }}>Clear filters</Button></div>}</div> : visibleJobs.map((job) => (
             <article key={job.id} className={cn('min-w-0 px-3 py-3 sm:px-4', job.id === selectedId ? 'bg-primary/5' : job.status === 'failed' ? 'bg-danger/5' : undefined)}>
-              <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  <h2 className="break-words text-sm font-semibold [overflow-wrap:anywhere]">{jobTarget(job)}</h2>
-                  <p className="mt-1 break-words text-xs text-muted">{jobLabel(job.type, job.payload)} · Job #{job.id}</p>
-                  <p className="mt-2 text-sm text-muted">{JOB_PURPOSE[job.type] ?? jobLabel(job.type, job.payload)}</p>
-                  <p className="mt-1 text-sm">{jobOutcome(job)}</p>
-                  {job.context?.libraryName && job.context.series.length > 0 && <p className="mt-1 text-xs text-muted">Library: {job.context.libraryName}</p>}
-                  {(job.context?.series.length ?? 0) > 1 && <Disclosure label={`Affected series (${job.context!.series.length})`} className="mt-1"><ul className="space-y-1 py-2 text-sm">{job.context!.series.map((series) => <li key={series.id} className="break-words">{series.name} <span className="text-xs text-muted">· #{series.id}</span></li>)}</ul></Disclosure>}
+              <div className="flex min-w-0 items-start gap-3">
+                <JobCover job={job} />
+                <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+                    <div className="min-w-0 flex-1">
+                      <h2 className="break-words text-sm font-semibold [overflow-wrap:anywhere]">{jobTarget(job)}</h2>
+                      <p className="mt-1 break-words text-xs text-muted">
+                        {jobLabel(job.type, job.payload)} · <time dateTime={toIsoUtc(job.createdAt)} title={timestamp(job.createdAt)}>{timeAgo(job.createdAt)}</time>{job.startedAt && <> · {duration(job)}</>}
+                      </p>
+                      {jobSummary(job) && <p className={cn('mt-1 text-sm', job.status === 'failed' ? 'line-clamp-2 text-danger' : 'text-muted')} title={job.status === 'failed' ? job.errorMessage ?? undefined : undefined}>{jobSummary(job)}</p>}
+                      {job.status === 'running' && <div className="mt-2 flex items-center gap-2"><ProgressBar value={job.progressCurrent} max={job.progressTotal} active label={`Progress for ${jobTarget(job)}`} className="max-w-xs" />{job.progressTotal > 0 && <span className="shrink-0 text-xs tabular-nums text-muted">{job.progressCurrent} / {job.progressTotal}</span>}</div>}
+                    </div>
+                    <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+                      <JobStatus job={job} />
+                      {actions(job, true)}
+                      <Button variant="ghost" size="sm" className={controlClass} aria-label={`View details for job #${job.id}: ${jobTarget(job)}`} onClick={() => updateUrl({ job: job.id })}>Details</Button>
+                    </div>
                 </div>
-                <JobStatus job={job} />
               </div>
-              {isActive(job) && <div className="mt-2 flex items-center gap-3"><div className="min-w-0 flex-1"><ProgressBar value={job.progressCurrent} max={job.progressTotal} active /></div><p className="shrink-0 text-xs tabular-nums text-muted">{job.progressTotal > 0 ? `${job.progressCurrent} / ${job.progressTotal} · ${Math.min(100, Math.round(job.progressCurrent / job.progressTotal * 100))}%` : job.status === 'queued' ? 'Waiting for a worker' : 'Working…'}</p></div>}
-              {job.errorMessage && <p className="mt-2 whitespace-pre-wrap break-words text-sm text-danger [overflow-wrap:anywhere]">{job.errorMessage}</p>}
-              {job.recovery && <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1"><p className="text-sm text-muted">{job.recovery.explanation}</p>{job.recovery.actions.map((action) => <Button asChild variant="ghost" size="sm" className={controlClass} key={action.href}><Link to={action.href}>{action.label}</Link></Button>)}</div>}
-              {job.result !== null && job.result !== undefined && <Disclosure label="Recorded result" className="mt-2 text-sm"><p className="mt-1 break-words text-sm text-muted [overflow-wrap:anywhere]">{readableValue(job.result)}</p></Disclosure>}
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-muted"><time dateTime={toIsoUtc(job.createdAt)} title={timestamp(job.createdAt)}>{timeAgo(job.createdAt)}</time> · {duration(job)}</p><div className="flex flex-wrap gap-2">{actions(job)}<Button variant="ghost" className={controlClass} aria-label={`View details for job #${job.id}: ${jobTarget(job)}`} onClick={() => updateUrl({ job: job.id })}>View details</Button></div></div>
             </article>
           ))}
         </CardContent>
@@ -369,26 +448,34 @@ export function Jobs() {
       <Dialog open={selectedId !== null} onOpenChange={(open) => { if (!open) updateUrl({ job: null }); }}>
         <DialogContent className="!left-auto !right-0 !top-0 !h-dvh !max-h-dvh !w-full !max-w-none !translate-x-0 !translate-y-0 !animate-none !rounded-none border-y-0 border-r-0 sm:!w-full lg:!w-[min(640px,55vw)]">
           <div className="flex h-full min-h-0 min-w-0 flex-col">
-            <div className="shrink-0 border-b border-border p-4 pr-16 sm:p-5 sm:pr-16"><DialogTitle>{selectedJob ? jobLabel(selectedJob.type, selectedJob.payload) : 'Job details'}</DialogTitle><DialogDescription className="mt-1 break-words">Job #{selectedId}{selectedJob ? ` · ${selectedJob.type}` : ''}</DialogDescription>{selectedJob && <div className="mt-3"><JobStatus job={selectedJob} /></div>}</div>
+            <div className="flex shrink-0 items-start gap-3 border-b border-border p-4 pr-16 sm:p-5 sm:pr-16">
+              {selectedJob && <JobCover job={selectedJob} />}
+              <div className="min-w-0 flex-1">
+                <DialogTitle>{selectedJob ? jobTarget(selectedJob) : 'Job details'}</DialogTitle>
+                <DialogDescription className="mt-1 break-words">{selectedJob ? `${jobLabel(selectedJob.type, selectedJob.payload)} · ` : ''}Job #{selectedId}</DialogDescription>
+                {selectedJob && <div className="mt-3"><JobStatus job={selectedJob} /></div>}
+              </div>
+            </div>
             <div className="min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto overscroll-contain p-4 sm:p-5">
               {detailQuery.isError && <ErrorState title="Could not load job details" description={detailQuery.error.message} onRetry={() => void detailQuery.refetch()} />}
               {detailQuery.isPending && <div role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner /> Loading job details…</div>}
               {selectedJob && <>
                 <section className="space-y-2">
-                  <h3 className="text-sm font-semibold">What this job does</h3>
-                  <p className="text-sm text-muted">{JOB_PURPOSE[selectedJob.type] ?? jobLabel(selectedJob.type, selectedJob.payload)}</p>
+                  <h3 className="text-sm font-semibold">Summary</h3>
                   <p className="text-sm">{jobOutcome(selectedJob)}</p>
                   {selectedJob.type === 'apply-series' && typeof selectedJob.payload.selectedTitle === 'string' && <p className="text-sm">Selected title: {selectedJob.payload.selectedTitle}</p>}
                   {selectedJob.context?.libraryName && <p className="text-sm">Library: {selectedJob.context.libraryName}</p>}
-                  {(selectedJob.context?.series.length ?? 0) > 0 && <ul className="space-y-1 text-sm">{selectedJob.context!.series.map((series) => <li key={series.id} className="break-words">{series.name} <span className="text-xs text-muted">· Series #{series.id}</span></li>)}</ul>}
+                  {jobSeries(selectedJob).length > 1 && <Disclosure label={`Affected series (${jobSeries(selectedJob).length})`} summaryClassName="px-0"><AffectedSeries job={selectedJob} /></Disclosure>}
                 </section>
-                <section className="space-y-3"><h3 className="text-sm font-semibold">Target & progress</h3><p className="break-words text-sm [overflow-wrap:anywhere]">{jobTarget(selectedJob)}</p><ProgressBar value={selectedJob.progressCurrent} max={selectedJob.progressTotal} active={isActive(selectedJob)} /><p className="text-xs text-muted">{selectedJob.progressTotal > 0 ? `${selectedJob.progressCurrent} of ${selectedJob.progressTotal}` : isActive(selectedJob) ? 'Progress not yet reported' : 'No item count reported'} · {duration(selectedJob)}</p><dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">{[['Created', selectedJob.createdAt], ['Started', selectedJob.startedAt], ['Finished', selectedJob.finishedAt]].map(([label, value]) => <div key={label}><dt className="text-xs text-muted">{label}</dt><dd className="mt-1 break-words">{timestamp(value)}</dd></div>)}</dl><div className="flex flex-wrap gap-2">{actions(selectedJob)}</div></section>
+                {isActive(selectedJob) && <section className="space-y-2" aria-label="Job progress"><ProgressBar value={selectedJob.progressCurrent} max={selectedJob.progressTotal} active /><p className="text-xs text-muted">{duration(selectedJob)}</p></section>}
+                {(isActive(selectedJob) || selectedJob.status === 'failed') && <div className="flex flex-wrap gap-2">{actions(selectedJob)}</div>}
                 {selectedJob.errorMessage && <section role="alert" className="rounded-lg border border-danger/30 bg-danger/5 p-3"><h3 className="mb-2 text-sm font-semibold text-danger">Failure</h3><p className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{selectedJob.errorMessage}</p></section>}
                 <RecoveryActions job={selectedJob} />
-                <section className="space-y-3"><h3 className="text-sm font-semibold">Result</h3>{selectedJob.result === null || selectedJob.result === undefined ? <p className="text-sm text-muted">{isActive(selectedJob) ? 'Results will appear when this job finishes.' : 'No result was reported.'}</p> : <StructuredValue value={selectedJob.result} />}</section>
-                <Disclosure label={`Payload context · ${Object.keys(selectedJob.payload).length} fields`} className="rounded-lg border border-border"><div className="border-t border-border p-3"><StructuredValue value={selectedJob.payload} /></div></Disclosure>
+                {selectedJob.result !== null && selectedJob.result !== undefined && <Disclosure label="Recorded result" summaryClassName="px-0"><div className="pt-3"><StructuredValue value={selectedJob.result} /></div></Disclosure>}
+                <Disclosure label="Timing" summaryClassName="px-0"><p className="mt-2 text-sm">{duration(selectedJob)}</p><dl className="mt-3 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">{[['Created', selectedJob.createdAt], ['Started', selectedJob.startedAt], ['Finished', selectedJob.finishedAt]].map(([label, value]) => <div key={label}><dt className="text-xs text-muted">{label}</dt><dd className="mt-1 break-words">{timestamp(value)}</dd></div>)}</dl></Disclosure>
+                <Disclosure label="Technical details" summaryClassName="px-0"><p className="py-3 font-mono text-xs text-muted">{selectedJob.type} · Job #{selectedJob.id}</p><StructuredValue value={selectedJob.payload} /></Disclosure>
               </>}
-              {detailQuery.data && <LogConsole key={selectedId} jobId={selectedId!} logs={detailQuery.data.logs} />}
+              {detailQuery.data && <Disclosure key={selectedId} label={`Logs (${detailQuery.data.logs.length})`} open={selectedJob?.status === 'failed'} summaryClassName="px-0"><div className="pt-3"><LogConsole jobId={selectedId!} logs={detailQuery.data.logs} /></div></Disclosure>}
             </div>
           </div>
         </DialogContent>

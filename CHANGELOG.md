@@ -1,6 +1,50 @@
 # Changelog
 
-## Unreleased
+## v2.7.0
+
+### Jobs
+
+- Reduce activity rows to a cover, target, action and timing, status, and Details.
+  Remove repeated explanations and result summaries; show brief batch outcomes
+  and failure guidance only when they add useful information.
+- Add Kavita cover thumbnails to job rows and the detail drawer, with batch
+  counts and fallbacks for unavailable covers. Keep images stable during polling.
+- Move recorded results, affected series, timing, logs, technical data, and
+  individual history cleanup into Details. Keep retry and cancel available in
+  the list; open logs automatically for failed jobs.
+- Consolidate status counts into one filter and disclose the job-type filter.
+  Search still includes affected series names, outcomes, and errors.
+- Preserve series and library names in job history, including bulk targets and
+  targets renamed or deleted by a job. Recover older explicit targets from local
+  history when available; identify unknown names clearly.
+- Include completed and cancelled jobs in Finished. Flag completed batches with
+  failed items as needing attention and announce status changes to assistive
+  technology.
+
+### Settings
+
+- Add field-specific validation and instructions for connection URLs, account
+  credentials, folder mappings, schedules, and download performance settings.
+- Mark tabs containing unsaved changes and show save feedback beside section
+  actions. Preserve settings drafts during tab changes.
+- Clarify that provider connection tests use saved credentials, prevent tests
+  while changes are unsaved, and explain connection failures and recovery.
+- Keep download destination and format prominent; move performance controls
+  and the optional nHentai API key into Advanced.
+
+### Motion and Downloader
+
+- Smooth mobile navigation opening and closing, keep closed navigation inert,
+  and restore keyboard focus to the menu button after closing.
+- Add toast exit motion and pause countdowns while hovered, focused, or the
+  browser tab is hidden.
+- Use short page transitions, smooth selection indicators and progress updates,
+  and show indeterminate progress when item counts are unknown.
+- Add download queue continuity and selection feedback, with reduced-motion
+  alternatives and paused animations in hidden navigation or browser tabs.
+- Remove the dark overlay when hovering over Downloader covers.
+
+### Reliability
 
 - Honor cancellation during ComicInfo chapter verification, allow deferred Kavita
   scans to run before retrying, and fail verification timeouts instead of reporting
@@ -11,18 +55,11 @@
   repeatedly scanning or reporting success based on the first matching entry.
 - Fix Windows development startup hanging under `concurrently` by using Node's
   native file watcher with the `tsx` loader for the API server.
-- Make Jobs activity-first on desktop and mobile: consolidate status counts into
-  one filter, disclose the mobile job-type filter, and use compact rows with
-  target-first headings and expandable result summaries.
-- Align the Jobs Finished count with completed and cancelled history. Announce
-  completion, failure, and cancellation transitions to assistive technology,
-  and give each job one uniquely labeled details control.
-- Preserve series and library names in job history, including bulk targets and
-  targets renamed or deleted by the job. Recover older explicit series targets
-  from local history when available; leave unknown names clearly identified.
-- Explain each job's operation and recorded outcome directly in Jobs, including
-  applied metadata fields and covers. Search all affected series names and flag
-  completed batches with failed items as needing attention.
+
+### Upgrading
+
+Update the source checkout and rebuild your deployment. For Docker installations,
+run `docker compose up -d --build` with your existing data volume and library mounts.
 
 ## v2.6.0
 

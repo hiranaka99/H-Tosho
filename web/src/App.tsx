@@ -21,7 +21,7 @@ function LowConfidenceBadge() {
   if (!data || data.count === 0) return null;
   return (
     <Link to="/libraries/review" className="absolute right-1 top-0 flex h-9 min-w-9 items-center justify-center rounded-md" aria-label={`Needs review · ${data.count}`} title={`Review matches below ${Math.round(data.threshold * 100)}% confidence`}>
-      <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-warning">{data.count}</span>
+      <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-foreground">{data.count}</span>
     </Link>
   );
 }
@@ -70,7 +70,7 @@ function Brand() {
       <img src="/h-tosho-icon.png?v=199908e7" alt="" aria-hidden="true" width={32} height={32} className="h-8 w-8 shrink-0 rounded-lg object-contain" />
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold leading-tight tracking-tight">H-Tosho</div>
-        {data?.version && <div className="text-[10px] leading-tight text-muted">v{data.version}</div>}
+        {data?.version && <div className="text-[11px] leading-tight text-muted">v{data.version}</div>}
       </div>
     </div>
   );
@@ -120,7 +120,13 @@ export default function App() {
     if (mainRef.current) mainRef.current.inert = !isDesktop && navOpen;
     if (!navOpen || isDesktop) return;
     sidebarRef.current?.querySelector<HTMLElement>('a[aria-current="page"], nav a')?.focus();
-    return () => { navToggleRef.current?.focus(); };
+    return () => {
+      // Restore focus after the header has committed its accessible state.
+      requestAnimationFrame(() => {
+        const trigger = navToggleRef.current;
+        if (trigger?.getClientRects().length && trigger.getAttribute('aria-expanded') === 'false') trigger.focus();
+      });
+    };
   }, [navOpen, isDesktop]);
 
   const onNavKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
@@ -144,10 +150,10 @@ export default function App() {
           {navOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </Button>
       </header>
-      {navOpen && <div aria-hidden="true" className="fixed inset-x-0 bottom-0 top-14 z-30 bg-black/40 lg:hidden" onClick={() => setNavOpen(false)} />}
+      <div aria-hidden="true" data-state={navOpen ? 'open' : 'closed'} className="app-nav-scrim fixed inset-x-0 bottom-0 top-14 z-30 bg-black/40 lg:hidden" onClick={() => setNavOpen(false)} />
       <aside ref={sidebarRef} id="app-navigation" role={!isDesktop && navOpen ? 'dialog' : undefined} aria-modal={!isDesktop && navOpen ? true : undefined} aria-label="Navigation" onKeyDown={onNavKeyDown} className={cn(
-        'fixed bottom-0 left-0 top-14 z-40 flex w-[min(16rem,calc(100vw-2rem))] shrink-0 flex-col border-r border-border bg-sidebar pb-[env(safe-area-inset-bottom)] transition-transform duration-200 ease-out lg:static lg:inset-auto lg:w-60 lg:translate-x-0 lg:pb-0',
-        navOpen ? 'visible translate-x-0' : 'invisible -translate-x-full lg:visible',
+        'app-nav-drawer fixed bottom-0 left-0 top-14 z-40 flex w-[min(16rem,calc(100vw-2rem))] shrink-0 flex-col border-r border-border bg-sidebar pb-[env(safe-area-inset-bottom)] lg:static lg:inset-auto lg:w-60 lg:pb-0',
+        navOpen && 'app-nav-open',
       )}>
         <div className="flex justify-end px-3 pt-2 lg:hidden">
           <Button size="icon" variant="ghost" aria-label="Close navigation" onClick={() => setNavOpen(false)}><X className="h-5 w-5" /></Button>
@@ -190,7 +196,7 @@ export default function App() {
         {/* Padding lives on an inner wrapper, not on the scroll container itself: sticky
             page elements (tab bars) pin flush to the scrollport edge this way. */}
         <div className="p-3 sm:p-5 lg:p-8">
-          <div key={pageKey} className="animate-fade-up">
+          <div key={pageKey} className="app-page">
             <PageErrorBoundary>
               <React.Suspense fallback={<div className="flex h-40 items-center justify-center text-sm text-muted">Loading…</div>}>
                 <Routes>

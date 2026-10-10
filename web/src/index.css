@@ -333,7 +333,94 @@ select {
 }
 
 .ui-tab-indicator {
-  transition: transform 220ms var(--ease-out-soft), width 220ms var(--ease-out-soft), opacity 160ms ease;
+  transition: transform 220ms var(--ease-out-soft), opacity 160ms ease;
+}
+
+.ui-progress-fill {
+  transition: transform 280ms var(--ease-out-soft);
+}
+
+.ui-progress-indeterminate {
+  animation: indeterminate 1.4s ease-in-out infinite;
+}
+
+/* Navigation explains the drawer's relationship to the mobile header. Keep it
+   painted during exit; App makes the closed drawer inert immediately. */
+.app-nav-scrim {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, visibility 0s linear 160ms;
+}
+
+.app-nav-scrim[data-state="open"] {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+@media (max-width: 1023px) {
+  .app-nav-drawer {
+    visibility: hidden;
+    transform: translateX(-100%);
+    transition: transform 160ms ease-in, visibility 0s linear 160ms;
+  }
+
+  .app-nav-drawer.app-nav-open {
+    visibility: visible;
+    transform: translateX(0);
+    transition: transform 260ms var(--ease-out-soft), visibility 0s;
+  }
+
+  .app-nav-drawer:not(.app-nav-open) :is(.animate-spin,
+    .animate-indeterminate, .ui-progress-indeterminate, .progress-stripes) {
+    animation-play-state: paused;
+  }
+}
+
+/* Routine route changes confirm navigation without moving the workspace. */
+.app-page {
+  animation: fade-in 160ms ease-out;
+}
+
+.ui-toast {
+  animation: slide-in-right 240ms var(--ease-out-soft);
+}
+
+.ui-toast[data-paused="true"] .animate-toast-progress {
+  animation-play-state: paused;
+}
+
+.ui-toast[data-closing="true"] {
+  pointer-events: none;
+}
+
+/* A hidden tab should not keep working on loading and countdown animations. */
+html[data-motion-paused] :is(.skeleton, .progress-stripes, .animate-spin,
+  .animate-shimmer, .animate-pulse-soft, .animate-indeterminate,
+  .ui-progress-indeterminate, .animate-toast-progress) {
+  animation-play-state: paused;
+}
+
+/* A drawn check confirms a gallery joined the merged-download selection. */
+@keyframes downloader-selection-check {
+  from { stroke-dashoffset: 24; }
+  to { stroke-dashoffset: 0; }
+}
+
+.downloader-selection-check path {
+  stroke-dasharray: 24;
+  animation: downloader-selection-check 240ms var(--ease-out-soft);
+}
+
+@keyframes downloader-task-status {
+  from { opacity: 0.6; }
+  to { opacity: 1; }
+}
+
+.downloader-task-status {
+  animation: downloader-task-status 140ms ease-out;
 }
 
 /* The whole panel enters together, rather than animating each nested card twice. */
@@ -359,6 +446,15 @@ select {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .ui-progress-fill {
+    transition: none;
+  }
+
+  .downloader-selection-check path,
+  .downloader-task-status {
+    animation: none;
+  }
+
   .ui-tab-indicator {
     transition: none !important;
   }
@@ -374,5 +470,46 @@ select {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  @media (max-width: 1023px) {
+    .app-nav-drawer,
+    .app-nav-drawer.app-nav-open {
+      transform: none;
+    }
+
+    .app-nav-drawer {
+      opacity: 0;
+    }
+
+    .app-nav-drawer.app-nav-open {
+      opacity: 1;
+    }
+  }
+
+  .ui-progress-indeterminate {
+    animation: none !important;
+    transform: none;
+    opacity: 0.65;
+  }
+
+  .app-page,
+  .ui-toast {
+    animation: fade-in 120ms ease-out !important;
+  }
+
+  .ui-toast .animate-toast-progress {
+    display: none;
+  }
+
+  /* Keep restrained color feedback while removing spatial movement. */
+  .ui-button,
+  .ui-choice,
+  .ui-field,
+  .app-nav-scrim,
+  .app-nav-drawer {
+    transition-property: background-color, border-color, color, opacity, visibility;
+    transition-duration: 100ms !important;
+    transition-delay: 0s;
   }
 }

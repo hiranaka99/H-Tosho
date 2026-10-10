@@ -56,6 +56,7 @@ export const JOB_LABELS: Record<string, string> = {
   'check-watched-searches': 'Check watched searches',
   'edit-comicinfo': 'Edit ComicInfo',
   'merge-series': 'Merge series',
+  'delete-series': 'Delete series',
 };
 
 export function jobLabel(type: string, payload?: Record<string, unknown>): string {

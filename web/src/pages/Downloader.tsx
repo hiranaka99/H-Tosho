@@ -201,6 +201,52 @@ const RESULTS_PAGE_SIZE = 25;
 /** Finished tasks shown before the History section collapses (rest via "Show all"). */
 const HISTORY_PREVIEW = 5;
 
+/** Follow tasks between queue sections, without measuring on every progress tick. */
+function useQueueTransitions(state: string) {
+  const ref = React.useRef<HTMLDivElement>(null);
+  const previous = React.useRef<Map<string, { x: number; y: number }> | null>(null);
+  React.useLayoutEffect(() => {
+    const container = ref.current;
+    if (!container) return;
+    const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const origin = container.getBoundingClientRect();
+    const positions = new Map<string, { x: number; y: number }>();
+    const animations: Animation[] = [];
+    container.querySelectorAll<HTMLElement>('[data-download-id]').forEach((row) => {
+      const bounds = row.getBoundingClientRect();
+      // Work only on visible rows; a long history adds no offscreen animation cost.
+      if (bounds.bottom < 0 || bounds.top > window.innerHeight) return;
+      const id = row.dataset.downloadId!;
+      const position = { x: bounds.left - origin.left, y: bounds.top - origin.top };
+      positions.set(id, position);
+      if (!previous.current || preference.matches || document.hidden || typeof row.animate !== 'function') return;
+      const old = previous.current.get(id);
+      const dx = old ? old.x - position.x : 0;
+      const dy = old ? old.y - position.y : 6;
+      if (old && Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      const nearby = old && Math.abs(dx) < 80 && Math.abs(dy) < 160;
+      animations.push(row.animate(
+        nearby
+          ? [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }]
+          : [{ opacity: 0.6, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }],
+        { duration: nearby ? 240 : 180, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' },
+      ));
+    });
+    previous.current = positions;
+    const cancel = () => animations.forEach((animation) => animation.cancel());
+    const onPreferenceChange = () => { if (preference.matches) cancel(); };
+    const onVisibilityChange = () => { if (document.hidden) cancel(); };
+    preference.addEventListener('change', onPreferenceChange);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      cancel();
+      preference.removeEventListener('change', onPreferenceChange);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [state]);
+  return ref;
+}
+
 /** Format an ISO 8601 date string for display, or undefined when absent/invalid. */
 function formatDate(iso?: string | null): string | undefined {
   if (!iso) return undefined;
@@ -217,7 +263,7 @@ function DownloadStatusBadge({ status }: { status: string }) {
     failed: <Badge tone="danger"><XCircle className="h-3 w-3" /> Failed</Badge>,
     paused: <Badge tone="warning"><Pause className="h-3 w-3" /> Paused</Badge>,
   };
-  return <>{map[status] ?? <Badge>{status}</Badge>}</>;
+  return <span key={status} className="downloader-task-status inline-flex">{map[status] ?? <Badge>{status}</Badge>}</span>;
 }
 
 // ---------------- Gallery card ----------------
@@ -263,11 +309,11 @@ const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, 
           )}
           <PageCountPill pageCount={item.pageCount} className="absolute right-2 top-2" />
           {selectMode && selected && (
-            <span className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-primary-button text-white">
-              <CheckSquare className="h-3.5 w-3.5" />
+            <span className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-primary-button text-white" aria-hidden="true">
+              <CheckCircle2 className="downloader-selection-check h-3.5 w-3.5" />
             </span>
           )}
-          <div className="pointer-events-none absolute inset-0 flex items-end justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          <div className="pointer-events-none absolute inset-0 flex items-end justify-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
             <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-primary-button px-3 py-1 text-xs font-medium text-white">
               {selectMode ? (<><CheckSquare className="h-3 w-3" /> {selected ? 'Selected' : 'Select'}</>) : (<><Search className="h-3 w-3" /> Details</>)}
             </span>
@@ -560,7 +606,7 @@ const QueueRow = React.memo(function QueueRow({ task, onAction, onEditComicInfo,
   const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : 0;
   const showCover = task.status === 'completed' && !!task.outputPath;
   return (
-    <div className="flex min-w-0 animate-fade-up gap-3 rounded-lg border border-border p-3 transition-colors duration-150 sm:p-4">
+    <div data-download-id={task.id} className="flex min-w-0 gap-3 rounded-lg border border-border p-3 transition-colors duration-150 sm:p-4">
       {showCover && <TaskCover id={task.id} />}
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="flex flex-wrap items-start justify-between gap-2">
@@ -580,7 +626,7 @@ const QueueRow = React.memo(function QueueRow({ task, onAction, onEditComicInfo,
 
         {task.status === 'downloading' && (
           <>
-            <ProgressBar value={task.progressCurrent} max={task.progressTotal} active={task.status === 'downloading'} />
+            <ProgressBar value={task.progressCurrent} max={task.progressTotal} label={`Download progress for ${task.title ?? `Gallery ${task.galleryId}`}`} />
             <div className="flex flex-col gap-1 text-sm text-muted sm:flex-row sm:items-center sm:justify-between">
               <span className="truncate">{task.currentFile ? `Saving ${task.currentFile}` : 'Starting…'}</span>
               <span className="shrink-0">
@@ -895,6 +941,8 @@ function ManagerTab() {
   const [showAllHistory, setShowAllHistory] = React.useState(false);
   const [comicInfo, setComicInfo] = React.useState<{ path?: string } | null>(null);
 
+  const queueMotionRef = useQueueTransitions(`${status}:${showAllHistory}:${tasks.map((task) => `${task.id}:${task.status}`).join(',')}`);
+
   const currentTasks = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
   const failed = tasks.filter((t) => t.status === 'failed');
   const finished = tasks.filter((t) => t.status === 'completed');
@@ -912,11 +960,12 @@ function ManagerTab() {
 
   return (
     <>
+      <div ref={queueMotionRef}>
       <Card>
         <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
           <CardTitle className="flex items-center gap-2">
             <DownloadIcon className="h-4 w-4" /> Downloads
-            {liveConnected && <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" /> Live</span>}
+            {liveConnected && <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success"><span className="h-1.5 w-1.5 rounded-full bg-success" /> Live</span>}
             {currentTasks.length > 0 && <Badge tone="info">{currentTasks.length} active</Badge>}
           </CardTitle>
           {finished.some((task) => task.status === 'completed') && <Button size="sm" variant="outline" onClick={() => setConfirmClear(true)}><Trash2 className="h-3.5 w-3.5" /> Clear completed</Button>}
@@ -967,6 +1016,7 @@ function ManagerTab() {
         </CardContent>
       </Card>
 
+      </div>
       {comicInfo && (
         <ComicInfoModal initialPath={comicInfo.path} onClose={() => setComicInfo(null)} />
       )}

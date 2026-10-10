@@ -52,8 +52,8 @@ export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDiv
   return <div className={cn('flex flex-col gap-1 border-b border-border p-3 sm:p-4', className)} {...props} />;
 }
 
-export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn('min-w-0 text-sm font-semibold tracking-tight', className)} {...props} />;
+export function CardTitle({ className, as: Heading = 'h3', ...props }: React.HTMLAttributes<HTMLHeadingElement> & { as?: 'h2' | 'h3' | 'h4' }) {
+  return <Heading className={cn('min-w-0 text-sm font-semibold tracking-tight', className)} {...props} />;
 }
 
 export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
@@ -65,7 +65,7 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
     <input
       ref={ref}
       className={cn(
-        'ui-field flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-sm placeholder:text-muted/70 focus:border-primary focus:bg-surface',
+        'ui-field flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-base placeholder:text-muted focus:border-primary focus:bg-surface aria-[invalid=true]:border-danger sm:text-sm',
         'transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
@@ -84,7 +84,7 @@ export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttrib
     <select
       ref={ref}
       className={cn(
-        'ui-field flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-sm focus:border-primary focus:bg-surface',
+        'ui-field flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-base focus:border-primary focus:bg-surface sm:text-sm',
         'transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
@@ -177,18 +177,18 @@ export function StatusBadge({ status, className, title }: { status: string; clas
 
 export function ProgressBar({ value, max, className, active = false, label = 'Progress' }: { value: number; max: number; className?: string; active?: boolean; label?: string }) {
   const determinate = max > 0;
-  const p = determinate ? Math.min(100, Math.round((value / max) * 100)) : 0;
+  const p = determinate ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : 0;
   return (
     <div
       role="progressbar"
       aria-label={label}
       aria-valuemin={0}
       aria-valuemax={determinate ? max : undefined}
-      aria-valuenow={determinate ? Math.min(max, value) : undefined}
+      aria-valuenow={determinate ? Math.max(0, Math.min(max, value)) : undefined}
       aria-valuetext={determinate ? `${p}%` : 'In progress'}
       className={cn('h-2 w-full overflow-hidden rounded-full bg-surface-2', className)}
     >
-      <div className="relative h-full rounded-full bg-primary transition-[width] duration-500 ease-out" style={{ width: p + '%' }}>
+      <div className={cn('relative h-full origin-left rounded-full bg-primary', determinate ? 'ui-progress-fill w-full' : 'ui-progress-indeterminate w-1/3')} style={determinate ? { transform: `scaleX(${p / 100})` } : undefined}>
         {active && p > 0 && p < 100 && <div className="progress-stripes absolute inset-0" />}
       </div>
     </div>
@@ -314,7 +314,7 @@ export function ErrorState({ title = 'Something went wrong', description, onRetr
   );
 }
 
-export function SegmentedTabs<T extends string>({ items, value, onChange, label, panelId, className }: { items: readonly { id: T; label: string }[]; value: T; onChange: (id: T) => void; label: string; panelId: string; className?: string }) {
+export function SegmentedTabs<T extends string>({ items, value, onChange, label, panelId, className }: { items: readonly { id: T; label: string; dirty?: boolean }[]; value: T; onChange: (id: T) => void; label: string; panelId: string; className?: string }) {
   const { ref, indicatorStyle } = useSelectionIndicator(value, items);
   return (
     <div ref={ref} role="tablist" aria-label={label} className={cn('ui-tablist relative flex w-full max-w-full flex-nowrap overflow-x-auto border-b border-border p-1', className)}>
@@ -343,7 +343,7 @@ export function SegmentedTabs<T extends string>({ items, value, onChange, label,
             value === item.id ? 'text-primary' : 'text-muted hover:text-foreground',
           )}
         >
-          {item.label}
+          {item.label}{item.dirty && <><span aria-hidden="true" className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-primary align-middle" /><span className="sr-only">, unsaved changes</span></>}
         </button>
       ))}
     </div>
