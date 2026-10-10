@@ -452,9 +452,9 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, setup, onS
   };
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-5xl" aria-describedby={undefined}>
-        <div className="flex max-h-[calc(100dvh-2rem)] flex-col lg:max-h-[90dvh]">
-        <div className="grid min-h-0 gap-4 overflow-y-auto p-3 sm:p-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-5">
+      <DialogContent className="max-w-[min(98vw,1760px)]" aria-describedby={undefined}>
+        <div className="flex max-h-[calc(100dvh-2rem)] flex-col">
+        <div className="grid min-h-0 gap-4 overflow-y-auto p-3 sm:p-5 lg:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)] lg:gap-5">
           <div className="flex min-w-0 flex-col gap-4 lg:col-start-2 lg:row-start-1 lg:self-start">
             <div className="min-w-0 pr-10">
               <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -518,16 +518,17 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, setup, onS
               <div
                 className="flex min-h-0 flex-col gap-2"
                 tabIndex={0}
-                aria-label="Doujin page preview. Use left and right arrow keys to change pages."
+                aria-label="Doujin page preview. Click the left half for the previous page or the right half for the next page. You can also use left and right arrow keys."
                 onKeyDown={(event) => {
                   if (event.key === 'ArrowLeft') showPreviewPage(previewPage - 1);
                   if (event.key === 'ArrowRight') showPreviewPage(previewPage + 1);
                 }}
               >
-                <div className="flex h-[min(40dvh,24rem)] items-center justify-center overflow-hidden rounded-lg border border-border bg-background lg:h-[min(60dvh,46rem)]">
+                <div className="relative flex h-[min(60dvh,36rem)] shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-background sm:h-[min(72dvh,54rem)] lg:h-[min(84dvh,72rem)]">
                   {previewFailed ? (
                     <div className="flex flex-col items-center gap-2 p-6 text-center text-sm text-muted"><ImageOff className="h-8 w-8" />This page could not be loaded.<Button size="sm" variant="outline" onClick={() => { setPreviewFailed(false); setPreviewAttempt(n => n + 1); }}><RotateCcw className="h-3.5 w-3.5" /> Retry page</Button></div>
                   ) : (
+                    <>
                     <img
                       key={`${previewPage}:${previewAttempt}`}
                       src={previewPages[previewPage]}
@@ -539,6 +540,9 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, setup, onS
                         else setPreviewFailed(true);
                       }}
                     />
+                      <button type="button" tabIndex={-1} aria-label="Previous page — left half of preview" title="Previous page" disabled={previewPage === 0} onClick={() => showPreviewPage(previewPage - 1)} className="absolute inset-y-0 left-0 w-1/2 cursor-pointer disabled:cursor-default" />
+                      <button type="button" tabIndex={-1} aria-label="Next page — right half of preview" title="Next page" disabled={previewPage === lastPreviewPage} onClick={() => showPreviewPage(previewPage + 1)} className="absolute inset-y-0 right-0 w-1/2 cursor-pointer disabled:cursor-default" />
+                    </>
                   )}
                 </div>
                 <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">

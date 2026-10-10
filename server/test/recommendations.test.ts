@@ -427,3 +427,97 @@ test('download ownership survives queue clearing and warm refresh needs no new s
   assert.equal(searches, calls);
   assert.equal(overlap(keySet(first.items), keySet(second.items)), 0);
 });
+
+test('artist-constrained warm pools fetch fresh candidates before reusing history', async () => {
+  getDb().delete(schema.recommendationHistory).run();
+  let searches = 0;
+  let diverse = false;
+  const fetchedKeys = new Set<string>();
+  doujinProviders.hitomi = {
+    ...stubProvider('hitomi', () => []),
+    async search(query, limit = 24) {
+      searches += 1;
+      return Array.from({ length: limit }, (_, i) => {
+        const galleryId = `${diverse ? 'diverse' : 'constrained'}-${slug(query)}-${i}`;
+        fetchedKeys.add(galleryId);
+        return { source: 'hitomi' as const, galleryId, title: galleryId, tags: [], artists: diverse ? [galleryId] : ['shared artist'] };
+      });
+    },
+  };
+
+  const first = await recs.refreshRecommendations();
+  assert.equal(first.items.length, 1);
+  assert.ok(fetchedKeys.size > 24, 'scenario must have enough raw galleries to appear full');
+  const calls = searches;
+  diverse = true;
+  const second = await recs.refreshRecommendations();
+  assert.ok(searches > calls, 'artist-constrained pool prevented replenishment');
+  assert.ok(searches - calls <= 10, 'replenishment exceeded one batch of searches');
+  assert.equal(second.items.length, 12);
+  assert.equal(second.repeatedCount, 0);
+  assert.equal(overlap(keySet(first.items), keySet(second.items)), 0);
+  assert.equal(new Set(second.items.flatMap((item) => item.artists)).size, 12);
+});
+
+test('provider exclusions do not let an ineligible warm pool prevent replenishment', async () => {
+  getDb().delete(schema.recommendationHistory).run();
+  setDownloaderSettings({ ...DEFAULT_DOWNLOADER, hitomiBannedTags: ['blocked'] });
+  let searches = 0;
+  let excludeOld = false;
+  doujinProviders.hitomi = {
+    ...stubProvider('hitomi', () => []),
+    async search(query, limit = 24) {
+      searches += 1;
+      return Array.from({ length: limit }, (_, i) => {
+        const galleryId = `${excludeOld ? 'eligible-new' : 'eligible-old'}-${slug(query)}-${i}`;
+        return { source: 'hitomi' as const, galleryId, title: galleryId, tags: [], artists: [] };
+      });
+    },
+    async filterRecommendations(items) {
+      return excludeOld ? items.filter((item) => item.galleryId.startsWith('eligible-new')) : items;
+    },
+  };
+  try {
+    const first = await recs.refreshRecommendations();
+    assert.equal(first.items.length, 12);
+    const calls = searches;
+    excludeOld = true;
+    const second = await recs.refreshRecommendations();
+    assert.ok(searches > calls, 'ineligible pool prevented replenishment');
+    assert.equal(second.items.length, 12);
+    assert.ok(second.items.every((item) => item.galleryId.startsWith('eligible-new')));
+    assert.equal(second.repeatedCount, 0);
+  } finally {
+    setDownloaderSettings(DEFAULT_DOWNLOADER);
+  }
+});
+
+test('popular reserves exclude visible cards and replace all twelve dismissals without searches', async () => {
+  getDb().delete(schema.recommendationHistory).run();
+  let searches = 0;
+  const ids = Array.from({ length: 24 }, (_, i) => `popular-reserve-${i}`);
+  doujinProviders.hitomi = stubProvider('hitomi', (query) => {
+    searches += 1;
+    return query === 'doujinshi' ? ids : [];
+  });
+
+  const initial = await recs.refreshRecommendations();
+  assert.equal(initial.mode, 'popular');
+  assert.equal(initial.items.length, 12);
+  const today = localDate(new Date());
+  const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${today}`)).get();
+  assert.ok(row);
+  const cached = JSON.parse(row.valueJson) as { reserve: DoujinSearchResult[] };
+  assert.equal(cached.reserve.length, 12);
+  assert.equal(overlap(keySet(initial.items), keySet(cached.reserve)), 0);
+
+  const calls = searches;
+  let current = initial;
+  for (const item of initial.items) {
+    current = await recs.dismissAndReplace(item.source, item.galleryId);
+    assert.equal(current.items.length, 12, 'dismissal ran out of usable reserves');
+    assert.equal(searches, calls, 'dismissal performed remote searches');
+    assert.ok(!keySet(current.items).has(`${item.source}:${item.galleryId}`));
+  }
+  assert.deepEqual(keySet(current.items), keySet(cached.reserve));
+});

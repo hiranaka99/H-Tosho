@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.8.0
+
+### Libraries
+
+- Open existing matches directly in field-by-field review. Add a review queue
+  position, Skip to next, and Apply & next without bypassing field selection.
+- Keep comparison actions and selected-field counts visible while scrolling.
+  Disclose library actions and mobile sorting/merge selection; place page
+  previews to the right of the artist and remove the Identify series label.
+- Remove the leading context-menu divider, including for series without artists.
+- Show failure reasons, distinguish empty libraries from filtered results, and
+  report unmatched and failed counts separately. Preserve browsing position
+  when closing metadata review.
+- Remove alignment status, its API fields, computations, and stored flag.
+  Upgrade existing databases without removing matches or explicit approvals.
+- Add left/right click navigation to Libraries and Downloader page previews.
+  Keep arrow keys and page controls, and stop at the first and last page.
+
+### Recommendations
+
+- Replenish cached candidates when artist/work diversity or provider exclusions
+  leave too few usable picks, before falling back to previously shown galleries.
+- Exclude visible galleries from popular reserves so dismissals can replace
+  every displayed pick without repeating cards or performing new searches.
+
+### Jobs
+
+- Enlarge cover thumbnails in the activity list and detail drawer, and adapt
+  action wrapping for narrower screens.
+- Simplify Libraries and Downloader pagination by removing the jump input.
+
+### Upgrading
+
+Update and rebuild with your existing data volume and library mounts. For Docker,
+run `docker compose up -d --build`. The retired alignment column is removed
+automatically; saved matches, explicit approvals, settings, and history remain.
+
 ## v2.7.0
 
 ### Jobs

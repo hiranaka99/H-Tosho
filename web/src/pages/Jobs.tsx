@@ -81,9 +81,9 @@ function SeriesCover({ series, version, className }: { series?: { id: number; na
   const src = series ? `/api/kavita/series/${series.id}/cover?v=${encodeURIComponent(version)}` : undefined;
   const [failedSrc, setFailedSrc] = React.useState<string>();
   return (
-    <div aria-hidden="true" className={cn('aspect-[3/4] w-12 shrink-0 overflow-hidden rounded-md bg-surface-2', className)}>
+    <div aria-hidden="true" className={cn('aspect-[3/4] w-16 shrink-0 overflow-hidden rounded-md bg-surface-2 sm:w-24', className)}>
       {src && failedSrc !== src ? (
-        <img src={src} alt="" width={48} height={64} loading="lazy" decoding="async" className="h-full w-full object-cover" onError={() => setFailedSrc(src)} />
+        <img src={src} alt="" width={96} height={128} loading="lazy" decoding="async" className="h-full w-full object-cover" onError={() => setFailedSrc(src)} />
       ) : (
         <div className="flex h-full items-center justify-center text-sm font-semibold text-muted">
           {series ? series.name.charAt(0).toUpperCase() : <ListChecks className="h-5 w-5" />}
@@ -93,11 +93,11 @@ function SeriesCover({ series, version, className }: { series?: { id: number; na
   );
 }
 
-function JobCover({ job }: { job: Job }) {
+function JobCover({ job, className }: { job: Job; className?: string }) {
   const series = jobSeries(job);
   return (
     <div className="relative shrink-0" title={series.length > 1 ? `${series.length} affected series` : series[0]?.name}>
-      <SeriesCover series={series[0]} version={job.finishedAt ?? job.startedAt ?? job.createdAt} />
+      <SeriesCover series={series[0]} version={job.finishedAt ?? job.startedAt ?? job.createdAt} className={className} />
       {series.length > 1 && <span aria-hidden="true" className="absolute bottom-1 right-1 rounded bg-black/70 px-1 py-0.5 text-2xs font-medium tabular-nums text-white">+{series.length - 1}</span>}
     </div>
   );
@@ -110,7 +110,7 @@ function AffectedSeries({ job }: { job: Job }) {
     <ul className="space-y-2 py-2 text-sm">
       {series.map((target) => (
         <li key={target.id} className="flex min-w-0 items-center gap-2">
-          <SeriesCover series={target} version={job.finishedAt ?? job.startedAt ?? job.createdAt} className="w-6 rounded" />
+          <SeriesCover series={target} version={job.finishedAt ?? job.startedAt ?? job.createdAt} className="w-10 rounded sm:w-12" />
           <span className="min-w-0 break-words">{target.name} <span className="text-xs text-muted">· Series #{target.id}</span></span>
         </li>
       ))}
@@ -425,7 +425,7 @@ export function Jobs() {
             <article key={job.id} className={cn('min-w-0 px-3 py-3 sm:px-4', job.id === selectedId ? 'bg-primary/5' : job.status === 'failed' ? 'bg-danger/5' : undefined)}>
               <div className="flex min-w-0 items-start gap-3">
                 <JobCover job={job} />
-                <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+                <div className="flex min-w-0 flex-1 flex-col gap-2 md:flex-row md:items-start md:justify-between md:gap-4">
                     <div className="min-w-0 flex-1">
                       <h2 className="break-words text-sm font-semibold [overflow-wrap:anywhere]">{jobTarget(job)}</h2>
                       <p className="mt-1 break-words text-xs text-muted">
@@ -434,7 +434,7 @@ export function Jobs() {
                       {jobSummary(job) && <p className={cn('mt-1 text-sm', job.status === 'failed' ? 'line-clamp-2 text-danger' : 'text-muted')} title={job.status === 'failed' ? job.errorMessage ?? undefined : undefined}>{jobSummary(job)}</p>}
                       {job.status === 'running' && <div className="mt-2 flex items-center gap-2"><ProgressBar value={job.progressCurrent} max={job.progressTotal} active label={`Progress for ${jobTarget(job)}`} className="max-w-xs" />{job.progressTotal > 0 && <span className="shrink-0 text-xs tabular-nums text-muted">{job.progressCurrent} / {job.progressTotal}</span>}</div>}
                     </div>
-                    <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+                    <div className="flex shrink-0 flex-wrap items-center gap-2 md:justify-end">
                       <JobStatus job={job} />
                       {actions(job, true)}
                       <Button variant="ghost" size="sm" className={controlClass} aria-label={`View details for job #${job.id}: ${jobTarget(job)}`} onClick={() => updateUrl({ job: job.id })}>Details</Button>
@@ -449,7 +449,7 @@ export function Jobs() {
         <DialogContent className="!left-auto !right-0 !top-0 !h-dvh !max-h-dvh !w-full !max-w-none !translate-x-0 !translate-y-0 !animate-none !rounded-none border-y-0 border-r-0 sm:!w-full lg:!w-[min(640px,55vw)]">
           <div className="flex h-full min-h-0 min-w-0 flex-col">
             <div className="flex shrink-0 items-start gap-3 border-b border-border p-4 pr-16 sm:p-5 sm:pr-16">
-              {selectedJob && <JobCover job={selectedJob} />}
+              {selectedJob && <JobCover job={selectedJob} className="w-20 sm:w-28" />}
               <div className="min-w-0 flex-1">
                 <DialogTitle>{selectedJob ? jobTarget(selectedJob) : 'Job details'}</DialogTitle>
                 <DialogDescription className="mt-1 break-words">{selectedJob ? `${jobLabel(selectedJob.type, selectedJob.payload)} · ` : ''}Job #{selectedId}</DialogDescription>

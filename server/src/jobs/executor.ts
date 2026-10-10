@@ -12,7 +12,7 @@ import {
   providerOrderFor,
 } from '../services/settings.js';
 import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
-import { applyToKavita, applySeriesMatch, checkAlignment, type ApplySeriesResult } from '../services/sync.js';
+import { applyToKavita, applySeriesMatch, type ApplySeriesResult } from '../services/sync.js';
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type JobContext, type LogFn } from './queue.js';
@@ -93,7 +93,6 @@ function upsertMatch(r: {
   matchScore: number | null;
   metadataJson: string | null;
   errorMessage: string | null;
-  aligned?: boolean;
 }): void {
   const existing = getDb().select({
     confirmed: schema.seriesMatches.confirmed,
@@ -115,7 +114,6 @@ function upsertMatch(r: {
       confirmed,
       metadataJson: r.metadataJson,
       errorMessage: r.errorMessage,
-      aligned: r.aligned ?? false,
       lastSyncedAt: new Date().toISOString(),
     })
     .onConflictDoUpdate({
@@ -128,7 +126,6 @@ function upsertMatch(r: {
         confirmed,
         metadataJson: r.metadataJson,
         errorMessage: r.errorMessage,
-        aligned: r.aligned ?? false,
         lastSyncedAt: new Date().toISOString(),
       },
     })
@@ -195,17 +192,6 @@ async function matchAndApply(
       volumeCovers: meta.volumeCovers,
       title: series.name,
     });
-    // Verify the push against Kavita's live state and record whether every
-    // provider-managed field now matches (the "Aligned" flag).
-    let aligned = false;
-    try {
-      const full = await client.getSeriesById(series.id);
-      const kavitaMeta = await client.getSeriesMetadata(series.id);
-      aligned = checkAlignment({ name: full.name, metadata: kavitaMeta }, meta).aligned;
-    } catch {
-      /* series without a metadata row yet — stays unaligned */
-    }
-
     const status = result.errors.length ? 'failed' : 'matched';
     upsertMatch({
       kavitaSeriesId: series.id,
@@ -215,7 +201,6 @@ async function matchAndApply(
       matchScore: best.score,
       metadataJson: JSON.stringify(meta),
       errorMessage: result.errors.length ? result.errors.join('; ') : null,
-      aligned,
     });
     recordHistory(series.id, series.name, result.errors.length ? 'failed' : force ? 'updated' : 'matched', {
       providerId: best.providerId,

@@ -154,16 +154,14 @@ function dropCatalogTable(sqlite: Database.Database): void {
     console.warn('[h-tosho] failed to drop legacy mangadex_catalog table:', err);
   }
 }
-/** Add the alignment flag column to databases created before it existed. */
+/** Preserve explicit approvals and remove the retired alignment flag. */
 function migrateSeriesMatchColumns(sqlite: Database.Database): void {
   const existing = new Set(
     (sqlite.prepare('PRAGMA table_info(series_matches)').all() ?? []).map((c) => (c as { name: string }).name),
   );
   if (existing.size === 0) return;
-  for (const column of ['aligned', 'confirmed']) {
-    if (existing.has(column)) continue;
-    sqlite.exec(`ALTER TABLE series_matches ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
-  }
+  if (existing.has('aligned')) sqlite.exec('ALTER TABLE series_matches DROP COLUMN aligned');
+  if (!existing.has('confirmed')) sqlite.exec('ALTER TABLE series_matches ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0');
   if (!existing.has('confirmed')) {
     // Recover explicit approvals from retained apply jobs. History alone is
     // ambiguous: automatic re-syncs also use the "updated" action. Require the
@@ -377,7 +375,6 @@ CREATE TABLE IF NOT EXISTS series_matches (
   provider_series_id TEXT,
   match_score REAL,
   confirmed INTEGER NOT NULL DEFAULT 0,
-  aligned INTEGER NOT NULL DEFAULT 0,
   metadata_json TEXT,
   error_message TEXT,
   last_synced_at TEXT,

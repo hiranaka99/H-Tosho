@@ -34,8 +34,6 @@ export const seriesMatches = sqliteTable('series_matches', {
   matchScore: real('match_score'),
   /** A user explicitly accepted this provider candidate. Independent of title similarity. */
   confirmed: integer('confirmed', { mode: 'boolean' }).notNull().default(false),
-  /** All provider-managed metadata fields match Kavita's current values. */
-  aligned: integer('aligned', { mode: 'boolean' }).notNull().default(false),
   /** Aggregated metadata (JSON) captured at match time */
   metadataJson: text('metadata_json'),
   errorMessage: text('error_message'),

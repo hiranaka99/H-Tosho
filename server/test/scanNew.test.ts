@@ -44,7 +44,6 @@ function insertMatchRow(kavitaSeriesId: number, status: string): void {
       matchScore: null,
       metadataJson: null,
       errorMessage: null,
-      aligned: false,
     })
     .run();
 }

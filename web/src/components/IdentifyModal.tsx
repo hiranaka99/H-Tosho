@@ -48,6 +48,9 @@ interface IdentifyModalProps {
   match: SeriesMatch | null;
   currentCover?: string | null;
   onClose: () => void;
+  reviewPosition?: string;
+  onNext?: () => void;
+  autoReview?: boolean;
 }
 
 const tagNames = (tags: KavitaTag[] | null | undefined): string =>
@@ -229,7 +232,7 @@ function CandidateCover({ src }: { src?: string }) {
   if (!src || failed) return <Search className="h-4 text-muted" />;
   return <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} className="h-full w-full object-cover" />;
 }
-export function IdentifyModal({ seriesId, current, currentLoading, currentError, onRetryCurrent, match, currentCover, onClose }: IdentifyModalProps) {
+export function IdentifyModal({ seriesId, current, currentLoading, currentError, onRetryCurrent, match, currentCover, onClose, reviewPosition, onNext, autoReview = false }: IdentifyModalProps) {
   const qc = useQueryClient();
   const [selected, setSelected] = React.useState<MatchCandidate | null>(null);
   const [reviewingExistingMatch, setReviewingExistingMatch] = React.useState(false);
@@ -313,7 +316,8 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
       qc.invalidateQueries({ queryKey: ['series', seriesId] });
       qc.invalidateQueries({ queryKey: ['jobs'] });
       toast({ tone: 'info', title: 'Sync queued', description: 'Cover stays unchanged until sync finishes. Check Jobs for errors.' });
-      onClose();
+      if (onNext) onNext();
+      else onClose();
     },
     onError: (e) => toast({ tone: 'danger', title: 'Could not queue sync', description: e instanceof Error ? e.message : String(e) }),
   });
@@ -358,6 +362,12 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const visibleCandidates = React.useMemo(() => {
     return tab === 'all' ? alternatives : alternatives.filter((c) => c.providerId === tab);
   }, [alternatives, tab]);
+  const openedExisting = React.useRef(false);
+  React.useEffect(() => {
+    if (!autoReview || openedExisting.current || !match?.providerId || !match.providerSeriesId) return;
+    openedExisting.current = true;
+    reviewCandidate({ providerId: match.providerId, providerSeriesId: match.providerSeriesId, title: current.name, type: 'unknown', score: match.matchScore ?? 0 }, false, true);
+  }, [autoReview, match?.providerId, match?.providerSeriesId, current.name, match?.matchScore]);
 
   // Full aggregated metadata for the selected candidate — fetched through the
   // same path Apply & Sync uses, so the diff previews exactly what will push.
@@ -409,6 +419,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
     ];
     return { rows, coverCandidate: m?.coverUrl ?? selected.coverUrl };
   }, [selected, preview.data, resolvedTitle, current, k]);
+  const selectedFieldCount = diff?.rows.filter((row) => row.field && (row.candidate.trim() !== '' || row.clearing) && !excluded.has(row.field)).length ?? 0;
 
   const doApply = (ids: { providerId: string; providerSeriesId: string }, opts?: { selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) => {
     apply.mutate({ ...ids, ...opts });
@@ -416,9 +427,9 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
 
   return (
     <>
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-[min(96vw,1440px)]">
-        <div ref={dialogScroll} className="flex max-h-[90vh] flex-col gap-4 overflow-y-auto p-3 sm:p-5">
+    <Dialog open onOpenChange={(o) => { if (!o && !apply.isPending) onClose(); }}>
+      <DialogContent className="flex max-h-[90dvh] max-w-[min(96vw,1440px)] flex-col overflow-hidden">
+        <div ref={dialogScroll} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-3 sm:p-5">
           <div className="flex items-start gap-2 pr-10">
             <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
             <div>
@@ -449,7 +460,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                     <ProviderBadge id={match.providerId} />
                     {typeof match.matchScore === 'number' && ` · ${Math.round(match.matchScore * 100)}%`}
                   </p>
-                  <p className="mt-1 text-xs text-muted">{match.aligned ? 'Metadata is up to date.' : 'Metadata differs. Review the changes before syncing.'}</p>
+                  <p className="mt-1 text-xs text-muted">Review current and proposed metadata before syncing.</p>
                 </div>
               <div className="flex flex-wrap items-center gap-2">
                 {match.providerSeriesId && (
@@ -648,18 +659,6 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                 </div>
               )}
 
-              {selected && (
-              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
-                <Button variant="ghost" onClick={onClose}>
-                  <X className="h-4 w-4" /> Cancel
-                </Button>
-                <Button
-                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: reviewingExistingMatch ? undefined : selected.score })}
-                  disabled={!currentReady || !preview.isSuccess || preview.isError || apply.isPending}
-                >
-                  {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} Apply & Sync to Kavita
-                </Button>
-              </div>)}
 
               {apply.isError && (
                 <div className="flex items-center gap-2 rounded-md bg-danger/10 p-3 text-sm text-danger">
@@ -670,6 +669,18 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
             </>
           )}
         </div>
+        {(selected || reviewPosition) && <div className="shrink-0 border-t border-border bg-surface px-3 py-3 sm:px-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p role="status" className="text-xs text-muted">{reviewPosition && `Review ${reviewPosition}${selected ? ' · ' : ''}`}{selected && (currentReady && preview.isSuccess ? `${selectedFieldCount} fields selected${coverEnabled && diff?.coverCandidate ? ' · cover selected' : ''}` : 'Load metadata before applying')}</p>
+            <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+              <Button variant="ghost" onClick={onClose} disabled={apply.isPending}>Close</Button>
+              {onNext && <Button variant="outline" onClick={onNext} disabled={apply.isPending}>Skip to next</Button>}
+              {selected && <Button className="min-h-11 flex-1 sm:flex-none" onClick={() => doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: reviewingExistingMatch ? undefined : selected.score })} disabled={!currentReady || !preview.isSuccess || preview.isError || apply.isPending}>
+                {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} {onNext ? 'Apply & next' : 'Apply & Sync'}
+              </Button>}
+            </div>
+          </div>
+        </div>}
       </DialogContent>
     </Dialog>
     <Dialog open={!!zoomCover} onOpenChange={(o) => { if (!o) setZoomCover(null); }}>

@@ -39,5 +39,8 @@ test('upgrade recovers only successful manual approvals of the current candidate
   const rows = db.select().from(schema.seriesMatches).all().sort((a, b) => a.kavitaSeriesId - b.kavitaSeriesId);
   assert.deepEqual(rows.map((r) => r.confirmed), [true, false, false, false, false, false, false]);
   assert.ok(rows.every((r) => r.matchScore === 0.39), 'migration keeps the original confidence');
+  const sqlite = new Database(path.join(dir, 'htosho.db'));
+  assert.equal(sqlite.prepare('PRAGMA table_info(series_matches)').all().some((column) => column !== null && typeof column === 'object' && 'name' in column && column.name === 'aligned'), false);
+  sqlite.close();
   assert.equal(initDb(), db, 'initialization is idempotent');
 });

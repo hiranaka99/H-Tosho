@@ -51,7 +51,7 @@ export function SeriesPreviewModal({ seriesId, name, onClose }: { seriesId: numb
       {files.data.files.length > 1 && (
         <label className="flex items-center gap-2 text-xs text-muted">
           <span className="shrink-0">Chapter</span>
-          <Select aria-label="Preview chapter" value={chapter} onChange={(event) => setChapter(Number(event.target.value))} className="py-1 text-xs">
+          <Select aria-label="Preview chapter" value={chapter} onChange={(event) => setChapter(Number(event.target.value))} className="min-w-0 flex-1 py-1 text-xs">
             {files.data.files.map((f, i) => (
               <option key={f} value={i}>{f.split(/[\\/]/).pop()}</option>
             ))}
@@ -61,13 +61,13 @@ export function SeriesPreviewModal({ seriesId, name, onClose }: { seriesId: numb
       <div
         className="flex min-h-0 flex-col gap-2"
         tabIndex={0}
-        aria-label={`Page preview for ${name}. Use left and right arrow keys to change pages.`}
+        aria-label={`Page preview for ${name}. Click the left half for the previous page or the right half for the next page. You can also use left and right arrow keys.`}
         onKeyDown={(event) => {
           if (event.key === 'ArrowLeft') showPage(page - 1);
           if (event.key === 'ArrowRight') showPage(page + 1);
         }}
       >
-        <div className="flex h-[min(40dvh,24rem)] items-center justify-center overflow-hidden rounded-lg border border-border bg-background lg:h-[min(60dvh,46rem)]">
+        <div className="relative flex h-[min(60dvh,36rem)] shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-background sm:h-[min(72dvh,54rem)] lg:h-[min(84dvh,72rem)]">
           {images.isPending ? (
             <Spinner className="h-6 w-6" />
           ) : pages.length === 0 ? (
@@ -75,6 +75,7 @@ export function SeriesPreviewModal({ seriesId, name, onClose }: { seriesId: numb
           ) : failed ? (
             <div className="flex flex-col items-center gap-2 p-6 text-center text-sm text-muted"><ImageOff className="h-8 w-8" />This page could not be loaded.<Button size="sm" variant="outline" onClick={() => { setFailed(false); setAttempt((n) => n + 1); }}><RotateCcw className="h-3.5 w-3.5" /> Retry page</Button></div>
           ) : (
+            <>
             <img
               key={`${chapterFile}:${page}:${attempt}`}
               src={api.cbzPageUrl(chapterFile!, pages[page])}
@@ -82,6 +83,9 @@ export function SeriesPreviewModal({ seriesId, name, onClose }: { seriesId: numb
               className="h-full w-full object-contain"
               onError={() => setFailed(true)}
             />
+              <button type="button" tabIndex={-1} aria-label="Previous page — left half of preview" title="Previous page" disabled={page === 0} onClick={() => showPage(page - 1)} className="absolute inset-y-0 left-0 w-1/2 cursor-pointer disabled:cursor-default" />
+              <button type="button" tabIndex={-1} aria-label="Next page — right half of preview" title="Next page" disabled={page === lastPage} onClick={() => showPage(page + 1)} className="absolute inset-y-0 right-0 w-1/2 cursor-pointer disabled:cursor-default" />
+            </>
           )}
         </div>
         {pages.length > 0 && (
@@ -103,9 +107,9 @@ export function SeriesPreviewModal({ seriesId, name, onClose }: { seriesId: numb
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-3xl">
-        <div className="flex flex-col gap-4 p-4 pr-12 sm:p-5 sm:pr-12">
-          <div>
+      <DialogContent className="max-w-[min(98vw,1600px)]">
+        <div className="flex max-h-[calc(100dvh-2rem)] min-w-0 flex-col gap-4 overflow-y-auto p-3 sm:p-5">
+          <div className="shrink-0 pr-10">
             <DialogTitle>Preview · {name}</DialogTitle>
             <DialogDescription className="mt-1">Pages are read directly from the series' .cbz files on disk.</DialogDescription>
           </div>

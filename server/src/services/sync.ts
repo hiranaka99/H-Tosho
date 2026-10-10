@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import path from 'node:path';
 import { getDb, schema } from '../db/index.js';
-import { KavitaClient, kavitaNormalizeName } from '../kavita/client.js';
+import { KavitaClient } from '../kavita/client.js';
 import {
   KavitaPublicationStatus,
   type SeriesMetadataPayload,
@@ -89,51 +89,6 @@ export function mergeTagLists(existing: string[], incoming: string[]): string[] 
     out.push(tag);
   }
   return out;
-}
-/**
- * Alignment check: a matched series is "aligned" when every metadata field
- * its provider supplies matches Kavita's current values. List fields compare
- * order-insensitively and ignore punctuation placement ("Girl's Love" vs
- * "Girls' Love"); tags use subset semantics because sync merges instead of
- * replacing; fields the provider does not supply are skipped.
- */
-export function checkAlignment(
-  kavita: { name: string; metadata: KavitaSeriesMetadataDto | null },
-  meta: SeriesMetadata,
-): { aligned: boolean; mismatched: string[] } {
-  const k = kavita.metadata;
-  const mismatched: string[] = [];
-  const norm = (s?: string | null) => (s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
-  // Preserve letters from every script: stripping everything outside ASCII
-  // makes distinct Japanese/Chinese/Korean names compare as the empty string.
-  const listKey = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
-  const sameSet = (a: Array<string | null>, b: string[]) => {
-    const sa = new Set(a.map((x) => listKey(x ?? '')).filter(Boolean));
-    const sb = b.map(listKey).filter(Boolean);
-    return sa.size === sb.length && sb.every((x) => sa.has(x));
-  };
-
-  // The title compares under Kavita's own normalization: the scanner treats names that normalize identically as one series, and H-Tosho never pushes titles through the API — a punctuation-only difference is steady state, not drift.
-  if (meta.title && kavitaNormalizeName(kavita.name) !== kavitaNormalizeName(meta.title)) mismatched.push('title');
-  if (meta.summary !== undefined && norm(k?.summary) !== norm(meta.summary)) mismatched.push('summary');
-  if (meta.genres.length && !sameSet((k?.genres ?? []).map((g) => g.title), meta.genres)) mismatched.push('genres');
-  if (meta.tags.length) {
-    const have = new Set((k?.tags ?? []).map((t) => listKey(t.title ?? '')).filter(Boolean));
-    if (!meta.tags.every((t) => have.has(listKey(t)))) mismatched.push('tags');
-  }
-  if (meta.writers.length && !sameSet((k?.writers ?? []).map((p) => p.name), meta.writers)) mismatched.push('writers');
-  // H-Tosho writes provider artists into Kavita's penciller role.
-  if (meta.artists.length && !sameSet((k?.pencillers ?? []).map((p) => p.name), meta.artists)) mismatched.push('artists');
-  const year = releaseYear(meta);
-  if (year !== undefined && (k?.releaseYear ?? 0) !== year) mismatched.push('releaseDate');
-  if (meta.language && norm(k?.language) !== norm(meta.language)) mismatched.push('language');
-  if (meta.status) {
-    const status = PUBLICATION_STATUS[meta.status];
-    if (status !== undefined && (k?.publicationStatus ?? -1) !== status) mismatched.push('status');
-  }
-  if (meta.url && norm(k?.webLinks) !== norm(meta.url)) mismatched.push('url');
-
-  return { aligned: mismatched.length === 0, mismatched };
 }
 
 /** User-selectable sync fields (identify dialog checkboxes) -> payload property names. */
@@ -418,7 +373,6 @@ export interface ApplySeriesResult {
   titleFilesVerified: number;
   coverUpdated: boolean;
   volumeCoversUpdated: number;
-  aligned: boolean;
   meta: SeriesMetadata;
 }
 
@@ -428,7 +382,7 @@ export interface ApplySeriesResult {
  * ComicInfo.Series in every chapter when the title is selected (the files must
  * agree with the record or Kavita's next scan would split the folder), rename
  * the record through /Series/update, push the remaining metadata + covers,
- * verify alignment, and update the local match row. Runs as a background job:
+ * and update the local match row. Runs as a background job:
  * the CBZ rewrites touch every chapter of the series, far longer than any HTTP
  * gateway tolerates on a held-open request (that is what used to surface as
  * "HTTP 504").
@@ -494,16 +448,6 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
   // History/notifications show the name Kavita displays after this sync.
   const renamed = !excludedFields.includes('title') && newTitle !== series.name.trim() && result.pushed.includes('name');
   invalidateSeriesArtists(seriesId);
-  // Verify the push against Kavita's live state and record whether every
-  // provider-managed field now matches (the "Aligned" flag).
-  let aligned = false;
-  try {
-    const full = await client.getSeriesById(seriesId);
-    const kavitaMeta = await client.getSeriesMetadata(seriesId);
-    aligned = checkAlignment({ name: full.name, metadata: kavitaMeta }, meta).aligned;
-  } catch {
-    /* series without a metadata row yet — stays unaligned */
-  }
   const db = getDb();
   // The dialog sends the applied candidate's current score; keep the stored
   // value when absent (older clients).
@@ -520,7 +464,6 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
       providerSeriesId: opts.providerSeriesId,
       matchScore,
       confirmed,
-      aligned,
       metadataJson: JSON.stringify(meta),
       errorMessage: result.errors.length ? result.errors.join('; ') : null,
       lastSyncedAt: new Date().toISOString(),
@@ -533,7 +476,6 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
         providerSeriesId: opts.providerSeriesId,
         matchScore,
         confirmed,
-        aligned,
         metadataJson: JSON.stringify(meta),
         errorMessage: result.errors.length ? result.errors.join('; ') : null,
         lastSyncedAt: new Date().toISOString(),
@@ -549,7 +491,6 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
     titleFilesVerified,
     coverUpdated: result.coverUpdated,
     volumeCoversUpdated: result.volumeCoversUpdated,
-    aligned,
     meta,
   };
 }

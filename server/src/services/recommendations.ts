@@ -732,8 +732,23 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
     candidatePool = { key: poolKey, at: Date.now(), provider, candidates: new Map(), popular: [] };
   }
   const pool = candidatePool;
-  const unseen = new Set([...pool.candidates.keys(), ...pool.popular.map(keyOf)].filter((key) => !freshExcluded.has(key)));
-  if (unseen.size < TOTAL_PICKS + RESERVE_PICKS) {
+  const asCandidate = (item: RecommendationItem): Candidate => ({ result: item, score: 1, reasons: item.reasons, matched: new Set() });
+  const readFreshPool = async () => {
+    const eligible = await eligibleRecommendations([...pool.candidates.values()].map((candidate) => candidate.result));
+    const eligibleKeys = new Set(eligible.map(keyOf));
+    const candidates = new Map([...pool.candidates].filter(([key]) => eligibleKeys.has(key) && !freshExcluded.has(key)));
+    const popular = (await eligibleRecommendations(pool.popular)).filter((item) => !freshExcluded.has(keyOf(item)));
+    return { candidates, popular };
+  };
+  let { candidates, popular } = await readFreshPool();
+  // Count picks under the same gallery/work/artist constraints as selection,
+  // rather than treating many galleries from one artist as a full pool. This
+  // probe leaves the roll's RNG untouched and fetching stays bounded to one batch.
+  const usable = selectRecommendations([
+    ...[...candidates.values()].map((candidate) => ({ ...candidate, score: 1 })),
+    ...popular.map(asCandidate),
+  ], TOTAL_PICKS + RESERVE_PICKS, () => 0);
+  if (usable.length < TOTAL_PICKS + RESERVE_PICKS) {
     if (profile.terms.length >= MIN_PROFILE_TERMS || getRecommendationFeedback().liked.length > 0) {
       const termIndex = new Map(profile.terms.map((term) => [`${term.kind}:${term.name.toLowerCase()}`, term]));
       const fetched = await gatherCandidates(buildQuerySpecs(profile, rng), hardExcluded, termIndex);
@@ -744,16 +759,12 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
     for (const item of fetchedPopular) popularByKey.set(keyOf(item), item);
     pool.popular = [...popularByKey.values()].slice(-240);
     pool.candidates = new Map([...pool.candidates].slice(-480));
+    ({ candidates, popular } = await readFreshPool());
   }
-  const eligible = await eligibleRecommendations([...pool.candidates.values()].map((candidate) => candidate.result));
-  const eligibleKeys = new Set(eligible.map(keyOf));
-  const candidates = new Map([...pool.candidates].filter(([key]) => eligibleKeys.has(key) && !freshExcluded.has(key)));
   candidateCount = candidates.size;
   rankCandidates([...candidates.values()], new Map(profile.terms.map((term) => [`${term.kind}:${term.name.toLowerCase()}`, term.weight])), profile.language);
   items = selectRecommendations([...candidates.values()], TOTAL_PICKS, rng);
   libraryPicks = items.length;
-  const popular = (await eligibleRecommendations(pool.popular)).filter((item) => !freshExcluded.has(keyOf(item)));
-  const asCandidate = (item: RecommendationItem): Candidate => ({ result: item, score: 1, reasons: item.reasons, matched: new Set() });
   items.push(...selectRecommendations(popular.map(asCandidate), TOTAL_PICKS - items.length, rng, items));
 
   // Last resort: recycle valid history least-recently-shown first. Earlier-day
@@ -777,7 +788,7 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
   const visibleKeys = new Set(items.map(keyOf));
   const leftovers = [...candidates.values()].filter((candidate) => !visibleKeys.has(keyOf(candidate.result)));
   const reserve = selectRecommendations(leftovers, RESERVE_PICKS, rng);
-  reserve.push(...selectRecommendations(popular.map(asCandidate), RESERVE_PICKS - reserve.length, rng, reserve));
+  reserve.push(...selectRecommendations(popular.filter((item) => !visibleKeys.has(keyOf(item))).map(asCandidate), RESERVE_PICKS - reserve.length, rng, reserve));
 
 
   const popularPicks = items.length - libraryPicks;

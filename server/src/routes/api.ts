@@ -34,7 +34,7 @@ import {
 } from '../services/settings.js';
 import { isJobType, jobQueue, type JobContext, type JobPayload } from '../jobs/queue.js';
 import { autoMatch, fetchProviderMetadata } from '../match/autoMatcher.js';
-import { buildSeriesPayload, checkAlignment } from '../services/sync.js';
+import { buildSeriesPayload } from '../services/sync.js';
 import { kavitaSeriesArtists } from '../services/seriesArtists.js';
 import { testNotification } from '../notify/dispatcher.js';
 import { getDownloaderSettings, parseDownloaderSettings, setDownloaderSettings } from '../services/settings.js';
@@ -241,7 +241,6 @@ api.get('/kavita/libraries/:id/series', async (c) => {
           providerId: m?.providerId ?? null,
           matchScore: m?.matchScore ?? null,
           confirmed: m?.confirmed ?? false,
-          aligned: m?.aligned ?? false,
           lastSyncedAt: m?.lastSyncedAt ?? null,
           errorMessage: m?.errorMessage ?? null,
           artists: matchArtists.length > 0 ? matchArtists : (kavitaArtists.get(s.id) ?? []),
@@ -306,7 +305,7 @@ api.get('/series/needs-review', async (c) => {
           cover: s.cover ? kavitaCoverUrl(s.id, s.cover, match.lastSyncedAt) : null,
           status: match.status, providerId: match.providerId, matchScore: match.matchScore,
           confirmed: match.confirmed,
-          aligned: match.aligned, lastSyncedAt: match.lastSyncedAt,
+          lastSyncedAt: match.lastSyncedAt,
           artists: artistsFromMetadata(match.metadataJson),
         };
       });
@@ -356,28 +355,14 @@ api.get('/series/:id/identify', async (c) => {
     const { credentials, enabledProviders } = getCredentialMap();
     const providerOrder = providerOrderFor(series.libraryId, enabledProviders);
     const outcome = await autoMatch(series, { providerOrder, credentials, enabledProviders, searchAll: true });
-    // Scoring improves over time (e.g. title-variant matching), so a stored
-    // match can carry a stale confidence — and Kavita data drifts after
-    // manual edits. Refresh both when the matched series still surfaces in
-    // this run's candidates.
+    // Refresh stored confidence when the current match surfaces in this search.
     const existingMatch = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
     if (existingMatch) {
       const current = outcome.candidates.find(
         (cand) => cand.providerId === existingMatch.providerId && cand.providerSeriesId === existingMatch.providerSeriesId,
       );
-      const updates: { matchScore?: number; aligned?: boolean } = {};
-      if (current && current.score !== existingMatch.matchScore) updates.matchScore = current.score;
-      if (current && existingMatch.providerId && existingMatch.providerSeriesId) {
-        try {
-          const providerMeta = await fetchProviderMetadata(existingMatch.providerId, existingMatch.providerSeriesId, credentials);
-          const kavitaMeta = await client.getSeriesMetadata(seriesId).catch(() => null);
-          updates.aligned = checkAlignment({ name: series.name, metadata: kavitaMeta }, providerMeta).aligned;
-        } catch {
-          /* provider fetch failed — keep the stored flag */
-        }
-      }
-      if (Object.keys(updates).length) {
-        getDb().update(schema.seriesMatches).set(updates).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).run();
+      if (current && current.score !== existingMatch.matchScore) {
+        getDb().update(schema.seriesMatches).set({ matchScore: current.score }).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).run();
       }
     }
     // MangaDex search thumbnails resolve the main cover_art, but Apply & Sync

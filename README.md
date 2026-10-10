@@ -6,7 +6,7 @@ H-Tosho helps you identify manga and light novels, review metadata before applyi
 it, and keep new additions organized. It also includes a doujinshi downloader,
 recommendations, and watched searches for new releases.
 
-Works with **Kavita v0.9.x or newer**. Current version: **v2.7.0** ·
+Works with **Kavita v0.9.x or newer**. Current version: **v2.8.0** ·
 [Release notes](CHANGELOG.md)
 
 ![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
@@ -134,9 +134,13 @@ With this example, use `/mnt/downloads` as H-Tosho's output folder.
 
 ### Identify a series and review the changes
 
-1. Open **Libraries**, choose a library, and click a series cover.
-2. Choose **Review changes** for the current match, or select another candidate,
-   to compare its metadata with the current Kavita values.
+1. Open **Libraries**, choose a library, and click a series cover or title to
+   identify it or review metadata. **Preview pages**, to the right of the artist,
+   opens the book separately.
+   In library and Downloader previews, click the right half of the page to go
+   forward or the left half to go back. Arrow keys and page controls also work.
+2. Existing matches open directly in the comparison. Use **Back to matches**
+   to select another candidate.
 3. Uncheck any fields you want to keep, and choose a title if alternatives are
    offered.
 4. Choose **Apply & Sync**. H-Tosho applies your selection in the background;
@@ -154,6 +158,9 @@ and warnings are available in **Jobs**.
 Use **Back to matches** to compare another candidate; your provider filter and
 list position are preserved. Applying stays disabled until both current and
 proposed metadata are available. Failed requests offer a retry.
+The comparison footer keeps the selected-field count and apply action visible
+while you scroll. A match records identification, not whether metadata is up to
+date; the retired alignment status is no longer calculated or stored.
 
 Applied series and volume covers are locked in Kavita so later scans keep them.
 Changing a title also updates the Series field in the series' CBZ files, so
@@ -161,14 +168,16 @@ configure your library folders before renaming.
 
 ### Match new additions automatically
 
-Turn on **Auto-match new series** for the libraries you want to monitor. Set
-the check frequency under **Settings → General → Auto-scan interval**.
-Use **Match all unmatched** to work through an existing library.
+Open **Library actions** to turn on **Auto-match new series** for the libraries
+you want to monitor, refresh from Kavita, or **Match all unmatched**.
+Set the check frequency under **Settings → General → Auto-scan interval**.
 Refresh and matching actions show when they are queuing, then display library
 job progress on the page, including on mobile. Choose **View job** for details.
 
-Unconfirmed matches below 80% confidence appear in **Needs review**. Open a
-result, review the candidate, and apply it to confirm the match.
+Unconfirmed matches below 80% confidence appear in **Needs review**. Choose
+**Start review** to work through the filtered queue. **Apply & next** queues the
+selected changes and opens the next series; **Skip to next** leaves it unchanged.
+The queue position stays visible, and closing returns you to the library list.
 
 Libraries defaults to **Sort · Date added**, showing the newest series first.
 Your selected sort order is remembered for the current browser session.
@@ -178,8 +187,9 @@ Your selected sort order is remembered for the current browser session.
 Open a series card's **⋮** menu and choose **Edit ComicInfo.xml** to edit its
 CBZ metadata. Use raw XML mode when you need a field beyond the form.
 
-To combine related series, choose **Select series**, select the ones to combine,
-and use the merge action. H-Tosho needs writable access to their files.
+To combine related series, choose **Select to merge**, select the ones to combine,
+and use the merge action. On phones, sorting and selection are under
+**Sort & merge**. H-Tosho needs writable access to their files.
 
 <details>
 <summary>See the mobile interface</summary>

@@ -31,8 +31,6 @@ export interface SeriesRow {
   matchScore?: number | null;
   /** A user explicitly accepted this candidate. */
   confirmed?: boolean;
-  /** All provider-managed metadata fields match Kavita's current values. */
-  aligned?: boolean;
   lastSyncedAt?: string | null;
   /** When the series was added to Kavita (Kavita's series creation date). */
   dateAdded?: string | null;
@@ -52,8 +50,6 @@ export interface SeriesMatch {
   matchScore?: number | null;
   /** A user explicitly accepted this candidate. */
   confirmed?: boolean;
-  /** All provider-managed metadata fields match Kavita's current values. */
-  aligned?: boolean;
   metadataJson?: string | null;
   errorMessage?: string | null;
   lastSyncedAt?: string | null;
