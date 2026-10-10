@@ -15,11 +15,11 @@ import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/
 import { applyToKavita, applySeriesMatch, checkAlignment, type ApplySeriesResult } from '../services/sync.js';
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
-import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
+import { jobQueue, JobCancelled, type Job, type JobContext, type LogFn } from './queue.js';
 import { listCbzFiles, mapKavitaPathToLocalPath, mergeCbzFiles, pathContains, readComicInfo, resolveExistingFile, resolveSeriesHostDir, rewriteZipEntry } from '../lib/cbz.js';
 import { mapLimit, sleep } from '../lib/http.js';
 import { parseComicInfo, renderComicInfoXml } from '../downloader/comicinfo.js';
-import type { KavitaChapterDto } from '../kavita/types.js';
+import type { KavitaChapterDto, KavitaSeries } from '../kavita/types.js';
 
 interface Target {
   id: number;
@@ -33,6 +33,55 @@ interface MatchResult {
   matched: boolean;
   errors: string[];
   coverUrl?: string;
+}
+
+export interface JobResult {
+  [key: string]: number | string[] | boolean | undefined;
+  pushed?: string[];
+  coverUpdated?: boolean;
+  volumeCoversUpdated?: number;
+}
+
+function rememberContext(job: Job, context: JobContext): void {
+  const saved = jobQueue.updateContext(job.id, context);
+  if (saved) {
+    job.context = saved;
+    job.payload.context = saved;
+  }
+}
+
+function throwIfJobCancelled(jobId: number): void {
+  if (jobQueue.isCancelRequested(jobId)) throw new JobCancelled();
+}
+
+function rememberTargets(job: Job, targets: Target[]): void {
+  const explicitIds = new Set([...(job.payload.seriesId !== undefined ? [job.payload.seriesId] : []), ...(job.payload.seriesIds ?? [])]);
+  const libraryIds = new Set(targets.map((target) => target.libraryId));
+  const resolvedExplicit = explicitIds.size > 0 && targets.filter((target) => explicitIds.has(target.id)).length === explicitIds.size;
+  rememberContext(job, {
+    series: targets.map(({ id, name }) => ({ id, name })),
+    libraryId: job.payload.libraryId ?? job.context?.libraryId ?? (resolvedExplicit && libraryIds.size === 1 ? targets[0]?.libraryId : undefined),
+  });
+}
+
+function rememberLibraries(job: Job, libraries: { id: number; name: string }[]): void {
+  const libraryId = job.payload.libraryId ?? job.context?.libraryId ?? (libraries.length === 1 ? libraries[0].id : undefined);
+  const library = libraries.find((entry) => entry.id === libraryId);
+  rememberContext(job, { series: [], libraryId, libraryName: library?.name });
+}
+
+async function rememberAvailableLibraries(job: Job, client: KavitaClient): Promise<void> {
+  if (job.context?.libraryName) return;
+  try {
+    rememberLibraries(job, await client.getLibraries());
+  } catch {
+    // Identity enrichment must not prevent the existing operation from running.
+  }
+}
+
+async function rememberSeriesLibrary(job: Job, client: KavitaClient, series: Target): Promise<void> {
+  rememberTargets(job, [series]);
+  await rememberAvailableLibraries(job, client);
 }
 
 
@@ -287,6 +336,8 @@ async function rescanLibraryContainingDir(dir: string, log: LogFn, seriesName?: 
 }
 const SCAN_WAIT_TIMEOUT_MS = 30 * 60_000;
 const SCAN_STATUS_POLL_MS = 5_000;
+// Leave time for a deferred series scan to run before requesting another one.
+const EDIT_RESCAN_RETRY_MS = 10 * 60_000;
 /**
  * Kavita enqueues scans asynchronously (Hangfire), so an idle isTaskRunning
  * answer right after the request is not proof the scan finished. Allow this
@@ -321,17 +372,25 @@ async function waitForKavitaTasksToDrain(
   log: LogFn,
   what: string,
   deadline: number,
+  jobId?: number,
 ): Promise<boolean> {
   const graceUntil = Date.now() + SCAN_TASK_GRACE_MS;
   let sawTask = false;
   for (;;) {
+    if (jobId !== undefined) throwIfJobCancelled(jobId);
+    if (Date.now() >= deadline) {
+      log('warn', `Kavita scan for ${what} not confirmed complete after waiting — continuing`);
+      return false;
+    }
     let running: boolean;
     try {
       running = await client.isTaskRunning();
     } catch (e) {
+      if (jobId !== undefined) throwIfJobCancelled(jobId);
       log('warn', `Kavita task status unavailable (${e instanceof Error ? e.message : String(e)}); proceeding without waiting`);
       return true;
     }
+    if (jobId !== undefined) throwIfJobCancelled(jobId);
     if (running) {
       sawTask = true;
     } else if (sawTask || Date.now() >= graceUntil) {
@@ -371,43 +430,61 @@ async function rescanAndVerifyChapter(
   file: string,
   expectedNumber: string | null,
   log: LogFn,
+  jobId: number,
 ): Promise<void> {
   const fileName = path.basename(file).toLowerCase();
-  const deadline = Date.now() + editVerifyTimeoutMs();
+  const timeoutMs = editVerifyTimeoutMs();
+  const deadline = Date.now() + timeoutMs;
+  const target = expectedNumber === null ? fileName : `${fileName} as chapter ${expectedNumber}`;
+  const timeoutError = () => new Error(
+    `Kavita did not confirm ${target} within ${timeoutMs / 60_000} minutes. ComicInfo.xml was saved — run a manual scan in Kavita`,
+  );
+  let nextScanAt = 0;
   for (;;) {
-    await client.scanSeries(libraryId, seriesId);
-    log('info', `Requested Kavita rescan of series ${seriesId}`);
-    await waitForKavitaTasksToDrain(client, log, `series ${seriesId}`, deadline);
-    if (expectedNumber === null) return; // scan cycle complete; no number to check
-    let chapters: KavitaChapterDto[] | null = null;
+    throwIfJobCancelled(jobId);
+    if (Date.now() >= deadline) throw timeoutError();
+    if (Date.now() >= nextScanAt) {
+      await client.scanSeries(libraryId, seriesId);
+      nextScanAt = Date.now() + EDIT_RESCAN_RETRY_MS;
+      log('info', `Requested Kavita rescan of series ${seriesId}`);
+      throwIfJobCancelled(jobId);
+      const drained = await waitForKavitaTasksToDrain(client, log, `series ${seriesId}`, deadline, jobId);
+      throwIfJobCancelled(jobId);
+      if (!drained) throw timeoutError();
+      if (expectedNumber === null) return; // scan cycle complete; no number to check
+    }
+    let chapters: KavitaChapterDto[];
     try {
       chapters = await client.getChaptersBySeries(seriesId);
-    } catch {
-      /* chapter list unavailable — treat as not yet indexed */
+    } catch (error) {
+      throwIfJobCancelled(jobId);
+      // A deleted/recreated series can return 401 here even with a valid key.
+      // Another scan against the same stale ID cannot repair that lookup.
+      throw new Error(`Could not verify chapter indexing for Kavita series ${seriesId}: ${error instanceof Error ? error.message : String(error)}. ComicInfo.xml was saved — refresh the library and check the current series in Kavita`);
     }
+    throwIfJobCancelled(jobId);
     if (chapters) {
-      let found: string | null = null;
-      outer: for (const ch of chapters) {
-        for (const f of ch.files ?? []) {
-          if (f.filePath && path.basename(f.filePath).toLowerCase() === fileName) {
-            found = String(ch.number ?? '');
-            break outer;
-          }
-        }
+      const matches = chapters.filter((ch) => (ch.files ?? []).some(
+        (f) => f.filePath && path.basename(f.filePath).toLowerCase() === fileName,
+      ));
+      const found = matches.length ? String(matches[0].number ?? '') : null;
+      // Kavita can attach a renumbered file to its new chapter without removing
+      // the old chapter's file entry. Check every match so response order cannot
+      // turn that inconsistency into either endless retries or false success.
+      if (found !== null && matches.some((ch) => !chapterNumberMatches(String(ch.number ?? ''), found))) {
+        const entries = matches.map((ch) => `chapter ${ch.number ?? ''} (ID ${ch.id})`).join(', ');
+        throw new Error(`Kavita indexes ${fileName} under conflicting chapters: ${entries}. ComicInfo.xml was saved — resolve the duplicate chapter entries in Kavita before retrying`);
       }
-      if (found !== null && chapterNumberMatches(found, expectedNumber)) {
+      if (found !== null && expectedNumber !== null && chapterNumberMatches(found, expectedNumber)) {
         log('success', `Kavita has indexed ${fileName} as chapter ${expectedNumber}`);
         return;
       }
       log('info', found === null
         ? `${fileName} not indexed in Kavita yet — waiting for the scan`
-        : `Kavita still shows ${fileName} as chapter "${found}" (expected "${expectedNumber}") — requesting another scan`);
+        : `Kavita still shows ${fileName} as chapter "${found}" (expected "${expectedNumber}") — waiting for the scan`);
     }
-    if (Date.now() >= deadline) {
-      log('warn', `Kavita did not index ${fileName} as chapter ${expectedNumber} within ${Math.round(editVerifyTimeoutMs() / 60_000)} minutes — run a manual scan in Kavita`);
-      return;
-    }
-    await sleep(SCAN_STATUS_POLL_MS);
+    if (Date.now() >= deadline) throw timeoutError();
+    await sleep(Math.min(SCAN_STATUS_POLL_MS, deadline - Date.now()));
   }
 }
 
@@ -456,7 +533,7 @@ async function runKavitaLibraryScan(client: KavitaClient, libs: { id: number; na
 }
 
 /** Resolve the exact Kavita series records owning source folders before a merge moves them away. */
-async function sourceSeriesIdsForMerge(sourceFiles: string[], targetDir: string, log: LogFn): Promise<number[]> {
+async function sourceSeriesIdsForMerge(sourceFiles: string[], targetDir: string, log: LogFn, job: Job): Promise<number[]> {
   try {
     const conn = getKavitaConnection();
     if (!conn.baseUrl || !conn.apiKey) return [];
@@ -464,7 +541,6 @@ async function sourceSeriesIdsForMerge(sourceFiles: string[], targetDir: string,
     const norm = (p: string): string => path.normalize(p).replace(/\\/g, '/').toLowerCase();
     const target = norm(targetDir);
     const sourceDirs = new Set(sourceFiles.map((file) => norm(path.dirname(file))).filter((dir) => dir !== target && !target.startsWith(`${dir}/`)));
-    if (sourceDirs.size === 0) return [];
     const dl = getDownloaderSettings();
     const downloadDirectory = dl.downloadDirectory;
     const anchors = [...sourceDirs].map((dir) => path.dirname(dir));
@@ -479,7 +555,14 @@ async function sourceSeriesIdsForMerge(sourceFiles: string[], targetDir: string,
       }
       for (const item of series) {
         const hostDir = resolveSeriesHostDir({ libraryPath: lib.path, folderPath: item.folderPath, anchors, mappings: dl.libraryPathMappings });
-        if (hostDir && sourceDirs.has(norm(hostDir))) ids.push(item.id);
+        if (hostDir && sourceDirs.has(norm(hostDir))) {
+          rememberTargets(job, [{ id: item.id, name: item.name, libraryId: lib.id }]);
+          ids.push(item.id);
+        }
+        if (hostDir && norm(hostDir) === target) {
+          rememberTargets(job, [{ id: item.id, name: item.name, libraryId: lib.id }]);
+          rememberLibraries(job, [lib]);
+        }
       }
     }
     return ids;
@@ -536,7 +619,7 @@ async function rescanAndVerifyMerge(
   targetDir: string,
   movedFiles: string[],
   log: LogFn,
-  opts?: { seriesId?: number | null; libraryId?: number | null },
+  opts: { job: Job; seriesId?: number | null; libraryId?: number | null },
 ): Promise<void> {
   try {
     const conn = getKavitaConnection();
@@ -572,19 +655,23 @@ async function rescanAndVerifyMerge(
       return;
     }
     const library = lib;
+    rememberLibraries(opts.job, [library]);
 
     const targetName = lastSegment(targetDir).toLowerCase();
     const findSeries = async (): Promise<{ id: number; name: string } | undefined> => {
       if (opts?.seriesId != null) {
         try {
           const s = await client.getSeriesById(opts.seriesId);
+          rememberTargets(opts.job, [{ id: s.id, name: s.name, libraryId: library.id }]);
           return { id: s.id, name: s.name };
         } catch {
           return undefined;
         }
       }
       const series = await client.getSeries(library.id);
-      return series.find((s) => s.folderPath && lastSegment(s.folderPath).toLowerCase() === targetName);
+      const found = series.find((s) => s.folderPath && lastSegment(s.folderPath).toLowerCase() === targetName);
+      if (found) rememberTargets(opts.job, [{ id: found.id, name: found.name, libraryId: library.id }]);
+      return found;
     };
     // Verify by file name rather than book count: pre-existing books in the target
     // folder, or partial indexing by a concurrent scan, must not skew the check.
@@ -682,7 +769,7 @@ async function pickSeriesStampName(dir: string, exclude: Set<string>): Promise<s
  * provider down, rejected title) fail the job with that message — the match
  * row is left as-is, mirroring the old synchronous route's behavior.
  */
-async function runApplySeries(client: KavitaClient, job: Job, log: LogFn): Promise<Record<string, number>> {
+async function runApplySeries(client: KavitaClient, job: Job, log: LogFn): Promise<JobResult> {
   const p = job.payload;
   const seriesId = p.seriesId!;
   let result: ApplySeriesResult;
@@ -696,6 +783,7 @@ async function runApplySeries(client: KavitaClient, job: Job, log: LogFn): Promi
       cover: p.cover,
       score: p.score ?? null,
       isCancelled: () => jobQueue.isCancelRequested(job.id),
+      onSeriesResolved: (series) => rememberSeriesLibrary(job, client, series),
     });
   } catch (e) {
     if (e instanceof JobCancelled) throw e;
@@ -733,7 +821,12 @@ async function runApplySeries(client: KavitaClient, job: Job, log: LogFn): Promi
     log('warn', `Notification failed for ${result.name}: ${e instanceof Error ? e.message : String(e)}`);
   }
   log(ok && result.warnings.length === 0 ? 'success' : 'warn', `${result.name} -> ${p.providerId!}${ok ? '' : ` — ${result.errors.join('; ')}`}`);
-  const summary: Record<string, number> = { processed: 1, matched: ok ? 1 : 0, failed: ok ? 0 : 1 };
+  const summary: JobResult = {
+    processed: 1, matched: ok ? 1 : 0, failed: ok ? 0 : 1,
+    pushed: result.pushed,
+    coverUpdated: result.coverUpdated,
+    volumeCoversUpdated: result.volumeCoversUpdated,
+  };
   if (result.warnings.length > 0) summary.warnings = result.warnings.length;
   if (result.titleFilesUpdated > 0) summary.titleFilesUpdated = result.titleFilesUpdated;
   if (result.titleFilesVerified > 0) summary.titleFilesVerified = result.titleFilesVerified;
@@ -744,7 +837,7 @@ async function runApplySeries(client: KavitaClient, job: Job, log: LogFn): Promi
 const MATCH_CONCURRENCY = 3;
 
 /** Run a queued job. Returns a small summary stored on the job row. */
-export async function runJob(job: Job, log: LogFn): Promise<Record<string, number>> {
+export async function runJob(job: Job, log: LogFn): Promise<JobResult> {
   // Watched-search checks talk to doujin sources only — no Kavita needed.
   if (job.type === 'check-watched-searches') {
     const r = await checkWatchedSearches(
@@ -760,11 +853,24 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
   // the write itself. The rescan below waits until Kavita has indexed the change
   // (when the series is known) so the job never reports success over stale data.
   if (job.type === 'edit-comicinfo') {
+    throwIfJobCancelled(job.id);
     const p = job.payload.path;
     if (!p) throw new Error('path required');
     const file = resolveExistingFile(p);
     if (!file) throw new Error(`File not found: ${p}`);
     const existing = await readComicInfo(file);
+    throwIfJobCancelled(job.id);
+    const previousSeriesName = existing ? parseComicInfo(existing).fields.Series?.trim() : undefined;
+    const editClient = job.payload.seriesId !== undefined ? connectedClientOrNull() : null;
+    let originalSeries: KavitaSeries | undefined;
+    if (editClient && job.payload.seriesId !== undefined) {
+      try {
+        originalSeries = await editClient.getSeriesById(job.payload.seriesId);
+        await rememberSeriesLibrary(job, editClient, originalSeries);
+      } catch {
+        // Editing a local archive remains possible when Kavita is unavailable.
+      }
+    }
     let xml: string;
     if (typeof job.payload.xml === 'string' && job.payload.xml.trim()) {
       // Raw-XML mode — the client rendered the document, use it verbatim.
@@ -779,15 +885,20 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
         edited,
       });
     }
+    throwIfJobCancelled(job.id);
     await rewriteZipEntry(file, 'ComicInfo.xml', Buffer.from(xml, 'utf8'));
     log('info', `Wrote ComicInfo.xml into ${file}`);
+    throwIfJobCancelled(job.id);
     const editedSeriesName = parseComicInfo(xml).fields.Series?.trim();
+    const seriesNameChanged = Boolean(editedSeriesName && editedSeriesName !== previousSeriesName);
     const writtenNumber = parseComicInfo(xml).fields.Number?.trim() ?? '';
     if (job.payload.seriesId !== undefined) {
-      const client = connectedClientOrNull();
+      const client = editClient;
       if (client) {
-        const series = await client.getSeriesById(job.payload.seriesId);
-        if (editedSeriesName) {
+        const series = originalSeries ?? await client.getSeriesById(job.payload.seriesId);
+        rememberTargets(job, [series]);
+        throwIfJobCancelled(job.id);
+        if (seriesNameChanged && editedSeriesName) {
           await client.updateSeriesMetadata(series.id, { name: editedSeriesName });
           log('info', `Updated Kavita series name to "${editedSeriesName}"`);
         }
@@ -795,11 +906,12 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
         // another scan is in flight, and a job that reports success while Kavita
         // still shows the old chapter number is how renumbered archives end up
         // merged into their neighbor's chapter.
-        await rescanAndVerifyChapter(client, series.libraryId, series.id, file, writtenNumber || null, log);
+        await rescanAndVerifyChapter(client, series.libraryId, series.id, file, writtenNumber || null, log, job.id);
       }
     } else {
       await rescanLibraryContainingDir(path.dirname(file), log, editedSeriesName);
     }
+    throwIfJobCancelled(job.id);
     return { processed: 1, matched: 0, failed: 0 };
   }
 
@@ -825,8 +937,10 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       } catch {
         throw new Error(`Kavita series ${job.payload.seriesId} not found`);
       }
+      rememberTargets(job, [s]);
       const libraries = await client.getLibraries();
       const lib = libraries.find((l) => l.id === s.libraryId);
+      rememberLibraries(job, libraries);
       const dl = getDownloaderSettings();
       const dir = resolveSeriesHostDir({
         libraryPath: lib?.path ?? null,
@@ -844,15 +958,72 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       stampName = (await pickSeriesStampName(dir, new Set(sourceFiles.map((f) => path.resolve(f))))) ?? s.name;
     }
     if (!targetDir) throw new Error('targetDir required');
-    const sourceSeriesIds = await sourceSeriesIdsForMerge(sourceFiles, targetDir, log);
+    const sourceSeriesIds = await sourceSeriesIdsForMerge(sourceFiles, targetDir, log, job);
     log('info', `Merging ${sourceFiles.length} file(s) into ${targetDir}`);
     const r = await mergeCbzFiles(sourceFiles, targetDir, job.payload.chapters, stampName ?? lastSegment(targetDir));
     for (const f of r.failed) log('warn', `Skipped ${f.file}: ${f.error}`);
     if (r.moved.length === 0) throw new Error('No files could be moved — check the source paths');
     log('success', `Moved ${r.moved.length} file(s) into one folder as "${stampName ?? lastSegment(targetDir)}"; stamped chapter numbers on ${r.chaptered.length}`);
     await removeSourceSeriesFromKavita(sourceSeriesIds, log);
-    await rescanAndVerifyMerge(targetDir, r.moved, log, { seriesId: job.payload.seriesId ?? null, libraryId: targetLibraryId });
+    await rescanAndVerifyMerge(targetDir, r.moved, log, { job, seriesId: job.payload.seriesId ?? null, libraryId: targetLibraryId });
     return { processed: r.moved.length, matched: 0, failed: r.failed.length };
+  }
+
+  // "Delete files" from a series card: removes the folder holding the series'
+  // .cbz archives. The folder is re-resolved server-side from the series id —
+  // the client never supplies a path — and must land strictly inside a known
+  // library root before anything is removed. Kavita is then asked to rescan
+  // the containing library so it drops the now-fileless series record (the
+  // next scan-new run prunes the local match row as an orphan).
+  if (job.type === 'delete-series') {
+    const seriesId = job.payload.seriesId;
+    if (seriesId == null) throw new Error('seriesId required');
+    const client = connectedClientOrNull();
+    if (!client) throw new Error('Kavita is not configured');
+    let s: { id: number; name: string; libraryId: number; folderPath?: string };
+    try {
+      s = await client.getSeriesById(seriesId);
+    } catch {
+      throw new Error(`Kavita series ${seriesId} not found`);
+    }
+    rememberTargets(job, [s]);
+    const libraries = await client.getLibraries();
+    const lib = libraries.find((l) => l.id === s.libraryId);
+    rememberLibraries(job, libraries);
+    if (!lib) throw new Error(`Kavita library ${s.libraryId} not found`);
+    const dl = getDownloaderSettings();
+    const mappings = dl.libraryPathMappings ?? [];
+    const dir = resolveSeriesHostDir({
+      libraryPath: lib.path,
+      folderPath: s.folderPath,
+      anchors: dl.downloadDirectory ? [path.resolve(dl.downloadDirectory)] : [],
+      mappings,
+    });
+    if (!dir || !fs.existsSync(dir)) {
+      throw new Error(`Could not locate the series folder for "${s.name}" on this machine`);
+    }
+    // Never delete a root itself: a series whose folder is the library (or
+    // download) root would wipe the whole tree, not just its own files.
+    const realDir = safeRealpath(dir);
+    const trustedRoots = [
+      ...(lib.paths ?? (lib.path ? [lib.path] : [])).map((r) => mapKavitaPathToLocalPath(r, mappings) ?? r),
+      ...mappings.map((m) => m.localPath),
+      ...(dl.downloadDirectory ? [path.resolve(dl.downloadDirectory)] : []),
+    ].map((r) => safeRealpath(r));
+    if (trustedRoots.includes(realDir) || !trustedRoots.some((r) => pathContains(r, realDir))) {
+      throw new Error(`Refusing to delete ${dir}: it is not strictly inside a known library root`);
+    }
+    const archives = listCbzFiles(dir).length;
+    log('info', `Deleting ${dir} (${archives} archive(s))`);
+    await fs.promises.rm(dir, { recursive: true });
+    log('success', `Deleted ${dir}`);
+    try {
+      await client.scanLibrary(lib.id);
+      log('info', `Requested Kavita rescan of "${lib.name}" so the series record is dropped`);
+    } catch (e) {
+      log('warn', `Kavita rescan failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    return { deleted: archives };
   }
 
   // Identify dialog's "Apply & Sync": pushes one user-selected candidate onto
@@ -879,12 +1050,24 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
     return { id: s.id, name: s.name, libraryId: s.libraryId };
   };
 
+  const resolveIds = async (ids: number[]): Promise<Target[]> => {
+    const resolved = await Promise.allSettled(ids.map((id) => byId(id)));
+    const found: Target[] = [];
+    for (const result of resolved) if (result.status === 'fulfilled') found.push(result.value);
+    rememberTargets(job, found);
+    await rememberAvailableLibraries(job, client);
+    const failure = resolved.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
+    return found;
+  };
+
   switch (job.type) {
     case 'scan-new': {
       const allLibs = await client.getLibraries();
       // An explicit libraryId (from the Libraries page) scopes the scan to one
       // library; the scheduled auto-scan enqueues without a payload and stays global.
       const libs = job.payload.libraryId !== undefined ? allLibs.filter((l) => l.id === job.payload.libraryId) : allLibs;
+      rememberLibraries(job, libs);
       summary.libraries = libs.length;
       // Refresh Kavita's database first: folders only become series once
       // Kavita itself has scanned them.
@@ -910,6 +1093,7 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
           liveIds.add(s.id);
           if (autoMatchEnabled && !known.has(s.id)) targets.push({ id: s.id, name: s.name, libraryId: lib.id });
         }
+        rememberTargets(job, targets);
       }
       // Prune local match rows whose Kavita series no longer exists (deleted in
       // Kavita, or re-imported under a new id after a folder rename/move). Stale
@@ -937,6 +1121,7 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       const allLibs = await client.getLibraries();
       // Same scoping as scan-new: explicit libraryId targets one library.
       const libs = job.payload.libraryId !== undefined ? allLibs.filter((l) => l.id === job.payload.libraryId) : allLibs;
+      rememberLibraries(job, libs);
       const rows = getDb()
         .select({ kavitaSeriesId: schema.seriesMatches.kavitaSeriesId, status: schema.seriesMatches.status })
         .from(schema.seriesMatches)
@@ -949,30 +1134,34 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
           // O(1) lookup instead of a per-series rows.find scan.
           if (statusBySeries.get(s.id) !== 'matched') targets.push({ id: s.id, name: s.name, libraryId: lib.id });
         }
+        rememberTargets(job, targets);
       }
       break;
     }
     case 'match-library': {
       const libraryId = job.payload.libraryId;
       if (libraryId === undefined) throw new Error('libraryId required');
+      await rememberAvailableLibraries(job, client);
       const series = (await client.getSeries(libraryId)) as { id: number; name: string }[];
       for (const s of series) targets.push({ id: s.id, name: s.name, libraryId });
+      rememberTargets(job, targets);
       break;
     }
     case 'match-series': {
       const ids =
         job.payload.seriesIds?.length ? job.payload.seriesIds : job.payload.seriesId !== undefined ? [job.payload.seriesId] : [];
       if (!ids.length) throw new Error('seriesId or seriesIds required');
-      targets.push(...(await Promise.all(ids.map((id) => byId(id)))));
+      targets.push(...(await resolveIds(ids)));
       break;
     }
     case 'sync-series': {
       const ids = job.payload.seriesIds?.length ? job.payload.seriesIds : [];
       if (ids.length) {
-        targets.push(...(await Promise.all(ids.map((id) => byId(id)))));
+        targets.push(...(await resolveIds(ids)));
       } else {
         const libraryId = job.payload.libraryId;
         if (libraryId === undefined) throw new Error('seriesIds or libraryId required');
+        await rememberAvailableLibraries(job, client);
         const rows = getDb()
           .select({ kavitaSeriesId: schema.seriesMatches.kavitaSeriesId, status: schema.seriesMatches.status })
           .from(schema.seriesMatches)
@@ -984,11 +1173,13 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
             targets.push({ id: s.id, name: s.name, libraryId });
           }
         }
+        rememberTargets(job, targets);
       }
       break;
     }
     case 'clear-overrides': {
       const libIds = job.payload.libraryId !== undefined ? [job.payload.libraryId] : [];
+      await rememberAvailableLibraries(job, client);
       // Route through settings so its library-override cache is invalidated —
       // settings.ts is the module that caches reads of this table.
       clearLibraryOverrides(libIds);
@@ -999,6 +1190,7 @@ export async function runJob(job: Job, log: LogFn): Promise<Record<string, numbe
       throw new Error('Unknown job type: ' + job.type);
   }
 
+  rememberTargets(job, targets);
   log('info', `Processing ${targets.length} series`);
 
   const force = job.type === 'sync-series';

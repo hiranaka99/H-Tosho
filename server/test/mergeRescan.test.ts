@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, test } from 'node:test';
+import { setImmediate } from 'node:timers/promises';
+import { afterEach, test, type TestContext } from 'node:test';
 import type { Job } from '../src/jobs/queue.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-merge-rescan-'));
@@ -22,6 +23,20 @@ const originalFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = originalFetch;
 });
+
+async function finishWithScanClock<T>(t: TestContext, run: () => Promise<T>): Promise<T> {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+  let done = false;
+  const result = run().finally(() => { done = true; });
+  // The caller asserts rejections after the virtual polling loop finishes.
+  void result.catch(() => {});
+  for (let step = 0; step < 1000; step++) {
+    for (let flush = 0; flush < 20; flush++) await setImmediate();
+    if (done) return result;
+    t.mock.timers.tick(5_000);
+  }
+  assert.fail('Scan verification did not finish');
+}
 
 /** One .cbz per source folder, like three separately downloaded chapters. */
 function makeSources(): string[] {
@@ -327,7 +342,7 @@ test('merge into an existing series still rescans when host and Kavita paths dif
   assert.ok(requests.some((r) => r.includes('/api/Search/chapters-by-series?seriesId=213')), 'indexed files verified against the known series');
 });
 
-test('edit-comicinfo re-requests the scan until Kavita indexes the new chapter number', async () => {
+test('edit-comicinfo retries a deferred scan until Kavita indexes the new chapter number', async (t) => {
   const dir = path.join(dataDir, 'renumber');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'Chapter 5.cbz');
@@ -364,7 +379,7 @@ test('edit-comicinfo re-requests the scan until Kavita indexes the new chapter n
 
   const job: Job = { ...makeJob([], dir), type: 'edit-comicinfo', payload: { path: file, seriesId: 50, fields: { Number: '3' } } };
   const logs: string[] = [];
-  const result = await runJob(job, (level, message) => logs.push(`${level}: ${message}`));
+  const result = await finishWithScanClock(t, () => runJob(job, (level, message) => logs.push(`${level}: ${message}`)));
 
   assert.deepEqual(result, { processed: 1, matched: 0, failed: 0 });
   assert.equal(state.scans, 2, 'stale chapter number triggers a follow-up rescan');
@@ -373,7 +388,7 @@ test('edit-comicinfo re-requests the scan until Kavita indexes the new chapter n
   assert.ok(logs.some((l) => l.startsWith('success') && l.includes('as chapter 3')), 'verified indexed under the new number');
 });
 
-test('edit-comicinfo reports a manual-scan warning when Kavita never picks up the new number', async () => {
+test('edit-comicinfo fails with manual-scan guidance when Kavita never picks up the new number', async (t) => {
   process.env.HTOSHO_EDIT_VERIFY_TIMEOUT_MS = '1000';
   try {
     const dir = path.join(dataDir, 'renumber-stuck');
@@ -399,11 +414,10 @@ test('edit-comicinfo reports a manual-scan warning when Kavita never picks up th
     }) as typeof fetch;
 
     const job: Job = { ...makeJob([], dir), type: 'edit-comicinfo', payload: { path: file, seriesId: 50, fields: { Number: '3' } } };
-    const logs: string[] = [];
-    const result = await runJob(job, (level, message) => logs.push(`${level}: ${message}`));
-
-    assert.deepEqual(result, { processed: 1, matched: 0, failed: 0 });
-    assert.ok(logs.some((l) => l.startsWith('warn') && l.includes('manual scan')), `gives up with an actionable warning, got: ${logs.join(' | ')}`);
+    await assert.rejects(
+      finishWithScanClock(t, () => runJob(job, () => {})),
+      /ComicInfo\.xml was saved.*manual scan/,
+    );
   } finally {
     delete process.env.HTOSHO_EDIT_VERIFY_TIMEOUT_MS;
   }

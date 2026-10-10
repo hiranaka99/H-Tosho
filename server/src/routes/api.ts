@@ -32,7 +32,7 @@ import {
   setProviderSetting,
   providerOrderFor,
 } from '../services/settings.js';
-import { isJobType, jobQueue } from '../jobs/queue.js';
+import { isJobType, jobQueue, type JobContext, type JobPayload } from '../jobs/queue.js';
 import { autoMatch, fetchProviderMetadata } from '../match/autoMatcher.js';
 import { buildSeriesPayload, checkAlignment } from '../services/sync.js';
 import { kavitaSeriesArtists } from '../services/seriesArtists.js';
@@ -46,9 +46,10 @@ import { getRecommendations, dismissAndReplace, undoDismiss, refreshRecommendati
 import { getRecommendationFeedback, type FeedbackAction } from '../services/recommendationFeedback.js';
 import { getRecommendationSettings } from '../services/settings.js';
 import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../downloader/types.js';
-import { listCbzFiles, readComicInfo, readCoverImage, resolveExistingFile, resolveSeriesHostDir } from '../lib/cbz.js';
+import { imageMime, listCbzFiles, listCbzImages, readComicInfo, readCoverImage, readZipEntryFromDisk, resolveExistingFile, resolveSeriesHostDir } from '../lib/cbz.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
 import { galleryFilesystemName, sanitizeFilename } from '../downloader/util.js';
+import { mapLimit } from '../lib/http.js';
 
 const CREDENTIAL_FIELDS: Record<string, { key: string; label: string }[]> = {
   myanimelist: [{ key: 'clientId', label: 'Client ID' }],
@@ -58,6 +59,38 @@ function connectedClient(): KavitaClient | null {
   const conn = getKavitaConnection();
   if (!conn.baseUrl || !conn.apiKey) return null;
   return new KavitaClient(conn.baseUrl, conn.apiKey);
+}
+
+/** Capture live target identities before execution; outages must not block enqueue. */
+async function resolveJobContext(payload: JobPayload, client = connectedClient()): Promise<JobContext | undefined> {
+  const context = jobQueue.contextForPayload(payload);
+  if (!context) return context;
+  const pendingIds = new Set(context.series.map((target) => target.id));
+  payload.contextPendingSeriesIds = [...pendingIds];
+  if (!client) return context;
+  const libraryIds = new Set<number>();
+  let resolvedCount = 0;
+  const [libraries] = await Promise.all([
+    client.getLibraries().catch(() => []),
+    mapLimit(context.series, 3, async (target) => {
+      try {
+        const series = await client.getSeriesById(target.id);
+        target.name = series.name;
+        libraryIds.add(series.libraryId);
+        resolvedCount++;
+        pendingIds.delete(target.id);
+      } catch {
+        // Keep a locally known name, or the explicit Series #id placeholder.
+      }
+    }),
+  ]);
+  if (context.libraryId === undefined && libraryIds.size === 1 && resolvedCount === context.series.length) {
+    context.libraryId = [...libraryIds][0];
+  }
+  const library = libraries.find((entry) => entry.id === context.libraryId);
+  if (library) context.libraryName = library.name;
+  payload.contextPendingSeriesIds = [...pendingIds];
+  return context;
 }
 
 function errMsg(e: unknown): string {
@@ -430,8 +463,16 @@ api.post('/series/:id/apply', async (c) => {
   // One apply per series at a time — concurrent runs would race over the same CBZ files.
   const busy = jobQueue.active().some((j) => j.type === 'apply-series' && j.payload.seriesId === seriesId);
   if (busy) return c.json({ error: 'A sync is already running for this series' }, 409);
+  const targetPayload: JobPayload = { seriesId };
+  const context = await resolveJobContext(targetPayload, client);
+  // Identity lookup yields; another request may have enqueued while it ran.
+  if (jobQueue.active().some((job) => job.type === 'apply-series' && job.payload.seriesId === seriesId)) {
+    return c.json({ error: 'A sync is already running for this series' }, 409);
+  }
   const id = jobQueue.enqueue('apply-series', {
     seriesId,
+    context,
+    contextPendingSeriesIds: targetPayload.contextPendingSeriesIds,
     providerId: body.providerId,
     providerSeriesId: body.providerSeriesId,
     selectedTitle: body.selectedTitle,
@@ -1089,6 +1130,39 @@ api.get('/cbz/comicinfo', async (c) => {
   return c.json({ path: full, hasEntry: true, fields: doc.fields, order: doc.order, raw: xml });
 });
 
+/** List the image entries (pages) of a .cbz in reading order. */
+api.get('/cbz/images', async (c) => {
+  const file = c.req.query('path');
+  const full = file ? resolveExistingFile(file) : null;
+  if (!full || !full.toLowerCase().endsWith('.cbz')) {
+    return c.json({ error: 'Path must point to an existing .cbz file' }, 400);
+  }
+  try {
+    const images = await listCbzImages(full);
+    return c.json({ path: full, images });
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 500);
+  }
+});
+
+/** Serve one page image from a .cbz (positional read of a single entry). */
+api.get('/cbz/page', async (c) => {
+  const file = c.req.query('path');
+  const name = c.req.query('name');
+  const full = file ? resolveExistingFile(file) : null;
+  if (!full || !full.toLowerCase().endsWith('.cbz') || !name) {
+    return c.json({ error: 'Path and entry name are required' }, 400);
+  }
+  const mime = imageMime(name);
+  if (!mime) return c.json({ error: 'Entry is not a recognized image' }, 400);
+  try {
+    const buf = await readZipEntryFromDisk(full, name);
+    return new Response(buf, { status: 200, headers: { 'Content-Type': mime, 'Cache-Control': 'private, max-age=3600' } });
+  } catch (e) {
+    return c.json({ error: errMsg(e) }, 404);
+  }
+});
+
 /** List the .cbz archives on disk for a Kavita series (host-side path resolution). */
 api.get('/cbz/series/:id', async (c) => {
   const id = intParam(c.req.param('id'));
@@ -1136,7 +1210,9 @@ api.get('/cbz/series/:id', async (c) => {
 api.post('/jobs', async (c) => {
   const body = (await c.req.json()) as { type?: unknown; libraryId?: number; seriesId?: number; seriesIds?: number[]; path?: string; xml?: string; fields?: Record<string, string>; sourceFiles?: string[]; targetDir?: string; chapters?: Record<string, string>; providerId?: string; providerSeriesId?: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number };
   if (!isJobType(body.type)) return c.json({ error: 'Unsupported job type' }, 400);
-  const id = jobQueue.enqueue(body.type, { libraryId: body.libraryId, seriesId: body.seriesId, seriesIds: body.seriesIds, path: body.path, xml: body.xml, fields: body.fields, sourceFiles: body.sourceFiles, targetDir: body.targetDir, chapters: body.chapters, providerId: body.providerId, providerSeriesId: body.providerSeriesId, selectedTitle: body.selectedTitle, excludedFields: body.excludedFields, cover: body.cover, score: body.score });
+  const payload: JobPayload = { libraryId: body.libraryId, seriesId: body.seriesId, seriesIds: body.seriesIds, path: body.path, xml: body.xml, fields: body.fields, sourceFiles: body.sourceFiles, targetDir: body.targetDir, chapters: body.chapters, providerId: body.providerId, providerSeriesId: body.providerSeriesId, selectedTitle: body.selectedTitle, excludedFields: body.excludedFields, cover: body.cover, score: body.score };
+  payload.context = await resolveJobContext(payload);
+  const id = jobQueue.enqueue(body.type, payload);
   return c.json({ id }, 202);
 });
 

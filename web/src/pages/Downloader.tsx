@@ -44,7 +44,7 @@ import { buildTagSearchFragment, cn, timeAgo, toIsoUtc } from '../lib/utils';
 import { formatBytes, formatSpeed } from '../lib/format';
 import { downloadErrorHelp } from '../lib/downloadErrors';
 import { toast } from '../lib/toast';
-import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, ErrorState, ConfirmDialog, Skeleton } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, ErrorState, ConfirmDialog, Skeleton, Pager } from '../components/ui';
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeIntoSeriesDialog } from '../components/MergeIntoSeriesDialog';
 import { GalleryFeedbackDialog, RecommendationFeedbackManager } from '../components/RecommendationFeedback';
@@ -200,54 +200,6 @@ const RESULTS_PAGE_SIZE = 25;
 
 /** Finished tasks shown before the History section collapses (rest via "Show all"). */
 const HISTORY_PREVIEW = 5;
-
-/** Page numbers with ellipses: [1 … 4 5 6 … 42] style, capped to a sane width. */
-function pageList(page: number, count: number): (number | '…')[] {
-  if (count <= 7) return Array.from({ length: count }, (_, i) => i + 1);
-  const pages: (number | '…')[] = [1];
-  const lo = Math.max(2, page - 1);
-  const hi = Math.min(count - 1, page + 1);
-  if (lo > 2) pages.push('…');
-  for (let p = lo; p <= hi; p++) pages.push(p);
-  if (hi < count - 1) pages.push('…');
-  pages.push(count);
-  return pages;
-}
-
-/** Prev/next + numbered pager, with a jump-to-page input for long result sets. */
-function Pager({ page, count, onPageChange }: { page: number; count: number; onPageChange: (p: number) => void }) {
-  const [jump, setJump] = React.useState('');
-  if (count <= 1) return null;
-  const commitJump = () => {
-    const n = Math.floor(Number(jump));
-    if (Number.isFinite(n)) onPageChange(Math.min(count, Math.max(1, n)));
-    setJump('');
-  };
-  return (
-    <nav aria-label="Result pages" className="mt-5 flex flex-wrap items-center justify-center gap-1">
-      <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
-        <ChevronLeft className="h-3.5 w-3.5" /> Previous
-      </Button>
-      {pageList(page, count).map((p, i) =>
-        p === '…' ? (
-          <span key={`e${i}`} className="px-1 text-xs text-muted">…</span>
-        ) : (
-          <Button key={p} size="sm" variant="outline" className={p === page ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15' : undefined} onClick={() => onPageChange(p)} aria-current={p === page ? 'page' : undefined}>
-            {p}
-          </Button>
-        ),
-      )}
-      <Button size="sm" variant="outline" disabled={page >= count} onClick={() => onPageChange(page + 1)}>
-        Next <ChevronRight className="h-3.5 w-3.5" />
-      </Button>
-      <form className="ml-2 flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); commitJump(); }} aria-label="Jump to page">
-        <label className="sr-only" htmlFor="jump-page">Page number</label>
-        <Input id="jump-page" type="number" min={1} max={count} value={jump} onChange={(e) => setJump(e.target.value)} placeholder={`${page}/${count}`} className="w-16 px-2 text-center text-xs tabular-nums" />
-        <Button size="sm" variant="ghost" type="submit">Go</Button>
-      </form>
-    </nav>
-  );
-}
 
 /** Format an ISO 8601 date string for display, or undefined when absent/invalid. */
 function formatDate(iso?: string | null): string | undefined {

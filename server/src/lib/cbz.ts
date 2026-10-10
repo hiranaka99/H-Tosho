@@ -380,6 +380,53 @@ export function imageMime(name: string): string | null {
   }
 }
 
+/** Compare page file names in natural order (02.jpg before 10.jpg). */
+function comparePageNames(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+/**
+ * Image entries of a CBZ in reading order. Positional read: only the central
+ * directory is touched, never the payloads.
+ */
+export async function listCbzImages(p: string): Promise<string[]> {
+  const fh = await fs.promises.open(p, 'r');
+  try {
+    const stat = await fh.stat();
+    const entries = await readZipEntriesFromDisk(fh, stat.size);
+    return entries.map((e) => e.name).filter((name) => imageMime(name) !== null).sort(comparePageNames);
+  } finally {
+    await fh.close();
+  }
+}
+
+/**
+ * Read one CBZ entry as raw bytes. Positional read: only the central directory
+ * and this entry's payload are touched, never the whole archive.
+ */
+export async function readZipEntryFromDisk(p: string, entryName: string): Promise<Buffer> {
+  const fh = await fs.promises.open(p, 'r');
+  try {
+    const stat = await fh.stat();
+    const entries = await readZipEntriesFromDisk(fh, stat.size);
+    const e = entries.find((x) => x.name === entryName);
+    if (!e) throw new Error(`Entry "${entryName}" not found`);
+    const start = await payloadStartFromDisk(fh, e);
+    const raw = Buffer.alloc(e.compressedSize);
+    await readFull(fh, raw, start);
+    switch (e.method) {
+      case 0:
+        return raw;
+      case 8:
+        return inflateRawSync(raw);
+      default:
+        throw new Error(`Unsupported compression method ${e.method} for entry "${entryName}"`);
+    }
+  } finally {
+    await fh.close();
+  }
+}
+
 /** Hard cap on a cover payload (a single page image, never the whole archive). */
 const COVER_MAX_BYTES = 32 * 1024 * 1024;
 

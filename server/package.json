@@ -4,9 +4,9 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "node --watch --import tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx --test test/auth.test.ts test/client.test.ts test/sync.test.ts test/mangadex.test.ts test/anilist.test.ts test/manualMatch.test.ts test/applyTitle.test.ts test/syncApply.test.ts test/fixes.test.ts test/unmatch.test.ts test/alignment.test.ts test/media.test.ts test/watchedSearches.test.ts test/seriesArtists.test.ts test/cbz.test.ts test/cbzEdit.test.ts test/mergeRescan.test.ts test/engineRetry.test.ts test/downloadQueue.test.ts test/scanNew.test.ts test/recommendations.test.ts test/recommendationRanking.test.ts test/recommendationSignals.test.ts test/comicinfo.test.ts test/nhentai.test.ts test/hitomi.test.ts test/queueHardening.test.ts test/jobsRetry.test.ts test/appImprovements.test.ts test/reviewQueue.test.ts test/libraryFolders.test.ts test/matchConfirmation.test.ts test/matchConfirmationMigration.test.ts",
+    "test": "tsx --test test/auth.test.ts test/client.test.ts test/sync.test.ts test/mangadex.test.ts test/anilist.test.ts test/manualMatch.test.ts test/applyTitle.test.ts test/syncApply.test.ts test/fixes.test.ts test/unmatch.test.ts test/alignment.test.ts test/media.test.ts test/watchedSearches.test.ts test/seriesArtists.test.ts test/cbz.test.ts test/cbzEdit.test.ts test/chapterVerification.test.ts test/mergeRescan.test.ts test/engineRetry.test.ts test/downloadQueue.test.ts test/scanNew.test.ts test/recommendations.test.ts test/recommendationRanking.test.ts test/recommendationSignals.test.ts test/comicinfo.test.ts test/nhentai.test.ts test/hitomi.test.ts test/queueHardening.test.ts test/jobsRetry.test.ts test/appImprovements.test.ts test/reviewQueue.test.ts test/libraryFolders.test.ts test/matchConfirmation.test.ts test/matchConfirmationMigration.test.ts test/deleteSeries.test.ts test/jobContext.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "npm run build && node dist/index.js"
   },

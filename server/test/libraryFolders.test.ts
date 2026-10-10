@@ -73,7 +73,11 @@ test('locates and renames mapped Manga archives without changing an identically 
   assert.equal(files.dir, mangaDir);
   const job: Job = { id: 999, type: 'apply-series', payload: { seriesId: 1, providerId: 'anilist', providerSeriesId: '1', cover: false }, status: 'running', progressCurrent: 0, progressTotal: 1, result: null, errorMessage: null, createdAt: new Date().toISOString(), startedAt: null, finishedAt: null };
   const result = await runJob(job, () => {});
-  assert.deepEqual(result, { processed: 1, matched: 1, failed: 0, titleFilesUpdated: 1, titleFilesVerified: 1 });
+  assert.equal(result.processed, 1);
+  assert.equal(result.matched, 1);
+  assert.equal(result.failed, 0);
+  assert.equal(result.titleFilesUpdated, 1);
+  assert.equal(result.titleFilesVerified, 1);
   assert.equal(name, 'Accepted title');
   assert.equal(parseComicInfo((await readComicInfo(path.join(mangaDir, 'Chapter 1.cbz')))!).fields.Series, 'Accepted title');
   assert.equal(parseComicInfo((await readComicInfo(path.join(doujinDir, 'Chapter 1.cbz')))!).fields.Series, title);

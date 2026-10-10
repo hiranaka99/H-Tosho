@@ -50,7 +50,8 @@ test('retryJob copies a failed job into a NEW queued job with the same payload',
 
   const retried = jobQueue.get(newId!)!;
   assert.equal(retried.type, 'scan-new');
-  assert.deepEqual(retried.payload, { libraryId: 42 });
+  assert.equal(retried.payload.libraryId, 42);
+  assert.deepEqual(retried.context, original.context);
   // The original stays as history (still failed, untouched).
   assert.equal(jobQueue.get(originalId)!.status, 'failed');
 

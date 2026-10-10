@@ -1,11 +1,12 @@
 import * as React from 'react';
 import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { Search, RefreshCw, Play, BookOpen, Unlink, FileText, Combine, Check, CheckSquare, ChevronLeft, ChevronRight, EllipsisVertical } from 'lucide-react';
+import { Search, RefreshCw, Play, BookOpen, Unlink, FileText, Combine, Check, CheckSquare, EllipsisVertical, Trash2, Eye } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource, type Job } from '../lib/api';
-import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog, SegmentedControl, TabPanel, Spinner, ProgressBar } from '../components/ui';
+import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog, SegmentedControl, TabPanel, Spinner, ProgressBar, Pager } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
 import { ComicInfoModal } from '../components/ComicInfoModal';
+import { SeriesPreviewModal } from '../components/SeriesPreviewModal';
 import { MergeSeriesModal } from '../components/MergeSeriesModal';
 import { PageCountPill } from '../components/PageCountPill';
 import { buildTagSearchFragment, cn, jobLabel } from '../lib/utils';
@@ -61,7 +62,7 @@ const ARTIST_SOURCE_META: Record<DoujinSource, { label: string; color: string }>
   nhentai: { label: 'nHentai', color: '#e91e63' },
 };
 
-function CardActionMenu({ row, onEdit, onUnmatch }: { row: SeriesRow; onEdit: () => void; onUnmatch: () => void }) {
+function CardActionMenu({ row, onEdit, onUnmatch, onDelete, onPreview }: { row: SeriesRow; onEdit: () => void; onUnmatch: () => void; onDelete: () => void; onPreview: () => void }) {
   const navigate = useNavigate();
   const [open, setOpen] = React.useState(false);
   const root = React.useRef<HTMLDivElement>(null);
@@ -127,12 +128,22 @@ function CardActionMenu({ row, onEdit, onUnmatch }: { row: SeriesRow; onEdit: ()
       </button>
       {open && (
         <div id={menuId} role="menu" aria-label={`Actions for ${row.name}`} onKeyDown={menuKeys} className="absolute right-0 top-full mt-1 w-52 overflow-hidden rounded-md border border-border bg-surface p-1 text-foreground shadow-xl">
-          {row.artists?.length ? (['hitomi', 'nhentai'] as const).map((source) => (
-            <button key={source} type="button" role="menuitem" tabIndex={-1} onClick={() => searchArtist(source)} className="flex max-lg:min-h-11 pointer-coarse:min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2">
-              <img src={`/${source}.png`} alt="" className="h-5 w-5 rounded object-contain" aria-hidden="true" />
-              Search {ARTIST_SOURCE_META[source].label}
-            </button>
-          )) : null}
+          <button type="button" role="menuitem" tabIndex={-1} onClick={() => { setOpen(false); trigger.current?.focus(); onPreview(); }} className="flex max-lg:min-h-11 pointer-coarse:min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2">
+            <Eye className="h-4 w-4" /> Preview pages
+          </button>
+          {row.artists?.length ? (
+            <>
+              <div role="separator" className="mx-1 my-1 h-px bg-border" />
+              <p className="px-3 pb-1 pt-1.5 text-xs font-medium text-muted">More by this artist</p>
+              {(['hitomi', 'nhentai'] as const).map((source) => (
+                <button key={source} type="button" role="menuitem" tabIndex={-1} onClick={() => searchArtist(source)} className="flex max-lg:min-h-11 pointer-coarse:min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2">
+                  <img src={`/${source}.png`} alt="" className="h-5 w-5 rounded object-contain" aria-hidden="true" />
+                  {ARTIST_SOURCE_META[source].label}
+                </button>
+              ))}
+            </>
+          ) : null}
+          <div role="separator" className="mx-1 my-1 h-px bg-border" />
           <button type="button" role="menuitem" tabIndex={-1} onClick={() => { setOpen(false); trigger.current?.focus(); onEdit(); }} className="flex max-lg:min-h-11 pointer-coarse:min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2">
             <FileText className="h-4 w-4" /> Edit ComicInfo.xml
           </button>
@@ -141,23 +152,13 @@ function CardActionMenu({ row, onEdit, onUnmatch }: { row: SeriesRow; onEdit: ()
               <Unlink className="h-4 w-4" /> Unmatch series
             </button>
           )}
+          <div role="separator" className="mx-1 my-1 h-px bg-border" />
+          <button type="button" role="menuitem" tabIndex={-1} onClick={() => { setOpen(false); trigger.current?.focus(); onDelete(); }} className="flex max-lg:min-h-11 pointer-coarse:min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-danger transition-colors hover:bg-surface-2">
+            <Trash2 className="h-4 w-4" /> Delete files
+          </button>
         </div>
       )}
     </div>
-  );
-}
-
-function PaginationControls({ currentPage, pageCount, firstVisible, lastVisible, total, compact = false, onChange }: { currentPage: number; pageCount: number; firstVisible: number; lastVisible: number; total: number; compact?: boolean; onChange: (page: number) => void }) {
-  return (
-    <nav aria-label={compact ? 'Series pages above results' : 'Series pages'} className="flex flex-wrap items-center justify-center gap-2">
-      <Button size="sm" variant="outline" disabled={currentPage === 1} onClick={() => onChange(Math.max(1, currentPage - 1))} aria-label={compact ? 'Previous series page' : undefined}>
-        <ChevronLeft className="h-3.5 w-3.5" /> {!compact && 'Previous'}
-      </Button>
-      <span className="text-xs tabular-nums text-muted sm:text-sm">{compact ? `${firstVisible}–${lastVisible} of ${total}` : `Page ${currentPage} of ${pageCount} · ${firstVisible}–${lastVisible} of ${total}`}</span>
-      <Button size="sm" variant="outline" disabled={currentPage === pageCount} onClick={() => onChange(Math.min(pageCount, currentPage + 1))} aria-label={compact ? 'Next series page' : undefined}>
-        {!compact && 'Next'} <ChevronRight className="h-3.5 w-3.5" />
-      </Button>
-    </nav>
   );
 }
 
@@ -175,10 +176,12 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
   const [identify, setIdentify] = React.useState<{ id: number; name: string; cover?: string | null } | null>(null);
   const [comicInfo, setComicInfo] = React.useState<{ id: number; name: string } | null>(null);
+  const [preview, setPreview] = React.useState<{ id: number; name: string } | null>(null);
   const [mergeOpen, setMergeOpen] = React.useState(false);
   const [selectMode, setSelectMode] = React.useState(false);
   const [page, setPage] = React.useState(() => libraryId ? initialState.pages?.[libraryId] ?? 1 : 1);
   const [unmatchTarget, setUnmatchTarget] = React.useState<SeriesRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<{ id: number; name: string; dir: string } | null>(null);
   const [recoveryFile, setRecoveryFile] = React.useState<string | null>(null);
   const [lastQueuedJob, setLastQueuedJob] = React.useState<{ id: number; type: string; libraryId: number } | null>(null);
   const requestedSeries = Number(searchParams.get('series'));
@@ -284,8 +287,6 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const pageCount = React.useMemo(() => Math.max(1, Math.ceil(filtered.length / SERIES_PAGE_SIZE)), [filtered.length]);
   const currentPage = Math.min(page, pageCount);
   const visibleRows = filtered.slice((currentPage - 1) * SERIES_PAGE_SIZE, currentPage * SERIES_PAGE_SIZE);
-  const firstVisible = filtered.length === 0 ? 0 : (currentPage - 1) * SERIES_PAGE_SIZE + 1;
-  const lastVisible = Math.min(currentPage * SERIES_PAGE_SIZE, filtered.length);
   React.useEffect(() => {
     if (!review) writeLibraryState({ query, statusFilter, sortBy });
   }, [query, statusFilter, sortBy, review]);
@@ -349,6 +350,26 @@ export function Libraries({ review = false }: { review?: boolean }) {
       toast({ tone: 'success', title: 'Unmatched', description: row.name });
     },
     onError: (e) => toast({ tone: 'danger', title: 'Unmatch failed', description: e instanceof Error ? e.message : String(e) }),
+  });
+
+  // "Delete files": first resolve the series' on-disk folder (for the
+  // confirmation dialog), then queue the deletion as a background job — the
+  // server re-resolves and validates the path itself.
+  const prepareDelete = useMutation({
+    mutationFn: (row: SeriesRow) => api.cbzSeriesFiles(row.id),
+    onSuccess: (res, row) => {
+      if (!res.dir) toast({ tone: 'danger', title: 'Cannot locate this series on this machine', description: res.reason ?? undefined });
+      else setDeleteTarget({ id: row.id, name: row.name, dir: res.dir });
+    },
+    onError: (e) => toast({ tone: 'danger', title: 'Could not load the series files', description: e instanceof Error ? e.message : String(e) }),
+  });
+  const deleteSeries = useMutation({
+    mutationFn: (target: { id: number; name: string }) => api.enqueue('delete-series', { seriesId: target.id }),
+    onSuccess: (_res, target) => {
+      setDeleteTarget(null);
+      toast({ tone: 'success', title: `Deleting “${target.name}”`, description: 'The folder is being removed in the background — follow progress on the Jobs page.' });
+    },
+    onError: (e) => toast({ tone: 'danger', title: 'Could not queue the deletion', description: e instanceof Error ? e.message : String(e) }),
   });
 
   const matchedInLib = rows.filter((r) => r.status === 'matched').length;
@@ -439,9 +460,6 @@ export function Libraries({ review = false }: { review?: boolean }) {
                 <h2 className="text-sm font-semibold tabular-nums">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h2>
                 {series.data && <p className="text-xs text-muted">{review ? 'Matches below 80% confidence · All libraries' : `${matchedInLib} matched · ${rows.length - matchedInLib} pending`}</p>}
               </div>
-              {filtered.length > SERIES_PAGE_SIZE && (
-                <PaginationControls currentPage={currentPage} pageCount={pageCount} firstVisible={firstVisible} lastVisible={lastVisible} total={filtered.length} compact onChange={changePage} />
-              )}
             </div>
           </div>
         )}
@@ -523,14 +541,14 @@ export function Libraries({ review = false }: { review?: boolean }) {
                         </div>
                       </div>
                     </button>
-                    {!selectMode && <CardActionMenu row={r} onEdit={() => setComicInfo({ id: r.id, name: r.name })} onUnmatch={() => setUnmatchTarget(r)} />}
+                    {!selectMode && <CardActionMenu row={r} onEdit={() => setComicInfo({ id: r.id, name: r.name })} onUnmatch={() => setUnmatchTarget(r)} onDelete={() => prepareDelete.mutate(r)} onPreview={() => setPreview({ id: r.id, name: r.name })} />}
                   </Card>
                 ))}
               </div>
             )}
             {filtered.length > SERIES_PAGE_SIZE && (
               <div className="pt-2">
-                <PaginationControls currentPage={currentPage} pageCount={pageCount} firstVisible={firstVisible} lastVisible={lastVisible} total={filtered.length} onChange={changePage} />
+                <Pager page={currentPage} count={pageCount} onPageChange={changePage} />
               </div>
             )}
           </>
@@ -546,6 +564,22 @@ export function Libraries({ review = false }: { review?: boolean }) {
         pending={unmatch.isPending}
         onOpenChange={(open) => { if (!open && !unmatch.isPending) setUnmatchTarget(null); }}
         onConfirm={() => { if (unmatchTarget) unmatch.mutate(unmatchTarget); }}
+      />
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete series files?"
+        description={deleteTarget ? `This permanently deletes the folder containing “${deleteTarget.name}” and its .cbz files:` : ''}
+        details={deleteTarget ? (
+          <>
+            <code className="break-all rounded bg-surface-2 px-2 py-1.5 font-mono text-xs text-foreground">{deleteTarget.dir}</code>
+            <p>Kavita drops the series on its next scan. This cannot be undone.</p>
+          </>
+        ) : undefined}
+        confirmLabel="Delete"
+        danger
+        pending={deleteSeries.isPending}
+        onOpenChange={(open) => { if (!open && !deleteSeries.isPending) setDeleteTarget(null); }}
+        onConfirm={() => { if (deleteTarget) deleteSeries.mutate(deleteTarget); }}
       />
       {identify && (
         <IdentifyModal
@@ -565,6 +599,9 @@ export function Libraries({ review = false }: { review?: boolean }) {
 
       {comicInfo && (
         <ComicInfoModal seriesId={comicInfo.id} onClose={() => setComicInfo(null)} />
+      )}
+      {preview && (
+        <SeriesPreviewModal seriesId={preview.id} name={preview.name} onClose={() => setPreview(null)} />
       )}
       {recoveryFile && <ComicInfoModal initialPath={recoveryFile} onClose={() => setRecoveryFile(null)} />}
 

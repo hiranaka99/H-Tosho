@@ -13,7 +13,7 @@ const FILTERS: readonly { id: JobFilter; label: string }[] = [
   { id: 'all', label: 'All activity' },
   { id: 'active', label: 'Active' },
   { id: 'failed', label: 'Needs attention' },
-  { id: 'done', label: 'Completed / cancelled' },
+  { id: 'done', label: 'Finished' },
 ];
 const LOG_COLOR: Record<string, string> = { info: 'text-muted', warn: 'text-warning', warning: 'text-warning', error: 'text-danger', success: 'text-success' };
 const controlClass = 'max-lg:min-h-11 pointer-coarse:min-h-11';
@@ -25,7 +25,7 @@ function isActive(job: Job): boolean {
 function hasWarnings(result: unknown): boolean {
   if (!result || typeof result !== 'object') return false;
   return Object.entries(result).some(([key, value]) => {
-    if (/^(warnings?|errors?)$/i.test(key)) {
+    if (/^(warnings?|errors?|failed)$/i.test(key)) {
       if (Array.isArray(value)) return value.length > 0;
       if (typeof value === 'object' && value !== null) return Object.keys(value).length > 0;
       return typeof value === 'number' ? value > 0 : Boolean(value);
@@ -51,12 +51,60 @@ function readableValue(value: unknown): string {
 }
 
 function jobTarget(job: Job): string {
+  const series = job.context?.series ?? [];
+  if (series.length === 1) return series[0].name;
+  if (series.length > 1) return `${series.length} series: ${series.slice(0, 3).map((item) => item.name).join(', ')}${series.length > 3 ? '…' : ''}`;
+  if (job.context?.libraryName) return job.context.libraryName;
   const payload = job.payload;
-  const name = payload.title ?? payload.name ?? payload.path ?? payload.target ?? payload.query;
+  const name = payload.title ?? payload.name ?? payload.path ?? payload.targetDir ?? payload.target ?? payload.query;
   if (name !== undefined && name !== null) return readableValue(name);
-  const targets = Object.entries(payload).filter(([key]) => /(?:ids?|source|library|series|gallery)$/i.test(key));
-  if (targets.length) return targets.map(([key, value]) => `${fieldLabel(key)}: ${readableValue(value)}`).join(' · ');
-  return Object.keys(payload).length ? readableValue(payload) : 'All applicable items';
+  if (payload.seriesId !== undefined) return `Series #${payload.seriesId} · name not recorded`;
+  if (Array.isArray(payload.seriesIds) && payload.seriesIds.length) return `${payload.seriesIds.length} series · names not recorded`;
+  if (payload.libraryId !== undefined) return `Library #${payload.libraryId} · name not recorded`;
+  return job.type === 'check-watched-searches' ? 'All watched searches' : 'All libraries';
+}
+
+const JOB_PURPOSE: Record<string, string> = {
+  'scan-new': 'Refresh Kavita libraries and match newly discovered series',
+  'match-unmatched': 'Find and apply metadata matches for unmatched series',
+  'match-library': 'Find and apply metadata matches for every series in the library',
+  'match-series': 'Find and apply metadata matches for the selected series',
+  'sync-series': 'Re-match and update series metadata and covers',
+  'apply-series': 'Apply the reviewed metadata candidate and selected fields',
+  'clear-overrides': 'Remove library-specific settings overrides',
+  'check-watched-searches': 'Check saved searches for new galleries',
+  'edit-comicinfo': 'Rewrite ComicInfo.xml in the selected archive',
+  'merge-series': 'Move archives into one series folder and update chapter metadata',
+  'delete-series': 'Delete the series folder and request a Kavita rescan',
+};
+
+function jobOutcome(job: Job): string {
+  if (job.status === 'queued') return 'Waiting to start. No work has been performed yet.';
+  if (job.status === 'running') return job.progressTotal > 0 ? `${job.progressCurrent} of ${job.progressTotal} items processed so far.` : 'Work is in progress; no item count reported yet.';
+  if (job.status === 'cancelled') return 'Cancelled. Work already performed is not undone.';
+  if (!job.result || typeof job.result !== 'object' || Array.isArray(job.result)) return job.status === 'failed' ? 'Stopped with an error. Check logs for any work performed before the failure.' : 'Finished. No outcome summary was recorded; check the logs.';
+  const result = job.result as Record<string, unknown>;
+  const parts: string[] = [];
+  if (job.type === 'check-watched-searches') {
+    for (const [key, label] of [['processed', 'saved searches checked'], ['newGalleries', 'new galleries found'], ['notified', 'notifications sent']]) if (typeof result[key] === 'number') parts.push(`${result[key]} ${label}`);
+  } else if (job.type === 'delete-series' && typeof result.deleted === 'number') {
+    parts.push(`${result.deleted} archives deleted`);
+  } else if (job.type === 'edit-comicinfo' && typeof result.processed === 'number') {
+    parts.push(`ComicInfo.xml rewritten in ${result.processed} ${result.processed === 1 ? 'archive' : 'archives'}`);
+  } else if (job.type === 'merge-series' && typeof result.processed === 'number') {
+    parts.push(`${result.processed} archives moved into the destination series`);
+    if (result.failed) parts.push(`${result.failed} archives could not be moved`);
+  } else if (job.type === 'clear-overrides') {
+    parts.push(result.cleared ? `${result.cleared} library overrides cleared` : 'Library settings overrides cleared');
+  } else {
+    for (const [key, label] of [['libraries', 'libraries scanned'], ['processed', 'series processed'], ['matched', 'metadata matches applied successfully'], ['failed', 'series needing attention'], ['pruned', 'stale series records removed']]) if (typeof result[key] === 'number' && (key !== 'failed' && key !== 'pruned' || result[key] > 0)) parts.push(`${result[key]} ${label}`);
+  }
+  if (Array.isArray(result.pushed) && result.pushed.length) parts.push(`Updated fields: ${result.pushed.map((field) => fieldLabel(String(field))).join(', ')}`);
+  if (result.coverUpdated === true) parts.push('series cover updated');
+  if (typeof result.volumeCoversUpdated === 'number' && result.volumeCoversUpdated > 0) parts.push(`${result.volumeCoversUpdated} volume covers updated`);
+  if (typeof result.warnings === 'number' && result.warnings > 0) parts.push(`${result.warnings} warnings`);
+  if (typeof result.titleFilesUpdated === 'number' && result.titleFilesUpdated > 0) parts.push(`${result.titleFilesUpdated} archive titles updated`);
+  return parts.length ? `${parts.join(' · ')}.` : 'Finished. Open the recorded result for details.';
 }
 
 function duration(job: Job): string {
@@ -190,6 +238,17 @@ export function Jobs() {
   const qc = useQueryClient();
   const jobsQuery = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, refetchInterval: 2500 });
   const jobs = jobsQuery.data ?? [];
+  const previousStatuses = React.useRef<Map<number, string> | null>(null);
+  const [announcement, setAnnouncement] = React.useState('');
+  React.useEffect(() => {
+    if (!jobsQuery.data) return;
+    const previous = previousStatuses.current;
+    const transitions = jobsQuery.data.filter((job) => previous?.has(job.id) && previous.get(job.id) !== job.status && ['completed', 'failed', 'cancelled'].includes(job.status));
+    if (transitions.length) {
+      setAnnouncement(transitions.map((job) => `Job #${job.id}, ${jobTarget(job)}, ${job.status === 'completed' && hasWarnings(job.result) ? 'completed with warnings' : job.status}.`).join(' '));
+    }
+    previousStatuses.current = new Map(jobsQuery.data.map((job) => [job.id, job.status]));
+  }, [jobsQuery.data]);
   const selectedListJob = jobs.find((job) => job.id === selectedId);
   const detailQuery = useQuery<JobDetails>({
     queryKey: ['job', selectedId],
@@ -256,51 +315,53 @@ export function Jobs() {
   const query = search.trim().toLowerCase();
   const visibleJobs = jobs.filter((job) => {
     const matchesFilter = filter === 'all' || (filter === 'active' ? isActive(job) : filter === 'failed' ? needsAttention(job) : job.status === 'completed' || job.status === 'cancelled');
-    return matchesFilter && (type === 'all' || job.type === type) && (!query || `${job.id} ${jobLabel(job.type, job.payload)} ${job.type} ${jobTarget(job)} ${job.errorMessage ?? ''} ${readableValue(job.result)}`.toLowerCase().includes(query));
+    return matchesFilter && (type === 'all' || job.type === type) && (!query || `${job.id} ${jobLabel(job.type, job.payload)} ${job.type} ${jobTarget(job)} ${job.context?.series.map((series) => series.name).join(' ') ?? ''} ${job.context?.libraryName ?? ''} ${JOB_PURPOSE[job.type] ?? ''} ${jobOutcome(job)} ${job.errorMessage ?? ''} ${readableValue(job.result)}`.toLowerCase().includes(query));
   }).sort((a, b) => {
     const priority = (job: Job) => job.status === 'running' ? 0 : job.status === 'queued' ? 1 : needsAttention(job) ? 2 : 3;
     return priority(a) - priority(b) || b.id - a.id;
   });
-  const summaries: { filter: JobFilter; label: string; description: string; count: number; icon: React.ReactNode; color: string }[] = [
-    { filter: 'active', label: 'Active', description: 'Running and queued work', count: jobs.filter(isActive).length, icon: <Activity className="h-5 w-5" />, color: 'text-primary' },
-    { filter: 'failed', label: 'Needs attention', description: 'Failures and completed jobs with warnings', count: jobs.filter(needsAttention).length, icon: <AlertTriangle className="h-5 w-5" />, color: 'text-warning' },
-    { filter: 'done', label: 'Completed', description: 'Browse finished and cancelled work', count: jobs.filter((job) => job.status === 'completed').length, icon: <CheckCircle2 className="h-5 w-5" />, color: 'text-success' },
-  ];
+  const statusCounts: Record<JobFilter, number> = {
+    all: jobs.length,
+    active: jobs.filter(isActive).length,
+    failed: jobs.filter(needsAttention).length,
+    done: jobs.filter((job) => job.status === 'completed' || job.status === 'cancelled').length,
+  };
   return (
     <div className="flex min-w-0 flex-col gap-4">
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
       <PageHeader icon={<ListChecks className="h-5 w-5" />} title="Jobs" subtitle="Track active work, resolve failures, and inspect what happened.">
         {jobs.some((job) => job.status === 'failed') && <Button variant="outline" className={controlClass} disabled={clearMutation.isPending || retryMutation.isPending} onClick={() => setClearTarget('all')}><Trash2 className="h-4 w-4" /> Clear failed jobs</Button>}
       </PageHeader>
-      <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-3">
-        {summaries.map((summary) => <button key={summary.filter} type="button" aria-pressed={filter === summary.filter} onClick={() => updateUrl({ filter: summary.filter })} className={cn('min-h-24 min-w-0 rounded-lg border bg-surface p-4 text-left transition-colors hover:bg-surface-2', filter === summary.filter ? 'border-primary ring-1 ring-primary/30' : 'border-border')}>
-          <div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{summary.label}</span><span className={summary.color}>{summary.icon}</span></div>
-          <p className="mt-2 text-3xl font-semibold tabular-nums">{jobsQuery.isPending || (jobsQuery.isError && !jobsQuery.data) ? '—' : summary.count}</p><p className="mt-1 text-xs text-muted">{summary.description}</p>
-        </button>)}
-      </div>
       <Card className="min-w-0">
         <div className="space-y-3 border-b border-border p-3 sm:p-4">
-          <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-[1fr_180px_200px]">
+          <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-[200px_1fr_200px]">
+            <div className="space-y-1"><Label htmlFor="jobs-status">Status</Label><Select id="jobs-status" value={filter} onChange={(event) => updateUrl({ filter: event.target.value as JobFilter })} className={controlClass}>{FILTERS.map((item) => <option key={item.id} value={item.id}>{item.label} ({jobsQuery.isPending || (jobsQuery.isError && !jobsQuery.data) ? '—' : statusCounts[item.id]})</option>)}</Select></div>
             <div className="space-y-1"><Label htmlFor="jobs-search">Search activity</Label><div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" /><Input id="jobs-search" type="search" placeholder="Job, target, result, or ID…" value={search} onChange={(event) => setSearch(event.target.value)} className="max-lg:min-h-11 pointer-coarse:min-h-11 pl-9" /></div></div>
-            <div className="space-y-1"><Label htmlFor="jobs-status">Status</Label><Select id="jobs-status" value={filter} onChange={(event) => updateUrl({ filter: event.target.value as JobFilter })} className={controlClass}>{FILTERS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</Select></div>
-            <div className="space-y-1"><Label htmlFor="jobs-type">Job type</Label><Select id="jobs-type" value={type} onChange={(event) => setType(event.target.value)} className={controlClass}><option value="all">All job types</option>{types.map((value) => <option key={value} value={value}>{jobLabel(value)}</option>)}</Select></div>
+            <Disclosure label={type === 'all' ? 'Job type' : `Job type: ${jobLabel(type)}`} className="sm:hidden"><div className="mt-2"><Select aria-label="Job type" value={type} onChange={(event) => setType(event.target.value)} className={controlClass}><option value="all">All job types</option>{types.map((value) => <option key={value} value={value}>{jobLabel(value)}</option>)}</Select></div></Disclosure>
+            <div className="hidden space-y-1 sm:block"><Label htmlFor="jobs-type">Job type</Label><Select id="jobs-type" value={type} onChange={(event) => setType(event.target.value)} className={controlClass}><option value="all">All job types</option>{types.map((value) => <option key={value} value={value}>{jobLabel(value)}</option>)}</Select></div>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted"><p>{visibleJobs.length} of {jobs.length} jobs</p>{filter !== 'all' && <Button variant="ghost" size="sm" className={controlClass} onClick={() => updateUrl({ filter: 'all' })}>View all history</Button>}</div>
         </div>
-        <CardContent className="space-y-3">
+        <CardContent className="!p-0 divide-y divide-border">
           {jobsQuery.isError && <ErrorState title="Could not load activity" description={jobsQuery.error.message} onRetry={() => void jobsQuery.refetch()} />}
           {jobsQuery.isPending ? <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted" role="status"><Spinner /> Loading activity…</div> : !visibleJobs.length && !jobsQuery.isError ? <div><EmptyState icon={<ListChecks className="h-8 w-8" />} title={jobs.length ? 'No matching jobs' : 'No activity yet'} description={jobs.length ? 'Try another status, job type, or search.' : 'Scans, matching, and other background work appear here.'} />{jobs.length > 0 && <div className="flex justify-center"><Button variant="outline" className={controlClass} onClick={() => { setSearch(''); setType('all'); updateUrl({ filter: 'all' }); }}>Clear filters</Button></div>}</div> : visibleJobs.map((job) => (
-            <article key={job.id} className={cn('min-w-0 rounded-lg border p-3 sm:p-4', job.id === selectedId ? 'border-primary bg-primary/5' : job.status === 'failed' ? 'border-danger/30 bg-danger/5' : isActive(job) ? 'border-primary/30 bg-primary/5' : 'border-border')}>
+            <article key={job.id} className={cn('min-w-0 px-3 py-3 sm:px-4', job.id === selectedId ? 'bg-primary/5' : job.status === 'failed' ? 'bg-danger/5' : undefined)}>
               <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
-                <button type="button" onClick={() => updateUrl({ job: job.id })} className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 rounded-md text-left transition-colors duration-150 hover:text-primary">
-                  <span className="text-xs text-muted">Job #{job.id}</span><h2 className="mt-1 break-words text-sm font-semibold">{jobLabel(job.type, job.payload)}</h2><p className="mt-1 break-words text-sm text-muted [overflow-wrap:anywhere]">{jobTarget(job)}</p>
-                </button>
+                <div className="min-w-0 flex-1">
+                  <h2 className="break-words text-sm font-semibold [overflow-wrap:anywhere]">{jobTarget(job)}</h2>
+                  <p className="mt-1 break-words text-xs text-muted">{jobLabel(job.type, job.payload)} · Job #{job.id}</p>
+                  <p className="mt-2 text-sm text-muted">{JOB_PURPOSE[job.type] ?? jobLabel(job.type, job.payload)}</p>
+                  <p className="mt-1 text-sm">{jobOutcome(job)}</p>
+                  {job.context?.libraryName && job.context.series.length > 0 && <p className="mt-1 text-xs text-muted">Library: {job.context.libraryName}</p>}
+                  {(job.context?.series.length ?? 0) > 1 && <Disclosure label={`Affected series (${job.context!.series.length})`} className="mt-1"><ul className="space-y-1 py-2 text-sm">{job.context!.series.map((series) => <li key={series.id} className="break-words">{series.name} <span className="text-xs text-muted">· #{series.id}</span></li>)}</ul></Disclosure>}
+                </div>
                 <JobStatus job={job} />
               </div>
-              {isActive(job) && <div className="mt-3 space-y-1.5"><ProgressBar value={job.progressCurrent} max={job.progressTotal} active /><p className="text-xs text-muted">{job.progressTotal > 0 ? `${job.progressCurrent} of ${job.progressTotal} · ${Math.min(100, Math.round(job.progressCurrent / job.progressTotal * 100))}%` : job.status === 'queued' ? 'Waiting for a worker' : 'Working…'}</p></div>}
-              {job.errorMessage && <p className="mt-3 whitespace-pre-wrap break-words text-sm text-danger [overflow-wrap:anywhere]">{job.errorMessage}</p>}
-              <RecoveryActions job={job} />
-              {job.result !== null && job.result !== undefined && <p className="mt-3 line-clamp-3 break-words text-sm text-muted [overflow-wrap:anywhere]">{readableValue(job.result)}</p>}
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-muted"><time dateTime={toIsoUtc(job.createdAt)} title={timestamp(job.createdAt)}>{timeAgo(job.createdAt)}</time> · {duration(job)}</p><div className="flex flex-wrap gap-2">{actions(job)}<Button variant="ghost" className={controlClass} onClick={() => updateUrl({ job: job.id })}>View details</Button></div></div>
+              {isActive(job) && <div className="mt-2 flex items-center gap-3"><div className="min-w-0 flex-1"><ProgressBar value={job.progressCurrent} max={job.progressTotal} active /></div><p className="shrink-0 text-xs tabular-nums text-muted">{job.progressTotal > 0 ? `${job.progressCurrent} / ${job.progressTotal} · ${Math.min(100, Math.round(job.progressCurrent / job.progressTotal * 100))}%` : job.status === 'queued' ? 'Waiting for a worker' : 'Working…'}</p></div>}
+              {job.errorMessage && <p className="mt-2 whitespace-pre-wrap break-words text-sm text-danger [overflow-wrap:anywhere]">{job.errorMessage}</p>}
+              {job.recovery && <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1"><p className="text-sm text-muted">{job.recovery.explanation}</p>{job.recovery.actions.map((action) => <Button asChild variant="ghost" size="sm" className={controlClass} key={action.href}><Link to={action.href}>{action.label}</Link></Button>)}</div>}
+              {job.result !== null && job.result !== undefined && <Disclosure label="Recorded result" className="mt-2 text-sm"><p className="mt-1 break-words text-sm text-muted [overflow-wrap:anywhere]">{readableValue(job.result)}</p></Disclosure>}
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-muted"><time dateTime={toIsoUtc(job.createdAt)} title={timestamp(job.createdAt)}>{timeAgo(job.createdAt)}</time> · {duration(job)}</p><div className="flex flex-wrap gap-2">{actions(job)}<Button variant="ghost" className={controlClass} aria-label={`View details for job #${job.id}: ${jobTarget(job)}`} onClick={() => updateUrl({ job: job.id })}>View details</Button></div></div>
             </article>
           ))}
         </CardContent>
@@ -313,6 +374,14 @@ export function Jobs() {
               {detailQuery.isError && <ErrorState title="Could not load job details" description={detailQuery.error.message} onRetry={() => void detailQuery.refetch()} />}
               {detailQuery.isPending && <div role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner /> Loading job details…</div>}
               {selectedJob && <>
+                <section className="space-y-2">
+                  <h3 className="text-sm font-semibold">What this job does</h3>
+                  <p className="text-sm text-muted">{JOB_PURPOSE[selectedJob.type] ?? jobLabel(selectedJob.type, selectedJob.payload)}</p>
+                  <p className="text-sm">{jobOutcome(selectedJob)}</p>
+                  {selectedJob.type === 'apply-series' && typeof selectedJob.payload.selectedTitle === 'string' && <p className="text-sm">Selected title: {selectedJob.payload.selectedTitle}</p>}
+                  {selectedJob.context?.libraryName && <p className="text-sm">Library: {selectedJob.context.libraryName}</p>}
+                  {(selectedJob.context?.series.length ?? 0) > 0 && <ul className="space-y-1 text-sm">{selectedJob.context!.series.map((series) => <li key={series.id} className="break-words">{series.name} <span className="text-xs text-muted">· Series #{series.id}</span></li>)}</ul>}
+                </section>
                 <section className="space-y-3"><h3 className="text-sm font-semibold">Target & progress</h3><p className="break-words text-sm [overflow-wrap:anywhere]">{jobTarget(selectedJob)}</p><ProgressBar value={selectedJob.progressCurrent} max={selectedJob.progressTotal} active={isActive(selectedJob)} /><p className="text-xs text-muted">{selectedJob.progressTotal > 0 ? `${selectedJob.progressCurrent} of ${selectedJob.progressTotal}` : isActive(selectedJob) ? 'Progress not yet reported' : 'No item count reported'} · {duration(selectedJob)}</p><dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">{[['Created', selectedJob.createdAt], ['Started', selectedJob.startedAt], ['Finished', selectedJob.finishedAt]].map(([label, value]) => <div key={label}><dt className="text-xs text-muted">{label}</dt><dd className="mt-1 break-words">{timestamp(value)}</dd></div>)}</dl><div className="flex flex-wrap gap-2">{actions(selectedJob)}</div></section>
                 {selectedJob.errorMessage && <section role="alert" className="rounded-lg border border-danger/30 bg-danger/5 p-3"><h3 className="mb-2 text-sm font-semibold text-danger">Failure</h3><p className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{selectedJob.errorMessage}</p></section>}
                 <RecoveryActions job={selectedJob} />

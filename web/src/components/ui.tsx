@@ -3,7 +3,7 @@ import { Slot } from '@radix-ui/react-slot';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import * as SwitchPrimitive from '@radix-ui/react-switch';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { X, Loader2, AlertTriangle, CheckCircle2, ChevronDown } from 'lucide-react';
+import { X, Loader2, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn, PROVIDER_COLORS, PROVIDER_NAMES } from '../lib/utils';
 import { useSelectionIndicator } from '../lib/useSelectionIndicator';
 
@@ -199,6 +199,55 @@ export function Spinner({ className }: { className?: string }) {
   return <Loader2 className={cn('h-4 w-4 animate-spin text-muted', className)} />;
 }
 
+/** Page numbers with ellipses: [1 … 4 5 6 … 42] style, capped to a sane width. */
+function pageList(page: number, count: number): (number | '…')[] {
+  if (count <= 7) return Array.from({ length: count }, (_, i) => i + 1);
+  const pages: (number | '…')[] = [1];
+  const lo = Math.max(2, page - 1);
+  const hi = Math.min(count - 1, page + 1);
+  if (lo > 2) pages.push('…');
+  for (let p = lo; p <= hi; p++) pages.push(p);
+  if (hi < count - 1) pages.push('…');
+  pages.push(count);
+  return pages;
+}
+
+/** Prev/next + numbered pager, with a jump-to-page input for long result sets. */
+export function Pager({ page, count, onPageChange }: { page: number; count: number; onPageChange: (p: number) => void }) {
+  const [jump, setJump] = React.useState('');
+  const jumpId = React.useId();
+  if (count <= 1) return null;
+  const commitJump = () => {
+    const n = Math.floor(Number(jump));
+    if (Number.isFinite(n)) onPageChange(Math.min(count, Math.max(1, n)));
+    setJump('');
+  };
+  return (
+    <nav aria-label="Pages" className="flex flex-wrap items-center justify-center gap-1">
+      <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
+        <ChevronLeft className="h-3.5 w-3.5" /> Previous
+      </Button>
+      {pageList(page, count).map((p, i) =>
+        p === '…' ? (
+          <span key={`e${i}`} className="px-1 text-xs text-muted">…</span>
+        ) : (
+          <Button key={p} size="sm" variant="outline" className={p === page ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15' : undefined} onClick={() => onPageChange(p)} aria-current={p === page ? 'page' : undefined}>
+            {p}
+          </Button>
+        ),
+      )}
+      <Button size="sm" variant="outline" disabled={page >= count} onClick={() => onPageChange(page + 1)}>
+        Next <ChevronRight className="h-3.5 w-3.5" />
+      </Button>
+      <form className="ml-2 flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); commitJump(); }} aria-label="Jump to page">
+        <label className="sr-only" htmlFor={jumpId}>Page number</label>
+        <Input id={jumpId} type="number" min={1} max={count} value={jump} onChange={(e) => setJump(e.target.value)} placeholder={`${page}/${count}`} className="w-16 px-2 text-center text-xs tabular-nums" />
+        <Button size="sm" variant="ghost" type="submit">Go</Button>
+      </form>
+    </nav>
+  );
+}
+
 export function Dialog({
   open,
   onOpenChange,
@@ -366,7 +415,7 @@ export function Disclosure({ label, children, className, summaryClassName, ...pr
   );
 }
 
-export function ConfirmDialog({ open, title, description, confirmLabel, danger = false, pending = false, onConfirm, onOpenChange }: { open: boolean; title: string; description: string; confirmLabel: string; danger?: boolean; pending?: boolean; onConfirm: () => void; onOpenChange: (open: boolean) => void }) {
+export function ConfirmDialog({ open, title, description, details, confirmLabel, danger = false, pending = false, onConfirm, onOpenChange }: { open: boolean; title: string; description: string; details?: React.ReactNode; confirmLabel: string; danger?: boolean; pending?: boolean; onConfirm: () => void; onOpenChange: (open: boolean) => void }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
@@ -378,6 +427,7 @@ export function ConfirmDialog({ open, title, description, confirmLabel, danger =
             <div className="min-w-0">
               <DialogTitle>{title}</DialogTitle>
               <DialogDescription className="mt-1">{description}</DialogDescription>
+              {details ? <div className="mt-2 flex min-w-0 flex-col gap-2 text-sm text-muted">{details}</div> : null}
             </div>
           </div>
           <div className="flex flex-wrap justify-end gap-2">

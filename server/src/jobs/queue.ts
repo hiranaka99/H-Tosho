@@ -1,5 +1,5 @@
-import { and, asc, desc, eq, inArray } from 'drizzle-orm';
-import { getDb, schema } from '../db/index.js';
+import { and, asc, desc, eq, gt, inArray } from 'drizzle-orm';
+import { getDb, schema, type Db } from '../db/index.js';
 import { jobRecovery, type JobRecovery } from './recovery.js';
 
 /** Types of background jobs the queue can run. */
@@ -14,6 +14,7 @@ export const JOB_TYPES = [
   'check-watched-searches',
   'edit-comicinfo',
   'merge-series',
+  'delete-series',
 ] as const;
 
 export type JobType = (typeof JOB_TYPES)[number];
@@ -22,10 +23,20 @@ export function isJobType(value: unknown): value is JobType {
   return typeof value === 'string' && JOB_TYPES.some((type) => type === value);
 }
 
+export interface JobContext {
+  series: { id: number; name: string }[];
+  libraryId?: number;
+  libraryName?: string;
+}
+
 export interface JobPayload {
   libraryId?: number;
   seriesId?: number;
   seriesIds?: number[];
+  /** Original targets, retained even after series are renamed or deleted. */
+  context?: JobContext;
+  /** Internal provenance: local-history/fallback names may be upgraded once live targets resolve. */
+  contextPendingSeriesIds?: number[];
   /** edit-comicinfo: absolute path of the .cbz to rewrite. */
   path?: string;
   /** edit-comicinfo: pre-rendered ComicInfo.xml (raw-XML mode) — used verbatim. */
@@ -67,6 +78,7 @@ export interface Job {
   startedAt: string | null;
   finishedAt: string | null;
   recovery?: JobRecovery;
+  context?: JobContext;
 }
 
 export interface JobLog {
@@ -104,11 +116,11 @@ interface JobRow {
   finishedAt: string | null;
 }
 
-function rowToJob(row: JobRow): Job {
+function rowToJob(row: JobRow, payload: JobPayload): Job {
   return {
     id: row.id,
     type: row.type as JobType,
-    payload: safeParse(row.payloadJson, {}),
+    payload,
     status: row.status as JobStatus,
     progressCurrent: row.progressCurrent,
     progressTotal: row.progressTotal,
@@ -117,7 +129,8 @@ function rowToJob(row: JobRow): Job {
     createdAt: row.createdAt,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt,
-    recovery: jobRecovery({ status: row.status, type: row.type, payload: safeParse(row.payloadJson, {}), errorMessage: row.errorMessage }),
+    recovery: jobRecovery({ status: row.status, type: row.type, payload: { ...payload }, errorMessage: row.errorMessage }),
+    context: payload.context,
   };
 }
 
@@ -139,6 +152,93 @@ class JobQueue {
   private running = 0;
   private pumping = false;
   private cancelRequested = new Set<number>();
+  private historyDb: Db | null = null;
+  private historyId = 0;
+  private historyNames = new Map<number, string>();
+
+  /** Read only newly appended history, never the full history table on every poll. */
+  private refreshHistoryNames(): void {
+    const db = getDb();
+    if (this.historyDb !== db) {
+      this.historyDb = db;
+      this.historyId = 0;
+      this.historyNames.clear();
+    }
+    const latest = db.select({ id: schema.syncHistory.id }).from(schema.syncHistory)
+      .orderBy(desc(schema.syncHistory.id)).limit(1).get();
+    if (!latest || latest.id <= this.historyId) return;
+    const rows = db.select({ id: schema.syncHistory.id, seriesId: schema.syncHistory.kavitaSeriesId, name: schema.syncHistory.seriesTitle })
+      .from(schema.syncHistory).where(gt(schema.syncHistory.id, this.historyId)).orderBy(asc(schema.syncHistory.id)).all();
+    for (const row of rows) {
+      if (row.name?.trim()) this.historyNames.set(row.seriesId, row.name.trim());
+      this.historyId = row.id;
+    }
+  }
+
+  /** Local-only recovery for legacy rows and unresolved explicit targets. */
+  contextForPayload(payload: JobPayload): JobContext | undefined {
+    const ids = [...new Set([...(payload.seriesId !== undefined ? [payload.seriesId] : []), ...(payload.seriesIds ?? [])])];
+    if (!payload.context && !ids.length && payload.libraryId === undefined) return undefined;
+    const series = new Map((payload.context?.series ?? []).map((target) => [target.id, { ...target }]));
+    for (const id of ids) if (!series.has(id)) series.set(id, { id, name: `Series #${id}` });
+    if ([...series.values()].some((target) => !target.name.trim() || target.name === `Series #${target.id}`)) {
+      this.refreshHistoryNames();
+      for (const target of series.values()) {
+        if (!target.name.trim() || target.name === `Series #${target.id}`) {
+          target.name = this.historyNames.get(target.id) ?? `Series #${target.id}`;
+        }
+      }
+    }
+    return {
+      ...payload.context,
+      series: [...series.values()],
+      libraryId: payload.context?.libraryId ?? payload.libraryId,
+    };
+  }
+
+  private hydrate(row: JobRow): Job {
+    const payload = safeParse<JobPayload>(row.payloadJson, {});
+    const context = this.contextForPayload(payload);
+    const previousIds = new Set((payload.context?.series ?? []).filter((target) => target.name !== `Series #${target.id}`).map((target) => target.id));
+    if (context && payload.contextPendingSeriesIds === undefined) {
+      payload.contextPendingSeriesIds = context.series.filter((target) => !previousIds.has(target.id)).map((target) => target.id);
+    }
+    if (context) {
+      payload.context = context;
+      const payloadJson = JSON.stringify(payload);
+      if (payloadJson !== row.payloadJson) getDb().update(schema.jobs).set({ payloadJson }).where(eq(schema.jobs.id, row.id)).run();
+    }
+    return rowToJob(row, payload);
+  }
+
+  /** Append discovered targets, upgrading placeholders but retaining original known names. */
+  updateContext(jobId: number, context: JobContext): JobContext | undefined {
+    const db = getDb();
+    const row = db.select({ payloadJson: schema.jobs.payloadJson }).from(schema.jobs).where(eq(schema.jobs.id, jobId)).get();
+    if (!row) return undefined;
+    const payload = safeParse<JobPayload>(row.payloadJson, {});
+    const previous = payload.context;
+    const series = new Map((previous?.series ?? []).map((target) => [target.id, target]));
+    const pendingIds = new Set(payload.contextPendingSeriesIds ?? []);
+    for (const target of context.series) {
+      const known = series.get(target.id);
+      if (pendingIds.has(target.id) || !known?.name.trim() || known.name === `Series #${target.id}`) series.set(target.id, target);
+      pendingIds.delete(target.id);
+    }
+    const libraryId = previous?.libraryId ?? context.libraryId ?? payload.libraryId;
+    payload.context = this.contextForPayload({
+      ...payload,
+      context: {
+        series: [...series.values()],
+        libraryId,
+        libraryName: previous?.libraryName ?? (libraryId === context.libraryId ? context.libraryName : undefined),
+      },
+    });
+    payload.contextPendingSeriesIds = [...pendingIds];
+    const payloadJson = JSON.stringify(payload);
+    if (payloadJson !== row.payloadJson) db.update(schema.jobs).set({ payloadJson }).where(eq(schema.jobs.id, jobId)).run();
+    return payload.context;
+  }
 
   /** Register the function that actually performs each job. */
   registerHandler(h: JobHandler): void {
@@ -149,6 +249,11 @@ class JobQueue {
   /** Insert a new job and return its id. */
   enqueue(type: JobType, payload: JobPayload = {}): number {
     const db = getDb();
+    const context = this.contextForPayload(payload);
+    if (context) {
+      const knownIds = new Set((payload.context?.series ?? []).filter((target) => target.name !== `Series #${target.id}`).map((target) => target.id));
+      payload = { ...payload, context, contextPendingSeriesIds: payload.contextPendingSeriesIds ?? context.series.filter((target) => !knownIds.has(target.id)).map((target) => target.id) };
+    }
     const res = db
       .insert(schema.jobs)
       .values({ type, payloadJson: JSON.stringify(payload), status: 'queued' })
@@ -161,18 +266,18 @@ class JobQueue {
 
   get(id: number): Job | null {
     const row = getDb().select().from(schema.jobs).where(eq(schema.jobs.id, id)).get();
-    return row ? rowToJob(row) : null;
+    return row ? this.hydrate(row) : null;
   }
 
   list(limit = 100): Job[] {
     const rows = getDb().select().from(schema.jobs).orderBy(desc(schema.jobs.id)).limit(limit).all();
-    return rows.map(rowToJob);
+    return rows.map((row) => this.hydrate(row));
   }
 
   /** Jobs that are queued or currently running. */
   active(): Job[] {
     const rows = getDb().select().from(schema.jobs).where(inArray(schema.jobs.status, ['queued', 'running'])).all();
-    return rows.map(rowToJob);
+    return rows.map((row) => this.hydrate(row));
   }
 
   /**
@@ -256,7 +361,7 @@ class JobQueue {
     const row = db.select().from(schema.jobs).where(eq(schema.jobs.status, 'queued')).orderBy(asc(schema.jobs.id)).limit(1).get();
     if (!row) return null;
     db.update(schema.jobs).set({ status: 'running', startedAt: new Date().toISOString() }).where(eq(schema.jobs.id, row.id)).run();
-    return rowToJob({ ...row, status: 'running' });
+    return this.hydrate({ ...row, status: 'running' });
   }
 
   private async pump(): Promise<void> {

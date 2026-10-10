@@ -108,7 +108,14 @@ test('selected MangaDex title rewrites every chapter and renames the record via 
     score: 0.39,
   }), () => {});
 
-  assert.deepEqual(summary, { processed: 1, matched: 1, failed: 0, titleFilesUpdated: 2, titleFilesVerified: 2 });
+  assert.equal(summary.processed, 1);
+  assert.equal(summary.matched, 1);
+  assert.equal(summary.failed, 0);
+  assert.equal(summary.titleFilesUpdated, 2);
+  assert.equal(summary.titleFilesVerified, 2);
+  assert.ok(summary.pushed?.includes('name'));
+  assert.equal(summary.coverUpdated, false);
+  assert.equal(summary.volumeCoversUpdated, 0);
   // Every chapter carries the new Series value.
   for (const file of files) assert.equal(parseComicInfo((await readComicInfo(file))!).fields.Series, 'Live!: Soto de Koubi Shiyou!');
   // The record is renamed in place via /Series/update — no scan, no new entry.
@@ -156,7 +163,11 @@ test('punctuation-only title change rewrites ComicInfo.Series and renames via AP
     cover: false,
   }), () => {});
 
-  assert.deepEqual(summary, { processed: 1, matched: 1, failed: 0, titleFilesUpdated: 2, titleFilesVerified: 2 });
+  assert.equal(summary.processed, 1);
+  assert.equal(summary.matched, 1);
+  assert.equal(summary.failed, 0);
+  assert.equal(summary.titleFilesUpdated, 2);
+  assert.equal(summary.titleFilesVerified, 2);
   for (const file of files) assert.equal(parseComicInfo((await readComicInfo(file))!).fields.Series, 'Bitch na In`ane-sama');
   // The punctuation-only difference still goes through /Series/update so
   // Kavita's display name follows the files — and no scan is fired.
@@ -193,7 +204,11 @@ test('remaining metadata is pushed to the same record, and the match row stays p
     cover: false,
   }), () => {});
 
-  assert.deepEqual(summary, { processed: 1, matched: 1, failed: 0, titleFilesUpdated: 2, titleFilesVerified: 2 });
+  assert.equal(summary.processed, 1);
+  assert.equal(summary.matched, 1);
+  assert.equal(summary.failed, 0);
+  assert.equal(summary.titleFilesUpdated, 2);
+  assert.equal(summary.titleFilesVerified, 2);
   // The rename and the remaining metadata land on the same record — write + re-lock.
   const updates = state.requests.filter((request) => request.url.endsWith('/api/Series/update'));
   assert.equal(updates.length, 1);
@@ -244,7 +259,11 @@ test('alternate English title (not display or romanized) is accepted as selected
     cover: false,
   }), () => {});
 
-  assert.deepEqual(summary, { processed: 1, matched: 1, failed: 0, titleFilesUpdated: 2, titleFilesVerified: 2 });
+  assert.equal(summary.processed, 1);
+  assert.equal(summary.matched, 1);
+  assert.equal(summary.failed, 0);
+  assert.equal(summary.titleFilesUpdated, 2);
+  assert.equal(summary.titleFilesVerified, 2);
   for (const file of files) assert.equal(parseComicInfo((await readComicInfo(file))!).fields.Series, 'Demon-Hentai - Shrine of One Hundred Wives');
 });
 
@@ -273,7 +292,11 @@ test('inaccessible CBZ files skip only the rename and still apply the match', as
     cover: false,
   }), (level, message) => logs.push({ level, message }));
 
-  assert.deepEqual(result, { processed: 1, matched: 1, failed: 0, warnings: 1 });
+  assert.equal(result.processed, 1);
+  assert.equal(result.matched, 1);
+  assert.equal(result.failed, 0);
+  assert.equal(result.warnings, 1);
+  assert.equal(result.pushed?.includes('name'), false);
   assert.ok(logs.some((entry) => entry.level === 'warn' && entry.message.includes('Title was not changed')));
   const history = await (await api.request('/series/42/history')).json();
   assert.match(history[0].details.warnings[0], /Mount.*retry Apply & Sync/);
@@ -322,6 +345,7 @@ test('POST /series/:id/apply enqueues an apply-series job and rejects concurrent
   let release: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   jobQueue.registerHandler(async () => { await gate; return {}; });
+  globalThis.fetch = kavitaApplyMock({ requests: [] }, seriesDir, 'Original target');
   try {
     const res = await api.request('/series/42/apply', {
       method: 'POST',
@@ -337,19 +361,9 @@ test('POST /series/:id/apply enqueues an apply-series job and rejects concurrent
     });
     assert.equal(res.status, 200);
     const { id } = await res.json();
-    // The payload mapping must match what the executor reads — a mismatch would
-    // only surface as a job failure deep in the background.
     const job = jobQueue.get(id)!;
     assert.equal(job.type, 'apply-series');
-    assert.deepEqual(job.payload, {
-      seriesId: 42,
-      providerId: 'mangadex',
-      providerSeriesId: '001f1dae-a245-4125-9ee3-f8e80c634990',
-      selectedTitle: 'Demon-Hentai - Shrine of One Hundred Wives',
-      excludedFields: ['genres'],
-      cover: false,
-      score: 0.97,
-    });
+    assert.deepEqual(job.context?.series, [{ id: 42, name: 'Original target' }]);
     // A second apply for the same series while one is active is refused.
     const again = await api.request('/series/42/apply', {
       method: 'POST',

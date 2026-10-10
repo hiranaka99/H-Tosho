@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+- Honor cancellation during ComicInfo chapter verification, allow deferred Kavita
+  scans to run before retrying, and fail verification timeouts instead of reporting
+  success over stale chapter numbers.
+- Preserve Kavita's series name during chapter-only ComicInfo edits and report
+  chapter lookup errors instead of repeatedly rescanning an unavailable series.
+- Report conflicting Kavita chapter entries for a renumbered archive instead of
+  repeatedly scanning or reporting success based on the first matching entry.
+- Fix Windows development startup hanging under `concurrently` by using Node's
+  native file watcher with the `tsx` loader for the API server.
+- Make Jobs activity-first on desktop and mobile: consolidate status counts into
+  one filter, disclose the mobile job-type filter, and use compact rows with
+  target-first headings and expandable result summaries.
+- Align the Jobs Finished count with completed and cancelled history. Announce
+  completion, failure, and cancellation transitions to assistive technology,
+  and give each job one uniquely labeled details control.
+- Preserve series and library names in job history, including bulk targets and
+  targets renamed or deleted by the job. Recover older explicit series targets
+  from local history when available; leave unknown names clearly identified.
+- Explain each job's operation and recorded outcome directly in Jobs, including
+  applied metadata fields and covers. Search all affected series names and flag
+  completed batches with failed items as needing attention.
+
 ## v2.6.0
 
 ### Libraries and metadata review
@@ -14,6 +38,10 @@
   matching and provider diagnostics behind disclosures.
 - Clarify metadata groups on mobile and show queued, running, completed or failed
   library jobs with a direct link to Jobs. Prevent repeat clicks while queuing.
+- Restructure the series card action menu into groups — view pages, find more by
+  the same artist on Hitomi.la or nHentai, manage the series (ComicInfo.xml and
+  matching), and destructive actions. Dividers separate the groups and
+  **Delete files** now carries the danger color.
 
 ### Downloader
 

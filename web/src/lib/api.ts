@@ -123,6 +123,7 @@ export interface Job {
   id: number;
   type: string;
   payload: Record<string, unknown>;
+  context?: { series: { id: number; name: string }[]; libraryId?: number; libraryName?: string };
   status: string;
   progressCurrent: number;
   progressTotal: number;
@@ -584,4 +585,9 @@ export const api = {
   /** .cbz archives on disk for a Kavita series (resolved host-side). */
   cbzSeriesFiles: (seriesId: number) =>
     request<{ seriesId: number; name: string; dir: string | null; reason: string | null; files: string[]; chapterNumbers: Record<string, string> }>(`/cbz/series/${seriesId}`),
+  /** Image entries (pages) of a .cbz, in reading order. */
+  cbzImages: (file: string) =>
+    request<{ path: string; images: string[] }>(`/cbz/images?path=${encodeURIComponent(file)}`),
+  /** Same-origin URL serving one page image from a .cbz. */
+  cbzPageUrl: (file: string, name: string) => `/api/cbz/page?path=${encodeURIComponent(file)}&name=${encodeURIComponent(name)}`,
 };

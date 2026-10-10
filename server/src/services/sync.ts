@@ -7,7 +7,7 @@ import {
   type SeriesMetadataPayload,
 } from '../kavita/types.js';
 import type { SeriesMetadata, VolumeCover } from '../providers/types.js';
-import type { KavitaVolume, KavitaSeriesMetadataDto } from '../kavita/types.js';
+import type { KavitaVolume, KavitaSeries, KavitaSeriesMetadataDto } from '../kavita/types.js';
 import { fetchProviderMetadata } from '../match/autoMatcher.js';
 import { listCbzFiles, resolveSeriesHostDir, setSeriesTitleInCbzFiles } from '../lib/cbz.js';
 import { mapLimit } from '../lib/http.js';
@@ -385,9 +385,10 @@ export async function enqueueMatchForNewSeries(
       .all()
       .map((r) => r.kavitaSeriesId),
   );
-  const fresh = series.filter((s) => !seenIds.has(s.id) && !known.has(s.id)).map((s) => s.id);
-  if (fresh.length > 0) jobQueue.enqueue('match-series', { seriesIds: fresh });
-  return fresh;
+  const fresh = series.filter((s) => !seenIds.has(s.id) && !known.has(s.id));
+  const seriesIds = fresh.map((s) => s.id);
+  if (fresh.length > 0) jobQueue.enqueue('match-series', { libraryId, seriesIds, context: { libraryId, series: fresh.map(({ id, name }) => ({ id, name })) } });
+  return seriesIds;
 }
 
 export interface ApplySeriesOptions {
@@ -403,6 +404,8 @@ export interface ApplySeriesOptions {
   score?: number | null;
   /** Job cancellation probe. */
   isCancelled?: () => boolean;
+  /** Preserve the authoritative target before any title or file mutation. */
+  onSeriesResolved?: (series: KavitaSeries) => void | Promise<void>;
 }
 
 export interface ApplySeriesResult {
@@ -434,6 +437,7 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
   const seriesId = opts.seriesId;
   if (opts.isCancelled?.()) throw new JobCancelled();
   const series = await client.getSeriesById(seriesId);
+  await opts.onSeriesResolved?.(series);
   const { credentials } = getCredentialMap();
   const meta = await fetchProviderMetadata(opts.providerId, opts.providerSeriesId, credentials);
   const selectedTitle = opts.selectedTitle?.trim();
