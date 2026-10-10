@@ -8,6 +8,9 @@ build/
 coverage/
 .nyc_output/
 
+# ---- Local Impeccable state, caches, reports & previews ---------------------
+.impeccable/
+
 # ---- Environment / local config & secrets ---------------------------------
 .env
 .env.*

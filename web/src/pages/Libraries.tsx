@@ -2,13 +2,13 @@ import * as React from 'react';
 import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { Search, RefreshCw, Play, BookOpen, Unlink, FileText, Combine, Check, CheckSquare, ChevronLeft, ChevronRight, EllipsisVertical } from 'lucide-react';
-import { api, type SeriesRow, type DoujinSource } from '../lib/api';
-import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog, SegmentedControl, TabPanel } from '../components/ui';
+import { api, type SeriesRow, type DoujinSource, type Job } from '../lib/api';
+import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog, SegmentedControl, TabPanel, Spinner, ProgressBar } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { MergeSeriesModal } from '../components/MergeSeriesModal';
 import { PageCountPill } from '../components/PageCountPill';
-import { buildTagSearchFragment, cn } from '../lib/utils';
+import { buildTagSearchFragment, cn, jobLabel } from '../lib/utils';
 import { toast } from '../lib/toast';
 /** Matches below this score are surfaced for review (mirrors the server's threshold). */
 const LOW_CONFIDENCE = 0.8;
@@ -171,7 +171,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const [selected, setSelected] = React.useState<number | null>(libraryId ? Number(libraryId) : null);
   const [query, setQuery] = React.useState(review ? '' : initialState.query ?? '');
   const [statusFilter, setStatusFilter] = React.useState(() => review ? 'all' : initialState.statusFilter ?? 'all');
-  const [sortBy, setSortBy] = React.useState<'name' | 'date-added'>(review ? 'name' : initialState.sortBy ?? 'name');
+  const [sortBy, setSortBy] = React.useState<'name' | 'date-added'>(review ? 'name' : initialState.sortBy ?? 'date-added');
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
   const [identify, setIdentify] = React.useState<{ id: number; name: string; cover?: string | null } | null>(null);
   const [comicInfo, setComicInfo] = React.useState<{ id: number; name: string } | null>(null);
@@ -180,6 +180,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const [page, setPage] = React.useState(() => libraryId ? initialState.pages?.[libraryId] ?? 1 : 1);
   const [unmatchTarget, setUnmatchTarget] = React.useState<SeriesRow | null>(null);
   const [recoveryFile, setRecoveryFile] = React.useState<string | null>(null);
+  const [lastQueuedJob, setLastQueuedJob] = React.useState<{ id: number; type: string; libraryId: number } | null>(null);
   const requestedSeries = Number(searchParams.get('series'));
   const linkedSeriesId = Number.isSafeInteger(requestedSeries) && requestedSeries > 0 ? requestedSeries : null;
   const linkedSeries = useQuery({ queryKey: ['series', linkedSeriesId], queryFn: () => api.series(linkedSeriesId!), enabled: linkedSeriesId !== null });
@@ -312,11 +313,25 @@ export function Libraries({ review = false }: { review?: boolean }) {
     });
   };
 
-  const enqueue = (type: string, payload: Record<string, unknown> = {}) => {
-    return api.enqueue(type, payload)
-      .then(() => qc.invalidateQueries({ queryKey: ['jobs'] }))
-      .catch((error) => toast({ tone: 'danger', title: 'Could not queue job', description: error instanceof Error ? error.message : String(error) }));
+  const enqueue = useMutation({
+    mutationFn: ({ type, libraryId }: { type: 'scan-new' | 'match-unmatched'; libraryId: number }) => api.enqueue(type, { libraryId }),
+    onSuccess: (result, variables) => {
+      setLastQueuedJob({ id: result.id, ...variables });
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
+      const libraryName = libs.data?.find((library) => library.id === variables.libraryId)?.name;
+      toast({ tone: 'info', title: variables.type === 'scan-new' ? 'Refresh queued' : 'Matching queued', description: `${libraryName ? `${libraryName}. ` : ''}Follow progress below or in Jobs.` });
+    },
+    onError: (error) => toast({ tone: 'danger', title: 'Could not queue job', description: error instanceof Error ? error.message : String(error) }),
+  });
+  const queueLibraryJob = (type: 'scan-new' | 'match-unmatched') => {
+    if (selected !== null && !enqueue.isPending) enqueue.mutate({ type, libraryId: selected });
   };
+  const libraryJobs = (jobs ?? []).filter((job) =>
+    job.payload.libraryId === selected || rows.some((row) => row.id === job.payload.seriesId),
+  );
+  const runningLibraryJobs = libraryJobs.filter((job) => job.status === 'queued' || job.status === 'running');
+  const lastJob = lastQueuedJob?.libraryId === selected ? (jobs ?? []).find((job) => job.id === lastQueuedJob.id) : undefined;
+  const libraryActivity: Pick<Job, 'id' | 'type' | 'payload' | 'status' | 'progressCurrent' | 'progressTotal'> | null = runningLibraryJobs[0] ?? lastJob ?? (lastQueuedJob?.libraryId === selected ? { ...lastQueuedJob, payload: { libraryId: selected }, status: 'queued', progressCurrent: 0, progressTotal: 0 } : null);
   const setAutoMatch = (c: boolean) => {
     if (selected === null) return;
     void api.saveLibraryOverride(selected, { autoMatch: c })
@@ -371,8 +386,8 @@ export function Libraries({ review = false }: { review?: boolean }) {
           </div>
           {!review && (
             <div role="group" aria-label="Library actions" className="flex min-w-0 flex-wrap items-center gap-2">
-              <Button size="sm" variant="outline" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 flex-1 sm:flex-none" onClick={() => enqueue('scan-new', { libraryId: selected })} disabled={selected === null}><RefreshCw className="h-3.5 w-3.5 shrink-0" /> Refresh library</Button>
-              <Button size="sm" variant="outline" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 flex-1 sm:flex-none" onClick={() => enqueue('match-unmatched', { libraryId: selected })} disabled={selected === null}><Play className="h-3.5 w-3.5 shrink-0" /> Match all unmatched</Button>
+              <Button size="sm" variant="outline" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 flex-1 sm:flex-none" onClick={() => queueLibraryJob('scan-new')} disabled={selected === null || enqueue.isPending}>{enqueue.isPending && enqueue.variables?.type === 'scan-new' && enqueue.variables.libraryId === selected ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5 shrink-0" />} {enqueue.isPending && enqueue.variables?.type === 'scan-new' && enqueue.variables.libraryId === selected ? 'Queuing refresh…' : 'Refresh library'}</Button>
+              <Button size="sm" variant="outline" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 flex-1 sm:flex-none" onClick={() => queueLibraryJob('match-unmatched')} disabled={selected === null || enqueue.isPending}>{enqueue.isPending && enqueue.variables?.type === 'match-unmatched' && enqueue.variables.libraryId === selected ? <Spinner /> : <Play className="h-3.5 w-3.5 shrink-0" />} {enqueue.isPending && enqueue.variables?.type === 'match-unmatched' && enqueue.variables.libraryId === selected ? 'Queuing matching…' : 'Match all unmatched'}</Button>
               <label className="flex min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 w-full cursor-pointer select-none items-center justify-between gap-3 px-1 text-xs font-medium text-muted sm:w-auto sm:pl-3">
                 Auto-match new series
                 <Switch aria-label="Automatically match new series" checked={override.data?.autoMatch ?? true} onCheckedChange={setAutoMatch} disabled={selected === null} />
@@ -380,6 +395,22 @@ export function Libraries({ review = false }: { review?: boolean }) {
             </div>
           )}
         </div>
+
+        {!review && libraryActivity && (
+          <div aria-label="Library activity" role="region" className="flex flex-wrap items-center gap-3 border-b border-border bg-surface-2/50 px-3 py-3 sm:px-4">
+            <div className="min-w-0 flex-1">
+              <p role="status" className={cn('flex items-center gap-2 text-sm font-medium', libraryActivity.status === 'failed' ? 'text-danger' : libraryActivity.status === 'completed' ? 'text-success' : 'text-foreground')}>
+                {libraryActivity.status === 'running' && <Spinner />}
+                <span>{jobLabel(libraryActivity.type, libraryActivity.payload)} · {libraryActivity.status === 'running' ? 'In progress' : libraryActivity.status.charAt(0).toUpperCase() + libraryActivity.status.slice(1)}</span>
+              </p>
+              {libraryActivity.status === 'running' && libraryActivity.progressTotal > 0 && (
+                <div className="mt-2 flex items-center gap-2"><ProgressBar label="Library job progress" value={libraryActivity.progressCurrent} max={libraryActivity.progressTotal} className="max-w-xs" /><span className="shrink-0 text-xs tabular-nums text-muted">{libraryActivity.progressCurrent}/{libraryActivity.progressTotal}</span></div>
+              )}
+              {runningLibraryJobs.length > 1 && <p className="mt-1 text-xs text-muted">{runningLibraryJobs.length} active jobs for this library</p>}
+            </div>
+            <Button asChild size="sm" variant="outline"><Link to={runningLibraryJobs.length > 1 ? '/jobs?filter=active' : `/jobs?job=${libraryActivity.id}`}>{runningLibraryJobs.length > 1 ? 'View jobs' : 'View job'}</Link></Button>
+          </div>
+        )}
 
         {(review || selected !== null) && (
           <div className="flex flex-col gap-3 p-3 sm:p-4">
@@ -523,6 +554,9 @@ export function Libraries({ review = false }: { review?: boolean }) {
             name: currentMeta.data?.series.name ?? identify.name,
             metadata: currentMeta.data?.kavita ?? null,
           }}
+          currentLoading={currentMeta.isPending || currentMeta.isFetching}
+          currentError={currentMeta.isError ? (currentMeta.error instanceof Error ? currentMeta.error.message : String(currentMeta.error)) : null}
+          onRetryCurrent={() => void currentMeta.refetch()}
           match={currentMeta.data?.match ?? null}
           currentCover={identify.cover}
           onClose={() => setIdentify(null)}

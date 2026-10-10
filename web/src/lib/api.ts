@@ -310,14 +310,6 @@ export interface DownloadedGallery {
   finishedAt: string | null;
 }
 
-/** One row of a series' sync/match history (newest first). */
-export interface SyncHistoryEntry {
-  id: number;
-  action: string;
-  details: Record<string, unknown> | null;
-  createdAt: string;
-}
-
 /** A saved doujin search that pings Discord when it finds new results. */
 export interface WatchedSearch {
   id: number;
@@ -474,9 +466,6 @@ export const api = {
   /** Matched series whose confidence is below the review threshold (local DB only). */
   lowConfidenceCount: () => request<{ count: number; threshold: number }>('/series/low-confidence'),
   reviewSeries: () => request<SeriesRow[]>('/series/needs-review'),
-  /** Recent sync/match history for one series (newest first). */
-  seriesHistory: (id: number) => request<SyncHistoryEntry[]>(`/series/${id}/history`),
-
   watchedSearches: () => request<WatchedSearch[]>('/watched-searches'),
   addWatchedSearch: (source: DoujinSource, query: string) =>
     request<WatchedSearch>('/watched-searches', { method: 'POST', body: JSON.stringify({ source, query }) }),

@@ -721,7 +721,8 @@ api.post('/downloads', async (c) => {
   // groups them together. mergeFolder is a plain folder name, never a path.
   const mergeFolder = body.mergeFolder?.trim() || undefined;
   if (mergeFolder && /[\\/]/.test(mergeFolder)) return c.json({ error: 'mergeFolder must be a plain folder name' }, 400);
-  const outputFormat = body.format ?? getDownloaderSettings().format;
+  const downloaderSettings = getDownloaderSettings();
+  const outputFormat = body.format ?? downloaderSettings.format;
   if (outputFormat !== 'cbz' && outputFormat !== 'folder') return c.json({ error: 'format must be cbz or folder' }, 400);
   if (mergeFolder && outputFormat === 'folder') return c.json({ error: 'Merged downloads require CBZ output' }, 400);
   const chapter = typeof body.chapter === 'number' && Number.isFinite(body.chapter) ? body.chapter : undefined;
@@ -735,6 +736,7 @@ api.post('/downloads', async (c) => {
   if (active) return c.json({ error: 'already-queued', message: 'This gallery is already queued or downloading.', status: active.status }, 409);
   const owned = getDb().select().from(schema.ownedGalleries).where(and(eq(schema.ownedGalleries.source, body.source), eq(schema.ownedGalleries.galleryId, body.galleryId))).get();
   if (owned) return c.json({ error: 'already-downloaded', message: 'This gallery is already owned, even if its download history was cleared.' }, 409);
+  if (!downloaderSettings.downloadDirectory.trim()) return c.json({ error: 'Set an output folder in Downloader settings before starting a download.' }, 400);
   // Queue priority: higher runs first; ties keep FIFO order. Defaults to 0.
   const priority = typeof body.priority === 'number' && Number.isFinite(body.priority) ? Math.trunc(body.priority) : 0;
   const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, body.title ?? null, outputFormat, mergeFolder, chapter, priority);

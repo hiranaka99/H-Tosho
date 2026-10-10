@@ -1,13 +1,14 @@
 import { useState } from 'react';
 import { Trigger as DialogTrigger } from '@radix-ui/react-dialog';
-import { MessageSquare, RotateCcw, ThumbsUp, VolumeX } from 'lucide-react';
+import { MessageSquare, RotateCcw, ThumbsDown, ThumbsUp, VolumeX } from 'lucide-react';
 import type { DoujinSearchResult, FeedbackRequest, RecommendationFeedback } from '../lib/api';
 import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogTitle } from './ui';
 
 const artistKey = (name: string) => name.normalize('NFKC').trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
-export function GalleryFeedbackDialog({ item, feedback, pending, onClose, onAction }: {
+export function GalleryFeedbackDialog({ item, feedback, pending, onClose, onAction, onDismiss }: {
   item: DoujinSearchResult; feedback?: RecommendationFeedback; pending: boolean;
   onClose: () => void; onAction: (request: FeedbackRequest) => void;
+  onDismiss?: () => void;
 }) {
   const liked = feedback?.liked.some(g => g.source === item.source && g.galleryId === item.galleryId);
   const target = { source: item.source, galleryId: item.galleryId };
@@ -16,11 +17,11 @@ export function GalleryFeedbackDialog({ item, feedback, pending, onClose, onActi
       <div className="max-h-[calc(100dvh-2rem)] space-y-4 overflow-y-auto p-4 pr-12 sm:p-5 sm:pr-12">
         <div><DialogTitle>Tune recommendations</DialogTitle><DialogDescription className="mt-1 break-words">{item.title}</DialogDescription></div>
         <Button variant={liked ? 'secondary' : 'outline'} className="w-full justify-start" disabled={pending || !feedback} onClick={() => onAction({ ...target, action: liked ? 'unlike' : 'like' })}><ThumbsUp className="h-4 w-4" />{liked ? 'Undo more like this' : 'More like this'}</Button>
+        {onDismiss && <Button variant="outline" className="w-full justify-start" disabled={pending} onClick={onDismiss}><ThumbsDown className="h-4 w-4 shrink-0" /><span className="whitespace-normal text-left">Don’t recommend this gallery</span></Button>}
         {item.artists.length > 0 && <div className="space-y-2"><p className="text-xs font-medium text-muted">Hide all recommendations by an artist</p>{[...new Set(item.artists)].map(artist => {
           const muted = feedback?.mutedArtists.some(a => artistKey(a) === artistKey(artist));
           return <Button variant="outline" key={artist} className="w-full justify-start" disabled={pending || !feedback} onClick={() => onAction({ ...target, artist, action: muted ? 'unmute-artist' : 'mute-artist' })}><VolumeX className="h-4 w-4 shrink-0" /><span className="truncate">{muted ? 'Unmute' : 'Mute'} {artist}</span></Button>;
         })}</div>}
-        <p className="text-xs text-muted">More like this favors this gallery’s artists and tags after refreshing picks. Muting hides an artist’s recommendations immediately, until you unmute them. Undo either choice in Feedback.</p>
       </div>
     </DialogContent>
   </Dialog>;

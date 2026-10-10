@@ -6,7 +6,7 @@ H-Tosho helps you identify manga and light novels, review metadata before applyi
 it, and keep new additions organized. It also includes a doujinshi downloader,
 recommendations, and watched searches for new releases.
 
-Works with **Kavita v0.9.x or newer**. Current version: **v2.5.0** ·
+Works with **Kavita v0.9.x or newer**. Current version: **v2.6.0** ·
 [Release notes](CHANGELOG.md)
 
 ![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
@@ -135,7 +135,8 @@ With this example, use `/mnt/downloads` as H-Tosho's output folder.
 ### Identify a series and review the changes
 
 1. Open **Libraries**, choose a library, and click a series cover.
-2. Select a candidate to compare its metadata with the current Kavita values.
+2. Choose **Review changes** for the current match, or select another candidate,
+   to compare its metadata with the current Kavita values.
 3. Uncheck any fields you want to keep, and choose a title if alternatives are
    offered.
 4. Choose **Apply & Sync**. H-Tosho applies your selection in the background;
@@ -147,7 +148,12 @@ With this example, use `/mnt/downloads` as H-Tosho's output folder.
 This preview uses sample metadata and real cover art.*
 
 If the suggested match is wrong, paste the series' AniList, MangaDex, or
-MyAnimeList URL into **Match by provider URL** and choose **Load**.
+MyAnimeList URL under **Use a provider URL** and choose **Load**.
+Provider search diagnostics are expandable below the matches. Sync progress
+and warnings are available in **Jobs**.
+Use **Back to matches** to compare another candidate; your provider filter and
+list position are preserved. Applying stays disabled until both current and
+proposed metadata are available. Failed requests offer a retry.
 
 Applied series and volume covers are locked in Kavita so later scans keep them.
 Changing a title also updates the Series field in the series' CBZ files, so
@@ -158,11 +164,14 @@ configure your library folders before renaming.
 Turn on **Auto-match new series** for the libraries you want to monitor. Set
 the check frequency under **Settings → General → Auto-scan interval**.
 Use **Match all unmatched** to work through an existing library.
+Refresh and matching actions show when they are queuing, then display library
+job progress on the page, including on mobile. Choose **View job** for details.
 
 Unconfirmed matches below 80% confidence appear in **Needs review**. Open a
 result, review the candidate, and apply it to confirm the match.
 
-Choose **Sort · Date added** to see the newest series in your Kavita library first.
+Libraries defaults to **Sort · Date added**, showing the newest series first.
+Your selected sort order is remembered for the current browser session.
 
 ### Edit metadata or merge series
 
@@ -194,16 +203,21 @@ Open **Downloader** to access four tabs:
 Before downloading, open **Settings → Downloader** and choose your output
 folder and format. **CBZ** puts each gallery in an archive; **Folder** saves its
 images in a directory. You can also set download concurrency, excluded tags,
-and an optional nHentai API key.
+and an optional nHentai API key. The Downloader shows the current folder and
+format, and offers **Set output folder** before you can queue your first download.
+
+Each source remembers its own search, unfinished input, and sort order. Switching
+sources restores that source's search without translating or dropping filters.
 
 H-Tosho prevents duplicate queued downloads and remembers galleries downloaded
-through the app. For galleries obtained elsewhere, use the thumbs-down button
-to remove unwanted recommendations.
+through the app. To remove unwanted recommendations, open a card's **Tune
+recommendations** menu and choose **Don’t recommend this gallery**. Use **Undo**
+to restore a dismissed gallery.
 
 ### Tune your recommendations
 
-Use a card's **Tune recommendations** menu to choose **More like this** or mute
-an artist. More like this influences the next refresh; a mute immediately hides
+Use a card's **Tune recommendations** menu to choose **More like this**, dismiss
+the gallery, or mute an artist. More like this influences the next refresh; a mute immediately hides
 recommendations featuring that artist, including collaborations.
 
 The **Feedback** button beside **Refresh picks** lets you undo saved preferences

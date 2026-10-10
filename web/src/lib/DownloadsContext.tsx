@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type DownloadTask, type DoujinSource } from './api';
 import { useDownloadEvents } from './useDownloadEvents';
 import { toast } from './toast';
+import { downloadErrorHelp } from './downloadErrors';
 
 export interface StartDownloadInput {
   source: DoujinSource;
@@ -139,7 +140,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
         toast({ tone: 'success', title: 'Download complete', description: title });
       } else if (t.status === 'failed' && t.errorMessage !== 'Cancelled by user') {
         // Surface genuine failures; a user cancel also lands as "failed" but carries a distinct message.
-        toast({ tone: 'danger', title: 'Download failed', description: t.errorMessage ?? title });
+        toast({ tone: 'danger', title: 'Download failed', description: t.errorMessage ? downloadErrorHelp(t.errorMessage).message : title });
       }
     }
     if (completed) void qc.invalidateQueries({ queryKey: ['downloads-completed'] });

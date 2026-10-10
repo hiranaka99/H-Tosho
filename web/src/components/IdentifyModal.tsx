@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, Sparkles, AlertTriangle, Check, X, ArrowRight, Link2, Unlink, History, RefreshCw, ChevronRight } from 'lucide-react';
+import { Search, Sparkles, AlertTriangle, X, ArrowLeft, ArrowRight, Link2, Unlink, ChevronRight } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import {
   api,
   type MatchCandidate,
@@ -11,7 +12,7 @@ import {
   type KavitaPerson,
   type SeriesMatch,
 } from '../lib/api';
-import { PROVIDER_NAMES, cn, timeAgo } from '../lib/utils';
+import { PROVIDER_NAMES, cn } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, ProviderBadge, Spinner, ConfirmDialog } from './ui';
 
@@ -32,27 +33,6 @@ const CANDIDATE_STATUS: Record<string, number | null> = {
   UNKNOWN: null,
 };
 
-const HISTORY_TONE: Record<string, string> = {
-  matched: 'bg-success/15 text-success',
-  updated: 'bg-info/15 text-info',
-  failed: 'bg-danger/15 text-danger',
-  unmatched: 'bg-surface-2 text-muted',
-  cleared: 'bg-surface-2 text-muted',
-  cover: 'bg-warning/15 text-warning',
-};
-
-/** Flatten a history row's details object into a short readable line. */
-function detailsText(details: Record<string, unknown> | null): string {
-  if (!details) return '';
-  return Object.entries(details)
-    .map(([k, v]) => {
-      const val = Array.isArray(v) ? v.join(', ') : typeof v === 'number' && k === 'score' ? Math.round(v * 100) + '%' : String(v);
-      return val === '' || val === 'undefined' || val === 'null' ? null : `${k}: ${val}`;
-    })
-    .filter((s): s is string => s !== null)
-    .join(' · ');
-}
-
 interface CurrentKavita {
   name: string;
   metadata: KavitaSeriesMetadata | null;
@@ -61,6 +41,9 @@ interface CurrentKavita {
 interface IdentifyModalProps {
   seriesId: number;
   current: CurrentKavita;
+  currentLoading: boolean;
+  currentError: string | null;
+  onRetryCurrent: () => void;
   /** Existing local match row (from GET /series/:id), if any. */
   match: SeriesMatch | null;
   currentCover?: string | null;
@@ -155,17 +138,27 @@ function UrlValue({ text, className }: { text: string; className?: string }) {
 /** Label column (fixed width) + two equal-width value columns: Kavita on the left, candidate on the right. */
 const ROW_GRID = 'grid grid-cols-1 items-start gap-1 sm:grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)] sm:gap-x-3';
 
+function ComparisonValue({ label, field, className, title, children }: { label: 'Current' | 'Proposed'; field: string; className?: string; title?: string; children: React.ReactNode }) {
+  return (
+    <dl className="min-w-0 text-sm">
+      <dt className="mb-1 text-xs font-medium text-muted sm:sr-only">{label}<span className="sr-only"> {field}</span></dt>
+      <dd className={className} title={title}>{children}</dd>
+    </dl>
+  );
+}
+
 function FieldRow({ row, checked, onToggle }: { row: DiffRow; checked?: boolean; onToggle?: () => void }) {
+  const labelId = React.useId();
   const merge = row.tagMerge;
   const differs = !merge && computeDiffers(row);
   // Multiline fields (Summary) are never truncated: full text, wrapping, with an internal scroll for very long descriptions.
   const valueCls = row.multiline ? 'min-w-0 max-h-56 overflow-y-auto whitespace-pre-wrap break-words' : 'min-w-0 whitespace-pre-wrap break-words';
   const showCheckbox = !!row.field && (row.candidate.trim() !== '' || row.clearing) && !!onToggle;
   return (
-    <div className={cn(ROW_GRID, 'border-b border-border py-2 last:border-0', differs ? 'bg-warning/5' : 'transition-colors hover:bg-surface-2/40')}>
-      <div className="flex min-w-0 items-start gap-1.5">
+    <div role="group" aria-labelledby={labelId} className={cn(ROW_GRID, 'border-b border-border py-3 last:border-0', differs ? 'bg-warning/5' : 'transition-colors hover:bg-surface-2/40')}>
+      <div id={labelId} className="flex min-w-0 items-start gap-1.5">
         {showCheckbox ? (
-          <label className="flex min-h-9 cursor-pointer items-center gap-2 py-1 text-xs font-medium uppercase tracking-wider text-muted">
+          <label className="flex min-h-11 cursor-pointer items-center gap-2 py-1 text-xs font-medium uppercase tracking-wider text-muted sm:min-h-9 pointer-coarse:min-h-11">
             <input type="checkbox" checked={!!checked} onChange={onToggle} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
             {row.label}
           </label>
@@ -173,32 +166,21 @@ function FieldRow({ row, checked, onToggle }: { row: DiffRow; checked?: boolean;
           <span className="min-h-9 py-3 text-xs font-medium uppercase tracking-wider text-muted">{row.label}</span>
         )}
       </div>
-      {merge ? (
-        <div className={cn(valueCls, 'min-h-8 text-sm')} title={row.current}>
-          {row.link ? <UrlValue text={row.current} /> : row.current || '—'}
-        </div>
-      ) : (
-        <div className={cn(valueCls, 'min-h-8 text-sm', differs && 'text-muted line-through')} title={row.current}>
-          {row.link ? <UrlValue text={row.current} /> : row.current || '—'}
-        </div>
-      )}
-      {merge ? (
-        <div className="min-w-0 text-sm">
+      <ComparisonValue label="Current" field={row.label} className={cn(valueCls, 'min-h-8', differs && 'text-muted line-through')} title={row.current}>
+        {row.link ? <UrlValue text={row.current} /> : row.current || '—'}
+      </ComparisonValue>
+      <ComparisonValue label="Proposed" field={row.label} className={cn(valueCls, 'min-h-8', differs && 'text-primary', !merge && showCheckbox && !checked && 'text-muted line-through opacity-60')} title={row.candidate}>
+        {merge ? (
           <MergedTags existing={merge.existing} incoming={merge.incoming} dimmed={!checked} />
-        </div>
-      ) : row.clearing ? (
-        <div className={cn(valueCls, 'min-h-8 text-sm')}>
-          <span className="text-primary">Will be cleared</span>
-          <span className="text-muted"> — the provider's summary contains only the tag list.</span>
-        </div>
-      ) : (
-        <div
-          className={cn(valueCls, 'min-h-8 text-sm', differs && 'text-primary', showCheckbox && !checked && 'text-muted line-through opacity-60')}
-          title={row.candidate}
-        >
-          {row.link ? <UrlValue text={row.candidate} className="text-primary" /> : row.candidate || '—'}
-        </div>
-      )}
+        ) : row.clearing ? (
+          <>
+            <span className="text-primary">Will be cleared</span>
+            <span className="text-muted"> — the provider's summary contains only the tag list.</span>
+          </>
+        ) : (
+          row.link ? <UrlValue text={row.candidate} className="text-primary" /> : row.candidate || '—'
+        )}
+      </ComparisonValue>
     </div>
   );
 }
@@ -247,10 +229,26 @@ function CandidateCover({ src }: { src?: string }) {
   if (!src || failed) return <Search className="h-4 text-muted" />;
   return <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} className="h-full w-full object-cover" />;
 }
-export function IdentifyModal({ seriesId, current, match, currentCover, onClose }: IdentifyModalProps) {
+export function IdentifyModal({ seriesId, current, currentLoading, currentError, onRetryCurrent, match, currentCover, onClose }: IdentifyModalProps) {
   const qc = useQueryClient();
-  const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [selected, setSelected] = React.useState<MatchCandidate | null>(null);
+  const [reviewingExistingMatch, setReviewingExistingMatch] = React.useState(false);
+  const selectedId = selected ? `${selected.providerId}:${selected.providerSeriesId}` : null;
+  const currentErrorMessage = currentError ?? (!currentLoading && !current.metadata ? 'Kavita did not return current metadata. Check the connection and retry.' : null);
+  const currentReady = !currentLoading && !currentErrorMessage && current.metadata !== null;
+  const dialogScroll = React.useRef<HTMLDivElement>(null);
+  const candidateList = React.useRef<HTMLDivElement>(null);
+  const savedListScroll = React.useRef(0);
+  const savedDialogScroll = React.useRef(0);
+  const savedCandidateKey = React.useRef<string | null>(null);
+  const savedReviewOrigin = React.useRef<'existing' | 'list' | 'manual'>('list');
+  const returningToMatches = React.useRef(false);
+  const backButton = React.useRef<HTMLButtonElement>(null);
+  const existingReviewButton = React.useRef<HTMLButtonElement>(null);
+  const manualLoadButton = React.useRef<HTMLButtonElement>(null);
+  const comparisonId = React.useId();
   const [manualUrl, setManualUrl] = React.useState('');
+  const [manualOpen, setManualOpen] = React.useState(false);
   const [manualCandidate, setManualCandidate] = React.useState<MatchCandidate | null>(null);
   const [selectedTitle, setSelectedTitle] = React.useState<string | null>(null);
   const [tab, setTab] = React.useState('all');
@@ -265,6 +263,29 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onClose 
     setCoverEnabled(true);
     setSelectedTitle(null);
   }, [selectedId]);
+
+  React.useLayoutEffect(() => {
+    if (selectedId) {
+      if (dialogScroll.current) dialogScroll.current.scrollTop = 0;
+      backButton.current?.focus({ preventScroll: true });
+    } else if (returningToMatches.current) {
+      returningToMatches.current = false;
+      if (candidateList.current) candidateList.current.scrollTop = savedListScroll.current;
+      if (dialogScroll.current) dialogScroll.current.scrollTop = savedDialogScroll.current;
+      const previous = Array.from(candidateList.current?.querySelectorAll<HTMLButtonElement>('[data-candidate-key]') ?? []).find((button) => button.dataset.candidateKey === savedCandidateKey.current);
+      const origin = savedReviewOrigin.current === 'manual' ? manualLoadButton.current : existingReviewButton.current;
+      (previous ?? origin)?.focus({ preventScroll: true });
+    }
+  }, [selectedId]);
+
+  const reviewCandidate = (candidate: MatchCandidate, fromList = false, existing = false) => {
+    savedListScroll.current = candidateList.current?.scrollTop ?? 0;
+    savedDialogScroll.current = dialogScroll.current?.scrollTop ?? 0;
+    savedCandidateKey.current = fromList ? `${candidate.providerId}:${candidate.providerSeriesId}` : null;
+    savedReviewOrigin.current = existing ? 'existing' : fromList ? 'list' : 'manual';
+    setReviewingExistingMatch(existing);
+    setSelected(candidate);
+  };
 
   const identify = useQuery({
     queryKey: ['identify', seriesId],
@@ -282,8 +303,10 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onClose 
 
 
   const apply = useMutation({
-    mutationFn: (p: { providerId: string; providerSeriesId: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) =>
-      api.apply(seriesId, p.providerId, p.providerSeriesId, { selectedTitle: p.selectedTitle, excludedFields: p.excludedFields, cover: p.cover, score: p.score }),
+    mutationFn: (p: { providerId: string; providerSeriesId: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) => {
+      if (!currentReady || !preview.isSuccess || preview.isError) throw new Error('Load current and proposed metadata before applying changes.');
+      return api.apply(seriesId, p.providerId, p.providerSeriesId, { selectedTitle: p.selectedTitle, excludedFields: p.excludedFields, cover: p.cover, score: p.score });
+    },
     onSuccess: () => {
       // A queued job has not changed Kavita yet. Keep showing Kavita's cover;
       // SidebarStatus refreshes the series list when the job settles.
@@ -299,7 +322,7 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onClose 
     mutationFn: () => api.manualMatch(seriesId, manualUrl),
     onSuccess: (candidate) => {
       setManualCandidate(candidate);
-      setSelectedId(candidate.providerId + ':' + candidate.providerSeriesId);
+      reviewCandidate(candidate);
     },
     onError: (e) => toast({ tone: 'danger', title: 'Could not load provider URL', description: e instanceof Error ? e.message : String(e) }),
   });
@@ -324,19 +347,17 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onClose 
     const key = manualCandidate.providerId + ':' + manualCandidate.providerSeriesId;
     return [manualCandidate, ...found.filter((c) => c.providerId + ':' + c.providerSeriesId !== key)];
   }, [outcome, manualCandidate]);
-  const selected = candidates.find((c) => c.providerId + ':' + c.providerSeriesId === selectedId);
   const autoBest = outcome?.best;
+  const currentCandidate = candidates.find((candidate) => candidate.providerId === match?.providerId && candidate.providerSeriesId === match.providerSeriesId);
+  const alternatives = React.useMemo(() => candidates.filter((candidate) => candidate.providerId !== match?.providerId || candidate.providerSeriesId !== match.providerSeriesId), [candidates, match?.providerId, match?.providerSeriesId]);
 
-  // One tab per provider that was searched or returned candidates (search order).
+  // Only offer filters that have matches to show.
   const tabProviders = React.useMemo(() => {
-    if (!outcome) return [] as string[];
-    const ids = [...outcome.searchedProviders];
-    for (const c of candidates) if (!ids.includes(c.providerId)) ids.push(c.providerId);
-    return ids;
-  }, [outcome, candidates]);
+    return [...new Set(alternatives.map((candidate) => candidate.providerId))];
+  }, [alternatives]);
   const visibleCandidates = React.useMemo(() => {
-    return tab === 'all' ? candidates : candidates.filter((c) => c.providerId === tab);
-  }, [candidates, tab]);
+    return tab === 'all' ? alternatives : alternatives.filter((c) => c.providerId === tab);
+  }, [alternatives, tab]);
 
   // Full aggregated metadata for the selected candidate — fetched through the
   // same path Apply & Sync uses, so the diff previews exactly what will push.
@@ -345,15 +366,7 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onClose 
     queryFn: () => api.providerMetadata(selected!.providerId, selected!.providerSeriesId),
     enabled: !!selected,
   });
-  const resolvedTitle = selectedTitle ?? selected?.title ?? preview.data?.title ?? '';
-
-  const history = useQuery({
-    queryKey: ['series-history', seriesId],
-    queryFn: () => api.seriesHistory(seriesId),
-    staleTime: 60_000,
-  });
-  // One expanded history row at a time; the raw detail dump stays out of the way.
-  const [openHistory, setOpenHistory] = React.useState<number | null>(null);
+  const resolvedTitle = selectedTitle ?? preview.data?.title ?? selected?.title ?? '';
 
   const k = current.metadata;
 
@@ -405,73 +418,48 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onClose 
     <>
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-[min(96vw,1440px)]">
-        <div className="flex max-h-[90vh] flex-col gap-4 overflow-y-auto p-5">
+        <div ref={dialogScroll} className="flex max-h-[90vh] flex-col gap-4 overflow-y-auto p-3 sm:p-5">
           <div className="flex items-start gap-2 pr-10">
             <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
             <div>
-              <DialogTitle>Identify “{current.name}”</DialogTitle>
-              <DialogDescription>Choose a metadata match and review exactly what will be synced to Kavita.</DialogDescription>
+              <DialogTitle className="break-words">Identify “{current.name}”</DialogTitle>
+              <DialogDescription>{selected ? 'Review the changes and choose which fields to sync.' : 'Choose a match to review its metadata before syncing.'}</DialogDescription>
             </div>
           </div>
 
+          {selected && (currentLoading ? (
+            <div role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner /> Loading current metadata…</div>
+          ) : currentErrorMessage ? (
+            <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-danger/30 bg-danger/10 p-3">
+              <div className="min-w-0 flex-1"><p className="text-sm font-medium">Could not load current metadata</p><p className="mt-1 break-words text-sm text-muted">{currentErrorMessage}</p></div>
+              <Button variant="outline" size="sm" onClick={onRetryCurrent}>Retry current metadata</Button>
+            </div>
+          ) : null)}
+
+          {selected && (
+            <Button ref={backButton} size="sm" variant="ghost" className="self-start" disabled={apply.isPending} onClick={() => { returningToMatches.current = true; setSelected(null); }}><ArrowLeft className="h-4 w-4" /> Back to matches</Button>
+          )}
+
           {!selected && match?.providerId && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border-2 bg-surface-2 p-3">
-              <div className="flex min-w-0 items-center gap-3">
-                <Link2 className="h-4 w-4 shrink-0 text-muted" />
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
                 <div className="min-w-0">
+                  {currentCandidate && <p className="mb-1 break-words text-sm font-semibold">{currentCandidate.title}</p>}
                   <p className="flex flex-wrap items-center gap-1.5 text-sm font-medium">
-                    Matched to {PROVIDER_NAMES[match.providerId] ?? match.providerId}
+                    <span className="font-normal text-muted">Current match</span>
+                    <ProviderBadge id={match.providerId} />
                     {typeof match.matchScore === 'number' && ` · ${Math.round(match.matchScore * 100)}%`}
-                    {match.aligned ? (
-                      <span className="rounded-md bg-success/15 px-1.5 py-0.5 text-2xs font-medium text-success">Aligned</span>
-                    ) : (
-                      <span className="rounded-md bg-warning/15 px-1.5 py-0.5 text-2xs font-medium text-warning">Not aligned</span>
-                    )}
                   </p>
-                  <p className="text-sm text-muted">Unmatching removes the link and removes metadata and covers previously applied by H-Tosho.</p>
+                  <p className="mt-1 text-xs text-muted">{match.aligned ? 'Metadata is up to date.' : 'Metadata differs. Review the changes before syncing.'}</p>
                 </div>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {match.providerSeriesId && (
-                  <Button size="sm" variant="secondary" onClick={() => doApply({ providerId: match.providerId!, providerSeriesId: match.providerSeriesId! })} disabled={apply.isPending} title="Re-push this provider's metadata to Kavita">
-                    {apply.isPending ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />} Sync
+                  <Button ref={existingReviewButton} size="sm" onClick={() => reviewCandidate({ providerId: match.providerId!, providerSeriesId: match.providerSeriesId!, title: current.name, type: 'unknown', score: match.matchScore ?? 0 }, false, true)} disabled={apply.isPending}>
+                    <ArrowRight className="h-3.5 w-3.5" /> Review changes
                   </Button>
                 )}
-                <Button size="sm" variant="danger" onClick={() => setConfirmUnmatch(true)} disabled={unmatch.isPending}>
+                <Button size="sm" variant="ghost" onClick={() => setConfirmUnmatch(true)} disabled={unmatch.isPending}>
                   <Unlink className="h-3.5 w-3.5" /> Unmatch
                 </Button>
-              </div>
-            </div>
-          )}
-
-          {Array.isArray(history.data?.[0]?.details?.warnings) && history.data[0].details.warnings.length > 0 && (
-            <div role="status" className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
-              <p className="font-medium">Last sync finished with warnings</p>
-              {history.data[0].details.warnings.filter((warning): warning is string => typeof warning === 'string').map((warning, i) => (
-                <p key={i} className="mt-1 break-words">{warning}</p>
-              ))}
-            </div>
-          )}
-
-          {history.data && history.data.length > 0 && (
-            <div className="rounded-lg border border-border-2 bg-surface-2 p-3">
-              <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
-                <History className="h-3.5 w-3.5" /> History
-              </p>
-              <div className="flex max-h-48 flex-col gap-0.5 overflow-y-auto">
-                {history.data.map((h) => (
-                  <div key={h.id}>
-                    <button type="button" onClick={() => setOpenHistory(openHistory === h.id ? null : h.id)} aria-expanded={openHistory === h.id} className="flex w-full items-center gap-2 rounded px-1 py-1 text-left text-xs transition-colors duration-150 hover:bg-surface/70">
-                      <span className={cn('shrink-0 rounded-md px-1.5 py-0.5 text-2xs font-medium', HISTORY_TONE[h.action] ?? 'bg-surface-2 text-muted')}>{h.action}</span>
-                      <span className="min-w-0 flex-1 truncate text-muted">{detailsText(h.details) || '—'}</span>
-                      <span className="shrink-0 text-2xs tabular-nums text-muted">{timeAgo(h.createdAt)}</span>
-                      <ChevronRight className={cn('h-3 w-3 shrink-0 text-muted transition-transform duration-150', openHistory === h.id && 'rotate-90')} />
-                    </button>
-                    {openHistory === h.id && detailsText(h.details) && (
-                      <p className="mb-1 break-words px-1 pb-1 text-xs leading-relaxed text-muted">{detailsText(h.details)}</p>
-                    )}
-                  </div>
-                ))}
               </div>
             </div>
           )}
@@ -483,69 +471,23 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onClose 
           )}
 
           {!selected && identify.isError && (
-            <div className="flex items-center gap-2 rounded-md bg-danger/10 p-3 text-sm text-danger">
+            <div role="alert" className="flex flex-wrap items-center gap-3 text-sm">
               <AlertTriangle className="h-4 w-4" />
-              {identify.error instanceof Error ? identify.error.message : String(identify.error)}
+              <div className="min-w-0 flex-1"><p className="font-medium">Could not search for matches</p><p className="mt-1 break-words text-muted">{identify.error instanceof Error ? identify.error.message : String(identify.error)}</p></div>
+              <Button size="sm" variant="outline" onClick={() => void identify.refetch()} disabled={identify.isFetching}>Retry search</Button>
             </div>
           )}
 
-          {outcome && (
+          {(outcome || selected || identify.isError) && (
             <>
-              {!selected && outcome.matched && autoBest && (
-                <div className="flex animate-fade-up flex-wrap items-center justify-between gap-3 rounded-lg border border-success/30 bg-success/10 p-3">
-                  <div className="flex items-center gap-3">
-                    <Check className="h-4 w-4 text-success" />
-                    <div>
-                      <p className="text-sm font-medium">
-                        Auto-matched to {PROVIDER_NAMES[autoBest.providerId] ?? autoBest.providerId} · {Math.round(autoBest.score * 100)}%
-                      </p>
-                      <p className="text-xs text-muted">{autoBest.title}</p>
-                    </div>
-                  </div>
-                  <Button
-                    size="sm"
-                    onClick={() => autoBest.providerId === 'mangadex'
-                      ? setSelectedId(autoBest.providerId + ':' + autoBest.providerSeriesId)
-                      : doApply({ providerId: autoBest.providerId, providerSeriesId: autoBest.providerSeriesId }, { score: autoBest.score })}
-                    disabled={apply.isPending}
-                  >
-                    {apply.isPending ? <Spinner /> : <ArrowRight className="h-3.5 w-3.5" />} {autoBest.providerId === 'mangadex' ? 'Choose Title & Sync' : 'Apply & Sync'}
-                  </Button>
-                </div>
-              )}
-
-              {!selected && (
-                <form
-                  className="rounded-lg border border-border-2 bg-surface-2 p-3"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (manualUrl.trim()) resolveManual.mutate();
-                  }}
-                >
-                  <Label htmlFor="manual-provider-url">Match by provider URL</Label>
-                  <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-                    <Input
-                      id="manual-provider-url"
-                      type="url"
-                      value={manualUrl}
-                      onChange={(e) => setManualUrl(e.target.value)}
-                      placeholder="Paste a MangaDex, MyAnimeList, or AniList series URL"
-                      autoComplete="off"
-                    />
-                    <Button type="submit" variant="outline" disabled={!manualUrl.trim() || resolveManual.isPending}>
-                      {resolveManual.isPending ? <Spinner /> : <Link2 className="h-4 w-4" />} Load
-                    </Button>
-                  </div>
-                </form>
-              )}
-
-              {!selected && (
+              {!selected && outcome && alternatives.length > 0 && <h3 className="text-sm font-semibold">{match?.providerId ? 'Other matches' : 'Choose a match'}</h3>}
+              {!selected && tabProviders.length > 1 && (
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   onClick={() => setTab('all')}
                   className={cn('rounded-full border px-2.5 py-1 text-xs transition-colors', tab === 'all' ? 'border-primary bg-primary/15 font-medium text-primary' : 'border-border text-muted hover:bg-surface-2')}
                 >
-                  All ({candidates.length})
+                  All ({alternatives.length})
                 </button>
                 {tabProviders.map((id) => (
                   <button
@@ -553,61 +495,86 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onClose 
                     onClick={() => setTab(id)}
                     className={cn('rounded-full border px-2.5 py-1 text-xs transition-colors', tab === id ? 'border-primary bg-primary/15 font-medium text-primary' : 'border-border text-muted hover:bg-surface-2')}
                   >
-                    {PROVIDER_NAMES[id] ?? id} ({candidates.filter((c) => c.providerId === id).length})
+                    {PROVIDER_NAMES[id] ?? id} ({alternatives.filter((c) => c.providerId === id).length})
                   </button>
                 ))}
               </div>)}
-              {!selected && outcome.errors && Object.keys(outcome.errors).length > 0 && (
-                <p className="text-xs text-warning">
-                  {Object.entries(outcome.errors)
-                    .map(([id, msg]) => `${PROVIDER_NAMES[id] ?? id}: ${msg}`)
-                    .join(' · ')}
-                </p>
-              )}
-
-              {!selected && (
-              <div className="max-h-[38vh] overflow-y-auto rounded-md border border-border">
+              {!selected && outcome && (
+              <div ref={candidateList} className="max-h-[42vh] overflow-y-auto">
                 {visibleCandidates.length === 0 && (
-                  <p className="p-4 text-sm text-muted">{tab === 'all' ? 'No candidates found across providers.' : `No candidates from ${PROVIDER_NAMES[tab] ?? tab}.`}</p>
+                  <p className="py-2 text-sm text-muted">{tab === 'all' ? (match?.providerId ? 'No other matches found.' : 'No matches found. Try a provider URL below.') : `No matches from ${PROVIDER_NAMES[tab] ?? tab}.`}</p>
                 )}
                 {visibleCandidates.map((c) => {
                   const key = c.providerId + ':' + c.providerSeriesId;
-                  const isSelected = selectedId === key;
                   const isBest = autoBest?.providerId === c.providerId && autoBest?.providerSeriesId === c.providerSeriesId;
                   return (
                     <button
                       key={key}
-                      onClick={() => setSelectedId(key)}
-                      className={cn('flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left last:border-0 transition-colors hover:bg-surface-2', isSelected && 'bg-surface-2')}
+                      data-candidate-key={key}
+                      onClick={() => reviewCandidate(c, true)}
+                      className="flex w-full items-center gap-3 rounded-md px-2 py-3 text-left transition-colors hover:bg-surface-2"
                     >
                       <div
-                        className="flex h-14 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-surface-2"
-                        style={{ border: isSelected ? '1px solid var(--color-primary)' : '1px solid var(--color-border)' }}
+                        className="flex h-16 w-11 shrink-0 items-center justify-center overflow-hidden rounded bg-surface-2"
                       >
                         <CandidateCover src={c.coverUrl} />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <ProviderBadge id={c.providerId} />
-                          {isBest && <span className="rounded-md bg-success/15 px-1.5 py-0.5 text-2xs font-medium text-success">Best</span>}
+                          {isBest && <span className="text-xs font-medium text-primary">Recommended</span>}
                           {c.year && <span className="text-xs text-muted">{c.year}</span>}
                         </div>
                         <p className="mt-1 truncate text-sm font-medium">{c.title}</p>
                         {c.summary && <p className="mt-0.5 line-clamp-1 text-xs text-muted">{c.summary}</p>}
                       </div>
-                      {isSelected && <Check className="h-4 w-4 shrink-0 text-primary" />}
+                      <ArrowRight aria-hidden="true" className="h-4 w-4 shrink-0 text-muted" />
                     </button>
                   );
                 })}
               </div>)}
 
+              {!selected && (
+                <div className="flex flex-col gap-3 border-t border-border pt-4">
+                  <details className="group" open={manualOpen} onToggle={(event) => setManualOpen(event.currentTarget.open)}>
+                    <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-3 text-sm text-muted sm:min-h-9 sm:py-2 [&::-webkit-details-marker]:hidden"><ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 group-open:rotate-90" />Use a provider URL</summary>
+                    <form className="pt-2" onSubmit={(event) => { event.preventDefault(); if (manualUrl.trim() && !resolveManual.isPending) resolveManual.mutate(); }}>
+                      <Label htmlFor="manual-provider-url">MangaDex, MyAnimeList, or AniList series URL</Label>
+                      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                        <Input id="manual-provider-url" type="url" value={manualUrl} onChange={(event) => setManualUrl(event.target.value)} placeholder="Paste a series URL" autoComplete="off" />
+                        <Button ref={manualLoadButton} type="submit" variant="outline" disabled={!manualUrl.trim() || resolveManual.isPending}>
+                          {resolveManual.isPending ? <Spinner /> : <Link2 className="h-4 w-4" />} Load
+                        </Button>
+                      </div>
+                    </form>
+                  </details>
+                  {outcome?.errors && Object.keys(outcome.errors).length > 0 && (
+                    <details className="group">
+                      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-3 text-sm text-muted sm:min-h-9 sm:py-2 [&::-webkit-details-marker]:hidden"><ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 group-open:rotate-90" />{Object.keys(outcome.errors).map((id) => PROVIDER_NAMES[id] ?? id).join(', ')} search unavailable</summary>
+                      <div className="space-y-2 pb-2 pt-1 text-xs text-muted">
+                        {Object.entries(outcome.errors).map(([id, message]) => <p key={id} className="break-words"><span className="font-medium">{PROVIDER_NAMES[id] ?? id}:</span> {message}</p>)}
+                        <Link to="/settings?tab=providers" className="inline-flex min-h-9 items-center text-primary underline underline-offset-2">Check provider settings</Link>
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
+
               {selected && diff && (
                 <div className="flex flex-col gap-2">
-                  <div className="flex items-center gap-2 text-sm">
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
                     <ProviderBadge id={selected.providerId} />
-                    <span className="font-medium">{selected.title}</span>
-                    <span className="text-xs text-muted">{Math.round(selected.score * 100)}% match</span>
+                    <span className="font-medium">{preview.data?.title ?? selected.title}</span>
+                    {(!reviewingExistingMatch || match?.matchScore != null) && <span className="text-xs text-muted">{Math.round(selected.score * 100)}% match</span>}
                   </div>
+                  {preview.isPending && <p role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner /> Loading proposed metadata…</p>}
+                  {preview.isError && (
+                    <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-danger/30 bg-danger/10 p-3">
+                      <div className="min-w-0 flex-1"><p className="text-sm font-medium">Could not load proposed metadata</p><p className="mt-1 break-words text-sm text-muted">{preview.error instanceof Error ? preview.error.message : String(preview.error)}</p></div>
+                      <Button size="sm" variant="outline" onClick={() => void preview.refetch()}>Retry preview</Button>
+                    </div>
+                  )}
+                  {currentReady && preview.isSuccess && !preview.isError && (<>
                   {(preview.data?.titleOptions?.length ?? 0) > 1 && (
                     <div className="rounded-md border border-border bg-surface-2 p-3">
                       <Label htmlFor="provider-title-choice">Series name written to every chapter's ComicInfo.xml</Label>
@@ -624,55 +591,60 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onClose 
                   )}
                   <div className="rounded-md border border-border">
                   {/* Mirrors the row grid so each header label sits above its column. */}
-                  <div className={cn(ROW_GRID, 'border-b border-border px-3 py-2 text-xs')}>
+                  <div aria-hidden="true" className="hidden grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)] gap-x-3 border-b border-border px-3 py-2 text-xs sm:grid">
                     <span />
                     <span className="font-semibold text-muted">Current (Kavita)</span>
                     <span className="flex items-center gap-2 font-semibold text-primary">
-                      {PROVIDER_NAMES[selected.providerId] ?? selected.providerId} (candidate)
-                      {preview.isPending && <Spinner />}
+                      Proposed ({PROVIDER_NAMES[selected.providerId] ?? selected.providerId})
                     </span>
                   </div>
-                  {preview.isError && (
-                    <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs text-danger">
-                      <AlertTriangle className="h-3.5 w-3.5" />
-                      Couldn't load candidate metadata: {preview.error instanceof Error ? preview.error.message : String(preview.error)}
-                      <Button size="sm" variant="outline" onClick={() => void preview.refetch()}>Retry preview</Button>
-                    </div>
-                  )}
                   <div className="px-3 pb-1">
-                    {diff.rows.map((row) => (
-                      <FieldRow
-                        key={row.label}
-                        row={row}
-                        checked={!excluded.has(row.field ?? '')}
-                        onToggle={
-                          row.field
-                            ? () =>
-                                setExcluded((prev) => {
-                                  const next = new Set(prev);
-                                  if (next.has(row.field!)) next.delete(row.field!);
-                                  else next.add(row.field!);
-                                  return next;
-                                })
-                            : undefined
-                        }
-                      />
+                    {[
+                      { title: 'Identity', fields: ['title', 'releaseDate', 'language', 'status', 'url'] },
+                      { title: 'Description & tags', fields: ['summary', 'genres', 'tags'] },
+                      { title: 'Contributors', fields: ['writers', 'artists'] },
+                    ].map((section) => (
+                      <section key={section.title} aria-labelledby={`${comparisonId}-${section.fields[0]}`} className="border-b border-border pb-2 last:border-0">
+                        <h3 id={`${comparisonId}-${section.fields[0]}`} className="pb-1 pt-4 text-sm font-semibold">{section.title}</h3>
+                        {diff.rows.filter((row) => section.fields.includes(row.field ?? '')).map((row) => (
+                          <FieldRow
+                            key={row.label}
+                            row={row}
+                            checked={!excluded.has(row.field ?? '')}
+                            onToggle={
+                              row.field
+                                ? () =>
+                                    setExcluded((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(row.field!)) next.delete(row.field!);
+                                      else next.add(row.field!);
+                                      return next;
+                                    })
+                                : undefined
+                            }
+                          />
+                        ))}
+                      </section>
                     ))}
-                    <div className={cn(ROW_GRID, 'items-center py-2')}>
-                      <label className="flex min-h-9 cursor-pointer items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted">
+                    <section aria-labelledby={`${comparisonId}-cover`}>
+                      <h3 id={`${comparisonId}-cover`} className="pb-1 pt-4 text-sm font-semibold">Cover</h3>
+                    <div className={cn(ROW_GRID, 'py-3')}>
+                      <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted sm:min-h-9 pointer-coarse:min-h-11">
                         <input type="checkbox" checked={coverEnabled} onChange={(e) => setCoverEnabled(e.target.checked)} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
-                        Cover
+                        Apply cover
                       </label>
-                      <div>
+                      <ComparisonValue label="Current" field="cover">
                         <CoverThumb src={currentCover ?? `/api/kavita/series/${seriesId}/cover`} alt="Current cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <CoverThumb src={diff.coverCandidate} alt="Candidate cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
+                      </ComparisonValue>
+                      <ComparisonValue label="Proposed" field="cover" className="flex flex-col gap-1.5">
+                        <CoverThumb src={diff.coverCandidate} alt="Proposed cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
                         {!coverEnabled && <span className="text-sm text-muted">not synced</span>}
-                      </div>
+                      </ComparisonValue>
                     </div>
+                    </section>
                   </div>
                 </div>
+                </>)}
                 </div>
               )}
 
@@ -682,8 +654,8 @@ export function IdentifyModal({ seriesId, current, match, currentCover, onClose 
                   <X className="h-4 w-4" /> Cancel
                 </Button>
                 <Button
-                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: selected.score })}
-                  disabled={preview.isPending || preview.isError || apply.isPending}
+                  onClick={() => selected && doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: reviewingExistingMatch ? undefined : selected.score })}
+                  disabled={!currentReady || !preview.isSuccess || preview.isError || apply.isPending}
                 >
                   {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} Apply & Sync to Kavita
                 </Button>

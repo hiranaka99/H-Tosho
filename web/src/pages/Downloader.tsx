@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Search,
   Loader2,
@@ -36,13 +36,13 @@ import {
   Merge,
   ChevronDown,
   Plus,
-  ThumbsDown,
   EllipsisVertical,
 } from 'lucide-react';
 import { api, type FeedbackRequest, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
 import { useDownloadActions, useDownloads } from '../lib/DownloadsContext';
 import { buildTagSearchFragment, cn, timeAgo, toIsoUtc } from '../lib/utils';
 import { formatBytes, formatSpeed } from '../lib/format';
+import { downloadErrorHelp } from '../lib/downloadErrors';
 import { toast } from '../lib/toast';
 import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, ErrorState, ConfirmDialog, Skeleton } from '../components/ui';
 import { ComicInfoModal } from '../components/ComicInfoModal';
@@ -70,6 +70,7 @@ interface DownloaderStateCache {
   searchKey?: string | null;
   sort?: DoujinSort;
   page?: number;
+  searches?: Partial<Record<DoujinSource, { query: string; searchKey: string | null; sort: DoujinSort }>>;
 }
 
 function readDownloaderState(): DownloaderStateCache {
@@ -111,30 +112,24 @@ const sortsFor = (src: DoujinSource): { value: DoujinSort; label: string }[] =>
 /** Human-facing display name for a doujin source. */
 const SOURCE_LABELS: Record<DoujinSource, string> = { hitomi: 'Hitomi.la', nhentai: 'nHentai' };
 
-/**
- * Split a query into terms, keeping quoted values (nHentai style) intact so
- * `tag:"big breasts"` stays one term instead of breaking at the space.
- */
-function splitTerms(query: string): string[] {
-  const terms: string[] = [];
-  let cur = '';
-  let quote: string | null = null;
-  for (const ch of query) {
-    if (quote) {
-      if (ch === quote) quote = null;
-      cur += ch;
-    } else if (ch === '"' || ch === "'") {
-      quote = ch;
-      cur += ch;
-    } else if (/\s/.test(ch)) {
-      if (cur) terms.push(cur);
-      cur = '';
-    } else {
-      cur += ch;
-    }
-  }
-  if (cur) terms.push(cur);
-  return terms;
+type DownloadSetup = { status: 'loading' | 'error' | 'missing' | 'ready'; directory?: string; format?: 'cbz' | 'folder'; onRetry: () => void };
+const DOWNLOADER_SETTINGS_URL = '/settings?tab=downloader';
+
+function DownloadDestination({ setup }: { setup: DownloadSetup }) {
+  return <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-xs text-muted" role="status">
+    {setup.status === 'loading' ? <><Spinner /> Checking download settings…</> : setup.status === 'error' ? <><span>Could not check the download folder.</span><Button size="sm" variant="outline" onClick={setup.onRetry}>Retry settings</Button></> : setup.status === 'missing' ? <><span>Choose where downloads will be saved.</span><Link className="inline-flex min-h-11 items-center font-medium text-primary underline underline-offset-4" to={DOWNLOADER_SETTINGS_URL}>Set output folder</Link></> : <>
+      <FolderOpen className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 break-all">Save to {setup.directory}</span><Badge tone="muted">{setup.format === 'cbz' ? 'CBZ' : 'Image folder'}</Badge><Link className="inline-flex min-h-9 items-center text-primary underline underline-offset-4" to={DOWNLOADER_SETTINGS_URL}>Change</Link>
+    </>}
+  </div>;
+}
+
+function DownloadFailure({ message }: { message: string }) {
+  const help = downloadErrorHelp(message);
+  return <div className="space-y-1 text-xs">
+    <p className="text-danger">{help.message}</p>
+    {help.settings && <Link className="inline-flex min-h-9 items-center text-primary underline underline-offset-4" to={DOWNLOADER_SETTINGS_URL}>Open Downloader settings</Link>}
+    <Disclosure label="Technical details" className="text-muted"><p className="break-all pt-2">{message}</p></Disclosure>
+  </div>;
 }
 
 /** Bounds of the token at the caret; whitespace inside quotes belongs to the same token. */
@@ -153,52 +148,6 @@ function activeTermBounds(full: string, caret: number): { start: number; end: nu
     }
   }
   return { start, end: full.length };
-}
-
-/**
- * Translate a search query from one doujin source's syntax to the other's so a
- * search can be re-run against the new source. nHentai uses quoted values and
- * supports negation (`-term`); Hitomi uses underscores for multi-word tag values
- * and has no negation, so excluded terms are dropped when heading to Hitomi.
- * Gender tags map between the sources too: Hitomi files them under the
- * `female:`/`male:` areas while nHentai has a single ungendered `tag:` type, so
- * `tag:"gyaru"` becomes `female:gyaru` heading to Hitomi (its primary tag area)
- * and `female:gyaru`/`male:bald` become `tag:"…"` heading to nHentai.
- */
-function translateQuery(query: string, from: DoujinSource, to: DoujinSource): string {
-  if (from === to) return query;
-  const trimmed = query.trim();
-  if (!trimmed) return query;
-  const out: string[] = [];
-  for (const rawTerm of splitTerms(trimmed)) {
-    let negated = false;
-    let term = rawTerm;
-    if (term.startsWith('-')) {
-      negated = true;
-      term = term.slice(1);
-    }
-    const colon = term.indexOf(':');
-    const ns = colon > 0 ? term.slice(0, colon) : null;
-    let val = colon > 0 ? term.slice(colon + 1) : term;
-    // Strip surrounding quotes (nHentai style).
-    val = val.replace(/^["']+|["']+$/g, '');
-
-    if (to === 'hitomi') {
-      // Hitomi has no negation → drop excluded terms.
-      if (negated) continue;
-      // Multi-word values become a single underscored token.
-      val = val.replace(/\s+/g, '_');
-    } else {
-      // nHentai: tag values are always quoted (multi-word values keep spaces).
-      val = `"${val.replace(/_/g, ' ')}"`;
-    }
-    // Remap the namespace where the two sources name the same concept differently.
-    let area = ns;
-    if (to === 'hitomi' && ns === 'tag') area = 'female';
-    else if (to === 'nhentai' && (ns === 'female' || ns === 'male')) area = 'tag';
-    out.push(area ? `${area}:${val}` : val);
-  }
-  return out.join(' ');
 }
 
 /** Badge color per suggestion tag type (mirrors the nHentai search dropdown). */
@@ -326,6 +275,7 @@ interface GalleryCardProps {
   item: DoujinSearchResult;
   onOpen: (item: DoujinSearchResult) => void;
   onDownload: (item: DoujinSearchResult) => void;
+  downloadSetup: DownloadSetup['status'];
   task?: DownloadTask;
   starting?: boolean;
   index?: number;
@@ -334,14 +284,13 @@ interface GalleryCardProps {
   selected?: boolean;
   onToggleSelect?: (item: DoujinSearchResult) => void;
   owned?: boolean;
-  onDismissGallery?: (item: DoujinSearchResult) => void;
   dismissing?: boolean;
   showSource?: boolean;
   showTags?: boolean;
   onFeedback?: (item: DoujinSearchResult) => void;
 }
 
-const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, task, starting = false, index = 0, downloadedAt, selectMode = false, selected = false, onToggleSelect, owned = false, onDismissGallery, dismissing = false, showSource = true, showTags = true, onFeedback }: GalleryCardProps) {
+const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, task, starting = false, index = 0, downloadedAt, selectMode = false, selected = false, onToggleSelect, owned = false, dismissing = false, showSource = true, showTags = true, onFeedback }: GalleryCardProps) {
   const tags = item.tags.slice(0, 4);
   const active = starting || task?.status === 'queued' || task?.status === 'downloading' || task?.status === 'paused';
   return (
@@ -391,15 +340,10 @@ const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, 
           </div>
         )}
         <div className="flex min-w-0 items-stretch gap-2">
-          <Button size="sm" className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1" onClick={() => onDownload(item)} disabled={active || !!downloadedAt} aria-label={active ? `${item.title} is ${task?.status ?? 'starting'}` : downloadedAt ? `${item.title} already downloaded` : `Download ${item.title}`}>
+          <Button size="sm" className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 px-2" onClick={() => onDownload(item)} disabled={active || !!downloadedAt || downloadSetup === 'loading' || downloadSetup === 'error'} aria-label={active ? `${item.title} is ${task?.status ?? 'starting'}` : downloadedAt ? `${item.title} already downloaded` : downloadSetup === 'missing' ? `Set output folder before downloading ${item.title}` : `Download ${item.title}`}>
             {active ? <Loader2 className={cn('h-3.5 w-3.5 shrink-0', task?.status !== 'paused' && 'animate-spin')} /> : downloadedAt ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <DownloadIcon className="h-3.5 w-3.5 shrink-0" />}
-            <span className="truncate">{task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : active ? 'Downloading' : downloadedAt ? 'Downloaded' : 'Download'}</span>
+            <span>{task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : active ? 'Downloading' : downloadedAt ? 'Downloaded' : downloadSetup === 'missing' ? 'Set folder' : 'Download'}</span>
           </Button>
-          {onDismissGallery && (
-            <Button size="icon" variant="outline" className="max-lg:min-h-11 max-lg:min-w-11 pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 text-muted hover:text-foreground" onClick={() => void onDismissGallery(item)} disabled={dismissing} title="Don't recommend this gallery again" aria-label={`Don't recommend ${item.title} again`}>
-              <ThumbsDown className="h-3.5 w-3.5 shrink-0" />
-            </Button>
-          )}
           {onFeedback && <Button size="icon" variant="outline" className="max-lg:min-h-11 max-lg:min-w-11 pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 text-muted" disabled={dismissing} onClick={() => onFeedback(item)} aria-label={`Tune recommendations for ${item.title}`} title="Tune recommendations"><EllipsisVertical className="h-4 w-4" /></Button>}
         </div>
       </div>
@@ -468,14 +412,15 @@ function MetaItem({ label, value }: { label: string; value?: string | number | n
   );
 }
 
-function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTag }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; downloading: boolean; onSearchTag: (fragment: string, source?: DoujinSource) => void }) {
-  const { data: gallery, isPending, isError, error } = useQuery({
+function GalleryDetailModal({ item, onClose, onDownload, downloading, setup, onSearchTag }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; downloading: boolean; setup: DownloadSetup; onSearchTag: (fragment: string, source?: DoujinSource) => void }) {
+  const { data: gallery, isPending, isFetching, isError, error, refetch } = useQuery({
     queryKey: ['doujin-gallery', item.source, item.galleryId],
     queryFn: () => api.doujinGallery(item.source, item.galleryId),
     staleTime: 5 * 60_000,
   });
   const [previewPage, setPreviewPage] = React.useState(0);
   const [previewFailed, setPreviewFailed] = React.useState(false);
+  const [previewAttempt, setPreviewAttempt] = React.useState(0);
 
   const g = gallery;
   const previewPages = g?.previewPages ?? [];
@@ -509,66 +454,16 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
   };
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-5xl">
-        <div className="flex max-h-[calc(100dvh-1rem)] flex-col gap-4 overflow-y-auto p-3 sm:p-5 lg:max-h-[90dvh] lg:flex-row lg:gap-5">
-          <div className="flex min-w-0 flex-col gap-2 lg:w-[min(45vw,28rem)] lg:shrink-0">
-            {previewPages.length > 0 ? (
-              <div
-                className="flex min-h-0 flex-col gap-2"
-                tabIndex={0}
-                aria-label="Doujin page preview. Use left and right arrow keys to change pages."
-                onKeyDown={(event) => {
-                  if (event.key === 'ArrowLeft') showPreviewPage(previewPage - 1);
-                  if (event.key === 'ArrowRight') showPreviewPage(previewPage + 1);
-                }}
-              >
-                <div className="flex min-h-64 items-center justify-center overflow-hidden rounded-lg border border-border bg-background lg:h-[min(68dvh,46rem)]">
-                  {previewFailed ? (
-                    <div className="flex flex-col items-center gap-2 p-6 text-center text-sm text-muted"><ImageOff className="h-8 w-8" />This page could not be loaded.</div>
-                  ) : (
-                    <img
-                      key={previewPage}
-                      src={previewPages[previewPage]}
-                      alt={`Page ${previewPage + 1} of ${previewPages.length} from ${g?.title ?? item.title}`}
-                      className="max-h-[68dvh] w-full object-contain"
-                      onError={(event) => {
-                        const fallback = g?.previewFallbacks?.[previewPage];
-                        if (fallback && event.currentTarget.src !== new URL(fallback, window.location.href).href) event.currentTarget.src = fallback;
-                        else setPreviewFailed(true);
-                      }}
-                    />
-                  )}
-                </div>
-                <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
-                  <Button size="sm" variant="outline" disabled={previewPage === 0} onClick={() => showPreviewPage(previewPage - 1)} aria-label="Previous page"><ChevronLeft className="h-4 w-4" /><span className="hidden sm:inline">Previous</span></Button>
-                  <label className="flex min-w-0 items-center justify-center gap-1.5 text-xs text-muted">
-                    <span>Page</span>
-                    <Select aria-label="Preview page" value={previewPage} onChange={(event) => showPreviewPage(Number(event.target.value))} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-auto min-w-16 py-0 pl-2 pr-7 text-xs">
-                      {previewPages.map((_, index) => <option key={index} value={index}>{index + 1}</option>)}
-                    </Select>
-                    <span>of {previewPages.length}</span>
-                  </label>
-                  <Button size="sm" variant="outline" disabled={previewPage === lastPreviewPage} onClick={() => showPreviewPage(previewPage + 1)} aria-label="Next page"><span className="hidden sm:inline">Next</span><ChevronRight className="h-4 w-4" /></Button>
-                </div>
-              </div>
-            ) : (
-              <Cover url={g?.coverUrl ?? item.coverUrl} title={item.title} className="mx-auto aspect-[3/4] w-40 rounded-md border border-border lg:w-48" />
-            )}
-            {g?.url && (
-              <a href={g.url} target="_blank" rel="noreferrer" className="inline-flex max-lg:min-h-11 pointer-coarse:min-h-11 items-center gap-1.5 self-start text-xs text-muted transition-colors hover:text-primary">
-                <ExternalLink className="h-3 w-3" /> View on {SOURCE_LABELS[item.source]}
-              </a>
-            )}
-          </div>
-
-          <div className="flex min-w-0 flex-1 flex-col gap-4">
+      <DialogContent className="max-w-5xl" aria-describedby={undefined}>
+        <div className="flex max-h-[calc(100dvh-2rem)] flex-col lg:max-h-[90dvh]">
+        <div className="grid min-h-0 gap-4 overflow-y-auto p-3 sm:p-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-5">
+          <div className="flex min-w-0 flex-col gap-4 lg:col-start-2 lg:row-start-1 lg:self-start">
             <div className="min-w-0 pr-10">
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <SourceBadge source={item.source} />
                 {g?.language && <Badge tone="info"><Languages className="h-3 w-3" /> {g.language}</Badge>}
               </div>
               <DialogTitle className="break-words text-lg leading-snug">{g?.title ?? item.title}</DialogTitle>
-              <DialogDescription>{previewPages.length > 0 ? 'Preview the gallery, review its details, or download it.' : 'Gallery details and download options.'}</DialogDescription>
             </div>
 
             {isPending && (
@@ -578,8 +473,10 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
             )}
 
             {isError && (
-              <div className="rounded-md bg-danger/10 p-3 text-sm text-danger">
-                Failed to load details: {error instanceof Error ? error.message : String(error)}
+              <div className="space-y-2" role="alert">
+                <p className="text-sm font-medium">Could not load gallery details</p>
+                <DownloadFailure message={error instanceof Error ? error.message : String(error)} />
+                <Button size="sm" variant="outline" disabled={isFetching} onClick={() => void refetch()}><RotateCcw className="h-3.5 w-3.5" />{isFetching ? 'Retrying…' : 'Retry details'}</Button>
               </div>
             )}
 
@@ -614,25 +511,69 @@ function GalleryDetailModal({ item, onClose, onDownload, downloading, onSearchTa
                   <TagList label={`Tags (${g.tags.length})`} items={g.tags} namespaces={g.tagNamespaces} icon={<Tags className="h-3 w-3" />} onSearch={(v, ns) => searchFor(v, ns)} titleFor={(v, ns) => searchTitle(v, ns)} />
                 ) : null}
 
-                <div className="mt-auto flex flex-wrap items-center justify-end gap-2 pt-2">
-                  <Button variant="ghost" onClick={onClose}>
-                    <X className="h-4 w-4" /> Close
-                  </Button>
-                  <Button onClick={onDownload} disabled={downloading}>
-                    {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <DownloadIcon className="h-4 w-4" />} Download
-                  </Button>
-                </div>
               </>
             )}
 
-            {!g && (
-              <div className="mt-auto flex flex-wrap items-center justify-end gap-2 pt-2">
-                <Button onClick={onDownload} disabled={downloading}>
-                  {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <DownloadIcon className="h-4 w-4" />} Download
-                </Button>
+          </div>
+          <div className="flex min-w-0 flex-col gap-2 lg:col-start-1 lg:row-start-1">
+            {previewPages.length > 0 ? (
+              <div
+                className="flex min-h-0 flex-col gap-2"
+                tabIndex={0}
+                aria-label="Doujin page preview. Use left and right arrow keys to change pages."
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowLeft') showPreviewPage(previewPage - 1);
+                  if (event.key === 'ArrowRight') showPreviewPage(previewPage + 1);
+                }}
+              >
+                <div className="flex h-[min(40dvh,24rem)] items-center justify-center overflow-hidden rounded-lg border border-border bg-background lg:h-[min(60dvh,46rem)]">
+                  {previewFailed ? (
+                    <div className="flex flex-col items-center gap-2 p-6 text-center text-sm text-muted"><ImageOff className="h-8 w-8" />This page could not be loaded.<Button size="sm" variant="outline" onClick={() => { setPreviewFailed(false); setPreviewAttempt(n => n + 1); }}><RotateCcw className="h-3.5 w-3.5" /> Retry page</Button></div>
+                  ) : (
+                    <img
+                      key={`${previewPage}:${previewAttempt}`}
+                      src={previewPages[previewPage]}
+                      alt={`Page ${previewPage + 1} of ${previewPages.length} from ${g?.title ?? item.title}`}
+                      className="h-full w-full object-contain"
+                      onError={(event) => {
+                        const fallback = g?.previewFallbacks?.[previewPage];
+                        if (fallback && event.currentTarget.src !== new URL(fallback, window.location.href).href) event.currentTarget.src = fallback;
+                        else setPreviewFailed(true);
+                      }}
+                    />
+                  )}
+                </div>
+                <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2">
+                  <Button size="sm" variant="outline" disabled={previewPage === 0} onClick={() => showPreviewPage(previewPage - 1)} aria-label="Previous page"><ChevronLeft className="h-4 w-4" /><span className="hidden sm:inline">Previous</span></Button>
+                  <label className="flex min-w-0 items-center justify-center gap-1.5 text-xs text-muted">
+                    <span>Page</span>
+                    <Select aria-label="Preview page" value={previewPage} onChange={(event) => showPreviewPage(Number(event.target.value))} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-auto min-w-16 py-0 pl-2 pr-7 text-xs">
+                      {previewPages.map((_, index) => <option key={index} value={index}>{index + 1}</option>)}
+                    </Select>
+                    <span>of {previewPages.length}</span>
+                  </label>
+                  <Button size="sm" variant="outline" disabled={previewPage === lastPreviewPage} onClick={() => showPreviewPage(previewPage + 1)} aria-label="Next page"><span className="hidden sm:inline">Next</span><ChevronRight className="h-4 w-4" /></Button>
+                </div>
               </div>
+            ) : (
+              <Cover url={g?.coverUrl ?? item.coverUrl} title={item.title} className="mx-auto aspect-[3/4] w-40 rounded-md border border-border lg:w-48" />
+            )}
+            {g?.url && (
+              <a href={g.url} target="_blank" rel="noreferrer" className="inline-flex max-lg:min-h-11 pointer-coarse:min-h-11 items-center gap-1.5 self-start text-xs text-muted transition-colors hover:text-primary">
+                <ExternalLink className="h-3 w-3" /> View on {SOURCE_LABELS[item.source]}
+              </a>
             )}
           </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border bg-surface p-3 sm:px-5">
+          <DownloadDestination setup={setup} />
+          <div className="ml-auto flex shrink-0 justify-end gap-2">
+            <Button variant="ghost" onClick={onClose}><X className="h-4 w-4" /> Close</Button>
+            {setup.status !== 'missing' && <Button onClick={onDownload} disabled={downloading || setup.status !== 'ready'}>
+              {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <DownloadIcon className="h-4 w-4" />}{downloading ? 'Queued / downloading' : 'Download'}
+            </Button>}
+          </div>
+        </div>
         </div>
       </DialogContent>
     </Dialog>
@@ -712,7 +653,7 @@ const QueueRow = React.memo(function QueueRow({ task, onAction, onEditComicInfo,
         )}
 
         {task.status === 'failed' && task.errorMessage && (
-          <p className="text-xs text-danger">{task.errorMessage}</p>
+          <DownloadFailure message={task.errorMessage} />
         )}
 
         <div className="flex items-center justify-between text-xs text-muted">
@@ -736,11 +677,13 @@ function folderNameFrom(title: string): string {
  * shared folder (one Kavita series). Chapter numbers are prefilled with the
  * selection order but editable by hand; an empty field skips numbering that file.
  */
-function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm }: {
+function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm, setup, pending }: {
   items: DoujinSearchResult[];
   defaultFolder: string;
   onClose: () => void;
   onConfirm: (folder: string, numbers: (number | null)[]) => void;
+  setup: DownloadSetup;
+  pending: boolean;
 }) {
   const [folder, setFolder] = React.useState(defaultFolder);
   const [numbered, setNumbered] = React.useState(true);
@@ -751,8 +694,8 @@ function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm }: {
     setNumbers((prev) => prev.map((n, j) => (j === i ? v : n)));
   };
   return (
-    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="sm:max-w-lg">
+    <Dialog open onOpenChange={(open) => { if (!open && !pending) onClose(); }}>
+      <DialogContent className="sm:max-w-lg" onEscapeKeyDown={event => { if (pending) event.preventDefault(); }} onPointerDownOutside={event => { if (pending) event.preventDefault(); }}>
         <div className="flex max-h-[calc(100vh-9rem)] flex-col gap-3 overflow-y-auto p-5 pr-12">
           <div>
             <DialogTitle>Merged download</DialogTitle>
@@ -760,6 +703,8 @@ function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm }: {
               Download {items.length} {items.length === 1 ? 'gallery' : 'galleries'} into one folder so Kavita groups them as a single series.
             </DialogDescription>
           </div>
+          <DownloadDestination setup={setup} />
+          {setup.status === 'ready' && setup.format !== 'cbz' && <p className="text-sm text-danger">Merged downloads need CBZ format. <Link className="underline underline-offset-4" to={DOWNLOADER_SETTINGS_URL}>Change the output format</Link> first.</p>}
           <div className="flex flex-col gap-1">
             <span id="merge-folder-label" className="text-xs font-medium text-muted">Folder name (becomes the Kavita series name)</span>
             <Input id="merge-folder" aria-labelledby="merge-folder-label" value={folder} onChange={(e) => setFolder(e.target.value)} placeholder="Series folder" autoFocus />
@@ -788,9 +733,9 @@ function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm }: {
           )}
         </div>
         <div className="flex justify-end gap-2 border-t border-border p-4">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button disabled={!folder.trim()} onClick={() => onConfirm(folder.trim(), numbered ? numbers.map((n) => (n === '' ? null : Number(n))) : items.map(() => null))}>
-            <Combine className="h-4 w-4" /> Download {items.length} {items.length === 1 ? 'gallery' : 'galleries'}
+          <Button variant="ghost" disabled={pending} onClick={onClose}>Cancel</Button>
+          <Button disabled={pending || !folder.trim() || setup.status !== 'ready' || setup.format !== 'cbz'} onClick={() => onConfirm(folder.trim(), numbered ? numbers.map((n) => (n === '' ? null : Number(n))) : items.map(() => null))}>
+            {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Combine className="h-4 w-4" />} {pending ? 'Queuing…' : `Download ${items.length} ${items.length === 1 ? 'gallery' : 'galleries'}`}
           </Button>
         </div>
       </DialogContent>
@@ -1097,12 +1042,20 @@ function ManagerTab() {
 // ---------------- Page ----------------
 
 export function Downloader() {
+  const navigate = useNavigate();
   // Search cards consume live tasks so each doujin reflects queued, downloading,
   // or paused state. Deep links from the Libraries page override cached search
   // state; ordinary navigation restores the last input, committed search, and
   // result page.
   const [searchParams, setSearchParams] = useSearchParams();
   const initialState = React.useMemo(readDownloaderState, []);
+  const initialSearches = React.useMemo(() => {
+    const previousSource = initialState.source ?? 'hitomi';
+    return {
+      [previousSource]: { query: initialState.query ?? '', searchKey: initialState.searchKey ?? null, sort: initialState.sort ?? 'default' },
+      ...initialState.searches,
+    };
+  }, [initialState]);
   const linkedQuery = searchParams.get('q');
   const [source, setSource] = React.useState<DoujinSource>(() => {
     const requested = searchParams.get('source');
@@ -1117,14 +1070,21 @@ export function Downloader() {
     () => (providerList && providerList.length > 0 ? providerList.map((p) => ({ id: p.id, label: p.name })) : FALLBACK_SOURCES),
     [providerList],
   );
-  const [query, setQuery] = React.useState(() => linkedQuery ?? initialState.query ?? '');
+  const sourceSearch = initialSearches[source];
+  const [query, setQuery] = React.useState(() => linkedQuery ?? sourceSearch?.query ?? '');
   const [searchKey, setSearchKey] = React.useState<string | null>(() => {
     if (linkedQuery !== null) return linkedQuery.trim() || null;
-    return initialState.searchKey?.trim() || null;
+    return sourceSearch?.searchKey?.trim() || null;
   });
-  // Result ordering for nHentai searches (ignored by other sources). Persisted
-  // across source switches so it applies the next time nHentai is searched.
-  const [sort, setSort] = React.useState<DoujinSort>(() => sortsFor(source).some((option) => option.value === initialState.sort) ? initialState.sort! : 'default');
+  // Restore the source's sort alongside its search, including the legacy cache.
+  const [sort, setSort] = React.useState<DoujinSort>(() => {
+    const saved = sourceSearch?.sort;
+    return sortsFor(source).some(option => option.value === saved) ? saved! : 'default';
+  });
+  const searches = React.useRef<DownloaderStateCache['searches']>(initialSearches);
+  function rememberSearch() {
+    searches.current = { ...searches.current, [source]: { query, searchKey, sort } };
+  }
   const deepLink = JSON.stringify([searchParams.get('source'), linkedQuery]);
   const previousDeepLink = React.useRef(deepLink);
   React.useEffect(() => {
@@ -1135,6 +1095,7 @@ export function Downloader() {
     const nextQuery = searchParams.get('q');
     if (nextQuery === null) return;
     const trimmed = nextQuery.trim();
+    rememberSearch();
     setSource(nextSource);
     setQuery(nextQuery);
     setSearchKey(trimmed || null);
@@ -1149,9 +1110,24 @@ export function Downloader() {
   const [selectMode, setSelectMode] = React.useState(false);
   const [selectedGalleries, setSelectedGalleries] = React.useState<Set<string>>(new Set());
   const [mergeOpen, setMergeOpen] = React.useState(false);
+  const [mergePending, setMergePending] = React.useState(false);
   const [mergeIntoOpen, setMergeIntoOpen] = React.useState(false);
 
   const { startDownload } = useDownloadActions();
+  const downloadSettings = useQuery({ queryKey: ['downloader-settings'], queryFn: api.downloaderSettings });
+  const setup: DownloadSetup = {
+    status: downloadSettings.isError ? 'error' : !downloadSettings.data ? 'loading' : downloadSettings.data.downloadDirectory.trim() ? 'ready' : 'missing',
+    directory: downloadSettings.data?.downloadDirectory,
+    format: downloadSettings.data?.format,
+    onRetry: () => { void downloadSettings.refetch(); },
+  };
+  const downloadStatus = setup.status;
+  const ensureDownloadReady = React.useCallback(() => {
+    if (downloadStatus === 'ready') return true;
+    if (downloadStatus === 'missing') navigate(DOWNLOADER_SETTINGS_URL);
+    else toast({ tone: 'info', title: downloadStatus === 'loading' ? 'Checking download settings' : 'Download settings unavailable', description: 'Retry the settings check before starting a download.' });
+    return false;
+  }, [downloadStatus, navigate]);
   const { tasks } = useDownloads();
   const activeTasksByGallery = React.useMemo(() => {
     const byGallery = new Map<string, DownloadTask>();
@@ -1353,6 +1329,7 @@ export function Downloader() {
       const replacement = await api.dismissGallery({ source: item.source, galleryId: item.galleryId });
       qc.setQueryData(['recommendations'], replacement);
       setDismissedGalleries((current) => [...current.filter((gallery) => `${gallery.source}:${gallery.galleryId}` !== key), item]);
+      setFeedbackItem(null);
     } catch (e) {
       toast({ tone: 'danger', title: 'Could not dismiss gallery', description: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -1427,7 +1404,10 @@ export function Downloader() {
   React.useEffect(() => {
     // Debounced so typing a long query does not serialize to sessionStorage on
     // every keystroke; the timer resets per change and clears on unmount.
-    const t = window.setTimeout(() => writeDownloaderState({ source, query, searchKey, sort, page }), 300);
+    const t = window.setTimeout(() => {
+      searches.current = { ...searches.current, [source]: { query, searchKey, sort } };
+      writeDownloaderState({ source, query, searchKey, sort, page, searches: searches.current });
+    }, 300);
     return () => window.clearTimeout(t);
   }, [source, query, searchKey, sort, page]);
 
@@ -1435,6 +1415,7 @@ export function Downloader() {
   // Item-argument style and stable (startDownload is stable, state updates are
   // functional) so memoized GalleryCards can keep this reference.
   const doStartDownload = React.useCallback(async (item: DoujinSearchResult) => {
+    if (!ensureDownloadReady()) return;
     const key = `${item.source}:${item.galleryId}`;
     setPendingKeys((current) => new Set(current).add(key));
     try {
@@ -1444,7 +1425,7 @@ export function Downloader() {
       if (msg === 'already-downloaded') {
         toast({ tone: 'info', title: 'Already downloaded', description: 'This gallery has already been downloaded. Open Downloads and choose Download again to get another copy.' });
       } else if (msg !== 'already-queued') {
-        toast({ tone: 'danger', title: 'Could not start download', description: msg });
+        toast({ tone: 'danger', title: 'Could not start download', description: downloadErrorHelp(msg).message });
       }
     } finally {
       setPendingKeys((current) => {
@@ -1453,7 +1434,7 @@ export function Downloader() {
         return next;
       });
     }
-  }, [startDownload, qc]);
+  }, [startDownload, ensureDownloadReady]);
 
   // Item-argument style + setter-only closure (see GalleryCard memo).
   const toggleGallerySelect = React.useCallback((item: DoujinSearchResult) => {
@@ -1478,8 +1459,10 @@ export function Downloader() {
 
   /** Queue every selected gallery into one shared folder (one Kavita series). */
   async function doMergedDownload(folder: string, numbers: (number | null)[]) {
+    if (mergePending || !ensureDownloadReady() || setup.format !== 'cbz') return;
     const items = selectedItems;
     if (items.length === 0) return;
+    setMergePending(true);
     let queued = 0;
     let skipped = 0;
     for (let i = 0; i < items.length; i++) {
@@ -1490,7 +1473,7 @@ export function Downloader() {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg === 'already-downloaded' || msg === 'already-queued') skipped++;
-        else toast({ tone: 'danger', title: `Could not queue ${item.title}`, description: msg });
+        else toast({ tone: 'danger', title: `Could not queue ${item.title}`, description: downloadErrorHelp(msg).message });
       }
     }
     if (queued > 0) toast({ tone: 'success', title: 'Merged downloads queued', description: `${queued} ${queued === 1 ? 'gallery' : 'galleries'} → “${folder}”` });
@@ -1498,6 +1481,7 @@ export function Downloader() {
     setSelectedGalleries(new Set());
     setSelectMode(false);
     setMergeOpen(false);
+    setMergePending(false);
   }
 
   function selectSuggestion(s: DoujinSuggestion) {
@@ -1565,6 +1549,7 @@ export function Downloader() {
   function searchTagFragment(fragment: string, itemSource?: DoujinSource) {
     const trimmed = fragment.trim();
     if (!trimmed) return;
+    rememberSearch();
     if (itemSource && itemSource !== source) {
       setSource(itemSource);
       // Drop a sort the target source does not offer so the dropdown never
@@ -1579,18 +1564,24 @@ export function Downloader() {
     setSelected(null);
   }
 
-  // Swap the active source, translating the current query into the target
-  // source's syntax for the displayed text.
+  // Source syntax differs: each source keeps its own unmodified draft and search.
   function switchSource(next: DoujinSource) {
     if (next === source) return;
-    const translated = translateQuery(query, source, next).trim();
-    setQuery(translated);
-    setSearchKey(translated || null);
-    // Drop a sort the new source does not offer (e.g. nHentai's all-time
-    // popularity when switching to Hitomi) so the dropdown never shows a value
-    // with no matching option.
-    if (!sortsFor(next).some((s) => s.value === sort)) setSort('default');
+    rememberSearch();
+    const saved = searches.current?.[next];
+    setQuery(saved?.query ?? '');
+    setSearchKey(saved?.searchKey ?? null);
+    setSort(saved && sortsFor(next).some(option => option.value === saved.sort) ? saved.sort : 'default');
+    setSuggestions([]);
+    setHighlight(-1);
     setSource(next);
+    // A consumed deep link must not overwrite the restored draft on refresh.
+    setSearchParams(current => {
+      const params = new URLSearchParams(current);
+      params.delete('q');
+      params.delete('source');
+      return params;
+    }, { replace: true });
   }
 
   const runSearch = (e: React.FormEvent) => {
@@ -1610,6 +1601,7 @@ export function Downloader() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader icon={<ListVideo className="h-5 w-5" />} title="Doujinshi Downloader" subtitle="Search Hitomi.la and nHentai, then download galleries into your Kavita library." />
+      <DownloadDestination setup={setup} />
 
       <SegmentedTabs
         items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'Recommended' }, { id: 'watched' as const, label: 'Watched' }, { id: 'manager' as const, label: 'Downloads' }]}
@@ -1719,6 +1711,7 @@ export function Downloader() {
               )}
             </div>
           </form>
+          <p className="text-xs text-muted">Each source remembers its own search and filters.</p>
         </CardContent>
       </Card>
 
@@ -1818,6 +1811,7 @@ export function Downloader() {
                     starting={pendingKeys.has(`${item.source}:${item.galleryId}`)}
                     downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
                     onDownload={doStartDownload}
+                    downloadSetup={downloadStatus}
                   />
                 ))}
               </div>
@@ -1928,8 +1922,8 @@ export function Downloader() {
                     starting={pendingKeys.has(`${item.source}:${item.galleryId}`)}
                     downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
                     onDownload={doStartDownload}
+                    downloadSetup={downloadStatus}
                     owned={ownedKeys.has(`${item.source}:${item.galleryId}`)}
-                    onDismissGallery={doDismissGallery}
                     onFeedback={setFeedbackItem}
                     dismissing={feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading}
                     showSource={false}
@@ -2004,6 +1998,7 @@ export function Downloader() {
                           starting={pendingKeys.has(key)}
                           downloadedAt={downloadedAt.get(key)}
                           onDownload={doStartDownload}
+                          downloadSetup={downloadStatus}
                         />
                         {meta && (
                           <p className="px-1 text-xs leading-snug text-muted" title={`Found by watch “${meta.query}”`}>
@@ -2030,6 +2025,8 @@ export function Downloader() {
           defaultFolder={folderNameFrom(selectedItems[0].title ?? '')}
           onClose={() => setMergeOpen(false)}
           onConfirm={(folder, numbers) => void doMergedDownload(folder, numbers)}
+          setup={setup}
+          pending={mergePending}
         />
       )}
 
@@ -2047,12 +2044,13 @@ export function Downloader() {
       )}
 
       {/* Gallery detail modal */}
-      {feedbackItem && <GalleryFeedbackDialog item={feedbackItem} feedback={feedbackQuery.data} pending={feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading} onClose={() => setFeedbackItem(null)} onAction={request => void updateFeedback(request)} />}
+      {feedbackItem && <GalleryFeedbackDialog item={feedbackItem} feedback={feedbackQuery.data} pending={feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading} onClose={() => setFeedbackItem(null)} onAction={request => void updateFeedback(request)} onDismiss={() => void doDismissGallery(feedbackItem)} />}
       {selected && (
         <GalleryDetailModal
           item={selected}
           onClose={() => setSelected(null)}
           downloading={pendingKeys.has(`${selected.source}:${selected.galleryId}`) || activeTasksByGallery.has(`${selected.source}:${selected.galleryId}`)}
+          setup={setup}
           onDownload={() => doStartDownload(selected)}
           onSearchTag={searchTagFragment}
         />

@@ -1,5 +1,48 @@
 # Changelog
 
+## v2.6.0
+
+### Libraries and metadata review
+
+- Default library sorting to **Date added**, newest first, while retaining the
+  other sorting choices and session persistence.
+- Route metadata updates through field-by-field review. Show current metadata
+  loading and retry states before enabling Apply & Sync, and preserve the
+  selected provider, result position and focus when returning to matches.
+- Simplify Identify to one current-match summary and one Review changes action.
+  Remove its history section and duplicate auto-match messages; keep manual URL
+  matching and provider diagnostics behind disclosures.
+- Clarify metadata groups on mobile and show queued, running, completed or failed
+  library jobs with a direct link to Jobs. Prevent repeat clicks while queuing.
+
+### Downloader
+
+- Show the download destination and output format before queuing. Offer
+  **Set output folder** when setup is missing; block unconfigured downloads in
+  both the interface and API. Merged downloads require configured CBZ output.
+- Preserve each source's exact search, unfinished input and sort when switching
+  providers, including existing session caches. Stop silently translating or
+  dropping search filters.
+- Place gallery metadata directly below its title and keep tags expanded.
+  Preserve the desktop preview/details split, with a visible mobile Download
+  footer. Align Close and Download with the save path where space allows.
+- Consolidate recommendation feedback into one control, including gallery
+  dismissal and Undo, so download status stays readable. Remove redundant help
+  copy from the feedback dialog.
+- Explain common download failures with recovery steps and optional technical
+  details. Add independent retries for gallery details and preview pages.
+
+### Repository maintenance
+
+- Add durable product and design documentation. Exclude local Impeccable state,
+  caches, critique reports and QA previews from version control, and remove
+  completed temporary QA artifacts.
+
+### Upgrading
+
+Update the source checkout and rebuild your deployment. For Docker installations,
+run `docker compose up -d --build` with your existing data volume and library mounts.
+
 ## v2.5.0
 
 ### Watched searches

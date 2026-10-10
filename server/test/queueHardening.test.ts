@@ -12,6 +12,7 @@ process.env.HTOSHO_DATA_DIR = dataDir;
 const { initDb, getDb, getTmpDir, schema } = await import('../src/db/index.js');
 const { DownloadQueue, downloadQueue: singletonQueue } = await import('../src/downloader/engine.js');
 const { api } = await import('../src/routes/api.js');
+const { DEFAULT_DOWNLOADER, setDownloaderSettings } = await import('../src/services/settings.js');
 const { doujinProviders } = await import('../src/downloader/providers.js');
 const originalHitomi = doujinProviders.hitomi;
 
@@ -131,6 +132,7 @@ test('enqueue persists an explicit priority', async () => {
 });
 
 test('POST /downloads blocks duplicates in flight and already owned, with distinct messages', async () => {
+  setDownloaderSettings({ ...DEFAULT_DOWNLOADER, downloadDirectory: outputDir, requestDelayMs: 0, autoSyncKavita: false });
   stubFetch();
   claimed.length = 0;
   // Static rows: never handed to a pump, so statuses stay exactly as inserted.

@@ -72,7 +72,24 @@ test('thumbs-down dismisses a gallery manually without changing ownership or sca
   getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, key)).run();
 });
 
+test('downloads reject missing output folders before queuing or fetching gallery metadata', async t => {
+  const previous = settings.getDownloaderSettings();
+  const enqueue = t.mock.method(downloadQueue, 'enqueue', () => 100);
+  const getGallery = t.mock.method(doujinProviders.hitomi, 'getGallery', async () => { throw new Error('Must not fetch metadata'); });
+  try {
+    for (const downloadDirectory of ['', '   ']) {
+      settings.setDownloaderSettings({ ...previous, downloadDirectory });
+      const response = await api.request('/downloads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: 'hitomi', galleryId: 'no-folder' }) });
+      assert.equal(response.status, 400);
+      assert.match((await response.json()).error, /output folder/);
+    }
+    assert.equal(enqueue.mock.callCount(), 0);
+    assert.equal(getGallery.mock.callCount(), 0);
+  } finally { settings.setDownloaderSettings(previous); }
+});
+
 test('downloads enqueue without checking Kavita, including when Kavita is unavailable', async t => {
+  settings.setDownloaderSettings({ ...settings.DEFAULT_DOWNLOADER, downloadDirectory: process.env.HTOSHO_DATA_DIR! });
   const count = mockLibraries();
   const enqueue = t.mock.method(downloadQueue, 'enqueue', () => 100);
   const getGallery = t.mock.method(doujinProviders.hitomi, 'getGallery', async () => { throw new Error('Metadata should be resolved by the download worker'); });
