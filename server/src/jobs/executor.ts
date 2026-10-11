@@ -752,7 +752,7 @@ async function pickSeriesStampName(dir: string, exclude: Set<string>): Promise<s
 /**
  * apply-series job: push one user-selected candidate onto a single series.
  * applySeriesMatch owns the flow and the match-row update; this wrapper adds
- * history, notification, and the job summary. Hard failures (missing folder,
+ * history and the job summary. Hard failures (missing folder,
  * provider down, rejected title) fail the job with that message — the match
  * row is left as-is, mirroring the old synchronous route's behavior.
  */
@@ -789,24 +789,6 @@ async function runApplySeries(client: KavitaClient, job: Job, log: LogFn): Promi
     errors: result.errors,
     warnings: result.warnings,
   });
-  // Notification failures must not flip an already-applied match to failed —
-  // the metadata push succeeded by the time we get here.
-  try {
-    const name = providerName(p.providerId!);
-    await notify({
-      title: ok ? (result.warnings.length ? `Synced with warnings — ${result.name}` : result.name) : `Sync failed — ${result.name}`,
-      description: `Applied to ${result.meta.url ? `[${name}](${result.meta.url})` : name}`,
-      fields: [
-        ...(result.pushed.length ? [{ name: 'Updated', value: formatPushedFields(result.pushed) }] : []),
-        ...(result.warnings.length ? [{ name: 'Notes', value: result.warnings.join('\n') }] : []),
-        ...(result.errors.length ? [{ name: 'Errors', value: result.errors.join('\n') }] : []),
-      ],
-      coverUrl: result.meta.coverUrl,
-      success: ok,
-    });
-  } catch (e) {
-    log('warn', `Notification failed for ${result.name}: ${e instanceof Error ? e.message : String(e)}`);
-  }
   log(ok && result.warnings.length === 0 ? 'success' : 'warn', `${result.name} -> ${p.providerId!}${ok ? '' : ` — ${result.errors.join('; ')}`}`);
   const summary: JobResult = {
     processed: 1, matched: ok ? 1 : 0, failed: ok ? 0 : 1,

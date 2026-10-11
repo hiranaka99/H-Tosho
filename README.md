@@ -6,7 +6,7 @@ H-Tosho helps you identify manga and light novels, review metadata before applyi
 it, and keep new additions organized. It also includes a doujinshi downloader,
 recommendations, and watched searches for new releases.
 
-Works with **Kavita v0.9.x or newer**. Current version: **v2.11.0** ·
+Works with **Kavita v0.9.x or newer**. Current version: **v2.12.0** ·
 [Release notes](CHANGELOG.md)
 
 ![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
@@ -297,8 +297,9 @@ supports downloading together, merging, and marking selected finds reviewed.
 ### Enable Discord notifications
 
 Open **Settings → Notifications**, enable Discord, paste your channel's webhook
-URL, save, and send a test message. Notifications include metadata updates and
-new watched-search results.
+URL, save, and send a test message. Notifications include automatic metadata
+matches and updates, plus new watched-search results. Manual **Apply & Sync**
+does not send Discord notifications; results and warnings remain in **Jobs**.
 
 ## Help
 

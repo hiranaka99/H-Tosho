@@ -436,10 +436,32 @@ describe('autoMatch fallback search for compound names', () => {
   it('splits compound names into search parts', () => {
     assert.deepEqual(titleSearchParts('Aizome - Fill With LOVE'), ['Aizome', 'Fill With LOVE']);
     assert.deepEqual(titleSearchParts('Title: Subtitle'), ['Title', 'Subtitle']);
+    assert.deepEqual(titleSearchParts('Houkai Kazoku | Dysfunctional Family'), ['Houkai Kazoku', 'Dysfunctional Family']);
     assert.deepEqual(titleSearchParts('Plain Title'), ['Plain Title']);
     // Short parts are dropped; the list is capped at three.
     assert.deepEqual(titleSearchParts('x - Aizome'), ['Aizome']);
     assert.deepEqual(titleSearchParts('Alpha - Beta - Gamma - Delta'), ['Alpha', 'Beta', 'Gamma']);
+  });
+
+  it('finds Houkai Kazoku through a pipe-separated alias when the full search returns another work', async () => {
+    const queries: string[] = [];
+    globalThis.fetch = (async (input: unknown) => {
+      const url = new URL(String(input));
+      assert.equal(url.origin + url.pathname, 'https://api.mangadex.org/manga');
+      const query = url.searchParams.get('title')!;
+      queries.push(query);
+      const data = query === 'Houkai Kazoku'
+        ? [{ id: '8b05c633-d42c-443f-a75b-e0e44c5b09f6', attributes: { title: { en: 'Kazoku Soukanzu' }, altTitles: [{ 'ja-ro': 'Houkai Kazoku' }, { 'ja-ro': 'Ketsuen' }, { en: 'Hankouki' }] }, relationships: [] }]
+        : [{ id: '3e6911b1-7294-4cfe-bff0-81e9ca0be8b6', attributes: { title: { en: 'Daraku Kazokuron' } }, relationships: [] }];
+      return Response.json({ data });
+    }) as typeof fetch;
+    const outcome = await autoMatch({ id: 1, name: 'Houkai Kazoku | Dysfunctional Family' }, {
+      providerOrder: ['mangadex'], credentials: {}, enabledProviders: ['mangadex'],
+    });
+    assert.equal(outcome.matched, true);
+    assert.equal(outcome.best?.providerSeriesId, '8b05c633-d42c-443f-a75b-e0e44c5b09f6');
+    assert.equal(outcome.best?.title, 'Houkai Kazoku');
+    assert.ok(queries.includes('Houkai Kazoku'));
   });
 });
 

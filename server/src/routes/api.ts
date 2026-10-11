@@ -438,8 +438,7 @@ api.post('/series/:id/manual-match', async (c) => {
  * push includes the ComicInfo.Series rename flow, which waits for Kavita's
  * scan — potentially minutes — so it runs as a background job: holding this
  * request open that long is what intermediate gateways were timing out with
- * HTTP 504. Progress shows in the sidebar; results land in the Jobs page and,
- * when configured, Discord.
+ * HTTP 504. Progress shows in the sidebar; results land in the Jobs page.
  */
 api.post('/series/:id/apply', async (c) => {
   const client = connectedClient();

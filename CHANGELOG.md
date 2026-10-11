@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.12.0
+
+- Search pipe-separated title variants during metadata matching, including
+  Houkai Kazoku | Dysfunctional Family's MangaDex alternate title.
+- Stop Discord notifications for manual metadata matches through Apply & Sync;
+  preserve job results, warnings, history, and automatic-match notifications.
+
 ## v2.11.0
 
 - Preserve remaining Recommended picks and their order after downloads; apply

@@ -87,9 +87,15 @@ test('selected MangaDex title rewrites every chapter and renames the record via 
     ]));
     return file;
   });
+  setNotificationSettings({ discord: { enabled: true, webhookUrl: 'https://discord.test/webhook' } });
+  let notifications = 0;
   const state = { requests: [] as RequestLog[] };
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (url === 'https://discord.test/webhook') {
+      notifications += 1;
+      return new Response(null, { status: 204 });
+    }
     if (url.includes('api.mangadex.org/manga/00faf1ea-5086-4d75-9621-5a597e523e21?')) {
       return Response.json({ data: { id: '00faf1ea-5086-4d75-9621-5a597e523e21', attributes: { title: { 'ja-ro': 'Live!: Soto de Koubi Shiyou!' }, altTitles: [{ en: "Let's Do It Outside!" }], status: 'completed', originalLanguage: 'ja' }, relationships: [] } });
     }
@@ -111,6 +117,7 @@ test('selected MangaDex title rewrites every chapter and renames the record via 
   assert.equal(summary.processed, 1);
   assert.equal(summary.matched, 1);
   assert.equal(summary.failed, 0);
+  assert.equal(notifications, 0, 'successful manual matches do not send Discord notifications');
   assert.equal(summary.titleFilesUpdated, 2);
   assert.equal(summary.titleFilesVerified, 2);
   assert.ok(summary.pushed?.includes('name'));
@@ -300,8 +307,7 @@ test('inaccessible CBZ files skip only the rename and still apply the match', as
   assert.ok(logs.some((entry) => entry.level === 'warn' && entry.message.includes('Title was not changed')));
   const history = await (await api.request('/series/42/history')).json();
   assert.match(history[0].details.warnings[0], /Mount.*retry Apply & Sync/);
-  assert.match(notifications[0].embeds[0].title, /^Synced with warnings/);
-  assert.match(notifications[0].embeds[0].fields.find((field) => field.name === 'Notes')!.value, /Title was not changed/);
+  assert.deepEqual(notifications, [], 'manual matching stays silent even when it completes with warnings');
   assert.equal(state.requests.some((request) => request.url.endsWith('/api/Series/update')), false);
   const row = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, 42)).get();
   assert.equal(row?.status, 'matched');

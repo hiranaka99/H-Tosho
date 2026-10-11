@@ -93,7 +93,7 @@ export function canonicalTitle(raw: string): string {
 export function titleSearchParts(raw: string): string[] {
   const stripped = stripVolumeMarkers(raw).trim();
   const parts = stripped
-    .split(/\s+[-–—]+\s*|\s*:\s*/)
+    .split(/\s+[-–—]+\s*|\s*[:|]\s*/)
     .map((p) => p.trim())
     .filter((p) => p.length >= 3);
   return [...new Set(parts)].slice(0, 3);
