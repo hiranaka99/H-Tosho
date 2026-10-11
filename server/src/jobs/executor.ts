@@ -1,3 +1,4 @@
+import { invalidateDuplicateLibrary } from '../services/galleryDuplicates.js';
 import { eq, inArray } from 'drizzle-orm';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -824,6 +825,8 @@ const MATCH_CONCURRENCY = 3;
 
 /** Run a queued job. Returns a small summary stored on the job row. */
 export async function runJob(job: Job, log: LogFn): Promise<JobResult> {
+  // Any file/metadata job may change the archive index, including partial failures.
+  invalidateDuplicateLibrary();
   // Watched-search checks talk to doujin sources only — no Kavita needed.
   if (job.type === 'check-watched-searches') {
     const r = await checkWatchedSearches(
@@ -873,6 +876,7 @@ export async function runJob(job: Job, log: LogFn): Promise<JobResult> {
     }
     throwIfJobCancelled(job.id);
     await rewriteZipEntry(file, 'ComicInfo.xml', Buffer.from(xml, 'utf8'));
+    invalidateDuplicateLibrary();
     log('info', `Wrote ComicInfo.xml into ${file}`);
     throwIfJobCancelled(job.id);
     const editedSeriesName = parseComicInfo(xml).fields.Series?.trim();
@@ -997,6 +1001,7 @@ export async function runJob(job: Job, log: LogFn): Promise<JobResult> {
     log('success', `Moved ${r.moved.length} file(s) into one folder as "${stampName ?? lastSegment(targetDir)}"; stamped chapter numbers on ${r.chaptered.length}`);
     await removeSourceSeriesFromKavita(sourceSeriesIds, log);
     await rescanAndVerifyMerge(targetDir, r.moved, log, { job, seriesId: job.payload.seriesId ?? null, libraryId: targetLibraryId });
+    invalidateDuplicateLibrary();
     return { processed: r.moved.length, matched: 0, failed: r.failed.length + chapterEditFailures };
   }
 

@@ -1,3 +1,4 @@
+import { recordGalleryIdentity, invalidateDuplicateLibrary, resolveDuplicateGallery } from '../services/galleryDuplicates.js';
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -724,8 +725,9 @@ export class DownloadQueue {
 
       // Resolve the full gallery (metadata + image list).
       this.updateProgress(row.id, { progressCurrent: 0, progressTotal: 0, speed: 0, currentFile: 'Resolving gallery…', bytesCurrent: 0, bytesTotal: 0 }, { force: true });
-      const gallery = await retryTransient(() => provider.getGallery(row.galleryId), 4, [2000, 10000, 30000]);
+      const gallery = await retryTransient(() => resolveDuplicateGallery(row.source as DoujinSource, row.galleryId, true), 4, [2000, 10000, 30000]);
       if (ctx.cancelled) throw new Error('Cancelled by user');
+      recordGalleryIdentity(gallery);
       const total = gallery.pages.length;
       if (!total) throw new Error('Gallery has no downloadable pages.');
       this.updateProgress(row.id, { progressCurrent: 0, progressTotal: total, speed: 0, currentFile: null, bytesCurrent: 0, bytesTotal: 0 }, { force: true });
@@ -744,6 +746,7 @@ export class DownloadQueue {
       // observes a completed task whose scratch dir is still on disk.
       await fs.promises.rm(tmpDir, { recursive: true, force: true });
 
+      invalidateDuplicateLibrary();
       this.setStatus(row.id, 'completed');
       // Only completed downloads are taste signals. Failed or cancelled work
       // must not permanently bias the recommendation profile.

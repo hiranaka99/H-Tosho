@@ -1,0 +1,56 @@
+import * as React from 'react';
+import { Copy } from 'lucide-react';
+import { api, type DuplicateCheck, type DoujinSource } from '../lib/api';
+import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Badge } from './ui';
+
+export function useDuplicateReview() {
+  const [review, setReview] = React.useState<DuplicateCheck | null>(null);
+  const resolveRef = React.useRef<((keys: Set<string> | null) => void) | null>(null);
+  const finish = React.useCallback((approve: boolean) => {
+    const keys = approve ? new Set(review?.reports.filter(report => report.matches.length).map(report => `${report.source}:${report.galleryId}`)) : null;
+    resolveRef.current?.(keys);
+    resolveRef.current = null;
+    setReview(null);
+  }, [review]);
+  React.useEffect(() => () => { resolveRef.current?.(null); }, []);
+  const reviewCheck = React.useCallback((check: DuplicateCheck): Promise<Set<string> | null> => {
+    if (!check.reports.some(report => report.matches.length) && !check.warnings.length) return Promise.resolve(new Set());
+    // A new request never leaves an older confirmation waiting indefinitely.
+    resolveRef.current?.(null);
+    setReview(check);
+    return new Promise(resolve => { resolveRef.current = resolve; });
+  }, []);
+  const checkDuplicates = React.useCallback(async (items: { source: DoujinSource; galleryId: string }[]) => {
+    if (!items.length) return new Set<string>();
+    return reviewCheck(await api.checkDuplicates(items));
+  }, [reviewCheck]);
+  const dialog = review && <Dialog open onOpenChange={open => { if (!open) finish(false); }}>
+    <DialogContent className="max-w-xl">
+      <div className="flex max-h-[calc(100dvh-2rem)] flex-col">
+        <div className="shrink-0 space-y-2 border-b border-border p-4 pr-12 sm:p-5 sm:pr-12">
+          <DialogTitle className="flex items-center gap-2"><Copy className="h-5 w-5 shrink-0 text-warning" />{review.reports.some(report => report.matches.length) ? 'Possible duplicates' : 'Duplicate check incomplete'}</DialogTitle>
+          <DialogDescription>Review matching copies before downloading.</DialogDescription>
+        </div>
+        <div className="min-h-0 space-y-5 overflow-y-auto p-4 sm:p-5">
+          {review.reports.filter(report => report.matches.length).map(report => <section key={`${report.source}:${report.galleryId}`} className="space-y-2">
+            <h3 className="break-words text-sm font-semibold">{report.title}</h3>
+            <ul className="divide-y divide-border rounded-lg border border-border">
+              {report.matches.map(match => <li key={`${match.source}:${match.galleryId}`} className="space-y-1.5 p-3 text-sm">
+                <div className="flex flex-wrap items-center gap-2"><span className="min-w-0 flex-1 break-words font-medium">{match.title}</span><Badge tone="muted">{match.source === 'library' ? 'Library' : match.source === 'hitomi' ? 'Hitomi.la' : 'nHentai'} · {match.status}</Badge></div>
+                <p className="break-words text-xs text-muted">{match.artists.join(', ')}{match.language ? ` · ${match.language}` : ''}{match.pageCount ? ` · ${match.pageCount} pages` : ''}</p>
+                <p className="text-xs text-muted">{match.reasons.join(' · ')}</p>
+                {match.path && <p className="break-all text-xs text-muted">{match.path}</p>}
+              </li>)}
+            </ul>
+          </section>)}
+          {!!review.warnings.length && <div role="alert" className="space-y-1 text-xs text-warning"><p className="font-medium">Some files could not be checked.</p>{review.warnings.map(warning => <p key={warning} className="break-words">{warning}</p>)}</div>}
+        </div>
+        <div className="flex shrink-0 justify-end gap-2 border-t border-border p-4">
+          <Button variant="outline" onClick={() => finish(false)}>Cancel</Button>
+          <Button onClick={() => finish(true)}>{review.reports.some(report => report.matches.length) ? 'Download anyway' : 'Continue'}</Button>
+        </div>
+      </div>
+    </DialogContent>
+  </Dialog>;
+  return { checkDuplicates, reviewCheck, dialog };
+}

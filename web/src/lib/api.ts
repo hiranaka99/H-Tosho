@@ -299,6 +299,12 @@ export type DownloadEvent =
   | { type: 'task'; task: DownloadTask }
   | { type: 'removed'; ids: number[] };
 
+export interface DuplicateMatch {
+  title: string; source: string; galleryId: string; artists: string[]; language?: string | null; pageCount?: number; path?: string; taskId?: number; status: string; reasons: string[]; confirmed?: boolean;
+}
+export interface DuplicateReport { source: DoujinSource; galleryId: string; title: string; matches: DuplicateMatch[] }
+export interface DuplicateCheck { reports: DuplicateReport[]; warnings: string[] }
+
 /** A gallery with a completed download task (duplicate-download guard). */
 export interface DownloadedGallery {
   source: DoujinSource;
@@ -553,8 +559,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ source, idOrUrl }),
     }),
-  startDownload: (body: { source: DoujinSource; galleryId: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number }) =>
+  startDownload: (body: { source: DoujinSource; galleryId: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number; allowDuplicate?: boolean }) =>
     request<{ id: number; status: string }>('/downloads', { method: 'POST', body: JSON.stringify(body) }),
+  checkDuplicates: (items: { source: DoujinSource; galleryId: string }[], refreshLibrary = false) => request<DuplicateCheck>('/downloads/duplicates', { method: 'POST', body: JSON.stringify({ items, refreshLibrary }) }),
+  libraryMatches: (items: DoujinSearchResult[]) => request<DuplicateCheck>('/downloads/library-matches', { method: 'POST', body: JSON.stringify({ items: items.map(({ source, galleryId, title, artists, language, pageCount }) => ({ source, galleryId, title, artists, language, pageCount })) }) }),
   downloads: () => request<DownloadTask[]>('/downloads'),
   /** Completed galleries for the duplicate-download badges. */
   downloadsCompleted: () => request<DownloadedGallery[]>('/downloads/completed'),

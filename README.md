@@ -6,7 +6,7 @@ H-Tosho helps you identify manga and light novels, review metadata before applyi
 it, and keep new additions organized. It also includes a doujinshi downloader,
 recommendations, and watched searches for new releases.
 
-Works with **Kavita v0.9.x or newer**. Current version: **v2.9.0** ·
+Works with **Kavita v0.9.x or newer**. Current version: **v2.10.0** ·
 [Release notes](CHANGELOG.md)
 
 ![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
@@ -32,6 +32,8 @@ shop; counts, match results, and metadata are example data.
   **Recently added**, with optional Discord notifications.
 - **Get recommendations you can tune.** Ask for more like a gallery, mute an
   artist, or dismiss a pick you do not want.
+- **Review possible duplicate downloads.** Compare galleries across Hitomi and
+  nHentai with owned downloads and local CBZ metadata before downloading.
 - **Fix files and organize series.** Edit ComicInfo.xml inside CBZ files and
   merge related series.
 
@@ -182,10 +184,42 @@ The queue position stays visible, and closing returns you to the library list.
 Libraries defaults to **Sort · Date added**, showing the newest series first.
 Your selected sort order is remembered for the current browser session.
 
+### Check for duplicate galleries
+
+Search, Recommended, and Watched cards check the local library before download.
+Merged chapters keep their own identity even when their series is renamed:
+ComicInfo source links and gallery IDs in filenames show **In library**, while
+title/artist matches offer **Review duplicate**. Clearing download history does
+not remove these matches.
+
+Downloads and merge downloads compare normalized titles (including alternate
+source titles), artists, language, and page counts. Matching copies appear in
+**Possible duplicates** with their source and file location. Choose **Cancel**
+to keep your current selection or **Download anyway** to continue with the
+selected gallery. Same-source galleries already owned or queued retain their
+existing duplicate guard.
+
+Local checks read ComicInfo metadata from CBZ files in the output folder, mapped
+library folders, and library paths learned when you open Libraries. You do not
+need Kavita to be online during a download. Archive metadata is cached and
+rechecked periodically; unreadable folders and archives without title/artist
+metadata are reported as incomplete coverage.
+
+These are metadata matches, not image comparisons. Known differences in language
+or page count stay separate; missing metadata, unrelated source title variants,
+and archives without usable ComicInfo may prevent a match. Detection metadata
+persists independently of cleared download history.
+
 ### Edit metadata or merge series
 
 Open a series card's **⋮** menu and choose **Edit ComicInfo.xml** to edit its
-CBZ metadata. Use raw XML mode when you need a field beyond the form.
+CBZ metadata through grouped fields. Saving preserves nested metadata and
+attributes. Language name and language code are separate metadata fields.
+
+Use **Change archive** to switch files without losing their unsaved drafts.
+Closing with unsaved edits asks before discarding them. **Queue save** submits a
+background write; follow the displayed job reference to check completion. The
+archive name and save action remain visible while scrolling.
 
 To combine related series, choose **Select to merge**, select the ones to combine,
 and use the merge action. On phones, sorting and selection are under

@@ -88,11 +88,11 @@ test('downloads reject missing output folders before queuing or fetching gallery
   } finally { settings.setDownloaderSettings(previous); }
 });
 
-test('downloads enqueue without checking Kavita, including when Kavita is unavailable', async t => {
+test('downloads preflight source metadata without checking Kavita, including when Kavita is unavailable', async t => {
   settings.setDownloaderSettings({ ...settings.DEFAULT_DOWNLOADER, downloadDirectory: process.env.HTOSHO_DATA_DIR! });
   const count = mockLibraries();
   const enqueue = t.mock.method(downloadQueue, 'enqueue', () => 100);
-  const getGallery = t.mock.method(doujinProviders.hitomi, 'getGallery', async () => { throw new Error('Metadata should be resolved by the download worker'); });
+  const getGallery = t.mock.method(doujinProviders.hitomi, 'getGallery', async () => ({ ...item(), pages: ['https://fixture.invalid/page.jpg'] }));
   for (const unavailable of [false, true]) {
     if (unavailable) KavitaClient.prototype.getLibraries = async () => { throw new Error('HTTP 503'); };
     const response = await api.request('/downloads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: 'hitomi', galleryId: '123' }) });
@@ -100,7 +100,7 @@ test('downloads enqueue without checking Kavita, including when Kavita is unavai
     assert.deepEqual(await response.json(), { id: 100, status: 'queued' });
   }
   assert.equal(enqueue.mock.callCount(), 2);
-  assert.equal(getGallery.mock.callCount(), 0);
+  assert.equal(getGallery.mock.callCount(), 1, 'Fresh metadata is reused for duplicate preflights');
   assert.equal(count(), 0);
   settings.setKavitaConnection({ baseUrl: '', apiKey: '' });
 });

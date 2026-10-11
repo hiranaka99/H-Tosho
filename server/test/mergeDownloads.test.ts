@@ -104,8 +104,8 @@ test('final merge downloads missing galleries as CBZ, reuses existing files, and
   assert.equal(f.counts.size, 0, 'Saving the plan starts no downloads without job execution');
   const result = await clock(t, () => runJob(job, () => {}));
   assert.deepEqual(result, { processed: 3, matched: 0, failed: 0 });
-  assert.equal(f.counts.get('fresh-a'), 1);
-  assert.equal(f.counts.get('fresh-b'), 1);
+  assert.equal(f.requests.filter(url => url === 'https://images.example/fresh-a.jpg').length, 1);
+  assert.equal(f.requests.filter(url => url === 'https://images.example/fresh-b.jpg').length, 1);
   assert.equal((await fields(f.existing)).Number, '11.5');
   assert.equal((await fields(f.existing)).Writer, 'Keep Author');
   for (const id of ['fresh-a', 'fresh-b']) {
@@ -142,8 +142,8 @@ test('download failure preserves existing chapters; job retry reuses successful 
   t.mock.timers.reset();
   const retried = await clock(t, () => runJob(jobQueue.get(retryId)!, () => {}));
   assert.equal(retried.processed, 2);
-  assert.equal(f.counts.get('retry-a'), 1, 'The successful gallery is not downloaded twice');
-  assert.equal(f.counts.get('retry-b'), 2);
+  assert.equal(f.requests.filter(url => url === 'https://images.example/retry-a.jpg').length, 1, 'The successful gallery image is not downloaded twice; metadata preflights may resolve it again');
+  assert.ok((f.counts.get('retry-b') ?? 0) >= 2, 'The failed gallery is resolved again for retry');
   assert.deepEqual(jobQueue.get(retryId)!.payload.mergeDownloadIds, checkpoints);
   assert.equal((await fields(f.existing)).Number, '9');
 });

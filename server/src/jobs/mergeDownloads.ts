@@ -1,3 +1,4 @@
+import { prepareDuplicateCheck, findDuplicateReports } from '../services/galleryDuplicates.js';
 import fs from 'node:fs';
 import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider } from '../downloader/providers.js';
@@ -20,6 +21,7 @@ export function validateMergeDownloads(value: unknown): asserts value is JobPayl
     if (!entry || typeof entry.source !== 'string' || getDoujinProvider(entry.source)?.id !== entry.source || typeof entry.galleryId !== 'string' || !entry.galleryId.trim() || typeof entry.title !== 'string') {
       throw new Error('Each merge download needs a supported source, galleryId, and title');
     }
+    if (entry.allowDuplicate !== undefined && typeof entry.allowDuplicate !== 'boolean') throw new Error('allowDuplicate must be a boolean');
     if (!validMergeChapter(entry.chapter)) throw new Error('Download chapters must be positive numbers or blank');
     const key = `${entry.source}:${entry.galleryId}`;
     if (keys.has(key)) throw new Error('A gallery can only appear once in merge downloads');
@@ -61,6 +63,23 @@ export async function prepareMergeDownloads(job: Job, log: LogFn): Promise<{ fil
         task = queue.get(task.id);
       }
       if (!task || (task.status === 'completed' && !archiveExists(task)) || (task.status === 'failed' && task.mergeJobId == null && !queue.hasPendingRetry(task.id) && !queue.isRunning(task.id))) {
+        if (!plan.allowDuplicate) {
+          const identities = await prepareDuplicateCheck([plan]);
+          checkCancelled();
+          // An independent task may have appeared while metadata was resolving.
+          const raced = queue.findActive(plan.source, plan.galleryId) ?? queue.findCompleted(plan.source, plan.galleryId);
+          if (raced && (raced.status !== 'completed' || archiveExists(raced))) {
+            if (raced.mergeJobId != null && raced.mergeJobId !== job.id) {
+              const owner = jobQueue.get(raced.mergeJobId);
+              if (owner?.status === 'queued' || owner?.status === 'running') throw new Error(`${plan.title} is already assigned to merge job #${owner.id}.`);
+            }
+            tracked.push({ plan, id: raced.id, owned: raced.mergeJobId === job.id });
+            remember(key, raced.id);
+            continue;
+          }
+          const check = findDuplicateReports(identities, job.payload.sourceFiles);
+          if (check.reports.some(report => report.matches.length)) throw new Error(`Possible duplicate for ${plan.title}. Review this gallery in Downloader before queueing the merge again.`);
+        }
         const id = queue.enqueue(plan.source, plan.galleryId, plan.title, 'cbz', undefined, plan.chapter.trim() ? Number(plan.chapter) : undefined, 0, job.id);
         tracked.push({ plan, id, owned: true });
         remember(key, id);

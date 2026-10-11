@@ -18,6 +18,7 @@ const SETTINGS_TABS = [
   { id: 'downloader', label: 'Downloader' },
 ] as const;
 type SettingsTab = (typeof SETTINGS_TABS)[number]['id'];
+const SETTINGS_TAB_ORDER = SETTINGS_TABS.map(tab => tab.id);
 
 function SectionHeader({ icon, title, children }: { icon: React.ReactNode; title: string; children?: React.ReactNode }) {
   return (
@@ -260,7 +261,7 @@ export function Settings() {
       <PageHeader icon={<SlidersHorizontal className="h-5 w-5" />} title="Settings" subtitle="Manage connections, downloads, notifications and your account." />
       <SegmentedTabs items={SETTINGS_TABS.map(item => ({ ...item, dirty: dirtyIds.some(id => item.id === 'general' ? ['connection', 'library-folders', 'poll', 'account'].includes(id) : item.id === 'providers' ? id === 'priorities' || id.startsWith('provider:') : id === item.id) }))} value={tab} onChange={setTab} label="Settings sections" panelId="settings-panel" className="sticky top-0 z-10 self-start bg-background" />
 
-      <TabPanel value={tab} id="settings-panel" role="tabpanel" aria-labelledby={`settings-panel-tab-${tab}`}>
+      <TabPanel value={tab} tabOrder={SETTINGS_TAB_ORDER} id="settings-panel" role="tabpanel" aria-labelledby={`settings-panel-tab-${tab}`}>
       <div hidden={tab !== 'general'} className="flex flex-col gap-4">
       <Card id="kavita-connection" className="animate-fade-up scroll-mt-16">
         <SectionHeader icon={<Server className="h-4 w-4" />} title="Kavita connection">

@@ -1,8 +1,9 @@
+import { useDuplicateReview } from './DuplicateReview';
 import * as React from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ImageOff, Merge, RotateCcw, Search } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { api, type DoujinSearchResult, type DoujinSource } from '../lib/api';
+import { api, ApiError, type DuplicateCheck, type DoujinSearchResult, type DoujinSource } from '../lib/api';
 import { chapterErrors, chapterNumber } from '../lib/chapterNumbers';
 import { useDownloads } from '../lib/DownloadsContext';
 import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner } from './ui';
@@ -30,7 +31,7 @@ interface MergeSubmission {
   sourceFiles: string[];
   chapters: Record<string, string>;
   existingChapters: Record<string, string>;
-  downloads: { source: DoujinSource; galleryId: string; title: string; chapter: string }[];
+  downloads: { source: DoujinSource; galleryId: string; title: string; chapter: string; allowDuplicate?: boolean }[];
   keys: string[];
   targetName: string;
 }
@@ -146,15 +147,28 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
   const downloadReady = !downloadEntries.length || (setup.status === 'ready' && !!setup.directory);
   const canQueue = targetReady && items.length > 0 && !resolving && !entries.some(entry => entry.lookupError) && downloadReady && !hasErrors;
 
+  const { checkDuplicates, reviewCheck, dialog: duplicateDialog } = useDuplicateReview();
   const save = useMutation({
-    mutationFn: (submission: MergeSubmission) => api.enqueue('merge-series', {
-      seriesId: submission.seriesId,
-      sourceFiles: submission.sourceFiles,
-      chapters: submission.chapters,
-      existingChapters: submission.existingChapters,
-      downloads: submission.downloads,
-    }),
+    mutationFn: async (submission: MergeSubmission) => {
+      const approved = await checkDuplicates(submission.downloads);
+      if (approved === null) return null;
+      const enqueue = (keys: Set<string>) => api.enqueue('merge-series', {
+        seriesId: submission.seriesId,
+        sourceFiles: submission.sourceFiles,
+        chapters: submission.chapters,
+        existingChapters: submission.existingChapters,
+        downloads: submission.downloads.map(plan => ({ ...plan, allowDuplicate: keys.has(`${plan.source}:${plan.galleryId}`) })),
+      });
+      try { return await enqueue(approved); }
+      catch (error) {
+        if (!(error instanceof ApiError) || error.message !== 'possible-duplicate') throw error;
+        const approval = await reviewCheck(error.details as unknown as DuplicateCheck);
+        if (approval === null) return null;
+        return enqueue(new Set([...approved, ...approval]));
+      }
+    },
     onSuccess: (_result, submission) => {
+      if (_result === null) return;
       void qc.invalidateQueries({ queryKey: ['jobs'] });
       toast({
         tone: 'success',
@@ -192,6 +206,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
   const dismiss = () => { if (!submitting.current) onClose(); };
 
   return (
+    <>
     <Dialog open onOpenChange={open => { if (!open) dismiss(); }}>
       <DialogContent className="flex max-h-[calc(100dvh-2rem)] max-w-2xl flex-col" onEscapeKeyDown={event => { if (busy) event.preventDefault(); }} onPointerDownOutside={event => { if (busy) event.preventDefault(); }}>
         <div className="flex min-h-0 flex-col gap-4 overflow-y-auto p-5">
@@ -303,5 +318,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
         </div>
       </DialogContent>
     </Dialog>
+    {duplicateDialog}
+    </>
   );
 }

@@ -1,3 +1,4 @@
+import { prepareDuplicateCheck, findDuplicateReports, recordGalleryIdentity, resolveDuplicateGallery, rememberDuplicateLibraryRoots, lookupLibraryMatches } from '../services/galleryDuplicates.js';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import fs from 'node:fs';
@@ -183,6 +184,7 @@ api.get('/kavita/libraries', async (c) => {
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
   try {
     const libs = await client.getLibraries();
+    rememberDuplicateLibraryRoots(libs);
     const rows = getDb().select().from(schema.seriesMatches).all();
     const matchedIds = new Set(rows.filter((r) => r.status === 'matched').map((r) => r.kavitaSeriesId));
     // Fetch every library's series in parallel (was a sequential per-library
@@ -731,7 +733,8 @@ api.post('/doujin/gallery', async (c) => {
   try {
     // Page URLs stay behind the authenticated, allowlisted media proxy so the
     // browser never needs provider-specific Referer headers or direct CDN access.
-    const gallery = await provider.getGallery(body.idOrUrl);
+    const gallery = await resolveDuplicateGallery(body.source as DoujinSource, body.idOrUrl);
+    recordGalleryIdentity(gallery);
     const { pages, pageFallbacks, requestHeaders: _requestHeaders, resolvePageUrl: _resolvePageUrl, ...meta } = gallery;
     return c.json({ ...rewriteDoujinCover(meta), ...rewriteDoujinPages(pages, pageFallbacks), pageCount: pages.length });
   } catch (e) {
@@ -739,11 +742,32 @@ api.post('/doujin/gallery', async (c) => {
   }
 });
 
+/** Resolve authoritative metadata and compare against ownership, active work, and local CBZ files. */
+api.post('/downloads/library-matches', async (c) => {
+  const body = await c.req.json() as { items?: unknown[] };
+  if (!Array.isArray(body.items) || !body.items.length || body.items.length > 100) return c.json({ error: 'Provide 1–100 galleries to check.' }, 400);
+  const items = [];
+  for (const raw of body.items) {
+    const item = raw as { source: DoujinSource; galleryId: string; title: string; artists: string[]; language?: string; pageCount?: number } | null;
+    if (!item || getDoujinProvider(item.source)?.id !== item.source || typeof item.galleryId !== 'string' || !item.galleryId.trim() || typeof item.title !== 'string' || !Array.isArray(item.artists) || item.artists.some(artist => typeof artist !== 'string') || (item.language !== undefined && typeof item.language !== 'string') || (item.pageCount !== undefined && (typeof item.pageCount !== 'number' || !Number.isFinite(item.pageCount) || item.pageCount < 0))) return c.json({ error: 'Invalid gallery metadata.' }, 400);
+    items.push({ source: item.source, galleryId: item.galleryId, title: item.title, artists: item.artists, language: item.language, pageCount: item.pageCount });
+  }
+  try { return c.json(await lookupLibraryMatches(items)); }
+  catch (error) { return c.json({ error: 'Could not check library matches', message: errMsg(error) }, 502); }
+});
+
+api.post('/downloads/duplicates', async (c) => {
+  const body = await c.req.json() as { items?: { source: DoujinSource; galleryId: string }[]; refreshLibrary?: boolean };
+  if (!Array.isArray(body.items) || !body.items.length || body.items.length > 100 || body.items.some(item => !item || getDoujinProvider(item.source)?.id !== item.source || typeof item.galleryId !== 'string' || !item.galleryId.trim())) return c.json({ error: 'Provide 1–100 supported galleries to check.' }, 400);
+  try { return c.json(findDuplicateReports(await prepareDuplicateCheck(body.items, body.refreshLibrary === true))); }
+  catch (error) { return c.json({ error: 'Could not check for duplicates', message: errMsg(error) }, 502); }
+});
+
 /** Enqueue a gallery download. */
 api.post('/downloads', async (c) => {
-  const body = (await c.req.json()) as { source: string; galleryId: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number; priority?: number };
+  const body = (await c.req.json()) as { source: string; galleryId: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number; priority?: number; allowDuplicate?: boolean };
   if (!body.source || !body.galleryId) return c.json({ error: 'source and galleryId are required' }, 400);
-  if (!getDoujinProvider(body.source)) return c.json({ error: `Unknown source: ${body.source}` }, 400);
+  if (getDoujinProvider(body.source)?.id !== body.source) return c.json({ error: `Unknown source: ${body.source}` }, 400);
   // Merge options: all chapters of one series land in a shared folder so Kavita
   // groups them together. mergeFolder is a plain folder name, never a path.
   const mergeFolder = body.mergeFolder?.trim() || undefined;
@@ -766,8 +790,17 @@ api.post('/downloads', async (c) => {
   if (!downloaderSettings.downloadDirectory.trim()) return c.json({ error: 'Set an output folder in Downloader settings before starting a download.' }, 400);
   // Queue priority: higher runs first; ties keep FIFO order. Defaults to 0.
   const priority = typeof body.priority === 'number' && Number.isFinite(body.priority) ? Math.trunc(body.priority) : 0;
-  const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, body.title ?? null, outputFormat, mergeFolder, chapter, priority);
-  return c.json({ id, status: 'queued' }, 202);
+  try {
+    const identities = await prepareDuplicateCheck([{ source: body.source as DoujinSource, galleryId: body.galleryId }]);
+    // Repeat same-source guards after asynchronous provider/filesystem reads.
+    if (downloadQueue.findCompleted(body.source as DoujinSource, body.galleryId)) return c.json({ error: 'already-downloaded' }, 409);
+    if (downloadQueue.findActive(body.source as DoujinSource, body.galleryId)) return c.json({ error: 'already-queued' }, 409);
+    if (getDb().select().from(schema.ownedGalleries).where(and(eq(schema.ownedGalleries.source, body.source), eq(schema.ownedGalleries.galleryId, body.galleryId))).get()) return c.json({ error: 'already-downloaded' }, 409);
+    const check = findDuplicateReports(identities);
+    if (body.allowDuplicate !== true && check.reports.some(report => report.matches.length)) return c.json({ error: 'possible-duplicate', ...check }, 409);
+    const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, identities[0].title, outputFormat, mergeFolder, chapter, priority);
+    return c.json({ id, status: 'queued' }, 202);
+  } catch (error) { return c.json({ error: 'Could not check for duplicates', message: errMsg(error) }, 502); }
 });
 
 api.get('/downloads', (c) => c.json(downloadQueue.list(100)));
@@ -1033,6 +1066,7 @@ api.get('/recommendations/libraries', async (c) => {
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
   try {
     const libs = await client.getLibraries();
+    rememberDuplicateLibraryRoots(libs);
     return c.json(libs.map((l) => ({ id: l.id, name: l.name })));
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 502);
@@ -1198,6 +1232,13 @@ api.post('/jobs', async (c) => {
   if (!isJobType(body.type)) return c.json({ error: 'Unsupported job type' }, 400);
   try { validateMergeDownloads(body.downloads); } catch (error) { return c.json({ error: errMsg(error) }, 400); }
   const payload: JobPayload = { libraryId: body.libraryId, seriesId: body.seriesId, seriesIds: body.seriesIds, path: body.path, xml: body.xml, fields: body.fields, sourceFiles: body.sourceFiles, targetDir: body.targetDir, chapters: body.chapters, existingChapters: body.existingChapters, downloads: body.downloads, providerId: body.providerId, providerSeriesId: body.providerSeriesId, selectedTitle: body.selectedTitle, excludedFields: body.excludedFields, cover: body.cover, score: body.score };
+  if (body.type === 'merge-series' && payload.downloads?.length) {
+    try {
+      const identities = await prepareDuplicateCheck(payload.downloads);
+      const check = findDuplicateReports(identities, payload.sourceFiles);
+      if (check.reports.some(report => report.matches.length && !payload.downloads!.find(plan => plan.source === report.source && plan.galleryId === report.galleryId)?.allowDuplicate)) return c.json({ error: 'possible-duplicate', ...check }, 409);
+    } catch (error) { return c.json({ error: 'Could not check for duplicates', message: errMsg(error) }, 502); }
+  }
   payload.context = await resolveJobContext(payload);
   const id = jobQueue.enqueue(body.type, payload);
   return c.json({ id }, 202);

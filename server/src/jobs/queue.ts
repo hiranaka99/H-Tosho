@@ -53,7 +53,7 @@ export interface JobPayload {
   /** merge-series: staged chapter edits for archives already in the target folder. */
   existingChapters?: Record<string, string>;
   /** merge-series: galleries to download after the user commits the merge. */
-  downloads?: { source: DoujinSource; galleryId: string; title: string; chapter: string }[];
+  downloads?: { source: DoujinSource; galleryId: string; title: string; chapter: string; allowDuplicate?: boolean }[];
   /** Internal checkpoint: reuse the same download tasks after a job retry. */
   mergeDownloadIds?: Record<string, number>;
   /** apply-series: provider of the candidate chosen in the identify dialog. */

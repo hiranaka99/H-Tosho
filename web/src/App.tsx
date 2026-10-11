@@ -114,13 +114,37 @@ export default function App() {
   const sidebarRef = React.useRef<HTMLElement>(null);
   const mainRef = React.useRef<HTMLElement>(null);
   const navToggleRef = React.useRef<HTMLButtonElement>(null);
+  const navigationRef = React.useRef<HTMLElement>(null);
+  const [navIndicator, setNavIndicator] = React.useState({ top: 0, height: 0 });
+  React.useLayoutEffect(() => {
+    const nav = navigationRef.current;
+    if (!nav) return;
+    const measure = () => {
+      const active = nav.querySelector<HTMLElement>('a[aria-current="page"]');
+      if (!active) { setNavIndicator({ top: 0, height: 0 }); return; }
+      const bounds = active.getBoundingClientRect();
+      const top = bounds.top - nav.getBoundingClientRect().top;
+      setNavIndicator(current => current.top === top && current.height === bounds.height ? current : { top, height: bounds.height });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(nav);
+    nav.querySelectorAll('a').forEach(link => observer.observe(link));
+    return () => observer.disconnect();
+  }, [location.pathname, isDesktop]);
   React.useEffect(() => setNavOpen(false), [location.pathname, location.search, isDesktop]);
   React.useLayoutEffect(() => {
     if (sidebarRef.current) sidebarRef.current.inert = !isDesktop && !navOpen;
     if (mainRef.current) mainRef.current.inert = !isDesktop && navOpen;
     if (!navOpen || isDesktop) return;
-    sidebarRef.current?.querySelector<HTMLElement>('a[aria-current="page"], nav a')?.focus();
+    // Focus after the drawer's visible styles have committed, including the
+    // reduced-motion fade. Focusing a still-hidden link can silently fail.
+    const focusFrame = requestAnimationFrame(() => {
+      const nav = sidebarRef.current;
+      (nav?.querySelector<HTMLElement>('a[aria-current="page"]') ?? nav?.querySelector<HTMLElement>('nav a'))?.focus();
+    });
     return () => {
+      cancelAnimationFrame(focusFrame);
       // Restore focus after the header has committed its accessible state.
       requestAnimationFrame(() => {
         const trigger = navToggleRef.current;
@@ -151,7 +175,12 @@ export default function App() {
         </Button>
       </header>
       <div aria-hidden="true" data-state={navOpen ? 'open' : 'closed'} className="app-nav-scrim fixed inset-x-0 bottom-0 top-14 z-30 bg-black/40 lg:hidden" onClick={() => setNavOpen(false)} />
-      <aside ref={sidebarRef} id="app-navigation" role={!isDesktop && navOpen ? 'dialog' : undefined} aria-modal={!isDesktop && navOpen ? true : undefined} aria-label="Navigation" onKeyDown={onNavKeyDown} className={cn(
+      <aside ref={sidebarRef} id="app-navigation" role={!isDesktop && navOpen ? 'dialog' : undefined} aria-modal={!isDesktop && navOpen ? true : undefined} aria-label="Navigation" onKeyDown={onNavKeyDown} onTransitionEnd={event => {
+        // A visibility transition interrupted by a media preference change can
+        // postpone focus. Recover once the drawer itself finishes opening.
+        if (event.target !== event.currentTarget || !navOpen || isDesktop || event.currentTarget.contains(document.activeElement)) return;
+        event.currentTarget.querySelector<HTMLElement>('a[aria-current="page"]')?.focus();
+      }} className={cn(
         'app-nav-drawer fixed bottom-0 left-0 top-14 z-40 flex w-[min(16rem,calc(100vw-2rem))] shrink-0 flex-col border-r border-border bg-sidebar pb-[env(safe-area-inset-bottom)] lg:static lg:inset-auto lg:w-60 lg:pb-0',
         navOpen && 'app-nav-open',
       )}>
@@ -161,19 +190,20 @@ export default function App() {
         <div className="hidden h-14 items-center border-b border-border px-4 lg:flex">
           <Brand />
         </div>
-        <nav aria-label="Primary navigation" className="flex flex-1 flex-col gap-1 p-3">
+        <nav ref={navigationRef} aria-label="Primary navigation" className="relative isolate flex flex-1 flex-col gap-1 p-3">
+          <span aria-hidden="true" className="app-nav-indicator pointer-events-none absolute inset-x-3 top-0 rounded-lg bg-primary/10" style={{ height: navIndicator.height, transform: `translateY(${navIndicator.top}px)`, opacity: navIndicator.height ? 1 : 0 }} />
           {NAV.map((item) => (
-            <div key={item.to} className="relative">
+            <div key={item.to} className="relative z-10">
               <NavLink
                 to={item.to}
                 className={({ isActive }) => cn(
-                  'ui-choice group flex h-9 items-center gap-2.5 rounded-lg px-3 pr-11 text-sm transition-colors duration-150',
-                  isActive ? 'bg-primary/10 font-medium text-primary' : 'text-muted hover:bg-surface-2/70 hover:text-foreground',
+                  'app-nav-link ui-choice group flex h-9 items-center gap-2.5 rounded-lg px-3 pr-11 text-sm transition-colors duration-150',
+                  isActive ? 'font-medium text-primary' : 'text-muted hover:bg-surface-2/70 hover:text-foreground',
                 )}
               >
                 {({ isActive }) => (
                   <>
-                    <item.icon className={cn('h-4 w-4 shrink-0 transition-colors duration-150', isActive ? 'text-primary' : 'text-muted group-hover:text-foreground')} />
+                    <item.icon className={cn('app-nav-icon h-4 w-4 shrink-0', isActive ? 'text-primary' : 'text-muted group-hover:text-foreground')} />
                     <span className="min-w-0 flex-1 truncate">{item.label}</span>
                   </>
                 )}

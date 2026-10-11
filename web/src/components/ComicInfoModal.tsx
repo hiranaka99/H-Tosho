@@ -1,53 +1,20 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FileText, FolderOpen, FileArchive, ArrowUp, Save, Code2, PencilLine, HardDrive } from 'lucide-react';
+import { FileText, FolderOpen, FileArchive, ArrowUp, Save, HardDrive } from 'lucide-react';
 import { api } from '../lib/api';
 import { cn } from '../lib/utils';
 import { toast } from '../lib/toast';
-import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, EmptyState, SegmentedControl } from './ui';
+import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, EmptyState, Disclosure } from './ui';
+import { changedComicInfoFields, comicInfoHasChanges, createComicInfoDraft, editComicInfoField, type ComicInfoDraft } from '../lib/comicInfoDraft';
 
-/** Fields offered in the form editor, mirroring the server's COMICINFO_EDITOR_FIELDS. */
-const EDITOR_FIELDS = [
-  'Title',
-  'Series',
-  'Number',
-  'Volume',
-  'Artist',
-  'Writer',
-  'Publisher',
-  'Summary',
-  'Tags',
-  'Language',
-  'Year',
-  'Web',
-] as const;
-
-const EMPTY_DOC = `<?xml version="1.0" encoding="UTF-8"?>
-<ComicInfo xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-</ComicInfo>
-`;
-/** Per-file editor state so switching files never loses pending changes. */
-interface Draft {
-  values: Record<string, string>;
-  order: string[];
-  rawText: string;
-  mode: 'form' | 'raw';
-  /** Field values as loaded from the file (baseline for change detection). */
-  orig: Record<string, string>;
-  origRaw: string;
-}
-
-const emptyValues = (): Record<string, string> => Object.fromEntries(EDITOR_FIELDS.map((f) => [f, '']));
-
-/** Field keys whose value differs from the file's loaded baseline. */
-function changedFieldKeys(d: Draft): string[] {
-  return Object.keys(d.values).filter((k) => (d.values[k] ?? '') !== (d.orig[k] ?? ''));
-}
-
-function draftHasChanges(d: Draft): boolean {
-  if (d.mode === 'raw') return d.rawText.trim() !== '' && d.rawText !== d.origRaw;
-  return changedFieldKeys(d).length > 0;
-}
+const FIELD_GROUPS = [
+  { title: 'Chapter identity', fields: ['Title', 'Series', 'Number', 'Volume'] },
+  { title: 'Credits', fields: ['Artist', 'Writer', 'Publisher'] },
+  { title: 'Description and tags', fields: ['Summary', 'Tags'] },
+  { title: 'Additional metadata', fields: ['Language', 'LanguageISO', 'Year', 'Web'] },
+];
+const FIELD_LABELS: Record<string, string> = { Number: 'Chapter number', Web: 'Source URL', Language: 'Language name', LanguageISO: 'Language code' };
+const EDITOR_FIELDS = FIELD_GROUPS.flatMap(group => group.fields);
 
 /** Join a directory + child using the separator the server's paths actually use. */
 const joinPath = (dir: string, name: string): string => `${dir}${dir.includes('\\') ? '\\' : '/'}${name}`;
@@ -57,27 +24,24 @@ interface ComicInfoModalProps {
   initialPath?: string;
   /** Kavita series to list archives for (entry point from the Libraries page). */
   seriesId?: number;
-  /** Present in dialog mode — hides the Cancel button on the standalone page. */
   onClose?: () => void;
+  onStateChange?: (state: { dirty: boolean; pending: boolean; file: string | null }) => void;
 }
 
-export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoModalProps) {
+export function ComicInfoEditor({ initialPath, seriesId, onClose, onStateChange }: ComicInfoModalProps) {
   const qc = useQueryClient();
   const [pathInput, setPathInput] = React.useState(initialPath ?? '');
   const [browseOpen, setBrowseOpen] = React.useState(!initialPath && seriesId === undefined);
   const [file, setFile] = React.useState<string | null>(initialPath ?? null);
   const [dir, setDir] = React.useState<string | null>(null);
-  const [drafts, setDrafts] = React.useState<Record<string, Draft>>({});
+  const [drafts, setDrafts] = React.useState<Record<string, ComicInfoDraft>>({});
+  const [pickerOpen, setPickerOpen] = React.useState(!initialPath);
+  const [queuedFiles, setQueuedFiles] = React.useState<Record<string, number>>({});
   const draft = file ? drafts[file] : undefined;
-  const mode = draft?.mode ?? 'form';
   const values = draft?.values ?? {};
-  const order = draft?.order ?? [];
-  const rawText = draft?.rawText ?? EMPTY_DOC;
-
-  /** Patch the current file's draft (no-op until its document has loaded). */
-  const patchDraft = (patch: Partial<Draft>) => {
+  const patchDraft = (update: (current: ComicInfoDraft) => ComicInfoDraft) => {
     if (!file) return;
-    setDrafts((prev) => (prev[file] ? { ...prev, [file]: { ...prev[file], ...patch } } : prev));
+    setDrafts(previous => previous[file] ? { ...previous, [file]: update(previous[file]) } : previous);
   };
 
   const roots = useQuery({ queryKey: ['cbz-roots'], queryFn: () => api.cbzRoots(), enabled: browseOpen });
@@ -118,20 +82,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
   // draft is kept so pending edits survive refetches and file switches.
   React.useEffect(() => {
     if (!doc.data || !file) return;
-    setDrafts((prev) => {
-      if (prev[file]) return prev;
-      return {
-        ...prev,
-        [file]: {
-          values: { ...emptyValues(), ...doc.data.fields },
-          order: doc.data.order,
-          rawText: doc.data.raw ?? EMPTY_DOC,
-          mode: 'form',
-          orig: { ...doc.data.fields },
-          origRaw: doc.data.raw ?? EMPTY_DOC,
-        },
-      };
-    });
+    setDrafts(previous => previous[file] ? previous : { ...previous, [file]: createComicInfoDraft(doc.data.raw) });
   }, [doc.data, file]);
 
   const openFile = (p: string) => {
@@ -140,40 +91,54 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
     setPathInput(trimmed);
     setFile(trimmed);
     setBrowseOpen(false);
+    setPickerOpen(false);
   };
 
-  /** Only fields that actually changed are sent — the server merges them over the file's current entry. */
-  const changedFields = React.useMemo(() => (draft && draft.mode === 'form' ? changedFieldKeys(draft) : []), [draft]);
-
+  const changedFields = React.useMemo(() => draft ? changedComicInfoFields(draft) : [], [draft]);
   const save = useMutation({
-    mutationFn: () =>
-      mode === 'raw'
-        ? api.enqueue('edit-comicinfo', { path: file!, xml: rawText, ...(seriesId !== undefined ? { seriesId } : {}) })
-        : api.enqueue('edit-comicinfo', { path: file!, fields: Object.fromEntries(changedFields.map((k) => [k, values[k]])), ...(seriesId !== undefined ? { seriesId } : {}) }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['jobs'] });
-      const savedPath = file!;
-      // Advance the draft's baseline so its pending indicator clears while the
-      // just-saved values stay displayed. The modal stays open so other files
-      // in the series can be edited next.
-      setDrafts((prev) => (prev[savedPath] ? { ...prev, [savedPath]: { ...prev[savedPath], orig: { ...prev[savedPath].values }, origRaw: prev[savedPath].rawText } } : prev));
-      toast({ tone: 'success', title: 'ComicInfo save queued', description: `${savedPath.split(/[\\/]/).pop()} — check the Jobs page` });
+    mutationFn: ({ path, snapshot }: { path: string; snapshot: ComicInfoDraft }) => api.enqueue('edit-comicinfo', {
+      path,
+      ...(snapshot.rawEdited ? { xml: snapshot.xml } : { fields: Object.fromEntries(changedComicInfoFields(snapshot).map(key => [key, snapshot.values[key] ?? ''])) }),
+      ...(seriesId !== undefined ? { seriesId } : {}),
+    }),
+    onSuccess: (result, { path, snapshot }) => {
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
+      setQueuedFiles(previous => ({ ...previous, [path]: result.id }));
+      setDrafts(previous => previous[path] ? { ...previous, [path]: { ...previous[path], originalXml: snapshot.xml, originalValues: { ...snapshot.values } } } : previous);
+      toast({ tone: 'success', title: 'ComicInfo save queued', description: `${path.split(/[\\/]/).pop()} — check the Jobs page` });
     },
-    onError: (e) => toast({ tone: 'danger', title: 'Could not queue save', description: e instanceof Error ? e.message : String(e) }),
+    onError: error => toast({ tone: 'danger', title: 'Could not queue save', description: error instanceof Error ? error.message : String(error) }),
   });
-
-  const canSave = !!file && !!draft && !doc.isLoading && draftHasChanges(draft);
-
-  // Extra tags present in the file but not in the standard editor set.
-  const extraTags = order.filter((t) => !(EDITOR_FIELDS as readonly string[]).includes(t));
+  const dirty = Object.values(drafts).some(comicInfoHasChanges);
+  React.useEffect(() => { onStateChange?.({ dirty, pending: save.isPending, file }); }, [dirty, save.isPending, file, onStateChange]);
+  React.useEffect(() => {
+    if (!dirty && !save.isPending) return;
+    const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, [dirty, save.isPending]);
+  const canSave = !!file && !!draft && !doc.isLoading && !draft.error && comicInfoHasChanges(draft);
+  const extraTags = draft?.scalarFields.filter(tag => !EDITOR_FIELDS.includes(tag)) ?? [];
 
   const fieldId = (field: string): string => `comicinfo-${field.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+  const renderField = (field: string) => {
+    const id = fieldId(field);
+    const changed = changedFields.includes(field);
+    return <div key={field} className={cn('flex min-w-0 flex-col gap-1.5', field === 'Summary' && 'sm:col-span-2')}>
+      <Label htmlFor={id} className="flex flex-wrap items-center justify-between gap-2">{FIELD_LABELS[field] ?? field}{changed && <span className="text-xs font-normal text-warning">Changed</span>}</Label>
+      {field === 'Summary' ? <textarea id={id} value={values[field] ?? ''} onChange={event => patchDraft(current => editComicInfoField(current, field, event.target.value))} rows={4} className={cn('w-full rounded-lg border bg-surface-2 px-3 py-2 text-base lg:text-sm', changed ? 'border-warning/60' : 'border-border-2')} />
+        : <Input id={id} value={values[field] ?? ''} onChange={event => patchDraft(current => editComicInfoField(current, field, event.target.value))} className={changed ? 'border-warning/60 bg-warning/10' : undefined} />}
+    </div>;
+  };
 
   return (
-    <div className="flex flex-col gap-4">
-
-          {/* File picker */}
-          <div className="flex flex-col gap-2 rounded-lg border border-border-2 bg-surface-2 p-3">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
+        <div className="min-w-0"><p className="break-words text-sm font-semibold">{file ? file.split(/[\\/]/).pop() : 'Choose an archive'}</p></div>
+        <Button size="sm" variant="outline" aria-expanded={pickerOpen} onClick={() => setPickerOpen(open => !open)}>Change archive</Button>
+      </div>
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5" data-comicinfo-scroll>
+          {pickerOpen && <div className="flex flex-col gap-3 border-b border-border pb-4">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <Input
                 aria-label="CBZ file path"
@@ -181,7 +146,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                 onChange={(e) => setPathInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') openFile(pathInput); }}
                 placeholder="Absolute path to a .cbz file…"
-                className="flex-1 font-mono text-xs"
+                className="flex-1 font-mono text-base lg:text-xs"
               />
               <div className="flex gap-2">
                 <Button size="sm" variant="secondary" onClick={() => openFile(pathInput)} disabled={!pathInput.trim()} className="flex-1 sm:flex-none">Load</Button>
@@ -205,7 +170,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                     <div className="flex max-h-56 flex-col gap-1 overflow-y-auto pr-1">
                       {sortedFiles.map((f) => {
                         const num = seriesFiles.data?.chapterNumbers[f];
-                        const pending = drafts[f] ? draftHasChanges(drafts[f]) : false;
+                        const pending = drafts[f] ? comicInfoHasChanges(drafts[f]) : false;
                         return (
                           <button key={f} type="button" onClick={() => openFile(f)} aria-label={`Open ${f}`}
                             className={cn(
@@ -293,7 +258,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
                 )}
               </div>
             )}
-          </div>
+          </div>}
 
           {/* Document editor */}
           {doc.isLoading && file && (
@@ -306,55 +271,18 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
           )}
           {doc.data && (
             <>
-              {!doc.data.hasEntry && mode === 'form' && (
+              {!doc.data.hasEntry && (
                 <p className="text-xs text-muted">This archive has no ComicInfo.xml yet — saving will create one.</p>
               )}
-              <SegmentedControl items={[
-                { id: 'form' as const, label: 'Fields', icon: <PencilLine className="h-4 w-4 shrink-0" /> },
-                { id: 'raw' as const, label: 'Raw XML', icon: <Code2 className="h-4 w-4 shrink-0" /> },
-              ]} value={mode} onChange={(mode) => patchDraft({ mode })} label="ComicInfo editor mode" className="self-start" />
-
-              {mode === 'form' ? (
-                <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-                  {EDITOR_FIELDS.map((f) => {
-                    const id = fieldId(f);
-                    const isChanged = draft ? (values[f] ?? '') !== (draft.orig[f] ?? '') : false;
-                    return (
-                      <div key={f} className={cn('flex flex-col gap-1', f === 'Summary' && 'sm:col-span-2')}>
-                        <Label htmlFor={id} className={isChanged ? 'text-warning' : undefined}>{f}</Label>
-                        {f === 'Summary' ? (
-                          <textarea
-                            id={id}
-                            value={values[f] ?? ''}
-                            onChange={(e) => patchDraft({ values: { ...values, [f]: e.target.value } })}
-                            rows={4}
-                            className={cn('w-full rounded-md border bg-surface-2 px-3 py-2 text-sm transition-colors', isChanged ? 'border-warning/60' : 'border-border-2')}
-                          />
-                        ) : (
-                          <Input id={id} value={values[f] ?? ''} onChange={(e) => patchDraft({ values: { ...values, [f]: e.target.value } })} className={isChanged ? 'border-warning/60 bg-warning/10' : undefined} />
-                        )}
-                      </div>
-                    );
-                  })}
-                  {extraTags.map((t) => {
-                    const isChanged = draft ? (values[t] ?? '') !== (draft.orig[t] ?? '') : false;
-                    return (
-                      <div key={t} className="flex flex-col gap-1">
-                        <Label htmlFor={fieldId(t)} className={isChanged ? 'text-warning' : undefined}>{t}</Label>
-                        <Input id={fieldId(t)} value={values[t] ?? ''} onChange={(e) => patchDraft({ values: { ...values, [t]: e.target.value } })} className={isChanged ? 'border-warning/60 bg-warning/10' : undefined} />
-                      </div>
-                    );
-                  })}
+              {draft?.error && <p role="alert" id="comicinfo-xml-error" className="text-sm text-danger">{draft.error}</p>}
+                <div className="space-y-6">
+                  {FIELD_GROUPS.map(group => <fieldset key={group.title} className="min-w-0 space-y-3">
+                    <legend className="mb-3 text-sm font-semibold">{group.title}</legend>
+                    <div className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">{group.fields.map(renderField)}</div>
+                  </fieldset>)}
+                  {extraTags.length > 0 && <Disclosure label="Other metadata fields"><div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">{extraTags.map(renderField)}</div></Disclosure>}
                 </div>
-              ) : (
-                <textarea
-                  value={rawText}
-                  onChange={(e) => patchDraft({ rawText: e.target.value })}
-                  rows={14}
-                  spellCheck={false}
-                  className={cn('w-full rounded-md border bg-surface-2 px-3 py-2 font-mono text-xs leading-relaxed transition-colors', draft && rawText !== draft.origRaw ? 'border-warning/60' : 'border-border-2')}
-                />
-              )}
+
             </>
           )}
 
@@ -362,38 +290,52 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose }: ComicInfoMod
             <EmptyState icon={<FileText className="h-8 w-8" />} title="No file selected" description="Type a path or browse to pick a .cbz archive." />
           )}
 
-          {/* Footer */}
-          <div className="flex flex-col gap-3 border-t border-border pt-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="min-w-0 text-sm text-muted">
-              {mode === 'raw' ? 'Raw XML is written to the archive verbatim.' : `${changedFields.length} changed field${changedFields.length === 1 ? '' : 's'} will be merged into the file's ComicInfo.xml.`}
-            </p>
-            <div className="flex shrink-0 justify-end gap-2">
-              {onClose && <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>}
-              <Button size="sm" onClick={() => save.mutate()} disabled={!canSave || save.isPending}>
-                {save.isPending ? <Spinner /> : <Save className="h-3.5 w-3.5" />} Save
-              </Button>
-            </div>
-          </div>
+      </div>
+      <div className="flex shrink-0 flex-col gap-3 border-t border-border bg-surface px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+        <div className="min-w-0 text-xs text-muted" role="status">
+          <p>{draft?.error ? 'Cannot save unreadable metadata.' : draft && comicInfoHasChanges(draft) ? `${changedFields.length} changed field${changedFields.length === 1 ? '' : 's'}` : 'No unsaved changes in this archive.'}</p>
+          {file && queuedFiles[file] && <p className="mt-1">Save queued as job #{queuedFiles[file]}. <a href="/jobs" target="_blank" rel="noreferrer" className="text-primary underline underline-offset-4">Check write progress</a></p>}
+        </div>
+        <div className="flex shrink-0 justify-end gap-2">
+          {onClose && <Button variant="outline" size="sm" onClick={onClose}>Close</Button>}
+          <Button size="sm" onClick={() => { if (file && draft) save.mutate({ path: file, snapshot: draft }); }} disabled={!canSave || save.isPending}>
+            {save.isPending ? <Spinner /> : <Save className="h-3.5 w-3.5" />} {save.isPending ? 'Queueing…' : 'Queue save'}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
 
 /** Dialog wrapper around the editor (used from the Downloader and Libraries pages). */
 export function ComicInfoModal({ initialPath, seriesId, onClose }: ComicInfoModalProps) {
-  return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose?.(); }}>
-      <DialogContent className="max-w-2xl">
-        <div className="flex max-h-[85vh] flex-col gap-4 overflow-y-auto p-5">
-          <div className="flex items-start gap-2 pr-10">
-            <FileText className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-            <div>
-              <DialogTitle>Edit ComicInfo</DialogTitle>
-              <DialogDescription>Edit metadata stored inside the selected CBZ archive.</DialogDescription>
-            </div>
+  const [state, setState] = React.useState({ dirty: false, pending: false, file: initialPath ?? null as string | null });
+  const [confirmDiscard, setConfirmDiscard] = React.useState(false);
+  const requestClose = () => {
+    if (state.pending) return;
+    if (state.dirty) setConfirmDiscard(true);
+    else onClose?.();
+  };
+  return <>
+    <Dialog open onOpenChange={open => { if (!open) requestClose(); }}>
+      <DialogContent className="flex h-[min(58rem,calc(100dvh-1.5rem))] max-w-2xl flex-col" onEscapeKeyDown={event => { if (state.pending) event.preventDefault(); }} onPointerDownOutside={event => { if (state.pending) event.preventDefault(); }}>
+        <div className="flex shrink-0 items-start gap-2 border-b border-border p-4 pr-14 sm:p-5 sm:pr-14">
+          <FileText className="mt-0.5 h-5 w-5 shrink-0 text-primary" aria-hidden="true" />
+          <div><DialogTitle>Edit ComicInfo</DialogTitle><DialogDescription className="sr-only">Edit ComicInfo metadata.</DialogDescription></div>
+        </div>
+        <ComicInfoEditor initialPath={initialPath} seriesId={seriesId} onClose={requestClose} onStateChange={setState} />
+      </DialogContent>
+    </Dialog>
+    <Dialog open={confirmDiscard} onOpenChange={setConfirmDiscard}>
+      <DialogContent className="max-w-md">
+        <div className="space-y-4 p-5 pr-14">
+          <div><DialogTitle>Discard unsaved changes?</DialogTitle><DialogDescription className="mt-2">Unsaved drafts in all opened archives will be discarded. Saves already queued in Jobs are not cancelled.</DialogDescription></div>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="outline" onClick={() => setConfirmDiscard(false)}>Keep editing</Button>
+            <Button variant="danger" onClick={() => { setConfirmDiscard(false); onClose?.(); }}>Discard changes</Button>
           </div>
-          <ComicInfoEditor initialPath={initialPath} seriesId={seriesId} onClose={onClose} />
         </div>
       </DialogContent>
     </Dialog>
-  );
+  </>;
 }

@@ -1,5 +1,79 @@
 # Changelog
 
+## v2.10.0
+
+### Cross-source duplicate detection
+
+- Show library matches on Search, Recommended, and Watched cards before download.
+  Recognize merged chapters by their original titles, ComicInfo source links,
+  and preserved gallery IDs in filenames, independently of the renamed series
+  or cleared queue history. Exact matches show In library; metadata matches
+  offer Review duplicate.
+- Review matching Hitomi/nHentai galleries against owned or active downloads and
+  local CBZ metadata before single downloads or either merge workflow starts.
+- Compare normalized titles and alternate titles with shared artists; distinguish
+  known language and page-count differences. Show matching sources, file paths,
+  and evidence, with Cancel and a per-gallery Download anyway choice.
+- Persist detection metadata independently of download history, reuse fresh
+  provider metadata, cache archive reads, and report incomplete local coverage.
+  Learn library roots through normal browsing without requiring live Kavita
+  requests while downloading.
+- Enforce duplicate review at download enqueue and merge execution, including
+  concurrent requests, while preserving merge drafts and cancellation ownership.
+
+
+### ComicInfo editor
+
+- Edit ComicInfo through grouped metadata fields; remove the Raw XML view and
+  mode switch while preserving nested metadata and attributes.
+- Confirm before discarding unsaved drafts across opened archives; warn before
+  leaving the browser page with unsaved edits or an in-flight save request.
+- Keep the archive name and Queue save action visible while scrolling. Group
+  fields by task, distinguish language name from language code, and show changed
+  fields with text as well as color.
+- Remove panel subtitles and explanatory field copy; retain labels, save status,
+  errors, and discard warnings.
+- Increase the editor's height on larger screens while keeping viewport-safe
+  margins on phones and shorter displays.
+- Distinguish queued saves from completed archive writes with a persistent job
+  reference. Preserve edits made while a save request is in flight.
+
+### Libraries motion
+
+- Keep visible series spatially connected through sorting, filtering, and merge
+  selection changes. Reveal additions to the selected-series shortlist and draw
+  the selection check without adding per-card page-load delays.
+- Cancel interrupted transitions, stop motion in hidden tabs, and respect reduced
+  motion preferences. Keep cover hover movement limited to precise pointers.
+
+### Downloader motion
+
+- Animate gallery-result and merge-shortlist changes with bounded continuity
+  transitions. Reuse the queue motion lifecycle and remove per-card load delays.
+- Keep hidden shortlist copies out of animations, cancel interrupted movement,
+  honor reduced motion, and reserve cover hover movement for precise pointers.
+
+
+### Browsing and previews
+
+- Streamline Search, Recommended, Watched, Downloads, and Libraries with more
+  consistent actions, selection controls, responsive layouts, and concise copy.
+- Share the page-preview viewer between downloaded series and gallery previews.
+  Add image loading and retry states, preserve keyboard navigation, and prefetch
+  adjacent pages after the current image loads while respecting data-saving
+  connections.
+- Cache library filtering and sorting, use indexed queue lookups, and reduce
+  unnecessary card updates during download polling.
+- Animate sidebar navigation and settings tabs, respecting reduced motion and
+  keeping mobile navigation focus accessible.
+
+### Upgrading
+
+Update and rebuild with your existing data volume and library mounts. For Docker,
+run `docker compose up -d --build`. Existing settings, metadata, and download
+history remain. Open Libraries once to refresh known library folders; local
+archive metadata is indexed when checking gallery ownership and duplicates.
+
 ## v2.9.0
 
 ### Downloader and selection

@@ -12,12 +12,9 @@ import { PageCountPill } from '../components/PageCountPill';
 import { buildTagSearchFragment, cn, jobLabel } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { useMediaQuery } from '../lib/useMediaQuery';
-/** Matches below this score are surfaced for review (mirrors the server's threshold). */
-const LOW_CONFIDENCE = 0.8;
-function needsReview(row: SeriesRow): boolean {
-  return row.status === 'matched' && !row.confirmed && typeof row.matchScore === 'number' && row.matchScore < LOW_CONFIDENCE;
-}
+import { filterLibraryRows, needsReview, prepareLibraryRows } from '../lib/libraryShelf';
 const SERIES_PAGE_SIZE = 40;
+const EMPTY_SERIES: SeriesRow[] = [];
 
 const LIBRARY_STATE_KEY = 'h-tosho:library-state';
 
@@ -159,6 +156,50 @@ function CardActionMenu({ row, onEdit, onUnmatch, onDelete }: { row: SeriesRow; 
   );
 }
 
+/** Follow visible books through shelf changes; never measure on idle job polls. */
+function useLibraryMotion(state: string) {
+  const ref = React.useRef<HTMLDivElement>(null);
+  const previous = React.useRef<Map<string, { x: number; y: number }> | null>(null);
+  React.useLayoutEffect(() => {
+    const container = ref.current;
+    if (!container) return;
+    const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const origin = container.getBoundingClientRect();
+    const positions = new Map<string, { x: number; y: number }>();
+    const animations: Animation[] = [];
+    container.querySelectorAll<HTMLElement>('[data-library-motion-id]').forEach(element => {
+      const bounds = element.getBoundingClientRect();
+      const position = { x: bounds.left - origin.left, y: bounds.top - origin.top };
+      const id = element.dataset.libraryMotionId!;
+      positions.set(id, position);
+      if (!previous.current || preference.matches || document.hidden || bounds.bottom < 0 || bounds.top > window.innerHeight || typeof element.animate !== 'function') return;
+      const old = previous.current.get(id);
+      const dx = old ? old.x - position.x : 0;
+      const dy = old ? old.y - position.y : 0;
+      if (old && Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      const nearby = old && Math.abs(dx) < bounds.width * 2 && Math.abs(dy) < bounds.height * 2;
+      animations.push(element.animate(
+        nearby ? [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }]
+          : id.startsWith('selection:') ? [{ opacity: 0.4, clipPath: 'inset(0 100% 0 0)' }, { opacity: 1, clipPath: 'inset(0 0 0 0)' }]
+            : [{ opacity: 0.65 }, { opacity: 1 }],
+        { duration: nearby ? 260 : 180, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' },
+      ));
+    });
+    previous.current = positions;
+    const cancel = () => animations.forEach(animation => animation.cancel());
+    const onPreferenceChange = () => { if (preference.matches) cancel(); };
+    const onVisibilityChange = () => { if (document.hidden) cancel(); };
+    preference.addEventListener('change', onPreferenceChange);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      cancel();
+      preference.removeEventListener('change', onPreferenceChange);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [state]);
+  return ref;
+}
+
 export function Libraries({ review = false }: { review?: boolean }) {
   const { libraryId } = useParams();
   const [searchParams] = useSearchParams();
@@ -276,28 +317,14 @@ export function Libraries({ review = false }: { review?: boolean }) {
     }
   }, [libs.data, selected, navigate, review, linkedSeriesId, searchParams]);
 
-  const rows = series.data ?? [];
-
-  const filtered = React.useMemo(() => {
-    const q = query.toLowerCase();
-    const list = rows.filter((r) => {
-      const okStatus =
-        review || statusFilter === 'all' ? true :
-        statusFilter === 'low-score' ? needsReview(r) :
-        r.status === statusFilter;
-      const okQuery = query ? r.name.toLowerCase().includes(q) || (r.artists ?? []).some((a) => a.toLowerCase().includes(q)) : true;
-      return okStatus && okQuery;
-    });
-    // Explicit ordering: Kavita's own order is not stable across versions, and
-    // the date-added view needs newest-first with unknown dates last.
-    list.sort(sortBy === 'date-added'
-      ? (a, b) => (Date.parse(b.dateAdded ?? '') || 0) - (Date.parse(a.dateAdded ?? '') || 0) || a.name.localeCompare(b.name)
-      : (a, b) => a.name.localeCompare(b.name));
-    return list;
-  }, [rows, statusFilter, query, review, sortBy]);
+  const rows = series.data ?? EMPTY_SERIES;
+  const shelf = React.useMemo(() => prepareLibraryRows(rows, sortBy), [rows, sortBy]);
+  const filtered = React.useMemo(() => filterLibraryRows(shelf, query, statusFilter, review), [shelf, statusFilter, query, review]);
+  const selectedRows = React.useMemo(() => rows.filter(row => checked.has(row.id)), [rows, checked]);
   const pageCount = React.useMemo(() => Math.max(1, Math.ceil(filtered.length / SERIES_PAGE_SIZE)), [filtered.length]);
   const currentPage = Math.min(page, pageCount);
   const visibleRows = filtered.slice((currentPage - 1) * SERIES_PAGE_SIZE, currentPage * SERIES_PAGE_SIZE);
+  const motionRef = useLibraryMotion(`${review}:${selected}:${currentPage}:${visibleRows.map(row => row.id).join(',')}:${selectMode}:${[...checked].join(',')}`);
   React.useEffect(() => {
     if (!review) writeLibraryState({ query, statusFilter, sortBy });
   }, [query, statusFilter, sortBy, review]);
@@ -338,18 +365,17 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const queueLibraryJob = (type: 'scan-new' | 'match-unmatched') => {
     if (selected !== null && !enqueue.isPending) enqueue.mutate({ type, libraryId: selected });
   };
-  const libraryJobs = (jobs ?? []).filter((job) =>
-    job.payload.libraryId === selected || rows.some((row) => row.id === job.payload.seriesId),
-  );
+  const libraryJobs = React.useMemo(() => (jobs ?? []).filter((job) =>
+    job.payload.libraryId === selected || shelf.ids.has(job.payload.seriesId as number),
+  ), [jobs, selected, shelf]);
   const runningLibraryJobs = libraryJobs.filter((job) => job.status === 'queued' || job.status === 'running');
   const lastJob = lastQueuedJob?.libraryId === selected ? (jobs ?? []).find((job) => job.id === lastQueuedJob.id) : undefined;
   const libraryActivity: Pick<Job, 'id' | 'type' | 'payload' | 'status' | 'progressCurrent' | 'progressTotal'> | null = runningLibraryJobs[0] ?? lastJob ?? (lastQueuedJob?.libraryId === selected ? { ...lastQueuedJob, payload: { libraryId: selected }, status: 'queued', progressCurrent: 0, progressTotal: 0 } : null);
-  const setAutoMatch = (c: boolean) => {
-    if (selected === null) return;
-    void api.saveLibraryOverride(selected, { autoMatch: c })
-      .then(() => qc.invalidateQueries({ queryKey: ['library-override', selected] }))
-      .catch((error) => toast({ tone: 'danger', title: 'Could not update auto-match', description: error instanceof Error ? error.message : String(error) }));
-  };
+  const saveAutoMatch = useMutation({
+    mutationFn: ({ libraryId, autoMatch }: { libraryId: number; autoMatch: boolean }) => api.saveLibraryOverride(libraryId, { autoMatch }),
+    onSuccess: (_result, variables) => qc.invalidateQueries({ queryKey: ['library-override', variables.libraryId] }),
+    onError: (error) => toast({ tone: 'danger', title: 'Could not update auto-match', description: error instanceof Error ? error.message : String(error) }),
+  });
 
   const unmatch = useMutation({
     mutationFn: (row: SeriesRow) => api.unmatch(row.id),
@@ -383,8 +409,6 @@ export function Libraries({ review = false }: { review?: boolean }) {
     onError: (e) => toast({ tone: 'danger', title: 'Could not queue the deletion', description: e instanceof Error ? e.message : String(e) }),
   });
 
-  const matchedInLib = rows.filter((r) => r.status === 'matched').length;
-
   if (needsConnection) {
     return <div className="flex flex-col gap-4">
       <PageHeader icon={<BookOpen className="h-5 w-5" />} title="Libraries" subtitle="Review matches and manage Kavita metadata." />
@@ -396,7 +420,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-4">
+    <div ref={motionRef} className="flex min-w-0 flex-col gap-4">
       <PageHeader icon={<BookOpen className="h-5 w-5" />} title={review ? 'Needs review' : 'Libraries'} subtitle={review ? 'Review uncertain matches across all your libraries.' : 'Review matches and manage Kavita metadata.'} />
       {linkedSeriesId && linkedSeries.isPending && <p role="status" className="text-sm text-muted">Opening series…</p>}
       {linkedSeries.isError && <ErrorState title="Could not open series" description={linkedSeries.error.message} onRetry={() => void linkedSeries.refetch()} />}
@@ -406,7 +430,14 @@ export function Libraries({ review = false }: { review?: boolean }) {
             {libs.isError ? (
               <ErrorState title="Could not load libraries" description={libs.error instanceof Error ? libs.error.message : String(libs.error)} onRetry={() => void libs.refetch()} />
             ) : libs.data && libs.data.length > 0 ? (
-              review ? <Button asChild variant="ghost"><Link to="/libraries">Back to libraries</Link></Button> : <SegmentedControl items={libs.data.map((lib) => ({ id: lib.id, label: lib.name }))} value={selected} onChange={pickLibrary} label="Kavita library" />
+              review ? <Button asChild variant="ghost"><Link to="/libraries">Back to libraries</Link></Button> : <>
+                <label htmlFor="library-picker" className="flex min-w-0 w-full flex-col gap-1 text-xs font-medium text-muted sm:hidden">Library
+                  <Select id="library-picker" aria-label="Kavita library" value={selected ?? ''} onChange={event => pickLibrary(Number(event.target.value))} title={libs.data.find(lib => lib.id === selected)?.name} className="min-h-11">
+                    {libs.data.map(lib => <option key={lib.id} value={lib.id}>{lib.name}</option>)}
+                  </Select>
+                </label>
+                <SegmentedControl items={libs.data.map((lib) => ({ id: lib.id, label: lib.name }))} value={selected} onChange={pickLibrary} label="Kavita library" className="hidden sm:flex" />
+              </>
             ) : (
               <p className="text-sm text-muted">{libs.isLoading ? 'Loading libraries…' : 'No libraries — connect Kavita in Settings.'}</p>
             )}
@@ -418,12 +449,13 @@ export function Libraries({ review = false }: { review?: boolean }) {
           </div>
           {!review && (
             <Disclosure label="Library actions" className="min-w-0" summaryClassName="min-h-11 text-sm">
+            {override.isError && <ErrorState title="Could not load auto-match settings" description={override.error instanceof Error ? override.error.message : String(override.error)} onRetry={() => void override.refetch()} />}
             <div role="group" aria-label="Library actions" className="flex min-w-0 flex-wrap items-center gap-2 pt-2">
               <Button size="sm" variant="outline" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 flex-1 sm:flex-none" onClick={() => queueLibraryJob('scan-new')} disabled={selected === null || enqueue.isPending}>{enqueue.isPending && enqueue.variables?.type === 'scan-new' && enqueue.variables.libraryId === selected ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5 shrink-0" />} {enqueue.isPending && enqueue.variables?.type === 'scan-new' && enqueue.variables.libraryId === selected ? 'Queuing refresh…' : 'Refresh library'}</Button>
               <Button size="sm" variant="outline" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 flex-1 sm:flex-none" onClick={() => queueLibraryJob('match-unmatched')} disabled={selected === null || enqueue.isPending}>{enqueue.isPending && enqueue.variables?.type === 'match-unmatched' && enqueue.variables.libraryId === selected ? <Spinner /> : <Play className="h-3.5 w-3.5 shrink-0" />} {enqueue.isPending && enqueue.variables?.type === 'match-unmatched' && enqueue.variables.libraryId === selected ? 'Queuing matching…' : 'Match all unmatched'}</Button>
               <label className="flex min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 w-full cursor-pointer select-none items-center justify-between gap-3 px-1 text-xs font-medium text-muted sm:w-auto sm:pl-3">
-                Auto-match new series
-                <Switch aria-label="Automatically match new series" checked={override.data?.autoMatch ?? true} onCheckedChange={setAutoMatch} disabled={selected === null} />
+                <span className="flex items-center gap-2">Auto-match new series{saveAutoMatch.isPending && <Spinner />}</span>
+                <Switch aria-label="Automatically match new series" aria-busy={saveAutoMatch.isPending} checked={saveAutoMatch.isPending && saveAutoMatch.variables.libraryId === selected ? saveAutoMatch.variables.autoMatch : override.data?.autoMatch ?? true} onCheckedChange={autoMatch => { if (selected !== null) saveAutoMatch.mutate({ libraryId: selected, autoMatch }); }} disabled={selected === null || !override.data || saveAutoMatch.isPending} />
               </label>
             </div>
             </Disclosure>
@@ -448,10 +480,11 @@ export function Libraries({ review = false }: { review?: boolean }) {
 
         {(review || selected !== null) && (
           <div className="flex flex-col gap-3 p-3 sm:p-4">
-            <div className="grid w-full grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap">
+            <div className="grid w-full grid-cols-2 items-start gap-2 sm:flex sm:flex-wrap sm:items-center">
               <div className="relative col-span-2 min-w-0 flex-1">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
-                <Input aria-label="Filter series or artists" placeholder="Search series or artists…" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-full pl-8 sm:min-h-9" />
+                <Input aria-label="Filter series or artists" placeholder="Search series or artists…" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-full pl-8 pr-11 sm:min-h-9" />
+                {query && <Button size="icon" variant="ghost" className="absolute right-0 top-1/2 -translate-y-1/2" aria-label="Clear series search" onClick={() => { setQuery(''); setPage(1); }}><X className="h-4 w-4" /></Button>}
               </div>
               {!review && <Select aria-label="Filter by match status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 sm:min-h-9 sm:w-44">
                 <option value="all">All statuses</option>
@@ -460,22 +493,20 @@ export function Libraries({ review = false }: { review?: boolean }) {
                 <option value="failed">Failed</option>
                 <option value="low-score">Needs review (&lt;80%)</option>
               </Select>}
-              {!review && <Disclosure open={wideControls || undefined} label="Sort & merge" className="min-w-0 sm:contents" summaryClassName="min-h-11 sm:hidden">
+              {!review && <Disclosure open={wideControls || undefined} label="Sort" className="min-w-0 sm:contents" summaryClassName="min-h-11 sm:hidden">
               <div className="flex flex-wrap gap-2 pt-2 sm:flex-nowrap sm:pt-0">
               {!review && <Select aria-label="Sort series" value={sortBy} onChange={(e) => { setSortBy(e.target.value as 'name' | 'date-added'); setPage(1); }} className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 sm:min-h-9 sm:w-44">
                 <option value="name">Sort · A–Z</option>
                 <option value="date-added">Sort · Date added</option>
               </Select>}
-              {!review && !selectMode && checked.size === 0 && (
-                <Button variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11 shrink-0 sm:min-h-9" onClick={() => setSelectMode(true)}><CheckSquare className="h-4 w-4" /> Select to merge</Button>
-              )}
               </div></Disclosure>}
             </div>
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <h2 className="text-sm font-semibold tabular-nums">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h2>
-                {series.data && <p className="text-xs text-muted">{review ? 'Matches below 80% confidence · All libraries' : `${matchedInLib} matched · ${rows.filter((row) => row.status === 'unmatched').length} unmatched${rows.some((row) => row.status === 'failed') ? ` · ${rows.filter((row) => row.status === 'failed').length} failed` : ''}`}</p>}
+              <div className="contents sm:flex sm:min-w-0 sm:flex-1 sm:flex-wrap sm:items-baseline sm:gap-x-3 sm:gap-y-1">
+                <h2 aria-live="polite" aria-atomic="true" className="mr-auto text-sm font-semibold tabular-nums sm:mr-0">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h2>
+                {series.data && <p className="order-last w-full text-xs text-muted sm:order-none sm:w-auto">{review ? 'Matches below 80% confidence · All libraries' : `${shelf.counts.matched} matched · ${shelf.counts.unmatched} unmatched${shelf.counts.failed ? ` · ${shelf.counts.failed} failed` : ''}`}</p>}
               </div>
+              {!review && !selectMode && checked.size === 0 && <Button variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11 shrink-0 sm:min-h-9" onClick={() => setSelectMode(true)}><CheckSquare className="h-4 w-4" /> Select to merge</Button>}
             </div>
               {review && filtered.length > 0 && <Button size="sm" onClick={() => openIdentify(filtered[0])}>Start review</Button>}
           </div>
@@ -491,7 +522,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
           <Button size="sm" variant="ghost" className="max-lg:min-h-11 pointer-coarse:min-h-11 sm:min-h-9" disabled={checked.size === 0} onClick={() => setChecked(new Set())}><span>Clear<span className="hidden sm:inline"> selection</span></span></Button>
           <Button size="sm" variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11 sm:min-h-9" onClick={() => { setSelectMode(false); setChecked(new Set()); }}><span>Exit<span className="hidden sm:inline"> selection</span></span></Button>
           {checked.size > 0 && <ul aria-label="Selected series" className="grid max-h-28 w-full grid-cols-1 gap-x-4 overflow-y-auto border-t border-border sm:grid-cols-2 xl:grid-cols-3">
-            {rows.filter(row => checked.has(row.id)).map(row => <li key={row.id} className="flex min-w-0 items-center gap-2 py-2">
+            {selectedRows.map(row => <li key={row.id} data-library-motion-id={`selection:${row.id}`} className="flex min-w-0 items-center gap-2 py-2">
               <div className="h-10 w-8 shrink-0 overflow-hidden rounded"><Cover src={row.cover} name={row.name} /></div>
               <span className="min-w-0 flex-1 break-words text-xs font-medium">{row.name}</span>
               <Button size="icon" variant="ghost" className="shrink-0" aria-label={`Remove ${row.name} from selection`} onClick={() => toggleCheck(row.id)}><X className="h-4 w-4" /></Button>
@@ -523,12 +554,12 @@ export function Libraries({ review = false }: { review?: boolean }) {
               </Card>
             ) : (
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-                {visibleRows.map((r, i) => (
+                {visibleRows.map(r => (
                   <Card
                     key={r.id}
-                    style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
+                    data-library-motion-id={`shelf:${r.id}`}
                     className={cn(
-                      'ui-card-interactive group relative z-0 flex min-w-0 flex-col animate-fade-up transition-colors duration-200 focus-within:z-40',
+                      'ui-card-interactive group relative z-0 flex min-w-0 flex-col transition-colors duration-200 focus-within:z-40',
                       checked.has(r.id) ? 'border-primary bg-primary/10 ring-2 ring-primary' : 'hover:border-border-2',
                     )}
                   >
@@ -545,10 +576,10 @@ export function Libraries({ review = false }: { review?: boolean }) {
                       aria-pressed={selectMode ? checked.has(r.id) : undefined}
                     >
                       {selectMode && (
-                        <span className={cn('pointer-events-none absolute left-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md border', checked.has(r.id) ? 'border-primary-button bg-primary-button text-white' : 'border-border-2 bg-surface text-muted')} aria-hidden>{checked.has(r.id) ? <Check className="h-5 w-5" /> : <span className="h-4 w-4 rounded-sm border-2 border-current" />}</span>
+                        <span className={cn('pointer-events-none absolute left-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md border transition-colors duration-150', checked.has(r.id) ? 'border-primary-button bg-primary-button text-white' : 'border-border-2 bg-surface text-muted')} aria-hidden>{checked.has(r.id) ? <Check className="library-selection-check h-5 w-5" /> : <span className="h-4 w-4 rounded-sm border-2 border-current" />}</span>
                       )}
                       <div className="relative aspect-[3/4] w-full overflow-hidden rounded-t-xl">
-                        <Cover src={r.cover} name={r.name} className="transition-transform duration-300 ease-out group-hover:scale-105" />
+                        <Cover src={r.cover} name={r.name} className="library-cover" />
                         <PageCountPill pageCount={r.pageCount} className="absolute bottom-2 right-2" />
                       </div>
                       <div className="min-w-0 w-full px-3 pt-3">
@@ -556,12 +587,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
                       </div>
                     </button>
                     <div className="flex min-w-0 flex-1 flex-col gap-2 px-3 pb-3">
-                      <div className="flex min-w-0 items-center justify-between gap-2">
-                        <p className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={r.artists?.length ? `Artists: ${r.artists.join(', ')}` : undefined}>
-                          {r.artists?.length ? <><span className="text-muted">Artist{r.artists.length > 1 ? 's' : ''} · </span>{r.artists.join(', ')}</> : null}
-                        </p>
-                        {!selectMode && <Button variant="ghost" className="min-h-11 shrink-0 px-1 text-xs" aria-label={`Preview pages of ${r.name}`} onClick={() => setPreview({ id: r.id, name: r.name })}><Eye className="h-4 w-4" /><span className="hidden sm:inline">Preview pages</span><span className="sm:hidden">Preview</span></Button>}
-                      </div>
+                      {!!r.artists?.length && <p className="min-w-0 break-words text-xs font-medium text-foreground line-clamp-2" title={`Artists: ${r.artists.join(', ')}`}><span className="text-muted">Artist{r.artists.length > 1 ? 's' : ''} · </span>{r.artists.join(', ')}</p>}
                         {review && <p className="text-xs text-muted">{r.libraryName}</p>}
                         <div className="mt-auto flex flex-wrap items-center gap-1">
                           {needsReview(r)
@@ -570,6 +596,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
                           {r.status === 'failed' && <p className="w-full break-words text-xs text-danger">{r.errorMessage || 'Matching or sync failed. Retry identification, or check provider settings.'}</p>}
                         </div>
                         {!selectMode && (r.status === 'failed' || r.providerId) && <Button variant="ghost" className="min-h-9 justify-start px-0 text-xs text-primary" onClick={() => openIdentify(r)}>{r.status === 'failed' ? 'Retry identification' : 'Review metadata'} <Play aria-hidden="true" className="h-3 w-3" /></Button>}
+                        {!selectMode && <Button variant="outline" className="min-h-11 w-full px-2 text-xs" aria-label={`Preview pages of ${r.name}`} onClick={() => setPreview({ id: r.id, name: r.name })}><Eye className="h-4 w-4 shrink-0" />Preview pages</Button>}
                         {selectMode && <Button size="sm" variant={checked.has(r.id) ? 'default' : 'outline'} aria-pressed={checked.has(r.id)} aria-label={`${checked.has(r.id) ? 'Remove' : 'Select'} ${r.name} ${checked.has(r.id) ? 'from' : 'for'} merging`} onClick={() => toggleCheck(r.id)}><CheckSquare className="h-4 w-4" />{checked.has(r.id) ? 'Selected' : 'Select'}</Button>}
                     </div>
                     {!selectMode && <CardActionMenu row={r} onEdit={() => setComicInfo({ id: r.id, name: r.name })} onUnmatch={() => setUnmatchTarget(r)} onDelete={() => prepareDelete.mutate(r)} />}
@@ -642,7 +669,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
 
       {mergeOpen && (
         <MergeSeriesModal
-          selected={(series.data ?? []).filter((r) => checked.has(r.id))}
+          selected={selectedRows}
           onClose={() => setMergeOpen(false)}
         />
       )}

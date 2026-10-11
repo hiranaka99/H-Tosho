@@ -4,6 +4,7 @@ import { api, type DownloadTask, type DoujinSource } from './api';
 import { useDownloadEvents } from './useDownloadEvents';
 import { toast } from './toast';
 import { downloadErrorHelp } from './downloadErrors';
+import { mergeDownloadPoll } from './downloadPoll';
 
 export interface StartDownloadInput {
   source: DoujinSource;
@@ -14,6 +15,7 @@ export interface StartDownloadInput {
   mergeFolder?: string;
   /** Merged download: manual chapter number written to ComicInfo.Number. */
   chapter?: number;
+  allowDuplicate?: boolean;
 }
 
 type StartResult = { id: number; status: string };
@@ -44,30 +46,6 @@ export interface DownloadsApi extends DownloadActionsApi, DownloadTasksApi {}
 const ActionsCtx = React.createContext<DownloadActionsApi | null>(null);
 const TasksCtx = React.createContext<DownloadTasksApi | null>(null);
 
-const PAGE_LABEL = /^Page (\d+)\/(\d+)$/;
-
-/** Rank of a "Page X/Y" label for monotonic comparison (0 for phase markers). */
-function pageRank(label: string | null | undefined): number {
-  if (!label) return 0;
-  const m = PAGE_LABEL.exec(label);
-  return m ? Number(m[1]) : 0;
-}
-
-/**
- * A poll reads the DB, which lags the live SSE snapshot by up to ~250ms. While
- * both sides show a task as downloading, progress fields only ever move forward —
- * keep the higher value so a stale poll can't make the UI jump backwards.
- */
-function mergePolledTask(prevList: DownloadTask[], fresh: DownloadTask): DownloadTask {
-  const prev = prevList.find((t) => t.id === fresh.id);
-  if (!prev) return fresh;
-  if (prev.status !== 'downloading' || fresh.status !== 'downloading') return fresh;
-  const better =
-    fresh.progressCurrent > prev.progressCurrent ||
-    fresh.progressCurrent === prev.progressCurrent && pageRank(fresh.currentFile) >= pageRank(prev.currentFile) && (fresh.speed ?? 0) > 0;
-  return better ? fresh : prev;
-}
-
 /**
  * App-wide download state. Lifts the downloads query + SSE subscription out of
  * the Downloader page so progress is live on every screen, and surfaces
@@ -91,7 +69,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
       const fresh = await api.downloads();
       const prev = qc.getQueryData<DownloadTask[]>(['downloads']);
       if (!prev) return fresh;
-      return fresh.map((f) => mergePolledTask(prev, f));
+      return mergeDownloadPoll(prev, fresh);
     },
     refetchInterval: liveConnected ? false : 5000,
   });

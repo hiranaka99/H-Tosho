@@ -360,17 +360,33 @@ select {
   transition-delay: 0s;
 }
 
+.app-nav-indicator {
+  transition: transform 240ms var(--ease-out-soft), opacity 140ms ease-out;
+}
+
+.app-nav-icon {
+  transition: transform 160ms var(--ease-out-soft), color 150ms ease-out;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .app-nav-link:hover .app-nav-icon { transform: translateX(2px); }
+}
+
 @media (max-width: 1023px) {
   .app-nav-drawer {
     visibility: hidden;
+    opacity: 0;
     transform: translateX(-100%);
-    transition: transform 160ms ease-in, visibility 0s linear 160ms;
+    box-shadow: none;
+    transition: transform 180ms ease-in, opacity 140ms ease-in, box-shadow 180ms ease-in, visibility 0s linear 180ms;
   }
 
   .app-nav-drawer.app-nav-open {
     visibility: visible;
+    opacity: 1;
     transform: translateX(0);
-    transition: transform 260ms var(--ease-out-soft), visibility 0s;
+    box-shadow: 12px 0 32px var(--control-shadow);
+    transition: transform 280ms var(--ease-out-soft), opacity 180ms ease-out, box-shadow 280ms ease-out, visibility 0s;
   }
 
   .app-nav-drawer:not(.app-nav-open) :is(.animate-spin,
@@ -409,7 +425,8 @@ html[data-motion-paused] :is(.skeleton, .progress-stripes, .animate-spin,
   to { stroke-dashoffset: 0; }
 }
 
-.downloader-selection-check path {
+.downloader-selection-check path,
+.library-selection-check path {
   stroke-dasharray: 24;
   animation: downloader-selection-check 240ms var(--ease-out-soft);
 }
@@ -426,6 +443,15 @@ html[data-motion-paused] :is(.skeleton, .progress-stripes, .animate-spin,
 /* The whole panel enters together, rather than animating each nested card twice. */
 .ui-tab-panel .animate-fade-up {
   animation: none;
+}
+
+.library-cover,
+.downloader-cover {
+  transition: transform 240ms var(--ease-out-soft);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .group:hover :is(.library-cover, .downloader-cover) { transform: scale(1.04); }
 }
 
 /* Touch controls press in place; hover lift is reserved for precise pointers. */
@@ -446,14 +472,20 @@ html[data-motion-paused] :is(.skeleton, .progress-stripes, .animate-spin,
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .app-nav-indicator { transition: none; }
+  .app-nav-icon { transform: none !important; }
+
   .ui-progress-fill {
     transition: none;
   }
 
   .downloader-selection-check path,
+  .library-selection-check path,
   .downloader-task-status {
     animation: none;
   }
+
+  .library-cover, .downloader-cover { transform: none !important; }
 
   .ui-tab-indicator {
     transition: none !important;
@@ -511,5 +543,14 @@ html[data-motion-paused] :is(.skeleton, .progress-stripes, .animate-spin,
     transition-property: background-color, border-color, color, opacity, visibility;
     transition-duration: 100ms !important;
     transition-delay: 0s;
+  }
+
+  /* Visibility switches immediately so links can receive focus as the drawer
+     fades in. Only opacity transitions in the reduced-motion drawer. */
+  .app-nav-drawer,
+  .app-nav-drawer.app-nav-open,
+  .app-nav-scrim,
+  .app-nav-scrim[data-state="open"] {
+    transition-property: opacity;
   }
 }

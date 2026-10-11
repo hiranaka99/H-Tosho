@@ -351,20 +351,29 @@ export function SegmentedTabs<T extends string>({ items, value, onChange, label,
 }
 
 /** Animate content changes without remounting forms or losing their drafts. */
-export function TabPanel({ value, className, ...props }: React.ComponentPropsWithoutRef<'div'> & { value: string }) {
+export function TabPanel({ value, tabOrder, className, ...props }: React.ComponentPropsWithoutRef<'div'> & { value: string; tabOrder?: readonly string[] }) {
   const ref = React.useRef<HTMLDivElement>(null);
+  const previousValue = React.useRef(value);
   React.useLayoutEffect(() => {
     const panel = ref.current;
     const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
-    if (!panel || preference.matches || typeof panel.animate !== 'function') return;
+    const previous = previousValue.current;
+    previousValue.current = value;
+    if (!panel || typeof panel.animate !== 'function' || (preference.matches && !tabOrder) || (tabOrder && previous === value)) return;
+    const direction = tabOrder && tabOrder.indexOf(value) < tabOrder.indexOf(previous) ? -1 : 1;
+    const frames = preference.matches
+      ? [{ opacity: 0.8 }, { opacity: 1 }]
+      : tabOrder
+        ? [{ opacity: 0.65, transform: `translateX(${direction * 12}px)` }, { opacity: 1, transform: 'translateX(0)' }]
+        : [{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'translateY(0)' }];
     const animation = panel.animate(
-      [{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'translateY(0)' }],
-      { duration: 220, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' },
+      frames,
+      { duration: preference.matches ? 100 : tabOrder ? 240 : 220, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' },
     );
     const onPreferenceChange = () => { if (preference.matches) animation.cancel(); };
     preference.addEventListener('change', onPreferenceChange);
     return () => { animation.cancel(); preference.removeEventListener('change', onPreferenceChange); };
-  }, [value]);
+  }, [value, tabOrder]);
   return <div ref={ref} className={cn('ui-tab-panel flex min-w-0 flex-col gap-4', className)} {...props} />;
 }
 

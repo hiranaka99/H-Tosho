@@ -16,7 +16,7 @@ interface GallerySelectionBarProps {
 }
 
 /** Both results grids share a shortlist; mobile keeps its actions within reach. */
-export function GallerySelectionBar({ items, onMerge, onMergeInto, onRemove, onClear, onCancel, mobile = false, onHeightChange }: GallerySelectionBarProps) {
+export const GallerySelectionBar = React.memo(function GallerySelectionBar({ items, onMerge, onMergeInto, onRemove, onClear, onCancel, mobile = false, onHeightChange }: GallerySelectionBarProps) {
   const ref = React.useRef<HTMLDivElement>(null);
   React.useLayoutEffect(() => {
     const tray = ref.current;
@@ -54,7 +54,7 @@ export function GallerySelectionBar({ items, onMerge, onMergeInto, onRemove, onC
       </div>
       {items.length > 0 ? <>
         <ol aria-label="Selected galleries" className="grid max-h-[min(9rem,22dvh)] grid-cols-1 gap-x-6 overflow-y-auto overscroll-contain border-y border-border lg:max-h-48 lg:grid-cols-2 xl:grid-cols-3">
-          {items.map(item => <li key={`${item.source}:${item.galleryId}`} className="flex min-w-0 items-center gap-2 border-b border-border py-2">
+          {items.map(item => <li key={`${item.source}:${item.galleryId}`} data-gallery-shortlist-id={`${item.source}:${item.galleryId}`} className="flex min-w-0 items-center gap-2 border-b border-border py-2">
             <span className="relative flex h-12 w-9 shrink-0 items-center justify-center overflow-hidden rounded bg-surface-2 text-muted" aria-hidden="true">
               <ImageOff className="h-4 w-4" />
               {item.coverUrl && <img src={item.coverUrl} alt="" loading="lazy" referrerPolicy="no-referrer" onError={event => { event.currentTarget.hidden = true; }} className="absolute inset-0 h-full w-full object-cover" />}
@@ -74,4 +74,4 @@ export function GallerySelectionBar({ items, onMerge, onMergeInto, onRemove, onC
       </div>
     </div>
   );
-}
+});
