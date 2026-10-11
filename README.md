@@ -6,7 +6,7 @@ H-Tosho helps you identify manga and light novels, review metadata before applyi
 it, and keep new additions organized. It also includes a doujinshi downloader,
 recommendations, and watched searches for new releases.
 
-Works with **Kavita v0.9.x or newer**. Current version: **v2.10.1** ·
+Works with **Kavita v0.9.x or newer**. Current version: **v2.11.0** ·
 [Release notes](CHANGELOG.md)
 
 ![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
@@ -275,14 +275,24 @@ or unmute artists. Use thumbs down to dismiss a single gallery, and
 Run a search, then choose **Watch** to save that query. Under **Watched**, choose
 how often to check it or use **Check now** to check manually.
 
+Watch controls stay above the feed. **Manage watches** opens saved searches and
+the add form. Check progress and outcomes remain visible, with a link to the job.
+
 The first check records the existing results quietly. Later checks add new
-finds to **Recently added** and send Discord messages if notifications are
+finds to **Inbox** and send Discord messages if notifications are
 enabled. Results with a known upload date older than fourteen days are skipped
 to keep old galleries from being announced as new. Results without a usable
 upload date are still eligible.
 
 Watches find galleries for you; choose the ones you want to download from the
-feed.
+feed. Filter discoveries by watch or source. **Mark reviewed** removes a find
+from Inbox while keeping it in **History**; **Return to inbox** reverses that
+choice. Review state is saved across sessions and shared by watches that found
+the same gallery. Stopping a watch keeps its discoveries in History.
+
+Artist and language are saved from search results when available. Older finds
+gain that context when later checks return metadata for them. **Select galleries**
+supports downloading together, merging, and marking selected finds reviewed.
 
 ### Enable Discord notifications
 

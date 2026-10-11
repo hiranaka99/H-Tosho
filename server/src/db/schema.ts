@@ -135,6 +135,10 @@ export const watchedSearches = sqliteTable('watched_searches', {
   lastResultCount: integer('last_result_count'),
   /** New galleries from the last check that found something (JSON array; null = no check yet). */
   lastResultsJson: text('last_results_json'),
+  lastNewCount: integer('last_new_count'),
+  lastFindsAt: text('last_finds_at'),
+  lastAttemptedAt: text('last_attempted_at'),
+  lastError: text('last_error'),
   createdAt: text('created_at')
     .notNull()
     .default(sql`(current_timestamp)`),
@@ -153,8 +157,8 @@ export const watchedSearchSeen = sqliteTable('watched_search_seen', {
 });
 /**
  * Galleries a watch reported as new, with enough metadata to render them in
- * the Downloader's "Recently added" feed without re-scraping. Kept bounded by
- * pruneNew; rows are removed together with their watch.
+ * the Downloader's inbox and history without re-scraping. Discoveries remain
+ * after review or watch removal; the feed is paginated at query time.
  */
 export const watchedSearchNew = sqliteTable('watched_search_new', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -167,6 +171,9 @@ export const watchedSearchNew = sqliteTable('watched_search_new', {
   url: text('url'),
   coverUrl: text('cover_url'),
   pageCount: integer('page_count'),
+  artistsJson: text('artists_json').notNull().default('[]'),
+  language: text('language'),
+  reviewedAt: text('reviewed_at'),
   /** ISO 8601 timestamp of the check that first reported the gallery. */
   foundAt: text('found_at').notNull(),
 });

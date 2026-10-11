@@ -20,6 +20,10 @@ export interface WatchedSearch {
   lastCheckedAt: string | null;
   lastResultCount: number | null;
   seenCount: number;
+  lastNewCount: number | null;
+  lastFindsAt: string | null;
+  lastAttemptedAt: string | null;
+  lastError: string | null;
   /** New galleries from the last check that found something; empty otherwise. */
   lastResults: WatchedSearchNewResult[];
 }
@@ -48,9 +52,6 @@ const SEEN_PRUNE_TO = 1500;
 const NOTIFY_MAX_LISTED = 10;
 /** Cap on the persisted "new since last check" list shown in the UI. */
 const LAST_RESULTS_MAX = 50;
-/** Cap on the persisted "recently added" feed so the table cannot grow unbounded. */
-const NEW_RETENTION = 1000;
-const NEW_PRUNE_TO = 750;
 
 /** Decode the persisted new-results JSON; malformed payloads degrade to []. */
 function decodeLastResults(json: string | null): WatchedSearchNewResult[] {
@@ -90,6 +91,10 @@ function rowToWatch(row: typeof schema.watchedSearches.$inferSelect): WatchedSea
     query: row.query,
     lastCheckedAt: row.lastCheckedAt,
     lastResultCount: row.lastResultCount,
+    lastNewCount: row.lastNewCount,
+    lastFindsAt: row.lastFindsAt,
+    lastAttemptedAt: row.lastAttemptedAt,
+    lastError: row.lastError,
     seenCount: Number(counted?.n ?? 0),
     lastResults: decodeLastResults(row.lastResultsJson),
   };
@@ -114,6 +119,10 @@ export function listWatchedSearches(): WatchedSearch[] {
     query: r.query,
     lastCheckedAt: r.lastCheckedAt,
     lastResultCount: r.lastResultCount,
+    lastNewCount: r.lastNewCount,
+    lastFindsAt: r.lastFindsAt,
+    lastAttemptedAt: r.lastAttemptedAt,
+    lastError: r.lastError,
     seenCount: seenCounts.get(r.id) ?? 0,
     lastResults: decodeLastResults(r.lastResultsJson),
   }));
@@ -135,13 +144,13 @@ export function addWatchedSearch(source: DoujinSource, query: string): WatchedSe
   return rowToWatch(row);
 }
 
-/** Remove a watch, its seen history, and its "recently added" entries. Returns false when the id is unknown. */
+/** Remove a watch and its seen IDs, retaining discovery/review history. */
 export function removeWatchedSearch(id: number): boolean {
   const db = getDb();
   const row = db.select().from(schema.watchedSearches).where(eq(schema.watchedSearches.id, id)).get();
   if (!row) return false;
   db.delete(schema.watchedSearchSeen).where(eq(schema.watchedSearchSeen.searchId, id)).run();
-  db.delete(schema.watchedSearchNew).where(eq(schema.watchedSearchNew.searchId, id)).run();
+  // Stopping a watch keeps its discoveries and review history.
   db.delete(schema.watchedSearches).where(eq(schema.watchedSearches.id, id)).run();
   return true;
 }
@@ -184,6 +193,7 @@ interface CheckResult {
   checked: number;
   notified: number;
   newGalleries: number;
+  failed: number;
 }
 
 /** Re-run every watch once and Discord-ping about new results. */
@@ -193,7 +203,7 @@ export async function checkWatchedSearches(
   onProgress?: (current: number, total: number) => void,
 ): Promise<CheckResult> {
   const searches = listWatchedSearches();
-  const result: CheckResult = { checked: 0, notified: 0, newGalleries: 0 };
+  const result: CheckResult = { checked: 0, notified: 0, newGalleries: 0, failed: 0 };
   for (let i = 0; i < searches.length; i++) {
     if (isCancelled?.()) throw new JobCancelled();
     const s = searches[i];
@@ -207,7 +217,10 @@ export async function checkWatchedSearches(
     try {
       results = await provider.search(s.query, SEARCH_LIMIT);
     } catch (e) {
-      log('error', `Watch ${s.id} "${s.query}" failed: ${e instanceof Error ? e.message : String(e)}`);
+      const message = e instanceof Error ? e.message : String(e);
+      result.failed++;
+      getDb().update(schema.watchedSearches).set({ lastError: message, lastAttemptedAt: new Date().toISOString() }).where(eq(schema.watchedSearches.id, s.id)).run();
+      log('error', `Watch ${s.id} "${s.query}" failed: ${message}`);
       continue;
     }
     result.checked++;
@@ -307,15 +320,23 @@ export async function checkWatchedSearches(
               ...(r?.url ? { url: r.url } : {}),
               ...(r?.coverUrl ? { coverUrl: r.coverUrl } : {}),
               ...pageCountMetadata(r?.pageCount),
+              artistsJson: JSON.stringify(r?.artists ?? []),
+              language: r?.language ?? null,
+              reviewedAt: tx.select({ reviewedAt: schema.watchedSearchNew.reviewedAt }).from(schema.watchedSearchNew).where(and(eq(schema.watchedSearchNew.source, s.source), eq(schema.watchedSearchNew.galleryId, id))).get()?.reviewedAt ?? null,
               foundAt,
             };
           }))
           .onConflictDoNothing()
           .run();
-        pruneNew(tx);
+        // Discovery history is retained; paging keeps the browser feed bounded.
+      }
+      // Refresh known metadata from the existing search response, with no gallery fetches.
+      for (const gallery of results) {
+        if (!gallery.artists?.length && !gallery.language) continue;
+        tx.update(schema.watchedSearchNew).set({ ...(gallery.artists?.length ? { artistsJson: JSON.stringify(gallery.artists) } : {}), ...(gallery.language ? { language: gallery.language } : {}) }).where(and(eq(schema.watchedSearchNew.source, s.source), eq(schema.watchedSearchNew.galleryId, gallery.galleryId))).run();
       }
       tx.update(schema.watchedSearches)
-        .set({ lastCheckedAt: new Date().toISOString(), lastResultCount: ids.length, ...(lastResultsJson !== null ? { lastResultsJson } : {}) })
+        .set({ lastCheckedAt: new Date().toISOString(), lastAttemptedAt: new Date().toISOString(), lastError: null, lastNewCount: freshNewIds.length, ...(freshNewIds.length ? { lastFindsAt: new Date().toISOString() } : {}), lastResultCount: ids.length, ...(lastResultsJson !== null ? { lastResultsJson } : {}) })
         .where(eq(schema.watchedSearches.id, s.id))
         .run();
     });
@@ -347,25 +368,6 @@ function pruneSeen(searchId: number, db: Db): void {
   db.delete(schema.watchedSearchSeen).where(inArray(schema.watchedSearchSeen.id, ids)).run();
 }
 
-/** Keep the "recently added" feed bounded: drop the oldest rows beyond the retention cap. */
-function pruneNew(db: Db): void {
-  const counted = db
-    .select({ n: sql<number>`count(*)` })
-    .from(schema.watchedSearchNew)
-    .get();
-  const count = Number(counted?.n ?? 0);
-  if (count <= NEW_RETENTION) return;
-  const excess = count - NEW_PRUNE_TO;
-  const oldest = db
-    .select({ id: schema.watchedSearchNew.id })
-    .from(schema.watchedSearchNew)
-    .orderBy(asc(schema.watchedSearchNew.id))
-    .limit(excess)
-    .all();
-  const ids = oldest.map((r) => r.id);
-  db.delete(schema.watchedSearchNew).where(inArray(schema.watchedSearchNew.id, ids)).run();
-}
-
 /** One gallery in the "recently added" feed. */
 export interface WatchedSearchNewGallery {
   source: string;
@@ -378,40 +380,47 @@ export interface WatchedSearchNewGallery {
   query: string;
   /** ISO 8601 timestamp of the check that first reported it. */
   foundAt: string;
+  searchId: number;
+  artists: string[];
+  language?: string;
+  reviewedAt: string | null;
 }
 
 /**
  * Newest-first feed of galleries any watch reported as new. A gallery found by
  * several watches appears once (its newest discovery wins).
  */
+function feedItem(r: typeof schema.watchedSearchNew.$inferSelect): WatchedSearchNewGallery {
+  let artists: string[] = [];
+  try { const values: unknown = JSON.parse(r.artistsJson); if (Array.isArray(values)) artists = values.filter((artist): artist is string => typeof artist === 'string'); } catch { /* Old metadata may be incomplete. */ }
+  return { source: r.source, galleryId: r.galleryId, title: r.title, ...(r.url ? { url: r.url } : {}), ...(r.coverUrl ? { coverUrl: r.coverUrl } : {}), ...pageCountMetadata(r.pageCount), query: r.query, foundAt: r.foundAt, searchId: r.searchId, artists, ...(r.language ? { language: r.language } : {}), reviewedAt: r.reviewedAt };
+}
+
+export function listGalleryFeed(options: { view?: 'inbox' | 'history'; source?: string; searchId?: number; offset?: number; limit?: number } = {}) {
+  const table = schema.watchedSearchNew;
+  const filters = and(options.source ? eq(table.source, options.source) : undefined, options.searchId !== undefined ? eq(table.searchId, options.searchId) : undefined);
+  // Deduplicate inside SQLite before counting and paging, including watch filters.
+  const winners = sql`${table.id} IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY source, gallery_id ORDER BY found_at DESC, id DESC) AS n FROM watched_search_new ${filters ? sql`WHERE ${filters}` : sql``}) WHERE n = 1)`;
+  const counts = getDb().select({ total: sql<number>`count(*)`, inboxCount: sql<number>`coalesce(sum(case when ${table.reviewedAt} is null then 1 else 0 end), 0)` }).from(table).where(winners).get()!;
+  const where = and(winners, options.view === 'inbox' ? sql`${table.reviewedAt} IS NULL` : undefined);
+  const items = getDb().select().from(table).where(where).orderBy(desc(table.foundAt), desc(table.id)).limit(options.limit ?? 100).offset(options.offset ?? 0).all().map(feedItem);
+  const watches = getDb().select({ id: table.searchId, query: table.query, source: table.source }).from(table).groupBy(table.searchId).orderBy(table.searchId).all();
+  return { items, total: options.view === 'inbox' ? counts.inboxCount : counts.total, inboxCount: counts.inboxCount, historyCount: counts.total, watches };
+}
+
 export function listNewGalleries(limit = 100): WatchedSearchNewGallery[] {
-  const db = getDb();
-  // Fetch a wider window than needed so cross-watch dedupe still fills the page.
-  const rows = db
-    .select()
-    .from(schema.watchedSearchNew)
-    .orderBy(desc(schema.watchedSearchNew.foundAt), desc(schema.watchedSearchNew.id))
-    .limit(limit * 3)
-    .all();
-  const seen = new Set<string>();
-  const out: WatchedSearchNewGallery[] = [];
-  for (const r of rows) {
-    const key = `${r.source}:${r.galleryId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
-      source: r.source,
-      galleryId: r.galleryId,
-      title: r.title,
-      ...(r.url ? { url: r.url } : {}),
-      ...(r.coverUrl ? { coverUrl: r.coverUrl } : {}),
-      ...pageCountMetadata(r.pageCount),
-      query: r.query,
-      foundAt: r.foundAt,
-    });
-    if (out.length >= limit) break;
-  }
-  return out;
+  return listGalleryFeed({ limit }).items;
+}
+
+/** Review is shared by every watch that discovered this provider/gallery identity. */
+export function setGalleriesReviewed(items: { source: DoujinSource; galleryId: string }[], reviewed: boolean): boolean {
+  const table = schema.watchedSearchNew;
+  return getDb().transaction(tx => {
+    for (const item of items) if (!tx.select({ id: table.id }).from(table).where(and(eq(table.source, item.source), eq(table.galleryId, item.galleryId))).get()) return false;
+    const reviewedAt = reviewed ? new Date().toISOString() : null;
+    for (const item of items) tx.update(table).set({ reviewedAt }).where(and(eq(table.source, item.source), eq(table.galleryId, item.galleryId))).run();
+    return true;
+  });
 }
 
 /**

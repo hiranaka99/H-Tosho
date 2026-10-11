@@ -373,12 +373,40 @@ test('diversity caps apply to every matched artist and language stays a soft pre
   assert.ok(queries.every((query) => !query.includes('language:')), 'language preference was used as a hard query filter');
   assert.ok(set.items.filter((item) => item.reasons.includes('artist alpha')).length <= 1, 'artist diversity cap was bypassed');
 });
-test('recording a completed gallery invalidates the current daily cache', async () => {
+test('completed downloads preserve remaining picks and their order until an explicit refresh', async () => {
   const today = localDate(new Date());
-  const cachedValue = JSON.stringify({ date: today, generatedAt: new Date().toISOString(), mode: 'popular', profile: { artists: [], tags: [], series: [], language: null }, items: [{ source: 'hitomi', galleryId: 'cached', title: 'Cached', tags: [], artists: [], reasons: [] }] });
-  getDb().insert(schema.keyValueStore).values({ key: `recommendations-v2:${today}`, valueJson: cachedValue }).onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: cachedValue } }).run();
-  recs.recordGalleryTags('hitomi', { source: 'hitomi', galleryId: 'completed-new', title: 'New', pages: [], artists: ['new artist'], tags: ['new tag'] });
-  assert.equal(getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${today}`)).get(), undefined);
+  let searches = 0;
+  doujinProviders.hitomi = {
+    ...stubProvider('hitomi', () => []),
+    async search(query: string, limit?: number) {
+      searches++;
+      return Array.from({ length: limit ?? 30 }, (_, i) => ({ source: 'hitomi' as const, galleryId: `stable-${slug(query)}-${i}`, title: `Stable ${query} ${i}`, tags: [], artists: [] }));
+    },
+  };
+  const initial = await recs.refreshRecommendations();
+  assert.equal(initial.items.length, 12);
+  const cacheBefore = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${today}`)).get()!.valueJson;
+  const callsBefore = searches;
+  const complete = (item: typeof initial.items[number]) => recs.recordGalleryTags(item.source, { ...item, pages: [], artists: ['new artist'], tags: ['new tag'] });
+  complete(initial.items[3]);
+  complete(initial.items[8]);
+  const expected = initial.items.filter((_, i) => i !== 3 && i !== 8);
+  const remaining = await recs.getRecommendations();
+  assert.deepEqual(remaining.items, expected, 'download reshuffled or replaced remaining picks');
+  assert.equal(remaining.generatedAt, initial.generatedAt);
+  assert.ok(remaining.ownedKeys.includes(`hitomi:${initial.items[3].galleryId}`));
+  assert.deepEqual((await recs.getRecommendations()).items, expected, 'reopening the tab changed remaining picks');
+  assert.equal(searches, callsBefore, 'completed download triggered a new recommendation search');
+  assert.equal(getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${today}`)).get()!.valueJson, cacheBefore);
+
+  // Even when every pick has been downloaded, only Refresh should roll a new set.
+  expected.forEach(complete);
+  assert.deepEqual((await recs.getRecommendations()).items, []);
+  assert.equal(searches, callsBefore);
+  const refreshed = await recs.refreshRecommendations();
+  assert.ok(refreshed.items.length > 0);
+  assert.equal(overlap(keySet(initial.items), keySet(refreshed.items)), 0);
+  assert.ok(refreshed.profile.artists.includes('new artist'), 'refresh did not learn from completed downloads');
 });
 
 test('malformed cached recommendation payloads are regenerated', async () => {

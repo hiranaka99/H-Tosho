@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.11.0
+
+- Preserve remaining Recommended picks and their order after downloads; apply
+  updated preferences when picks are explicitly refreshed.
+- Make Watched an inbox and persistent discovery history, with saved review
+  state, watch/source filters, paginated results, and individual/bulk review.
+- Keep watch controls above discoveries and disclose saved-search management.
+  Show queued/running/completed/failed check outcomes and link to the job.
+- Separate each watch's latest check outcome from its retained finds; report
+  failed attempts and refresh discoveries when a check finishes.
+- Preserve artist/language metadata without extra gallery requests, keep history
+  when a watch is removed, and rename bulk entry to Select galleries.
+
 ## v2.10.1
 
 - Only interrupt downloads and merge downloads when duplicate matches are found.

@@ -290,6 +290,11 @@ class JobQueue {
     return rows.map((row) => this.hydrate(row));
   }
 
+  latest(type: JobType): Job | null {
+    const row = getDb().select().from(schema.jobs).where(eq(schema.jobs.type, type)).orderBy(desc(schema.jobs.id)).limit(1).get();
+    return row ? this.hydrate(row) : null;
+  }
+
   /** Jobs that are queued or currently running. */
   active(): Job[] {
     const rows = getDb().select().from(schema.jobs).where(inArray(schema.jobs.status, ['queued', 'running'])).all();

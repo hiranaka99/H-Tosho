@@ -42,7 +42,7 @@ import { getDownloaderSettings, parseDownloaderSettings, setDownloaderSettings }
 import { downloadQueue } from '../downloader/engine.js';
 import { getDoujinProvider, listDoujinProviders } from '../downloader/providers.js';
 import { rewriteDoujinCover, rewriteDoujinPages, rewriteMangaDexCoverUrl } from './media.js';
-import { addWatchedSearch, listNewGalleries, listWatchedSearches, removeWatchedSearch } from '../services/watchedSearches.js';
+import { addWatchedSearch, listNewGalleries, listWatchedSearches, removeWatchedSearch, listGalleryFeed, setGalleriesReviewed } from '../services/watchedSearches.js';
 import { getRecommendations, dismissAndReplace, undoDismiss, refreshRecommendations, setExcludedLibraries, applyRecommendationFeedback } from '../services/recommendations.js';
 import { getRecommendationFeedback, type FeedbackAction } from '../services/recommendationFeedback.js';
 import { getRecommendationSettings } from '../services/settings.js';
@@ -957,6 +957,21 @@ api.put('/libraries/:id/override', async (c) => {
 
 api.get('/watched-searches', (c) => c.json(listWatchedSearches()));
 
+api.get('/watched-searches/feed', (c) => {
+  const view = c.req.query('view') ?? 'inbox', source = c.req.query('source'), watch = c.req.query('searchId');
+  const offset = Number(c.req.query('offset') ?? 0), limit = Number(c.req.query('limit') ?? 25);
+  if (!['inbox', 'history'].includes(view) || (source && source !== 'hitomi' && source !== 'nhentai') || (watch !== undefined && (!Number.isSafeInteger(Number(watch)) || Number(watch) < 1)) || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) return c.json({ error: 'Invalid feed filters or page.' }, 400);
+  const feed = listGalleryFeed({ view: view as 'inbox' | 'history', source, searchId: watch ? Number(watch) : undefined, offset, limit });
+  return c.json({ ...feed, items: feed.items.map(rewriteDoujinCover) });
+});
+
+api.post('/watched-searches/review', async (c) => {
+  const body = await c.req.json().catch(() => null) as { items?: { source: DoujinSource; galleryId: string }[]; reviewed?: boolean } | null;
+  if (!body || typeof body.reviewed !== 'boolean' || !Array.isArray(body.items) || !body.items.length || body.items.length > 100 || body.items.some(item => !item || !['hitomi', 'nhentai'].includes(item.source) || typeof item.galleryId !== 'string' || !item.galleryId.trim())) return c.json({ error: 'Provide 1–100 galleries and a reviewed state.' }, 400);
+  if (!setGalleriesReviewed(body.items, body.reviewed)) return c.json({ error: 'Discovery not found. Refresh the feed and try again.' }, 404);
+  return c.json({ ok: true });
+});
+
 /** Newest-first feed of galleries the watches reported as new ("Recently added"). */
 api.get('/watched-searches/new', (c) => {
   const limitParam = Number(c.req.query('limit') ?? '100');
@@ -988,6 +1003,8 @@ api.post('/watched-searches/check', (c) => {
   const id = jobQueue.enqueue('check-watched-searches', {});
   return c.json({ id, alreadyRunning: false }, 202);
 });
+
+api.get('/watched-searches/check-status', (c) => c.json(jobQueue.active().find(job => job.type === 'check-watched-searches') ?? jobQueue.latest('check-watched-searches')));
 
 // ---------------- Recommendations ----------------
 

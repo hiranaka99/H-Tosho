@@ -731,10 +731,6 @@ const WATCH_INTERVAL_OPTIONS = [
 ] as const;
 
 /** Human-readable cadence for the description copy; falls back to raw minutes. */
-function watchIntervalLabel(minutes: number): string {
-  return WATCH_INTERVAL_OPTIONS.find((o) => o.minutes === minutes)?.label ?? `${minutes} min`;
-}
-
 function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, query: string) => void }) {
   const qc = useQueryClient();
   const watchesQuery = useQuery({ queryKey: ['watched-searches'], queryFn: api.watchedSearches, refetchInterval: 30_000 });
@@ -747,6 +743,23 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
   const [adding, setAdding] = React.useState(false);
   const [removeTarget, setRemoveTarget] = React.useState<{ id: number; query: string } | null>(null);
   const [checking, setChecking] = React.useState(false);
+  const [requestedJob, setRequestedJob] = React.useState<number | null>(null);
+  const [manageOpen, setManageOpen] = React.useState(false);
+  const checkQuery = useQuery({ queryKey: ['watched-check-status'], queryFn: api.watchedCheckStatus, refetchInterval: 2500 });
+  const checkJob = checkQuery.data;
+  const checkActive = checking || (requestedJob !== null && checkJob?.id !== requestedJob && !checkQuery.isError) || checkJob?.status === 'queued' || checkJob?.status === 'running';
+  const completionRef = React.useRef('');
+  React.useEffect(() => {
+    if (!checkJob || ['queued', 'running'].includes(checkJob.status)) return;
+    const stamp = `${checkJob.id}:${checkJob.status}`;
+    if (completionRef.current === stamp) return;
+    completionRef.current = stamp;
+    void qc.invalidateQueries({ queryKey: ['watched-searches'] });
+    void qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
+    setRequestedJob(null);
+  }, [checkJob, qc]);
+  const summary = checkJob?.result as { newGalleries?: number; failed?: number; processed?: number } | undefined;
+  const checkLabel = checkQuery.isError ? 'Check status unavailable' : checkActive ? checkJob?.status === 'running' ? `Checking ${checkJob.progressCurrent} of ${checkJob.progressTotal} watches` : 'Check queued' : checkJob?.status === 'failed' ? 'Check failed' : checkJob?.status === 'cancelled' ? 'Check cancelled' : checkJob?.status === 'completed' ? `${summary?.newGalleries ?? 0} new ${summary?.newGalleries === 1 ? 'find' : 'finds'}${summary?.failed ? ` · ${summary.failed} ${summary.failed === 1 ? 'watch failed' : 'watches failed'}` : ''}` : 'No check recorded';
   const [expanded, setExpanded] = React.useState<Set<number>>(new Set());
   const toggleExpanded = (id: number) => {
     setExpanded((prev) => {
@@ -775,7 +788,8 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
     try {
       await api.removeWatchedSearch(id);
       qc.invalidateQueries({ queryKey: ['watched-searches'] });
-      toast({ tone: 'info', title: 'Watched search removed' });
+      qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
+      toast({ tone: 'info', title: 'Watch removed', description: 'Discoveries remain in History.' });
     } catch (e) {
       toast({ tone: 'danger', title: 'Could not remove watch', description: e instanceof Error ? e.message : String(e) });
     }
@@ -783,8 +797,9 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
   async function checkNow() {
     setChecking(true);
     try {
-      await api.checkWatchedSearches();
-      toast({ tone: 'success', title: 'Check queued', description: 'Results land in the job log; new galleries ping Discord.' });
+      const queued = await api.checkWatchedSearches();
+      setRequestedJob(queued.id);
+      await checkQuery.refetch();
     } catch (e) {
       toast({ tone: 'danger', title: 'Could not queue check', description: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -821,34 +836,43 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
             ))}
           </Select>
           </label>
-          <Button size="sm" variant="outline" className="shrink-0" onClick={checkNow} disabled={checking}>
-            {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Star className="h-3.5 w-3.5" />} Check now
+          <Button size="sm" variant="outline" className="shrink-0" onClick={checkNow} disabled={checkActive || !watches?.length || checkQuery.isPending}>
+            {checkActive ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Star className="h-3.5 w-3.5" />} Check now
           </Button>
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
+        <div role="status" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+          <span className={cn(checkJob?.status === 'failed' || summary?.failed ? 'text-warning' : 'text-muted')}>{checkLabel}{checkJob?.finishedAt && !checkActive ? ` · ${timeAgo(checkJob.finishedAt)}` : ''}</span>
+          {checkJob && <Link className="inline-flex min-h-11 items-center text-xs text-primary underline underline-offset-4" to={`/jobs?job=${checkJob.id}`}>View check</Link>}
+          {checkQuery.isError && <Button size="sm" variant="ghost" onClick={() => void checkQuery.refetch()}>Retry status</Button>}
+        </div>
         {watchesQuery.isError && <ErrorState title="Could not load watched searches" description={watchesQuery.error instanceof Error ? watchesQuery.error.message : String(watchesQuery.error)} onRetry={() => void watchesQuery.refetch()} />}
         {settingsQuery.isError && <ErrorState title="Could not load the check interval" description={settingsQuery.error instanceof Error ? settingsQuery.error.message : String(settingsQuery.error)} onRetry={() => void settingsQuery.refetch()} />}
-        {settingsQuery.data && (intervalMinutes > 0 ? (
-          <p className="text-sm text-muted">Checked automatically every {watchIntervalLabel(intervalMinutes)}. New results ping Discord — the first run just records what already exists.</p>
-        ) : (
-          <p className="text-sm text-muted">Auto-check is off — use Check now to run all watches. New results ping Discord; the first run just records what already exists.</p>
-        ))}
+        <Disclosure label={`Manage watches${watches ? ` (${watches.length})` : ''}`} open={manageOpen || watches?.length === 0} onToggle={event => setManageOpen(event.currentTarget.open)} summaryClassName="min-h-11 px-0 text-foreground">
+        <div className="flex flex-col gap-3 pt-2">
+        <p className="max-w-prose text-xs text-muted">The first check records existing galleries. Later discoveries appear in Inbox.</p>
+        <form className="grid grid-cols-1 gap-2 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-end" aria-label="Add a watched search" onSubmit={(e) => { e.preventDefault(); void add(); }}>
+          <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Source<Select aria-label="Watched search source" value={source} onChange={(e) => setSource(e.target.value as DoujinSource)} disabled={adding} className="sm:w-32 sm:shrink-0"><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select></label>
+          <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Query<Input aria-label="Watched search query" placeholder="Artist, tag, or search query" value={query} onChange={(e) => setQuery(e.target.value)} disabled={adding} className="flex-1" /></label>
+          <Button size="sm" type="submit" disabled={adding || !query.trim()}>{adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add watch</Button>
+        </form>
         {watchesQuery.isPending ? (
           <div role="status" aria-label="Loading watched searches" className="flex flex-col gap-2"><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /><span className="sr-only">Loading watched searches…</span></div>
         ) : watches && watches.length > 0 ? (
           <div className="flex flex-col gap-1.5">
             {watches.map((w) => (
-              <div key={w.id} className="rounded-lg border border-border px-3 py-3 text-xs">
+              <div key={w.id} className="border-b border-border py-3 text-xs last:border-b-0">
                 <div className="flex items-start gap-2">
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><Badge tone="muted">{SOURCE_LABELS[w.source] ?? w.source}</Badge><span className="text-muted">{w.lastCheckedAt ? `Checked ${timeAgo(w.lastCheckedAt)}` : 'Not checked yet'}</span></div>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><Badge tone="muted">{SOURCE_LABELS[w.source] ?? w.source}</Badge><span className="text-muted">{w.lastError ? 'Last attempt failed' : w.lastCheckedAt ? `Checked ${timeAgo(w.lastCheckedAt)}` : 'Awaiting first check'}</span></div>
+                    {w.lastError ? <p className="break-words text-warning">{w.lastError}</p> : w.lastNewCount !== null && w.lastNewCount !== undefined ? <p className="text-muted">{w.lastNewCount ? `${w.lastNewCount} new in last check` : 'No new finds in last check'}</p> : null}
                     <button type="button" onClick={() => onOpenSearch(w.source, w.query)} title={`Open in search tab: ${w.query}`} aria-label={`Search “${w.query}” on ${SOURCE_LABELS[w.source] ?? w.source}`} className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 text-left text-sm font-medium text-primary underline-offset-2 hover:underline"><span className="break-words line-clamp-2">{w.query}</span></button>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                   {w.lastResults.length > 0 && (
-                    <Button size="sm" variant="ghost" aria-expanded={expanded.has(w.id)} aria-controls={`watched-results-${w.id}`} aria-label={`${expanded.has(w.id) ? 'Hide' : 'Show'} ${w.lastResults.length} new results for ${w.query}`} onClick={() => toggleExpanded(w.id)}>
-                      {w.lastResults.length} new
+                    <Button size="sm" variant="ghost" aria-expanded={expanded.has(w.id)} aria-controls={`watched-results-${w.id}`} aria-label={`${expanded.has(w.id) ? 'Hide' : 'Show'} ${w.lastResults.length} latest finds for ${w.query}`} onClick={() => toggleExpanded(w.id)}>
+                      {w.lastResults.length} finds
                       <ChevronDown className={cn('h-3.5 w-3.5 transition-transform duration-150', expanded.has(w.id) && 'rotate-180')} />
                     </Button>
                   )}
@@ -857,6 +881,7 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
                 </div>
                 {w.lastResults.length > 0 && expanded.has(w.id) && (
                   <div id={`watched-results-${w.id}`} className="mt-2 flex flex-col gap-1.5 border-t border-border pt-2">
+                    {w.lastFindsAt && <p className="text-muted">Found {timeAgo(w.lastFindsAt)}</p>}
                     {w.lastResults.map(r => {
                       const content = <><Cover url={r.coverUrl} title={r.title} className="h-10 w-8 shrink-0 rounded" /><span className="min-w-0 flex-1 break-words text-left line-clamp-2">{r.title}</span><PageCountPill pageCount={r.pageCount} />{r.url && <ExternalLink aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted" />}</>;
                       const className = 'flex min-h-11 items-center gap-2 rounded px-1 text-foreground hover:bg-surface-2 hover:underline';
@@ -872,15 +897,13 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
         ) : (
           watches && <p className="text-sm text-muted">No watched searches yet — add one below, or use the Watch button in the Search tab.</p>
         )}
-        <form className="flex flex-col gap-2 border-t border-border pt-3 sm:flex-row sm:items-center" aria-label="Add a watched search" onSubmit={(e) => { e.preventDefault(); void add(); }}>
-          <Select aria-label="Watched search source" value={source} onChange={(e) => setSource(e.target.value as DoujinSource)} disabled={adding} className="sm:w-32 sm:shrink-0"><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select>
-          <Input aria-label="Watched search query" placeholder="Search query, e.g. artist:konboi" value={query} onChange={(e) => setQuery(e.target.value)} disabled={adding} className="flex-1" />
-          <Button size="sm" type="submit" disabled={adding || !query.trim()}>{adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add watch</Button>
-        </form>
+
+        </div>
+        </Disclosure>
         <ConfirmDialog
           open={removeTarget !== null}
           title="Remove watched search?"
-          description={removeTarget ? `Stop watching “${removeTarget.query}”?` : ''}
+          description={removeTarget ? `Stop watching “${removeTarget.query}”? Existing discoveries stay in History.` : ''}
           confirmLabel="Remove"
           onOpenChange={(open) => { if (!open) setRemoveTarget(null); }}
           onConfirm={() => { if (removeTarget) void remove(removeTarget.id); setRemoveTarget(null); }}
@@ -1238,33 +1261,45 @@ export function Downloader() {
     }
   }
 
-  // Galleries the watches reported as new — polled while the Watched tab is
-  // visible; a check can land new rows at any time in between.
-  const { data: newGalleries, isFetching: feedLoading, isError: feedFailed, error: feedError, refetch: retryFeed } = useQuery({
-    queryKey: ['watched-search-new'],
-    queryFn: () => api.watchedSearchNew(200),
+  const [feedView, setFeedView] = React.useState<'inbox' | 'history'>('inbox');
+  const [feedSource, setFeedSource] = React.useState('');
+  const [feedWatch, setFeedWatch] = React.useState('');
+  const [feedPage, setFeedPage] = React.useState(1);
+  const WATCH_PAGE_SIZE = 12;
+  const { data: galleryFeed, isFetching: feedLoading, isError: feedFailed, error: feedError, refetch: retryFeed } = useQuery({
+    queryKey: ['watched-gallery-feed', feedView, feedSource, feedWatch, feedPage],
+    queryFn: () => api.watchedGalleryFeed({ view: feedView, source: feedSource, searchId: feedWatch, offset: (feedPage - 1) * WATCH_PAGE_SIZE, limit: WATCH_PAGE_SIZE }),
     enabled: tab === 'watched',
     refetchInterval: 60_000,
   });
-  // Feed rows as gallery items for the shared card/selection machinery; the
-  // detail modal fetches full metadata itself.
-  const feedItems = React.useMemo<DoujinSearchResult[]>(
-    () => (newGalleries ?? []).map((g) => ({ source: g.source, galleryId: g.galleryId, title: g.title, coverUrl: g.coverUrl ?? null, pageCount: g.pageCount, tags: [], artists: [] })),
-    [newGalleries],
-  );
-  const feedMetaByKey = React.useMemo(() => {
-    const m = new Map<string, { query: string; foundAt: string }>();
-    for (const g of newGalleries ?? []) m.set(`${g.source}:${g.galleryId}`, { query: g.query, foundAt: g.foundAt });
-    return m;
-  }, [newGalleries]);
-  const [feedPage, setFeedPage] = React.useState(1);
-  const feedPageCount = Math.max(1, Math.ceil(feedItems.length / RESULTS_PAGE_SIZE));
+  const feedItems = React.useMemo<DoujinSearchResult[]>(() => (galleryFeed?.items ?? []).map(g => ({ source: g.source, galleryId: g.galleryId, title: g.title, coverUrl: g.coverUrl ?? undefined, pageCount: g.pageCount, tags: [], artists: g.artists ?? [], language: g.language })), [galleryFeed]);
+  const feedSelectionCache = React.useRef(new Map<string, DoujinSearchResult>());
+  for (const item of feedItems) feedSelectionCache.current.set(`${item.source}:${item.galleryId}`, item);
+  const feedMetaByKey = new Map((galleryFeed?.items ?? []).map(g => [`${g.source}:${g.galleryId}`, g]));
+  const feedPageCount = Math.max(1, Math.ceil((galleryFeed?.total ?? 0) / WATCH_PAGE_SIZE));
   const feedCurPage = Math.min(feedPage, feedPageCount);
-  const feedPageItems = feedItems.slice((feedCurPage - 1) * RESULTS_PAGE_SIZE, feedCurPage * RESULTS_PAGE_SIZE);
+  React.useEffect(() => { if (galleryFeed && feedPage > feedPageCount) setFeedPage(feedPageCount); }, [galleryFeed, feedPage, feedPageCount]);
+  const feedPageItems = feedItems;
+  const [reviewingKeys, setReviewingKeys] = React.useState(new Set<string>());
 
   // Daily recommendations: stable per local date (server caches the day's set),
   // so no polling — a manual refresh re-rolls with a fresh seed.
   const qc = useQueryClient();
+  async function reviewDiscoveries(items: DoujinSearchResult[], reviewed: boolean) {
+    const keys = items.map(item => `${item.source}:${item.galleryId}`);
+    if (!keys.length || keys.some(key => reviewingKeys.has(key))) return;
+    setReviewingKeys(current => new Set([...current, ...keys]));
+    try {
+      await api.reviewWatchedGalleries(items.map(({ source, galleryId }) => ({ source, galleryId })), reviewed);
+      const handled = new Set(keys);
+      setSelectedGalleries(current => new Set([...current].filter(key => !handled.has(key))));
+      await qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
+    } catch (error) {
+      toast({ tone: 'danger', title: 'Could not update review status', description: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setReviewingKeys(current => new Set([...current].filter(key => !keys.includes(key))));
+    }
+  }
   const { data: recs, isFetching: recsLoading, isError: recsFailed, error: recsError, refetch: refetchRecs } = useQuery({
     queryKey: ['recommendations'],
     queryFn: api.recommendations,
@@ -1444,8 +1479,9 @@ export function Downloader() {
   // Selected galleries in click order — the order chapter numbers are assigned.
   // Selections can come from either results grid (search or "Recently added");
   // a gallery present in live search results keeps its richer metadata.
-  const selectableGalleries = React.useMemo(() => indexSelectableGalleries(results ?? EMPTY_GALLERIES, feedItems), [results, feedItems]);
+  const selectableGalleries = React.useMemo(() => indexSelectableGalleries(results ?? EMPTY_GALLERIES, [...feedSelectionCache.current.values()]), [results, feedItems]);
   const selectedItems = React.useMemo(() => selectedGalleryItems(selectableGalleries, selectedGalleries), [selectableGalleries, selectedGalleries]);
+  const reviewableSelectedItems = selectedItems.filter(item => feedSelectionCache.current.has(`${item.source}:${item.galleryId}`));
 
   const openMergedDownload = React.useCallback(() => {
     if (!selectedItems.length) return;
@@ -1789,7 +1825,7 @@ export function Downloader() {
               </Button>
               {!!results?.length && (
                 <Button size="sm" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode(m => !m)} title="Select galleries to download together or merge into an existing series">
-                  <CheckSquare className="h-3.5 w-3.5" /> {selectMode ? 'Done selecting' : 'Select to merge'}
+                  <CheckSquare className="h-3.5 w-3.5" /> {selectMode ? 'Done selecting' : 'Select galleries'}
                 </Button>
               )}
             </div>
@@ -1961,63 +1997,51 @@ export function Downloader() {
         </div>
       )}
 
-      {/* Watched searches — two stacked sections: the "Recently added" feed, then the watch list */}
+      {/* Watch controls stay above the inbox and retained discovery history. */}
       {tab === 'watched' && (
         <div className="flex flex-col gap-4">
-          <section aria-label="Recently added" className="flex flex-col gap-3">
-            <h2 className="text-sm font-semibold">Recently added</h2>
-            {feedFailed ? (
-              <ErrorState title="Could not load recently added galleries" description={feedError instanceof Error ? feedError.message : String(feedError)} onRetry={() => void retryFeed()} />
-            ) : !newGalleries && feedLoading ? (
-              <div role="status" className="flex items-center justify-center gap-2 px-4 py-12 text-sm text-muted">
-                <Spinner /> Loading recently added galleries…
-              </div>
-            ) : feedItems.length > 0 ? (
+          <WatchedTab onOpenSearch={(src, q) => searchTagFragment(q, src)} />
+          <section aria-label="Watched discoveries" className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <SegmentedControl items={[{ id: 'inbox' as const, label: `Inbox${galleryFeed ? ` (${galleryFeed.inboxCount})` : ''}` }, { id: 'history' as const, label: `History${galleryFeed ? ` (${galleryFeed.historyCount})` : ''}` }]} value={feedView} onChange={view => { setFeedView(view); setFeedPage(1); }} label="Discovery view" itemClassName="min-h-11" />
+              <Button size="sm" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode(current => !current)} disabled={!feedItems.length && !selectedGalleries.size}><CheckSquare className="h-3.5 w-3.5" />{selectMode ? 'Done selecting' : 'Select galleries'}</Button>
+            </div>
+            <div className="grid min-w-0 grid-cols-1 gap-2 min-[420px]:grid-cols-2">
+              <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">Watch
+                <Select aria-label="Filter discoveries by watch" value={feedWatch} onChange={event => { setFeedWatch(event.target.value); setFeedPage(1); }}>
+                  <option value="">All watches</option>
+                  {(galleryFeed?.watches ?? []).map(watch => <option key={watch.id} value={watch.id}>{SOURCE_LABELS[watch.source]} · {watch.query}</option>)}
+                </Select>
+              </label>
+              <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">Source
+                <Select aria-label="Filter discoveries by source" value={feedSource} onChange={event => { setFeedSource(event.target.value); setFeedPage(1); }}><option value="">All sources</option><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select>
+              </label>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-muted">{feedView === 'inbox' ? 'Unreviewed finds · newest first' : 'All discoveries · newest first'}</p>
+              {reviewableSelectedItems.length > 0 && <Button size="sm" variant="outline" disabled={reviewingKeys.size > 0} onClick={() => void reviewDiscoveries(reviewableSelectedItems, true)}><Check className="h-3.5 w-3.5" />{reviewableSelectedItems.length === selectedItems.length ? 'Mark selected reviewed' : `Mark ${reviewableSelectedItems.length} finds reviewed`}</Button>}
+            </div>
+            {showSelection && <GallerySelectionBar {...selectionActions} />}
+            {feedFailed ? <ErrorState title="Could not load discoveries" description={feedError instanceof Error ? feedError.message : String(feedError)} onRetry={() => void retryFeed()} /> : !galleryFeed && feedLoading ? (
+              <div role="status" className="flex items-center justify-center gap-2 px-4 py-12 text-sm text-muted"><Spinner />Loading discoveries…</div>
+            ) : feedItems.length ? (
               <>
-                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-                  <p className="min-w-0 w-full text-sm text-muted min-[420px]:w-auto min-[420px]:flex-1">
-                    {feedItems.length} {feedItems.length === 1 ? 'gallery' : 'galleries'} found by your watched searches — newest first
-                  </p>
-                  <Button size="sm" className="ml-auto shrink-0" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode(m => !m)} title="Select galleries to download together or merge into an existing series">
-                    <CheckSquare className="h-3.5 w-3.5" /> {selectMode ? 'Done selecting' : 'Select to merge'}
-                  </Button>
-                </div>
-                {showSelection && <GallerySelectionBar {...selectionActions} />}
                 <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                   {feedPageItems.map(item => {
-                    const key = `${item.source}:${item.galleryId}`;
-                    const meta = feedMetaByKey.get(key);
-                    return (
-                      <div key={key} className="flex flex-col gap-1 [&>article]:flex-1">
-                        <GalleryCard
-                          item={item}
-                          selectMode={selectMode}
-                          selected={selectedGalleries.has(key)}
-                          onToggleSelect={toggleGallerySelect}
-                          onOpen={setSelected}
-                          task={activeTasksByGallery.get(key)}
-                          starting={pendingKeys.has(key)}
-                          downloadedAt={downloadedAt.get(key)}
-                          libraryMatch={libraryMatches.get(key)}
-                          onDownload={doStartDownload}
-                          downloadSetup={downloadStatus}
-                        />
-                        {meta && (
-                          <p className="break-words px-1 text-xs leading-snug text-muted line-clamp-2" title={`Found by watch “${meta.query}”`}>
-                            via “{meta.query}” · {timeAgo(meta.foundAt)}
-                          </p>
-                        )}
-                      </div>
-                    );
+                    const key = `${item.source}:${item.galleryId}`, meta = feedMetaByKey.get(key);
+                    return <div key={key} className="flex min-w-0 flex-col gap-1 [&>article]:flex-1">
+                      <GalleryCard item={item} selectMode={selectMode} selected={selectedGalleries.has(key)} onToggleSelect={toggleGallerySelect} onOpen={setSelected} task={activeTasksByGallery.get(key)} starting={pendingKeys.has(key)} downloadedAt={downloadedAt.get(key)} libraryMatch={libraryMatches.get(key)} onDownload={doStartDownload} downloadSetup={downloadStatus} showTags={false} />
+                      {meta && <div className="flex min-w-0 flex-col gap-1 px-1 text-xs">
+                        <button className="min-h-11 break-words text-left text-muted underline-offset-4 hover:text-primary hover:underline line-clamp-2" onClick={() => { setFeedWatch(String(meta.searchId)); setFeedPage(1); }} title={`Filter by ${meta.query}`}>via {meta.query} · {timeAgo(meta.foundAt)}</button>
+                        <Button size="sm" variant="ghost" className="min-h-11 justify-start px-1" disabled={reviewingKeys.has(key)} onClick={() => void reviewDiscoveries([item], !meta.reviewedAt)}>{reviewingKeys.has(key) ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : meta.reviewedAt ? <RotateCcw className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}{meta.reviewedAt ? 'Return to inbox' : 'Mark reviewed'}</Button>
+                      </div>}
+                    </div>;
                   })}
                 </div>
-                <Pager page={feedCurPage} count={feedPageCount} onPageChange={(p) => { setFeedPage(p); document.querySelector('main')?.scrollTo({ top: 0 }); }} />
+                <Pager page={feedCurPage} count={feedPageCount} showJump={false} onPageChange={page => { setFeedPage(page); document.querySelector('main')?.scrollTo({ top: 0 }); }} />
               </>
-            ) : (
-              <EmptyState icon={<Star className="h-8 w-8" />} title="Nothing new yet" description="New results from your watched searches will appear here after the next check — add a watched search below if you haven't yet." />
-            )}
+            ) : <EmptyState icon={<Star className="h-8 w-8" />} title={feedWatch || feedSource ? 'No matching discoveries' : feedView === 'inbox' ? 'Inbox is clear' : 'No discoveries yet'} description={feedWatch || feedSource ? 'Try another watch or source.' : feedView === 'inbox' ? 'New finds arrive here. Reviewed galleries stay in History.' : 'Add a watch above. Its first check records existing galleries; later finds appear here.'} />}
           </section>
-          <WatchedTab onOpenSearch={(src, q) => searchTagFragment(q, src)} />
         </div>
       )}
       {/* Merged download confirm — reachable from both results grids */}

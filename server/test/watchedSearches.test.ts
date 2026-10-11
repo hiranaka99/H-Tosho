@@ -26,13 +26,13 @@ legacy.close();
 // Dynamic imports are required here: the DB module snapshots HTOSHO_DATA_DIR at module load.
 const { diffSeenResults, addWatchedSearch, checkWatchedSearches, listWatchedSearches, isStaleUpload } = await import('../src/services/watchedSearches.js');
 const { doujinProviders } = await import('../src/downloader/providers.js');
-const { listNewGalleries, removeWatchedSearch, backfillNewGalleries } = await import('../src/services/watchedSearches.js');
+const { listNewGalleries, removeWatchedSearch, backfillNewGalleries, listGalleryFeed, setGalleriesReviewed } = await import('../src/services/watchedSearches.js');
 const { getDb, schema } = await import('../src/db/index.js');
 const { getNotificationSettings, setNotificationSettings } = await import('../src/services/settings.js');
 const originalHitomi = doujinProviders.hitomi;
 
 // Stub the hitomi provider so the full check pipeline runs against fixture data.
-let searchResults: { source: string; galleryId: string; title: string; tags: string[]; artists: string[]; url?: string; coverUrl?: string; pageCount?: number; uploadedAt?: string }[] = [];
+let searchResults: { source: string; galleryId: string; title: string; tags: string[]; artists: string[]; language?: string; url?: string; coverUrl?: string; pageCount?: number; uploadedAt?: string }[] = [];
 doujinProviders.hitomi = {
   id: 'hitomi',
   name: 'Hitomi.la',
@@ -191,15 +191,14 @@ describe('recently added feed', () => {
     assert.equal(feed[0].galleryId, 'f-4', 'newest find comes first');
     assert.deepEqual(listNewGalleries(1).map((g) => g.galleryId), ['f-4'], 'limit caps the feed');
 
-    // Removing a watch drops its feed rows (table level: other watches also
-    // reported f-4, so it stays in the feed via them).
+    // Removing a watch stops monitoring but retains its discoveries in history.
     assert.equal(removeWatchedSearch(watchB.id), true);
     const rowsForB = getDb()
       .select({ n: sql<number>`count(*)` })
       .from(schema.watchedSearchNew)
       .where(eq(schema.watchedSearchNew.searchId, watchB.id))
       .get();
-    assert.equal(Number(rowsForB?.n ?? 0), 0);
+    assert.ok(Number(rowsForB?.n ?? 0) > 0, "Stopping a watch preserves history");
   });
 
   it('backfills lastResults written by older builds into the feed exactly once', async () => {
@@ -350,5 +349,104 @@ describe('stale upload suppression (provider index hiccup)', () => {
     assert.deepEqual(listWatchedSearches().find((w) => w.id === watch.id)!.lastResults.map((r) => r.galleryId), searchResults.map((r) => r.galleryId));
     assert.deepEqual(listNewGalleries(500).filter((g) => g.query === query).map((g) => g.galleryId).sort(), searchResults.map((r) => r.galleryId).sort());
     removeWatchedSearch(watch.id);
+  });
+});
+
+
+describe('watched inbox and history', () => {
+  it('upgrades old discoveries with empty metadata and an unreviewed state', () => {
+    const old = listNewGalleries(1000).find(item => item.galleryId === 'old-find')!;
+    assert.deepEqual(old.artists, []);
+    assert.equal(old.reviewedAt, null);
+    assert.equal(old.language, undefined);
+  });
+
+  it('preserves artists/language and separates the last quiet check from retained finds', async () => {
+    const watch = addWatchedSearch('hitomi', 'artist:metadata-inbox');
+    searchResults = [];
+    await checkWatchedSearches(log);
+    searchResults = [{ source: 'hitomi', galleryId: 'metadata-find', title: 'Metadata Find', artists: ['Akatsuki Myuuto'], language: 'Japanese', tags: [], pageCount: 42 }];
+    await checkWatchedSearches(log);
+    const before = listWatchedSearches().find(item => item.id === watch.id)!;
+    assert.equal(before.lastNewCount, 1);
+    assert.ok(before.lastFindsAt);
+    const feed = listGalleryFeed({ searchId: watch.id });
+    assert.deepEqual(feed.items[0].artists, ['Akatsuki Myuuto']);
+    assert.equal(feed.items[0].language, 'Japanese');
+    await checkWatchedSearches(log);
+    const after = listWatchedSearches().find(item => item.id === watch.id)!;
+    assert.equal(after.lastNewCount, 0);
+    assert.equal(after.lastFindsAt, before.lastFindsAt);
+    assert.equal(after.lastResults.length, 1);
+  });
+
+  it('filters before deduplicating and paging, and shares review state across watches', () => {
+    const table = schema.watchedSearchNew;
+    const rows = Array.from({ length: 17 }, (_,i) => ({ searchId: 90001, source: 'hitomi', query: 'artist:filter', galleryId: `filter-${i}`, title: `Filter ${i}`, foundAt: new Date(Date.UTC(2026,9,1,0,i)).toISOString() }));
+    getDb().insert(table).values([...rows, { ...rows[16], searchId: 90002, query: 'tag:other', foundAt: '2026-10-02T00:00:00Z' }, { ...rows[0], searchId: 90003, source: 'nhentai', galleryId: 'filter-16' }]).run();
+    assert.equal(listGalleryFeed({ searchId: 90001, limit: 12 }).total, 17);
+    assert.equal(listGalleryFeed({ searchId: 90001, offset: 12, limit: 12 }).items.length, 5);
+    assert.equal(listGalleryFeed({ searchId: 90001 }).items[0].searchId, 90001, 'A later find by a different watch must not remove the match');
+    assert.equal(setGalleriesReviewed([{ source: 'hitomi', galleryId: 'filter-16' }], true), true);
+    assert.equal(listGalleryFeed({ searchId: 90001, view: 'inbox' }).total, 16);
+    assert.equal(listGalleryFeed({ searchId: 90002, view: 'inbox' }).total, 0);
+    assert.equal(listGalleryFeed({ searchId: 90001, view: 'history' }).total, 17);
+    assert.ok(listGalleryFeed({ searchId: 90002, view: 'history' }).items[0].reviewedAt);
+    assert.equal(listGalleryFeed({ searchId: 90003, source: 'nhentai', view: 'inbox' }).total, 1, 'Provider identities remain distinct');
+    assert.equal(setGalleriesReviewed([{ source: 'hitomi', galleryId: 'filter-16' }], false), true);
+    assert.equal(listGalleryFeed({ searchId: 90002, view: 'inbox' }).total, 1);
+    assert.equal(setGalleriesReviewed([{ source: 'hitomi', galleryId: 'filter-16' }, { source: 'hitomi', galleryId: 'missing' }], true), false);
+    assert.equal(listGalleryFeed({ searchId: 90002, view: 'inbox' }).total, 1, 'Failed batches must not partially mark reviewed');
+  });
+
+  it('retains reviewed state when another watch discovers the gallery later', async () => {
+    const first = addWatchedSearch('hitomi', 'artist:review-origin');
+    searchResults = [];
+    await checkWatchedSearches(log);
+    searchResults = [{ source: 'hitomi', galleryId: 'review-later', title: 'Review Later', tags: [], artists: ['Artist'] }];
+    await checkWatchedSearches(log);
+    setGalleriesReviewed([{ source: 'hitomi', galleryId: 'review-later' }], true);
+    const second = addWatchedSearch('hitomi', 'artist:review-second');
+    searchResults = [];
+    await checkWatchedSearches(log);
+    searchResults = [{ source: 'hitomi', galleryId: 'review-later', title: 'Review Later', tags: [], artists: ['Artist'] }];
+    await checkWatchedSearches(log);
+    assert.equal(listGalleryFeed({ searchId: second.id, view: 'inbox' }).total, 0);
+    assert.ok(listGalleryFeed({ searchId: second.id, view: 'history' }).items[0].reviewedAt);
+    removeWatchedSearch(first.id);
+    assert.ok(listGalleryFeed({ searchId: first.id, view: 'history' }).items[0].reviewedAt);
+  });
+
+  it('records failed attempts without replacing the last successful check and clears errors on recovery', async () => {
+    const watch = addWatchedSearch('hitomi', 'artist:failure-status');
+    searchResults = [];
+    await checkWatchedSearches(log);
+    const lastChecked = listWatchedSearches().find(item => item.id === watch.id)!.lastCheckedAt;
+    const search = doujinProviders.hitomi.search;
+    try {
+      doujinProviders.hitomi.search = async () => { throw Error('Provider unavailable'); };
+      const failed = await checkWatchedSearches(log);
+      assert.ok(failed.failed > 0);
+      const state = listWatchedSearches().find(item => item.id === watch.id)!;
+      assert.equal(state.lastError, 'Provider unavailable');
+      assert.ok(state.lastAttemptedAt);
+      assert.equal(state.lastCheckedAt, lastChecked);
+    } finally { doujinProviders.hitomi.search = search; }
+    await checkWatchedSearches(log);
+    assert.equal(listWatchedSearches().find(item => item.id === watch.id)!.lastError, null);
+  });
+
+  it('validates feed/review APIs and reports a check older than the last 100 unrelated jobs', async () => {
+    const { api } = await import('../src/routes/api.js');
+    for (const query of ['offset=-1', 'limit=101', 'source=unsupported', 'searchId=abc', 'view=all']) assert.equal((await api.request(`/watched-searches/feed?${query}`)).status, 400);
+    const response = await api.request('/watched-searches/feed?view=history&searchId=90001&limit=12&offset=12');
+    const feed = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(feed.total, 17);
+    assert.equal(feed.items.length, 5);
+    for (const body of [{ items: [], reviewed: true }, { items: [{ source: 'unsupported', galleryId: '1' }], reviewed: true }, { items: [{ source: 'hitomi', galleryId: '1' }], reviewed: 'true' }]) assert.equal((await api.request('/watched-searches/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).status, 400);
+    const id = Number(getDb().insert(schema.jobs).values({ type: 'check-watched-searches', status: 'completed', payloadJson: '{}' }).run().lastInsertRowid);
+    getDb().insert(schema.jobs).values(Array.from({ length: 101 }, () => ({ type: 'scan-new', status: 'completed', payloadJson: '{}' }))).run();
+    assert.equal((await (await api.request('/watched-searches/check-status')).json()).id, id);
   });
 });

@@ -130,11 +130,8 @@ function migrateWatchedSearchColumns(sqlite: Database.Database): void {
     (sqlite.prepare('PRAGMA table_info(watched_searches)').all() ?? []).map((c) => (c as { name: string }).name),
   );
   if (existing.size === 0) return; // table created by the DDL above already has every column
-  if (existing.has('last_results_json')) return;
-  try {
-    sqlite.exec('ALTER TABLE watched_searches ADD COLUMN last_results_json TEXT');
-  } catch (err) {
-    console.warn('[h-tosho] failed to add watched_searches column last_results_json:', err);
+  for (const [column, type] of [['last_results_json', 'TEXT'], ['last_new_count', 'INTEGER'], ['last_finds_at', 'TEXT'], ['last_attempted_at', 'TEXT'], ['last_error', 'TEXT']]) {
+    if (!existing.has(column)) sqlite.exec(`ALTER TABLE watched_searches ADD COLUMN ${column} ${type}`);
   }
 }
 
@@ -143,8 +140,10 @@ function migrateWatchedSearchNewColumns(sqlite: Database.Database): void {
   const existing = new Set(
     (sqlite.prepare('PRAGMA table_info(watched_search_new)').all() ?? []).map((c) => (c as { name: string }).name),
   );
-  if (existing.size === 0 || existing.has('page_count')) return;
-  sqlite.exec('ALTER TABLE watched_search_new ADD COLUMN page_count INTEGER');
+  if (existing.size === 0) return;
+  for (const [column, type] of [['page_count', 'INTEGER'], ['artists_json', "TEXT NOT NULL DEFAULT '[]'"], ['language', 'TEXT'], ['reviewed_at', 'TEXT']]) {
+    if (!existing.has(column)) sqlite.exec(`ALTER TABLE watched_search_new ADD COLUMN ${column} ${type}`);
+  }
 }
 
 /** Drop the legacy MangaDex adult catalog table (feature removed; live title search covers it). */
@@ -440,6 +439,10 @@ CREATE TABLE IF NOT EXISTS watched_searches (
   last_checked_at TEXT,
   last_result_count INTEGER,
   last_results_json TEXT,
+  last_new_count INTEGER,
+  last_finds_at TEXT,
+  last_attempted_at TEXT,
+  last_error TEXT,
   created_at TEXT NOT NULL DEFAULT (current_timestamp)
 );
 CREATE TABLE IF NOT EXISTS watched_search_seen (
@@ -459,6 +462,9 @@ CREATE TABLE IF NOT EXISTS watched_search_new (
   url TEXT,
   cover_url TEXT,
   page_count INTEGER,
+  artists_json TEXT NOT NULL DEFAULT '[]',
+  language TEXT,
+  reviewed_at TEXT,
   found_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS gallery_tags (
@@ -497,6 +503,7 @@ CREATE INDEX IF NOT EXISTS idx_download_queue_gallery ON download_queue(source, 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_watched_search_seen_unique ON watched_search_seen(search_id, source, gallery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_watched_search_new_unique ON watched_search_new(search_id, source, gallery_id);
 CREATE INDEX IF NOT EXISTS idx_watched_search_new_found ON watched_search_new(found_at, id);
+CREATE INDEX IF NOT EXISTS idx_watched_search_new_gallery ON watched_search_new(source, gallery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_tags_unique ON gallery_tags(source, gallery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_owned_galleries_unique ON owned_galleries(source, gallery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dismissed_galleries_unique ON dismissed_galleries(source, gallery_id);

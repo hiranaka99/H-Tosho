@@ -321,6 +321,10 @@ export interface WatchedSearch {
   lastCheckedAt: string | null;
   lastResultCount: number | null;
   seenCount: number;
+  lastNewCount: number | null;
+  lastFindsAt: string | null;
+  lastAttemptedAt: string | null;
+  lastError: string | null;
   /** New galleries from the last check that found something (empty otherwise). */
   lastResults: WatchedSearchResultItem[];
 }
@@ -346,7 +350,13 @@ export interface WatchedNewGallery {
   query: string;
   /** ISO 8601 timestamp of the check that first reported it. */
   foundAt: string;
+  searchId: number;
+  artists: string[];
+  language?: string;
+  reviewedAt: string | null;
 }
+
+export interface WatchedGalleryFeed { items: WatchedNewGallery[]; total: number; inboxCount: number; historyCount: number; watches: { id: number; query: string; source: DoujinSource }[] }
 
 /** One pick in a daily recommendation set (a search result plus why it matched). */
 export interface RecommendationItem extends DoujinSearchResult {
@@ -474,6 +484,14 @@ export const api = {
     request<WatchedSearch>('/watched-searches', { method: 'POST', body: JSON.stringify({ source, query }) }),
   removeWatchedSearch: (id: number) => request<{ ok: boolean }>(`/watched-searches/${id}`, { method: 'DELETE' }),
   checkWatchedSearches: () => request<{ id: number }>('/watched-searches/check', { method: 'POST' }),
+  watchedCheckStatus: () => request<Job | null>('/watched-searches/check-status'),
+  watchedGalleryFeed: (options: { view: 'inbox' | 'history'; source: string; searchId: string; offset: number; limit: number }) => {
+    const params = new URLSearchParams({ view: options.view, offset: String(options.offset), limit: String(options.limit) });
+    if (options.source) params.set('source', options.source);
+    if (options.searchId) params.set('searchId', options.searchId);
+    return request<WatchedGalleryFeed>(`/watched-searches/feed?${params}`);
+  },
+  reviewWatchedGalleries: (items: { source: DoujinSource; galleryId: string }[], reviewed: boolean) => request<{ ok: boolean }>('/watched-searches/review', { method: 'POST', body: JSON.stringify({ items, reviewed }) }),
   watchedSearchNew: (limit?: number) =>
     request<WatchedNewGallery[]>(`/watched-searches/new${limit ? `?limit=${limit}` : ''}`),
 

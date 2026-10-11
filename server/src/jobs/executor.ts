@@ -834,7 +834,7 @@ export async function runJob(job: Job, log: LogFn): Promise<JobResult> {
       () => jobQueue.isCancelRequested(job.id),
       (current, total) => jobQueue.setProgress(job.id, current, total),
     );
-    return { processed: r.checked, matched: 0, failed: 0, notified: r.notified, newGalleries: r.newGalleries };
+    return { processed: r.checked, matched: 0, failed: r.failed, notified: r.notified, newGalleries: r.newGalleries };
   }
 
 
