@@ -14,7 +14,7 @@ export function useDuplicateReview() {
   }, [review]);
   React.useEffect(() => () => { resolveRef.current?.(null); }, []);
   const reviewCheck = React.useCallback((check: DuplicateCheck): Promise<Set<string> | null> => {
-    if (!check.reports.some(report => report.matches.length) && !check.warnings.length) return Promise.resolve(new Set());
+    if (!check.reports.some(report => report.matches.length)) return Promise.resolve(new Set());
     // A new request never leaves an older confirmation waiting indefinitely.
     resolveRef.current?.(null);
     setReview(check);
@@ -28,7 +28,7 @@ export function useDuplicateReview() {
     <DialogContent className="max-w-xl">
       <div className="flex max-h-[calc(100dvh-2rem)] flex-col">
         <div className="shrink-0 space-y-2 border-b border-border p-4 pr-12 sm:p-5 sm:pr-12">
-          <DialogTitle className="flex items-center gap-2"><Copy className="h-5 w-5 shrink-0 text-warning" />{review.reports.some(report => report.matches.length) ? 'Possible duplicates' : 'Duplicate check incomplete'}</DialogTitle>
+          <DialogTitle className="flex items-center gap-2"><Copy className="h-5 w-5 shrink-0 text-warning" />Possible duplicates</DialogTitle>
           <DialogDescription>Review matching copies before downloading.</DialogDescription>
         </div>
         <div className="min-h-0 space-y-5 overflow-y-auto p-4 sm:p-5">
@@ -47,7 +47,7 @@ export function useDuplicateReview() {
         </div>
         <div className="flex shrink-0 justify-end gap-2 border-t border-border p-4">
           <Button variant="outline" onClick={() => finish(false)}>Cancel</Button>
-          <Button onClick={() => finish(true)}>{review.reports.some(report => report.matches.length) ? 'Download anyway' : 'Continue'}</Button>
+          <Button onClick={() => finish(true)}>Download anyway</Button>
         </div>
       </div>
     </DialogContent>

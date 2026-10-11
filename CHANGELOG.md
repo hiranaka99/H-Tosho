@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.10.1
+
+- Only interrupt downloads and merge downloads when duplicate matches are found.
+  Incomplete library metadata alone no longer opens a confirmation dialog.
+
 ## v2.10.0
 
 ### Cross-source duplicate detection

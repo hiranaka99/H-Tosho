@@ -6,7 +6,7 @@ H-Tosho helps you identify manga and light novels, review metadata before applyi
 it, and keep new additions organized. It also includes a doujinshi downloader,
 recommendations, and watched searches for new releases.
 
-Works with **Kavita v0.9.x or newer**. Current version: **v2.10.0** ·
+Works with **Kavita v0.9.x or newer**. Current version: **v2.10.1** ·
 [Release notes](CHANGELOG.md)
 
 ![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
@@ -204,6 +204,8 @@ library folders, and library paths learned when you open Libraries. You do not
 need Kavita to be online during a download. Archive metadata is cached and
 rechecked periodically; unreadable folders and archives without title/artist
 metadata are reported as incomplete coverage.
+Incomplete coverage alone does not interrupt downloads; duplicate matches still
+require review before proceeding.
 
 These are metadata matches, not image comparisons. Known differences in language
 or page count stay separate; missing metadata, unrelated source title variants,
