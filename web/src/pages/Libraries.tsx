@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { Search, RefreshCw, Play, BookOpen, Unlink, FileText, Combine, Check, CheckSquare, EllipsisVertical, Trash2, Eye } from 'lucide-react';
+import { Search, RefreshCw, Play, BookOpen, Unlink, FileText, Combine, Check, CheckSquare, EllipsisVertical, Trash2, Eye, X } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource, type Job } from '../lib/api';
 import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog, SegmentedControl, TabPanel, Spinner, ProgressBar, Pager, Disclosure } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
@@ -490,6 +490,13 @@ export function Libraries({ review = false }: { review?: boolean }) {
           </Button>
           <Button size="sm" variant="ghost" className="max-lg:min-h-11 pointer-coarse:min-h-11 sm:min-h-9" disabled={checked.size === 0} onClick={() => setChecked(new Set())}><span>Clear<span className="hidden sm:inline"> selection</span></span></Button>
           <Button size="sm" variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11 sm:min-h-9" onClick={() => { setSelectMode(false); setChecked(new Set()); }}><span>Exit<span className="hidden sm:inline"> selection</span></span></Button>
+          {checked.size > 0 && <ul aria-label="Selected series" className="grid max-h-28 w-full grid-cols-1 gap-x-4 overflow-y-auto border-t border-border sm:grid-cols-2 xl:grid-cols-3">
+            {rows.filter(row => checked.has(row.id)).map(row => <li key={row.id} className="flex min-w-0 items-center gap-2 py-2">
+              <div className="h-10 w-8 shrink-0 overflow-hidden rounded"><Cover src={row.cover} name={row.name} /></div>
+              <span className="min-w-0 flex-1 break-words text-xs font-medium">{row.name}</span>
+              <Button size="icon" variant="ghost" className="shrink-0" aria-label={`Remove ${row.name} from selection`} onClick={() => toggleCheck(row.id)}><X className="h-4 w-4" /></Button>
+            </li>)}
+          </ul>}
         </div>
       )}
 
@@ -521,8 +528,8 @@ export function Libraries({ review = false }: { review?: boolean }) {
                     key={r.id}
                     style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}
                     className={cn(
-                      'ui-card-interactive group relative z-0 flex min-w-0 flex-col animate-fade-up transition-colors duration-200 hover:border-border-2 focus-within:z-40',
-                      checked.has(r.id) && 'border-primary/60 ring-2 ring-primary',
+                      'ui-card-interactive group relative z-0 flex min-w-0 flex-col animate-fade-up transition-colors duration-200 focus-within:z-40',
+                      checked.has(r.id) ? 'border-primary bg-primary/10 ring-2 ring-primary' : 'hover:border-border-2',
                     )}
                   >
                     <button
@@ -537,8 +544,8 @@ export function Libraries({ review = false }: { review?: boolean }) {
                       aria-label={selectMode ? (checked.has(r.id) ? `Deselect ${r.name}` : `Select ${r.name}`) : `${r.providerId ? 'Review metadata for' : 'Identify'} ${r.name}`}
                       aria-pressed={selectMode ? checked.has(r.id) : undefined}
                     >
-                      {checked.has(r.id) && (
-                        <span className="pointer-events-none absolute left-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-full bg-primary-button text-white" aria-hidden><Check className="h-4 w-4" /></span>
+                      {selectMode && (
+                        <span className={cn('pointer-events-none absolute left-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md border', checked.has(r.id) ? 'border-primary-button bg-primary-button text-white' : 'border-border-2 bg-surface text-muted')} aria-hidden>{checked.has(r.id) ? <Check className="h-5 w-5" /> : <span className="h-4 w-4 rounded-sm border-2 border-current" />}</span>
                       )}
                       <div className="relative aspect-[3/4] w-full overflow-hidden rounded-t-xl">
                         <Cover src={r.cover} name={r.name} className="transition-transform duration-300 ease-out group-hover:scale-105" />
@@ -563,6 +570,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
                           {r.status === 'failed' && <p className="w-full break-words text-xs text-danger">{r.errorMessage || 'Matching or sync failed. Retry identification, or check provider settings.'}</p>}
                         </div>
                         {!selectMode && (r.status === 'failed' || r.providerId) && <Button variant="ghost" className="min-h-9 justify-start px-0 text-xs text-primary" onClick={() => openIdentify(r)}>{r.status === 'failed' ? 'Retry identification' : 'Review metadata'} <Play aria-hidden="true" className="h-3 w-3" /></Button>}
+                        {selectMode && <Button size="sm" variant={checked.has(r.id) ? 'default' : 'outline'} aria-pressed={checked.has(r.id)} aria-label={`${checked.has(r.id) ? 'Remove' : 'Select'} ${r.name} ${checked.has(r.id) ? 'from' : 'for'} merging`} onClick={() => toggleCheck(r.id)}><CheckSquare className="h-4 w-4" />{checked.has(r.id) ? 'Selected' : 'Select'}</Button>}
                     </div>
                     {!selectMode && <CardActionMenu row={r} onEdit={() => setComicInfo({ id: r.id, name: r.name })} onUnmatch={() => setUnmatchTarget(r)} onDelete={() => prepareDelete.mutate(r)} />}
                   </Card>

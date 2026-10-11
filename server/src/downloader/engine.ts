@@ -177,6 +177,7 @@ export interface DownloadTask {
   mergeFolder: string | null;
   /** Manual chapter number written to ComicInfo.Number for merged downloads. */
   chapterNumber: number | null;
+  mergeJobId?: number | null;
   /** Queue priority: higher values are claimed first (ties break on id ASC). */
   priority: number;
   errorMessage: string | null;
@@ -201,6 +202,7 @@ interface DownloadRow {
   outputPath: string | null;
   mergeFolder: string | null;
   chapterNumber: number | null;
+  mergeJobId?: number | null;
   priority: number;
   errorMessage: string | null;
   createdAt: string;
@@ -225,6 +227,7 @@ function rowToTask(row: DownloadRow): DownloadTask {
     outputPath: row.outputPath,
     mergeFolder: row.mergeFolder ?? null,
     chapterNumber: row.chapterNumber ?? null,
+    mergeJobId: row.mergeJobId ?? null,
     priority: row.priority ?? 0,
     errorMessage: row.errorMessage,
     startedAt: row.startedAt,
@@ -336,6 +339,7 @@ export class DownloadQueue {
     mergeFolder?: string,
     chapterNumber?: number,
     priority?: number,
+    mergeJobId?: number,
   ): number {
     const db = getDb();
     const res = db
@@ -351,6 +355,7 @@ export class DownloadQueue {
         mergeFolder: mergeFolder ?? null,
         chapterNumber: chapterNumber ?? null,
         priority: priority ?? 0,
+        mergeJobId: mergeJobId ?? null,
       })
       .run();
     const id = Number(res.lastInsertRowid);
@@ -493,10 +498,24 @@ export class DownloadQueue {
     return false;
   }
 
+  /** A failed task may still be waiting for its automatic retry timer. */
+  hasPendingRetry(id: number): boolean {
+    return this.retryTimers.has(id);
+  }
+
   /** Cancel: stop an in-flight job and mark it failed/cancelled. */
   cancel(id: number): boolean {
     const task = this.get(id);
     if (!task) return false;
+    const retryTimer = this.retryTimers.get(id);
+    if (retryTimer && task.status === 'failed') {
+      clearTimeout(retryTimer);
+      this.retryTimers.delete(id);
+      this.autoRetries.delete(id);
+      getDb().update(schema.downloadQueue).set({ errorMessage: 'Cancelled by user' }).where(eq(schema.downloadQueue.id, id)).run();
+      this.syncLive(id);
+      return true;
+    }
     if (this.activeRuns.get(id)?.committing) return false;
     if (task.status === 'queued' || task.status === 'downloading' || task.status === 'paused') {
       const run = this.activeRuns.get(id);
@@ -732,7 +751,7 @@ export class DownloadQueue {
       this.updateProgress(row.id, { progressCurrent: total, progressTotal: total, speed: 0, currentFile: null }, { force: true });
 
       // Optional Kavita auto-sync.
-      if (settings.autoSyncKavita) await this.triggerKavitaScan(outputPath);
+      if (settings.autoSyncKavita && row.mergeJobId == null) await this.triggerKavitaScan(outputPath);
     } catch (e) {
       ctx.stopped = true;
       wakePaused(ctx);

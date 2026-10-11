@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gt, inArray } from 'drizzle-orm';
 import { getDb, schema, type Db } from '../db/index.js';
 import { jobRecovery, type JobRecovery } from './recovery.js';
+import type { DoujinSource } from '../downloader/types.js';
 
 /** Types of background jobs the queue can run. */
 export const JOB_TYPES = [
@@ -49,6 +50,12 @@ export interface JobPayload {
   targetDir?: string;
   /** merge-series: chapter numbers keyed by source path, written to ComicInfo.Number. */
   chapters?: Record<string, string>;
+  /** merge-series: staged chapter edits for archives already in the target folder. */
+  existingChapters?: Record<string, string>;
+  /** merge-series: galleries to download after the user commits the merge. */
+  downloads?: { source: DoujinSource; galleryId: string; title: string; chapter: string }[];
+  /** Internal checkpoint: reuse the same download tasks after a job retry. */
+  mergeDownloadIds?: Record<string, number>;
   /** apply-series: provider of the candidate chosen in the identify dialog. */
   providerId?: string;
   /** apply-series: provider-side series id of the chosen candidate. */
@@ -238,6 +245,15 @@ class JobQueue {
     const payloadJson = JSON.stringify(payload);
     if (payloadJson !== row.payloadJson) db.update(schema.jobs).set({ payloadJson }).where(eq(schema.jobs.id, jobId)).run();
     return payload.context;
+  }
+
+  /** Persist merge progress without overwriting independently resolved context. */
+  updateMergeState(jobId: number, state: Pick<JobPayload, 'mergeDownloadIds' | 'sourceFiles' | 'chapters'>): void {
+    const db = getDb();
+    const row = db.select().from(schema.jobs).where(eq(schema.jobs.id, jobId)).get();
+    if (!row || row.type !== 'merge-series') return;
+    const payload = safeParse<JobPayload>(row.payloadJson, {});
+    db.update(schema.jobs).set({ payloadJson: JSON.stringify({ ...payload, ...state }) }).where(eq(schema.jobs.id, jobId)).run();
   }
 
   /** Register the function that actually performs each job. */

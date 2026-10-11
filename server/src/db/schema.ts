@@ -109,6 +109,8 @@ export const downloadQueue = sqliteTable('download_queue', {
   mergeFolder: text('merge_folder'),
   /** Manual chapter number written to ComicInfo.Number for merged downloads. */
   chapterNumber: integer('chapter_number'),
+  /** A merge job owns this download and performs the final Kavita scan. */
+  mergeJobId: integer('merge_job_id'),
   /** Queue priority: claimNext picks higher values first (ties break on id ASC). */
   priority: integer('priority').notNull().default(0),
   errorMessage: text('error_message'),

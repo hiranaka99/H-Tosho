@@ -16,10 +16,11 @@ import { applyToKavita, applySeriesMatch, type ApplySeriesResult } from '../serv
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type JobContext, type LogFn } from './queue.js';
-import { listCbzFiles, mapKavitaPathToLocalPath, mergeCbzFiles, pathContains, readComicInfo, resolveExistingFile, resolveSeriesHostDir, rewriteZipEntry } from '../lib/cbz.js';
+import { listCbzFiles, mapKavitaPathToLocalPath, mergeCbzFiles, pathContains, readComicInfo, resolveExistingFile, resolveSeriesHostDir, rewriteZipEntry, setComicInfoFields } from '../lib/cbz.js';
 import { mapLimit, sleep } from '../lib/http.js';
 import { parseComicInfo, renderComicInfoXml } from '../downloader/comicinfo.js';
 import type { KavitaChapterDto, KavitaSeries } from '../kavita/types.js';
+import { prepareMergeDownloads, validMergeChapter, validateMergeDownloads } from './mergeDownloads.js';
 
 interface Target {
   id: number;
@@ -908,8 +909,12 @@ export async function runJob(job: Job, log: LogFn): Promise<JobResult> {
   // The target is either an explicit folder (targetDir) or an existing Kavita
   // series ("library item", seriesId) whose folder the files are moved into.
   if (job.type === 'merge-series') {
-    const sourceFiles = job.payload.sourceFiles ?? [];
-    if (sourceFiles.length < 1) throw new Error('At least one .cbz file is required');
+    let sourceFiles = job.payload.sourceFiles ?? [];
+    validateMergeDownloads(job.payload.downloads);
+    if (!sourceFiles.length && !job.payload.downloads?.length) throw new Error('At least one .cbz file or gallery is required');
+    throwIfJobCancelled(job.id);
+    for (const file of sourceFiles) if (!resolveExistingFile(file) || !file.toLowerCase().endsWith('.cbz')) throw new Error(`Source archive not found: ${file}`);
+    for (const number of Object.values(job.payload.chapters ?? {})) if (!validMergeChapter(number)) throw new Error('Incoming chapter numbers must be positive numbers or blank');
     let targetDir = job.payload.targetDir;
     let stampName: string | undefined;
     let targetLibraryId: number | null = null;
@@ -943,15 +948,56 @@ export async function runJob(job: Job, log: LogFn): Promise<JobResult> {
       stampName = (await pickSeriesStampName(dir, new Set(sourceFiles.map((f) => path.resolve(f))))) ?? s.name;
     }
     if (!targetDir) throw new Error('targetDir required');
+    // The merge and existing chapter edits share one queue commitment. Check
+    // every target edit before moving anything; incoming paths cannot expand
+    // the set of archives eligible for in-place metadata edits.
+    const existingEdits = Object.entries(job.payload.existingChapters ?? {});
+    if (existingEdits.length > 0) {
+      const targetArchives = new Set(listCbzFiles(targetDir).map(file => path.resolve(file)));
+      for (const [file, number] of existingEdits) {
+        if (!targetArchives.has(path.resolve(file))) throw new Error(`Chapter edit is not an existing target archive: ${file}`);
+        if (!validMergeChapter(number)) {
+          throw new Error('Existing chapter edits must be positive numbers or blank');
+        }
+      }
+    }
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.accessSync(targetDir, fs.constants.W_OK);
+    const downloaded = await prepareMergeDownloads(job, log);
+    sourceFiles = [...new Set([...sourceFiles, ...downloaded.files])];
+    const chapters = { ...job.payload.chapters, ...downloaded.chapters };
+    throwIfJobCancelled(job.id);
     const sourceSeriesIds = await sourceSeriesIdsForMerge(sourceFiles, targetDir, log, job);
+    throwIfJobCancelled(job.id);
     log('info', `Merging ${sourceFiles.length} file(s) into ${targetDir}`);
-    const r = await mergeCbzFiles(sourceFiles, targetDir, job.payload.chapters, stampName ?? lastSegment(targetDir));
+    const r = await mergeCbzFiles(sourceFiles, targetDir, chapters, stampName ?? lastSegment(targetDir), (source, destination) => {
+      // Keep download history and job retries pointing at the published archive,
+      // including collision-renamed files. Completed galleries are reused.
+      getDb().update(schema.downloadQueue).set({ outputPath: destination, mergeJobId: null }).where(eq(schema.downloadQueue.outputPath, source)).run();
+      job.payload.sourceFiles = (job.payload.sourceFiles ?? []).map(file => file === source ? destination : file);
+      if (job.payload.chapters?.[source] !== undefined) {
+        job.payload.chapters = { ...job.payload.chapters, [destination]: job.payload.chapters[source] };
+        if (source !== destination) delete job.payload.chapters[source];
+      }
+      jobQueue.updateMergeState(job.id, { sourceFiles: job.payload.sourceFiles, chapters: job.payload.chapters });
+    });
     for (const f of r.failed) log('warn', `Skipped ${f.file}: ${f.error}`);
     if (r.moved.length === 0) throw new Error('No files could be moved — check the source paths');
+    let chapterEditFailures = 0;
+    for (const [file, number] of existingEdits) {
+      throwIfJobCancelled(job.id);
+      try {
+        await setComicInfoFields(path.resolve(file), { Number: number.trim() });
+        log('success', `Updated existing chapter number: ${path.basename(file)}`);
+      } catch (error) {
+        chapterEditFailures += 1;
+        log('warn', `Could not update existing chapter ${file}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     log('success', `Moved ${r.moved.length} file(s) into one folder as "${stampName ?? lastSegment(targetDir)}"; stamped chapter numbers on ${r.chaptered.length}`);
     await removeSourceSeriesFromKavita(sourceSeriesIds, log);
     await rescanAndVerifyMerge(targetDir, r.moved, log, { job, seriesId: job.payload.seriesId ?? null, libraryId: targetLibraryId });
-    return { processed: r.moved.length, matched: 0, failed: r.failed.length };
+    return { processed: r.moved.length, matched: 0, failed: r.failed.length + chapterEditFailures };
   }
 
   // "Delete files" from a series card: removes the folder holding the series'

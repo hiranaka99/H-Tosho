@@ -5,6 +5,7 @@ import path from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { afterEach, test, type TestContext } from 'node:test';
 import type { Job } from '../src/jobs/queue.js';
+import { parseComicInfo } from '../src/downloader/comicinfo.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-merge-rescan-'));
 process.env.HTOSHO_DATA_DIR = dataDir;
@@ -67,6 +68,50 @@ function makeJob(sourceFiles: string[], targetDir: string): Job {
     finishedAt: null,
   };
 }
+
+test('one merge job commits staged existing chapters without moving or renaming them', async () => {
+  const sources = makeSources();
+  const targetDir = path.join(dataDir, 'staged-chapters');
+  fs.mkdirSync(targetDir, { recursive: true });
+  const existing = path.join(targetDir, 'Existing.cbz');
+  fs.writeFileSync(existing, buildZip([
+    { name: '001.jpg', data: Buffer.from('existing-image') },
+    { name: 'ComicInfo.xml', data: Buffer.from('<ComicInfo><Series>Keep This Name</Series><Number>12</Number></ComicInfo>') },
+  ]));
+  const cleared = path.join(targetDir, 'Cleared.cbz');
+  fs.writeFileSync(cleared, buildZip([{ name: 'ComicInfo.xml', data: Buffer.from('<ComicInfo><Series>Keep This Name</Series><Number>8</Number></ComicInfo>') }]));
+  const state: FakeKavita = { requests: [], indexed: [existing, cleared], lastScanned: 't0', preExistingSeries: true, preExistingFiles: [existing, cleared], dropFirstLibraryScan: false, taskPending: false };
+  globalThis.fetch = fakeKavita(state, targetDir, sources);
+  const job = makeJob(sources, targetDir);
+  job.payload.existingChapters = { [existing]: '7.5', [cleared]: '' };
+  job.payload.chapters = { [sources[0]]: '13' };
+  const result = await runJob(job, () => {});
+  assert.deepEqual(result, { processed: 3, matched: 0, failed: 0 });
+  assert.ok(fs.existsSync(existing));
+  const metadata = parseComicInfo((await readComicInfo(existing))!);
+  assert.equal(metadata.fields.Number, '7.5');
+  assert.equal(metadata.fields.Series, 'Keep This Name');
+  assert.equal(parseComicInfo((await readComicInfo(cleared))!).fields.Number ?? '', '');
+  const movedMetadata = await readComicInfo(path.join(targetDir, path.basename(sources[0])));
+  assert.equal(parseComicInfo(movedMetadata!).fields.Number, '13');
+});
+
+test('invalid existing chapter edits fail before any incoming archive moves', async () => {
+  const sources = makeSources();
+  const targetDir = path.join(dataDir, 'invalid-staged-chapters');
+  fs.mkdirSync(targetDir, { recursive: true });
+  const job = makeJob(sources, targetDir);
+  job.payload.existingChapters = { [sources[0]]: '4' };
+  await assert.rejects(runJob(job, () => {}), /not an existing target archive/);
+  assert.ok(sources.every(file => fs.existsSync(file)));
+  assert.deepEqual(fs.readdirSync(targetDir), []);
+  const existing = path.join(targetDir, 'Existing.cbz');
+  fs.writeFileSync(existing, buildZip([{ name: 'ComicInfo.xml', data: Buffer.from('<ComicInfo><Number>12</Number></ComicInfo>') }]));
+  job.payload.existingChapters = { [existing]: '0' };
+  await assert.rejects(runJob(job, () => {}), /positive numbers or blank/);
+  assert.ok(sources.every(file => fs.existsSync(file)));
+  assert.equal(parseComicInfo((await readComicInfo(existing))!).fields.Number, '12');
+});
 
 interface FakeKavita {
   requests: string[];

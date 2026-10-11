@@ -111,6 +111,7 @@ function migrateDownloadQueueColumns(sqlite: Database.Database): void {
     ['bytes_total', 'INTEGER NOT NULL DEFAULT 0'],
     ['merge_folder', 'TEXT'],
     ['chapter_number', 'INTEGER'],
+    ['merge_job_id', 'INTEGER'],
     ['priority', 'INTEGER NOT NULL DEFAULT 0'],
   ];
   for (const [col, def] of additions) {
@@ -425,6 +426,7 @@ CREATE TABLE IF NOT EXISTS download_queue (
   output_path TEXT,
   merge_folder TEXT,
   chapter_number INTEGER,
+  merge_job_id INTEGER,
   priority INTEGER NOT NULL DEFAULT 0,
   error_message TEXT,
   created_at TEXT NOT NULL DEFAULT (current_timestamp),

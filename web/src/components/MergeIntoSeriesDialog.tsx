@@ -1,413 +1,304 @@
 import * as React from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Download as DownloadIcon, Merge, Search } from 'lucide-react';
-import { api, type DoujinSearchResult } from '../lib/api';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Check, ImageOff, Merge, RotateCcw, Search } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { api, type DoujinSearchResult, type DoujinSource } from '../lib/api';
+import { chapterErrors, chapterNumber } from '../lib/chapterNumbers';
 import { useDownloads } from '../lib/DownloadsContext';
-import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, EmptyState } from './ui';
+import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner } from './ui';
 import { toast } from '../lib/toast';
 
 interface TargetOption {
   id: number;
   name: string;
   library: string;
-}
-
-/** A selected gallery plus the .cbz files ready to merge (empty when not downloadable). */
-interface Entry {
-  item: DoujinSearchResult;
-  files: string[];
-  note: string | null;
-  /** File lookup still in flight (history-cleared galleries are resolved server-side). */
-  resolving: boolean;
-  /** Server file lookup failed — the row shows a distinct error note. */
-  error: boolean;
+  artists: string[];
+  cover: string | null;
 }
 
 interface MergeIntoSeriesDialogProps {
   /** Selected galleries in click order. */
   items: DoujinSearchResult[];
   onClose: () => void;
-  /** Called after the merge job is queued (the page clears its selection). */
-  onQueued: () => void;
-  /** Queue a plain single-gallery download for an entry that has no file yet. */
-  onDownload: (item: DoujinSearchResult) => void;
+  /** Remove only galleries included in the queued merge from the shortlist. */
+  onQueued: (keys: string[]) => void;
+  setup: { status: 'loading' | 'error' | 'missing' | 'ready'; directory?: string; onRetry: () => void };
 }
 
-/**
- * Move already-downloaded galleries into an existing Kavita series: the archives
- * are moved into the target series' folder, stamped with its ComicInfo.Series
- * value and chapter numbers, and the emptied source series is removed from Kavita
- * (server `merge-series` job with a seriesId target). Chapter numbers can be set
- * per gallery before its download completes, and archives already in the target
- * series are renumbered in place via `edit-comicinfo` jobs.
- */
-export function MergeIntoSeriesDialog({ items, onClose, onQueued, onDownload }: MergeIntoSeriesDialogProps) {
+interface MergeSubmission {
+  seriesId: number;
+  sourceFiles: string[];
+  chapters: Record<string, string>;
+  existingChapters: Record<string, string>;
+  downloads: { source: DoujinSource; galleryId: string; title: string; chapter: string }[];
+  keys: string[];
+  targetName: string;
+}
+
+const galleryKey = (item: DoujinSearchResult) => `${item.source}:${item.galleryId}`;
+const filename = (file: string) => file.split(/[\\/]/).pop() ?? file;
+const normalizeArtist = (name: string) => name.normalize('NFKC').replace(/_/g, ' ').trim().replace(/\s+/g, ' ').toLowerCase();
+
+function TargetCover({ option, className = '' }: { option: TargetOption; className?: string }) {
+  return <div className={`relative flex aspect-[3/4] items-center justify-center overflow-hidden rounded-md bg-surface-2 ${className}`}>
+    <span className="flex flex-col items-center gap-1 text-xs text-muted" aria-hidden="true"><ImageOff className="h-5 w-5" /> No cover</span>
+    {option.cover && <img key={option.cover} src={option.cover} alt="" loading="lazy" onError={event => { event.currentTarget.hidden = true; }} className="absolute inset-0 h-full w-full object-cover" />}
+  </div>;
+}
+
+/** All chapter edits are drafts. One merge job commits incoming and existing changes. */
+export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: MergeIntoSeriesDialogProps) {
   const qc = useQueryClient();
   const { tasks } = useDownloads();
+  const id = React.useId();
   const [filter, setFilter] = React.useState('');
   const [targetId, setTargetId] = React.useState<number | null>(null);
-  // Chapter numbers keyed by source path; prefilled from the target's existing
-  // numeric chapters (max + 1…) and always editable. Never overwritten once set,
-  // so typed values survive downloads resolving and series refetches.
-  const [chapters, setChapters] = React.useState<Record<string, string>>({});
-  // Chapter numbers preset per gallery for entries whose file is not downloaded yet.
-  const [galleryChapters, setGalleryChapters] = React.useState<Record<string, string>>({});
-  // Editable chapter state for archives already in the target series: `value` is
-  // what the user sees, `orig` the last saved baseline (dirty when they differ).
-  const [existing, setExisting] = React.useState<Record<string, { value: string; orig: string }>>({});
-  // Server-resolved files for galleries whose download history row is gone;
-  // a null entry means the lookup failed (shown as its own error note).
-  const [remoteFiles, setRemoteFiles] = React.useState<Record<string, string[] | null>>({});
+  // Only user edits are stored. Generated values are derived after target inspection.
+  const [drafts, setDrafts] = React.useState<Record<string, string>>({});
+  const submitting = React.useRef(false);
 
-  /** Completed-task .cbz path when available; null means "ask the server". */
-  const taskPath = (item: DoujinSearchResult): string | null => {
-    const t = tasks.find((x) => x.source === item.source && x.galleryId === item.galleryId && x.status === 'completed');
-    return t?.outputPath?.toLowerCase().endsWith('.cbz') ? t.outputPath : null;
-  };
+  const galleryTasks = items.map(item => tasks.find(task => task.source === item.source && task.galleryId === item.galleryId && ['queued', 'downloading', 'paused'].includes(task.status))
+    ?? tasks.find(task => task.source === item.source && task.galleryId === item.galleryId && task.status === 'completed')
+    ?? tasks.find(task => task.source === item.source && task.galleryId === item.galleryId));
+  // Query observers survive StrictMode effect replay and support per-gallery retries.
+  const fileQueries = useQueries({
+    queries: items.map((item, index) => ({
+      queryKey: ['gallery-files', item.source, item.galleryId, item.title, galleryTasks[index]?.status === 'completed' ? galleryTasks[index]?.outputPath : null],
+      queryFn: () => api.galleryFiles(item.source, item.galleryId, item.title),
+      enabled: !['queued', 'downloading', 'paused'].includes(galleryTasks[index]?.status ?? ''),
+      retry: false,
+      staleTime: Infinity,
+    })),
+  });
 
-  // Server-resolved file lists are fetched once per unique gallery key per
-  // mount: taskPath stays null forever for folder-format or history-cleared
-  // galleries, so refiring on every download tick would loop requests. The
-  // live taskPath is still preferred at render time once a task completes.
-  const requestedRef = React.useRef(new Set<string>());
-  React.useEffect(() => {
-    let cancelled = false;
-    for (const item of items) {
-      const key = `${item.source}:${item.galleryId}`;
-      if (requestedRef.current.has(key)) continue;
-      requestedRef.current.add(key);
-      void api.galleryFiles(item.source, item.galleryId, item.title).then(
-        (res) => { if (!cancelled) setRemoteFiles((prev) => ({ ...prev, [key]: res.files })); },
-        () => { if (!cancelled) setRemoteFiles((prev) => ({ ...prev, [key]: null })); },
-      );
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [items]);
-
-  const entries: Entry[] = items.map((item) => {
-    const key = `${item.source}:${item.galleryId}`;
-    const direct = taskPath(item);
-    if (direct) return { item, files: [direct], note: null, error: false, resolving: false };
-    if (!(key in remoteFiles)) return { item, files: [], note: null, error: false, resolving: true };
-    const files = remoteFiles[key];
-    if (files === null) return { item, files: [], note: "Couldn't resolve files.", error: true, resolving: false };
-    if (files.length > 0) return { item, files, note: null, error: false, resolving: false };
-    const hasTask = tasks.some((t) => t.source === item.source && t.galleryId === item.galleryId && t.status === 'completed');
-    return { item, files: [], note: hasTask ? 'Downloaded as an image folder — merge works on .cbz archives.' : 'Not downloaded yet.', error: false, resolving: false };
+  const entries = items.map((item, index) => {
+    const key = galleryKey(item);
+    const task = galleryTasks[index];
+    const query = fileQueries[index];
+    const downloading = task?.status === 'queued' || task?.status === 'downloading' || task?.status === 'paused';
+    const files = !downloading && query.isSuccess && !query.isFetching ? query.data.files : [];
+    const resolving = !downloading && query.isFetching;
+    const folder = task?.status === 'completed' && task.outputPath && !task.outputPath.toLowerCase().endsWith('.cbz');
+    const lookupError = !downloading && query.isError;
+    let note = files.length ? `Downloaded${files.length > 1 ? ` · ${files.length} archives` : ''}` : 'To download';
+    if (downloading) note = task?.status === 'paused' ? 'Paused · resume in Downloads' : 'Downloading · merge will wait';
+    else if (resolving) note = 'Checking files…';
+    else if (lookupError) note = 'File lookup failed.';
+    else if (!files.length && folder) note = 'Folder found · CBZ download needed';
+    else if (!files.length && task?.status === 'completed') note = 'Missing CBZ · will download';
+    return { item, key, chapterKey: `gallery:${key}`, files, note, downloading, resolving, lookupError, task, query };
   });
 
   const options = useQuery({
-    queryKey: ['merge-into-series-options'],
-    // Library/series lists change rarely; don't refetch from scratch on every
-    // dialog open or window focus.
+    queryKey: ['merge-into-series-options', 'artist-covers'],
     staleTime: 5 * 60_000,
-    queryFn: async (): Promise<TargetOption[]> => {
-      const libs = await api.libraries();
-      const perLib = await Promise.all(
-        libs.map(async (lib) => {
-          try {
-            const rows = await api.librarySeries(lib.id);
-            return rows.map((r): TargetOption => ({ id: r.id, name: r.name, library: lib.name }));
-          } catch {
-            return [] as TargetOption[];
-          }
-        }),
-      );
-      return perLib.flat().sort((a, b) => a.name.localeCompare(b.name));
+    retry: false,
+    queryFn: async () => {
+      const libraries = await api.libraries();
+      const results = await Promise.all(libraries.map(async library => {
+        try {
+          const rows = await api.librarySeries(library.id);
+          return { options: rows.map(row => ({ id: row.id, name: row.name, library: library.name, artists: row.artists ?? [], cover: row.cover ?? null } satisfies TargetOption)), failed: null };
+        } catch {
+          return { options: [] as TargetOption[], failed: library.name };
+        }
+      }));
+      return {
+        options: results.flatMap(result => result.options).sort((a, b) => a.name.localeCompare(b.name)),
+        failedLibraries: results.flatMap(result => result.failed ? [result.failed] : []),
+      };
     },
   });
-
-  const target = (options.data ?? []).find((o) => o.id === targetId) ?? null;
-
+  const target = options.data?.options.find(option => option.id === targetId);
   const targetFiles = useQuery({
     queryKey: ['cbz-series-files', targetId],
     queryFn: () => api.cbzSeriesFiles(targetId!),
-    enabled: targetId != null,
+    enabled: targetId !== null,
+    retry: false,
   });
+  const targetReady = !!target && targetFiles.isSuccess && !targetFiles.isFetching && !!targetFiles.data?.dir && !targetFiles.data.reason;
+  const existingFiles = targetFiles.data?.files ?? [];
+  const sourceFiles = [...new Set(entries.flatMap(entry => entry.files))];
+  const downloadEntries = entries.filter(entry => !entry.files.length);
+  const incomingKeys = [...new Set(entries.flatMap(entry => entry.files.length ? entry.files : [entry.chapterKey]))];
+  const galleryDrafts = new Map(entries.filter(entry => entry.files.length === 1).map(entry => [entry.files[0], entry.chapterKey]));
+  const draftValue = (key: string) => drafts[key] ?? drafts[galleryDrafts.get(key) ?? ''];
+  const existingValue = (file: string) => drafts[file] ?? targetFiles.data?.chapterNumbers[file] ?? '';
+  const editedExisting = existingFiles.filter(file => drafts[file] !== undefined && drafts[file].trim() !== (targetFiles.data?.chapterNumbers[file] ?? '').trim());
 
-  // Seed the editable chapter state for the target's archives; local edits are
-  // kept across refetches and stale paths dropped.
-  React.useEffect(() => {
-    if (targetId == null) return;
-    const data = targetFiles.data;
-    if (!data) return;
-    setExisting((prev) => {
-      const next: Record<string, { value: string; orig: string }> = {};
-      let changed = false;
-      for (const f of data.files) {
-        if (prev[f]) next[f] = prev[f];
-        else {
-          next[f] = { value: data.chapterNumbers[f] ?? '', orig: data.chapterNumbers[f] ?? '' };
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [targetId, targetFiles.data]);
-
-  // Auto-assign chapter numbers into the gaps only: files that already carry a
-  // value (typed or previously assigned) are never renumbered, and numbering
-  // starts above every number in play — the target's existing chapters (including
-  // unsaved edits below) plus what is already assigned here.
-  const assignedTargetRef = React.useRef<number | null>(null);
-
-  React.useEffect(() => {
-    if (targetId == null) return;
-    const data = targetFiles.data;
-    const switched = assignedTargetRef.current !== targetId;
-    assignedTargetRef.current = targetId;
-    setChapters((prev) => {
-      const next: Record<string, string> = switched ? {} : { ...prev };
-      // Apply chapter numbers preset before download to files that just resolved.
-      for (const e of entries) {
-        if (e.files.length === 0) continue;
-        const preset = galleryChapters[`${e.item.source}:${e.item.galleryId}`]?.trim();
-        for (const f of e.files) if (!next[f]?.trim() && preset) next[f] = preset;
-      }
-      const taken: number[] = [];
-      for (const f of data?.files ?? []) {
-        const v = Number(existing[f]?.value ?? data?.chapterNumbers[f]);
-        if (Number.isFinite(v) && v > 0) taken.push(v);
-      }
-      for (const v of Object.values(next)) {
-        const n = Number(v);
-        if (Number.isFinite(n) && n > 0) taken.push(n);
-      }
-      let n = taken.length > 0 ? Math.max(...taken) : 0;
-      for (const e of entries) {
-        if (e.files.length === 0) continue;
-        for (const f of e.files) {
-          if (!next[f]?.trim()) {
-            n += 1;
-            next[f] = String(n);
-          }
-        }
-      }
-      return next;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetId, targetFiles.data, existing, galleryChapters, entries.map((e) => e.files.join(',')).join('|')]);
-
-  const sourceFiles = entries.flatMap((e) => e.files);
-  const resolving = entries.some((e) => e.resolving);
-  const canQueue = targetId != null && sourceFiles.length > 0 && !resolving;
+  // Generated defaults may adapt to staged edits; typed values (including blanks) never change.
+  const defaults: Record<string, string> = {};
+  if (targetReady) {
+    const taken = [...existingFiles.map(existingValue), ...incomingKeys.map(draftValue)].filter((value): value is string => value !== undefined).map(chapterNumber).filter((number): number is number => number !== null);
+    let next = Math.floor(Math.max(0, ...taken));
+    for (const file of incomingKeys) {
+      if (existingFiles.includes(file)) defaults[file] = existingValue(file);
+      else if (draftValue(file) === undefined) defaults[file] = String(++next);
+    }
+  }
+  const incomingValue = (file: string) => draftValue(file) ?? defaults[file] ?? '';
+  const errors = chapterErrors([
+    ...existingFiles.filter(file => !sourceFiles.includes(file)).map(file => ({ key: file, value: existingValue(file), changed: editedExisting.includes(file) })),
+    ...incomingKeys.map(file => ({ key: file, value: incomingValue(file), changed: true })),
+  ]);
+  const hasErrors = Object.keys(errors).length > 0;
+  const resolving = entries.some(entry => entry.resolving);
+  const downloadReady = !downloadEntries.length || (setup.status === 'ready' && !!setup.directory);
+  const canQueue = targetReady && items.length > 0 && !resolving && !entries.some(entry => entry.lookupError) && downloadReady && !hasErrors;
 
   const save = useMutation({
-    mutationFn: () => {
-      const numbered: Record<string, string> = {};
-      for (const f of sourceFiles) {
-        const v = chapters[f]?.trim();
-        if (v) numbered[f] = v;
-      }
-      return api.enqueue('merge-series', { seriesId: targetId, sourceFiles, chapters: numbered });
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['jobs'] });
-      toast({ tone: 'success', title: 'Merge queued', description: `${sourceFiles.length} file(s) → ${target?.name ?? `series ${targetId}`}` });
-      onQueued();
+    mutationFn: (submission: MergeSubmission) => api.enqueue('merge-series', {
+      seriesId: submission.seriesId,
+      sourceFiles: submission.sourceFiles,
+      chapters: submission.chapters,
+      existingChapters: submission.existingChapters,
+      downloads: submission.downloads,
+    }),
+    onSuccess: (_result, submission) => {
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
+      toast({
+        tone: 'success',
+        title: 'Merge queued',
+        description: `${submission.keys.length} ${submission.keys.length === 1 ? 'gallery' : 'galleries'} → ${submission.targetName}${submission.downloads.length ? ` · ${submission.downloads.length} downloads included` : ''}`,
+      });
+      onQueued(submission.keys);
       onClose();
     },
-    onError: (e) => toast({ tone: 'danger', title: 'Could not queue merge', description: e instanceof Error ? e.message : String(e) }),
+    onSettled: () => { submitting.current = false; },
   });
 
-  const saveExisting = useMutation({
-    mutationFn: (f: string) => {
-      const v = existing[f]?.value?.trim() ?? '';
-      return api.enqueue('edit-comicinfo', { path: f, seriesId: targetId!, fields: { Number: v } });
-    },
-    onMutate: (f) => {
-      // Mark the row saved optimistically: Enter and blur both fire while the
-      // row is dirty, and the baseline only updated on success, so Enter
-      // followed by a blur (e.g. onto Cancel) enqueued the same job twice.
-      const prevOrig = existing[f]?.orig ?? '';
-      setExisting((prev) => (prev[f] ? { ...prev, [f]: { ...prev[f], orig: prev[f].value } } : prev));
-      return { prevOrig };
-    },
-    onSuccess: (_res, f) => {
-      qc.invalidateQueries({ queryKey: ['jobs'] });
-      qc.invalidateQueries({ queryKey: ['cbz-series-files'] });
-      toast({ tone: 'success', title: 'Chapter save queued', description: `${f.split(/[\\/]/).pop()} — check the Jobs page` });
-    },
-    onError: (e, f, ctx) => {
-      // Revert the optimistic baseline so the row reads as unsaved again.
-      setExisting((prev) => (prev[f] ? { ...prev, [f]: { ...prev[f], orig: ctx?.prevOrig ?? prev[f].orig } } : prev));
-      toast({ tone: 'danger', title: 'Could not queue chapter save', description: e instanceof Error ? e.message : String(e) });
-    },
-  });
-
-  const visible = (options.data ?? []).filter((o) => o.name.toLowerCase().includes(filter.trim().toLowerCase()));
-
-  // Existing archives in reading order: numeric chapter first, then filename.
-  const existingFiles = React.useMemo(() => {
-    const files = targetFiles.data?.files ?? [];
-    const num = (f: string): number | null => {
-      const v = (existing[f]?.value ?? targetFiles.data?.chapterNumbers[f] ?? '').trim();
-      const n = Number(v);
-      return v !== '' && !Number.isNaN(n) ? n : null;
-    };
-    return [...files].sort((a, b) => {
-      const na = num(a);
-      const nb = num(b);
-      if (na !== null && nb !== null) return na - nb || a.localeCompare(b);
-      if (na !== null) return -1;
-      if (nb !== null) return 1;
-      return a.localeCompare(b);
+  const submit = () => {
+    if (!canQueue || submitting.current || targetId === null || !target) return;
+    submitting.current = true;
+    save.mutate({
+      seriesId: targetId,
+      sourceFiles,
+      chapters: Object.fromEntries(sourceFiles.filter(file => incomingValue(file).trim()).map(file => [file, incomingValue(file).trim()])),
+      existingChapters: Object.fromEntries(editedExisting.filter(file => !sourceFiles.includes(file)).map(file => [file, existingValue(file).trim()])),
+      downloads: downloadEntries.map(entry => ({ source: entry.item.source, galleryId: entry.item.galleryId, title: entry.item.title, chapter: incomingValue(entry.chapterKey).trim() })),
+      keys: entries.map(entry => entry.key),
+      targetName: target.name,
     });
-  }, [targetFiles.data, existing]);
-  const unsavedExisting = existingFiles.filter((f) => {
-    const st = existing[f];
-    return !!st && st.value !== st.orig;
-  }).length;
+  };
+
+  const setChapter = (file: string, value: string) => setDrafts(current => ({ ...current, [file]: value }));
+  const selectedArtists = [...new Map(items.flatMap(item => item.artists ?? []).filter(artist => normalizeArtist(artist)).map(artist => [normalizeArtist(artist), artist.trim()])).values()];
+  const artistNames = new Set(selectedArtists.map(normalizeArtist));
+  const search = normalizeArtist(filter);
+  const visible = (options.data?.options ?? []).filter(option => search
+    ? normalizeArtist(`${option.name} ${option.library} ${option.artists.join(' ')}`).includes(search)
+    : !artistNames.size || option.artists.some(artist => artistNames.has(normalizeArtist(artist))));
+  const busy = save.isPending;
+  const dismiss = () => { if (!submitting.current) onClose(); };
 
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-2xl">
-        <div className="flex max-h-[85vh] flex-col gap-4 overflow-y-auto p-5">
+    <Dialog open onOpenChange={open => { if (!open) dismiss(); }}>
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] max-w-2xl flex-col" onEscapeKeyDown={event => { if (busy) event.preventDefault(); }} onPointerDownOutside={event => { if (busy) event.preventDefault(); }}>
+        <div className="flex min-h-0 flex-col gap-4 overflow-y-auto p-5">
           <div className="flex items-start gap-2 pr-10">
-            <Merge className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-            <div>
+            <Merge className="mt-0.5 h-5 w-5 shrink-0 text-primary" aria-hidden="true" />
+            <div className="min-w-0">
               <DialogTitle>Merge into series</DialogTitle>
-              <DialogDescription>Move downloaded galleries into an existing Kavita series and set chapter numbers for new and existing files.</DialogDescription>
+              <DialogDescription className="sr-only">Choose a target and review chapter numbers. Downloads and chapter edits start after Queue merge.</DialogDescription>
             </div>
           </div>
 
-          {/* Target series picker */}
-          <div className="flex flex-col gap-1.5 rounded-lg border border-border-2 bg-surface-2 p-3">
-            <Label htmlFor="merge-into-target">Target series</Label>
-            {options.isLoading ? (
-              <div className="flex items-center gap-2 py-3 text-sm text-muted"><Spinner /> Loading Kavita series…</div>
-            ) : options.isError ? (
-              <p className="py-2 text-xs text-danger">Could not load Kavita series: {options.error instanceof Error ? options.error.message : String(options.error)}</p>
-            ) : (
-              <>
+          <section className="flex min-w-0 flex-col gap-2">
+            <Label htmlFor={`${id}-target`}>Target series</Label>
+            {options.isPending ? <p className="flex items-center gap-2 text-sm text-muted"><Spinner /> Loading Kavita series…</p>
+              : options.isError ? <div role="alert" className="space-y-2 text-sm"><p className="text-danger">Could not load Kavita series. Check the connection and retry.</p><Button size="sm" variant="outline" disabled={options.isFetching || busy} onClick={() => void options.refetch()}><RotateCcw className="h-3.5 w-3.5" /> Retry series list</Button></div>
+              : <>
+                {!!options.data?.failedLibraries.length && <div role="alert" className="space-y-2 text-xs"><p className="break-words text-danger">Could not load series from {options.data.failedLibraries.join(', ')}. Other libraries are available.</p><Button size="sm" variant="outline" disabled={options.isFetching || busy} onClick={() => void options.refetch()}>Retry missing libraries</Button></div>}
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
-                  <Input id="merge-into-target" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter by series name…" className="pl-7" />
+                  <Input id={`${id}-target`} value={filter} disabled={busy} onChange={event => setFilter(event.target.value)} placeholder="Search by series, artist or library…" aria-describedby={`${id}-target-help`} className="pl-7" />
                 </div>
-                <div className="flex max-h-48 flex-col gap-0.5 overflow-y-auto pr-1">
-                  {visible.length === 0 && <p className="py-2 text-xs text-muted">No matching series.</p>}
-                  {visible.map((o) => (
-                    <button
-                      key={o.id}
-                      type="button"
-                      onClick={() => setTargetId(o.id)}
-                      aria-pressed={targetId === o.id}
-                      className={`flex min-w-0 items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-left text-xs transition-colors ${
-                        targetId === o.id ? 'border-primary/60 bg-primary/10' : 'border-transparent hover:border-border-2 hover:bg-surface'
-                      }`}
-                    >
-                      <span className="min-w-0 truncate" title={o.name}>{o.name}</span>
-                      <span className="shrink-0 text-2xs text-muted">{o.library}</span>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Per-gallery file rows */}
-          <div className="flex flex-col gap-2 rounded-lg border border-border-2 bg-surface-2 p-3">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-muted">Galleries</span>
-              <span className="text-xs text-muted">{sourceFiles.length} file{sourceFiles.length === 1 ? '' : 's'} ready</span>
-            </div>
-            {entries.length === 0 ? (
-              <EmptyState icon={<Merge className="h-8 w-8" />} title="Nothing selected" description="Select galleries in the search results first." />
-            ) : (
-              <div className="flex max-h-64 flex-col gap-1 overflow-y-auto pr-1">
-                {entries.map((e) => {
-                  const key = `${e.item.source}:${e.item.galleryId}`;
-                  const ready = e.files.length > 0;
-                  const chapterValue = ready ? (chapters[e.files[0]] ?? '') : (galleryChapters[key] ?? '');
-                  const setChapter = (v: string) => {
-                    if (ready) setChapters((prev) => ({ ...prev, [e.files[0]]: v }));
-                    else setGalleryChapters((prev) => ({ ...prev, [key]: v }));
-                  };
-                  return (
-                    <div key={key} className="grid grid-cols-[minmax(0,1fr)_4rem_auto] items-center gap-2 rounded-md border border-border-2 bg-surface px-2 py-1.5 sm:grid-cols-[minmax(0,1fr)_8rem_4rem_auto]">
-                      <span className="min-w-0 truncate text-xs" title={e.item.title}>{e.item.title}</span>
-                      {ready ? (
-                        <span className="hidden truncate text-xs text-muted sm:block" title={e.files.join('\n')}>{e.files.map((f) => f.split(/[\\/]/).pop()).join(', ')}</span>
-                      ) : e.resolving ? (
-                        <span className="hidden items-center gap-1.5 text-xs text-muted sm:flex"><Spinner className="h-3 w-3" /> Resolving files…</span>
-                      ) : (
-                        <span className={`hidden truncate text-xs sm:block ${e.error ? 'text-danger' : 'text-warning'}`} title={e.note ?? ''}>{e.note}</span>
-                      )}
-                      <Input
-                        value={chapterValue}
-                        onChange={(ev) => setChapter(ev.target.value)}
-                        placeholder="Ch #"
-                        inputMode="decimal"
-                        className="h-8 w-full px-2 text-xs"
-                        aria-label={`Chapter number for ${e.item.title}`}
-                      />
-                      {!ready && !e.resolving ? (
-                        <Button size="sm" variant="ghost" onClick={() => onDownload(e.item)}>
-                          <DownloadIcon className="h-3.5 w-3.5" /> Download
-                        </Button>
-                      ) : null}
+                <p id={`${id}-target-help`} className="break-words text-xs text-muted">{search ? 'All series' : selectedArtists.length ? `By ${selectedArtists.join(', ')}` : 'All series · no artist listed'}</p>
+                {!visible.length && <p role="status" className="py-2 text-sm text-muted">{search ? 'No matches. Try another search.' : selectedArtists.length ? 'No series by this artist. Search for another target.' : 'No series available. Check your Kavita libraries.'}</p>}
+                <div className="grid max-h-[min(26rem,45dvh)] min-w-0 grid-cols-2 gap-3 overflow-y-auto p-1 sm:grid-cols-4" aria-label="Choose a merge target">
+                  {visible.map(option => <button
+                    key={option.id}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => { if (targetId !== option.id) { setTargetId(option.id); setDrafts({}); save.reset(); } }}
+                    aria-pressed={targetId === option.id}
+                    aria-label={`Select ${option.name} as merge target`}
+                    className={`flex min-w-0 flex-col gap-2 rounded-lg border p-2 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${targetId === option.id ? 'border-primary bg-primary/10' : 'border-border hover:border-border-2 hover:bg-surface-2'}`}
+                  >
+                    <div className="relative w-full">
+                      <TargetCover option={option} />
+                      {targetId === option.id && <span className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 rounded-b-md bg-primary-button px-1 py-1.5 font-medium text-white"><Check className="h-3.5 w-3.5" aria-hidden="true" /> Selected</span>}
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* Archives already in the target series: chapter numbers editable in place */}
-          {target && (
-            <div className="flex flex-col gap-2 rounded-lg border border-border-2 bg-surface-2 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-muted" title={`Existing in ${target.name}`}>Existing in {target.name}</span>
-                <span className="shrink-0 text-xs text-muted">
-                  {unsavedExisting > 0 ? <span className="text-warning">{unsavedExisting} unsaved</span> : `${existingFiles.length} file${existingFiles.length === 1 ? '' : 's'}`}
-                </span>
-              </div>
-              {targetFiles.isLoading ? (
-                <div className="flex items-center gap-2 py-2 text-sm text-muted"><Spinner /> Loading series files…</div>
-              ) : targetFiles.data?.reason ? (
-                <p className="py-1 text-xs text-warning">{targetFiles.data.reason}</p>
-              ) : existingFiles.length === 0 ? (
-                <p className="py-1 text-xs text-muted">No archives in this series yet.</p>
-              ) : (
-                <div className="flex max-h-48 flex-col gap-1 overflow-y-auto pr-1">
-                  {existingFiles.map((f) => {
-                    const st = existing[f];
-                    const name = f.split(/[\\/]/).pop() ?? f;
-                    const value = st?.value ?? targetFiles.data?.chapterNumbers[f] ?? '';
-                    const orig = st?.orig ?? targetFiles.data?.chapterNumbers[f] ?? '';
-                    const dirty = value !== orig;
-                    return (
-                      <div key={f} className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 rounded-md border border-border-2 bg-surface px-2 py-1.5">
-                        <span className={`min-w-0 truncate text-xs ${dirty ? 'text-warning' : ''}`} title={f}>{name}</span>
-                        <Input
-                          value={value}
-                          onChange={(ev) => setExisting((prev) => (prev[f] ? { ...prev, [f]: { ...prev[f], value: ev.target.value } } : prev))}
-                          onBlur={() => { if (dirty) saveExisting.mutate(f); }}
-                          onKeyDown={(ev) => { if (ev.key === 'Enter' && dirty) { ev.preventDefault(); saveExisting.mutate(f); } }}
-                          placeholder="—"
-                          inputMode="decimal"
-                          className="h-8 w-full px-2 text-xs"
-                          aria-label={`Chapter number for ${name}`}
-                        />
-                      </div>
-                    );
-                  })}
+                    <span className="w-full break-words font-medium">{option.name}</span>
+                    {!!option.artists.length && <span className="w-full break-words text-muted">{option.artists.join(', ')}</span>}
+                    <span className="w-full break-words text-muted">{option.library}</span>
+                  </button>)}
                 </div>
-              )}
+              </>}
+          </section>
+
+          {target && <section className="space-y-2 border-t border-border pt-4">
+            <div className="flex items-center gap-3">
+              <TargetCover option={target} className="w-12 shrink-0" />
+              <h3 className="min-w-0 break-words text-sm font-semibold">Existing chapters · {target.name}</h3>
             </div>
-          )}
-          <div className="flex flex-col gap-3 border-t border-border pt-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="min-w-0 flex-1 text-sm text-muted">
-              Files move into the target series folder and take its ComicInfo.Series name; emptied source series are removed from Kavita.
-            </p>
-            <div className="flex shrink-0 justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
-              <Button size="sm" onClick={() => save.mutate()} disabled={!canQueue || save.isPending || options.isLoading}>
-                {save.isPending ? <Spinner /> : <Merge className="h-3.5 w-3.5" />} Queue merge
-              </Button>
+            {targetFiles.isFetching ? <p role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner /> Inspecting target archives…</p>
+              : targetFiles.isError || !targetFiles.data?.dir || targetFiles.data.reason ? <div role="alert" className="space-y-2 text-sm">
+                <p className="text-danger">{targetFiles.isError ? 'Could not inspect the target series. Retry before merging.' : 'Could not locate the target series folder. Check library folder mappings in Downloader settings, then retry.'}</p>
+                <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={busy} onClick={() => void targetFiles.refetch()}><RotateCcw className="h-3.5 w-3.5" /> Retry target inspection</Button><Button asChild size="sm" variant="ghost"><Link to="/settings?tab=downloader">Downloader settings</Link></Button></div>
+              </div>
+              : <>
+                <p id={`${id}-existing-help`} className="text-xs text-muted">Blank clears the number.</p>
+                {editedExisting.length > 0 && <p className="text-xs text-warning">{editedExisting.length} staged chapter {editedExisting.length === 1 ? 'edit' : 'edits'}</p>}
+                {!existingFiles.length ? <p className="text-xs text-muted">No archives in this series yet.</p> : <div className="max-h-48 overflow-y-auto pr-1">
+                  {existingFiles.map((file, index) => <div key={file} className="border-b border-border py-2 last:border-b-0">
+                    <div className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2">
+                      <span className="min-w-0 break-words text-xs">{filename(file)}</span>
+                      <Input value={existingValue(file)} onChange={event => setChapter(file, event.target.value)} placeholder="—" inputMode="decimal" disabled={busy || !targetReady} className="w-full px-2 text-base sm:text-base lg:text-xs pointer-coarse:text-base" aria-label={`Chapter number for ${filename(file)}`} aria-invalid={!!errors[file]} aria-describedby={errors[file] ? `${id}-existing-error-${index}` : `${id}-existing-help`} />
+                    </div>
+                    {errors[file] && <p id={`${id}-existing-error-${index}`} className="mt-1 text-xs text-danger">{errors[file]}</p>}
+                  </div>)}
+                </div>}
+              </>}
+          </section>}
+
+          <section className="min-w-0 space-y-2 border-t border-border pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">Selected galleries</h3>
+              <span className="text-xs text-muted">{items.length} {items.length === 1 ? 'gallery' : 'galleries'} · {downloadEntries.length} to download</span>
             </div>
+            <p id={`${id}-chapter-help`} className="sr-only">Positive numbers or decimals. Blank keeps the archive’s number.</p>
+            <div className="max-h-[min(24rem,45dvh)] overflow-y-auto pr-1">
+              {entries.map((entry, index) => <div key={entry.key} className="min-w-0 space-y-2 border-b border-border py-3 last:border-b-0">
+                <p className="break-words text-xs font-medium">{entry.item.title}</p>
+                <p role={entry.downloading || entry.resolving ? 'status' : undefined} className={`flex items-start gap-2 text-xs ${entry.lookupError ? 'text-danger' : entry.files.length ? 'text-success' : 'text-muted'}`}>
+                  {(entry.resolving || entry.downloading) && <Spinner className="h-3.5 w-3.5 shrink-0" />}{entry.note}
+                </p>
+                {(entry.files.length ? entry.files : [entry.chapterKey]).map((file, fileIndex) => <div key={file}>
+                  <div className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2">
+                    <span className="min-w-0 break-words text-xs text-muted">{entry.files.length ? filename(file) : 'Chapter number'}</span>
+                    <Input value={incomingValue(file)} onChange={event => setChapter(file, event.target.value)} placeholder={targetReady ? '—' : 'Ch #'} inputMode="decimal" disabled={busy || !targetReady || entry.resolving} className="w-full px-2 text-base sm:text-base lg:text-xs pointer-coarse:text-base" aria-label={`Chapter number for ${entry.files.length <= 1 ? entry.item.title : `${filename(file)} in ${entry.item.title}`}`} aria-invalid={!!errors[file]} aria-describedby={errors[file] ? `${id}-gallery-error-${index}-${fileIndex}` : `${id}-chapter-help`} />
+                  </div>
+                  {errors[file] && <p id={`${id}-gallery-error-${index}-${fileIndex}`} className="mt-1 text-xs text-danger">{errors[file]}</p>}
+                </div>)}
+                {entry.lookupError && <Button size="sm" variant="outline" disabled={busy || entry.query.isFetching} onClick={() => void entry.query.refetch()}><RotateCcw className="h-3.5 w-3.5" /> Retry lookup</Button>}
+                {entry.downloading && <Link to="/downloader?tab=downloads" className="inline-block text-xs text-primary underline underline-offset-4">View download progress</Link>}
+              </div>)}
+            </div>
+          </section>
+        </div>
+
+        <div className="shrink-0 space-y-3 border-t border-border p-4">
+          {save.isError && <p role="alert" className="text-sm text-danger">Could not queue the merge. Drafts kept; try again.</p>}
+          {hasErrors && <p role="alert" className="text-xs text-danger">Fix the chapter numbers above.</p>}
+          {!downloadReady && <div role="status" className="flex flex-wrap items-center gap-2 text-xs text-muted">
+            {setup.status === 'loading' ? <><Spinner /> Checking download settings…</> : setup.status === 'error' ? <><span>Could not check download settings.</span><Button size="sm" variant="outline" onClick={setup.onRetry}>Retry settings</Button></> : <><span>Set an output folder before queueing downloads.</span><Link to="/settings?tab=downloader" className="inline-flex min-h-11 items-center text-primary underline underline-offset-4">Downloader settings</Link></>}
+          </div>}
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="outline" size="sm" disabled={busy} onClick={dismiss}>Cancel</Button>
+            <Button size="sm" onClick={submit} disabled={!canQueue || busy}>
+              {busy ? <Spinner /> : <Merge className="h-3.5 w-3.5" />} {busy ? 'Queuing…' : `Queue merge (${items.length} ${items.length === 1 ? 'gallery' : 'galleries'})`}
+            </Button>
           </div>
         </div>
       </DialogContent>

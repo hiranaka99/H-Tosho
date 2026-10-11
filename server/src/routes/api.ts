@@ -50,6 +50,7 @@ import { imageMime, listCbzFiles, listCbzImages, readComicInfo, readCoverImage, 
 import { parseComicInfo } from '../downloader/comicinfo.js';
 import { galleryFilesystemName, sanitizeFilename } from '../downloader/util.js';
 import { mapLimit } from '../lib/http.js';
+import { validateMergeDownloads } from '../jobs/mergeDownloads.js';
 
 const CREDENTIAL_FIELDS: Record<string, { key: string; label: string }[]> = {
   myanimelist: [{ key: 'clientId', label: 'Client ID' }],
@@ -1193,9 +1194,10 @@ api.get('/cbz/series/:id', async (c) => {
 // ---------------- Jobs ----------------
 
 api.post('/jobs', async (c) => {
-  const body = (await c.req.json()) as { type?: unknown; libraryId?: number; seriesId?: number; seriesIds?: number[]; path?: string; xml?: string; fields?: Record<string, string>; sourceFiles?: string[]; targetDir?: string; chapters?: Record<string, string>; providerId?: string; providerSeriesId?: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number };
+  const body = (await c.req.json()) as { type?: unknown; libraryId?: number; seriesId?: number; seriesIds?: number[]; path?: string; xml?: string; fields?: Record<string, string>; sourceFiles?: string[]; targetDir?: string; chapters?: Record<string, string>; existingChapters?: Record<string, string>; downloads?: unknown; providerId?: string; providerSeriesId?: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number };
   if (!isJobType(body.type)) return c.json({ error: 'Unsupported job type' }, 400);
-  const payload: JobPayload = { libraryId: body.libraryId, seriesId: body.seriesId, seriesIds: body.seriesIds, path: body.path, xml: body.xml, fields: body.fields, sourceFiles: body.sourceFiles, targetDir: body.targetDir, chapters: body.chapters, providerId: body.providerId, providerSeriesId: body.providerSeriesId, selectedTitle: body.selectedTitle, excludedFields: body.excludedFields, cover: body.cover, score: body.score };
+  try { validateMergeDownloads(body.downloads); } catch (error) { return c.json({ error: errMsg(error) }, 400); }
+  const payload: JobPayload = { libraryId: body.libraryId, seriesId: body.seriesId, seriesIds: body.seriesIds, path: body.path, xml: body.xml, fields: body.fields, sourceFiles: body.sourceFiles, targetDir: body.targetDir, chapters: body.chapters, existingChapters: body.existingChapters, downloads: body.downloads, providerId: body.providerId, providerSeriesId: body.providerSeriesId, selectedTitle: body.selectedTitle, excludedFields: body.excludedFields, cover: body.cover, score: body.score };
   payload.context = await resolveJobContext(payload);
   const id = jobQueue.enqueue(body.type, payload);
   return c.json({ id }, 202);

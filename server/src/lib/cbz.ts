@@ -648,6 +648,7 @@ export async function mergeCbzFiles(
   targetDir: string,
   chapters?: Record<string, string>,
   seriesName?: string,
+  onMoved?: (source: string, destination: string) => void,
 ): Promise<MergeCbzOutcome> {
   if (!path.isAbsolute(targetDir)) throw new Error('targetDir must be an absolute path');
   const out: MergeCbzOutcome = { moved: [], skipped: [], chaptered: [], failed: [] };
@@ -681,6 +682,7 @@ export async function mergeCbzFiles(
         removeEmptiedSourceDir(file, targetDir);
       }
       out.moved.push(dest);
+      onMoved?.(src, dest);
 
       const chapter = chapters?.[src];
       const wantNumber = chapter && chapter.trim() ? chapter.trim() : undefined;

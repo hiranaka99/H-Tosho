@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.9.0
+
+### Downloader and selection
+
+- Keep selected galleries in a shared shortlist with cover thumbnails, titles,
+  individual removal, and clear-all actions. Keep merge actions within reach on
+  mobile without covering focused content.
+- Make library selection explicit with checkboxes, selected-card styling, and
+  a removable list of selected series.
+
+### Merge into an existing series
+
+- Review incoming galleries and existing chapter numbers in one dialog. Keep
+  chapter edits as drafts until Queue merge; support positive decimal chapter
+  numbers and flag conflicting numbers without rejecting untouched legacy data.
+- Include missing gallery downloads in the merge job, use CBZ output regardless
+  of the normal download format, and reuse available archives or active downloads.
+- Wait for all galleries before moving archives or applying existing chapter
+  edits. Defer merge-owned download scans until the final series is ready.
+- Preserve download checkpoints across job retries, update download history when
+  archives move, and keep independently started downloads separate from merge
+  cancellation. Reject invalid download plans before queueing work.
+
+### Upgrading
+
+Update and rebuild with your existing data volume and library mounts. For Docker,
+run `docker compose up -d --build`. The merge-download ownership column is added
+automatically; existing settings and download history remain.
+
 ## v2.8.0
 
 ### Libraries
