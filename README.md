@@ -6,7 +6,7 @@ H-Tosho helps you identify manga and light novels, review metadata before applyi
 it, and keep new additions organized. It also includes a doujinshi downloader,
 recommendations, and watched searches for new releases.
 
-Works with **Kavita v0.9.x or newer**. Current version: **v2.12.0** ·
+Works with **Kavita v0.9.x or newer**. Current version: **v2.12.1** ·
 [Release notes](CHANGELOG.md)
 
 ![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
@@ -60,7 +60,7 @@ If you want to download galleries or edit existing CBZ files, also set up the
 
 ### Without Docker
 
-Install **Node.js 22 or newer**, download or clone the repository, and run these
+Install **Node.js 22.22 or newer**, download or clone the repository, and run these
 commands from its folder:
 
 ```bash
@@ -344,6 +344,17 @@ Found a problem? [Open an issue](https://github.com/hiranaka99/H-Tosho/issues)
 with your H-Tosho version, what you expected, and the relevant job error. Remove
 passwords, Auth Keys, and webhook URLs from anything you share.
 
+## Development checks
+
+Use `npm ci` to install the versions in the lockfile. Run `npm run typecheck`
+and `npm test` to check both workspaces. `npm run build` produces the frontend,
+backend, and precompressed Brotli/gzip assets used by the production server.
+
+For desktop and mobile browser checks, install Chromium once with
+`npm exec --workspace @h-tosho/web -- playwright install chromium`, then run
+`npm run test:e2e`. This builds the app and starts an isolated server with a
+fresh temporary database, without download workers or scheduled jobs.
+
 ## Publishing Docker images
 
 The [Docker release workflow](.github/workflows/docker-release.yml) builds the
@@ -354,6 +365,6 @@ alone or saving a draft release does not trigger it.
 
 The workflow uses the repository secrets `DOCKERHUB_USERNAME` and
 `DOCKERHUB_TOKEN`. The token must have write access to the Docker Hub repository.
-A stable release tagged `v2.12.0`, for example, publishes `v2.12.0`, `2.12.0`,
+A stable release tagged `v2.12.1`, for example, publishes `v2.12.1`, `2.12.1`,
 and `latest`. Prereleases publish their version tags without updating `latest`.
 Build progress and failures appear in the repository's **Actions** tab.

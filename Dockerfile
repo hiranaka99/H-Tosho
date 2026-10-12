@@ -1,6 +1,7 @@
 # ---- Stage 1: build frontend + backend ------------------------------------
 # `node:22-slim` (glibc) is used because better-sqlite3 ships glibc prebuilds;
 # alpine/musl would force a node-gyp compile at build time.
+# The current 22.x image must satisfy package.json's Node >=22.22 requirement.
 FROM node:22-slim AS build
 WORKDIR /app
 

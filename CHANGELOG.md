@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.12.1
+
+- Update all direct dependencies to current stable releases, including React 19,
+  React Router 8, Vite 8, and Hono's Node adapter 2. Require Node.js 22.22 or newer.
+- Migrate routing to the consolidated React Router package and resolve shared
+  React runtime and type definitions consistently across frontend libraries.
+- Generate Brotli/gzip assets at build time and cache content-hashed assets for
+  faster loading and repeat visits, while revalidating the frontend shell.
+- Return 404 for missing built assets instead of serving the frontend HTML.
+- Add HTTP adapter, Tailwind 4 class-merging, and desktop/mobile browser checks
+  covering login, navigation, themes, settings drafts, and download streaming.
+- Exclude local dependencies, runtime data, downloads, and credentials from
+  Docker build contexts. Verify Docker builds, Linux tests, and persisted state
+  after container restarts.
+
 ## v2.12.0
 
 - Search pipe-separated title variants during metadata matching, including

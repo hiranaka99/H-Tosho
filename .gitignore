@@ -6,6 +6,8 @@ dist/
 build/
 *.tsbuildinfo
 coverage/
+playwright-report/
+test-results/
 .nyc_output/
 
 # ---- Local Impeccable state, caches, reports & previews ---------------------

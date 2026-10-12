@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useBlocker, useBeforeUnload } from 'react-router-dom';
+import { useBlocker, useBeforeUnload } from 'react-router';
 import { Button, Dialog, DialogContent, DialogTitle, DialogDescription } from '../components/ui';
 import { useSettingsNavigation } from './SettingsDrafts';
 

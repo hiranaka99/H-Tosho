@@ -21,9 +21,9 @@ function resolveWebDist(): string | null {
   return null;
 }
 
-export function createApp(): Hono {
+export function createApp(options: { webDist?: string | null } = {}): Hono {
   const app = new Hono();
-  const webDist = resolveWebDist();
+  const webDist = options.webDist === undefined ? resolveWebDist() : options.webDist;
 
   app.onError((error, c) => {
     if (error instanceof SyntaxError) return c.json({ error: 'Invalid JSON body' }, 400);
@@ -43,7 +43,16 @@ export function createApp(): Hono {
   app.route('/', mediaRouter());
 
   if (webDist) {
-    app.use('/*', serveStatic({ root: webDist }));
+    app.use('/*', serveStatic({
+      root: webDist,
+      precompressed: true,
+      onFound: (_path, c) => {
+        // Vite's content hashes change whenever an asset changes. Cache those
+        // files across visits, but always revalidate the shell and public files.
+        const hashedAsset = /^\/assets\/[^/]+-[\w-]{8,}\.(?:js|css)$/.test(c.req.path);
+        c.header('Cache-Control', hashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache');
+      },
+    }));
     // SPA shell for unmatched routes (client-side navigation). The file is
     // re-read when its mtime changes, so a frontend rebuild is picked up
     // without restarting the server (a startup-cached shell goes stale as soon
@@ -51,7 +60,7 @@ export function createApp(): Hono {
     const indexPath = path.join(webDist, 'index.html');
     let shellCache: { mtimeMs: number; html: string } | null = null;
     app.get('*', (c) => {
-      if (c.req.path.startsWith('/api/')) return c.notFound();
+      if (c.req.path.startsWith('/api/') || c.req.path.startsWith('/assets/')) return c.notFound();
       try {
         const st = fs.statSync(indexPath);
         if (!shellCache || shellCache.mtimeMs !== st.mtimeMs) {
@@ -60,6 +69,7 @@ export function createApp(): Hono {
       } catch {
         return c.text('Frontend build not found — run npm start', 503);
       }
+      c.header('Cache-Control', 'no-cache');
       return c.html(shellCache.html);
     });
   }

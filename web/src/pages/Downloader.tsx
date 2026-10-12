@@ -1,7 +1,7 @@
 import { useDuplicateReview } from '../components/DuplicateReview';
 import * as React from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import {
   Search,
   Loader2,

@@ -2,7 +2,7 @@ import { useDuplicateReview } from './DuplicateReview';
 import * as React from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ImageOff, Merge, RotateCcw, Search } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { api, ApiError, type DuplicateCheck, type DoujinSearchResult, type DoujinSource } from '../lib/api';
 import { chapterErrors, chapterNumber } from '../lib/chapterNumbers';
 import { useDownloads } from '../lib/DownloadsContext';
