@@ -208,3 +208,35 @@ test('paged search exposes full totals, validates page bounds and avoids bulk hy
   }
   assert.equal(pageCalls, 1);
 });
+
+test('library lists expose saved Kavita tags for matched and unmatched series and cache metadata', async () => {
+  settings.setKavitaConnection({ baseUrl: 'http://library-tags.test', apiKey: 'test-key' });
+  const calls: number[] = [];
+  KavitaClient.prototype.getSeries = async () => [4101, 4102, 4103, 4104].map(id => ({ ...series, id }));
+  KavitaClient.prototype.getSeriesMetadata = async id => {
+    calls.push(id);
+    if (id === 4103) throw new Error('Metadata temporarily unavailable');
+    return metadata({ tags: id === 4101 ? [{ id: 1, title: 'Saved Tag' }] : [] });
+  };
+  getDb().insert(schema.seriesMatches).values([
+    { kavitaSeriesId: 4101, status: 'matched', metadataJson: JSON.stringify({ artists: ['Provider Artist'], tags: ['Stale Tag'] }) },
+    { kavitaSeriesId: 4102, status: 'matched', metadataJson: JSON.stringify({ tags: ['Removed Tag'] }) },
+    { kavitaSeriesId: 4103, status: 'matched', metadataJson: JSON.stringify({ tags: ['Fallback Tag', null, 12] }) },
+  ]).run();
+  const response = await api.request('/kavita/libraries/7/series');
+  assert.equal(response.status, 200);
+  const rows = await response.json();
+  assert.deepEqual(rows.map((row: { tags: string[] }) => row.tags), [['Saved Tag'], [], ['Fallback Tag'], []]);
+  assert.deepEqual(rows[0].artists, ['Provider Artist']);
+  assert.deepEqual(rows[3].artists, ['Sample Artist']);
+  await api.request('/kavita/libraries/7/series');
+  assert.deepEqual(calls, [4101, 4102, 4103, 4104, 4103], 'cached metadata is reused; temporary failures retry');
+});
+
+test('switching Kavita connections clears cached library tags', async () => {
+  settings.setKavitaConnection({ baseUrl: 'http://other-library-tags.test', apiKey: 'test-key' });
+  KavitaClient.prototype.getSeries = async () => [{ ...series, id: 4101 }];
+  KavitaClient.prototype.getSeriesMetadata = async () => metadata({ tags: [{ id: 2, title: 'Other Server Tag' }] });
+  const rows = await (await api.request('/kavita/libraries/7/series')).json();
+  assert.deepEqual(rows[0].tags, ['Other Server Tag']);
+});

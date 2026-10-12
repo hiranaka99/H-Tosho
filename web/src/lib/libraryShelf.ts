@@ -15,6 +15,7 @@ export function prepareLibraryRows(rows: readonly SeriesRow[], sortBy: 'name' | 
       row,
       name: row.name.toLowerCase(),
       artists: (row.artists ?? []).map(artist => artist.toLowerCase()),
+      tags: (row.tags ?? []).map(tag => tag.toLowerCase()),
       dateAdded: Date.parse(row.dateAdded ?? '') || 0,
     };
   });
@@ -25,12 +26,19 @@ export function prepareLibraryRows(rows: readonly SeriesRow[], sortBy: 'name' | 
   return { entries, ids, counts };
 }
 
+export function librarySearchTerm(query: string) {
+  const input = query.trim().toLowerCase();
+  const tagQuery = /^tags?:\s*(.*)$/s.exec(input);
+  const q = tagQuery ? tagQuery[1].replace(/^"|"$/g, '').replace(/_/g, ' ').trim() : input;
+  return { q, tagsOnly: Boolean(tagQuery) };
+}
+
 export function filterLibraryRows(index: ReturnType<typeof prepareLibraryRows>, query: string, statusFilter: string, review: boolean): SeriesRow[] {
-  const q = query.toLowerCase();
-  return index.entries.filter(({ row, name, artists }) => {
+  const { q, tagsOnly } = librarySearchTerm(query);
+  return index.entries.filter(({ row, name, artists, tags }) => {
     const okStatus = review || statusFilter === 'all'
       ? true
       : statusFilter === 'low-score' ? needsReview(row) : row.status === statusFilter;
-    return okStatus && (!q || name.includes(q) || artists.some(artist => artist.includes(q)));
+    return okStatus && (!q || tags.some(tag => tag.includes(q)) || !tagsOnly && (name.includes(q) || artists.some(artist => artist.includes(q))));
   }).map(entry => entry.row);
 }

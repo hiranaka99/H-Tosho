@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-const { kavitaSeriesArtists, invalidateSeriesArtists } = await import('../src/services/seriesArtists.js');
+const { kavitaSeriesArtists, kavitaSeriesSearchMetadata, invalidateSeriesArtists } = await import('../src/services/seriesArtists.js');
 
 type Person = { name: string | null };
-type Meta = { pencillers?: Person[] | null; inkers?: Person[] | null; writers?: Person[] | null };
+type Meta = { pencillers?: Person[] | null; inkers?: Person[] | null; writers?: Person[] | null; tags?: { id: number; title: string | null }[] | null };
 
 /** Stub MetadataSource with a per-id response table and a fetch log. */
 function makeSource() {
@@ -88,5 +88,34 @@ describe('kavitaSeriesArtists', () => {
     const out = await kavitaSeriesArtists(s.source, []);
     assert.equal(out.size, 0);
     assert.deepEqual(s.calls, []);
+  });
+
+  it('extracts tags and artists from one metadata request and shares the cache', async () => {
+    const s = makeSource();
+    s.set(106, { writers: [{ name: 'Artist' }], tags: [{ id: 1, title: ' Romance ' }, { id: 2, title: 'romance' }, { id: 3, title: null }, { id: 4, title: 'Slice of Life' }] });
+    const rows = await kavitaSeriesSearchMetadata(s.source, [106, 106]);
+    assert.deepEqual(rows.get(106), { artists: ['Artist'], tags: ['Romance', 'Slice of Life'] });
+    assert.deepEqual((await kavitaSeriesArtists(s.source, [106])).get(106), ['Artist']);
+    assert.deepEqual(s.calls, [106]);
+  });
+
+  it('distinguishes no saved tags from unavailable metadata and retries temporary failures', async () => {
+    const s = makeSource();
+    s.set(107, { tags: [] });
+    s.failTransient(108);
+    const rows = await kavitaSeriesSearchMetadata(s.source, [107, 108]);
+    assert.deepEqual(rows.get(107)?.tags, []);
+    assert.equal(rows.get(108)?.tags, null);
+    s.set(108, { tags: [{ id: 1, title: 'Recovered' }] });
+    assert.deepEqual((await kavitaSeriesSearchMetadata(s.source, [108])).get(108)?.tags, ['Recovered']);
+  });
+
+  it('invalidating synced metadata refreshes saved tags as well as artists', async () => {
+    const s = makeSource();
+    s.set(109, { tags: [{ id: 1, title: 'Old' }] });
+    await kavitaSeriesSearchMetadata(s.source, [109]);
+    s.set(109, { tags: [{ id: 2, title: 'New' }] });
+    invalidateSeriesArtists(109);
+    assert.deepEqual((await kavitaSeriesSearchMetadata(s.source, [109])).get(109)?.tags, ['New']);
   });
 });

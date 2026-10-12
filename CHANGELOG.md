@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## v2.14.0
+
+- Load daily recommendations when the app opens, keep picks stable through
+  navigation, downloads, reconnects, metadata updates, and preference changes,
+  and persist empty daily sets. Refresh picks remains an explicit action.
+- Restore the last Downloader tab when returning from Libraries or other pages,
+  while allowing explicit search and download links to choose their own tabs.
+- Search Libraries by saved tags as well as series titles and artists. Use
+  `tag:` to restrict matches to tags, with cached Kavita metadata and stored
+  match tags as a fallback when metadata cannot be read.
+
 ## v2.13.0
 
 - Translate the active query on every provider switch, preserving exclusions,

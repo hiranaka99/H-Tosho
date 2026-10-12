@@ -36,7 +36,7 @@ import {
 import { isJobType, jobQueue, type JobContext, type JobPayload } from '../jobs/queue.js';
 import { autoMatch, fetchProviderMetadata } from '../match/autoMatcher.js';
 import { buildSeriesPayload } from '../services/sync.js';
-import { kavitaSeriesArtists } from '../services/seriesArtists.js';
+import { kavitaSeriesSearchMetadata } from '../services/seriesArtists.js';
 import { testNotification } from '../notify/dispatcher.js';
 import { getDownloaderSettings, parseDownloaderSettings, setDownloaderSettings } from '../services/settings.js';
 import { downloadQueue } from '../downloader/engine.js';
@@ -110,19 +110,19 @@ function intParam(raw: string | undefined): number | null {
 }
 
 /**
- * Extract provider artist names from a stored match row's metadata JSON.
- * Matched series carry the provider metadata (including `artists`) locally,
- * so library lists can surface artists without extra Kavita round-trips.
+ * Extract searchable strings from stored provider metadata, including fallback
+ * tags when a series' Kavita metadata cannot be read.
  */
-function artistsFromMetadata(metadataJson: string | null | undefined): string[] {
+function stringsFromMatchMetadata(metadataJson: string | null | undefined, field: 'artists' | 'tags' = 'artists'): string[] {
   if (!metadataJson) return [];
   try {
     const meta: unknown = JSON.parse(metadataJson);
-    if (meta && typeof meta === 'object' && 'artists' in meta && Array.isArray(meta.artists)) {
-      return meta.artists.filter((a): a is string => typeof a === 'string' && a.trim().length > 0);
+    if (meta && typeof meta === 'object' && field in meta) {
+      const values = (meta as Record<string, unknown>)[field];
+      if (Array.isArray(values)) return values.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).map(value => value.trim());
     }
   } catch {
-    /* corrupt metadata JSON — treat as no artists */
+    /* corrupt metadata JSON — treat as no values */
   }
   return [];
 }
@@ -226,12 +226,13 @@ api.get('/kavita/libraries/:id/series', async (c) => {
     const byId = new Map(rows.map((r) => [r.kavitaSeriesId, r]));
     // Series without match-derived artists fall back to Kavita's own people
     // (pencillers/inkers/writers), so unmatched entries can also be searched by artist.
-    const needIds = series.filter((s) => artistsFromMetadata(byId.get(s.id)?.metadataJson).length === 0).map((s) => s.id);
-    const kavitaArtists = await kavitaSeriesArtists(client, needIds);
+    // Read tags for every series, sharing the existing bounded metadata/artist
+    // cache. Live Kavita tags take precedence over older provider match data.
+    const searchMetadata = await kavitaSeriesSearchMetadata(client, series.map(s => s.id));
     return c.json(
       series.map((s) => {
         const m = byId.get(s.id);
-        const matchArtists = artistsFromMetadata(m?.metadataJson);
+        const matchArtists = stringsFromMatchMetadata(m?.metadataJson);
         return {
           id: s.id,
           name: s.name,
@@ -246,7 +247,8 @@ api.get('/kavita/libraries/:id/series', async (c) => {
           confirmed: m?.confirmed ?? false,
           lastSyncedAt: m?.lastSyncedAt ?? null,
           errorMessage: m?.errorMessage ?? null,
-          artists: matchArtists.length > 0 ? matchArtists : (kavitaArtists.get(s.id) ?? []),
+          artists: matchArtists.length > 0 ? matchArtists : (searchMetadata.get(s.id)?.artists ?? []),
+          tags: searchMetadata.get(s.id)?.tags ?? stringsFromMatchMetadata(m?.metadataJson, 'tags'),
         };
       }),
     );
@@ -309,7 +311,8 @@ api.get('/series/needs-review', async (c) => {
           status: match.status, providerId: match.providerId, matchScore: match.matchScore,
           confirmed: match.confirmed,
           lastSyncedAt: match.lastSyncedAt,
-          artists: artistsFromMetadata(match.metadataJson),
+          artists: stringsFromMatchMetadata(match.metadataJson),
+          tags: stringsFromMatchMetadata(match.metadataJson, 'tags'),
         };
       });
     }));

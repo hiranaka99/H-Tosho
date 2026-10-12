@@ -157,7 +157,7 @@ test('manual refresh during an in-flight generation re-rolls instead of joining 
   assert.equal(overlap(keySet(set1.items), keySet(set2.items)), 0, 'second roll re-served picks from the first');
 });
 
-test('empty generation is not cached and backs off until a manual refresh', async () => {
+test('empty daily generation is persisted and changes only on a manual refresh', async () => {
   // Fresh boundary: no history to recycle into the (would-be) set.
   getDb().delete(schema.recommendationHistory).run();
   const today = localDate(new Date());
@@ -177,21 +177,19 @@ test('empty generation is not cached and backs off until a manual refresh', asyn
 
   const set1 = await recs.getRecommendations();
   assert.equal(set1.items.length, 0);
-  assert.ok(
-    !getDb().select().from(schema.keyValueStore).all().some((r) => r.key === `recommendations-v2:${today}`),
-    'empty set was pinned to the day cache',
-  );
+  assert.ok(getDb().select().from(schema.keyValueStore).all().some((r) => r.key === `recommendations-v2:${today}`), 'empty daily set must persist');
 
   // While the sources stay down, subsequent reads must not re-run the pipeline.
   const callsAfterFirst = searchCalls;
   const set2 = await recs.getRecommendations();
   assert.equal(set2.items.length, 0);
-  assert.equal(searchCalls, callsAfterFirst, 'empty-set cooldown did not prevent regeneration');
+  assert.equal(set2.generatedAt, set1.generatedAt);
+  assert.equal(searchCalls, callsAfterFirst, 'an empty set must not regenerate on another app opening');
 
-  // A manual refresh bypasses the cooldown and re-rolls.
+  // A manual refresh explicitly re-rolls, even after an empty first pass.
   const set3 = await recs.refreshRecommendations();
   assert.equal(set3.items.length, 0);
-  assert.ok(searchCalls > callsAfterFirst, 'manual refresh did not regenerate during the cooldown');
+  assert.ok(searchCalls > callsAfterFirst, 'manual refresh did not regenerate the empty set');
 });
 
 test('same-day exhaustion reuses least-recent picks to keep twelve visible', async () => {
@@ -548,4 +546,52 @@ test('popular reserves exclude visible cards and replace all twelve dismissals w
     assert.ok(!keySet(current.items).has(`${item.source}:${item.galleryId}`));
   }
   assert.deepEqual(keySet(current.items), keySet(cached.reserve));
+});
+
+test('metadata and recommendation preference changes preserve the daily set until explicit refresh', async () => {
+  let calls = 0;
+  const provider = stubProvider('hitomi', () => Array.from({ length: 100 }, (_, index) => `stable-day-${index}`));
+  doujinProviders.hitomi = { ...provider, async search(...args) { calls++; return provider.search(...args); } };
+  const first = await recs.refreshRecommendations();
+  const before = calls;
+  const today = localDate(new Date());
+  const cacheBefore = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${today}`)).get()!.valueJson;
+  const { invalidateRecommendationSeries } = await import('../src/services/recommendationSignals.js');
+  invalidateRecommendationSeries(42);
+  setDownloaderSettings(DEFAULT_DOWNLOADER);
+  recs.setExcludedLibraries([7]);
+  const second = await recs.getRecommendations();
+  assert.deepEqual(second.items, first.items);
+  assert.equal(second.generatedAt, first.generatedAt);
+  assert.equal(calls, before, 'changing inputs must not run provider searches');
+  assert.equal(getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${today}`)).get()!.valueJson, cacheBefore);
+  recs.setExcludedLibraries([]);
+  await recs.refreshRecommendations();
+  assert.ok(calls > before, 'explicit refresh uses updated inputs');
+});
+
+test('the next day generates new recommendations only when the app requests them again', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2030-01-10T12:00:00Z') });
+  let calls = 0;
+  doujinProviders.hitomi = {
+    ...stubProvider('hitomi', () => []),
+    async search(query, limit) {
+      calls++;
+      return Array.from({ length: limit ?? 30 }, (_, index) => ({ source: 'hitomi' as const, galleryId: `${localDate(new Date())}-${slug(query)}-${index}`, title: `Daily ${index}`, artists: [], tags: [] }));
+    },
+  };
+  const first = await recs.getRecommendations();
+  const before = calls;
+  assert.equal(first.date, '2030-01-10');
+  assert.deepEqual((await recs.getRecommendations()).items, first.items);
+  assert.equal(calls, before);
+  t.mock.timers.tick(86_400_000);
+  assert.equal(calls, before, 'midnight must not start automatic generation');
+  const edited = await recs.dismissAndReplace('hitomi', first.items[0].galleryId);
+  assert.equal(edited.date, first.date, 'feedback after midnight should edit the displayed day');
+  assert.equal(calls, before, 'dismissing a card after midnight must not generate a new daily set');
+  const next = await recs.getRecommendations();
+  assert.equal(next.date, '2030-01-11');
+  assert.ok(calls > before);
+  assert.equal(overlap(keySet(first.items), keySet(next.items)), 0);
 });

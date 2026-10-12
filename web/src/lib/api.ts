@@ -37,6 +37,8 @@ export interface SeriesRow {
   errorMessage?: string | null;
   /** Provider artist names from the stored match metadata (empty when unmatched or unknown). */
   artists?: string[];
+  /** Saved Kavita tags, with stored match tags as a fallback if metadata is unavailable. */
+  tags?: string[];
 }
 
 /** Local match row for a Kavita series (server `series_matches` table). */

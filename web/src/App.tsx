@@ -15,6 +15,7 @@ import { cn } from './lib/utils';
 import { useAuth } from './lib/AuthContext';
 import { useTheme } from './lib/theme';
 import { useMediaQuery } from './lib/useMediaQuery';
+import { recommendationQuery } from './lib/recommendationQuery';
 
 function LowConfidenceBadge() {
   const { data } = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, refetchInterval: 60_000 });
@@ -103,6 +104,9 @@ const NAV = [
 ];
 
 export default function App() {
+  // AuthProvider mounts App only after login. No timer or navigation rotates
+  // picks; the server persists the day's initial set across app openings.
+  useQuery(recommendationQuery);
   const location = useLocation();
   const { username, logout } = useAuth();
   // Library IDs select content within one page; keep its controls mounted.

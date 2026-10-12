@@ -6,7 +6,7 @@ H-Tosho helps you identify manga and light novels, review metadata before applyi
 it, and keep new additions organized. It also includes a doujinshi downloader,
 recommendations, and watched searches for new releases.
 
-Works with **Kavita v0.9.x or newer**. Current version: **v2.13.0** ·
+Works with **Kavita v0.9.x or newer**. Current version: **v2.14.0** ·
 [Release notes](CHANGELOG.md)
 
 ![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
@@ -184,6 +184,12 @@ The queue position stays visible, and closing returns you to the library list.
 Libraries defaults to **Sort · Date added**, showing the newest series first.
 Your selected sort order is remembered for the current browser session.
 
+The Libraries search field matches series titles, artists, and saved tags.
+Use `tag:romance` to search tags only, or `tag:"slice of life"` for a multiword
+tag. Matching is case-insensitive and supports partial tag names. Tag searches
+work with the match-status filter and across all result pages. Tags come from
+Kavita metadata; stored match tags are used if that metadata is unavailable.
+
 ### Check for duplicate galleries
 
 Search, Recommended, and Watched cards check the local library before download.
@@ -285,6 +291,12 @@ recommendations** menu and choose **Don’t recommend this gallery**. Use **Undo
 to restore a dismissed gallery.
 
 ### Tune your recommendations
+
+Recommendations load when you open the app. The first opening on a new day
+creates that day's picks; subsequent openings reuse them. Leaving the app open
+past midnight, switching pages, downloads, and preference changes do not roll
+new picks. Choose **Refresh picks** to generate a new selection yourself.
+Returning to Downloader restores the last tab you used, including Recommended.
 
 Use a card's **Tune recommendations** menu to choose **More like this**, dismiss
 the gallery, or mute an artist. More like this influences the next refresh; a mute immediately hides
@@ -391,6 +403,6 @@ alone or saving a draft release does not trigger it.
 
 The workflow uses the repository secrets `DOCKERHUB_USERNAME` and
 `DOCKERHUB_TOKEN`. The token must have write access to the Docker Hub repository.
-A stable release tagged `v2.13.0`, for example, publishes `v2.13.0`, `2.13.0`,
+A stable release tagged `v2.14.0`, for example, publishes `v2.14.0`, `2.14.0`,
 and `latest`. Prereleases publish their version tags without updating `latest`.
 Build progress and failures appear in the repository's **Actions** tab.

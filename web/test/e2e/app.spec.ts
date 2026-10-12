@@ -1,9 +1,14 @@
 import { expect, test, type Page } from '@playwright/test';
 
-async function navigate(page: Page, name: string) {
+async function navigate(page: Page, name: string, blocked = false) {
   const toggle = page.getByRole('button', { name: 'Open navigation', exact: true });
-  if (await toggle.isVisible()) await toggle.click();
-  await page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('link', { name, exact: true }).click();
+  const mobile = await toggle.isVisible();
+  if (mobile) await toggle.click();
+  const link = page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('link', { name, exact: true });
+  const target = await link.getAttribute('href');
+  await link.click();
+  if (!blocked) await expect(page).toHaveURL(url => url.pathname === target || target === '/libraries' && url.pathname.startsWith('/libraries/'));
+  if (mobile && !blocked) await expect(toggle).toBeVisible(); // Wait for the drawer to close before the next navigation.
 }
 
 test.beforeEach(async ({ page }) => {
@@ -50,18 +55,18 @@ test('unsaved settings can stay, discard, or save before navigating', async ({ p
   const original = await interval.inputValue();
   const changed = original === '13' ? '14' : '13';
   await interval.fill(changed);
-  await navigate(page, 'Jobs');
+  await navigate(page, 'Jobs', true);
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: 'Save your settings changes?' })).toBeVisible();
   await dialog.getByRole('button', { name: 'Stay', exact: true }).click();
   await expect(interval).toHaveValue(changed);
-  await navigate(page, 'Jobs');
+  await navigate(page, 'Jobs', true);
   await dialog.getByRole('button', { name: 'Discard', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Jobs', exact: true })).toBeVisible();
   await navigate(page, 'Settings');
   await expect(interval).toHaveValue(original);
   await interval.fill(changed);
-  await navigate(page, 'Jobs');
+  await navigate(page, 'Jobs', true);
   await dialog.getByRole('button', { name: 'Save & leave', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Jobs', exact: true })).toBeVisible();
   await navigate(page, 'Settings');
@@ -574,4 +579,143 @@ test('authenticated download events stream over the upgraded HTTP adapter', asyn
   }));
   expect(snapshot.type).toBe('snapshot');
   expect(snapshot.tasks).toEqual([]);
+});
+
+test('Libraries searches saved tags across pages alongside titles and artists', async ({ page }, testInfo) => {
+  const rows = Array.from({ length: 85 }, (_, index) => ({
+    id: 5000 + index, name: index === 84 ? 'Romance title only' : `Library book ${String(index + 1).padStart(2, '0')}`,
+    status: index % 2 ? 'matched' : 'unmatched', providerId: index % 2 ? 'anilist' : null,
+    artists: index === 0 ? ['Test Artist'] : [],
+    tags: index < 60 ? ['Romance', ...(index === 0 ? ['Slice of Life'] : [])] : index === 83 ? ['Rare Tag'] : [],
+    dateAdded: '2026-10-01T00:00:00Z',
+  }));
+  await page.route('**/api/kavita/status', route => route.fulfill({ json: { configured: true, baseUrl: 'http://fixture.invalid', hasApiKey: true } }));
+  await page.route('**/api/kavita/libraries', route => route.fulfill({ json: [{ id: 7, name: 'Manga', seriesCount: rows.length, matchedCount: 42 }] }));
+  await page.route('**/api/kavita/libraries/7/series', route => route.fulfill({ json: rows }));
+  await page.route('**/api/libraries/7/override', route => route.fulfill({ json: { libraryId: 7, priority: [], autoMatch: false } }));
+  await page.goto('/libraries/7');
+  const query = page.getByRole('textbox', { name: 'Filter series, artists or tags', exact: true });
+  const cards = page.locator('[data-library-motion-id]');
+  await expect(cards).toHaveCount(40);
+  await query.fill('ROMANCE');
+  await expect(page.getByText('61 of 85 series', { exact: true })).toBeVisible();
+  await query.fill('tag:romance');
+  await expect(page.getByText('60 of 85 series', { exact: true })).toBeVisible();
+  const pages = page.getByRole('navigation', { name: 'Pages', exact: true });
+  await pages.getByRole('button', { name: '2', exact: true }).click();
+  await expect(cards).toHaveCount(20);
+  await expect(cards.first()).toContainText('Tags · Romance');
+  await page.getByRole('combobox', { name: 'Filter by match status' }).selectOption('matched');
+  await expect(page.getByText('30 of 85 series', { exact: true })).toBeVisible();
+  await expect(cards).toHaveCount(30);
+  await page.getByRole('combobox', { name: 'Filter by match status' }).selectOption('all');
+  await query.fill('tag:"slice of life"');
+  await expect(cards).toHaveCount(1);
+  await expect(cards.first()).toContainText('Library book 01');
+  await expect(cards.first()).toContainText('Tags · Slice of Life');
+  await query.fill('tag:rare');
+  await expect(cards).toHaveCount(1);
+  await expect(cards.first()).toContainText('Library book 84');
+  await expect(cards.first()).toContainText('Tags · Rare Tag');
+  await expect(page.getByText('1 of 85 series', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(query).toHaveValue('tag:rare');
+  await expect(cards).toHaveCount(1);
+  await page.locator('main').screenshot({ path: testInfo.outputPath('library-tag-search.png') });
+  await query.fill('Test Artist');
+  await expect(cards).toHaveCount(1);
+  await query.fill('tag:missing');
+  await expect(page.getByText('No matching series', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+  await expect(query).toHaveValue('');
+  await expect(cards).toHaveCount(40);
+  expect(await page.locator('main').evaluate(element => element.scrollWidth <= element.clientWidth)).toBeTruthy();
+});
+
+test('daily recommendations stay fixed and returning from Libraries restores Recommended', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-10-12T12:00:00Z') });
+  let day = '2026-10-12';
+  let reads = 0, refreshes = 0;
+  let excludedLibraryIds: number[] = [];
+  const titles = new Map<string, string>();
+  const picks = () => ({
+    date: day, generatedAt: `${day}T12:00:00Z`, mode: 'popular',
+    profile: { artists: [], tags: [], series: [], language: null }, repeatedCount: 0, degradedReason: null, ownedKeys: [], dismissedKeys: [],
+    items: [{ source: 'hitomi', galleryId: `${day}-${refreshes}`, title: titles.get(day) ?? `Daily pick ${day}`, artists: [], tags: [], reasons: [], pageCount: 28 }],
+  });
+  await page.route('**/api/recommendations', async route => { reads++; await route.fulfill({ json: picks() }); });
+  await page.route('**/api/recommendations/refresh', async route => { refreshes++; titles.set(day, 'Manually refreshed pick'); await route.fulfill({ json: picks() }); });
+  await page.route('**/api/recommendations/libraries', route => route.fulfill({ json: [{ id: 7, name: 'Manga' }] }));
+  await page.route('**/api/recommendations/settings', async route => {
+    if (route.request().method() === 'POST') excludedLibraryIds = route.request().postDataJSON().excludedLibraryIds;
+    await route.fulfill({ json: { excludedLibraryIds } });
+  });
+  await page.route('**/api/downloads/library-matches', route => route.fulfill({ json: { items: [], incomplete: false, errors: [] } }));
+  await page.route('**/api/doujin/search', route => route.fulfill({ json: { items: [], total: 0 } }));
+  // App startup loads the day's picks while Libraries is still open.
+  await page.reload();
+  await expect.poll(() => reads).toBe(1);
+  await navigate(page, 'Downloader');
+  const recommended = page.getByRole('tab', { name: 'Recommended', exact: true });
+  await recommended.click();
+  await expect(page.getByText('Daily pick 2026-10-12', { exact: true })).toBeVisible();
+  await navigate(page, 'Libraries');
+  await page.clock.fastForward('06:00'); // Beyond both stale and garbage-collection defaults.
+  await navigate(page, 'Downloader');
+  await expect(recommended).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByText('Daily pick 2026-10-12', { exact: true })).toBeVisible();
+  await page.evaluate(() => { window.dispatchEvent(new Event('offline')); window.dispatchEvent(new Event('online')); window.dispatchEvent(new Event('focus')); });
+  await page.getByRole('group', { name: 'Libraries used for recommendations' }).getByRole('button', { name: 'Manga', exact: true }).click();
+  await expect.poll(() => excludedLibraryIds).toEqual([7]);
+  await expect(page.getByText('Daily pick 2026-10-12', { exact: true })).toBeVisible();
+  expect(reads).toBe(1);
+  expect(refreshes).toBe(0);
+  await page.getByRole('button', { name: 'Refresh picks', exact: true }).click();
+  await expect(page.getByText('Manually refreshed pick', { exact: true })).toBeVisible();
+  expect(refreshes).toBe(1);
+  expect(reads).toBe(1);
+  // Reopening on the same day reads the same persisted server selection.
+  await page.reload();
+  await expect(recommended).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByText('Manually refreshed pick', { exact: true })).toBeVisible();
+  expect(reads).toBe(2);
+  day = '2026-10-13';
+  await page.clock.fastForward('24:00:00');
+  await expect(page.getByText('Manually refreshed pick', { exact: true })).toBeVisible();
+  expect(reads).toBe(2);
+  // The new daily set loads only at the next app opening.
+  await page.reload();
+  await expect(page.getByText('Daily pick 2026-10-13', { exact: true })).toBeVisible();
+  expect(reads).toBe(3);
+  await page.goto('/downloader?source=hitomi&q=artist:sample');
+  await expect(page.getByRole('tab', { name: 'Search', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await recommended.click();
+  await expect(recommended).toHaveAttribute('aria-selected', 'true');
+  await navigate(page, 'Libraries');
+  await navigate(page, 'Downloader');
+  await expect(recommended).toHaveAttribute('aria-selected', 'true');
+  expect(reads).toBe(4); // The explicit full-page deep link is an app opening too.
+  expect(refreshes).toBe(1);
+});
+
+test('a failed initial recommendation load retries only on an explicit Retry', async ({ page }) => {
+  let reads = 0;
+  let recover = false;
+  await page.route('**/api/recommendations', async route => {
+    reads++;
+    await route.fulfill(recover ? { json: { date: '2026-10-12', generatedAt: '2026-10-12T12:00:00Z', mode: 'popular', profile: { artists: [], tags: [], series: [], language: null }, items: [], repeatedCount: 0, degradedReason: 'insufficient-eligible' } } : { status: 503, json: { error: 'Temporarily unavailable' } });
+  });
+  await page.reload();
+  await expect.poll(() => reads).toBe(1);
+  await navigate(page, 'Downloader');
+  await page.getByRole('tab', { name: 'Recommended', exact: true }).click();
+  await expect(page.getByText('Recommendations failed', { exact: true })).toBeVisible();
+  await navigate(page, 'Libraries');
+  await navigate(page, 'Downloader');
+  await expect(page.getByText('Recommendations failed', { exact: true })).toBeVisible();
+  expect(reads).toBe(1);
+  recover = true;
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.getByText('No picks available', { exact: true })).toBeVisible();
+  expect(reads).toBe(2);
 });

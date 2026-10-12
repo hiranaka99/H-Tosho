@@ -1,13 +1,14 @@
 import type { KavitaSeriesMetadataDto } from '../kavita/types.js';
 import { invalidateRecommendationSeries } from './recommendationSignals.js';
+import { onSettingChange } from './settings.js';
 
 /** Minimal client surface the cache needs — satisfied by KavitaClient. */
 export interface MetadataSource {
-  getSeriesMetadata(seriesId: number): Promise<Pick<KavitaSeriesMetadataDto, 'pencillers' | 'inkers' | 'writers'>>;
+  getSeriesMetadata(seriesId: number): Promise<Pick<KavitaSeriesMetadataDto, 'pencillers' | 'inkers' | 'writers'> & Partial<Pick<KavitaSeriesMetadataDto, 'tags'>>>;
 }
 
 /**
- * Artist names per series, sourced from Kavita's own series metadata.
+ * Searchable artists and tags, sourced from Kavita's own series metadata.
  *
  * Matched series carry provider artists in the local match row (and H-Tosho
  * pushes them into Kavita's penciller role), but unmatched entries have no
@@ -16,18 +17,25 @@ export interface MetadataSource {
  */
 
 /** How long a fetched (or definitively empty) result stays fresh. */
-const TTL_MS = 60 * 60 * 1000;
+const TTL_MS = 5 * 60 * 1000;
 /** Parallel metadata requests while filling the cache. */
 const CONCURRENCY = 8;
 
-interface Entry {
+export interface SeriesSearchMetadata {
   artists: string[];
+  /** null means metadata could not be read; an empty array means no saved tags. */
+  tags: string[] | null;
+}
+
+interface Entry extends SeriesSearchMetadata {
   at: number;
 }
 
 const cache = new Map<number, Entry>();
+let connectionEpoch = 0;
+onSettingChange('kavita-connection', () => { cache.clear(); connectionEpoch++; });
 
-/** Drop one series' cached names (call after Kavita metadata is rewritten). */
+/** Drop cached artists and tags after Kavita metadata is rewritten. */
 export function invalidateSeriesArtists(seriesId: number): void {
   cache.delete(seriesId);
   invalidateRecommendationSeries(seriesId);
@@ -53,18 +61,19 @@ function isNotFound(e: unknown): boolean {
 }
 
 /**
- * Artist names for the given series from Kavita metadata. Fresh cache entries
+ * Artists and tags for the given series from Kavita metadata. Fresh cache entries
  * are served immediately; missing/stale ones are fetched with limited
  * concurrency (first load of a large library takes a few seconds). 404s
  * (series without a metadata row) are cached as empty so they are not
  * re-fetched on every poll; other errors are not cached and retry next time.
  */
-export async function kavitaSeriesArtists(client: MetadataSource, seriesIds: number[]): Promise<Map<number, string[]>> {
-  const out = new Map<number, string[]>();
+export async function kavitaSeriesSearchMetadata(client: MetadataSource, seriesIds: number[]): Promise<Map<number, SeriesSearchMetadata>> {
+  const epoch = connectionEpoch;
+  const out = new Map<number, SeriesSearchMetadata>();
   const pending: number[] = [];
-  for (const id of seriesIds) {
+  for (const id of new Set(seriesIds)) {
     const hit = cache.get(id);
-    if (hit && Date.now() - hit.at < TTL_MS) out.set(id, hit.artists);
+    if (hit && Date.now() - hit.at < TTL_MS) out.set(id, hit);
     else pending.push(id);
   }
 
@@ -75,15 +84,22 @@ export async function kavitaSeriesArtists(client: MetadataSource, seriesIds: num
       try {
         const meta = await client.getSeriesMetadata(id);
         const artists = artistNames(meta);
-        cache.set(id, { artists, at: Date.now() });
-        out.set(id, artists);
+        const seen = new Set<string>();
+        const tags = meta.tags === undefined ? null : (meta.tags ?? []).flatMap(tag => {
+          const title = tag.title?.trim();
+          if (!title || seen.has(title.toLowerCase())) return [];
+          seen.add(title.toLowerCase());
+          return [title];
+        });
+        if (epoch === connectionEpoch) cache.set(id, { artists, tags, at: Date.now() });
+        out.set(id, { artists, tags });
       } catch (e) {
         if (isNotFound(e)) {
-          cache.set(id, { artists: [], at: Date.now() });
-          out.set(id, []);
+          if (epoch === connectionEpoch) cache.set(id, { artists: [], tags: null, at: Date.now() });
+          out.set(id, { artists: [], tags: null });
         } else {
           // Transient failure: leave uncached so the next poll retries.
-          out.set(id, []);
+          out.set(id, { artists: [], tags: null });
         }
       }
     }
@@ -91,4 +107,10 @@ export async function kavitaSeriesArtists(client: MetadataSource, seriesIds: num
   const workers = pending.length > 0 ? Array.from({ length: Math.min(CONCURRENCY, pending.length) }, () => worker()) : [];
   await Promise.all(workers);
   return out;
+}
+
+/** Compatibility for artist-only consumers; shares the metadata cache. */
+export async function kavitaSeriesArtists(client: MetadataSource, seriesIds: number[]): Promise<Map<number, string[]>> {
+  const metadata = await kavitaSeriesSearchMetadata(client, seriesIds);
+  return new Map([...metadata].map(([id, item]) => [id, item.artists]));
 }

@@ -12,7 +12,7 @@ import { PageCountPill } from '../components/PageCountPill';
 import { buildTagSearchFragment, cn, jobLabel } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { useMediaQuery } from '../lib/useMediaQuery';
-import { filterLibraryRows, needsReview, prepareLibraryRows } from '../lib/libraryShelf';
+import { filterLibraryRows, librarySearchTerm, needsReview, prepareLibraryRows } from '../lib/libraryShelf';
 const SERIES_PAGE_SIZE = 40;
 const EMPTY_SERIES: SeriesRow[] = [];
 
@@ -36,6 +36,13 @@ function readLibraryState(): LibraryStateCache {
 function writeLibraryState(update: Partial<LibraryStateCache>) {
   const current = readLibraryState();
   sessionStorage.setItem(LIBRARY_STATE_KEY, JSON.stringify({ ...current, ...update }));
+}
+
+function MatchingTags({ tags, query }: { tags?: string[]; query: string }) {
+  const { q } = librarySearchTerm(query);
+  const matches = q ? tags?.filter(tag => tag.toLowerCase().includes(q)) ?? [] : [];
+  if (!matches.length) return null;
+  return <p className="min-w-0 break-words text-xs text-muted line-clamp-2" title={`Matching tags: ${matches.join(', ')}`}><span className="font-medium">Tags · </span>{matches.join(', ')}</p>;
 }
 
 function Cover({ src, name, className }: { src?: string | null; name: string; className?: string }) {
@@ -483,7 +490,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
             <div className="grid w-full grid-cols-2 items-start gap-2 sm:flex sm:flex-wrap sm:items-center">
               <div className="relative col-span-2 min-w-0 flex-1">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
-                <Input aria-label="Filter series or artists" placeholder="Search series or artists…" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-full pl-8 pr-11 sm:min-h-9" />
+                <Input aria-label="Filter series, artists or tags" placeholder="Search series, artists or tags…" title="Use tag:romance to search tags only" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-full pl-8 pr-11 sm:min-h-9" />
                 {query && <Button size="icon" variant="ghost" className="absolute right-0 top-1/2 -translate-y-1/2" aria-label="Clear series search" onClick={() => { setQuery(''); setPage(1); }}><X className="h-4 w-4" /></Button>}
               </div>
               {!review && <Select aria-label="Filter by match status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 sm:min-h-9 sm:w-44">
@@ -588,6 +595,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
                     </button>
                     <div className="flex min-w-0 flex-1 flex-col gap-2 px-3 pb-3">
                       {!!r.artists?.length && <p className="min-w-0 break-words text-xs font-medium text-foreground line-clamp-2" title={`Artists: ${r.artists.join(', ')}`}><span className="text-muted">Artist{r.artists.length > 1 ? 's' : ''} · </span>{r.artists.join(', ')}</p>}
+                      <MatchingTags tags={r.tags} query={query} />
                         {review && <p className="text-xs text-muted">{r.libraryName}</p>}
                         <div className="mt-auto flex flex-wrap items-center gap-1">
                           {needsReview(r)

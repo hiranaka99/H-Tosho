@@ -54,6 +54,7 @@ import { PageCountPill } from '../components/PageCountPill';
 import { GallerySelectionBar } from '../components/GallerySelectionBar';
 import { indexSelectableGalleries, selectedGalleryItems } from '../lib/gallerySelection';
 import { switchProviderSearch, type TranslationLink } from '../lib/searchTranslation';
+import { recommendationQuery } from '../lib/recommendationQuery';
 
 /** Source list fallback (rendered before the server's provider list resolves). */
 const FALLBACK_SOURCES: { id: DoujinSource; label: string }[] = [
@@ -68,8 +69,10 @@ const SOURCE_COLORS: Record<DoujinSource, string> = {
 };
 
 const DOWNLOADER_STATE_KEY = 'h-tosho:downloader-state';
+type DownloaderTab = 'search' | 'recommend' | 'watched' | 'manager';
 
 interface DownloaderStateCache {
+  tab?: DownloaderTab;
   source?: DoujinSource;
   query?: string;
   searchKey?: string | null;
@@ -1170,14 +1173,22 @@ export function Downloader() {
     return byGallery;
   }, [tasks]);
   // Top-of-page view tabs: search results vs. the download manager queue.
-  type DownloaderTab = 'search' | 'recommend' | 'watched' | 'manager';
+  const [rememberedTab, setRememberedTab] = React.useState<DownloaderTab>(() =>
+    ['search', 'recommend', 'watched', 'manager'].includes(initialState.tab ?? '') ? initialState.tab! : 'search');
   const requestedTab = searchParams.get('tab');
-  const tab: DownloaderTab = requestedTab === 'downloads' ? 'manager' : requestedTab === 'recommend' || requestedTab === 'watched' ? requestedTab : 'search';
+  const tab: DownloaderTab = requestedTab === 'downloads' ? 'manager'
+    : requestedTab === 'recommend' || requestedTab === 'watched' ? requestedTab
+    : requestedTab !== null || linkedQuery !== null ? 'search' : rememberedTab;
+  React.useEffect(() => {
+    setRememberedTab(tab);
+    writeDownloaderState({ tab });
+  }, [tab]);
   const setTab = (next: DownloaderTab) => {
+    setRememberedTab(next);
+    writeDownloaderState({ tab: next });
     setSearchParams((current) => {
       const params = new URLSearchParams(current);
-      if (next === 'search') params.delete('tab');
-      else params.set('tab', next === 'manager' ? 'downloads' : next);
+      params.set('tab', next === 'manager' ? 'downloads' : next);
       return params;
     }, { replace: true });
   };
@@ -1277,9 +1288,10 @@ export function Downloader() {
   }, [qc, reviewingKeys]);
   const reviewGallery = React.useCallback((item: DoujinSearchResult, reviewed: boolean) => { void reviewDiscoveries([item], reviewed); }, [reviewDiscoveries]);
   const { data: recs, isFetching: recsLoading, isError: recsFailed, error: recsError, refetch: refetchRecs } = useQuery({
-    queryKey: ['recommendations'],
-    queryFn: api.recommendations,
-    enabled: tab === 'recommend',
+    ...recommendationQuery,
+    // App owns the initial load. This observer only reads the shared snapshot;
+    // a failed first load retries only when the user chooses Retry.
+    enabled: false,
   });
   const [recsRefreshing, setRecsRefreshing] = React.useState(false);
   async function doRefreshRecs() {
@@ -1346,18 +1358,6 @@ export function Downloader() {
     }
   }
 
-  // Completed-download changes can affect eligibility and the taste profile.
-  // Invalidate inactive recommendations without fetching until the tab opens.
-  const completedFingerprint = React.useRef<string | null>(null);
-  React.useEffect(() => {
-    if (!completed) return;
-    const next = completed.map((gallery) => `${gallery.source}:${gallery.galleryId}:${gallery.finishedAt}`).sort().join('|');
-    if (completedFingerprint.current !== null && completedFingerprint.current !== next) {
-      void qc.invalidateQueries({ queryKey: ['recommendations'] });
-    }
-    completedFingerprint.current = next;
-  }, [completed, qc]);
-
   // Which Kavita libraries feed the recommendation profile (per-library opt-out).
   const { data: recLibs } = useQuery({ queryKey: ['recommendation-libraries'], queryFn: api.recommendationLibraries, enabled: tab === 'recommend' });
   const { data: recSettings, refetch: refetchRecSettings } = useQuery({ queryKey: ['recommendation-settings'], queryFn: api.recommendationSettings, enabled: tab === 'recommend' });
@@ -1369,9 +1369,8 @@ export function Downloader() {
     else excluded.add(lib.id);
     try {
       await api.saveRecommendationSettings({ excludedLibraryIds: [...excluded] });
-      // The server invalidates today's cached set — refetching re-rolls the picks.
-      await Promise.all([refetchRecSettings(), refetchRecs()]);
-      toast({ tone: 'success', title: `“${lib.name}” ${excluded.has(lib.id) ? 'excluded from' : 'added to'} recommendations`, description: 'Your picks now use the selected libraries.' });
+      await refetchRecSettings();
+      toast({ tone: 'success', title: `“${lib.name}” ${excluded.has(lib.id) ? 'excluded from' : 'added to'} recommendations`, description: 'This applies to your next daily picks or when you choose Refresh picks.' });
     } catch (e) {
       toast({ tone: 'danger', title: 'Could not update libraries', description: e instanceof Error ? e.message : String(e) });
     } finally {

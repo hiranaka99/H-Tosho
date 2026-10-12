@@ -136,16 +136,14 @@ onSettingChange('downloader', invalidateProfile);
 onSettingChange('kavita-connection', invalidateProfile);
 onRecommendationSeriesChange(invalidateProfile);
 
-/** Invalidate today's derived set whenever its taste inputs change. */
+/** Update the next roll's inputs without replacing persisted daily picks. */
 function invalidateProfile(): void {
   invalidateTasteInputs();
-  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(localDate()))).run();
 }
 
 /** Learn from downloads without replacing the picks the user is browsing. */
 function invalidateTasteInputs(): void {
   profileRevision += 1;
-  emptyCooldownUntil = 0;
   candidatePool = null;
 }
 
@@ -824,7 +822,7 @@ function readCached(date: string): CachedRecommendationSet | null {
     const parsed: unknown = JSON.parse(row.valueJson);
     if (!parsed || typeof parsed !== 'object') return null;
     const set = parsed as Partial<CachedRecommendationSet>;
-    if (!Array.isArray(set.items) || set.items.length === 0 || !set.items.every(isRecommendationItem)) return null;
+    if (!Array.isArray(set.items) || !set.items.every(isRecommendationItem)) return null;
     const reserve = Array.isArray(set.reserve) ? set.reserve.filter(isRecommendationItem) : [];
     const profile = set.profile;
     if (!profile || !Array.isArray(profile.artists) || !Array.isArray(profile.tags) || !Array.isArray(profile.series)) return null;
@@ -839,6 +837,13 @@ function readCached(date: string): CachedRecommendationSet | null {
   } catch {
     return null;
   }
+}
+
+/** Feedback after midnight edits the displayed set, without starting a new day. */
+function readDisplayedSet(): CachedRecommendationSet | null {
+  const row = getDb().select({ key: schema.keyValueStore.key }).from(schema.keyValueStore)
+    .where(like(schema.keyValueStore.key, 'recommendations-v2:%')).orderBy(desc(schema.keyValueStore.key)).get();
+  return row ? readCached(row.key.slice('recommendations-v2:'.length)) : null;
 }
 
 function writeCached(set: CachedRecommendationSet): void {
@@ -861,9 +866,6 @@ function writeCached(set: CachedRecommendationSet): void {
 /** Serialize generation; invalidated profile inputs trigger a fresh pass before commit. */
 let inflight: { date: string; promise: Promise<CachedRecommendationSet> } | null = null;
 
-const EMPTY_RETRY_COOLDOWN_MS = 10 * 60_000;
-let emptyCooldownUntil = 0;
-
 function generateFor(date: string, nonce: number): Promise<CachedRecommendationSet> {
   if (inflight && inflight.date === date) return inflight.promise;
   const promise = (async () => {
@@ -877,8 +879,8 @@ function generateFor(date: string, nonce: number): Promise<CachedRecommendationS
       }
       const history = pruneHistory();
       addHistory(date, set.items, history);
-      if (set.items.length > 0) writeCached(set);
-      else emptyCooldownUntil = Date.now() + EMPTY_RETRY_COOLDOWN_MS;
+      // An empty first pass also stays stable for the day. Recovery is explicit.
+      writeCached(set);
       return set;
     }
   })().finally(() => {
@@ -905,17 +907,20 @@ async function withOwned(set: RecommendationSet): Promise<RecommendationResponse
   return { date, generatedAt, mode, profile, items, repeatedCount, degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' : degradedReason, ownedKeys: [...owned], dismissedKeys: dismissed };
 }
 
+function displayedRecommendations(): Promise<RecommendationResponse> {
+  return withOwned(readDisplayedSet() ?? {
+    date: localDate(), generatedAt: new Date().toISOString(), mode: 'popular',
+    profile: { artists: [], tags: [], series: [], language: null }, items: [],
+    repeatedCount: 0, degradedReason: 'insufficient-eligible',
+  });
+}
+
 export async function getRecommendations(): Promise<RecommendationResponse> {
   const date = localDate();
   const cached = readCached(date);
   if (cached) {
     // Completed downloads leave gaps, not a new roll. Refresh explicitly to refill.
     return withOwned(cached);
-  }
-  if (Date.now() < emptyCooldownUntil) {
-    return Promise.resolve(
-      withOwned({ date, generatedAt: new Date().toISOString(), mode: 'popular', profile: { artists: [], tags: [], series: [], language: null }, items: [], repeatedCount: 0, degradedReason: 'insufficient-eligible' }),
-    );
   }
   return generateFor(date, 0).then(withOwned);
 }
@@ -926,8 +931,6 @@ let refreshNonce = 0;
 /** Re-roll today's picks with a fresh seed (manual refresh). */
 export async function refreshRecommendations(): Promise<RecommendationResponse> {
   const date = localDate();
-  // An explicit re-roll bypasses the empty-set cooldown.
-  emptyCooldownUntil = 0;
   // If a generation is already running (the day's first pass, another tab),
   // wait for it and then roll anyway: joining its promise would silently
   // discard this click's fresh seed and hand back whatever was in flight.
@@ -941,9 +944,9 @@ export async function refreshRecommendations(): Promise<RecommendationResponse> 
 export async function dismissAndReplace(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
   getDb().insert(schema.dismissedGalleries).values({ source, galleryId }).onConflictDoNothing().run();
   profileRevision += 1;
-  const date = localDate();
-  const cached = readCached(date);
-  if (!cached) return getRecommendations();
+  const cached = readDisplayedSet();
+  if (!cached) return displayedRecommendations();
+  const date = cached.date;
   const items = await eligibleRecommendations(cached.items);
   const keys = new Set(items.map(keyOf));
   const reserve = (await eligibleRecommendations(cached.reserve)).filter((item) => !keys.has(keyOf(item)));
@@ -964,7 +967,7 @@ export async function undoDismiss(source: DoujinSource, galleryId: string): Prom
 }
 
 async function restoreHistoryItem(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
-  const cached = readCached(localDate());
+  const cached = readDisplayedSet();
   const original = readHistory().find((entry) => entry.key === `${source}:${galleryId}`)?.item;
   if (cached && original && (await eligibleRecommendations([original])).length) {
     const remaining = cached.items.filter((item) => keyOf(item) !== keyOf(original));
@@ -975,7 +978,7 @@ async function restoreHistoryItem(source: DoujinSource, galleryId: string): Prom
     writeCached(updated);
     return withOwned(updated);
   }
-  return getRecommendations();
+  return displayedRecommendations();
 }
 
 /** Use server-side history/provider metadata, not client-supplied taste signals. */
@@ -992,11 +995,10 @@ export async function applyRecommendationFeedback(action: FeedbackAction, target
   const feedback = saveRecommendationFeedback(action, target, item);
   profileRevision++;
   candidatePool = null;
-  emptyCooldownUntil = 0;
   let recommendations: RecommendationResponse;
   // Revalidate visible cards and promote spares immediately. Preference boosts
   // affect the next refresh; leave existing good cards in place after a like.
-  const cached = readCached(localDate());
+  const cached = readDisplayedSet();
   if (cached) {
     const items = await eligibleRecommendations(cached.items);
     const reserves = await eligibleRecommendations(cached.reserve);
@@ -1008,11 +1010,11 @@ export async function applyRecommendationFeedback(action: FeedbackAction, target
     writeCached(updated);
     if (promoted.length) addHistory(cached.date, promoted, pruneHistory());
     recommendations = await withOwned(updated);
-  } else recommendations = await getRecommendations();
+  } else recommendations = await displayedRecommendations();
   return { feedback, recommendations };
 }
 
-/** Replace the list of Kavita libraries feeding the profile; today's cached set is re-generated. */
+/** Library preferences apply to the next daily generation or explicit refresh. */
 export function setExcludedLibraries(ids: number[]): void {
   setRecommendationSettings({ excludedLibraryIds: [...new Set(ids)] });
   clearRecommendationSignals();
