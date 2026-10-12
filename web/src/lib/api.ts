@@ -188,7 +188,7 @@ export interface MatchOutcome {
 export type DoujinSource = 'hitomi' | 'nhentai';
 
 /** Result ordering for a source search (nHentai and Hitomi support popularity sorts). */
-export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today' | 'popular-year';
+export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today' | 'popular-month' | 'popular-year' | 'date-published' | 'random';
 
 export interface DoujinProvider {
   id: DoujinSource;
@@ -567,10 +567,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ source, query, ...(sort && sort !== 'default' ? { sort } : {}) }),
     }),
-  doujinSuggestions: (source: DoujinSource, query: string) =>
+  doujinSearchPage: (source: DoujinSource, query: string, offset: number, limit: number, sort?: DoujinSort) =>
+    request<{ items: DoujinSearchResult[]; total: number } | DoujinSearchResult[]>('/doujin/search', {
+      method: 'POST', body: JSON.stringify({ source, query, offset, limit, ...(sort && sort !== 'default' ? { sort } : {}) }),
+    }).then(result => Array.isArray(result) ? { items: result, total: result.length } : result),
+  doujinSuggestions: (source: DoujinSource, query: string, context?: string) =>
     request<DoujinSuggestion[]>('/doujin/suggestions', {
       method: 'POST',
-      body: JSON.stringify({ source, query }),
+      body: JSON.stringify({ source, query, ...(context !== undefined ? { context } : {}) }),
     }),
   doujinGallery: (source: DoujinSource, idOrUrl: string) =>
     request<DoujinGallery>('/doujin/gallery', {

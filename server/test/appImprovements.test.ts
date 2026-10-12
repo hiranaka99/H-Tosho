@@ -181,3 +181,30 @@ test('known failures offer relevant safe destinations, unknown failures are not 
   assert.equal(jobRecovery({ ...job, errorMessage: 'Random failure https://evil.test' }), undefined);
   assert.equal(jobRecovery({ ...job, status: 'completed' }), undefined);
 });
+
+test('paged search exposes full totals, validates page bounds and avoids bulk hydration', async () => {
+  let pageCalls = 0;
+  doujinProviders.hitomi = {
+    ...originalProvider,
+    async search() { throw Error('Paged searches must not load 1000 galleries'); },
+    async searchPage(query, offset, limit, sort) {
+      pageCalls++;
+      assert.equal(query, 'cat -artist:evil');
+      assert.equal(offset, 1100);
+      assert.equal(limit, 25);
+      assert.equal(sort, 'popular-month');
+      return { items: [item('1101')], total: 1500 };
+    },
+  };
+  const body = { source: 'hitomi', query: 'cat -artist:evil', offset: 1100, limit: 25, sort: 'popular-month' };
+  const response = await api.request('/doujin/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal(response.status, 200);
+  const page = await response.json();
+  assert.equal(page.total, 1500);
+  assert.equal(page.items[0].galleryId, '1101');
+  for (const invalid of [{ offset: -1 }, { offset: 1.5 }, { limit: 0 }, { limit: 101 }, { limit: '25' }]) {
+    const response = await api.request('/doujin/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, ...invalid }) });
+    assert.equal(response.status, 400);
+  }
+  assert.equal(pageCalls, 1);
+});

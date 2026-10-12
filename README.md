@@ -6,7 +6,7 @@ H-Tosho helps you identify manga and light novels, review metadata before applyi
 it, and keep new additions organized. It also includes a doujinshi downloader,
 recommendations, and watched searches for new releases.
 
-Works with **Kavita v0.9.x or newer**. Current version: **v2.12.1** ·
+Works with **Kavita v0.9.x or newer**. Current version: **v2.13.0** ·
 [Release notes](CHANGELOG.md)
 
 ![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
@@ -252,8 +252,32 @@ images in a directory. You can also set download concurrency, excluded tags,
 and an optional nHentai API key. The Downloader shows the current folder and
 format, and offers **Set output folder** before you can queue your first download.
 
-Each source remembers its own search, unfinished input, and sort order. Switching
-sources restores that source's search without translating or dropping filters.
+Switching sources translates the current query into the other provider's syntax,
+preserving shared artist/group/parody/character/language filters and exclusions.
+Compatible committed searches run automatically; unfinished drafts stay drafts.
+Filters or sort modes without an equivalent are listed beside the translated
+query for review before searching. Catalog IDs and URLs cannot transfer across
+providers. Switching back without editing restores the exact original query,
+including unsupported filters. The watched-query source selector uses the same
+translation rules. Both providers retain their English default.
+
+Hitomi search uses the website's query syntax: spaces combine required terms,
+`OR` combines alternatives, `-artist:sample` excludes a term, and underscores
+represent spaces inside tags (`artist:sample_name`). Queries default to English
+unless they specify `language:`; image sets remain excluded. Sorting supports
+date added, date published, random order, and popularity today/week/month/year.
+Typed `orderby:`, `orderbykey:`, and `orderbydirection:` directives also work.
+Results load 25 galleries per page with the full filtered count, so searches can
+be browsed beyond 1000 matches. Selections remain available across pages.
+
+nHentai also defaults to English unless a positive `language:` or `languages:`
+filter specifies another language. Its native query syntax passes through:
+quoted phrases, `-tag:"full color"`, `artist:"sample name"`, `pages:>20`,
+`favorites:>=100`, and `uploaded:<7d`. Plural namespaces such as `artists:` and
+`parodies:` are supported. Autocomplete follows the typed tag namespace and
+retains exclusions. The website's newest and popular all-time/week/today sorts
+are available. nHentai results use native pages with the full matching count,
+replacing the old 250-result browsing limit.
 
 H-Tosho prevents duplicate queued downloads and remembers galleries downloaded
 through the app. To remove unwanted recommendations, open a card's **Tune
@@ -277,6 +301,8 @@ how often to check it or use **Check now** to check manually.
 
 Watch controls stay above the feed. **Manage watches** opens saved searches and
 the add form. Check progress and outcomes remain visible, with a link to the job.
+The query field offers the same tag and artist autocomplete as Search; choose
+a suggestion with the pointer or arrow keys and Enter, then select Add watch.
 
 The first check records the existing results quietly. Later checks add new
 finds to **Inbox** and send Discord messages if notifications are
@@ -285,14 +311,14 @@ to keep old galleries from being announced as new. Results without a usable
 upload date are still eligible.
 
 Watches find galleries for you; choose the ones you want to download from the
-feed. Filter discoveries by watch or source. **Mark reviewed** removes a find
-from Inbox while keeping it in **History**; **Return to inbox** reverses that
+feed. Filter discoveries by watch or source. **Dismiss**, next to Download,
+removes a find from Inbox while keeping it in **History**; **Return to inbox** reverses that
 choice. Review state is saved across sessions and shared by watches that found
 the same gallery. Stopping a watch keeps its discoveries in History.
 
 Artist and language are saved from search results when available. Older finds
 gain that context when later checks return metadata for them. **Select galleries**
-supports downloading together, merging, and marking selected finds reviewed.
+supports downloading together, merging, and dismissing selected finds.
 
 ### Enable Discord notifications
 
@@ -365,6 +391,6 @@ alone or saving a draft release does not trigger it.
 
 The workflow uses the repository secrets `DOCKERHUB_USERNAME` and
 `DOCKERHUB_TOKEN`. The token must have write access to the Docker Hub repository.
-A stable release tagged `v2.12.1`, for example, publishes `v2.12.1`, `2.12.1`,
+A stable release tagged `v2.13.0`, for example, publishes `v2.13.0`, `2.13.0`,
 and `latest`. Prereleases publish their version tags without updating `latest`.
 Build progress and failures appear in the repository's **Actions** tab.

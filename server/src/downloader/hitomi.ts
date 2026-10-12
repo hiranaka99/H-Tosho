@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { hitomiNozomiPath, hitomiStateForTerm, normalizeHitomiQuery, parseHitomiSearch, type HitomiSearchState } from './hitomiSearch.js';
 import { fetchBuffer } from '../lib/http.js';
 import { getDownloaderSettings } from '../services/settings.js';
 import { extractGalleryId, stripTags, toIsoDate } from './util.js';
@@ -72,10 +73,18 @@ interface GG {
 }
 
 let ggCache: { value: GG; at: number } | null = null;
+let ggLoading: Promise<GG> | null = null;
 
 /** Load the live CDN routing table, honoring a short cache unless `force`. */
 async function loadGG(force = false): Promise<GG> {
   if (!force && ggCache && Date.now() - ggCache.at < GG_CACHE_TTL_MS) return ggCache.value;
+  if (ggLoading) return ggLoading;
+  ggLoading = loadFreshGG();
+  try { return await ggLoading; }
+  finally { ggLoading = null; }
+}
+
+async function loadFreshGG(): Promise<GG> {
   const code = await fetchText(`${API_BASE}/gg.js`);
   // gg.js begins with 'use strict'; and assigns to a bare `gg`. Provide `gg`
   // as a parameter so that assignment is legal within the function scope.
@@ -319,13 +328,13 @@ function cmp(a: Uint8Array, b: Uint8Array): number {
   return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
 }
 
-let galleriesIndexVersion: string | null = null;
+let galleriesIndexVersion: { value: string; at: number } | null = null;
 
 async function getGalleriesIndexVersion(): Promise<string> {
-  if (galleriesIndexVersion) return galleriesIndexVersion;
+  if (galleriesIndexVersion && Date.now() - galleriesIndexVersion.at < 30_000) return galleriesIndexVersion.value;
   const v = await fetchText(`${API_BASE}/galleriesindex/version?_=${Date.now()}`);
-  galleriesIndexVersion = v.trim();
-  return galleriesIndexVersion;
+  galleriesIndexVersion = { value: v.trim(), at: Date.now() };
+  return galleriesIndexVersion.value;
 }
 
 /**
@@ -426,8 +435,12 @@ function parseNozomiIds(buf: Buffer): number[] {
 
 /** Fetch the big-endian int32 gallery-id list from a nozomi filter. */
 async function fetchNozomiIds(f: NozomiFilter, strict = false): Promise<number[]> {
+  return fetchNozomiUrl(nozomiUrl(f), strict);
+}
+
+async function fetchNozomiUrl(url: string, strict = false): Promise<number[]> {
   try {
-    const r = await fetch(nozomiUrl(f), { headers: { ...headers() } });
+    const r = await fetch(url, { headers: { ...headers() } });
     if (r.status !== 200) {
       if (strict && r.status !== 404) throw new Error(`Hitomi exclusion index HTTP ${r.status}`);
       return [];
@@ -435,22 +448,6 @@ async function fetchNozomiIds(f: NozomiFilter, strict = false): Promise<number[]
     return parseNozomiIds(Buffer.from(await r.arrayBuffer()));
   } catch (error) {
     if (strict) throw error;
-    return [];
-  }
-}
-
-/**
- * Fetch the popularity-ranked id list for a period, mirroring the live site's
- * `orderby:popular orderbykey:<period>` sort, which resolves to
- * `/n/popular/<period>-<language>.nozomi`. The returned order is descending
- * popularity — callers must preserve it.
- */
-async function fetchPopularIds(period: 'today' | 'week' | 'year', language: string): Promise<number[]> {
-  try {
-    const r = await fetch(`${API_BASE}/n/popular/${period}-${language}.nozomi`, { headers: { ...headers() } });
-    if (r.status !== 200) return [];
-    return parseNozomiIds(Buffer.from(await r.arrayBuffer()));
-  } catch {
     return [];
   }
 }
@@ -493,8 +490,7 @@ function intersectIds(sets: number[][]): number[] {
  * "schoolgirl uniform", while bare keywords are de-underscored for the B-tree.
  */
 function tokenizeQuery(query: string): { ns?: string; val: string }[] {
-  return query
-    .trim()
+  return normalizeHitomiQuery(query)
     .split(/\s+/)
     .filter(Boolean)
     .map((t) => {
@@ -514,69 +510,42 @@ function tokenizeQuery(query: string): { ns?: string; val: string }[] {
  * Results are restricted to English by default (unless the query names an
  * explicit `language:`), so searches don't surface non-English galleries.
  *
- * With `popularPeriod` set, the base result set is instead the period's
- * popularity-ranked list and every term's id set is AND-filtered onto it, so
- * results keep descending-popularity order (the live site's
- * `orderby:popular orderbykey:<period>` behavior).
+ * Resolve date/popularity ordering through the same first positive namespace
+ * and scoped ranking indexes as the live site. OR groups form unions; separate
+ * groups and positive terms intersect, then negative terms subtract.
  *
  * Configured banned tags are subtracted from the final id set on both paths.
  * A query that names a banned tag verbatim is an explicit request and skips
  * that tag's exclusion, so searching a banned tag still returns results (a
  * bare gallery-id lookup never reaches this function at all).
  */
-async function searchGalleryIds(query: string, version: string, popularPeriod?: 'today' | 'week' | 'year', strictExclusions = false): Promise<number[]> {
-  const terms = tokenizeQuery(query);
-  if (!terms.length) return [];
-
-  // Hitomi's keyword index is built from lowercased terms, so the B-tree lookup
-  // is case-sensitive. Lowercase bare keywords (e.g. "Chibikko" → "chibikko") so
-  // a naturally-capitalized title still matches. Plain keywords AND-intersect —
-  // the live site filters the running result set by every positive term, so
-  // "aoi kajitsu to shiroi hada" returns only galleries matching all of those
-  // words, not the union, which would surface hundreds of unrelated galleries
-  // sharing any single common word.
-  const btreeTerm = (t: { val: string }) => getGalleryIdsForTerm(t.val.toLowerCase(), version);
-  const sets = await Promise.all(
-    terms.map(async (t) => {
-      if (t.ns) {
-        const f = nozomiFilterFromTerm(`${t.ns}:${t.val}`);
-        return f ? fetchNozomiIds(f) : [];
-      }
-      return btreeTerm(t);
-    })
-  );
-
-  const explicitLanguage = terms.find((t) => t.ns?.toLowerCase() === 'language')?.val;
-
-  if (popularPeriod) {
-    // The language rides on the popular list itself, so no separate English
-    // intersection applies in this mode. An empty popularity index yields zero
-    // results rather than falling back to index order.
-    const popular = await fetchPopularIds(popularPeriod, explicitLanguage ?? 'english');
-    if (!popular.length) return [];
-    const setOf = sets.map((s) => new Set(s));
-    const banned = await bannedIdSet(strictExclusions ? '' : query, version, strictExclusions);
-    return popular.filter((id) => setOf.every((s) => s.has(id)) && !banned?.has(id));
+async function searchGalleryIds(query: string, version: string, sort?: DoujinSort, strictExclusions = false): Promise<number[]> {
+  const { state, positive, negative, groups } = parseHitomiSearch(query, sort);
+  const resolve = (term: string) => term.includes(':')
+    ? fetchNozomiUrl(`${API_BASE}${hitomiNozomiPath(hitomiStateForTerm(term, state))}`)
+    : getGalleryIdsForTerm(term, version);
+  // The first positive namespace determines the ranking index on the website.
+  let ids = !positive.length || (!positive[0].includes(':') && state.orderbykey !== 'added')
+    ? await fetchNozomiUrl(`${API_BASE}${hitomiNozomiPath(state)}`)
+    : await resolve(positive.shift()!);
+  if (state.direction === 'asc' || state.direction === 'ascending') ids.reverse();
+  else if (state.direction === 'random' || state.direction === 'rand') {
+    for (let index = ids.length - 1; index > 0; index--) {
+      const other = crypto.randomInt(index + 1);
+      [ids[index], ids[other]] = [ids[other], ids[index]];
+    }
   }
-
-  let ids = intersectIds(sets);
-
-  // Restrict results to English so plain keyword/tag searches don't surface
-  // non-English galleries. An explicit `language:` term takes precedence, letting
-  // users still search other languages. Fail open if the English index is
-  // unavailable so a transient error doesn't blank out all results.
-  if (ids.length && !explicitLanguage) {
-    const english = await fetchNozomiIds({ tag: 'index', language: 'english' });
-    if (english.length) ids = intersectIds([ids, english]);
-  }
-
-  // Drop galleries carrying any configured banned tag (see bannedIdSet).
-  if (ids.length) {
-    const banned = await bannedIdSet(strictExclusions ? '' : query, version, strictExclusions);
-    if (banned) ids = ids.filter((id) => !banned.has(id));
-  }
-
-  return ids;
+  if (!ids.length) return [];
+  const [required, alternatives, excluded] = await Promise.all([
+    Promise.all(positive.map(resolve)),
+    Promise.all(groups.map(async group => new Set((await Promise.all(group.map(resolve))).flat()))),
+    Promise.all(negative.map(resolve)),
+  ]);
+  const allowed = required.map(list => new Set(list));
+  const disallowed = new Set(excluded.flat());
+  const banned = await bannedIdSet(strictExclusions ? '' : query, version, strictExclusions);
+  return ids.filter(id => allowed.every(set => set.has(id)) && alternatives.every(set => set.has(id))
+    && !disallowed.has(id) && !banned?.has(id));
 }
 
 // ---------------------------------------------------------------------------
@@ -672,10 +641,8 @@ interface TagSuggestion {
  * path segment under `{field}`, yielding `[name, count, namespace]` triples.
  */
 async function fetchTagSuggestions(field: string, term: string): Promise<TagSuggestion[]> {
-  if (!term) return [];
-
   const encoded = term.toLowerCase().replace(/_/g, ' ');
-  const chars = encoded.split('').map((c) => (c === '/' ? 'slash' : c === '.' ? 'dot' : c));
+  const chars = encoded.split('').map((c) => (c === ' ' ? '_' : c === '/' ? 'slash' : c === '.' ? 'dot' : c));
 
   let url = `${TAG_INDEX}/${field}`;
   if (chars.length > 0) url += '/' + chars.join('/');
@@ -703,14 +670,78 @@ async function fetchTagSuggestions(field: string, term: string): Promise<TagSugg
 // Provider
 // ---------------------------------------------------------------------------
 
-/** Hitomi popularity periods behind the `orderby:popular orderbykey:<period>` sort. */
-const HITOMI_POPULAR_PERIODS: Partial<Record<DoujinSort, 'today' | 'week' | 'year'>> = {
-  'popular-today': 'today',
-  'popular-week': 'week',
-  'popular-year': 'year',
-};
 /** Gallery types omitted from every hitomi search result (hitomi's "image set"). */
 const EXCLUDED_GALLERY_TYPES: Record<string, true> = { imageset: true };
+
+let imageSetIndex: { version: string; ids: Promise<Set<number>> } | null = null;
+async function imageSetIds(version: string): Promise<Set<number>> {
+  if (imageSetIndex?.version === version) return imageSetIndex.ids;
+  const ids = fetchNozomiIds({ area: 'type', tag: 'imageset', language: 'all' }, true).then(list => new Set(list));
+  imageSetIndex = { version, ids };
+  try { return await ids; }
+  catch (error) { if (imageSetIndex?.ids === ids) imageSetIndex = null; throw error; }
+}
+
+// Keep one ranking snapshot across page requests, including a random shuffle.
+// Match the frontend's five-minute search cache and bound retained catalog IDs.
+const searchPageCache = new Map<string, { expiresAt: number; ids: Promise<number[]>; count: number }>();
+async function pagedSearchIds(query: string, sort?: DoujinSort): Promise<number[]> {
+  const key = JSON.stringify([normalizeHitomiQuery(query), sort ?? 'default', getDownloaderSettings().hitomiBannedTags]);
+  const cached = searchPageCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    searchPageCache.delete(key);
+    searchPageCache.set(key, cached);
+    return cached.ids;
+  }
+  searchPageCache.delete(key);
+  while (searchPageCache.size >= 4) searchPageCache.delete(searchPageCache.keys().next().value!);
+  const ids = (async () => {
+    const version = await getGalleriesIndexVersion();
+    const [ranked, imageSets] = await Promise.all([searchGalleryIds(query, version, sort), imageSetIds(version)]);
+    return ranked.filter(id => !imageSets.has(id));
+  })();
+  const entry = { expiresAt: Date.now() + 5 * 60_000, ids, count: 0 };
+  searchPageCache.set(key, entry);
+  try {
+    const result = await ids;
+    entry.count = result.length;
+    while (searchPageCache.size > 1 && [...searchPageCache.values()].reduce((sum, item) => sum + item.count, 0) > 2_000_000) {
+      searchPageCache.delete(searchPageCache.keys().next().value!);
+    }
+    return result;
+  } catch (error) {
+    if (searchPageCache.get(key) === entry) searchPageCache.delete(key);
+    throw error;
+  }
+}
+
+async function hydrateSearchIds(ids: number[], limit: number, opts?: DoujinSearchOptions): Promise<DoujinSearchResult[]> {
+  const target = Math.max(limit, 1);
+  const start = Math.min(Math.max(opts?.skip ?? 0, 0), ids.length);
+  const scanLimit = Math.min(ids.length - start, target * 4);
+  const excludedTypes = new Set(Object.keys(EXCLUDED_GALLERY_TYPES));
+  for (const type of opts?.excludeTypes ?? []) excludedTypes.add(type.toLowerCase().replace(/[^a-z]/g, ''));
+  const out: DoujinSearchResult[] = [];
+  for (let index = 0; index < scanLimit && out.length < target; index += 25) {
+    await Promise.all(ids.slice(start + index, Math.min(start + index + 25, start + scanLimit)).map(async id => {
+      try {
+        const info = parseGalleryInfo(await fetchText(`${API_BASE}/galleries/${id}.js`));
+        const type = typeof info.type === 'string' ? info.type.toLowerCase().replace(/[^a-z]/g, '') : '';
+        if (excludedTypes.has(type)) return;
+        const gg = await loadGG();
+        const files: HitomiFile[] = info.files ?? [];
+        out.push({
+          source: 'hitomi', galleryId: String(id), title: stripTags(info.title) || `Gallery ${id}`,
+          coverUrl: coverUrlFor(gg, files), language: typeof info.language === 'string' && info.language ? info.language : undefined,
+          tags: (info.tags ?? []).map(tagValue).filter(Boolean).slice(0, 24), artists: (info.artists ?? []).map(tagValue).filter(Boolean).slice(0, 8),
+          pageCount: files.length || undefined, url: galleryUrlFor(info, String(id)), uploadedAt: toIsoDate(info.date),
+        });
+      } catch { /* Preserve partial results when an individual metadata lookup fails. */ }
+    }));
+  }
+  const byId = new Map(out.map(result => [result.galleryId, result]));
+  return ids.slice(start).map(id => byId.get(String(id))).filter((result): result is DoujinSearchResult => !!result).slice(0, target);
+}
 
 export const hitomiProvider: DoujinProvider = {
   id: 'hitomi',
@@ -742,58 +773,21 @@ export const hitomiProvider: DoujinProvider = {
     }
 
     const version = await getGalleriesIndexVersion();
-    const ids = await searchGalleryIds(q, version, HITOMI_POPULAR_PERIODS[sort ?? 'default'], opts?.strictExclusions);
+    const ids = await searchGalleryIds(q, version, sort, opts?.strictExclusions);
     if (!ids.length) return [];
 
-    // Hydrate results with metadata (one request each), in bounded batches so a
-    // large result set doesn't open thousands of concurrent connections. `ids`
-    // keeps the ordering the index returned (popularity when a popular sort was
-    // requested, otherwise newest-first), so batching preserves it. Excluded
-    // types (image sets, plus any caller-specified types) are dropped during
-    // hydration and backfilled from later candidates so results still fill to
-    // `limit` where possible; the scan caps at 4x the target to bound lookups on type-heavy queries.
-    // A `skip` option slides the hydration window down the ranking (recommendations
-    // use it to rotate a static popularity list across refreshes).
-    const target = Math.max(limit, 1);
-    const start = Math.min(Math.max(opts?.skip ?? 0, 0), ids.length);
-    const scanLimit = Math.min(ids.length - start, target * 4);
-    // Base exclusions plus caller-specified types (recommendations drop artist CGs too).
-    const excludedTypes = new Set(Object.keys(EXCLUDED_GALLERY_TYPES));
-    for (const t of opts?.excludeTypes ?? []) excludedTypes.add(t.toLowerCase().replace(/[^a-z]/g, ''));
-    const out: DoujinSearchResult[] = [];
-    const BATCH = 25;
-    for (let i = 0; i < scanLimit && out.length < target; i += BATCH) {
-      await Promise.all(
-        ids.slice(start + i, Math.min(start + i + BATCH, start + scanLimit)).map(async (id) => {
-          if (out.length >= target) return;
-          try {
-            const info = parseGalleryInfo(await fetchText(`${API_BASE}/galleries/${id}.js`));
-            const type = typeof info.type === 'string' ? info.type.toLowerCase().replace(/[^a-z]/g, '') : '';
-            if (excludedTypes.has(type)) return;
-            const gg = await loadGG();
-            const files: HitomiFile[] = info.files ?? [];
-            out.push({
-              source: 'hitomi',
-              galleryId: String(id),
-              title: stripTags(info.title) || `Gallery ${id}`,
-              coverUrl: coverUrlFor(gg, files),
-              language: typeof info.language === 'string' && info.language ? info.language : undefined,
-              tags: (info.tags ?? []).map(tagValue).filter(Boolean).slice(0, 24),
-              artists: (info.artists ?? []).map(tagValue).filter(Boolean).slice(0, 8),
-              pageCount: files.length || undefined,
-              url: galleryUrlFor(info, String(id)),
-              uploadedAt: toIsoDate(info.date),
-            });
-          } catch {
-            /* skip failed lookups */
-          }
-        }),
-      );
-    }
+    return hydrateSearchIds(ids, limit, opts);
+  },
 
-    // Preserve ranking order (popularity when a popular sort was requested, otherwise newest-first).
-    const byId = new Map(out.map((r) => [r.galleryId, r]));
-    return ids.slice(start).map((id) => byId.get(String(id))).filter((r): r is DoujinSearchResult => !!r).slice(0, target);
+  async searchPage(query: string, offset: number, limit: number, sort?: DoujinSort) {
+    if (/^\d+$/.test(query.trim())) {
+      const items = await this.search(query, 1, sort);
+      return { items: offset ? [] : items, total: items.length };
+    }
+    const ids = await pagedSearchIds(query, sort);
+    const items = await hydrateSearchIds(ids.slice(offset, offset + limit), limit);
+    if (offset < ids.length && !items.length) throw new Error('Could not load this Hitomi results page. Please retry.');
+    return { items, total: ids.length };
   },
 
   async filterRecommendations(items: DoujinSearchResult[]): Promise<DoujinSearchResult[]> {
@@ -809,8 +803,8 @@ export const hitomiProvider: DoujinProvider = {
    * a character-prefix query. If the seed contains a colon (e.g. "artist:charu"),
    * the part before it scopes the lookup to that namespace; otherwise 'global'.
    */
-  async suggest(query: string, limit = 10): Promise<DoujinSuggestion[]> {
-    const q = query.trim().toLowerCase();
+  async suggest(query: string, limit = 10, context?: string): Promise<DoujinSuggestion[]> {
+    const q = normalizeHitomiQuery(query).replace(/^-/, '');
     if (!q) return [];
 
     let field = 'global';
@@ -820,7 +814,12 @@ export const hitomiProvider: DoujinProvider = {
       if (ns) field = ns;
       term = rest.join(':');
     }
-    if (!term) return [];
+    if (/^(?:sort|order)by(?:key|direction)?:/.test(q)) {
+      const values = /^(?:sort|order)by:$/.test(`${field}:`) ? ['date', 'datepublished', 'popular', 'random']
+        : /bydirection$/.test(field) ? ['asc', 'desc', 'random']
+        : /\b(?:sort|order)by:popular/i.test(context ?? '') ? ['today', 'week', 'month', 'year'] : ['added', 'published'];
+      return values.slice(0, limit).map(name => ({ source: 'hitomi', type: field, name, filter: `${field}:${name}` }));
+    }
 
     const suggestions = await fetchTagSuggestions(field, term);
     const out: DoujinSuggestion[] = [];

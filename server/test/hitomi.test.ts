@@ -32,6 +32,8 @@ const VERSION = 'v-test';
 const CAT_IDS = [101, 102, 103, 104, 105, 106, 107, 108];
 const DOG_IDS = Array.from({ length: 30 }, (_, i) => 201 + i);
 const LOLI_IDS = [105, 107];
+const MOON_IDS = [101, 104, 108, 301];
+const MANY_IDS = Array.from({ length: 1301 }, (_, index) => 40_001 + index);
 const TYPE_BY_ID: Record<number, string> = Object.fromEntries([
   ...CAT_IDS.map((id) => [id, 'doujinshi']),
   [102, 'imageset'],
@@ -39,6 +41,9 @@ const TYPE_BY_ID: Record<number, string> = Object.fromEntries([
   [104, 'manga'],
   [106, 'imageset'],
   ...DOG_IDS.map((id) => [id, 'imageset']),
+  [301, 'doujinshi'],
+  ...MANY_IDS.map(id => [id, 'doujinshi']),
+  [40_026, 'imageset'],
 ]);
 
 function hashTerm(term: string): Uint8Array {
@@ -76,19 +81,31 @@ function idsBuffer(ids: number[]): Buffer {
 const CAT_DATA_OFFSET = 1_000_000;
 const DOG_DATA_OFFSET = 2_000_000;
 const LOLI_DATA_OFFSET = 3_000_000;
+const MOON_DATA_OFFSET = 4_000_000;
+const BLUE_DATA_OFFSET = 5_000_000;
+const MANY_DATA_OFFSET = 6_000_000;
 const catData = idsBuffer(CAT_IDS);
 const dogData = idsBuffer(DOG_IDS);
 const loliData = idsBuffer(LOLI_IDS);
+const moonData = idsBuffer(MOON_IDS);
+const blueData = idsBuffer([101, 103]);
+const manyData = idsBuffer(MANY_IDS);
 // The `.data` file serves every term's id list; look it up by range offset.
 const DATA_BY_OFFSET: Record<number, Buffer> = {
   [CAT_DATA_OFFSET]: catData,
   [DOG_DATA_OFFSET]: dogData,
   [LOLI_DATA_OFFSET]: loliData,
+  [MOON_DATA_OFFSET]: moonData,
+  [BLUE_DATA_OFFSET]: blueData,
+  [MANY_DATA_OFFSET]: manyData,
 };
 const rootEntries = [
   { key: hashTerm('cat'), offset: CAT_DATA_OFFSET, data: catData },
   { key: hashTerm('dog'), offset: DOG_DATA_OFFSET, data: dogData },
   { key: hashTerm('loli'), offset: LOLI_DATA_OFFSET, data: loliData },
+  { key: hashTerm('moon'), offset: MOON_DATA_OFFSET, data: moonData },
+  { key: hashTerm('blue sky'), offset: BLUE_DATA_OFFSET, data: blueData },
+  { key: hashTerm('many'), offset: MANY_DATA_OFFSET, data: manyData },
 ].sort((a, b) => cmpBytes(a.key, b.key));
 const rootNodeBuffer = btreeNodeBuffer(
   rootEntries.map((e) => e.key),
@@ -99,7 +116,7 @@ function galleryInfo(id: number): string {
   return `var galleryinfo = ${JSON.stringify({
     id,
     title: `Cat Gallery ${id}`,
-    language: 'english',
+    language: id === 301 ? 'japanese' : 'english',
     type: TYPE_BY_ID[id],
     date: id === 101 ? '2026-08-01' : '2026-08-01 00:00:00',
     files: [{ name: 'page1.jpg', hash: 'ab'.repeat(32), haswebp: 1 }],
@@ -112,19 +129,38 @@ function galleryInfo(id: number): string {
 const GG_JS = 'gg.m = function (g) { return 0; }; gg.s = function (h) { return "/p/"; }; gg.b = "base/";';
 
 let fetchedUrls: string[] = [];
+let servedVersion = VERSION;
+const NOZOMI: Record<string, number[]> = {
+  '/n/artist/evil-all.nozomi': [104],
+  '/n/index-english.nozomi': [...CAT_IDS, ...DOG_IDS],
+  '/n/index-japanese.nozomi': [301],
+  '/n/index-all.nozomi': [...CAT_IDS, ...DOG_IDS, 301, ...MANY_IDS],
+  '/n/type/imageset-all.nozomi': [102, 106, ...DOG_IDS, 40_026],
+  '/n/artist/sample group-all.nozomi': [104, 101, 108],
+  '/n/tag/female:blue sky-all.nozomi': [101, 108],
+  '/n/popular/year-english.nozomi': [108, 104, 105, 101, 107, 103, 102, 106],
+  '/n/popular/month-english.nozomi': [103, 107, 101],
+  '/n/popular/week-english.nozomi': [101, 104, 108],
+  '/n/popular/today-english.nozomi': [107, 101],
+  '/n/artist/popular/week/sample group-all.nozomi': [108, 101, 104],
+  '/n/date/published-english.nozomi': [104, 108, 101, 107, 105, 103, 102, 106],
+};
 
 globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
   const url = String(input);
   fetchedUrls.push(url);
-  if (url.includes('/galleriesindex/version')) return new Response(VERSION);
+  if (url.includes('/galleriesindex/version')) return new Response(servedVersion);
   if (url.endsWith('.index')) return new Response(rootNodeBuffer);
   if (url.endsWith('.data')) {
     const range = String((init?.headers as Record<string, string> | undefined)?.Range ?? '');
     const offset = Number(range.replace(/^bytes=/, '').split('-')[0]);
     return new Response(DATA_BY_OFFSET[offset] ?? Buffer.alloc(4));
   }
-  if (url === `${API_BASE}/n/artist/evil-all.nozomi`) return new Response(idsBuffer([104]));
-  if (url === `${API_BASE}/n/index-english.nozomi`) return new Response(idsBuffer([...CAT_IDS, ...DOG_IDS]));
+  if (url.includes('/n/')) {
+    const ids = NOZOMI[decodeURI(new URL(url).pathname)];
+    return ids ? new Response(idsBuffer(ids).subarray(4)) : new Response(null, { status: 404 });
+  }
+  if (url.startsWith('https://tagindex.hitomi.la/')) return new Response(JSON.stringify([['Sample Group', 42, 'artist']]));
   const gallery = /\/galleries\/(\d+)\.js$/.exec(url);
   if (gallery) {
     const id = Number(gallery[1]);
@@ -232,4 +268,96 @@ test('search excludes galleries matching a namespaced banned tag via nozomi', as
   // that gallery is dropped — unlike a plain keyword, which matches any field.
   assert.ok(fetchedUrls.includes(`${API_BASE}/n/artist/evil-all.nozomi`));
   assert.deepEqual(results.map((r) => r.galleryId), ['101', '103', '105', '107', '108']);
+});
+
+// Ordered expectations derived from the official results.js/search.js algorithm.
+for (const { query, sort, expected } of [
+  { query: 'CAT -loli', expected: [101, 103, 104, 108] },
+  { query: 'cat moon', expected: [101, 104, 108] },
+  { query: 'cat OR moon', expected: [101, 103, 104, 105, 107, 108] },
+  { query: 'cat or dog moon or loli', expected: [101, 104, 105, 107, 108] },
+  { query: '-dog', expected: [101, 103, 104, 105, 107, 108] },
+  { query: 'cat —artist:evil', expected: [101, 103, 105, 107, 108] },
+  { query: 'blue_sky', expected: [101, 103] },
+  { query: 'female:blue_sky', expected: [101, 108] },
+  { query: 'moon', expected: [101, 104, 108] },
+  { query: 'moon language:japanese', expected: [301] },
+  { query: 'artist:sample_group cat', expected: [104, 101, 108] },
+  { query: 'cat orderbydirection:ascending', expected: [108, 107, 105, 104, 103, 101] },
+  { query: 'cat orderby:popular', expected: [108, 104, 105, 101, 107, 103] },
+  { query: 'cat sortby:popularity sortbykey:month', expected: [103, 107, 101] },
+  { query: 'artist:sample_group cat orderby:popular orderbykey:week', expected: [108, 101, 104] },
+  { query: 'artist:sample_group cat', sort: 'popular-week' as const, expected: [108, 101, 104] },
+  { query: 'cat', sort: 'popular-month' as const, expected: [103, 107, 101] },
+  { query: 'cat orderby:datepublished', expected: [104, 108, 101, 107, 105, 103] },
+  { query: 'cat', sort: 'date-published' as const, expected: [104, 108, 101, 107, 105, 103] },
+  { query: 'cat orderby:popular orderbykey:missing', expected: [] },
+]) {
+  test(`official query semantics: ${query}${sort ? ` (${sort})` : ''}`, async () => {
+    const results = await hitomiProvider.search(query, 24, sort);
+    assert.deepEqual(results.map(result => Number(result.galleryId)), expected);
+  });
+}
+
+test('random ordering preserves the filtered gallery set', async () => {
+  const results = await hitomiProvider.search('cat -loli orderby:random', 24);
+  assert.deepEqual(results.map(result => Number(result.galleryId)).sort((a, b) => a - b), [101, 103, 104, 108]);
+});
+
+test('autocomplete scopes namespaces and encodes multi-word prefixes like the website', async () => {
+  const suggestions = await hitomiProvider.suggest('-artist:sample_gr');
+  assert.ok(fetchedUrls.includes('https://tagindex.hitomi.la/artist/s/a/m/p/l/e/_/g/r.json'));
+  assert.equal(suggestions[0].filter, 'artist:Sample_Group');
+  await hitomiProvider.suggest('artist:');
+  assert.ok(fetchedUrls.includes('https://tagindex.hitomi.la/artist.json'));
+});
+
+test('sort autocomplete offers the website periods in popularity context', async () => {
+  const suggestions = await hitomiProvider.suggest('orderbykey:', 10, 'cat orderby:popular orderbykey:');
+  assert.deepEqual(suggestions.map(suggestion => suggestion.filter), ['orderbykey:today', 'orderbykey:week', 'orderbykey:month', 'orderbykey:year']);
+  assert.equal(fetchedUrls.length, 0);
+});
+
+test('keyword index versions refresh and concurrent gallery hydration shares one routing request', async t => {
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now + 60_000);
+  servedVersion = 'v-refreshed';
+  const results = await hitomiProvider.search('cat', 24);
+  assert.equal(results.length, 6);
+  assert.ok(fetchedUrls.some(url => url.includes('/galleriesindex/version')));
+  assert.ok(fetchedUrls.some(url => url.endsWith('/galleries.v-refreshed.index')));
+  assert.equal(fetchedUrls.filter(url => url.endsWith('/gg.js')).length, 1);
+});
+
+test('search pages count and skip image sets before slicing the ranking', async () => {
+  const first = await hitomiProvider.searchPage!('cat', 0, 3);
+  const second = await hitomiProvider.searchPage!('cat', 3, 3);
+  assert.equal(first.total, 6);
+  assert.equal(second.total, 6);
+  assert.deepEqual(first.items.map(item => Number(item.galleryId)), [101, 103, 104]);
+  assert.deepEqual(second.items.map(item => Number(item.galleryId)), [105, 107, 108]);
+  assert.ok(!fetchedUrls.some(url => /\/galleries\/(102|106)\.js$/.test(url)));
+});
+
+test('search pages can browse beyond 1000 matches and hydrate only the requested page', async () => {
+  const result = await hitomiProvider.searchPage!('many language:all', 1100, 25);
+  const expected = MANY_IDS.filter(id => id !== 40_026).slice(1100, 1125);
+  assert.equal(result.total, 1300);
+  assert.deepEqual(result.items.map(item => Number(item.galleryId)), expected);
+  assert.equal(fetchedUrls.filter(url => /\/galleries\/\d+\.js$/.test(url)).length, 25);
+});
+
+test('paged totals retain configured bans and out-of-range pages stay empty', async () => {
+  setDownloaderSettings({ ...DEFAULT_DOWNLOADER, hitomiBannedTags: ['loli'] });
+  const result = await hitomiProvider.searchPage!('cat', 99, 25);
+  assert.equal(result.total, 4);
+  assert.deepEqual(result.items, []);
+});
+
+test('random search pages share one ranking snapshot without duplicates or gaps', async () => {
+  const first = await hitomiProvider.searchPage!('cat', 0, 2, 'random');
+  const second = await hitomiProvider.searchPage!('cat', 2, 4, 'random');
+  const again = await hitomiProvider.searchPage!('cat', 0, 2, 'random');
+  assert.deepEqual(again.items.map(item => item.galleryId), first.items.map(item => item.galleryId));
+  assert.deepEqual([...first.items, ...second.items].map(item => Number(item.galleryId)).sort((a, b) => a - b), [101, 103, 104, 105, 107, 108]);
 });

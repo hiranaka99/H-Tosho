@@ -9,6 +9,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-nhentai-test-'));
 
 const { nhentaiProvider, nhentaiRateLimits } = await import('../src/downloader/nhentai.js');
+const { DEFAULT_DOWNLOADER, setDownloaderSettings } = await import('../src/services/settings.js');
 
 type FetchHandler = (url: string, init: RequestInit | undefined) => Response | Promise<Response>;
 
@@ -31,6 +32,7 @@ beforeEach(() => {
   }
   nhentaiRateLimits.backoffBaseMs = 1;
   delete process.env.NHENTAI_API_KEY;
+  setDownloaderSettings({ ...DEFAULT_DOWNLOADER });
   requests = [];
   handler = () => new Response('{}', { status: 404 });
 });
@@ -151,7 +153,7 @@ test('search URL uses the documented query/page/sort parameters (no limit param)
   const searchReq = requests.find((r) => r.url.includes('/api/v2/search'))!;
   const u = new URL(searchReq.url);
   assert.equal(u.pathname, '/api/v2/search');
-  assert.equal(u.searchParams.get('query'), 'k');
+  assert.equal(u.searchParams.get('query'), 'k language:english');
   assert.equal(u.searchParams.get('page'), '1');
   assert.equal(u.searchParams.get('sort'), 'popular-week');
   assert.equal(u.searchParams.get('limit'), null);
@@ -279,4 +281,106 @@ test('sustained 429 exhausts the bounded retries and surfaces a rate-limit error
   );
   // Initial attempt + nhentaiRateLimits.maxRetries (3) retries.
   assert.equal(searchCalls, 4);
+});
+
+for (const { query, expected } of [
+  { query: 'artist:"Sample Artist" -tag:"full color" pages:>20 favorites:>=100 uploaded:<7d', expected: 'artist:"Sample Artist" -tag:"full color" pages:>20 favorites:>=100 uploaded:<7d language:english' },
+  { query: 'language:japanese artist:sample', expected: 'language:japanese artist:sample' },
+  { query: 'LANGUAGES:"Japanese" sample', expected: 'LANGUAGES:"Japanese" sample' },
+  { query: '-language:japanese sample', expected: '-language:japanese sample language:english' },
+  { query: 'title:"a language:japanese example"', expected: 'title:"a language:japanese example" language:english' },
+  { query: '"exact phrase" parodies:sample pages:<=30', expected: '"exact phrase" parodies:sample pages:<=30 language:english' },
+]) {
+  test(`website query syntax stays intact with the default language: ${query}`, async () => {
+    handler = url => url.includes('/api/v2/search') ? jsonResponse({ result: [], num_pages: 0, total: 0 }) : jsonResponse(CDN);
+    await nhentaiProvider.search(query);
+    assert.equal(new URL(requests.find(request => request.url.includes('/api/v2/search'))!.url).searchParams.get('query'), expected);
+  });
+}
+
+test('configured exclusions preserve scoped multi-word tags', async () => {
+  setDownloaderSettings({ ...DEFAULT_DOWNLOADER, nhentaiBannedTags: ['full color', 'artists:"Sample Artist"', 'FULL COLOR'] });
+  handler = url => url.includes('/api/v2/search') ? jsonResponse({ result: [], num_pages: 0, total: 0 }) : jsonResponse(CDN);
+  await nhentaiProvider.search('sample');
+  assert.equal(new URL(requests.find(request => request.url.includes('/api/v2/search'))!.url).searchParams.get('query'), 'sample language:english -"full color" -artist:"Sample Artist"');
+});
+
+for (const sort of ['default', 'popular', 'popular-today', 'popular-week', 'popular-month', 'popular-year'] as const) {
+  test(`search forwards the documented nHentai sort: ${sort}`, async () => {
+    handler = url => url.includes('/api/v2/search') ? jsonResponse({ result: [], num_pages: 0, total: 0 }) : jsonResponse(CDN);
+    await nhentaiProvider.search('sample', 5, sort);
+    const supported = sort !== 'default' && sort !== 'popular-year';
+    assert.equal(new URL(requests.find(request => request.url.includes('/api/v2/search'))!.url).searchParams.get('sort'), supported ? sort : null);
+  });
+}
+
+function pagePayload(page: number, total: number, perPage = 25) {
+  return {
+    result: Array.from({ length: Math.max(0, Math.min(perPage, total - (page - 1) * perPage)) }, (_, index) => ({
+      id: (page - 1) * perPage + index + 1, english_title: 'Sample title', num_pages: 28, tag_ids: [],
+    })),
+    num_pages: Math.ceil(total / perPage), per_page: perPage, total,
+  };
+}
+
+test('paged searches access matches beyond the old 250-result ceiling with one search request', async () => {
+  handler = url => url.includes('/api/v2/search') ? jsonResponse(pagePayload(Number(new URL(url).searchParams.get('page')), 1301)) : jsonResponse(CDN);
+  const result = await nhentaiProvider.searchPage!('sample', 1100, 25, 'popular-week');
+  assert.equal(result.total, 1301);
+  assert.deepEqual(result.items.map(item => Number(item.galleryId)), Array.from({ length: 25 }, (_, index) => 1101 + index));
+  const searches = requests.filter(request => request.url.includes('/api/v2/search'));
+  assert.equal(searches.length, 1);
+  assert.equal(new URL(searches[0].url).searchParams.get('page'), '45');
+  assert.equal(new URL(searches[0].url).searchParams.get('query'), 'sample language:english');
+});
+
+test('unaligned search windows slice adjacent API pages without duplicates', async () => {
+  handler = url => url.includes('/api/v2/search') ? jsonResponse(pagePayload(Number(new URL(url).searchParams.get('page')), 60)) : jsonResponse(CDN);
+  const result = await nhentaiProvider.searchPage!('sample', 24, 3);
+  assert.equal(result.total, 60);
+  assert.deepEqual(result.items.map(item => Number(item.galleryId)), [25, 26, 27]);
+  assert.equal(requests.filter(request => request.url.includes('/api/v2/search')).length, 2);
+});
+
+test('nullable totals use the last native page for an exact count', async () => {
+  handler = url => url.includes('/api/v2/search') ? jsonResponse({ ...pagePayload(Number(new URL(url).searchParams.get('page')), 52), total: null }) : jsonResponse(CDN);
+  const result = await nhentaiProvider.searchPage!('sample', 0, 25);
+  assert.equal(result.total, 52);
+  assert.equal(result.items.length, 25);
+  assert.deepEqual(requests.filter(request => request.url.includes('/api/v2/search')).map(request => new URL(request.url).searchParams.get('page')), ['1', '3']);
+});
+
+test('a changed API page size is honored when resolving an offset', async () => {
+  handler = url => url.includes('/api/v2/search') ? jsonResponse(pagePayload(Number(new URL(url).searchParams.get('page')), 63, 10)) : jsonResponse(CDN);
+  const result = await nhentaiProvider.searchPage!('sample', 20, 5);
+  assert.equal(result.total, 63);
+  assert.deepEqual(result.items.map(item => Number(item.galleryId)), [21, 22, 23, 24, 25]);
+  assert.deepEqual(requests.filter(request => request.url.includes('/api/v2/search')).map(request => new URL(request.url).searchParams.get('page')), ['1', '3']);
+});
+
+test('gallery URLs and #IDs resolve directly without adding search filters', async () => {
+  setDownloaderSettings({ ...DEFAULT_DOWNLOADER, nhentaiBannedTags: ['sample'] });
+  handler = url => url.includes('/api/v2/galleries/123') ? jsonResponse(galleryDetailPayload()) : jsonResponse(CDN);
+  for (const query of ['https://nhentai.net/g/123/', '#123']) {
+    const result = await nhentaiProvider.searchPage!(query, 0, 25);
+    assert.equal(result.total, 1);
+    assert.equal(result.items[0].galleryId, '123');
+  }
+  assert.ok(!requests.some(request => request.url.includes('/api/v2/search')));
+});
+
+test('scoped autocomplete uses the website aliases, unquotes prefixes and retains typed names', async () => {
+  process.env.NHENTAI_API_KEY = 'test-key';
+  handler = (url, init) => {
+    assert.equal(url, 'https://nhentai.net/api/v2/tags/search');
+    assert.deepEqual(JSON.parse(String(init?.body)), { type: 'artist', query: 'sample artist', limit: 5 });
+    return jsonResponse([{ type: 'artist', name: 'Sample Artist', count: 42 }]);
+  };
+  const result = await nhentaiProvider.suggest!('-artists:"sample artist', 5);
+  assert.equal(result[0].filter, 'artist:"Sample Artist"');
+});
+
+test('numeric, date and title autocomplete never waste a tag API request', async () => {
+  for (const query of ['pages:>20', 'uploaded:7d', 'favorites:>=100', 'title:"sample"']) assert.deepEqual(await nhentaiProvider.suggest!(query), []);
+  assert.equal(requests.length, 0);
 });

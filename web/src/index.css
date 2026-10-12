@@ -440,6 +440,37 @@ html[data-motion-paused] :is(.skeleton, .progress-stripes, .animate-spin,
   animation: downloader-task-status 140ms ease-out;
 }
 
+/* Watched motion explains disclosure and review state without delaying actions. */
+.watched-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transition: grid-template-rows 220ms var(--ease-out-soft), opacity 140ms ease-out,
+    visibility 0s linear 220ms;
+}
+
+.watched-reveal[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.watched-reveal-inner { min-height: 0; }
+.watched-reveal[data-clipping="true"] > .watched-reveal-inner { overflow: hidden; }
+
+.watched-check-status { animation: downloader-task-status 140ms ease-out; }
+
+.watched-discovery {
+  transition: opacity 140ms ease-out, transform 180ms var(--ease-out-soft);
+}
+
+.watched-discovery[data-review-pending="true"] {
+  opacity: 0.55;
+  transform: translateX(4px);
+}
+
 /* The whole panel enters together, rather than animating each nested card twice. */
 .ui-tab-panel .animate-fade-up {
   animation: none;
@@ -472,6 +503,12 @@ html[data-motion-paused] :is(.skeleton, .progress-stripes, .animate-spin,
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .watched-reveal { transition: none; }
+  .watched-check-status { animation: downloader-task-status 100ms ease-out !important; }
+  .watched-discovery {
+    transform: none !important;
+    transition: opacity 100ms ease-out !important;
+  }
   .app-nav-indicator { transition: none; }
   .app-nav-icon { transform: none !important; }
 

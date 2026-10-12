@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { getDownloaderSettings } from '../services/settings.js';
 import { fetchJson, sleep } from '../lib/http.js';
 import { extractGalleryId, toIsoDate } from './util.js';
+import { nhentaiAutocompleteQuery, nhentaiBannedTerm, nhentaiSearchQuery } from './nhentaiSearch.js';
 import { type DoujinGallery, type DoujinProvider, type DoujinSearchResult, type DoujinSort, type DoujinSuggestion } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -183,12 +184,12 @@ function buildBannedExclusions(): string {
   const seen = new Set<string>();
   const parts: string[] = [];
   for (const raw of tags) {
-    const name = String(raw ?? '').trim().replace(/"/g, '');
-    if (!name) continue;
-    const key = name.toLowerCase();
+    const exclusion = nhentaiBannedTerm(String(raw ?? ''));
+    if (!exclusion) continue;
+    const key = exclusion.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    parts.push(`-"${name}"`);
+    parts.push(exclusion);
   }
   return parts.join(' ');
 }
@@ -220,10 +221,18 @@ interface CdnConfig {
 
 let cdnCache: CdnConfig | null = null;
 let cdnCacheAt = 0;
+let cdnLoading: Promise<CdnConfig> | null = null;
 const CDN_TTL_MS = 10 * 60_000;
 
 async function getCdn(forceRefresh = false): Promise<CdnConfig> {
   if (!forceRefresh && cdnCache && Date.now() - cdnCacheAt < CDN_TTL_MS) return cdnCache;
+  if (cdnLoading) return cdnLoading;
+  cdnLoading = fetchCdn();
+  try { return await cdnLoading; }
+  finally { cdnLoading = null; }
+}
+
+async function fetchCdn(): Promise<CdnConfig> {
   const res = await throttledFetchJson<{ image_servers: string[]; thumb_servers: string[] }>(
     'gallery',
     `${BASE}/api/v2/cdn`,
@@ -270,12 +279,14 @@ const TAG_CACHE_MAX = 100_000;
 async function resolveTags(ids: number[]): Promise<Map<number, ApiTag>> {
   const out = new Map<number, ApiTag>();
   const missing: number[] = [];
+  const queued = new Set<number>();
   for (const id of ids) {
     const cached = tagCache.get(id);
     if (cached) {
       out.set(id, cached);
-    } else if (!missing.includes(id)) {
+    } else if (!queued.has(id)) {
       missing.push(id);
+      queued.add(id);
     }
   }
   const CHUNK = 100;
@@ -481,6 +492,46 @@ interface ApiGalleryDetail {
   upload_date?: number;
 }
 
+const SEARCH_PAGE_SIZE = 25;
+
+function directGalleryId(query: string): string | null {
+  const q = query.trim();
+  const bare = /^#?\s*(\d+)$/.exec(q);
+  if (bare) return bare[1];
+  return /^(?:https?:\/\/(?:www\.)?nhentai\.net)?\/(?:g|gallery)\/(\d+)\/?(?:[?#].*)?$/i.exec(q)?.[1] ?? null;
+}
+
+async function fetchSearchPage(query: string, page: number, sort?: DoujinSort): Promise<ApiSearchResponse> {
+  const params = new URLSearchParams({ query, page: String(page) });
+  if (sort && ['popular', 'popular-week', 'popular-today', 'popular-month'].includes(sort)) params.set('sort', sort);
+  const res = await throttledFetchJson<ApiSearchResponse>('search', `${BASE}/api/v2/search?${params}`, { headers: headers() });
+  if (res.status === 429) throw new Error('nHentai is rate-limiting this search. Set a valid nHentai API key in Settings to raise the limit, then try again.');
+  if (res.status !== 200 || !Array.isArray(res.data?.result) || !Number.isSafeInteger(res.data.num_pages) || res.data.num_pages! < 0) {
+    throw new Error(`nHentai search failed (HTTP ${res.status})`);
+  }
+  return res.data;
+}
+
+async function mapSearchRows(items: ApiGalleryListItem[]): Promise<NhentaiSearchRow[]> {
+  if (!items.length) return [];
+  const tagIds = items.flatMap(item => Array.isArray(item?.tag_ids) ? item.tag_ids : []);
+  const [cdn, tagsById] = await Promise.all([getCdn(), resolveTags(tagIds)]);
+  return items.filter(item => item && typeof item.id === 'number').map(item => {
+    const id = String(item.id);
+    const title = item.english_title || item.japanese_title || `Gallery ${id}`;
+    const resolved = (item.tag_ids ?? []).map(id => tagsById.get(id)).filter((tag): tag is ApiTag => !!tag);
+    const split = splitTags(resolved);
+    return {
+      source: 'nhentai', galleryId: id, title,
+      coverUrl: item.thumbnail ? joinServer(cdn.thumbServers[0], item.thumbnail) : undefined,
+      tags: split.tags, tagNamespaces: split.tagNamespaces, artists: split.artists,
+      series: split.parodies[0], parodies: split.parodies, groups: split.groups,
+      characters: split.characters, language: detectLanguage(split.langTags, title),
+      pageCount: item.num_pages ?? undefined, url: `${BASE}/g/${id}/`,
+    };
+  });
+}
+
 export const nhentaiProvider: DoujinProvider = {
   id: 'nhentai',
   name: 'nHentai',
@@ -490,26 +541,15 @@ export const nhentaiProvider: DoujinProvider = {
     const q = query.trim();
     if (!q) return [];
 
-    // Optional popularity ordering, mirroring nhentai.net's own sort controls
-    // (`sort=popular` all time, `popular-week`, `popular-today`). Values nHentai
-    // does not offer (e.g. Hitomi's `popular-year`) fall back to the API's
-    // default (newest-first).
-    const sortParam =
-      sort && ['popular', 'popular-week', 'popular-today'].includes(sort) ? `&sort=${sort}` : '';
-
     // A bare gallery id / URL should resolve to that single gallery. The full
     // DoujinGallery doubles as a search row (it extends DoujinSearchResult).
-    if (/^\d+$/.test(q)) {
-      return [await this.getGallery(q)];
-    }
+    const id = directGalleryId(q);
+    if (id) return [await this.getGallery(id)];
 
     // Append configured banned-tag exclusions so galleries carrying any of them
     // never show up in keyword/tag searches. (A bare gallery-ID lookup above is
     // an explicit request and intentionally skips this filter.)
-    const banned = buildBannedExclusions();
-    const searchQuery = banned ? `${q} ${banned}` : q;
-
-    const cdn = await getCdn();
+    const searchQuery = nhentaiSearchQuery(q, buildBannedExclusions());
     const want = Math.max(limit, 1);
     // The API serves a fixed page size (`per_page`, 25 live-observed; there is
     // no `limit` parameter) and paginates via `page`. Walk the pages until
@@ -524,63 +564,63 @@ export const nhentaiProvider: DoujinProvider = {
 
     let page = 1;
     do {
-      const url = `${BASE}/api/v2/search?query=${encodeURIComponent(searchQuery)}&page=${page}${sortParam}`;
       // throttledFetchJson spaces pages through the shared throttle and retries
       // transient 429/5xx with capped exponential backoff, so a multi-page
       // search doesn't fail on a single throttled request.
-      const res = await throttledFetchJson<ApiSearchResponse>('search', url, { headers: headers() });
-      if (res.status === 429) {
-        throw new Error(
-          'nHentai is rate-limiting this search. Set a valid nHentai API key in Settings to raise the limit, then try again.',
-        );
-      }
-      if (res.status !== 200 || !Array.isArray(res.data?.result)) {
-        throw new Error(`nHentai search failed (HTTP ${res.status})`);
-      }
-      const items = res.data.result;
+      const res = await fetchSearchPage(searchQuery, page, sort);
+      const items = res.result;
       if (!items.length) break;
 
-      // Resolve the page's numeric tag ids to named tags (cache hits are free;
-      // misses batch into /api/v2/tags/ids calls of up to 100 ids each).
-      const tagIds = items.flatMap((item) => (Array.isArray(item?.tag_ids) ? item.tag_ids : []));
-      const tagsById = await resolveTags(tagIds);
-
-      for (const item of items) {
-        if (!item || typeof item.id !== 'number') continue;
-        const id = String(item.id);
-        if (seen.has(id)) continue;
-        seen.add(id);
-        const title = item.english_title || item.japanese_title || `Gallery ${id}`;
-        const resolved = (item.tag_ids ?? [])
-          .map((tid) => tagsById.get(tid))
-          .filter((t): t is ApiTag => !!t);
-        const split = splitTags(resolved);
-        out.push({
-          source: 'nhentai',
-          galleryId: id,
-          title,
-          coverUrl: joinServer(cdn.thumbServers[0], item.thumbnail ?? ''),
-          tags: split.tags,
-          tagNamespaces: split.tagNamespaces,
-          artists: split.artists,
-          series: split.parodies[0],
-          parodies: split.parodies,
-          groups: split.groups,
-          characters: split.characters,
-          language: detectLanguage(split.langTags, title),
-          pageCount: item.num_pages ?? undefined,
-          url: `${BASE}/g/${id}/`,
-        });
+      for (const item of await mapSearchRows(items)) {
+        if (seen.has(item.galleryId)) continue;
+        seen.add(item.galleryId);
+        out.push(item);
         if (out.length >= target) return out;
       }
 
-      const totalPages = res.data.num_pages && res.data.num_pages > 0 ? res.data.num_pages : Infinity;
+      const totalPages = res.num_pages ?? 0;
       page++;
-      if (page > totalPages) break;
+      if (page > totalPages || page > Math.ceil(MAX_RESULTS / SEARCH_PAGE_SIZE)) break;
       // Page spacing is enforced by the shared throttle — no extra pause needed.
     } while (true);
 
     return out.slice(0, want);
+  },
+
+  async searchPage(query: string, offset: number, limit: number, sort?: DoujinSort) {
+    const q = query.trim();
+    if (!q) return { items: [], total: 0 };
+    const id = directGalleryId(q);
+    if (id) {
+      const gallery = await this.getGallery(id);
+      return { items: offset ? [] : [gallery], total: 1 };
+    }
+    const searchQuery = nhentaiSearchQuery(q, buildBannedExclusions());
+    const fetched = new Map<number, ApiSearchResponse>();
+    const getPage = async (page: number) => {
+      if (!fetched.has(page)) fetched.set(page, await fetchSearchPage(searchQuery, page, sort));
+      return fetched.get(page)!;
+    };
+    let page = Math.floor(offset / SEARCH_PAGE_SIZE) + 1;
+    let response = await getPage(page);
+    const perPage = Number.isSafeInteger(response.per_page) && response.per_page! > 0 ? response.per_page! : SEARCH_PAGE_SIZE;
+    const correctPage = Math.floor(offset / perPage) + 1;
+    if (correctPage !== page) { page = correctPage; response = await getPage(page); }
+    const numPages = response.num_pages ?? 0;
+    let total = response.total;
+    // The public schema permits a null total; the last page gives an exact count.
+    if (!Number.isSafeInteger(total) || total! < 0) {
+      total = numPages ? (numPages - 1) * perPage + (await getPage(numPages)).result.length : 0;
+    }
+    const rows = response.result.slice(offset % perPage, offset % perPage + limit);
+    if (offset < total! && !rows.length) throw new Error('Could not load this nHentai results page. Please retry.');
+    while (rows.length < limit && page < numPages && offset + rows.length < total!) {
+      page++;
+      const next = (await getPage(page)).result;
+      if (!next.length) break;
+      rows.push(...next.slice(0, limit - rows.length));
+    }
+    return { items: await mapSearchRows(rows), total: total! };
   },
 
   /**
@@ -589,10 +629,9 @@ export const nhentaiProvider: DoujinProvider = {
    * types). Results are returned most-popular-first with their gallery count.
    */
   async suggest(query: string, limit = 10): Promise<DoujinSuggestion[]> {
-    const q = query.trim();
-    if (!q) return [];
-
-    const body = JSON.stringify({ query: q, limit: Math.min(Math.max(limit, 1), 50) });
+    const lookup = nhentaiAutocompleteQuery(query);
+    if (!lookup) return [];
+    const body = JSON.stringify({ ...lookup, limit: Math.min(Math.max(limit, 1), 50) });
     // With an API key, go straight through the official POST endpoint
     // (authenticated requests are usually waved through Cloudflare); without
     // one, Node's fetch() on POST endpoints gets challenged, so curl goes

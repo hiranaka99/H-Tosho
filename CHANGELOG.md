@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+## v2.13.0
+
+- Translate the active query on every provider switch, preserving exclusions,
+  quoted names, namespace aliases, and shared sorts. Explain unsupported filters
+  before searching, restore exact queries on unchanged round trips, and apply
+  the same translation to watched-query drafts.
+- Align nHentai search with the official API and website: default to English,
+  preserve quoted phrases and scoped/range/date filters, scope autocomplete,
+  and browse native pages beyond 250 matches while retaining selections.
+- Match Hitomi's exclusion, OR, namespace ranking, sort directives, and scoped
+  autocomplete while retaining the English default and image-set exclusion.
+  Add monthly popularity, published-date, and random sort controls; refresh
+  keyword index versions and share concurrent CDN-routing requests.
+- Page Hitomi search across the full matching catalog, fetching 25 galleries
+  at a time and retaining selections across pages instead of stopping at 1000.
+- Keep Watched Inbox and History, and place Dismiss beside each gallery's
+  download action. Dismissed galleries remain in History and can return to Inbox.
+- Enlarge the watched-query field, share Search's tag/artist autocomplete with
+  watched queries, and remove explanatory text from the Watched tab.
+- Polish Watched control alignment, saved-query hierarchy, and filter spacing;
+  keep removal confirmations open while pending and after failed requests.
+- Animate watched-search expansion, review feedback, and saved-list changes;
+  preserve keyboard access, autocomplete, and reduced-motion preferences.
+- Defer rendering collapsed watch lists and latest finds, poll status less often
+  while idle, and batch animation layout measurements.
+
 ## v2.12.1
 
 - Update all direct dependencies to current stable releases, including React 19,

@@ -691,16 +691,26 @@ api.get('/doujin/providers', (c) => c.json(listDoujinProviders()));
 
 /** Search a doujinshi source by keyword/tag/artist/id-or-url. */
 api.post('/doujin/search', async (c) => {
-  const body = (await c.req.json()) as { source: string; query: string; sort?: DoujinSort };
+  const body = (await c.req.json()) as { source: string; query: string; sort?: DoujinSort; offset?: number; limit?: number };
   if (!body.source || !body.query?.trim()) return c.json({ error: 'source and query are required' }, 400);
   const provider = getDoujinProvider(body.source);
   if (!provider) return c.json({ error: `Unknown source: ${body.source}` }, 400);
-  // Optional popularity ordering (nHentai only; other providers ignore it).
+  // Each provider supports its own subset of ordering options.
   // Unknown values fall back to the default ordering.
   const sort: DoujinSort = body.sort && DOUJIN_SORTS.includes(body.sort) ? body.sort : 'default';
+  const paged = body.offset !== undefined || body.limit !== undefined;
+  if (paged && (!Number.isSafeInteger(body.offset ?? 0) || (body.offset ?? 0) < 0
+    || !Number.isSafeInteger(body.limit ?? 25) || (body.limit ?? 25) < 1 || (body.limit ?? 25) > 100)) {
+    return c.json({ error: 'offset must be nonnegative and limit must be between 1 and 100' }, 400);
+  }
   try {
+    if (paged && provider.searchPage) {
+      const page = await provider.searchPage(body.query, body.offset ?? 0, body.limit ?? 25, sort);
+      return c.json({ ...page, items: page.items.map(rewriteDoujinCover) });
+    }
     // Request the full result set (both providers cap internally at ~1000).
     const results = await provider.search(body.query, 1000, sort);
+    if (paged) return c.json({ items: results.slice(body.offset ?? 0, (body.offset ?? 0) + (body.limit ?? 25)).map(rewriteDoujinCover), total: results.length });
     // Route hitomi covers through the /media proxy so they carry the Referer
     // their CDN requires (browsers can't send it cross-origin).
     return c.json(results.map(rewriteDoujinCover));
@@ -711,13 +721,13 @@ api.post('/doujin/search', async (c) => {
 
 /** Autocomplete tag/artist suggestions for a doujinshi source search box. */
 api.post('/doujin/suggestions', async (c) => {
-  const body = (await c.req.json()) as { source: string; query: string };
+  const body = (await c.req.json()) as { source: string; query: string; context?: string };
   if (!body.source || !body.query?.trim()) return c.json({ error: 'source and query are required' }, 400);
   const provider = getDoujinProvider(body.source);
   if (!provider) return c.json({ error: `Unknown source: ${body.source}` }, 400);
   if (typeof provider.suggest !== 'function') return c.json([]);
   try {
-    return c.json(await provider.suggest(body.query, 10));
+    return c.json(await provider.suggest(body.query, 10, typeof body.context === 'string' ? body.context : undefined));
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

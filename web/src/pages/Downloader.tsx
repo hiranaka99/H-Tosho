@@ -1,3 +1,5 @@
+import { GallerySearchInput } from '../components/GallerySearchInput';
+import { WatchedDisclosure, WatchedReveal } from '../components/WatchedMotion';
 import { useDuplicateReview } from '../components/DuplicateReview';
 import * as React from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -22,7 +24,6 @@ import {
   FolderOpen,
   FileText,
   X,
-  ArrowRight,
   ExternalLink,
   BookOpen,
   Bookmark,
@@ -37,7 +38,7 @@ import {
   Plus,
   EllipsisVertical,
 } from 'lucide-react';
-import { api, ApiError, type DuplicateCheck, type FeedbackRequest, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DoujinSuggestion, type DownloadTask } from '../lib/api';
+import { api, ApiError, type DuplicateCheck, type FeedbackRequest, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DownloadTask } from '../lib/api';
 import { useDownloadActions, useDownloads } from '../lib/DownloadsContext';
 import { buildTagSearchFragment, cn, timeAgo, toIsoUtc } from '../lib/utils';
 import { formatBytes, formatSpeed } from '../lib/format';
@@ -52,6 +53,7 @@ import { PagePreview } from '../components/PagePreview';
 import { PageCountPill } from '../components/PageCountPill';
 import { GallerySelectionBar } from '../components/GallerySelectionBar';
 import { indexSelectableGalleries, selectedGalleryItems } from '../lib/gallerySelection';
+import { switchProviderSearch, type TranslationLink } from '../lib/searchTranslation';
 
 /** Source list fallback (rendered before the server's provider list resolves). */
 const FALLBACK_SOURCES: { id: DoujinSource; label: string }[] = [
@@ -74,6 +76,7 @@ interface DownloaderStateCache {
   sort?: DoujinSort;
   page?: number;
   searches?: Partial<Record<DoujinSource, { query: string; searchKey: string | null; sort: DoujinSort }>>;
+  translation?: TranslationLink | null;
 }
 
 function readDownloaderState(): DownloaderStateCache {
@@ -102,8 +105,11 @@ const NHENTAI_SORTS: { value: DoujinSort; label: string }[] = [
 /** Result ordering options for Hitomi searches (mirrors hitomi.la's sort dropdown). */
 const HITOMI_SORTS: { value: DoujinSort; label: string }[] = [
   { value: 'default', label: 'Newest' },
+  { value: 'date-published', label: 'Date published' },
+  { value: 'random', label: 'Random' },
   { value: 'popular-today', label: 'Popular Today' },
   { value: 'popular-week', label: 'Popular Week' },
+  { value: 'popular-month', label: 'Popular Month' },
   { value: 'popular-year', label: 'Popular Year' },
 ];
 
@@ -118,9 +124,9 @@ const SOURCE_LABELS: Record<DoujinSource, string> = { hitomi: 'Hitomi.la', nhent
 type DownloadSetup = { status: 'loading' | 'error' | 'missing' | 'ready'; directory?: string; format?: 'cbz' | 'folder'; onRetry: () => void };
 const DOWNLOADER_SETTINGS_URL = '/settings?tab=downloader';
 
-function DownloadDestination({ setup }: { setup: DownloadSetup }) {
+function DownloadDestination({ setup, compact = false }: { setup: DownloadSetup; compact?: boolean }) {
   return <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-xs text-muted" role="status">
-    {setup.status === 'loading' ? <><Spinner /> Checking download settings…</> : setup.status === 'error' ? <><span>Could not check the download folder.</span><Button size="sm" variant="outline" onClick={setup.onRetry}>Retry settings</Button></> : setup.status === 'missing' ? <><span>Choose where downloads will be saved.</span><Link className="inline-flex min-h-11 items-center font-medium text-primary underline underline-offset-4" to={DOWNLOADER_SETTINGS_URL}>Set output folder</Link></> : <>
+    {setup.status === 'loading' ? <><Spinner /> Checking download settings…</> : setup.status === 'error' ? <><span>Could not check the download folder.</span><Button size="sm" variant="outline" onClick={setup.onRetry}>Retry settings</Button></> : setup.status === 'missing' ? <>{!compact && <span>Choose where downloads will be saved.</span>}<Link className="inline-flex min-h-11 items-center font-medium text-primary underline underline-offset-4" to={DOWNLOADER_SETTINGS_URL}>Set output folder</Link></> : <>
       <FolderOpen className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 break-all">Save to {setup.directory}</span><Badge tone="muted">{setup.format === 'cbz' ? 'CBZ' : 'Image folder'}</Badge><Link className="inline-flex min-h-9 items-center text-primary underline underline-offset-4" to={DOWNLOADER_SETTINGS_URL}>Change</Link>
     </>}
   </div>;
@@ -134,36 +140,6 @@ function DownloadFailure({ message }: { message: string }) {
     <Disclosure label="Technical details" className="text-muted"><p className="break-all pt-2">{message}</p></Disclosure>
   </div>;
 }
-
-/** Bounds of the token at the caret; whitespace inside quotes belongs to the same token. */
-function activeTermBounds(full: string, caret: number): { start: number; end: number } {
-  let start = 0;
-  let quote: string | null = null;
-  for (let i = 0; i < full.length; i++) {
-    const ch = full[i];
-    if (!quote && /\s/.test(ch)) {
-      if (i >= caret) return { start, end: i };
-      start = i + 1;
-    } else if (ch === quote) {
-      quote = null;
-    } else if (!quote && (ch === '"' || ch === "'")) {
-      quote = ch;
-    }
-  }
-  return { start, end: full.length };
-}
-
-/** Badge color per suggestion tag type (mirrors the nHentai search dropdown). */
-const SUGG_TYPE_STYLES: Record<string, string> = {
-  artist: 'bg-violet-500/10 text-violet-700 dark:bg-violet-400/20 dark:text-violet-300',
-  group: 'bg-amber-500/10 text-amber-700 dark:bg-amber-400/20 dark:text-amber-300',
-  character: 'bg-pink-500/10 text-pink-700 dark:bg-pink-400/20 dark:text-pink-300',
-  parody: 'bg-blue-500/10 text-blue-700 dark:bg-blue-400/20 dark:text-blue-300',
-  series: 'bg-cyan-500/10 text-cyan-700 dark:bg-cyan-400/20 dark:text-cyan-300',
-  language: 'bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/20 dark:text-emerald-300',
-  category: 'bg-rose-500/10 text-rose-700 dark:bg-rose-400/20 dark:text-rose-300',
-  tag: 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/20 dark:text-slate-300',
-};
 
 function SourceBadge({ source }: { source: DoujinSource }) {
   const color = SOURCE_COLORS[source];
@@ -198,7 +174,7 @@ function Cover({ url, title, className }: { url?: string | null; title: string; 
   );
 }
 
-/** Gallaries per results page — the provider returns up to ~1000 in one shot. */
+/** Galleries per page, matching both official search APIs. */
 const RESULTS_PAGE_SIZE = 25;
 
 /** Finished tasks shown before the History section collapses (rest via "Show all"). */
@@ -206,21 +182,28 @@ const HISTORY_PREVIEW = 5;
 const EMPTY_GALLERIES: DoujinSearchResult[] = [];
 
 /** Track gallery/queue relationships only when membership or selection changes. */
-function useDownloaderTransitions(state: string) {
+function useDownloaderTransitions(state: string, selector = '[data-download-id], [data-gallery-motion-id], [data-gallery-shortlist-id]') {
   const ref = React.useRef<HTMLDivElement>(null);
   const previous = React.useRef<Map<string, { x: number; y: number }> | null>(null);
   React.useLayoutEffect(() => {
     const container = ref.current;
     if (!container) return;
     const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
+    if (preference.matches || document.hidden) {
+      previous.current = null;
+      return;
+    }
     const origin = container.getBoundingClientRect();
     const positions = new Map<string, { x: number; y: number }>();
     const animations: Animation[] = [];
-    container.querySelectorAll<HTMLElement>('[data-download-id], [data-gallery-motion-id], [data-gallery-shortlist-id]').forEach((row) => {
-      const bounds = row.getBoundingClientRect();
+    // Read every rectangle before starting animations, which write visual state.
+    const rows = Array.from(container.querySelectorAll<HTMLElement>(selector))
+      .filter(row => !row.closest('[inert]'))
+      .map(row => ({ row, bounds: row.getBoundingClientRect() }));
+    rows.forEach(({ row, bounds }) => {
       // Hidden desktop/mobile shortlist copies never participate in motion.
       if (!bounds.width || !bounds.height) return;
-      const id = row.dataset.galleryMotionId ? `gallery:${row.dataset.galleryMotionId}` : row.dataset.galleryShortlistId ? `shortlist:${row.dataset.galleryShortlistId}` : `task:${row.dataset.downloadId}`;
+      const id = row.dataset.galleryMotionId ? `gallery:${row.dataset.galleryMotionId}` : row.dataset.galleryShortlistId ? `shortlist:${row.dataset.galleryShortlistId}` : row.dataset.watchedSearchId ? `watch:${row.dataset.watchedSearchId}` : `task:${row.dataset.downloadId}`;
       const position = { x: bounds.left - origin.left, y: bounds.top - origin.top };
       positions.set(id, position);
       if (!previous.current || preference.matches || document.hidden || bounds.bottom < 0 || bounds.top > window.innerHeight || typeof row.animate !== 'function') return;
@@ -247,7 +230,7 @@ function useDownloaderTransitions(state: string) {
       preference.removeEventListener('change', onPreferenceChange);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [state]);
+  }, [state, selector]);
   return ref;
 }
 
@@ -290,9 +273,12 @@ interface GalleryCardProps {
   showSource?: boolean;
   showTags?: boolean;
   onFeedback?: (item: DoujinSearchResult) => void;
+  onReview?: (item: DoujinSearchResult, reviewed: boolean) => void;
+  reviewed?: boolean;
+  reviewPending?: boolean;
 }
 
-const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, task, starting = false, downloadedAt, selectMode = false, selected = false, onToggleSelect, owned = false, libraryMatch, dismissing = false, showSource = true, showTags = true, onFeedback }: GalleryCardProps) {
+const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, task, starting = false, downloadedAt, selectMode = false, selected = false, onToggleSelect, owned = false, libraryMatch, dismissing = false, showSource = true, showTags = true, onFeedback, onReview, reviewed = false, reviewPending = false }: GalleryCardProps) {
   const tags = item.tags.slice(0, 4);
   const inLibrary = libraryMatch === 'owned';
   const alreadyOwned = owned || inLibrary || downloadedAt !== undefined;
@@ -347,10 +333,11 @@ const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, 
           {selectMode ? <>
             <Button size="sm" variant={selected ? 'default' : 'outline'} className="min-w-0 flex-1 px-2" onClick={() => onToggleSelect?.(item)} aria-pressed={selected} aria-label={`${selected ? 'Remove' : 'Select'} ${item.title} ${selected ? 'from' : 'for'} merging`}><CheckSquare className="h-3.5 w-3.5 shrink-0" /><span>{selected ? 'Selected' : 'Select'}</span></Button>
             <Button size="sm" variant="ghost" onClick={() => onOpen(item)} aria-label={`View details for ${item.title}`}>Details</Button>
-          </> : <Button size="sm" variant={alreadyOwned || libraryMatch === 'possible' ? 'outline' : 'default'} className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 px-2" onClick={() => onDownload(item)} disabled={active || alreadyOwned || downloadSetup === 'loading' || downloadSetup === 'error'} aria-label={starting && !task ? `Checking duplicates for ${item.title}` : active ? `${item.title} is ${task?.status ?? 'starting'}` : alreadyOwned ? `${item.title} already in library` : libraryMatch === 'possible' ? `Review possible duplicate of ${item.title}` : downloadSetup === 'missing' ? `Set output folder before downloading ${item.title}` : `Download ${item.title}`}>
-            {task?.status === 'paused' ? <Pause className="h-3.5 w-3.5 shrink-0" /> : task?.status === 'queued' ? <Circle className="h-3.5 w-3.5 shrink-0" /> : active ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : alreadyOwned ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <DownloadIcon className="h-3.5 w-3.5 shrink-0" />}
+          </> : <Button size="sm" variant={alreadyOwned || libraryMatch === 'possible' ? 'outline' : 'default'} className={cn('max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 px-2', onReview && 'h-auto min-h-11 px-1.5')} onClick={() => onDownload(item)} disabled={active || alreadyOwned || downloadSetup === 'loading' || downloadSetup === 'error'} aria-label={starting && !task ? `Checking duplicates for ${item.title}` : active ? `${item.title} is ${task?.status ?? 'starting'}` : alreadyOwned ? `${item.title} already in library` : libraryMatch === 'possible' ? `Review possible duplicate of ${item.title}` : downloadSetup === 'missing' ? `Set output folder before downloading ${item.title}` : `Download ${item.title}`}>
+            {!onReview && (task?.status === 'paused' ? <Pause className="h-3.5 w-3.5 shrink-0" /> : task?.status === 'queued' ? <Circle className="h-3.5 w-3.5 shrink-0" /> : active ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : alreadyOwned ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <DownloadIcon className="h-3.5 w-3.5 shrink-0" />)}
             <span>{task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : starting && !task ? 'Checking…' : active ? 'Downloading' : inLibrary ? 'In library' : alreadyOwned ? 'Downloaded' : libraryMatch === 'possible' ? 'Review duplicate' : downloadSetup === 'missing' ? 'Set folder' : 'Download'}</span>
           </Button>}
+          {!selectMode && onReview && <Button size="sm" variant="outline" className="relative h-auto min-h-11 shrink-0 px-1.5" disabled={reviewPending || reviewed} onClick={() => onReview(item, true)} aria-label={reviewed ? `${item.title} dismissed from inbox` : `Dismiss ${item.title}`} title={reviewed ? 'Kept in History' : 'Remove from Inbox and keep in History'}><span className={reviewPending ? 'invisible' : undefined}>{reviewed ? 'Dismissed' : 'Dismiss'}</span>{reviewPending && <Loader2 aria-hidden="true" className="absolute h-3.5 w-3.5 animate-spin" />}</Button>}
           {onFeedback && <Button size="icon" variant="outline" className="max-lg:min-h-11 max-lg:min-w-11 pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 text-muted" disabled={dismissing} onClick={() => onFeedback(item)} aria-label={`Tune recommendations for ${item.title}`} title="Tune recommendations"><EllipsisVertical className="h-4 w-4" /></Button>}
         </div>
         {!selectMode && selected && <Button size="sm" onClick={() => onToggleSelect?.(item)} aria-pressed={true} aria-label={`Remove ${item.title} from merging`}><CheckSquare className="h-3.5 w-3.5 shrink-0" />Selected for merge</Button>}
@@ -730,22 +717,36 @@ const WATCH_INTERVAL_OPTIONS = [
   { minutes: 1440, label: '24 hours' },
 ] as const;
 
-/** Human-readable cadence for the description copy; falls back to raw minutes. */
 function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, query: string) => void }) {
   const qc = useQueryClient();
-  const watchesQuery = useQuery({ queryKey: ['watched-searches'], queryFn: api.watchedSearches, refetchInterval: 30_000 });
+  const watchesQuery = useQuery({ queryKey: ['watched-searches'], queryFn: api.watchedSearches, staleTime: 30_000, refetchInterval: 30_000 });
   const watches = watchesQuery.data;
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const intervalMinutes = settingsQuery.data?.watchedSearchIntervalMinutes ?? 15;
   const [savingInterval, setSavingInterval] = React.useState(false);
   const [source, setSource] = React.useState<DoujinSource>('hitomi');
   const [query, setQuery] = React.useState('');
+  const watchTranslation = React.useRef<TranslationLink | null>(null);
+  const [watchTranslationNotice, setWatchTranslationNotice] = React.useState<{ query: string; issues: string[] } | null>(null);
+  function switchWatchSource(next: DoujinSource) {
+    if (next === source) return;
+    const translated = switchProviderSearch({ query, searchKey: null, sort: 'default' }, source, next, watchTranslation.current);
+    watchTranslation.current = translated.link;
+    setQuery(translated.search.query);
+    setWatchTranslationNotice({ query: translated.search.query, issues: translated.issues });
+    setSource(next);
+  }
   const [adding, setAdding] = React.useState(false);
+  const watchQueryId = React.useId();
   const [removeTarget, setRemoveTarget] = React.useState<{ id: number; query: string } | null>(null);
+  const [removing, setRemoving] = React.useState(false);
   const [checking, setChecking] = React.useState(false);
   const [requestedJob, setRequestedJob] = React.useState<number | null>(null);
   const [manageOpen, setManageOpen] = React.useState(false);
-  const checkQuery = useQuery({ queryKey: ['watched-check-status'], queryFn: api.watchedCheckStatus, refetchInterval: 2500 });
+  const checkQuery = useQuery({
+    queryKey: ['watched-check-status'], queryFn: api.watchedCheckStatus,
+    refetchInterval: query => checking || requestedJob !== null || ['queued', 'running'].includes(query.state.data?.status ?? '') ? 2500 : 30_000,
+  });
   const checkJob = checkQuery.data;
   const checkActive = checking || (requestedJob !== null && checkJob?.id !== requestedJob && !checkQuery.isError) || checkJob?.status === 'queued' || checkJob?.status === 'running';
   const completionRef = React.useRef('');
@@ -771,7 +772,7 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
 
   async function add() {
     const q = query.trim();
-    if (!q) return;
+    if (!q || adding) return;
     setAdding(true);
     try {
       await api.addWatchedSearch(source, q);
@@ -784,14 +785,21 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
     }
   }
 
-  async function remove(id: number) {
+  async function remove(id: number): Promise<boolean> {
+    setRemoving(true);
     try {
       await api.removeWatchedSearch(id);
-      qc.invalidateQueries({ queryKey: ['watched-searches'] });
-      qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['watched-searches'] }),
+        qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] }),
+      ]);
       toast({ tone: 'info', title: 'Watch removed', description: 'Discoveries remain in History.' });
+      return true;
     } catch (e) {
       toast({ tone: 'danger', title: 'Could not remove watch', description: e instanceof Error ? e.message : String(e) });
+      return false;
+    } finally {
+      setRemoving(false);
     }
   }
   async function checkNow() {
@@ -822,65 +830,71 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
     }
   }
 
+  const watchMotionRef = useDownloaderTransitions(`${manageOpen}:${(watches ?? []).map(watch => watch.id).join(',')}`, '[data-watched-search-id]');
+
   return (
+    <div ref={watchMotionRef}>
     <Card>
-      <CardHeader className="gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-        <CardTitle as="h2" className="flex items-center gap-2">
-          <Star className="h-4 w-4" /> Watched searches
-        </CardTitle>
+      <CardHeader className="gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+        <div className="min-w-0 flex-1">
+          <CardTitle as="h2" className="flex items-center gap-2">
+            <Star aria-hidden="true" className="h-4 w-4 shrink-0" /> Watched searches
+          </CardTitle>
+          <div role="status" className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <span key={`${checkJob?.id}:${checkJob?.status}`} className={cn('watched-check-status break-words', checkJob?.status === 'failed' || summary?.failed ? 'text-warning' : 'text-muted')}>{checkLabel}{checkJob?.finishedAt && !checkActive ? ` · ${timeAgo(checkJob.finishedAt)}` : ''}</span>
+            {checkJob && <Link className="inline-flex min-h-11 items-center text-primary underline underline-offset-4" to={`/jobs?job=${checkJob.id}`}>View check</Link>}
+            {checkQuery.isError && <Button size="sm" variant="ghost" onClick={() => void checkQuery.refetch()}>Retry status</Button>}
+          </div>
+        </div>
         <div className="flex items-end gap-2">
           <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-medium text-muted sm:flex-none">Check every
-          <Select aria-label="Watched search check interval" value={String(intervalMinutes)} onChange={(e) => void saveInterval(Number(e.target.value))} disabled={savingInterval || !settingsQuery.data} className="max-lg:min-h-11 pointer-coarse:min-h-11 sm:w-32">
+          <Select aria-label="Watched search check interval" value={String(intervalMinutes)} onChange={(e) => void saveInterval(Number(e.target.value))} disabled={savingInterval || !settingsQuery.data} className="h-11 sm:w-32">
             {WATCH_INTERVAL_OPTIONS.map((o) => (
               <option key={o.minutes} value={o.minutes}>{o.label}</option>
             ))}
           </Select>
           </label>
-          <Button size="sm" variant="outline" className="shrink-0" onClick={checkNow} disabled={checkActive || !watches?.length || checkQuery.isPending}>
+          <Button size="sm" variant="outline" className="h-11 shrink-0" onClick={checkNow} disabled={checkActive || !watches?.length || checkQuery.isPending}>
             {checkActive ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Star className="h-3.5 w-3.5" />} Check now
           </Button>
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        <div role="status" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-          <span className={cn(checkJob?.status === 'failed' || summary?.failed ? 'text-warning' : 'text-muted')}>{checkLabel}{checkJob?.finishedAt && !checkActive ? ` · ${timeAgo(checkJob.finishedAt)}` : ''}</span>
-          {checkJob && <Link className="inline-flex min-h-11 items-center text-xs text-primary underline underline-offset-4" to={`/jobs?job=${checkJob.id}`}>View check</Link>}
-          {checkQuery.isError && <Button size="sm" variant="ghost" onClick={() => void checkQuery.refetch()}>Retry status</Button>}
-        </div>
         {watchesQuery.isError && <ErrorState title="Could not load watched searches" description={watchesQuery.error instanceof Error ? watchesQuery.error.message : String(watchesQuery.error)} onRetry={() => void watchesQuery.refetch()} />}
         {settingsQuery.isError && <ErrorState title="Could not load the check interval" description={settingsQuery.error instanceof Error ? settingsQuery.error.message : String(settingsQuery.error)} onRetry={() => void settingsQuery.refetch()} />}
-        <Disclosure label={`Manage watches${watches ? ` (${watches.length})` : ''}`} open={manageOpen || watches?.length === 0} onToggle={event => setManageOpen(event.currentTarget.open)} summaryClassName="min-h-11 px-0 text-foreground">
-        <div className="flex flex-col gap-3 pt-2">
-        <p className="max-w-prose text-xs text-muted">The first check records existing galleries. Later discoveries appear in Inbox.</p>
-        <form className="grid grid-cols-1 gap-2 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-end" aria-label="Add a watched search" onSubmit={(e) => { e.preventDefault(); void add(); }}>
-          <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Source<Select aria-label="Watched search source" value={source} onChange={(e) => setSource(e.target.value as DoujinSource)} disabled={adding} className="sm:w-32 sm:shrink-0"><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select></label>
-          <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Query<Input aria-label="Watched search query" placeholder="Artist, tag, or search query" value={query} onChange={(e) => setQuery(e.target.value)} disabled={adding} className="flex-1" /></label>
-          <Button size="sm" type="submit" disabled={adding || !query.trim()}>{adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add watch</Button>
+        <WatchedDisclosure label={`Manage watches${watches ? ` (${watches.length})` : ''}`} open={manageOpen || watches?.length === 0} onOpenChange={setManageOpen}>
+        {() => (
+        <div className="flex flex-col gap-4 pt-3">
+        <form className="grid grid-cols-1 gap-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-end" aria-label="Add a watched search" onSubmit={(e) => { e.preventDefault(); void add(); }}>
+          <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Source<Select aria-label="Watched search source" value={source} onChange={(e) => switchWatchSource(e.target.value as DoujinSource)} disabled={adding} className="h-11 sm:w-32 sm:shrink-0"><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select></label>
+          <div className="flex min-w-0 flex-col gap-1"><label htmlFor={watchQueryId} className="text-xs text-muted">Query</label><GallerySearchInput id={watchQueryId} value={query} onChange={setQuery} source={source} label="Watched search query" placeholder="Artist, tag, or search query" clearLabel="Clear watched search query" disabled={adding} className="h-11" /></div>
+          <Button size="sm" className="h-11" type="submit" disabled={adding || !query.trim()}>{adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add watch</Button>
         </form>
+        {watchTranslationNotice?.query === query && watchTranslationNotice.issues.length > 0 && <p role="status" aria-label="Watch query translation" className="break-words text-sm text-muted">{watchTranslationNotice.issues.join(' ')} Review the query before adding the watch.</p>}
         {watchesQuery.isPending ? (
           <div role="status" aria-label="Loading watched searches" className="flex flex-col gap-2"><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /><span className="sr-only">Loading watched searches…</span></div>
         ) : watches && watches.length > 0 ? (
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col border-t border-border">
             {watches.map((w) => (
-              <div key={w.id} className="border-b border-border py-3 text-xs last:border-b-0">
+              <div key={w.id} data-watched-search-id={w.id} className="border-b border-border py-3 text-xs last:border-b-0">
                 <div className="flex items-start gap-2">
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <button type="button" onClick={() => onOpenSearch(w.source, w.query)} title={`Open in search tab: ${w.query}`} aria-label={`Search “${w.query}” on ${SOURCE_LABELS[w.source] ?? w.source}`} className="flex min-h-11 min-w-0 items-center text-left text-sm font-medium text-primary underline-offset-2 hover:underline"><span className="break-words line-clamp-2">{w.query}</span></button>
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><Badge tone="muted">{SOURCE_LABELS[w.source] ?? w.source}</Badge><span className="text-muted">{w.lastError ? 'Last attempt failed' : w.lastCheckedAt ? `Checked ${timeAgo(w.lastCheckedAt)}` : 'Awaiting first check'}</span></div>
                     {w.lastError ? <p className="break-words text-warning">{w.lastError}</p> : w.lastNewCount !== null && w.lastNewCount !== undefined ? <p className="text-muted">{w.lastNewCount ? `${w.lastNewCount} new in last check` : 'No new finds in last check'}</p> : null}
-                    <button type="button" onClick={() => onOpenSearch(w.source, w.query)} title={`Open in search tab: ${w.query}`} aria-label={`Search “${w.query}” on ${SOURCE_LABELS[w.source] ?? w.source}`} className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 text-left text-sm font-medium text-primary underline-offset-2 hover:underline"><span className="break-words line-clamp-2">{w.query}</span></button>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                   {w.lastResults.length > 0 && (
-                    <Button size="sm" variant="ghost" aria-expanded={expanded.has(w.id)} aria-controls={`watched-results-${w.id}`} aria-label={`${expanded.has(w.id) ? 'Hide' : 'Show'} ${w.lastResults.length} latest finds for ${w.query}`} onClick={() => toggleExpanded(w.id)}>
+                    <Button size="sm" variant="ghost" className="h-11" aria-expanded={expanded.has(w.id)} aria-controls={`watched-results-${w.id}`} aria-label={`${expanded.has(w.id) ? 'Hide' : 'Show'} ${w.lastResults.length} latest finds for ${w.query}`} onClick={() => toggleExpanded(w.id)}>
                       {w.lastResults.length} finds
                       <ChevronDown className={cn('h-3.5 w-3.5 transition-transform duration-150', expanded.has(w.id) && 'rotate-180')} />
                     </Button>
                   )}
-                  <Button size="icon" variant="ghost" aria-label={`Remove watch ${w.query}`} onClick={() => setRemoveTarget({ id: w.id, query: w.query })}><X className="h-3.5 w-3.5" /></Button>
+                  <Button size="icon" variant="ghost" className="h-11 w-11" aria-label={`Remove watch ${w.query}`} onClick={() => setRemoveTarget({ id: w.id, query: w.query })}><X className="h-3.5 w-3.5" /></Button>
                   </div>
                 </div>
-                {w.lastResults.length > 0 && expanded.has(w.id) && (
-                  <div id={`watched-results-${w.id}`} className="mt-2 flex flex-col gap-1.5 border-t border-border pt-2">
+                {w.lastResults.length > 0 && <WatchedReveal id={`watched-results-${w.id}`} open={expanded.has(w.id)} lazy>{() => (
+                  <div className="mt-2 flex flex-col gap-1.5 border-t border-border pt-2">
                     {w.lastFindsAt && <p className="text-muted">Found {timeAgo(w.lastFindsAt)}</p>}
                     {w.lastResults.map(r => {
                       const content = <><Cover url={r.coverUrl} title={r.title} className="h-10 w-8 shrink-0 rounded" /><span className="min-w-0 flex-1 break-words text-left line-clamp-2">{r.title}</span><PageCountPill pageCount={r.pageCount} />{r.url && <ExternalLink aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted" />}</>;
@@ -890,26 +904,29 @@ function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, que
                         : <button key={r.galleryId} type="button" className={className} onClick={() => onOpenSearch(w.source, r.galleryId)} aria-label={`Search for ${r.title} on ${SOURCE_LABELS[w.source]}`}>{content}</button>;
                     })}
                   </div>
-                )}
+                )}</WatchedReveal>}
               </div>
             ))}
           </div>
         ) : (
-          watches && <p className="text-sm text-muted">No watched searches yet — add one below, or use the Watch button in the Search tab.</p>
+          watches && <p className="text-sm text-muted">No watched searches yet</p>
         )}
 
         </div>
-        </Disclosure>
+        )}
+        </WatchedDisclosure>
         <ConfirmDialog
           open={removeTarget !== null}
           title="Remove watched search?"
           description={removeTarget ? `Stop watching “${removeTarget.query}”? Existing discoveries stay in History.` : ''}
           confirmLabel="Remove"
-          onOpenChange={(open) => { if (!open) setRemoveTarget(null); }}
-          onConfirm={() => { if (removeTarget) void remove(removeTarget.id); setRemoveTarget(null); }}
+          pending={removing}
+          onOpenChange={(open) => { if (!open && !removing) setRemoveTarget(null); }}
+          onConfirm={() => { if (removeTarget && !removing) void remove(removeTarget.id).then(success => { if (success) setRemoveTarget(null); }); }}
         />
       </CardContent>
     </Card>
+    </div>
   );
 }
 
@@ -1084,6 +1101,11 @@ export function Downloader() {
     return sortsFor(source).some(option => option.value === saved) ? saved! : 'default';
   });
   const searches = React.useRef<DownloaderStateCache['searches']>(initialSearches);
+  const translation = React.useRef<TranslationLink | null>(linkedQuery === null ? initialState.translation ?? null : null);
+  const [translationNotice, setTranslationNotice] = React.useState<{ query: string; issues: string[] } | null>(() => {
+    const saved = translation.current;
+    return saved?.to === source ? { query: saved.output.query, issues: saved.issues } : null;
+  });
   function rememberSearch() {
     searches.current = { ...searches.current, [source]: { query, searchKey, sort } };
   }
@@ -1098,6 +1120,8 @@ export function Downloader() {
     if (nextQuery === null) return;
     const trimmed = nextQuery.trim();
     rememberSearch();
+    translation.current = null;
+    setTranslationNotice(null);
     setSource(nextSource);
     setQuery(nextQuery);
     setSearchKey(trimmed || null);
@@ -1145,60 +1169,6 @@ export function Downloader() {
     }
     return byGallery;
   }, [tasks]);
-  const [suggestions, setSuggestions] = React.useState<DoujinSuggestion[]>([]);
-  const [suggLoading, setSuggLoading] = React.useState(false);
-  const [inputFocused, setInputFocused] = React.useState(false);
-  const [highlight, setHighlight] = React.useState(-1);
-  const inputRef = React.useRef<HTMLInputElement>(null);
-
-  /**
-   * Extract the "active word" being typed at the caret so we can suggest tags for
-   * just that token (like nhentai.net), rather than the whole query string. This
-   * lets you build multi-tag filters such as `artist:"konboi" language:english`.
-   */
-  function activeSeed(): string {
-    const el = inputRef.current;
-    const full = el ? el.value : query;
-    const caret = el && document.activeElement === el ? (el.selectionStart ?? full.length) : full.length;
-    const { start } = activeTermBounds(full, caret);
-    let seed = full.slice(start, caret);
-    if (seed.includes(':')) seed = seed.slice(seed.indexOf(':') + 1);
-    return seed.replace(/^[\s"']+|[\s"']+$/g, '');
-  }
-
-  // Debounced tag/artist autocomplete for the active token. Only nHentai implements
-  // `suggest`, so the dropdown stays empty for Hitomi (its search is unchanged).
-  React.useEffect(() => {
-    const seed = activeSeed();
-    // The dropdown is only visible while the input has focus — skip the network
-    // entirely when suggestions cannot be shown, but still drop stale state so
-    // reopening the dropdown never flashes old tags.
-    if (!inputFocused || seed.length < 2) {
-      setSuggestions([]);
-      setSuggLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setSuggLoading(true);
-    const t = window.setTimeout(async () => {
-      try {
-        const res = await api.doujinSuggestions(source, seed);
-        if (!cancelled) {
-          setSuggestions(Array.isArray(res) ? res : []);
-          setHighlight(-1);
-        }
-      } catch {
-        if (!cancelled) setSuggestions([]);
-      } finally {
-        if (!cancelled) setSuggLoading(false);
-      }
-    }, 200);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(t);
-    };
-  }, [query, source, inputFocused]);
-
   // Top-of-page view tabs: search results vs. the download manager queue.
   type DownloaderTab = 'search' | 'recommend' | 'watched' | 'manager';
   const requestedTab = searchParams.get('tab');
@@ -1211,15 +1181,20 @@ export function Downloader() {
       return params;
     }, { replace: true });
   };
-  const { data: results, isFetching, isError: searchFailed, error: searchError, refetch: retrySearch } = useQuery({
-    queryKey: ['doujin-search', source, searchKey, sort],
-    queryFn: () => api.doujinSearch(source, searchKey!, sort),
-    enabled: searchKey !== null && searchKey.trim().length > 0,
+  const searchIdentity = JSON.stringify([source, searchKey, sort]);
+  const [pagination, setPagination] = React.useState(() => ({ identity: searchIdentity, page: linkedQuery !== null ? 1 : Math.max(1, initialState.page ?? 1) }));
+  const page = pagination.identity === searchIdentity ? pagination.page : 1;
+  const setPage = (next: number) => setPagination({ identity: searchIdentity, page: next });
+  const { data: searchResponse, isFetching, isError: searchFailed, error: searchError, refetch: retrySearch } = useQuery({
+    queryKey: ['doujin-search', source, searchKey, sort, page],
+    queryFn: () => api.doujinSearchPage(source, searchKey!, (page - 1) * RESULTS_PAGE_SIZE, RESULTS_PAGE_SIZE, sort),
+    enabled: tab === 'search' && searchKey !== null && searchKey.trim().length > 0,
     // Refocusing the window must not re-scrape Hitomi/nHentai, and while a new
     // search loads the grid keeps the previous results instead of blanking.
     staleTime: 5 * 60_000,
     placeholderData: keepPreviousData,
   });
+  const results = searchResponse?.items;
 
   // Galleries with a completed download task — powers the duplicate badges.
   // The downloads context invalidates this key when a task completes.
@@ -1285,7 +1260,7 @@ export function Downloader() {
   // Daily recommendations: stable per local date (server caches the day's set),
   // so no polling — a manual refresh re-rolls with a fresh seed.
   const qc = useQueryClient();
-  async function reviewDiscoveries(items: DoujinSearchResult[], reviewed: boolean) {
+  const reviewDiscoveries = React.useCallback(async (items: DoujinSearchResult[], reviewed: boolean) => {
     const keys = items.map(item => `${item.source}:${item.galleryId}`);
     if (!keys.length || keys.some(key => reviewingKeys.has(key))) return;
     setReviewingKeys(current => new Set([...current, ...keys]));
@@ -1295,11 +1270,12 @@ export function Downloader() {
       setSelectedGalleries(current => new Set([...current].filter(key => !handled.has(key))));
       await qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
     } catch (error) {
-      toast({ tone: 'danger', title: 'Could not update review status', description: error instanceof Error ? error.message : String(error) });
+      toast({ tone: 'danger', title: 'Could not update Inbox', description: error instanceof Error ? error.message : String(error) });
     } finally {
       setReviewingKeys(current => new Set([...current].filter(key => !keys.includes(key))));
     }
-  }
+  }, [qc, reviewingKeys]);
+  const reviewGallery = React.useCallback((item: DoujinSearchResult, reviewed: boolean) => { void reviewDiscoveries([item], reviewed); }, [reviewDiscoveries]);
   const { data: recs, isFetching: recsLoading, isError: recsFailed, error: recsError, refetch: refetchRecs } = useQuery({
     queryKey: ['recommendations'],
     queryFn: api.recommendations,
@@ -1407,16 +1383,12 @@ export function Downloader() {
   // indicators when downloads are queued concurrently from different surfaces.
   const [pendingKeys, setPendingKeys] = React.useState<ReadonlySet<string>>(new Set());
 
-  // Results are fetched in full (up to ~1000 galleries) and paged client-side —
-  // rendering every card at once is the heaviest thing this page can do.
-  const [page, setPage] = React.useState(() => linkedQuery !== null ? 1 : Math.max(1, initialState.page ?? 1));
   const searchMounted = React.useRef(false);
   React.useEffect(() => {
     if (!searchMounted.current) {
       searchMounted.current = true;
       return;
     }
-    setPage(1);
     setSelectedGalleries(new Set());
     setSelectMode(false);
   }, [searchKey, source]);
@@ -1425,7 +1397,7 @@ export function Downloader() {
     // every keystroke; the timer resets per change and clears on unmount.
     const t = window.setTimeout(() => {
       searches.current = { ...searches.current, [source]: { query, searchKey, sort } };
-      writeDownloaderState({ source, query, searchKey, sort, page, searches: searches.current });
+      writeDownloaderState({ source, query, searchKey, sort, page, searches: searches.current, translation: translation.current });
     }, 300);
     return () => window.clearTimeout(t);
   }, [source, query, searchKey, sort, page]);
@@ -1479,7 +1451,12 @@ export function Downloader() {
   // Selected galleries in click order — the order chapter numbers are assigned.
   // Selections can come from either results grid (search or "Recently added");
   // a gallery present in live search results keeps its richer metadata.
-  const selectableGalleries = React.useMemo(() => indexSelectableGalleries(results ?? EMPTY_GALLERIES, [...feedSelectionCache.current.values()]), [results, feedItems]);
+  const selectionIdentity = JSON.stringify([source, searchKey]);
+  const searchSelectionCache = React.useRef({ identity: selectionIdentity, items: new Map<string, DoujinSearchResult>() });
+  if (searchSelectionCache.current.identity !== selectionIdentity) searchSelectionCache.current = { identity: selectionIdentity, items: new Map() };
+  for (const key of searchSelectionCache.current.items.keys()) if (!selectedGalleries.has(key)) searchSelectionCache.current.items.delete(key);
+  for (const item of results ?? EMPTY_GALLERIES) searchSelectionCache.current.items.set(`${item.source}:${item.galleryId}`, item);
+  const selectableGalleries = React.useMemo(() => indexSelectableGalleries([...searchSelectionCache.current.items.values()], [...feedSelectionCache.current.values()]), [results, feedItems, selectedGalleries, selectionIdentity]);
   const selectedItems = React.useMemo(() => selectedGalleryItems(selectableGalleries, selectedGalleries), [selectableGalleries, selectedGalleries]);
   const reviewableSelectedItems = selectedItems.filter(item => feedSelectionCache.current.has(`${item.source}:${item.galleryId}`));
 
@@ -1552,54 +1529,7 @@ export function Downloader() {
     }
   }
 
-  function selectSuggestion(s: DoujinSuggestion) {
-    const el = inputRef.current;
-    const q = s.filter ?? s.name;
-    const full = el ? el.value : query;
-    const caret = el && document.activeElement === el ? (el.selectionStart ?? full.length) : full.length;
-    const { start, end } = activeTermBounds(full, caret);
-    const prefix = full.slice(0, start);
-    const suffix = full.slice(end);
-    const newQuery = prefix + q + suffix + (suffix ? '' : ' ');
-    const nextCaret = prefix.length + q.length + (suffix ? 0 : 1);
-    setQuery(newQuery);
-    setSuggestions([]);
-    setHighlight(-1);
-    // Keep focus and park the caret after the inserted filter, before any later terms.
-    requestAnimationFrame(() => {
-      const node = inputRef.current;
-      if (!node) return;
-      node.focus();
-      try {
-        node.setSelectionRange(nextCaret, nextCaret);
-      } catch {
-        /* ignore */
-      }
-    });
-  }
-
-  function onInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      setHighlight((h) => Math.min(suggestions.length - 1, h + 1));
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setHighlight((h) => (h <= 0 ? Math.max(0, suggestions.length - 1) : h - 1));
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      if (highlight >= 0 && suggestions[highlight]) selectSuggestion(suggestions[highlight]);
-      else commitQuery(query);
-    } else if (e.key === 'Escape') {
-      setSuggestions([]);
-      setHighlight(-1);
-    }
-  }
-
-  const showDropdown = inputFocused && (suggestions.length > 0 || suggLoading);
-
-  // Commit a search. The query is sent verbatim (trimmed), matching how the
-  // sources' own search boxes behave — Hitomi defaults to "all languages" unless
-  // the user adds an explicit `language:` filter.
+  // Send native syntax verbatim; both providers apply the default English filter.
   function commitQuery(raw: string) {
     const trimmed = raw.trim();
     if (!trimmed) return;
@@ -1618,6 +1548,8 @@ export function Downloader() {
     const trimmed = fragment.trim();
     if (!trimmed) return;
     rememberSearch();
+    translation.current = null;
+    setTranslationNotice(null);
     if (itemSource && itemSource !== source) {
       setSource(itemSource);
       // Drop a sort the target source does not offer so the dropdown never
@@ -1627,21 +1559,19 @@ export function Downloader() {
     setTab('search');
     setQuery(trimmed);
     setSearchKey(trimmed);
-    setSuggestions([]);
-    setHighlight(-1);
     setSelected(null);
   }
 
-  // Source syntax differs: each source keeps its own unmodified draft and search.
+  // Translate the active query on every switch; review losses before searching.
   function switchSource(next: DoujinSource) {
     if (next === source) return;
     rememberSearch();
-    const saved = searches.current?.[next];
-    setQuery(saved?.query ?? '');
-    setSearchKey(saved?.searchKey ?? null);
-    setSort(saved && sortsFor(next).some(option => option.value === saved.sort) ? saved.sort : 'default');
-    setSuggestions([]);
-    setHighlight(-1);
+    const translated = switchProviderSearch({ query, searchKey, sort }, source, next, translation.current);
+    translation.current = translated.link;
+    setTranslationNotice({ query: translated.search.query, issues: translated.issues });
+    setQuery(translated.search.query);
+    setSearchKey(translated.search.searchKey);
+    setSort(translated.search.sort);
     setSource(next);
     // A consumed deep link must not overwrite the restored draft on refresh.
     setSearchParams(current => {
@@ -1657,14 +1587,15 @@ export function Downloader() {
     commitQuery(query);
   };
 
-  const pageCount = Math.max(1, Math.ceil((results?.length ?? 0) / RESULTS_PAGE_SIZE));
+  const resultCount = searchResponse?.total ?? 0;
+  const pageCount = Math.max(1, Math.ceil(resultCount / RESULTS_PAGE_SIZE));
   const curPage = Math.min(page, pageCount);
 
   function changePage(nextPage: number) {
     setPage(nextPage);
     document.querySelector('main')?.scrollTo({ top: 0 });
   }
-  const pageItems = results ? results.slice((curPage - 1) * RESULTS_PAGE_SIZE, curPage * RESULTS_PAGE_SIZE) : [];
+  const pageItems = results ?? EMPTY_GALLERIES;
   const matchItems = tab === 'search' ? pageItems : tab === 'recommend' ? visibleRecs : tab === 'watched' ? feedPageItems : [];
   const matchQuery = useQuery({
     queryKey: ['gallery-library-matches', matchItems.map(({ source, galleryId, title, artists, language, pageCount }) => ({ source, galleryId, title, artists, language, pageCount }))],
@@ -1681,8 +1612,8 @@ export function Downloader() {
 
   return (
     <div ref={galleryMotionRef} className={cn('flex flex-col gap-4', showSelection && 'pb-[calc(var(--selection-tray-height,0px)+1rem)] lg:pb-0')} style={{ '--selection-tray-height': `${selectionHeight}px` } as React.CSSProperties}>
-      <PageHeader icon={<ListVideo className="h-5 w-5" />} title="Doujinshi Downloader" subtitle="Search Hitomi.la and nHentai, then download galleries into your Kavita library." />
-      <DownloadDestination setup={setup} />
+      <PageHeader icon={<ListVideo className="h-5 w-5" />} title="Doujinshi Downloader" subtitle={tab === 'watched' ? undefined : "Search Hitomi.la and nHentai, then download galleries into your Kavita library."} />
+      <DownloadDestination setup={setup} compact={tab === 'watched'} />
 
       <SegmentedTabs
         items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'Recommended' }, { id: 'watched' as const, label: 'Watched' }, { id: 'manager' as const, label: 'Downloads' }]}
@@ -1701,75 +1632,7 @@ export function Downloader() {
         <CardContent className="flex flex-col gap-3">
           <form onSubmit={runSearch} className="flex flex-col gap-2 lg:flex-row">
             <div className="flex min-w-0 flex-1 gap-2">
-              <div className="relative min-w-0 flex-1">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
-                <Input
-                  ref={inputRef}
-                  role="combobox"
-                  aria-label="Search galleries"
-                  aria-expanded={showDropdown}
-                  aria-controls="doujin-suggestions"
-                  aria-activedescendant={highlight >= 0 ? `doujin-suggestion-${highlight}` : undefined}
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onKeyDown={onInputKeyDown}
-                  onFocus={() => setInputFocused(true)}
-                  onBlur={() => { setInputFocused(false); setHighlight(-1); }}
-                  placeholder="Search by keyword, tag, artist, gallery ID or URL…"
-                  className="pl-9 pr-11"
-                />
-                {query && (
-                  <button
-                    type="button"
-                    onClick={() => setQuery('')}
-                    aria-label="Clear search input"
-                    className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded text-muted hover:text-foreground"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                )}
-
-                {showDropdown && (
-                  <div id="doujin-suggestions" role="listbox" className="absolute left-0 right-0 top-full z-50 mt-1 origin-top animate-scale-in overflow-hidden rounded-md border border-border bg-surface shadow-lg">
-                    {suggLoading && suggestions.length === 0 ? (
-                      <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted">
-                        <Spinner /> Searching tags…
-                      </div>
-                    ) : (
-                      <div className="max-h-80 overflow-y-auto py-1">
-                        {suggestions.map((s, i) => (
-                          <button
-                            key={`${s.type}-${s.name}`}
-                            type="button"
-                            id={`doujin-suggestion-${i}`}
-                            role="option"
-                            aria-selected={i === highlight}
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => selectSuggestion(s)}
-                            onMouseEnter={() => setHighlight(i)}
-                            className={cn(
-                              'flex max-lg:min-h-11 pointer-coarse:min-h-11 w-full items-center gap-2 px-3 py-2 text-left text-sm',
-                              i === highlight ? 'bg-surface-2' : 'hover:bg-surface-2',
-                            )}
-                          >
-                            <span
-                              className={cn(
-                                'shrink-0 rounded px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide',
-                                SUGG_TYPE_STYLES[s.type] ?? 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/20 dark:text-slate-300',
-                              )}
-                            >
-                              {s.type}
-                            </span>
-                            <span className="truncate">{s.name}</span>
-                            {typeof s.count === 'number' && <span className="text-xs text-muted">{s.count}</span>}
-                            <ArrowRight className="ml-auto h-3.5 w-3.5 shrink-0 text-muted" />
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
+              <GallerySearchInput value={query} onChange={setQuery} source={source} label="Search galleries" placeholder="Search by keyword, tag, artist, gallery ID or URL…" clearLabel="Clear search input" />
               <Button className="shrink-0" type="submit" disabled={isFetching || !query.trim()}>
                 {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
               </Button>
@@ -1792,7 +1655,7 @@ export function Downloader() {
               )}
             </div>
           </form>
-          <p className="text-xs text-muted">Each source remembers its own search and filters.</p>
+          {translationNotice?.query === query && translationNotice.issues.length > 0 && <p role="status" aria-label="Search query translation" className="break-words text-sm text-muted">{translationNotice.issues.join(' ')} Review the query, then choose Search.</p>}
         </CardContent>
       </Card>
 
@@ -1808,8 +1671,8 @@ export function Downloader() {
         <div>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
             <p role="status" className="min-w-0 w-full text-sm text-muted min-[420px]:w-auto min-[420px]:flex-1">
-              {isFetching ? 'Searching…' : results ? results.length + (results.length === 1 ? ' gallery' : ' galleries') + ' found on ' + SOURCE_LABELS[source] : 'Search results'}
-              {!isFetching && pageCount > 1 && ' · ' + ((curPage - 1) * RESULTS_PAGE_SIZE + 1) + '–' + Math.min(curPage * RESULTS_PAGE_SIZE, results?.length ?? 0)}
+              {isFetching ? 'Searching…' : results ? resultCount + (resultCount === 1 ? ' gallery' : ' galleries') + ' found on ' + SOURCE_LABELS[source] : 'Search results'}
+              {!isFetching && pageCount > 1 && ' · ' + ((curPage - 1) * RESULTS_PAGE_SIZE + 1) + '–' + Math.min(curPage * RESULTS_PAGE_SIZE, resultCount)}
             </p>
             <div className="ml-auto flex items-center gap-2">
               <Button
@@ -2004,23 +1867,22 @@ export function Downloader() {
           <section aria-label="Watched discoveries" className="flex flex-col gap-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <SegmentedControl items={[{ id: 'inbox' as const, label: `Inbox${galleryFeed ? ` (${galleryFeed.inboxCount})` : ''}` }, { id: 'history' as const, label: `History${galleryFeed ? ` (${galleryFeed.historyCount})` : ''}` }]} value={feedView} onChange={view => { setFeedView(view); setFeedPage(1); }} label="Discovery view" itemClassName="min-h-11" />
-              <Button size="sm" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode(current => !current)} disabled={!feedItems.length && !selectedGalleries.size}><CheckSquare className="h-3.5 w-3.5" />{selectMode ? 'Done selecting' : 'Select galleries'}</Button>
+              <Button size="sm" className="h-11" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode(current => !current)} disabled={!feedItems.length && !selectedGalleries.size}><CheckSquare className="h-3.5 w-3.5" />{selectMode ? 'Done selecting' : 'Select galleries'}</Button>
             </div>
-            <div className="grid min-w-0 grid-cols-1 gap-2 min-[420px]:grid-cols-2">
+            <div className="grid min-w-0 grid-cols-1 gap-3 min-[420px]:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_12rem]">
               <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">Watch
-                <Select aria-label="Filter discoveries by watch" value={feedWatch} onChange={event => { setFeedWatch(event.target.value); setFeedPage(1); }}>
+                <Select className="h-11" aria-label="Filter discoveries by watch" value={feedWatch} onChange={event => { setFeedWatch(event.target.value); setFeedPage(1); }}>
                   <option value="">All watches</option>
                   {(galleryFeed?.watches ?? []).map(watch => <option key={watch.id} value={watch.id}>{SOURCE_LABELS[watch.source]} · {watch.query}</option>)}
                 </Select>
               </label>
               <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">Source
-                <Select aria-label="Filter discoveries by source" value={feedSource} onChange={event => { setFeedSource(event.target.value); setFeedPage(1); }}><option value="">All sources</option><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select>
+                <Select className="h-11" aria-label="Filter discoveries by source" value={feedSource} onChange={event => { setFeedSource(event.target.value); setFeedPage(1); }}><option value="">All sources</option><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select>
               </label>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-muted">{feedView === 'inbox' ? 'Unreviewed finds · newest first' : 'All discoveries · newest first'}</p>
-              {reviewableSelectedItems.length > 0 && <Button size="sm" variant="outline" disabled={reviewingKeys.size > 0} onClick={() => void reviewDiscoveries(reviewableSelectedItems, true)}><Check className="h-3.5 w-3.5" />{reviewableSelectedItems.length === selectedItems.length ? 'Mark selected reviewed' : `Mark ${reviewableSelectedItems.length} finds reviewed`}</Button>}
-            </div>
+            {reviewableSelectedItems.length > 0 && <div className="flex justify-end">
+              <Button size="sm" variant="outline" disabled={reviewingKeys.size > 0} onClick={() => void reviewDiscoveries(reviewableSelectedItems, true)}><Check className="h-3.5 w-3.5" />{reviewableSelectedItems.length === selectedItems.length ? 'Dismiss selected' : `Dismiss ${reviewableSelectedItems.length} finds`}</Button>
+            </div>}
             {showSelection && <GallerySelectionBar {...selectionActions} />}
             {feedFailed ? <ErrorState title="Could not load discoveries" description={feedError instanceof Error ? feedError.message : String(feedError)} onRetry={() => void retryFeed()} /> : !galleryFeed && feedLoading ? (
               <div role="status" className="flex items-center justify-center gap-2 px-4 py-12 text-sm text-muted"><Spinner />Loading discoveries…</div>
@@ -2029,18 +1891,18 @@ export function Downloader() {
                 <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                   {feedPageItems.map(item => {
                     const key = `${item.source}:${item.galleryId}`, meta = feedMetaByKey.get(key);
-                    return <div key={key} className="flex min-w-0 flex-col gap-1 [&>article]:flex-1">
-                      <GalleryCard item={item} selectMode={selectMode} selected={selectedGalleries.has(key)} onToggleSelect={toggleGallerySelect} onOpen={setSelected} task={activeTasksByGallery.get(key)} starting={pendingKeys.has(key)} downloadedAt={downloadedAt.get(key)} libraryMatch={libraryMatches.get(key)} onDownload={doStartDownload} downloadSetup={downloadStatus} showTags={false} />
+                    return <div key={key} data-review-pending={reviewingKeys.has(key)} className="watched-discovery flex min-w-0 flex-col gap-1 [&>article]:flex-1">
+                      <GalleryCard item={item} selectMode={selectMode} selected={selectedGalleries.has(key)} onToggleSelect={toggleGallerySelect} onOpen={setSelected} task={activeTasksByGallery.get(key)} starting={pendingKeys.has(key)} downloadedAt={downloadedAt.get(key)} libraryMatch={libraryMatches.get(key)} onDownload={doStartDownload} downloadSetup={downloadStatus} showTags={false} onReview={reviewGallery} reviewed={!!meta?.reviewedAt} reviewPending={reviewingKeys.has(key)} />
                       {meta && <div className="flex min-w-0 flex-col gap-1 px-1 text-xs">
                         <button className="min-h-11 break-words text-left text-muted underline-offset-4 hover:text-primary hover:underline line-clamp-2" onClick={() => { setFeedWatch(String(meta.searchId)); setFeedPage(1); }} title={`Filter by ${meta.query}`}>via {meta.query} · {timeAgo(meta.foundAt)}</button>
-                        <Button size="sm" variant="ghost" className="min-h-11 justify-start px-1" disabled={reviewingKeys.has(key)} onClick={() => void reviewDiscoveries([item], !meta.reviewedAt)}>{reviewingKeys.has(key) ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : meta.reviewedAt ? <RotateCcw className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}{meta.reviewedAt ? 'Return to inbox' : 'Mark reviewed'}</Button>
+                        {meta.reviewedAt && <Button size="sm" variant="ghost" className="min-h-11 justify-start px-1" disabled={reviewingKeys.has(key)} onClick={() => reviewGallery(item, false)}><RotateCcw className="h-3.5 w-3.5" />Return to inbox</Button>}
                       </div>}
                     </div>;
                   })}
                 </div>
                 <Pager page={feedCurPage} count={feedPageCount} showJump={false} onPageChange={page => { setFeedPage(page); document.querySelector('main')?.scrollTo({ top: 0 }); }} />
               </>
-            ) : <EmptyState icon={<Star className="h-8 w-8" />} title={feedWatch || feedSource ? 'No matching discoveries' : feedView === 'inbox' ? 'Inbox is clear' : 'No discoveries yet'} description={feedWatch || feedSource ? 'Try another watch or source.' : feedView === 'inbox' ? 'New finds arrive here. Reviewed galleries stay in History.' : 'Add a watch above. Its first check records existing galleries; later finds appear here.'} />}
+            ) : <EmptyState icon={<Star className="h-8 w-8" />} title={feedWatch || feedSource ? 'No matching discoveries' : feedView === 'inbox' ? 'Inbox is clear' : 'No discoveries yet'} />}
           </section>
         </div>
       )}

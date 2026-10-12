@@ -13,9 +13,9 @@ export type DoujinSource = 'hitomi' | 'nhentai';
  * server-side against the popularity index and never appended to the user's
  * query text. Each provider ignores values it does not support.
  */
-export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today' | 'popular-year';
+export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today' | 'popular-month' | 'popular-year' | 'date-published' | 'random';
 
-export const DOUJIN_SORTS: DoujinSort[] = ['default', 'popular', 'popular-week', 'popular-today', 'popular-year'];
+export const DOUJIN_SORTS: DoujinSort[] = ['default', 'popular', 'popular-week', 'popular-today', 'popular-month', 'popular-year', 'date-published', 'random'];
 
 /** A tag/artist/group autocomplete suggestion (as shown by the source's own search box). */
 export interface DoujinSuggestion {
@@ -143,8 +143,10 @@ export interface DoujinProvider {
   getGallery(idOrUrl: string): Promise<DoujinGallery>;
   /** Keyword/tag/artist search. `sort` is only honored by providers that support it. */
   search(query: string, limit?: number, sort?: DoujinSort, opts?: DoujinSearchOptions): Promise<DoujinSearchResult[]>;
+  /** Optional full-count paging without hydrating the entire catalog match. */
+  searchPage?(query: string, offset: number, limit: number, sort?: DoujinSort): Promise<{ items: DoujinSearchResult[]; total: number }>;
   /** Optional tag/artist autocomplete suggestions for a query prefix. */
-  suggest?(query: string, limit?: number): Promise<DoujinSuggestion[]>;
+  suggest?(query: string, limit?: number, context?: string): Promise<DoujinSuggestion[]>;
   /** Recheck cached/history candidates against current provider exclusions. */
   filterRecommendations?(items: DoujinSearchResult[]): Promise<DoujinSearchResult[]>;
 }
