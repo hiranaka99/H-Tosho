@@ -343,3 +343,17 @@ to reach it over your network. Sign in with your H-Tosho account on each device.
 Found a problem? [Open an issue](https://github.com/hiranaka99/H-Tosho/issues)
 with your H-Tosho version, what you expected, and the relevant job error. Remove
 passwords, Auth Keys, and webhook URLs from anything you share.
+
+## Publishing Docker images
+
+The [Docker release workflow](.github/workflows/docker-release.yml) builds the
+release's tagged commit and publishes a Linux AMD64 image to Docker Hub as
+`<DOCKERHUB_USERNAME>/h-tosho` whenever a GitHub release is **published**.
+Commit and push the workflow before publishing the next release; pushing a tag
+alone or saving a draft release does not trigger it.
+
+The workflow uses the repository secrets `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN`. The token must have write access to the Docker Hub repository.
+A stable release tagged `v2.12.0`, for example, publishes `v2.12.0`, `2.12.0`,
+and `latest`. Prereleases publish their version tags without updating `latest`.
+Build progress and failures appear in the repository's **Actions** tab.
