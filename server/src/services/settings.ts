@@ -50,7 +50,7 @@ function cachedSetting<T>(key: string, clone: (v: T) => T, load: () => T): T {
   if (hit !== undefined) return clone(hit as T);
   const value = load();
   settingsCache.set(key, value);
-  return value;
+  return clone(value);
 }
 /** Ordered global provider priorities. */
 export function getProviderPriorities(): string[] {
@@ -74,10 +74,10 @@ export function getProviderPriorities(): string[] {
 
 export function setProviderPriorities(orderedIds: string[]): void {
   const db = getDb();
-  db.delete(schema.providerPriorities).run();
-  for (const [i, id] of orderedIds.entries()) {
-    db.insert(schema.providerPriorities).values({ providerId: id, position: i }).run();
-  }
+  db.transaction(tx => {
+    tx.delete(schema.providerPriorities).run();
+    for (const [i, id] of orderedIds.entries()) tx.insert(schema.providerPriorities).values({ providerId: id, position: i }).run();
+  });
   settingsCache.delete('provider-priorities');
 }
 
@@ -101,7 +101,7 @@ export function setKavitaConnection(conn: KavitaConnection): void {
 }
 
 export function getProviderSettings(): Record<string, ProviderSetting> {
-  return cachedSetting('provider-settings', (v) => ({ ...v }), () => {
+  return cachedSetting('provider-settings', (v) => structuredClone(v), () => {
     const db = getDb();
     const out: Record<string, ProviderSetting> = {};
     for (const p of allProviderIds()) {
@@ -164,7 +164,7 @@ export function getCredentialMap(): {
 
 export function getLibraryOverride(libraryId: number): LibraryOverride | null {
   // Per-library key: called once per series inside the match loop.
-  return cachedSetting(`library-override:${libraryId}`, (v) => (v ? { ...v } : null), () => {
+  return cachedSetting(`library-override:${libraryId}`, (v) => structuredClone(v), () => {
     const db = getDb();
     const row = db.select().from(schema.libraryOverrides).where(eq(schema.libraryOverrides.libraryId, libraryId)).get();
     if (!row) return null;

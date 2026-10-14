@@ -349,7 +349,7 @@ class MangaDexProvider extends BaseProvider {
     }
   }
 
-  async search(query: string, type?: string): Promise<SearchResult[]> {
+  async search(query: string, _type?: string): Promise<SearchResult[]> {
     const search = async (title: string): Promise<MangaListItem[]> => {
       const params = new URLSearchParams({
         title,

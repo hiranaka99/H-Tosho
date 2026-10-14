@@ -16,12 +16,13 @@ COPY server/package.json ./server/
 COPY web/package.json ./web/
 RUN npm install -g npm@12 && npm ci
 
+# Copy shared source before building the frontend, which imports its contracts.
+COPY server ./server
 # Build the frontend into web/dist.
 COPY web ./web
 RUN npm run build --workspace @h-tosho/web
 
 # Build the backend into server/dist.
-COPY server ./server
 RUN npm run build --workspace @h-tosho/server
 
 # ---- Stage 2: runtime -------------------------------------------------------

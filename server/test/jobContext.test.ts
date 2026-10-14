@@ -33,7 +33,8 @@ function insertJob(type: JobType, payload: JobPayload, status = 'running'): numb
   return Number(getDb().insert(schema.jobs).values({ type, payloadJson: JSON.stringify(payload), status }).run().lastInsertRowid);
 }
 function storedPayload(id: number): JobPayload {
-  return JSON.parse(getDb().select().from(schema.jobs).where(eq(schema.jobs.id, id)).get()!.payloadJson);
+  const row = getDb().select().from(schema.jobs).where(eq(schema.jobs.id, id)).get()!;
+  return { ...JSON.parse(row.payloadJson), ...JSON.parse(row.stateJson) };
 }
 
 // Runnable integration smoke: real HTTP Kavita client + API + temporary SQLite,
@@ -68,8 +69,8 @@ test('API target context smoke with temporary DB and fake Kavita server', async 
     const dbPath = getDb().$client.name;
     const fresh = new Database(dbPath, { readonly: true });
     try {
-      const row = fresh.prepare('SELECT payload_json FROM jobs WHERE id = ?').get(id) as { payload_json: string };
-      assert.deepEqual(JSON.parse(row.payload_json).context, expected);
+      const row = fresh.prepare('SELECT payload_json, state_json FROM jobs WHERE id = ?').get(id) as { payload_json: string };
+      assert.deepEqual(({ ...JSON.parse(row.payload_json), ...JSON.parse((row as { state_json?: string }).state_json ?? '{}') }).context, expected);
     } finally { fresh.close(); }
   } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
 });
@@ -93,7 +94,7 @@ test('legacy history recovers local names once, then snapshots them through late
   globalThis.fetch = (async () => { fetches++; throw new Error('must stay local'); }) as typeof fetch;
   const expected = [{ id: 100, name: 'Locally known' }, { id: 101, name: 'Series #101' }];
   assert.deepEqual(jobQueue.get(id)?.context?.series, expected);
-  assert.deepEqual(storedPayload(id).context?.series, expected);
+  assert.equal(storedPayload(id).context, undefined, 'reading legacy history must not persist a snapshot');
   getDb().insert(schema.syncHistory).values({ kavitaSeriesId: 100, seriesTitle: 'Later rename', action: 'updated' }).run();
   getDb().insert(schema.syncHistory).values({ kavitaSeriesId: 101, seriesTitle: 'New history', action: 'matched' }).run();
   assert.deepEqual(jobQueue.get(id)?.context?.series, [{ id: 100, name: 'Locally known' }, { id: 101, name: 'New history' }]);
@@ -186,7 +187,7 @@ test('edit saves Kavita name before changing archive and series title', async ()
     }
     return Response.json({});
   }) as typeof fetch;
-  await runJob(jobQueue.get(id)!, () => {});
+  await assert.rejects(runJob(jobQueue.get(id)!, () => {}), /scan status could not be verified/);
   assert.equal(storedPayload(id).context?.series[0].name, 'Old title');
 });
 

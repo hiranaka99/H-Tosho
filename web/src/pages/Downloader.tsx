@@ -1,1068 +1,34 @@
+import { useGallerySelection, resolveGallerySelection } from './downloader/useGallerySelection';
+import { useWatchedFeed } from './downloader/useWatchedFeed';
+import { useRecommendations } from './downloader/useRecommendations';
+import { gallerySearchReducer } from './downloader/searchState';
 import { GallerySearchInput } from '../components/GallerySearchInput';
-import { WatchedDisclosure, WatchedReveal } from '../components/WatchedMotion';
 import { useDuplicateReview } from '../components/DuplicateReview';
 import * as React from 'react';
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useNavigate, useSearchParams } from 'react-router';
-import {
-  Search,
-  Loader2,
-  RefreshCcw,
-  Download as DownloadIcon,
-  Pause,
-  Play,
-  XCircle,
-  RotateCcw,
-  Trash2,
-  CheckCircle2,
-  Check,
-  Circle,
-  ImageOff,
-  ListVideo,
-  Languages,
-  FileArchive,
-  FolderOpen,
-  FileText,
-  X,
-  ExternalLink,
-  BookOpen,
-  Bookmark,
-  Users,
-  Layers,
-  Star,
-  Sparkles,
-  Tags,
-  CheckSquare,
-  Combine,
-  ChevronDown,
-  Plus,
-  EllipsisVertical,
-} from 'lucide-react';
-import { api, ApiError, type DuplicateCheck, type FeedbackRequest, type DoujinSource, type DoujinSort, type DoujinSearchResult, type DownloadTask } from '../lib/api';
-import { useDownloadActions, useDownloads } from '../lib/DownloadsContext';
-import { buildTagSearchFragment, cn, timeAgo, toIsoUtc } from '../lib/utils';
-import { formatBytes, formatSpeed } from '../lib/format';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { useNavigate, useSearchParams } from 'react-router';
+import { Search, Loader2, RotateCcw, CheckCircle2, Check, ListVideo, Star, Sparkles, CheckSquare } from 'lucide-react';
+import { api, ApiError, type DuplicateCheck, type DoujinSource, type DoujinSort, type DoujinSearchResult } from '../lib/api';
+import { useDownloadActions } from '../lib/DownloadsContext';
+import { cn, timeAgo } from '../lib/utils';
 import { downloadErrorHelp } from '../lib/downloadErrors';
 import { toast } from '../lib/toast';
-import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Input, Select, EmptyState, Spinner, ProgressBar, Dialog, DialogContent, DialogTitle, DialogDescription, PageHeader, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, ErrorState, ConfirmDialog, Skeleton, Pager } from '../components/ui';
-import { ComicInfoModal } from '../components/ComicInfoModal';
+import { Button, Card, CardContent, Badge, Select, EmptyState, Spinner, PageHeader, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, ErrorState, Skeleton, Pager } from '../components/ui';
 import { MergeIntoSeriesDialog } from '../components/MergeIntoSeriesDialog';
-import { chapterErrors } from '../lib/chapterNumbers';
 import { GalleryFeedbackDialog, RecommendationFeedbackManager } from '../components/RecommendationFeedback';
-import { PagePreview } from '../components/PagePreview';
-import { PageCountPill } from '../components/PageCountPill';
 import { GallerySelectionBar } from '../components/GallerySelectionBar';
-import { indexSelectableGalleries, selectedGalleryItems } from '../lib/gallerySelection';
 import { switchProviderSearch, type TranslationLink } from '../lib/searchTranslation';
-import { recommendationQuery } from '../lib/recommendationQuery';
 
-/** Source list fallback (rendered before the server's provider list resolves). */
-const FALLBACK_SOURCES: { id: DoujinSource; label: string }[] = [
-  { id: 'hitomi', label: 'Hitomi.la' },
-  { id: 'nhentai', label: 'nHentai' },
-];
-
-/** Display accent per doujin source (mirrors backend provider.color). */
-const SOURCE_COLORS: Record<DoujinSource, string> = {
-  hitomi: '#ff5722',
-  nhentai: '#e91e63',
-};
-
-const DOWNLOADER_STATE_KEY = 'h-tosho:downloader-state';
-type DownloaderTab = 'search' | 'recommend' | 'watched' | 'manager';
-
-interface DownloaderStateCache {
-  tab?: DownloaderTab;
-  source?: DoujinSource;
-  query?: string;
-  searchKey?: string | null;
-  sort?: DoujinSort;
-  page?: number;
-  searches?: Partial<Record<DoujinSource, { query: string; searchKey: string | null; sort: DoujinSort }>>;
-  translation?: TranslationLink | null;
-}
-
-function readDownloaderState(): DownloaderStateCache {
-  try {
-    return JSON.parse(sessionStorage.getItem(DOWNLOADER_STATE_KEY) ?? '{}') as DownloaderStateCache;
-  } catch {
-    return {};
-  }
-}
-
-function writeDownloaderState(update: Partial<DownloaderStateCache>) {
-  sessionStorage.setItem(DOWNLOADER_STATE_KEY, JSON.stringify({ ...readDownloaderState(), ...update }));
-}
-
-/**
- * Result ordering options for nHentai searches, mirroring nhentai.net's own
- * sort controls.
- */
-const NHENTAI_SORTS: { value: DoujinSort; label: string }[] = [
-  { value: 'default', label: 'Newest' },
-  { value: 'popular', label: 'Popular — all time' },
-  { value: 'popular-week', label: 'Popular — this week' },
-  { value: 'popular-today', label: 'Popular — today' },
-];
-
-/** Result ordering options for Hitomi searches (mirrors hitomi.la's sort dropdown). */
-const HITOMI_SORTS: { value: DoujinSort; label: string }[] = [
-  { value: 'default', label: 'Newest' },
-  { value: 'date-published', label: 'Date published' },
-  { value: 'random', label: 'Random' },
-  { value: 'popular-today', label: 'Popular Today' },
-  { value: 'popular-week', label: 'Popular Week' },
-  { value: 'popular-month', label: 'Popular Month' },
-  { value: 'popular-year', label: 'Popular Year' },
-];
-
-/** The sort options a source offers (sent as a separate field — the search box never shows the syntax). */
-const DEFAULT_SORTS: { value: DoujinSort; label: string }[] = [{ value: 'default', label: 'Newest' }];
-const sortsFor = (src: DoujinSource): { value: DoujinSort; label: string }[] =>
-  src === 'nhentai' ? NHENTAI_SORTS : src === 'hitomi' ? HITOMI_SORTS : DEFAULT_SORTS;
-
-/** Human-facing display name for a doujin source. */
-const SOURCE_LABELS: Record<DoujinSource, string> = { hitomi: 'Hitomi.la', nhentai: 'nHentai' };
-
-type DownloadSetup = { status: 'loading' | 'error' | 'missing' | 'ready'; directory?: string; format?: 'cbz' | 'folder'; onRetry: () => void };
-const DOWNLOADER_SETTINGS_URL = '/settings?tab=downloader';
-
-function DownloadDestination({ setup, compact = false }: { setup: DownloadSetup; compact?: boolean }) {
-  return <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-xs text-muted" role="status">
-    {setup.status === 'loading' ? <><Spinner /> Checking download settings…</> : setup.status === 'error' ? <><span>Could not check the download folder.</span><Button size="sm" variant="outline" onClick={setup.onRetry}>Retry settings</Button></> : setup.status === 'missing' ? <>{!compact && <span>Choose where downloads will be saved.</span>}<Link className="inline-flex min-h-11 items-center font-medium text-primary underline underline-offset-4" to={DOWNLOADER_SETTINGS_URL}>Set output folder</Link></> : <>
-      <FolderOpen className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 break-all">Save to {setup.directory}</span><Badge tone="muted">{setup.format === 'cbz' ? 'CBZ' : 'Image folder'}</Badge><Link className="inline-flex min-h-9 items-center text-primary underline underline-offset-4" to={DOWNLOADER_SETTINGS_URL}>Change</Link>
-    </>}
-  </div>;
-}
-
-function DownloadFailure({ message }: { message: string }) {
-  const help = downloadErrorHelp(message);
-  return <div className="space-y-1 text-xs">
-    <p className="text-danger">{help.message}</p>
-    {help.settings && <Link className="inline-flex min-h-9 items-center text-primary underline underline-offset-4" to={DOWNLOADER_SETTINGS_URL}>Open Downloader settings</Link>}
-    <Disclosure label="Technical details" className="text-muted"><p className="break-all pt-2">{message}</p></Disclosure>
-  </div>;
-}
-
-function SourceBadge({ source }: { source: DoujinSource }) {
-  const color = SOURCE_COLORS[source];
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium" style={{ backgroundColor: color + '22', color }}>
-      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
-      {SOURCE_LABELS[source]}
-    </span>
-  );
-}
-
-function Cover({ url, title, className }: { url?: string | null; title: string; className?: string }) {
-  const [failed, setFailed] = React.useState(false);
-  React.useEffect(() => setFailed(false), [url]);
-  const size = className ?? 'h-40 w-full';
-  if (!url || failed) {
-    return (
-      <div className={cn('flex items-center justify-center bg-surface-2 text-muted', size)}>
-        <ImageOff className="h-6 w-6" />
-      </div>
-    );
-  }
-  return (
-    <img
-      src={url}
-      alt={title}
-      referrerPolicy="no-referrer"
-      loading="lazy"
-      onError={() => setFailed(true)}
-      className={cn('object-cover', size)}
-    />
-  );
-}
-
-/** Galleries per page, matching both official search APIs. */
+import { FALLBACK_SOURCES, SOURCE_COLORS, SOURCE_LABELS, sortsFor, readDownloaderState, writeDownloaderState, DOWNLOADER_SETTINGS_URL, type DownloaderTab, type DownloaderStateCache, type DownloadSetup } from './downloader/state';
+import { DownloadDestination } from './downloader/DownloadSetup';
+import { GalleryCard } from './downloader/GalleryCard';
+import { GalleryDetailModal } from './downloader/GalleryDetailModal';
+import { ManagerTab } from './downloader/DownloadManager';
+import { WatchedTab } from './downloader/WatchedSearchControls';
+import { MergeDownloadDialog, folderNameFrom, type MergeDownloadResult } from './downloader/MergeDownloadDialog';
+import { useDownloaderTransitions } from './downloader/motion';
 const RESULTS_PAGE_SIZE = 25;
-
-/** Finished tasks shown before the History section collapses (rest via "Show all"). */
-const HISTORY_PREVIEW = 5;
 const EMPTY_GALLERIES: DoujinSearchResult[] = [];
-
-/** Track gallery/queue relationships only when membership or selection changes. */
-function useDownloaderTransitions(state: string, selector = '[data-download-id], [data-gallery-motion-id], [data-gallery-shortlist-id]') {
-  const ref = React.useRef<HTMLDivElement>(null);
-  const previous = React.useRef<Map<string, { x: number; y: number }> | null>(null);
-  React.useLayoutEffect(() => {
-    const container = ref.current;
-    if (!container) return;
-    const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
-    if (preference.matches || document.hidden) {
-      previous.current = null;
-      return;
-    }
-    const origin = container.getBoundingClientRect();
-    const positions = new Map<string, { x: number; y: number }>();
-    const animations: Animation[] = [];
-    // Read every rectangle before starting animations, which write visual state.
-    const rows = Array.from(container.querySelectorAll<HTMLElement>(selector))
-      .filter(row => !row.closest('[inert]'))
-      .map(row => ({ row, bounds: row.getBoundingClientRect() }));
-    rows.forEach(({ row, bounds }) => {
-      // Hidden desktop/mobile shortlist copies never participate in motion.
-      if (!bounds.width || !bounds.height) return;
-      const id = row.dataset.galleryMotionId ? `gallery:${row.dataset.galleryMotionId}` : row.dataset.galleryShortlistId ? `shortlist:${row.dataset.galleryShortlistId}` : row.dataset.watchedSearchId ? `watch:${row.dataset.watchedSearchId}` : `task:${row.dataset.downloadId}`;
-      const position = { x: bounds.left - origin.left, y: bounds.top - origin.top };
-      positions.set(id, position);
-      if (!previous.current || preference.matches || document.hidden || bounds.bottom < 0 || bounds.top > window.innerHeight || typeof row.animate !== 'function') return;
-      const old = previous.current.get(id);
-      const dx = old ? old.x - position.x : 0;
-      const dy = old ? old.y - position.y : 6;
-      if (old && Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-      const nearby = old && Math.abs(dx) < bounds.width * 2 && Math.abs(dy) < bounds.height * 2;
-      animations.push(row.animate(
-        nearby ? [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }]
-          : id.startsWith('shortlist:') ? [{ opacity: 0.5, clipPath: 'inset(0 100% 0 0)' }, { opacity: 1, clipPath: 'inset(0 0 0 0)' }]
-            : [{ opacity: 0.65 }, { opacity: 1 }],
-        { duration: nearby ? 240 : 180, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' },
-      ));
-    });
-    previous.current = positions;
-    const cancel = () => animations.forEach((animation) => animation.cancel());
-    const onPreferenceChange = () => { if (preference.matches) cancel(); };
-    const onVisibilityChange = () => { if (document.hidden) cancel(); };
-    preference.addEventListener('change', onPreferenceChange);
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => {
-      cancel();
-      preference.removeEventListener('change', onPreferenceChange);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    };
-  }, [state, selector]);
-  return ref;
-}
-
-/** Format an ISO 8601 date string for display, or undefined when absent/invalid. */
-function formatDate(iso?: string | null): string | undefined {
-  if (!iso) return undefined;
-  const d = new Date(toIsoUtc(iso));
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toISOString().slice(0, 10);
-}
-
-function DownloadStatusBadge({ status }: { status: string }) {
-  const map: Record<string, React.ReactNode> = {
-    queued: <Badge tone="muted"><Circle className="h-3 w-3" /> Queued</Badge>,
-    downloading: <Badge tone="info"><Loader2 className="h-3 w-3 animate-spin" /> Downloading</Badge>,
-    completed: <Badge tone="success"><CheckCircle2 className="h-3 w-3" /> Completed</Badge>,
-    failed: <Badge tone="danger"><XCircle className="h-3 w-3" /> Failed</Badge>,
-    paused: <Badge tone="warning"><Pause className="h-3 w-3" /> Paused</Badge>,
-  };
-  return <span key={status} className="downloader-task-status inline-flex">{map[status] ?? <Badge>{status}</Badge>}</span>;
-}
-
-// ---------------- Gallery card ----------------
-// Handlers take the item they act on (instead of per-card closures) so the
-// memoized card only re-renders when its own data changes.
-interface GalleryCardProps {
-  item: DoujinSearchResult;
-  onOpen: (item: DoujinSearchResult) => void;
-  onDownload: (item: DoujinSearchResult) => void;
-  downloadSetup: DownloadSetup['status'];
-  task?: DownloadTask;
-  starting?: boolean;
-  downloadedAt?: string | null;
-  selectMode?: boolean;
-  selected?: boolean;
-  onToggleSelect?: (item: DoujinSearchResult) => void;
-  owned?: boolean;
-  libraryMatch?: 'owned' | 'possible';
-  dismissing?: boolean;
-  showSource?: boolean;
-  showTags?: boolean;
-  onFeedback?: (item: DoujinSearchResult) => void;
-  onReview?: (item: DoujinSearchResult, reviewed: boolean) => void;
-  reviewed?: boolean;
-  reviewPending?: boolean;
-}
-
-const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, task, starting = false, downloadedAt, selectMode = false, selected = false, onToggleSelect, owned = false, libraryMatch, dismissing = false, showSource = true, showTags = true, onFeedback, onReview, reviewed = false, reviewPending = false }: GalleryCardProps) {
-  const tags = item.tags.slice(0, 4);
-  const inLibrary = libraryMatch === 'owned';
-  const alreadyOwned = owned || inLibrary || downloadedAt !== undefined;
-  const active = starting || task?.status === 'queued' || task?.status === 'downloading' || task?.status === 'paused';
-  return (
-    <article
-      data-gallery-motion-id={`${item.source}:${item.galleryId}`}
-      className={cn(
-        'ui-card ui-card-interactive @container group flex min-w-0 flex-col overflow-hidden rounded-xl border transition-colors duration-200',
-        selected ? 'border-primary bg-primary/10 ring-2 ring-primary' : 'border-border bg-surface hover:border-border-2',
-      )}
-    >
-      <button type="button" onClick={() => (selectMode ? onToggleSelect?.(item) : onOpen(item))} className="grid min-w-0 grid-cols-[5rem_minmax(0,1fr)] text-left min-[420px]:block" aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
-        <div className="relative overflow-hidden">
-          <Cover url={item.coverUrl} title={item.title} className="downloader-cover aspect-[3/4] w-full" />
-          {item.language && (
-            <span className={cn('absolute left-2 hidden items-center gap-1 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white min-[420px]:inline-flex', selectMode || selected ? 'bottom-2' : 'top-2')}>
-              <Languages className="h-3 w-3" /> {item.language}
-            </span>
-          )}
-          <PageCountPill pageCount={item.pageCount} className={cn('absolute right-2', selectMode || selected ? 'bottom-2' : 'top-2')} />
-          {(selectMode || selected) && (
-            <span className={cn('pointer-events-none absolute left-2 top-2 z-20 inline-flex h-8 w-8 items-center justify-center rounded-md border', selected ? 'border-primary-button bg-primary-button text-white' : 'border-border-2 bg-surface text-muted')} aria-hidden="true">
-              {selected ? <Check className="downloader-selection-check h-5 w-5" /> : <span className="h-4 w-4 rounded-sm border-2 border-current" />}
-            </span>
-          )}
-          {!selectMode && !selected && <div className="pointer-events-none absolute inset-0 flex items-end justify-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-            <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-primary-button px-3 py-1 text-xs font-medium text-white">
-              <Search className="h-3 w-3" /> Details
-            </span>
-          </div>}
-        </div>
-        <div className="flex min-w-0 flex-col gap-2 p-3 pb-0">
-          <p className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]" title={item.title}>{item.title}</p>
-          {item.language && <p className="text-xs text-muted min-[420px]:hidden">{item.language}</p>}
-          {item.artists.length > 0 && (
-            <p className="truncate text-xs font-medium text-foreground" title={`Artists: ${item.artists.join(', ')}`}>
-              <span className="text-muted">Artist{item.artists.length > 1 ? 's' : ''} · </span>{item.artists.join(', ')}
-            </p>
-          )}
-          {showTags && tags.length > 0 && <div className="flex max-h-12 flex-wrap gap-1 overflow-hidden" aria-label="Tags">{tags.map((tag, i) => <span key={i} className="max-w-full truncate rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{tag}</span>)}</div>}
-        </div>
-      </button>
-      <div className="mt-auto flex min-w-0 flex-col gap-2 p-3">
-        {(showSource || owned) && (
-          <div className="flex min-h-6 flex-wrap items-center gap-2">
-            {showSource && <SourceBadge source={item.source} />}
-            {owned && <Badge tone="muted"><Bookmark className="h-3 w-3" /> Owned</Badge>}
-          </div>
-        )}
-        <div className="flex min-w-0 items-stretch gap-2">
-          {selectMode ? <>
-            <Button size="sm" variant={selected ? 'default' : 'outline'} className="min-w-0 flex-1 px-2" onClick={() => onToggleSelect?.(item)} aria-pressed={selected} aria-label={`${selected ? 'Remove' : 'Select'} ${item.title} ${selected ? 'from' : 'for'} merging`}><CheckSquare className="h-3.5 w-3.5 shrink-0" /><span>{selected ? 'Selected' : 'Select'}</span></Button>
-            <Button size="sm" variant="ghost" onClick={() => onOpen(item)} aria-label={`View details for ${item.title}`}>Details</Button>
-          </> : <Button size="sm" variant={alreadyOwned || libraryMatch === 'possible' ? 'outline' : 'default'} className={cn('max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 px-2', onReview && 'h-auto min-h-11 px-1.5')} onClick={() => onDownload(item)} disabled={active || alreadyOwned || downloadSetup === 'loading' || downloadSetup === 'error'} aria-label={starting && !task ? `Checking duplicates for ${item.title}` : active ? `${item.title} is ${task?.status ?? 'starting'}` : alreadyOwned ? `${item.title} already in library` : libraryMatch === 'possible' ? `Review possible duplicate of ${item.title}` : downloadSetup === 'missing' ? `Set output folder before downloading ${item.title}` : `Download ${item.title}`}>
-            {!onReview && (task?.status === 'paused' ? <Pause className="h-3.5 w-3.5 shrink-0" /> : task?.status === 'queued' ? <Circle className="h-3.5 w-3.5 shrink-0" /> : active ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : alreadyOwned ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <DownloadIcon className="h-3.5 w-3.5 shrink-0" />)}
-            <span>{task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : starting && !task ? 'Checking…' : active ? 'Downloading' : inLibrary ? 'In library' : alreadyOwned ? 'Downloaded' : libraryMatch === 'possible' ? 'Review duplicate' : downloadSetup === 'missing' ? 'Set folder' : 'Download'}</span>
-          </Button>}
-          {!selectMode && onReview && <Button size="sm" variant="outline" className="relative h-auto min-h-11 shrink-0 px-1.5" disabled={reviewPending || reviewed} onClick={() => onReview(item, true)} aria-label={reviewed ? `${item.title} dismissed from inbox` : `Dismiss ${item.title}`} title={reviewed ? 'Kept in History' : 'Remove from Inbox and keep in History'}><span className={reviewPending ? 'invisible' : undefined}>{reviewed ? 'Dismissed' : 'Dismiss'}</span>{reviewPending && <Loader2 aria-hidden="true" className="absolute h-3.5 w-3.5 animate-spin" />}</Button>}
-          {onFeedback && <Button size="icon" variant="outline" className="max-lg:min-h-11 max-lg:min-w-11 pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 text-muted" disabled={dismissing} onClick={() => onFeedback(item)} aria-label={`Tune recommendations for ${item.title}`} title="Tune recommendations"><EllipsisVertical className="h-4 w-4" /></Button>}
-        </div>
-        {!selectMode && selected && <Button size="sm" onClick={() => onToggleSelect?.(item)} aria-pressed={true} aria-label={`Remove ${item.title} from merging`}><CheckSquare className="h-3.5 w-3.5 shrink-0" />Selected for merge</Button>}
-      </div>
-    </article>
-  );
-});
-
-// ---------------- Gallery detail modal ----------------
-
-const TAG_GROUP_STYLES: Record<string, string> = {
-  Artists: 'bg-violet-500/10 text-violet-700 dark:bg-violet-400/20 dark:text-violet-300',
-  Groups: 'bg-amber-500/10 text-amber-700 dark:bg-amber-400/20 dark:text-amber-300',
-  Characters: 'bg-pink-500/10 text-pink-700 dark:bg-pink-400/20 dark:text-pink-300',
-  Series: 'bg-cyan-500/10 text-cyan-700 dark:bg-cyan-400/20 dark:text-cyan-300',
-  Tags: 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/20 dark:text-slate-300',
-};
-
-function TagList({ label, items, namespaces, icon, onSearch, titleFor }: {
-  label: string;
-  items?: string[];
-  /** Per-item search namespace (parallel to `items`). */
-  namespaces?: (string | null)[];
-  icon?: React.ReactNode;
-  onSearch?: (value: string, ns?: string | null) => void;
-  /** Tooltip for a searchable item — show the exact query it will run. */
-  titleFor?: (value: string, ns?: string | null) => string | undefined;
-}) {
-  if (!items?.length) return null;
-  const style = Object.entries(TAG_GROUP_STYLES).find(([k]) => label.startsWith(k))?.[1] ?? 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/20 dark:text-slate-300';
-  return (
-    <div className="flex flex-col gap-1.5">
-      <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
-        {icon} {label}
-      </p>
-      <div className="flex flex-wrap gap-1.5">
-        {items.map((t, i) => {
-          const ns = namespaces?.[i];
-          return (
-            <button
-              key={i}
-              type="button"
-              onClick={() => onSearch?.(t, ns)}
-              title={titleFor ? titleFor(t, ns) : onSearch ? `Search for “${t}”` : undefined}
-              className={cn(
-                'max-lg:min-h-11 pointer-coarse:min-h-11 rounded-full px-2.5 py-1 text-xs transition-all',
-                style,
-                onSearch && 'cursor-pointer hover:brightness-125',
-              )}
-            >
-              {t}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function MetaItem({ label, value }: { label: string; value?: string | number | null }) {
-  if (value === undefined || value === null || value === '') return null;
-  return (
-    <div className="flex flex-col gap-0.5 rounded-md border border-border bg-surface-2/50 px-3 py-2">
-      <span className="text-2xs font-semibold uppercase tracking-wide text-muted">{label}</span>
-      <span className="text-sm font-medium">{value}</span>
-    </div>
-  );
-}
-
-function GalleryDetailModal({ item, onClose, onDownload, downloading, checking, downloaded, inLibrary, setup, onSearchTag }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; downloading: boolean; checking: boolean; downloaded: boolean; inLibrary: boolean; setup: DownloadSetup; onSearchTag: (fragment: string, source?: DoujinSource) => void }) {
-  const { data: gallery, isPending, isFetching, isError, error, refetch } = useQuery({
-    queryKey: ['doujin-gallery', item.source, item.galleryId],
-    queryFn: () => api.doujinGallery(item.source, item.galleryId),
-    staleTime: 5 * 60_000,
-  });
-  const g = gallery;
-  const previewPages = g?.previewPages ?? [];
-
-  /** Search a single tag/artist value (from the details card) on this source. */
-  const searchFor = (value: string, ns?: string | null) => {
-    const fragment = buildTagSearchFragment(value, ns, item.source);
-    if (fragment) onSearchTag(fragment, item.source);
-  };
-  /** Tooltip showing the exact query a pill will run. */
-  const searchTitle = (value: string, ns?: string | null) => {
-    const fragment = buildTagSearchFragment(value, ns, item.source);
-    return fragment ? `Search for “${fragment}”` : undefined;
-  };
-  return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-[min(98vw,1760px)]" aria-describedby={undefined}>
-        <div className="flex max-h-[calc(100dvh-2rem)] flex-col">
-        <div className="grid min-h-0 gap-4 overflow-y-auto p-3 sm:p-5 lg:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)] lg:grid-rows-[auto_minmax(0,1fr)] lg:gap-5">
-          <div className="flex min-w-0 flex-col gap-4 lg:col-start-2 lg:row-start-1 lg:self-start">
-            <div className="min-w-0 pr-10">
-              <div className="mb-2 flex flex-wrap items-center gap-2">
-                <SourceBadge source={item.source} />
-                {g?.language && <Badge tone="info"><Languages className="h-3 w-3" /> {g.language}</Badge>}
-              </div>
-              <DialogTitle className="break-words text-lg leading-snug">{g?.title ?? item.title}</DialogTitle>
-            </div>
-
-            {isPending && (
-              <div className="flex items-center gap-2 py-6 text-sm text-muted">
-                <Spinner /> Loading gallery details…
-              </div>
-            )}
-
-            {isError && (
-              <div className="space-y-2" role="alert">
-                <p className="text-sm font-medium">Could not load gallery details</p>
-                <DownloadFailure message={error instanceof Error ? error.message : String(error)} />
-                <Button size="sm" variant="outline" disabled={isFetching} onClick={() => void refetch()}><RotateCcw className="h-3.5 w-3.5" />{isFetching ? 'Retrying…' : 'Retry details'}</Button>
-              </div>
-            )}
-
-          </div>
-          <div className="flex min-w-0 flex-col gap-2 lg:col-start-1 lg:row-start-1 lg:row-span-2">
-            {previewPages.length > 0 ? (
-              <PagePreview key={`${item.source}:${item.galleryId}`} pages={previewPages} fallbacks={g?.previewFallbacks} name={g?.title ?? item.title} />
-            ) : (
-              <Cover url={g?.coverUrl ?? item.coverUrl} title={item.title} className="mx-auto aspect-[3/4] w-40 rounded-md border border-border lg:w-48" />
-            )}
-            {g?.url && (
-              <a href={g.url} target="_blank" rel="noreferrer" className="inline-flex max-lg:min-h-11 pointer-coarse:min-h-11 items-center gap-1.5 self-start text-xs text-muted transition-colors hover:text-primary">
-                <ExternalLink className="h-3 w-3" /> View on {SOURCE_LABELS[item.source]}
-              </a>
-            )}
-          </div>
-          <div className="flex min-w-0 flex-col gap-4 lg:col-start-2 lg:row-start-2 lg:self-start">
-            {g && (
-              <>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  <MetaItem label="Pages" value={g.pageCount ? `${g.pageCount} pages` : null} />
-                  <MetaItem label="Language" value={g.language} />
-                  <MetaItem label="Uploaded" value={formatDate(g.uploadedAt ?? item.uploadedAt)} />
-                  <MetaItem label="Gallery ID" value={g.galleryId} />
-                </div>
-
-                <TagList label="Artists" items={g.artists ?? item.artists} icon={<Users className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'artist')} titleFor={(v) => searchTitle(v, 'artist')} />
-                <TagList label="Groups" items={g.groups} icon={<Layers className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'group')} titleFor={(v) => searchTitle(v, 'group')} />
-                <TagList label="Characters" items={g.characters ?? g.genres} icon={<Star className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'character')} titleFor={(v) => searchTitle(v, 'character')} />
-                {g.series && (
-                  <div className="flex flex-col gap-1.5">
-                    <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
-                      <BookOpen className="h-3 w-3" /> Series
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => searchFor(g.series ?? '', 'series')}
-                      title={searchTitle(g.series ?? '', 'series')}
-                      className="max-lg:min-h-11 pointer-coarse:min-h-11 w-fit cursor-pointer rounded-full bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-700 transition-all hover:brightness-125 dark:bg-cyan-400/20 dark:text-cyan-300"
-                    >
-                      {g.series}
-                    </button>
-                  </div>
-                )}
-                {g.tags?.length ? (
-                  <TagList label={`Tags (${g.tags.length})`} items={g.tags} namespaces={g.tagNamespaces} icon={<Tags className="h-3 w-3" />} onSearch={(v, ns) => searchFor(v, ns)} titleFor={(v, ns) => searchTitle(v, ns)} />
-                ) : null}
-
-              </>
-            )}
-
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border bg-surface p-3 sm:px-5">
-          <div className="flex min-w-0 flex-col gap-1">
-            <DownloadDestination setup={setup} />
-            {downloaded && !inLibrary && <Link to="/downloader?tab=downloads" onClick={onClose} className="inline-flex min-h-11 items-center self-start text-xs text-primary underline underline-offset-4">Manage this gallery in Downloads</Link>}
-          </div>
-          <div className="ml-auto flex shrink-0 justify-end gap-2">
-            <Button variant="ghost" onClick={onClose}><X className="h-4 w-4" /> Close</Button>
-            {(downloaded || setup.status !== 'missing') && <Button onClick={onDownload} disabled={downloaded || downloading || checking || setup.status !== 'ready'}>
-              {downloaded ? <CheckCircle2 className="h-4 w-4" /> : (downloading || checking) ? <Loader2 className="h-4 w-4 animate-spin" /> : <DownloadIcon className="h-4 w-4" />}{inLibrary ? 'In library' : downloaded ? 'Downloaded' : checking ? 'Checking…' : downloading ? 'Queued / downloading' : 'Download'}
-            </Button>}
-          </div>
-        </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// ---------------- Queue row ----------------
-
-/**
- * Cover for a finished download — the first image of the saved file, served
- * locally by /downloads/:id/cover. Stretches to the full height of its row so
- * completed downloads are identifiable at a glance; lazy-loaded and hidden
- * when the file is gone or holds no image, so rows never show a broken
- * placeholder.
- */
-function TaskCover({ id }: { id: number }) {
-  const [failed, setFailed] = React.useState(false);
-  if (failed) return null;
-  return (
-    <img
-      src={`/api/downloads/${id}/cover`}
-      alt=""
-      loading="lazy"
-      decoding="async"
-      onError={() => setFailed(true)}
-      className="w-16 shrink-0 self-stretch rounded-sm border border-border object-cover"
-    />
-  );
-}
-
-const QueueRow = React.memo(function QueueRow({ task, onAction, onEditComicInfo, onDelete }: { task: DownloadTask; onAction: (id: number, a: 'pause' | 'resume' | 'cancel' | 'retry') => void; onEditComicInfo?: (path: string) => void; onDelete?: (id: number) => void }) {
-  const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : 0;
-  const showCover = task.status === 'completed' && !!task.outputPath;
-  return (
-    <div data-download-id={task.id} className="flex min-w-0 gap-3 rounded-lg border border-border p-3 transition-colors duration-150 sm:p-4">
-      {showCover && <TaskCover id={task.id} />}
-      <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div className="flex min-w-0 flex-1 flex-col items-start gap-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-2">
-            <DownloadStatusBadge status={task.status} />
-            <span className="min-w-0 break-words text-sm font-medium line-clamp-2 sm:flex-1" title={task.title ?? ''}>{task.title ?? `Gallery ${task.galleryId}`}</span>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {task.status === 'downloading' && <Button size="icon" variant="ghost" aria-label={`Pause ${task.title ?? `Gallery ${task.galleryId}`}`} onClick={() => onAction(task.id, 'pause')}><Pause className="h-4 w-4" /></Button>}
-            {task.status === 'paused' && <Button size="icon" variant="ghost" aria-label={`Resume ${task.title ?? `Gallery ${task.galleryId}`}`} onClick={() => onAction(task.id, 'resume')}><Play className="h-4 w-4" /></Button>}
-            {task.status === 'failed' && <Button size="sm" variant="outline" aria-label={`Retry ${task.title ?? 'download'}`} onClick={() => onAction(task.id, 'retry')}><RotateCcw className="h-4 w-4" /> Retry</Button>}
-            {task.status === 'completed' && <Button size="icon" variant="ghost" aria-label={`Download ${task.title ?? `Gallery ${task.galleryId}`} again`} onClick={() => onAction(task.id, 'retry')}><RotateCcw className="h-4 w-4" /></Button>}
-            {(task.status === 'downloading' || task.status === 'queued') && <Button size="icon" variant="ghost" aria-label={`Cancel ${task.title ?? `Gallery ${task.galleryId}`}`} onClick={() => onAction(task.id, 'cancel')}><XCircle className="h-4 w-4" /></Button>}
-            {onDelete && <Button size="icon" variant="ghost" aria-label={`Remove ${task.title ?? `Gallery ${task.galleryId}`} from history`} onClick={() => onDelete(task.id)}><Trash2 className="h-4 w-4" /></Button>}
-          </div>
-        </div>
-
-        {task.status === 'downloading' && (
-          <>
-            <ProgressBar value={task.progressCurrent} max={task.progressTotal} label={`Download progress for ${task.title ?? `Gallery ${task.galleryId}`}`} />
-            <div className="flex flex-col gap-1 text-sm text-muted sm:flex-row sm:items-center sm:justify-between">
-              <span className="truncate">{task.currentFile ? `Saving ${task.currentFile}` : 'Starting…'}</span>
-              <span className="min-w-0 break-words tabular-nums sm:text-right">
-                {task.progressTotal > 0 ? `${task.progressCurrent}/${task.progressTotal} pages (${pct}%)` : 'Resolving gallery…'}
-                {typeof task.bytesCurrent === 'number' && (task.bytesCurrent > 0 || (task.bytesTotal ?? 0) > 0) && (` · ${formatBytes(task.bytesCurrent)}${(task.bytesTotal ?? 0) > 0 ? ` / ${formatBytes(task.bytesTotal)}` : ''}`)}
-                {formatSpeed(task.speed) && ` · ${formatSpeed(task.speed)}`}
-              </span>
-            </div>
-          </>
-        )}
-
-        {task.status === 'completed' && task.outputPath && (
-          <div className="flex items-center gap-2 text-xs">
-            {task.outputFormat === 'cbz' ? <FileArchive className="h-3.5 w-3.5 text-success" /> : <FolderOpen className="h-3.5 w-3.5 text-success" />}
-            <span className="min-w-0 break-all text-muted">{task.outputPath}</span>
-            {task.outputFormat === 'cbz' && onEditComicInfo && (
-              <Button size="icon" variant="ghost" className="ml-auto shrink-0" aria-label={`Edit ComicInfo.xml for ${task.title ?? `Gallery ${task.galleryId}`}`} onClick={() => onEditComicInfo(task.outputPath!)}>
-                <FileText className="h-3.5 w-3.5" />
-              </Button>
-            )}
-          </div>
-        )}
-
-        {task.status === 'failed' && task.errorMessage && (
-          <DownloadFailure message={task.errorMessage} />
-        )}
-
-        <div className="flex items-center justify-between text-xs text-muted">
-          <span>{timeAgo(task.createdAt)}</span>
-          <Badge tone={task.outputFormat === 'cbz' ? 'default' : 'info'}>{task.outputFormat.toUpperCase()}</Badge>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-// ---------------- Merged download dialog ----------------
-
-/** Sanitize a gallery title into a usable folder name. */
-function folderNameFrom(title: string): string {
-  return title.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Confirm dialog for queued merged downloads: all selected galleries land in one
- * shared folder (one Kavita series). Chapter numbers are prefilled with the
- * selection order but editable by hand; an empty field skips numbering that file.
- */
-interface MergeDownloadResult {
-  queuedKeys: string[];
-  skippedKeys: string[];
-  failures: { key: string; message: string }[];
-}
-
-function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm, setup, pending, result }: {
-  items: DoujinSearchResult[];
-  defaultFolder: string;
-  onClose: () => void;
-  onConfirm: (folder: string, numbers: (number | null)[]) => void;
-  setup: DownloadSetup;
-  pending: boolean;
-  result: MergeDownloadResult | null;
-}) {
-  const [folder, setFolder] = React.useState(defaultFolder);
-  // Per-gallery chapter numbers as editable strings, prefilled with selection order.
-  const [numbers, setNumbers] = React.useState<string[]>(() => items.map((_, i) => String(i + 1)));
-  const settled = new Set([...(result?.queuedKeys ?? []), ...(result?.skippedKeys ?? [])]);
-  const setNumber = (i: number, v: string) => {
-    setNumbers((prev) => prev.map((n, j) => (j === i ? v : n)));
-  };
-  const numberErrors = chapterErrors(numbers.map((value, index) => ({ key: String(index), value, changed: true })));
-  const folderError = /[\\/]/.test(folder) ? 'Use a folder name without slashes.' : null;
-  return (
-    <Dialog open onOpenChange={(open) => { if (!open && !pending) onClose(); }}>
-      <DialogContent className="sm:max-w-lg" onEscapeKeyDown={event => { if (pending) event.preventDefault(); }} onPointerDownOutside={event => { if (pending) event.preventDefault(); }}>
-        <div className="flex max-h-[calc(100vh-9rem)] flex-col gap-3 overflow-y-auto p-5 pr-12">
-          <div>
-            <DialogTitle>Merged download</DialogTitle>
-            <DialogDescription className="sr-only">Download the selected galleries as one series.</DialogDescription>
-          </div>
-          <DownloadDestination setup={setup} />
-          {result && result.failures.length > 0 && <div role="alert" className="space-y-1 text-sm">
-            <p className="font-medium">{result.queuedKeys.length} queued{result.skippedKeys.length > 0 ? ` · ${result.skippedKeys.length} already owned or queued` : ''} · {result.failures.length} {result.failures.length === 1 ? 'needs' : 'need'} retry</p>
-          </div>}
-          {setup.status === 'ready' && setup.format !== 'cbz' && <p className="text-sm text-danger">Merged downloads need CBZ format. <Link className="underline underline-offset-4" to={DOWNLOADER_SETTINGS_URL}>Change the output format</Link> first.</p>}
-          <div className="flex flex-col gap-1">
-            <span id="merge-folder-label" className="text-xs font-medium text-muted">Series folder name</span>
-            <Input id="merge-folder" aria-labelledby="merge-folder-label" value={folder} onChange={(e) => setFolder(e.target.value)} placeholder="Series folder" disabled={pending || settled.size > 0} aria-invalid={!!folderError} aria-describedby={folderError ? "merge-folder-error" : undefined} autoFocus />
-            {folderError && <p id="merge-folder-error" className="text-xs text-danger">{folderError}</p>}
-          </div>
-          <hr className="border-border" />
-          <div className="flex max-h-56 flex-col gap-1 overflow-y-auto pr-1">
-            {items.map((item, i) => (
-              <div key={`${item.source}:${item.galleryId}`} className="flex shrink-0 items-center gap-2 rounded-md border border-border-2 bg-surface-2 px-2 py-1.5">
-                <div className="min-w-0 flex-1 text-xs">
-                  <p className="break-words">{item.title}</p>
-                  {result?.queuedKeys.includes(`${item.source}:${item.galleryId}`) && <p className="text-success">Queued</p>}
-                  {result?.skippedKeys.includes(`${item.source}:${item.galleryId}`) && <p className="text-muted">Already owned or queued</p>}
-                  {result?.failures.filter(failure => failure.key === `${item.source}:${item.galleryId}`).map(failure => <p key={failure.key} className="mt-1 text-danger">{failure.message}</p>)}
-                  {numberErrors[String(i)] && <p id={`merge-number-error-${i}`} className="mt-1 text-danger">{numberErrors[String(i)]}</p>}
-                </div>
-                <Input
-                  inputMode="decimal"
-                  aria-label={`Chapter number for ${item.title}`}
-                  value={numbers[i]}
-                  aria-invalid={!!numberErrors[String(i)]}
-                  aria-describedby={numberErrors[String(i)] ? `merge-number-error-${i}` : undefined}
-                  disabled={pending || settled.has(`${item.source}:${item.galleryId}`)}
-                  onChange={(e) => setNumber(i, e.target.value)}
-                  className="h-7 w-20 px-2 text-right text-base sm:text-base lg:text-xs pointer-coarse:text-base"
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="flex justify-end gap-2 border-t border-border p-4">
-          <Button variant="ghost" disabled={pending} onClick={onClose}>Cancel</Button>
-          <Button disabled={pending || !folder.trim() || !!folderError || Object.keys(numberErrors).length > 0 || setup.status !== 'ready' || setup.format !== 'cbz'} onClick={() => onConfirm(folder.trim(), numbers.map((n) => (n.trim() === '' ? null : Number(n))))}>
-            {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : result?.failures.length ? <RotateCcw className="h-4 w-4" /> : <Combine className="h-4 w-4" />} {pending ? 'Queuing…' : result?.failures.length ? `Retry remaining (${result.failures.length})` : `Download ${items.length} ${items.length === 1 ? 'gallery' : 'galleries'}`}
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// ---------------- Watched searches tab ----------------
-
-/**
- * Saved searches that ping Discord when they find new galleries. Owns its own
- * query observer (30s poll — auto-scan results land while the tab is open) so
- * refetches never re-render the rest of the page; the search tab's Watch
- * button shares the same cache key.
- */
-const WATCH_INTERVAL_OPTIONS = [
-  { minutes: 0, label: 'Off' },
-  { minutes: 5, label: '5 min' },
-  { minutes: 15, label: '15 min' },
-  { minutes: 30, label: '30 min' },
-  { minutes: 60, label: '1 hour' },
-  { minutes: 180, label: '3 hours' },
-  { minutes: 360, label: '6 hours' },
-  { minutes: 720, label: '12 hours' },
-  { minutes: 1440, label: '24 hours' },
-] as const;
-
-function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, query: string) => void }) {
-  const qc = useQueryClient();
-  const watchesQuery = useQuery({ queryKey: ['watched-searches'], queryFn: api.watchedSearches, staleTime: 30_000, refetchInterval: 30_000 });
-  const watches = watchesQuery.data;
-  const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.settings });
-  const intervalMinutes = settingsQuery.data?.watchedSearchIntervalMinutes ?? 15;
-  const [savingInterval, setSavingInterval] = React.useState(false);
-  const [source, setSource] = React.useState<DoujinSource>('hitomi');
-  const [query, setQuery] = React.useState('');
-  const watchTranslation = React.useRef<TranslationLink | null>(null);
-  const [watchTranslationNotice, setWatchTranslationNotice] = React.useState<{ query: string; issues: string[] } | null>(null);
-  function switchWatchSource(next: DoujinSource) {
-    if (next === source) return;
-    const translated = switchProviderSearch({ query, searchKey: null, sort: 'default' }, source, next, watchTranslation.current);
-    watchTranslation.current = translated.link;
-    setQuery(translated.search.query);
-    setWatchTranslationNotice({ query: translated.search.query, issues: translated.issues });
-    setSource(next);
-  }
-  const [adding, setAdding] = React.useState(false);
-  const watchQueryId = React.useId();
-  const [removeTarget, setRemoveTarget] = React.useState<{ id: number; query: string } | null>(null);
-  const [removing, setRemoving] = React.useState(false);
-  const [checking, setChecking] = React.useState(false);
-  const [requestedJob, setRequestedJob] = React.useState<number | null>(null);
-  const [manageOpen, setManageOpen] = React.useState(false);
-  const checkQuery = useQuery({
-    queryKey: ['watched-check-status'], queryFn: api.watchedCheckStatus,
-    refetchInterval: query => checking || requestedJob !== null || ['queued', 'running'].includes(query.state.data?.status ?? '') ? 2500 : 30_000,
-  });
-  const checkJob = checkQuery.data;
-  const checkActive = checking || (requestedJob !== null && checkJob?.id !== requestedJob && !checkQuery.isError) || checkJob?.status === 'queued' || checkJob?.status === 'running';
-  const completionRef = React.useRef('');
-  React.useEffect(() => {
-    if (!checkJob || ['queued', 'running'].includes(checkJob.status)) return;
-    const stamp = `${checkJob.id}:${checkJob.status}`;
-    if (completionRef.current === stamp) return;
-    completionRef.current = stamp;
-    void qc.invalidateQueries({ queryKey: ['watched-searches'] });
-    void qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
-    setRequestedJob(null);
-  }, [checkJob, qc]);
-  const summary = checkJob?.result as { newGalleries?: number; failed?: number; processed?: number } | undefined;
-  const checkLabel = checkQuery.isError ? 'Check status unavailable' : checkActive ? checkJob?.status === 'running' ? `Checking ${checkJob.progressCurrent} of ${checkJob.progressTotal} watches` : 'Check queued' : checkJob?.status === 'failed' ? 'Check failed' : checkJob?.status === 'cancelled' ? 'Check cancelled' : checkJob?.status === 'completed' ? `${summary?.newGalleries ?? 0} new ${summary?.newGalleries === 1 ? 'find' : 'finds'}${summary?.failed ? ` · ${summary.failed} ${summary.failed === 1 ? 'watch failed' : 'watches failed'}` : ''}` : 'No check recorded';
-  const [expanded, setExpanded] = React.useState<Set<number>>(new Set());
-  const toggleExpanded = (id: number) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  };
-
-  async function add() {
-    const q = query.trim();
-    if (!q || adding) return;
-    setAdding(true);
-    try {
-      await api.addWatchedSearch(source, q);
-      setQuery('');
-      qc.invalidateQueries({ queryKey: ['watched-searches'] });
-    } catch (e) {
-      toast({ tone: 'danger', title: 'Could not add watch', description: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setAdding(false);
-    }
-  }
-
-  async function remove(id: number): Promise<boolean> {
-    setRemoving(true);
-    try {
-      await api.removeWatchedSearch(id);
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ['watched-searches'] }),
-        qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] }),
-      ]);
-      toast({ tone: 'info', title: 'Watch removed', description: 'Discoveries remain in History.' });
-      return true;
-    } catch (e) {
-      toast({ tone: 'danger', title: 'Could not remove watch', description: e instanceof Error ? e.message : String(e) });
-      return false;
-    } finally {
-      setRemoving(false);
-    }
-  }
-  async function checkNow() {
-    setChecking(true);
-    try {
-      const queued = await api.checkWatchedSearches();
-      setRequestedJob(queued.id);
-      await checkQuery.refetch();
-    } catch (e) {
-      toast({ tone: 'danger', title: 'Could not queue check', description: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setChecking(false);
-    }
-  }
-
-  async function saveInterval(minutes: number) {
-    if (minutes === intervalMinutes || savingInterval) return;
-    setSavingInterval(true);
-    try {
-      await api.saveWatchedSearchInterval(minutes);
-      qc.invalidateQueries({ queryKey: ['settings'] });
-      toast({ tone: 'success', title: 'Check interval updated' });
-    } catch (e) {
-      void settingsQuery.refetch(); // snap the select back to the server value
-      toast({ tone: 'danger', title: 'Could not save check interval', description: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setSavingInterval(false);
-    }
-  }
-
-  const watchMotionRef = useDownloaderTransitions(`${manageOpen}:${(watches ?? []).map(watch => watch.id).join(',')}`, '[data-watched-search-id]');
-
-  return (
-    <div ref={watchMotionRef}>
-    <Card>
-      <CardHeader className="gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-        <div className="min-w-0 flex-1">
-          <CardTitle as="h2" className="flex items-center gap-2">
-            <Star aria-hidden="true" className="h-4 w-4 shrink-0" /> Watched searches
-          </CardTitle>
-          <div role="status" className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-            <span key={`${checkJob?.id}:${checkJob?.status}`} className={cn('watched-check-status break-words', checkJob?.status === 'failed' || summary?.failed ? 'text-warning' : 'text-muted')}>{checkLabel}{checkJob?.finishedAt && !checkActive ? ` · ${timeAgo(checkJob.finishedAt)}` : ''}</span>
-            {checkJob && <Link className="inline-flex min-h-11 items-center text-primary underline underline-offset-4" to={`/jobs?job=${checkJob.id}`}>View check</Link>}
-            {checkQuery.isError && <Button size="sm" variant="ghost" onClick={() => void checkQuery.refetch()}>Retry status</Button>}
-          </div>
-        </div>
-        <div className="flex items-end gap-2">
-          <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-medium text-muted sm:flex-none">Check every
-          <Select aria-label="Watched search check interval" value={String(intervalMinutes)} onChange={(e) => void saveInterval(Number(e.target.value))} disabled={savingInterval || !settingsQuery.data} className="h-11 sm:w-32">
-            {WATCH_INTERVAL_OPTIONS.map((o) => (
-              <option key={o.minutes} value={o.minutes}>{o.label}</option>
-            ))}
-          </Select>
-          </label>
-          <Button size="sm" variant="outline" className="h-11 shrink-0" onClick={checkNow} disabled={checkActive || !watches?.length || checkQuery.isPending}>
-            {checkActive ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Star className="h-3.5 w-3.5" />} Check now
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        {watchesQuery.isError && <ErrorState title="Could not load watched searches" description={watchesQuery.error instanceof Error ? watchesQuery.error.message : String(watchesQuery.error)} onRetry={() => void watchesQuery.refetch()} />}
-        {settingsQuery.isError && <ErrorState title="Could not load the check interval" description={settingsQuery.error instanceof Error ? settingsQuery.error.message : String(settingsQuery.error)} onRetry={() => void settingsQuery.refetch()} />}
-        <WatchedDisclosure label={`Manage watches${watches ? ` (${watches.length})` : ''}`} open={manageOpen || watches?.length === 0} onOpenChange={setManageOpen}>
-        {() => (
-        <div className="flex flex-col gap-4 pt-3">
-        <form className="grid grid-cols-1 gap-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-end" aria-label="Add a watched search" onSubmit={(e) => { e.preventDefault(); void add(); }}>
-          <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Source<Select aria-label="Watched search source" value={source} onChange={(e) => switchWatchSource(e.target.value as DoujinSource)} disabled={adding} className="h-11 sm:w-32 sm:shrink-0"><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select></label>
-          <div className="flex min-w-0 flex-col gap-1"><label htmlFor={watchQueryId} className="text-xs text-muted">Query</label><GallerySearchInput id={watchQueryId} value={query} onChange={setQuery} source={source} label="Watched search query" placeholder="Artist, tag, or search query" clearLabel="Clear watched search query" disabled={adding} className="h-11" /></div>
-          <Button size="sm" className="h-11" type="submit" disabled={adding || !query.trim()}>{adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add watch</Button>
-        </form>
-        {watchTranslationNotice?.query === query && watchTranslationNotice.issues.length > 0 && <p role="status" aria-label="Watch query translation" className="break-words text-sm text-muted">{watchTranslationNotice.issues.join(' ')} Review the query before adding the watch.</p>}
-        {watchesQuery.isPending ? (
-          <div role="status" aria-label="Loading watched searches" className="flex flex-col gap-2"><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /><span className="sr-only">Loading watched searches…</span></div>
-        ) : watches && watches.length > 0 ? (
-          <div className="flex flex-col border-t border-border">
-            {watches.map((w) => (
-              <div key={w.id} data-watched-search-id={w.id} className="border-b border-border py-3 text-xs last:border-b-0">
-                <div className="flex items-start gap-2">
-                  <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    <button type="button" onClick={() => onOpenSearch(w.source, w.query)} title={`Open in search tab: ${w.query}`} aria-label={`Search “${w.query}” on ${SOURCE_LABELS[w.source] ?? w.source}`} className="flex min-h-11 min-w-0 items-center text-left text-sm font-medium text-primary underline-offset-2 hover:underline"><span className="break-words line-clamp-2">{w.query}</span></button>
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><Badge tone="muted">{SOURCE_LABELS[w.source] ?? w.source}</Badge><span className="text-muted">{w.lastError ? 'Last attempt failed' : w.lastCheckedAt ? `Checked ${timeAgo(w.lastCheckedAt)}` : 'Awaiting first check'}</span></div>
-                    {w.lastError ? <p className="break-words text-warning">{w.lastError}</p> : w.lastNewCount !== null && w.lastNewCount !== undefined ? <p className="text-muted">{w.lastNewCount ? `${w.lastNewCount} new in last check` : 'No new finds in last check'}</p> : null}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                  {w.lastResults.length > 0 && (
-                    <Button size="sm" variant="ghost" className="h-11" aria-expanded={expanded.has(w.id)} aria-controls={`watched-results-${w.id}`} aria-label={`${expanded.has(w.id) ? 'Hide' : 'Show'} ${w.lastResults.length} latest finds for ${w.query}`} onClick={() => toggleExpanded(w.id)}>
-                      {w.lastResults.length} finds
-                      <ChevronDown className={cn('h-3.5 w-3.5 transition-transform duration-150', expanded.has(w.id) && 'rotate-180')} />
-                    </Button>
-                  )}
-                  <Button size="icon" variant="ghost" className="h-11 w-11" aria-label={`Remove watch ${w.query}`} onClick={() => setRemoveTarget({ id: w.id, query: w.query })}><X className="h-3.5 w-3.5" /></Button>
-                  </div>
-                </div>
-                {w.lastResults.length > 0 && <WatchedReveal id={`watched-results-${w.id}`} open={expanded.has(w.id)} lazy>{() => (
-                  <div className="mt-2 flex flex-col gap-1.5 border-t border-border pt-2">
-                    {w.lastFindsAt && <p className="text-muted">Found {timeAgo(w.lastFindsAt)}</p>}
-                    {w.lastResults.map(r => {
-                      const content = <><Cover url={r.coverUrl} title={r.title} className="h-10 w-8 shrink-0 rounded" /><span className="min-w-0 flex-1 break-words text-left line-clamp-2">{r.title}</span><PageCountPill pageCount={r.pageCount} />{r.url && <ExternalLink aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted" />}</>;
-                      const className = 'flex min-h-11 items-center gap-2 rounded px-1 text-foreground hover:bg-surface-2 hover:underline';
-                      return r.url
-                        ? <a key={r.galleryId} href={r.url} target="_blank" rel="noreferrer" className={className}>{content}</a>
-                        : <button key={r.galleryId} type="button" className={className} onClick={() => onOpenSearch(w.source, r.galleryId)} aria-label={`Search for ${r.title} on ${SOURCE_LABELS[w.source]}`}>{content}</button>;
-                    })}
-                  </div>
-                )}</WatchedReveal>}
-              </div>
-            ))}
-          </div>
-        ) : (
-          watches && <p className="text-sm text-muted">No watched searches yet</p>
-        )}
-
-        </div>
-        )}
-        </WatchedDisclosure>
-        <ConfirmDialog
-          open={removeTarget !== null}
-          title="Remove watched search?"
-          description={removeTarget ? `Stop watching “${removeTarget.query}”? Existing discoveries stay in History.` : ''}
-          confirmLabel="Remove"
-          pending={removing}
-          onOpenChange={(open) => { if (!open && !removing) setRemoveTarget(null); }}
-          onConfirm={() => { if (removeTarget && !removing) void remove(removeTarget.id).then(success => { if (success) setRemoveTarget(null); }); }}
-        />
-      </CardContent>
-    </Card>
-    </div>
-  );
-}
-
-// ---------------- Download manager tab ----------------
-
-/**
- * The manager tab is the only consumer of live task state; subscribing here
- * (rather than at the page top) keeps SSE progress ticks from re-rendering the
- * whole page. Task-mutating actions come from the same stable actions API.
- */
-function ManagerTab() {
-  const { tasks, error: downloadsError, refetch: refetchDownloads, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const requestedStatus = searchParams.get('status');
-  const status = requestedStatus === 'failed' || requestedStatus === 'active' ? requestedStatus : 'all';
-  const setStatus = (next: string) => {
-    setSearchParams((current) => {
-      const params = new URLSearchParams(current);
-      params.set('tab', 'downloads');
-      params.set('status', next);
-      return params;
-    });
-  };
-  const [confirmClear, setConfirmClear] = React.useState(false);
-  // The id (not the task row) is held so the delete callback stays stable for
-  // memoized QueueRows; the row itself is resolved from the task list for the
-  // dialog copy.
-  const [removeTargetId, setRemoveTargetId] = React.useState<number | null>(null);
-  // History collapse and the ComicInfo editor are reachable only from manager rows.
-  const [showAllHistory, setShowAllHistory] = React.useState(false);
-  const [comicInfo, setComicInfo] = React.useState<{ path?: string } | null>(null);
-
-  const queueMotionRef = useDownloaderTransitions(`${status}:${showAllHistory}:${tasks.map((task) => `${task.id}:${task.status}`).join(',')}`);
-
-  const currentTasks = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
-  const failed = tasks.filter((t) => t.status === 'failed');
-  const finished = tasks.filter((t) => t.status === 'completed');
-  const removeTarget = removeTargetId !== null ? tasks.find((t) => t.id === removeTargetId) ?? null : null;
-
-  const act = React.useCallback((id: number, a: 'pause' | 'resume' | 'cancel' | 'retry') => {
-    if (a === 'pause') pause(id);
-    else if (a === 'resume') resume(id);
-    else if (a === 'cancel') cancel(id);
-    else retry(id);
-  }, [pause, resume, cancel, retry]);
-  // Stable row callbacks so memoized QueueRows skip re-renders when untouched.
-  const openComicInfo = React.useCallback((path: string) => setComicInfo({ path }), []);
-  const removeFromHistory = React.useCallback((id: number) => setRemoveTargetId(id), []);
-
-  return (
-    <>
-      <div ref={queueMotionRef}>
-      <Card>
-        <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
-          <CardTitle as="h2" className="flex flex-wrap items-center gap-2">
-            <DownloadIcon className="h-4 w-4" /> Downloads
-            {currentTasks.length > 0 && <Badge tone="info">{currentTasks.length} active</Badge>}
-          </CardTitle>
-          {finished.some((task) => task.status === 'completed') && <Button size="sm" variant="outline" onClick={() => setConfirmClear(true)}><Trash2 className="h-3.5 w-3.5" /> Clear completed</Button>}
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <label htmlFor="download-status" className="text-sm font-medium">Show</label>
-            <Select id="download-status" value={status} onChange={(event) => setStatus(event.target.value)} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-full sm:w-64">
-              <option value="all">All downloads ({tasks.length})</option>
-              <option value="active">Active ({currentTasks.length})</option>
-              <option value="failed">Failed ({failed.length})</option>
-            </Select>
-          </div>
-          {downloadsError ? (
-            <ErrorState title="Could not load downloads" description={downloadsError.message} onRetry={() => void refetchDownloads()} />
-          ) : tasks.length === 0 ? (
-            <EmptyState icon={<DownloadIcon className="h-8 w-8" />} title="No downloads yet" description="Click Download on a gallery to queue it. Set the output folder in Settings first." />
-          ) : (status === 'failed' && failed.length === 0) || (status === 'active' && currentTasks.length === 0) ? (
-            <EmptyState icon={status === 'failed' ? <CheckCircle2 className="h-8 w-8" /> : <DownloadIcon className="h-8 w-8" />} title={status === 'failed' ? 'No failed downloads' : 'No active downloads'} description="Choose All downloads to view the rest of your queue and history." />
-          ) : (
-            <>
-              {status !== 'active' && failed.length > 0 && (
-                <section className="flex flex-col gap-2" aria-labelledby="failed-downloads">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 id="failed-downloads" className="text-sm font-semibold text-danger">Needs attention</h3>
-                    <Badge tone="danger">{failed.length} failed</Badge>
-                  </div>
-                  {failed.map((task) => <QueueRow key={task.id} task={task} onAction={act} onDelete={removeFromHistory} />)}
-                </section>
-              )}
-              {status !== 'failed' && currentTasks.length > 0 && (
-                <section className="flex flex-col gap-2" aria-labelledby="current-downloads">
-                  <h3 id="current-downloads" className="text-sm font-semibold">Active downloads</h3>
-                  {currentTasks.map((task) => <QueueRow key={task.id} task={task} onAction={act} onEditComicInfo={openComicInfo} />)}
-                </section>
-              )}
-              {status === 'all' && finished.length > 0 && (
-                <section className="flex flex-col gap-2" aria-labelledby="download-history">
-                  <div className="flex items-center justify-between">
-                    <h3 id="download-history" className="text-sm font-semibold">Completed</h3>
-                    {finished.length > HISTORY_PREVIEW && <Button size="sm" variant="ghost" onClick={() => setShowAllHistory((value) => !value)}>{showAllHistory ? 'Show less' : `Show all (${finished.length})`}</Button>}
-                  </div>
-                  {(showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW)).map((task) => <QueueRow key={task.id} task={task} onAction={act} onEditComicInfo={openComicInfo} onDelete={removeFromHistory} />)}
-                </section>
-              )}
-            </>
-          )}
-        </CardContent>
-      </Card>
-
-      </div>
-      {comicInfo && (
-        <ComicInfoModal initialPath={comicInfo.path} onClose={() => setComicInfo(null)} />
-      )}
-      <ConfirmDialog
-        open={removeTarget !== null}
-        title="Remove download from history?"
-        description={removeTarget ? `This removes “${removeTarget.title ?? `Gallery ${removeTarget.galleryId}`}” from history. Downloaded files are not deleted.` : ''}
-        confirmLabel="Remove"
-        onOpenChange={(open) => { if (!open) setRemoveTargetId(null); }}
-        onConfirm={() => { if (removeTarget) removeTask(removeTarget.id); setRemoveTargetId(null); }}
-      />
-      <ConfirmDialog
-        open={confirmClear}
-        title="Clear completed downloads?"
-        description="This removes every completed download from history. Downloaded files are not deleted."
-        confirmLabel="Clear completed"
-        danger
-        onOpenChange={setConfirmClear}
-        onConfirm={() => { clearCompleted(); setConfirmClear(false); }}
-      />
-    </>
-  );
-}
-
-// ---------------- Page ----------------
-
 export function Downloader() {
   const navigate = useNavigate();
   // Search cards consume live tasks so each doujin reflects queued, downloading,
@@ -1079,11 +45,11 @@ export function Downloader() {
     };
   }, [initialState]);
   const linkedQuery = searchParams.get('q');
-  const [source, setSource] = React.useState<DoujinSource>(() => {
+  const initialSource = React.useMemo<DoujinSource>(() => {
     const requested = searchParams.get('source');
     if (requested && SOURCE_COLORS[requested as DoujinSource]) return requested as DoujinSource;
     return initialState.source && SOURCE_COLORS[initialState.source] ? initialState.source : 'hitomi';
-  });
+  }, []);
 
   // The server reports the registered doujin providers; the radio list follows
   // it so new sources appear without UI changes (static fallback while loading).
@@ -1092,17 +58,16 @@ export function Downloader() {
     () => (providerList && providerList.length > 0 ? providerList.map((p) => ({ id: p.id, label: p.name })) : FALLBACK_SOURCES),
     [providerList],
   );
-  const sourceSearch = initialSearches[source];
-  const [query, setQuery] = React.useState(() => linkedQuery ?? sourceSearch?.query ?? '');
-  const [searchKey, setSearchKey] = React.useState<string | null>(() => {
-    if (linkedQuery !== null) return linkedQuery.trim() || null;
-    return sourceSearch?.searchKey?.trim() || null;
+  const [searchState, dispatchSearch] = React.useReducer(gallerySearchReducer, undefined, () => {
+    const saved = initialSearches[initialSource];
+    return { source: initialSource, query: linkedQuery ?? saved?.query ?? '',
+      searchKey: linkedQuery !== null ? linkedQuery.trim() || null : saved?.searchKey?.trim() || null,
+      sort: sortsFor(initialSource).some(option => option.value === saved?.sort) ? saved!.sort : 'default' };
   });
-  // Restore the source's sort alongside its search, including the legacy cache.
-  const [sort, setSort] = React.useState<DoujinSort>(() => {
-    const saved = sourceSearch?.sort;
-    return sortsFor(source).some(option => option.value === saved) ? saved! : 'default';
-  });
+  const { source, query, searchKey, sort } = searchState;
+  const setQuery = (query: string) => dispatchSearch({ type: 'input', query });
+  const setSearchKey = (query: string) => dispatchSearch({ type: 'commit', query });
+  const setSort = (sort: DoujinSort) => dispatchSearch({ type: 'sort', sort });
   const searches = React.useRef<DownloaderStateCache['searches']>(initialSearches);
   const translation = React.useRef<TranslationLink | null>(linkedQuery === null ? initialState.translation ?? null : null);
   const [translationNotice, setTranslationNotice] = React.useState<{ query: string; issues: string[] } | null>(() => {
@@ -1125,10 +90,7 @@ export function Downloader() {
     rememberSearch();
     translation.current = null;
     setTranslationNotice(null);
-    setSource(nextSource);
-    setQuery(nextQuery);
-    setSearchKey(trimmed || null);
-    setSort((current) => sortsFor(nextSource).some((option) => option.value === current) ? current : 'default');
+    dispatchSearch({ type: 'replace', state: { source: nextSource, query: nextQuery, searchKey: trimmed || null, sort: sortsFor(nextSource).some(option => option.value === sort) ? sort : 'default' } });
     setSelected(null);
   }, [deepLink, searchParams, source]);
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
@@ -1137,7 +99,6 @@ export function Downloader() {
   // is keyed `${source}:${galleryId}` and persists across result pages; a fresh
   // search resets it. Click order defines chapter numbering for merges.
   const [selectMode, setSelectMode] = React.useState(false);
-  const [selectedGalleries, setSelectedGalleries] = React.useState<Set<string>>(new Set());
   const [mergeOpen, setMergeOpen] = React.useState(false);
   const [mergePending, setMergePending] = React.useState(false);
   const mergePendingRef = React.useRef(false);
@@ -1162,16 +123,6 @@ export function Downloader() {
     else toast({ tone: 'info', title: downloadStatus === 'loading' ? 'Checking download settings' : 'Download settings unavailable', description: 'Retry the settings check before starting a download.' });
     return false;
   }, [downloadStatus, navigate]);
-  const { tasks } = useDownloads();
-  const activeTasksByGallery = React.useMemo(() => {
-    const byGallery = new Map<string, DownloadTask>();
-    for (const task of tasks) {
-      if (task.status === 'queued' || task.status === 'downloading' || task.status === 'paused') {
-        byGallery.set(`${task.source}:${task.galleryId}`, task);
-      }
-    }
-    return byGallery;
-  }, [tasks]);
   // Top-of-page view tabs: search results vs. the download manager queue.
   const [rememberedTab, setRememberedTab] = React.useState<DownloaderTab>(() =>
     ['search', 'recommend', 'watched', 'manager'].includes(initialState.tab ?? '') ? initialState.tab! : 'search');
@@ -1247,136 +198,12 @@ export function Downloader() {
     }
   }
 
-  const [feedView, setFeedView] = React.useState<'inbox' | 'history'>('inbox');
-  const [feedSource, setFeedSource] = React.useState('');
-  const [feedWatch, setFeedWatch] = React.useState('');
-  const [feedPage, setFeedPage] = React.useState(1);
-  const WATCH_PAGE_SIZE = 12;
-  const { data: galleryFeed, isFetching: feedLoading, isError: feedFailed, error: feedError, refetch: retryFeed } = useQuery({
-    queryKey: ['watched-gallery-feed', feedView, feedSource, feedWatch, feedPage],
-    queryFn: () => api.watchedGalleryFeed({ view: feedView, source: feedSource, searchId: feedWatch, offset: (feedPage - 1) * WATCH_PAGE_SIZE, limit: WATCH_PAGE_SIZE }),
-    enabled: tab === 'watched',
-    refetchInterval: 60_000,
-  });
-  const feedItems = React.useMemo<DoujinSearchResult[]>(() => (galleryFeed?.items ?? []).map(g => ({ source: g.source, galleryId: g.galleryId, title: g.title, coverUrl: g.coverUrl ?? undefined, pageCount: g.pageCount, tags: [], artists: g.artists ?? [], language: g.language })), [galleryFeed]);
-  const feedSelectionCache = React.useRef(new Map<string, DoujinSearchResult>());
-  for (const item of feedItems) feedSelectionCache.current.set(`${item.source}:${item.galleryId}`, item);
-  const feedMetaByKey = new Map((galleryFeed?.items ?? []).map(g => [`${g.source}:${g.galleryId}`, g]));
-  const feedPageCount = Math.max(1, Math.ceil((galleryFeed?.total ?? 0) / WATCH_PAGE_SIZE));
-  const feedCurPage = Math.min(feedPage, feedPageCount);
-  React.useEffect(() => { if (galleryFeed && feedPage > feedPageCount) setFeedPage(feedPageCount); }, [galleryFeed, feedPage, feedPageCount]);
-  const feedPageItems = feedItems;
-  const [reviewingKeys, setReviewingKeys] = React.useState(new Set<string>());
-
-  // Daily recommendations: stable per local date (server caches the day's set),
-  // so no polling — a manual refresh re-rolls with a fresh seed.
-  const qc = useQueryClient();
-  const reviewDiscoveries = React.useCallback(async (items: DoujinSearchResult[], reviewed: boolean) => {
-    const keys = items.map(item => `${item.source}:${item.galleryId}`);
-    if (!keys.length || keys.some(key => reviewingKeys.has(key))) return;
-    setReviewingKeys(current => new Set([...current, ...keys]));
-    try {
-      await api.reviewWatchedGalleries(items.map(({ source, galleryId }) => ({ source, galleryId })), reviewed);
-      const handled = new Set(keys);
-      setSelectedGalleries(current => new Set([...current].filter(key => !handled.has(key))));
-      await qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
-    } catch (error) {
-      toast({ tone: 'danger', title: 'Could not update Inbox', description: error instanceof Error ? error.message : String(error) });
-    } finally {
-      setReviewingKeys(current => new Set([...current].filter(key => !keys.includes(key))));
-    }
-  }, [qc, reviewingKeys]);
-  const reviewGallery = React.useCallback((item: DoujinSearchResult, reviewed: boolean) => { void reviewDiscoveries([item], reviewed); }, [reviewDiscoveries]);
-  const { data: recs, isFetching: recsLoading, isError: recsFailed, error: recsError, refetch: refetchRecs } = useQuery({
-    ...recommendationQuery,
-    // App owns the initial load. This observer only reads the shared snapshot;
-    // a failed first load retries only when the user chooses Retry.
-    enabled: false,
-  });
-  const [recsRefreshing, setRecsRefreshing] = React.useState(false);
-  async function doRefreshRecs() {
-    setRecsRefreshing(true);
-    try {
-      const refreshed = await api.refreshRecommendations();
-      qc.setQueryData(['recommendations'], refreshed);
-      toast({ tone: 'success', title: 'Fresh picks ready' });
-    } catch (e) {
-      toast({ tone: 'danger', title: 'Could not refresh recommendations', description: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setRecsRefreshing(false);
-    }
-  }
-
-  const ownedKeys = React.useMemo(
-    () => new Set(recs?.ownedKeys ?? []),
-    [recs],
-  );
-  const visibleRecs = recs?.items ?? [];
-  const [dismissedGalleries, setDismissedGalleries] = React.useState<DoujinSearchResult[]>([]);
-  const [feedbackPending, setFeedbackPending] = React.useState<string | null>(null);
-  const [feedbackItem, setFeedbackItem] = React.useState<DoujinSearchResult | null>(null);
-  const feedbackQuery = useQuery({ queryKey: ['recommendation-feedback'], queryFn: api.recommendationFeedback, enabled: tab === 'recommend' });
-  const updateFeedback = React.useCallback(async (request: FeedbackRequest) => {
-    setFeedbackPending(`${request.source}:${request.galleryId}`);
-    try {
-      const result = await api.saveRecommendationFeedback(request);
-      qc.setQueryData(['recommendation-feedback'], result.feedback);
-      qc.setQueryData(['recommendations'], result.recommendations);
-      setFeedbackItem(null);
-      const title = { like: 'More like this saved', unlike: 'Preference removed', 'mute-artist': 'Artist muted', 'unmute-artist': 'Artist unmuted' }[request.action];
-      toast({ tone: 'success', title, description: request.action === 'like' || request.action === 'unlike' ? 'Refresh picks to use your updated preferences.' : undefined });
-    } catch (error) {
-      toast({ tone: 'danger', title: 'Could not save recommendation feedback', description: error instanceof Error ? error.message : String(error) });
-    } finally { setFeedbackPending(null); }
-  }, [qc]);
-  const doDismissGallery = React.useCallback(async (item: DoujinSearchResult) => {
-    const key = `${item.source}:${item.galleryId}`;
-    setFeedbackPending(key);
-    try {
-      const replacement = await api.dismissGallery({ source: item.source, galleryId: item.galleryId });
-      qc.setQueryData(['recommendations'], replacement);
-      setDismissedGalleries((current) => [...current.filter((gallery) => `${gallery.source}:${gallery.galleryId}` !== key), item]);
-      setFeedbackItem(null);
-    } catch (e) {
-      toast({ tone: 'danger', title: 'Could not dismiss gallery', description: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setFeedbackPending(null);
-    }
-  }, [qc]);
-  async function undoDismissGallery(item: DoujinSearchResult) {
-    const key = `${item.source}:${item.galleryId}`;
-    setFeedbackPending(key);
-    try {
-      const replacement = await api.undoDismissGallery({ source: item.source, galleryId: item.galleryId });
-      qc.setQueryData(['recommendations'], replacement);
-      setDismissedGalleries((current) => current.filter((gallery) => `${gallery.source}:${gallery.galleryId}` !== key));
-      toast({ tone: 'success', title: 'Dismissal undone', description: 'This gallery can be recommended again.' });
-    } catch (e) {
-      toast({ tone: 'danger', title: 'Could not undo dismissal', description: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setFeedbackPending(null);
-    }
-  }
-
-  // Which Kavita libraries feed the recommendation profile (per-library opt-out).
-  const { data: recLibs } = useQuery({ queryKey: ['recommendation-libraries'], queryFn: api.recommendationLibraries, enabled: tab === 'recommend' });
-  const { data: recSettings, refetch: refetchRecSettings } = useQuery({ queryKey: ['recommendation-settings'], queryFn: api.recommendationSettings, enabled: tab === 'recommend' });
-  const [recLibraryPending, setRecLibraryPending] = React.useState<number | null>(null);
-  async function toggleRecLibrary(lib: { id: number; name: string }) {
-    setRecLibraryPending(lib.id);
-    const excluded = new Set(recSettings?.excludedLibraryIds ?? []);
-    if (excluded.has(lib.id)) excluded.delete(lib.id);
-    else excluded.add(lib.id);
-    try {
-      await api.saveRecommendationSettings({ excludedLibraryIds: [...excluded] });
-      await refetchRecSettings();
-      toast({ tone: 'success', title: `“${lib.name}” ${excluded.has(lib.id) ? 'excluded from' : 'added to'} recommendations`, description: 'This applies to your next daily picks or when you choose Refresh picks.' });
-    } catch (e) {
-      toast({ tone: 'danger', title: 'Could not update libraries', description: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setRecLibraryPending(null);
-    }
-  }
+  const selection = useGallerySelection();
+  const { feedView, setFeedView, feedSource, setFeedSource, feedWatch, setFeedWatch, setFeedPage, galleryFeed, feedLoading, feedFailed, feedError, retryFeed, feedItems, knownDiscoveries, feedMetaByKey, feedPageCount, feedCurPage, feedPageItems, reviewingKeys, reviewDiscoveries, reviewGallery } = useWatchedFeed(tab, selection.remove);
+  const selectionView = React.useMemo(() => resolveGallerySelection(selection.chosen, results ?? EMPTY_GALLERIES, feedItems, knownDiscoveries.current), [selection.chosen, results, feedItems, knownDiscoveries]);
+  const selectedGalleries = selection.keys, selectedItems = selectionView.items, reviewableSelectedItems = selectionView.reviewable;
+  const toggleGallerySelect = selection.toggle;
+  const { recs, recsLoading, recsFailed, recsError, refetchRecs, recsRefreshing, doRefreshRecs, ownedKeys, visibleRecs, dismissedGalleries, feedbackPending, feedbackItem, setFeedbackItem, feedbackQuery, updateFeedback, doDismissGallery, undoDismissGallery, recLibs, recSettings, recLibraryPending, toggleRecLibrary } = useRecommendations(tab);
 
   // Tracks every gallery whose start request is in flight. A set preserves the
   // indicators when downloads are queued concurrently from different surfaces.
@@ -1388,7 +215,7 @@ export function Downloader() {
       searchMounted.current = true;
       return;
     }
-    setSelectedGalleries(new Set());
+    selection.clear();
     setSelectMode(false);
   }, [searchKey, source]);
   React.useEffect(() => {
@@ -1436,29 +263,6 @@ export function Downloader() {
     }
   }, [startDownload, ensureDownloadReady, checkDuplicates, reviewCheck]);
 
-  // Item-argument style + setter-only closure (see GalleryCard memo).
-  const toggleGallerySelect = React.useCallback((item: DoujinSearchResult) => {
-    const key = `${item.source}:${item.galleryId}`;
-    setSelectedGalleries((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
-
-  // Selected galleries in click order — the order chapter numbers are assigned.
-  // Selections can come from either results grid (search or "Recently added");
-  // a gallery present in live search results keeps its richer metadata.
-  const selectionIdentity = JSON.stringify([source, searchKey]);
-  const searchSelectionCache = React.useRef({ identity: selectionIdentity, items: new Map<string, DoujinSearchResult>() });
-  if (searchSelectionCache.current.identity !== selectionIdentity) searchSelectionCache.current = { identity: selectionIdentity, items: new Map() };
-  for (const key of searchSelectionCache.current.items.keys()) if (!selectedGalleries.has(key)) searchSelectionCache.current.items.delete(key);
-  for (const item of results ?? EMPTY_GALLERIES) searchSelectionCache.current.items.set(`${item.source}:${item.galleryId}`, item);
-  const selectableGalleries = React.useMemo(() => indexSelectableGalleries([...searchSelectionCache.current.items.values()], [...feedSelectionCache.current.values()]), [results, feedItems, selectedGalleries, selectionIdentity]);
-  const selectedItems = React.useMemo(() => selectedGalleryItems(selectableGalleries, selectedGalleries), [selectableGalleries, selectedGalleries]);
-  const reviewableSelectedItems = selectedItems.filter(item => feedSelectionCache.current.has(`${item.source}:${item.galleryId}`));
-
   const openMergedDownload = React.useCallback(() => {
     if (!selectedItems.length) return;
     // Snapshot click order so successful requests never shift remaining chapters.
@@ -1467,8 +271,8 @@ export function Downloader() {
     setMergeOpen(true);
   }, [selectedItems]);
   const openMergeInto = React.useCallback(() => setMergeIntoOpen(true), []);
-  const clearSelection = React.useCallback(() => setSelectedGalleries(new Set()), []);
-  const cancelSelection = React.useCallback(() => { setSelectedGalleries(new Set()); setSelectMode(false); }, []);
+  const clearSelection = selection.clear;
+  const cancelSelection = React.useCallback(() => { selection.clear(); setSelectMode(false); }, [selection.clear]);
 
   const showSelection = (tab === 'search' || tab === 'watched') && (selectMode || selectedGalleries.size > 0);
   const selectionActions = {
@@ -1510,7 +314,7 @@ export function Downloader() {
         }
       }
       setMergeResult({ queuedKeys, skippedKeys, failures });
-      setSelectedGalleries(current => new Set([...current].filter(key => !settled.has(key))));
+      selection.remove(settled);
       if (!failures.length) {
         setSelectMode(false);
         setMergeOpen(false);
@@ -1549,15 +353,9 @@ export function Downloader() {
     rememberSearch();
     translation.current = null;
     setTranslationNotice(null);
-    if (itemSource && itemSource !== source) {
-      setSource(itemSource);
-      // Drop a sort the target source does not offer so the dropdown never
-      // shows a value with no matching option.
-      if (!sortsFor(itemSource).some((s) => s.value === sort)) setSort('default');
-    }
+    const nextSource = itemSource ?? source;
+    dispatchSearch({ type: 'replace', state: { source: nextSource, query: trimmed, searchKey: trimmed, sort: sortsFor(nextSource).some(option => option.value === sort) ? sort : 'default' } });
     setTab('search');
-    setQuery(trimmed);
-    setSearchKey(trimmed);
     setSelected(null);
   }
 
@@ -1568,10 +366,7 @@ export function Downloader() {
     const translated = switchProviderSearch({ query, searchKey, sort }, source, next, translation.current);
     translation.current = translated.link;
     setTranslationNotice({ query: translated.search.query, issues: translated.issues });
-    setQuery(translated.search.query);
-    setSearchKey(translated.search.searchKey);
-    setSort(translated.search.sort);
-    setSource(next);
+    dispatchSearch({ type: 'replace', state: { ...translated.search, source: next } });
     // A consumed deep link must not overwrite the restored draft on refresh.
     setSearchParams(current => {
       const params = new URLSearchParams(current);
@@ -1724,17 +519,11 @@ export function Downloader() {
                   <GalleryCard
                     key={item.source + item.galleryId}
                     item={item}
-                    selectMode={selectMode}
-                    selected={selectedGalleries.has(`${item.source}:${item.galleryId}`)}
-                    onToggleSelect={toggleGallerySelect}
                     onOpen={setSelected}
-                    task={activeTasksByGallery.get(`${item.source}:${item.galleryId}`)}
                     starting={pendingKeys.has(`${item.source}:${item.galleryId}`)}
-                    downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
-                    libraryMatch={libraryMatches.get(`${item.source}:${item.galleryId}`)}
                     onDownload={doStartDownload}
                     downloadSetup={downloadStatus}
-                  />
+                   ownership={{ type: libraryMatches.get(`${item.source}:${item.galleryId}`) === 'owned' ? 'in-library' : downloadedAt.has(`${item.source}:${item.galleryId}`) || ownedKeys.has(`${item.source}:${item.galleryId}`) ? 'downloaded' : libraryMatches.get(`${item.source}:${item.galleryId}`) === 'possible' ? 'possible-duplicate' : 'available', downloadedAt: downloadedAt.get(`${item.source}:${item.galleryId}`), preferenceOwned: ownedKeys.has(`${item.source}:${item.galleryId}`) }} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(`${item.source}:${item.galleryId}`), onToggle: toggleGallerySelect }} />
                 ))}
               </div>
               <Pager page={curPage} count={pageCount} onPageChange={changePage} />
@@ -1838,18 +627,12 @@ export function Downloader() {
                   <GalleryCard
                     item={item}
                     onOpen={setSelected}
-                    task={activeTasksByGallery.get(`${item.source}:${item.galleryId}`)}
                     starting={pendingKeys.has(`${item.source}:${item.galleryId}`)}
-                    downloadedAt={downloadedAt.get(`${item.source}:${item.galleryId}`)}
-                    libraryMatch={libraryMatches.get(`${item.source}:${item.galleryId}`)}
                     onDownload={doStartDownload}
                     downloadSetup={downloadStatus}
-                    owned={ownedKeys.has(`${item.source}:${item.galleryId}`)}
-                    onFeedback={setFeedbackItem}
-                    dismissing={feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading}
-                    showSource={false}
-                    showTags={false}
-                  />
+
+
+                   ownership={{ type: libraryMatches.get(`${item.source}:${item.galleryId}`) === 'owned' ? 'in-library' : downloadedAt.has(`${item.source}:${item.galleryId}`) || ownedKeys.has(`${item.source}:${item.galleryId}`) ? 'downloaded' : libraryMatches.get(`${item.source}:${item.galleryId}`) === 'possible' ? 'possible-duplicate' : 'available', downloadedAt: downloadedAt.get(`${item.source}:${item.galleryId}`), preferenceOwned: ownedKeys.has(`${item.source}:${item.galleryId}`) }} display="recommendation" feedback={{ pending: feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading, onOpen: setFeedbackItem }} />
                 </div>
               ))}
             </div>
@@ -1891,7 +674,7 @@ export function Downloader() {
                   {feedPageItems.map(item => {
                     const key = `${item.source}:${item.galleryId}`, meta = feedMetaByKey.get(key);
                     return <div key={key} data-review-pending={reviewingKeys.has(key)} className="watched-discovery flex min-w-0 flex-col gap-1 [&>article]:flex-1">
-                      <GalleryCard item={item} selectMode={selectMode} selected={selectedGalleries.has(key)} onToggleSelect={toggleGallerySelect} onOpen={setSelected} task={activeTasksByGallery.get(key)} starting={pendingKeys.has(key)} downloadedAt={downloadedAt.get(key)} libraryMatch={libraryMatches.get(key)} onDownload={doStartDownload} downloadSetup={downloadStatus} showTags={false} onReview={reviewGallery} reviewed={!!meta?.reviewedAt} reviewPending={reviewingKeys.has(key)} />
+                      <GalleryCard item={item} onOpen={setSelected} starting={pendingKeys.has(key)} onDownload={doStartDownload} downloadSetup={downloadStatus}   ownership={{ type: libraryMatches.get(`${item.source}:${item.galleryId}`) === 'owned' ? 'in-library' : downloadedAt.has(`${item.source}:${item.galleryId}`) || ownedKeys.has(`${item.source}:${item.galleryId}`) ? 'downloaded' : libraryMatches.get(`${item.source}:${item.galleryId}`) === 'possible' ? 'possible-duplicate' : 'available', downloadedAt: downloadedAt.get(`${item.source}:${item.galleryId}`), preferenceOwned: ownedKeys.has(`${item.source}:${item.galleryId}`) }} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(`${item.source}:${item.galleryId}`), onToggle: toggleGallerySelect }} display="discovery" review={{ state: reviewingKeys.has(key) ? 'pending' : meta?.reviewedAt ? 'reviewed' : 'unreviewed', onChange: reviewGallery }} />
                       {meta && <div className="flex min-w-0 flex-col gap-1 px-1 text-xs">
                         <button className="min-h-11 break-words text-left text-muted underline-offset-4 hover:text-primary hover:underline line-clamp-2" onClick={() => { setFeedWatch(String(meta.searchId)); setFeedPage(1); }} title={`Filter by ${meta.query}`}>via {meta.query} · {timeAgo(meta.foundAt)}</button>
                         {meta.reviewedAt && <Button size="sm" variant="ghost" className="min-h-11 justify-start px-1" disabled={reviewingKeys.has(key)} onClick={() => reviewGallery(item, false)}><RotateCcw className="h-3.5 w-3.5" />Return to inbox</Button>}
@@ -1925,7 +708,7 @@ export function Downloader() {
           onClose={() => setMergeIntoOpen(false)}
           onQueued={(keys) => {
             const queued = new Set(keys);
-            setSelectedGalleries(current => new Set([...current].filter(key => !queued.has(key))));
+            selection.remove(queued);
             setSelectMode(false);
           }}
           setup={setup}
@@ -1939,7 +722,7 @@ export function Downloader() {
           item={selected}
           onClose={() => setSelected(null)}
           checking={pendingKeys.has(`${selected.source}:${selected.galleryId}`)}
-          downloading={activeTasksByGallery.has(`${selected.source}:${selected.galleryId}`)}
+
           downloaded={downloadedAt.has(`${selected.source}:${selected.galleryId}`) || libraryMatches.get(`${selected.source}:${selected.galleryId}`) === 'owned' || ownedKeys.has(`${selected.source}:${selected.galleryId}`)}
           inLibrary={libraryMatches.get(`${selected.source}:${selected.galleryId}`) === 'owned'}
           setup={setup}

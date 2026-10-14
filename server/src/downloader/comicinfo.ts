@@ -63,7 +63,7 @@ export function buildComicInfoFields(g: DoujinGallery): ComicInfoFields {
   const series = (g.series ?? '').trim() || g.title.trim();
   // Doujinshi "genres" are the gendered content tags (female:/male: areas);
   // generic tags stay in Tags. An explicit genres list wins when present.
-  const genreNames = g.tags.filter((t, i) => g.tagNamespaces?.[i] === 'female' || g.tagNamespaces?.[i] === 'male');
+  const genreNames = g.tags.filter((_t, i) => g.tagNamespaces?.[i] === 'female' || g.tagNamespaces?.[i] === 'male');
   return {
     Title: g.title.trim(),
     Series: series,

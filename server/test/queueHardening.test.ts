@@ -194,7 +194,11 @@ test('POST /downloads blocks duplicates in flight and already owned, with distin
     waitForTerminal(singletonQueue, dupQueuedId),
     waitForTerminal(singletonQueue, id),
   ]);
-  for (const rowId of [dupQueuedId, dupDownloadingId, id]) singletonQueue.remove(rowId);
+  singletonQueue.cancel(dupDownloadingId);
+  // Terminal status can precede the last cleanup notification. Wait for the
+  // writers to unwind before removing rows under the stricter safety boundary.
+  while ([dupQueuedId, id].some(rowId => singletonQueue.isRunning(rowId))) await new Promise<void>(resolve => setImmediate(resolve));
+  for (const rowId of [dupQueuedId, dupDownloadingId, id]) assert.equal(singletonQueue.remove(rowId), true);
 });
 
 test('retry resumes from pre-seeded partial page files without re-fetching them', async () => {

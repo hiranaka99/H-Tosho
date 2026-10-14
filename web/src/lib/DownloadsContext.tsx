@@ -116,9 +116,9 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
       const title = t.title ?? `Gallery ${t.galleryId}`;
       if (t.status === 'completed') {
         toast({ tone: 'success', title: 'Download complete', description: title });
-      } else if (t.status === 'failed' && t.errorMessage !== 'Cancelled by user') {
+      } else if (t.status === 'failed' && t.state?.type !== 'cancelled') {
         // Surface genuine failures; a user cancel also lands as "failed" but carries a distinct message.
-        toast({ tone: 'danger', title: 'Download failed', description: t.errorMessage ? downloadErrorHelp(t.errorMessage).message : title });
+        toast({ tone: 'danger', title: 'Download failed', description: t.errorMessage ? downloadErrorHelp(t.errorMessage, t.errorCode).message : title });
       }
     }
     if (completed) void qc.invalidateQueries({ queryKey: ['downloads-completed'] });
@@ -181,4 +181,12 @@ export function useDownloadTasks(): DownloadTasksApi {
  * download manager). */
 export function useDownloads(): DownloadsApi {
   return { ...useDownloadActions(), ...useDownloadTasks() };
+}
+
+
+/** Observe only this gallery; unrelated SSE ticks retain the selected task reference. */
+export function useGalleryDownloadTask(source: DoujinSource, galleryId: string): DownloadTask | undefined {
+  const select = React.useCallback((tasks: DownloadTask[]) => tasks.find(task => task.source === source && task.galleryId === galleryId &&
+    (['queued', 'downloading', 'paused'].includes(task.status) || task.state?.type === 'retry-wait')), [source, galleryId]);
+  return useQuery({ queryKey: ['downloads'], enabled: false, select }).data;
 }

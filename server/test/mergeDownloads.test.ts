@@ -150,8 +150,7 @@ test('download failure preserves existing chapters; job retry reuses successful 
 
 test('invalid staged target edits reject the plan before any gallery download', async () => {
   const f = fixture('invalid');
-  const job = runningJob({ seriesId: 50, existingChapters: { [f.existing]: '0' }, downloads: [plan('never-downloaded')] });
-  await assert.rejects(runJob(job, () => {}), /positive numbers or blank/);
+  assert.throws(() => runningJob({ seriesId: 50, existingChapters: { [f.existing]: '0' }, downloads: [plan('never-downloaded')] }), /positive numbers or blank/);
   assert.equal(f.counts.size, 0);
   assert.equal(downloadQueue.findActive('hitomi', 'never-downloaded'), null);
   assert.equal((await fields(f.existing)).Number, '12');
@@ -159,7 +158,7 @@ test('invalid staged target edits reject the plan before any gallery download', 
 
 test('canceling a waiting merge stops its owned task and leaves independent downloads alone', async t => {
   fixture('cancel');
-  const job = runningJob({ downloads: [plan('owned-paused'), plan('independent-paused', '14')] });
+  const job = runningJob({ seriesId: 50, downloads: [plan('owned-paused'), plan('independent-paused', '14')] });
   const oldArchive = path.join(dataDir, 'old-independent.cbz');
   archive(oldArchive, '5');
   getDb().insert(schema.downloadQueue).values({ source: 'hitomi', galleryId: 'independent-paused', status: 'completed', outputFormat: 'cbz', outputPath: oldArchive }).run();
@@ -199,9 +198,9 @@ test('merge retry can replace a failed independent download without changing its
 
 test('another active merge retains ownership of its queued galleries', async () => {
   fixture('other-merge');
-  const owner = runningJob({ downloads: [plan('owned-elsewhere')] });
+  const owner = runningJob({ seriesId: 50, downloads: [plan('owned-elsewhere')] });
   const taskId = Number(getDb().insert(schema.downloadQueue).values({ source: 'hitomi', galleryId: 'owned-elsewhere', status: 'paused', outputFormat: 'cbz', mergeJobId: owner.id }).run().lastInsertRowid);
-  const job = runningJob({ downloads: [plan('owned-elsewhere')] });
+  const job = runningJob({ seriesId: 50, downloads: [plan('owned-elsewhere')] });
   await assert.rejects(prepareMergeDownloads(job, () => {}), /already assigned to merge job/);
   assert.equal(downloadQueue.get(taskId)!.status, 'paused');
   downloadQueue.cancel(taskId);

@@ -1,75 +1,12 @@
+import { classifyJobError, type JobErrorCode } from './errors.js';
+import { readJobPayload } from './storage.js';
 import { and, asc, desc, eq, gt, inArray } from 'drizzle-orm';
 import { getDb, schema, type Db } from '../db/index.js';
 import { jobRecovery, type JobRecovery } from './recovery.js';
-import type { DoujinSource } from '../downloader/types.js';
 
-/** Types of background jobs the queue can run. */
-export const JOB_TYPES = [
-  'scan-new',
-  'match-unmatched',
-  'match-library',
-  'match-series',
-  'sync-series',
-  'apply-series',
-  'clear-overrides',
-  'check-watched-searches',
-  'edit-comicinfo',
-  'merge-series',
-  'delete-series',
-] as const;
-
-export type JobType = (typeof JOB_TYPES)[number];
-
-export function isJobType(value: unknown): value is JobType {
-  return typeof value === 'string' && JOB_TYPES.some((type) => type === value);
-}
-
-export interface JobContext {
-  series: { id: number; name: string }[];
-  libraryId?: number;
-  libraryName?: string;
-}
-
-export interface JobPayload {
-  libraryId?: number;
-  seriesId?: number;
-  seriesIds?: number[];
-  /** Original targets, retained even after series are renamed or deleted. */
-  context?: JobContext;
-  /** Internal provenance: local-history/fallback names may be upgraded once live targets resolve. */
-  contextPendingSeriesIds?: number[];
-  /** edit-comicinfo: absolute path of the .cbz to rewrite. */
-  path?: string;
-  /** edit-comicinfo: pre-rendered ComicInfo.xml (raw-XML mode) — used verbatim. */
-  xml?: string;
-  /** edit-comicinfo: edited field values (merged over the file's current entry). */
-  fields?: Record<string, string>;
-  /** merge-series: absolute paths of the .cbz files to move together. */
-  sourceFiles?: string[];
-  /** merge-series: absolute target folder (becomes the Kavita series name). */
-  targetDir?: string;
-  /** merge-series: chapter numbers keyed by source path, written to ComicInfo.Number. */
-  chapters?: Record<string, string>;
-  /** merge-series: staged chapter edits for archives already in the target folder. */
-  existingChapters?: Record<string, string>;
-  /** merge-series: galleries to download after the user commits the merge. */
-  downloads?: { source: DoujinSource; galleryId: string; title: string; chapter: string; allowDuplicate?: boolean }[];
-  /** Internal checkpoint: reuse the same download tasks after a job retry. */
-  mergeDownloadIds?: Record<string, number>;
-  /** apply-series: provider of the candidate chosen in the identify dialog. */
-  providerId?: string;
-  /** apply-series: provider-side series id of the chosen candidate. */
-  providerSeriesId?: string;
-  /** apply-series: ComicInfo.Series value to write (one of the provider's titleOptions). */
-  selectedTitle?: string;
-  /** apply-series: sync fields deselected in the dialog. */
-  excludedFields?: string[];
-  /** apply-series: push series + volume covers (default true). */
-  cover?: boolean;
-  /** apply-series: candidate match score, kept on the match row. */
-  score?: number;
-}
-
+export { JOB_TYPES, isJobType } from '../contracts/jobs.js';
+export type { JobType, JobContext, JobPayload, JobCommand } from '../contracts/jobs.js';
+import { parseJobCommand, type JobType, type JobContext, type JobPayload, type JobCommand, type JobPayloads, type JobExecutionState } from '../contracts/jobs.js';
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface Job {
@@ -81,11 +18,13 @@ export interface Job {
   progressTotal: number;
   result: unknown;
   errorMessage: string | null;
+  errorCode?: JobErrorCode | null;
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
   recovery?: JobRecovery;
   context?: JobContext;
+  validationError?: string;
 }
 
 export interface JobLog {
@@ -97,7 +36,7 @@ export interface JobLog {
 }
 
 export type LogFn = (level: 'info' | 'warn' | 'error' | 'success', message: string) => void;
-export type JobHandler = (job: Job, log: LogFn) => Promise<unknown>;
+export type JobHandler = (job: Job, log: LogFn, signal?: AbortSignal) => Promise<unknown>;
 
 /** Thrown by the executor when a running job observes a cancellation request. */
 export class JobCancelled extends Error {
@@ -107,17 +46,23 @@ export class JobCancelled extends Error {
   }
 }
 
+export class JobConflict extends Error {
+  constructor() { super('A sync is already running for this series'); }
+}
+
 const CONCURRENCY = 2;
 
 interface JobRow {
   id: number;
   type: string;
   payloadJson: string;
+  stateJson?: string;
   status: string;
   progressCurrent: number;
   progressTotal: number;
   resultJson: string | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -133,17 +78,20 @@ function rowToJob(row: JobRow, payload: JobPayload): Job {
     progressTotal: row.progressTotal,
     result: row.resultJson ? safeParse(row.resultJson, null) : null,
     errorMessage: row.errorMessage,
+    errorCode: row.errorCode as JobErrorCode | null,
     createdAt: row.createdAt,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt,
-    recovery: jobRecovery({ status: row.status, type: row.type, payload: { ...payload }, errorMessage: row.errorMessage }),
+    recovery: jobRecovery({ status: row.status, type: row.type, payload: { ...payload }, errorMessage: row.errorMessage, errorCode: row.errorCode as JobErrorCode | null }),
     context: payload.context,
   };
 }
 
 function safeParse<T>(json: string, fallback: T): T {
   try {
-    return JSON.parse(json) as T;
+    const parsed: unknown = JSON.parse(json);
+    if (fallback && typeof fallback === 'object' && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) return fallback;
+    return parsed as T;
   } catch {
     return fallback;
   }
@@ -159,9 +107,11 @@ class JobQueue {
   private running = 0;
   private pumping = false;
   private cancelRequested = new Set<number>();
+  private controllers = new Map<number, AbortController>();
   private historyDb: Db | null = null;
   private historyId = 0;
   private historyNames = new Map<number, string>();
+  private legacyContexts = new Map<number, JobPayload>();
 
   /** Read only newly appended history, never the full history table on every poll. */
   private refreshHistoryNames(): void {
@@ -204,7 +154,8 @@ class JobQueue {
   }
 
   private hydrate(row: JobRow): Job {
-    const payload = safeParse<JobPayload>(row.payloadJson, {});
+    const decoded = readJobPayload(row.type, row.payloadJson, row.stateJson);
+    const payload = structuredClone(this.legacyContexts.get(row.id) ?? decoded.payload);
     const context = this.contextForPayload(payload);
     const previousIds = new Set((payload.context?.series ?? []).filter((target) => target.name !== `Series #${target.id}`).map((target) => target.id));
     if (context && payload.contextPendingSeriesIds === undefined) {
@@ -212,18 +163,21 @@ class JobQueue {
     }
     if (context) {
       payload.context = context;
-      const payloadJson = JSON.stringify(payload);
-      if (payloadJson !== row.payloadJson) getDb().update(schema.jobs).set({ payloadJson }).where(eq(schema.jobs.id, row.id)).run();
+      // Projection only: GET/list never write persistent job state.
+      if (!safeParse<JobPayload>(row.stateJson ?? '{}', {}).context) {
+        this.legacyContexts.set(row.id, payload);
+        if (this.legacyContexts.size > 300) this.legacyContexts.delete(this.legacyContexts.keys().next().value!);
+      }
     }
-    return rowToJob(row, payload);
+    return { ...rowToJob(row, payload), validationError: decoded.validationError };
   }
 
   /** Append discovered targets, upgrading placeholders but retaining original known names. */
   updateContext(jobId: number, context: JobContext): JobContext | undefined {
     const db = getDb();
-    const row = db.select({ payloadJson: schema.jobs.payloadJson }).from(schema.jobs).where(eq(schema.jobs.id, jobId)).get();
+    const row = db.select({ payloadJson: schema.jobs.payloadJson, stateJson: schema.jobs.stateJson }).from(schema.jobs).where(eq(schema.jobs.id, jobId)).get();
     if (!row) return undefined;
-    const payload = safeParse<JobPayload>(row.payloadJson, {});
+    const payload = { ...safeParse<JobPayload>(row.payloadJson, {}), ...safeParse<JobPayload>(row.stateJson ?? '{}', {}) };
     const previous = payload.context;
     const series = new Map((previous?.series ?? []).map((target) => [target.id, target]));
     const pendingIds = new Set(payload.contextPendingSeriesIds ?? []);
@@ -242,8 +196,9 @@ class JobQueue {
       },
     });
     payload.contextPendingSeriesIds = [...pendingIds];
-    const payloadJson = JSON.stringify(payload);
-    if (payloadJson !== row.payloadJson) db.update(schema.jobs).set({ payloadJson }).where(eq(schema.jobs.id, jobId)).run();
+    this.legacyContexts.delete(jobId);
+    const state = { ...safeParse<JobPayload>(row.stateJson ?? '{}', {}), context: payload.context, contextPendingSeriesIds: payload.contextPendingSeriesIds };
+    db.update(schema.jobs).set({ stateJson: JSON.stringify(state) }).where(eq(schema.jobs.id, jobId)).run();
     return payload.context;
   }
 
@@ -252,8 +207,8 @@ class JobQueue {
     const db = getDb();
     const row = db.select().from(schema.jobs).where(eq(schema.jobs.id, jobId)).get();
     if (!row || row.type !== 'merge-series') return;
-    const payload = safeParse<JobPayload>(row.payloadJson, {});
-    db.update(schema.jobs).set({ payloadJson: JSON.stringify({ ...payload, ...state }) }).where(eq(schema.jobs.id, jobId)).run();
+    this.legacyContexts.delete(jobId);
+    db.update(schema.jobs).set({ stateJson: JSON.stringify({ ...safeParse<JobPayload>(row.stateJson ?? '{}', {}), ...state }) }).where(eq(schema.jobs.id, jobId)).run();
   }
 
   /** Register the function that actually performs each job. */
@@ -263,7 +218,9 @@ class JobQueue {
   }
 
   /** Insert a new job and return its id. */
-  enqueue(type: JobType, payload: JobPayload = {}): number {
+  enqueue<T extends JobType>(type: T, payload: JobPayloads[NoInfer<T>] & JobExecutionState): number {
+    const command = parseJobCommand(type, payload);
+    if (command.type === 'apply-series' && this.active().some(job => job.type === command.type && job.payload.seriesId === command.payload.seriesId)) throw new JobConflict();
     const db = getDb();
     const context = this.contextForPayload(payload);
     if (context) {
@@ -272,12 +229,16 @@ class JobQueue {
     }
     const res = db
       .insert(schema.jobs)
-      .values({ type, payloadJson: JSON.stringify(payload), status: 'queued' })
+      .values({ type, payloadJson: JSON.stringify(command.payload), stateJson: JSON.stringify({ context: payload.context, contextPendingSeriesIds: payload.contextPendingSeriesIds, mergeDownloadIds: payload.mergeDownloadIds, sourceFiles: payload.mergeDownloadIds ? payload.sourceFiles : undefined, chapters: payload.mergeDownloadIds ? payload.chapters : undefined }), status: 'queued' })
       .run();
     const id = Number(res.lastInsertRowid);
     this.log(id, 'info', `Job enqueued: ${type}`);
     void this.pump();
     return id;
+  }
+
+  enqueueCommand(command: JobCommand, state: JobExecutionState = {}): number {
+    return this.enqueue(command.type, { ...command.payload, ...state });
   }
 
   get(id: number): Job | null {
@@ -325,6 +286,7 @@ class JobQueue {
     const current = this.get(id);
     if (current?.status === 'running') {
       this.cancelRequested.add(id);
+      this.controllers.get(id)?.abort(new JobCancelled());
       this.log(id, 'info', 'Cancellation requested; stopping at next checkpoint');
       return true;
     }
@@ -403,10 +365,14 @@ class JobQueue {
   private async process(job: Job): Promise<void> {
     const db = getDb();
     const log: LogFn = (level, message) => this.log(job.id, level, message);
+    const controller = new AbortController();
+    this.controllers.set(job.id, controller);
     try {
       if (!this.handler) throw new Error('No job handler registered');
       log('info', `Starting ${job.type}`);
-      const result = await this.handler(job, log);
+      if (job.validationError) throw new Error(`Invalid persisted job command: ${job.validationError}`);
+      parseJobCommand(job.type, job.payload);
+      const result = await this.handler(job, log, controller.signal);
       db.update(schema.jobs)
         .set({
           status: 'completed',
@@ -423,13 +389,14 @@ class JobQueue {
       } else {
         const message = e instanceof Error ? e.message : String(e);
         db.update(schema.jobs)
-          .set({ status: 'failed', errorMessage: message, finishedAt: new Date().toISOString() })
+          .set({ status: 'failed', errorMessage: message, errorCode: classifyJobError(message), finishedAt: new Date().toISOString() })
           .where(eq(schema.jobs.id, job.id))
           .run();
         this.log(job.id, 'error', message);
       }
     } finally {
       this.cancelRequested.delete(job.id);
+      this.controllers.delete(job.id);
       this.running--;
       void this.pump();
     }

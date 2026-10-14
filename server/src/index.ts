@@ -74,6 +74,8 @@ function main(): void {
 
   const shutdown = (): void => {
     console.log('[h-tosho] shutting down');
+    unsubscribePollInterval();
+    unsubscribeWatchedSearchInterval();
     clearTimeout(pollTimer);
     clearTimeout(watchedTimer);
     server.close(() => process.exit(0));

@@ -1,3 +1,5 @@
+import { recoverLegacyConfirmations } from './legacyColumns.js';
+import { migrateSchema, splitLegacyJobState } from './migrations.js';
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import fs from 'node:fs';
@@ -57,20 +59,7 @@ export function initDb(): Db {
   sqlite.pragma('foreign_keys = ON');
   // Tolerate brief lock contention from concurrent readers (SSE snapshots, UI polls).
   sqlite.pragma('busy_timeout = 5000');
-  // Column migrations run BEFORE the DDL: CREATE INDEX statements resolve
-  // column names, so an old DB missing a migrated column would abort the whole
-  // exec (and every table created earlier in it) otherwise.
-  migrateDownloadQueueColumns(sqlite);
-  migrateWatchedSearchColumns(sqlite);
-  migrateWatchedSearchNewColumns(sqlite);
-  migrateSeriesMatchColumns(sqlite);
-  migrateRecommendationHistoryColumns(sqlite);
-  sqlite.exec(SCHEMA_DDL);
-  // Ownership survives clearing queue history, including legacy tagged downloads.
-  sqlite.exec(`INSERT OR IGNORE INTO owned_galleries (source, gallery_id)
-    SELECT source, gallery_id FROM gallery_tags
-    UNION SELECT source, gallery_id FROM download_queue WHERE status = 'completed'`);
-  dropCatalogTable(sqlite);
+  migrateSchema(sqlite);
   pruneOldData(sqlite);
   db = drizzle(sqlite, { schema });
   return db;
@@ -93,116 +82,6 @@ function pruneOldData(sqlite: Database.Database): void {
   ).run(cutoff(JOB_RETENTION_DAYS));
   sqlite.prepare(`DELETE FROM jobs WHERE status IN ('completed','failed','cancelled') AND finished_at < ?`).run(cutoff(JOB_RETENTION_DAYS));
   sqlite.prepare(`DELETE FROM sync_history WHERE created_at < ?`).run(cutoff(HISTORY_RETENTION_DAYS));
-}
-
-/**
- * Add columns introduced after initial release to databases that already exist.
- * `CREATE TABLE IF NOT EXISTS` only affects brand-new tables, so any DB created
- * by an older build must be upgraded in place. Each ALTER is guarded by a
- * column-existence check and wrapped so a failure never blocks startup.
- */
-function migrateDownloadQueueColumns(sqlite: Database.Database): void {
-  const existing = new Set(
-    (sqlite.prepare('PRAGMA table_info(download_queue)').all() ?? []).map((c) => (c as { name: string }).name),
-  );
-  if (existing.size === 0) return; // table created by the DDL above already has every column
-  const additions: [string, string][] = [
-    ['bytes_current', 'INTEGER NOT NULL DEFAULT 0'],
-    ['bytes_total', 'INTEGER NOT NULL DEFAULT 0'],
-    ['merge_folder', 'TEXT'],
-    ['chapter_number', 'INTEGER'],
-    ['merge_job_id', 'INTEGER'],
-    ['priority', 'INTEGER NOT NULL DEFAULT 0'],
-  ];
-  for (const [col, def] of additions) {
-    if (existing.has(col)) continue;
-    try {
-      sqlite.exec(`ALTER TABLE download_queue ADD COLUMN ${col} ${def}`);
-    } catch (err) {
-      console.warn(`[h-tosho] failed to add download_queue column ${col}:`, err);
-    }
-  }
-}
-
-/** Add the watched-search last-results column to databases created before it existed. */
-function migrateWatchedSearchColumns(sqlite: Database.Database): void {
-  const existing = new Set(
-    (sqlite.prepare('PRAGMA table_info(watched_searches)').all() ?? []).map((c) => (c as { name: string }).name),
-  );
-  if (existing.size === 0) return; // table created by the DDL above already has every column
-  for (const [column, type] of [['last_results_json', 'TEXT'], ['last_new_count', 'INTEGER'], ['last_finds_at', 'TEXT'], ['last_attempted_at', 'TEXT'], ['last_error', 'TEXT']]) {
-    if (!existing.has(column)) sqlite.exec(`ALTER TABLE watched_searches ADD COLUMN ${column} ${type}`);
-  }
-}
-
-/** Preserve page counts in feeds created before this column existed. */
-function migrateWatchedSearchNewColumns(sqlite: Database.Database): void {
-  const existing = new Set(
-    (sqlite.prepare('PRAGMA table_info(watched_search_new)').all() ?? []).map((c) => (c as { name: string }).name),
-  );
-  if (existing.size === 0) return;
-  for (const [column, type] of [['page_count', 'INTEGER'], ['artists_json', "TEXT NOT NULL DEFAULT '[]'"], ['language', 'TEXT'], ['reviewed_at', 'TEXT']]) {
-    if (!existing.has(column)) sqlite.exec(`ALTER TABLE watched_search_new ADD COLUMN ${column} ${type}`);
-  }
-}
-
-/** Drop the legacy MangaDex adult catalog table (feature removed; live title search covers it). */
-function dropCatalogTable(sqlite: Database.Database): void {
-  try {
-    sqlite.exec('DROP TABLE IF EXISTS mangadex_catalog');
-  } catch (err) {
-    console.warn('[h-tosho] failed to drop legacy mangadex_catalog table:', err);
-  }
-}
-/** Preserve explicit approvals and remove the retired alignment flag. */
-function migrateSeriesMatchColumns(sqlite: Database.Database): void {
-  const existing = new Set(
-    (sqlite.prepare('PRAGMA table_info(series_matches)').all() ?? []).map((c) => (c as { name: string }).name),
-  );
-  if (existing.size === 0) return;
-  if (existing.has('aligned')) sqlite.exec('ALTER TABLE series_matches DROP COLUMN aligned');
-  if (!existing.has('confirmed')) sqlite.exec('ALTER TABLE series_matches ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0');
-  if (!existing.has('confirmed')) {
-    // Recover explicit approvals from retained apply jobs. History alone is
-    // ambiguous: automatic re-syncs also use the "updated" action. Require the
-    // exact candidate and the current row's sync timestamp within that job.
-    const hasJobs = sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'").get();
-    if (!hasJobs) return;
-    const jobs = sqlite.prepare("SELECT payload_json, result_json, started_at, finished_at FROM jobs WHERE type = 'apply-series' AND status = 'completed'").all() as {
-      payload_json: string; result_json: string | null; started_at: string | null; finished_at: string | null;
-    }[];
-    const findMatch = sqlite.prepare('SELECT provider_id, provider_series_id, last_synced_at FROM series_matches WHERE kavita_series_id = ? AND status = ?');
-    const confirm = sqlite.prepare('UPDATE series_matches SET confirmed = 1 WHERE kavita_series_id = ?');
-    sqlite.transaction(() => {
-      for (const job of jobs) {
-        try {
-          const payload = JSON.parse(job.payload_json);
-          const result = JSON.parse(job.result_json ?? '{}');
-          if (!payload?.providerId || !payload.providerSeriesId || result?.matched !== 1 || result.failed !== 0) continue;
-          const row = findMatch.get(payload.seriesId, 'matched') as { provider_id: string; provider_series_id: string; last_synced_at: string } | undefined;
-          if (!row || row.provider_id !== payload.providerId || row.provider_series_id !== payload.providerSeriesId) continue;
-          const syncedAt = Date.parse(row.last_synced_at);
-          if (syncedAt >= Date.parse(job.started_at ?? '') && syncedAt <= Date.parse(job.finished_at ?? '')) confirm.run(payload.seriesId);
-        } catch {
-          // Malformed legacy job records cannot establish an approval.
-        }
-      }
-    })();
-  }
-}
-
-/** Add precise serve times so same-day fallback can choose least-recent picks. */
-function migrateRecommendationHistoryColumns(sqlite: Database.Database): void {
-  const existing = new Set(
-    (sqlite.prepare('PRAGMA table_info(recommendation_history)').all() ?? []).map((c) => (c as { name: string }).name),
-  );
-  if (existing.size === 0 || existing.has('served_at')) return;
-  try {
-    sqlite.exec("ALTER TABLE recommendation_history ADD COLUMN served_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
-    sqlite.exec("UPDATE recommendation_history SET served_at = served_date || 'T00:00:00.000Z'");
-  } catch (err) {
-    console.warn('[h-tosho] failed to add recommendation_history served_at:', err);
-  }
 }
 
 /**
@@ -232,21 +111,23 @@ function migrateLegacyDatabases(canonicalFile: string): void {
   for (const legacyFile of collectLegacyDatabaseFiles(canonicalFile)) {
     const label = path.basename(legacyFile);
     let source: Database.Database | null = null;
+    let target: Database.Database | null = null;
     let migrated = false;
     try {
       // Open read-write so any un-checkpointed WAL is recovered into the main
       // file (a read-only connection cannot recover a WAL that needs writing).
       const src = new Database(legacyFile);
       source = src;
-      const target = new Database(canonicalFile);
+      target = new Database(canonicalFile);
+      const destination = target;
       // The canonical file may not exist yet (first run after a filename
       // rename), in which case the copy below would see no target tables and
       // silently skip every row. Create the schema up front so the column
       // intersection below always has something to match against.
-      target.exec(SCHEMA_DDL);
+      migrateSchema(target);
       // ATTACH lets us copy rows across databases in a single statement.
       target.exec(`ATTACH DATABASE '${legacyFile.replace(/'/g, "''")}' AS legacy`);
-      const copyAll = target.transaction(() => {
+      const copyAll = destination.transaction(() => {
         for (const table of tables) {
           const exists = src.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table);
           if (!exists) continue;
@@ -256,7 +137,7 @@ function migrateLegacyDatabases(canonicalFile: string): void {
           const sourceCols = (src.prepare(`PRAGMA table_info(${table})`).all() ?? [])
             .map((c) => (c as { name: string }).name);
           const targetCols = new Set(
-            (target.prepare(`PRAGMA table_info(${table})`).all() ?? []).map(
+            (destination.prepare(`PRAGMA table_info(${table})`).all() ?? []).map(
               (c: unknown) => (c as { name: string }).name,
             ),
           );
@@ -264,8 +145,12 @@ function migrateLegacyDatabases(canonicalFile: string): void {
           if (cols.length === 0) continue;
 
           const colList = cols.join(', ');
-          target.exec(`INSERT OR IGNORE INTO ${table} (${colList}) SELECT ${colList} FROM legacy.${table}`);
+          destination.exec(`INSERT OR IGNORE INTO ${table} (${colList}) SELECT ${colList} FROM legacy.${table}`);
         }
+        splitLegacyJobState(destination);
+        recoverLegacyConfirmations(destination);
+        destination.exec(`INSERT OR IGNORE INTO owned_galleries (source, gallery_id)
+          SELECT source, gallery_id FROM gallery_tags UNION SELECT source, gallery_id FROM download_queue WHERE status = 'completed'`);
       });
       copyAll();
       target.exec('DETACH DATABASE legacy');
@@ -282,6 +167,7 @@ function migrateLegacyDatabases(canonicalFile: string): void {
         /* ignore */
       }
       source?.close();
+      if (target?.open) target.close();
     }
 
     if (!migrated || !source) {
@@ -342,178 +228,6 @@ function collectLegacyDatabaseFiles(canonicalFile: string): string[] {
 
   return out;
 }
-
-/** Idempotent bootstrap DDL (mirrors src/db/schema.ts). */
-const SCHEMA_DDL = `
-CREATE TABLE IF NOT EXISTS provider_credentials (
-  provider_id TEXT PRIMARY KEY,
-  credentials_json TEXT NOT NULL DEFAULT '{}',
-  enabled INTEGER NOT NULL DEFAULT 1
-);
-CREATE TABLE IF NOT EXISTS provider_priorities (
-  provider_id TEXT PRIMARY KEY,
-  position INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS field_config (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  scope TEXT NOT NULL,
-  provider_id TEXT NOT NULL,
-  field TEXT NOT NULL,
-  enabled INTEGER NOT NULL DEFAULT 1
-);
-CREATE TABLE IF NOT EXISTS library_overrides (
-  library_id INTEGER PRIMARY KEY,
-  priority_json TEXT NOT NULL DEFAULT '[]',
-  auto_match INTEGER NOT NULL DEFAULT 1,
-  field_config_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE TABLE IF NOT EXISTS series_matches (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kavita_series_id INTEGER NOT NULL UNIQUE,
-  status TEXT NOT NULL DEFAULT 'unmatched',
-  provider_id TEXT,
-  provider_series_id TEXT,
-  match_score REAL,
-  confirmed INTEGER NOT NULL DEFAULT 0,
-  metadata_json TEXT,
-  error_message TEXT,
-  last_synced_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (current_timestamp),
-  updated_at TEXT NOT NULL DEFAULT (current_timestamp)
-);
-CREATE TABLE IF NOT EXISTS jobs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  type TEXT NOT NULL,
-  payload_json TEXT NOT NULL DEFAULT '{}',
-  status TEXT NOT NULL DEFAULT 'queued',
-  progress_current INTEGER NOT NULL DEFAULT 0,
-  progress_total INTEGER NOT NULL DEFAULT 0,
-  result_json TEXT,
-  error_message TEXT,
-  created_at TEXT NOT NULL DEFAULT (current_timestamp),
-  started_at TEXT,
-  finished_at TEXT
-);
-CREATE TABLE IF NOT EXISTS job_logs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  job_id INTEGER NOT NULL,
-  level TEXT NOT NULL DEFAULT 'info',
-  message TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (current_timestamp)
-);
-CREATE TABLE IF NOT EXISTS sync_history (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kavita_series_id INTEGER NOT NULL,
-  series_title TEXT,
-  action TEXT NOT NULL,
-  details_json TEXT,
-  created_at TEXT NOT NULL DEFAULT (current_timestamp)
-);
-CREATE TABLE IF NOT EXISTS download_queue (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  source TEXT NOT NULL,
-  gallery_id TEXT NOT NULL,
-  title TEXT,
-  status TEXT NOT NULL DEFAULT 'queued',
-  progress_current INTEGER NOT NULL DEFAULT 0,
-  progress_total INTEGER NOT NULL DEFAULT 0,
-  speed REAL,
-  current_file TEXT,
-  bytes_current INTEGER NOT NULL DEFAULT 0,
-  bytes_total INTEGER NOT NULL DEFAULT 0,
-  output_format TEXT NOT NULL DEFAULT 'cbz',
-  output_path TEXT,
-  merge_folder TEXT,
-  chapter_number INTEGER,
-  merge_job_id INTEGER,
-  priority INTEGER NOT NULL DEFAULT 0,
-  error_message TEXT,
-  created_at TEXT NOT NULL DEFAULT (current_timestamp),
-  started_at TEXT,
-  finished_at TEXT
-);
-CREATE TABLE IF NOT EXISTS watched_searches (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  source TEXT NOT NULL,
-  query TEXT NOT NULL,
-  last_checked_at TEXT,
-  last_result_count INTEGER,
-  last_results_json TEXT,
-  last_new_count INTEGER,
-  last_finds_at TEXT,
-  last_attempted_at TEXT,
-  last_error TEXT,
-  created_at TEXT NOT NULL DEFAULT (current_timestamp)
-);
-CREATE TABLE IF NOT EXISTS watched_search_seen (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  search_id INTEGER NOT NULL,
-  source TEXT NOT NULL,
-  gallery_id TEXT NOT NULL,
-  first_seen_at TEXT NOT NULL DEFAULT (current_timestamp)
-);
-CREATE TABLE IF NOT EXISTS watched_search_new (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  search_id INTEGER NOT NULL,
-  source TEXT NOT NULL,
-  query TEXT NOT NULL,
-  gallery_id TEXT NOT NULL,
-  title TEXT NOT NULL,
-  url TEXT,
-  cover_url TEXT,
-  page_count INTEGER,
-  artists_json TEXT NOT NULL DEFAULT '[]',
-  language TEXT,
-  reviewed_at TEXT,
-  found_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS gallery_tags (
-  source TEXT NOT NULL,
-  gallery_id TEXT NOT NULL,
-  title TEXT,
-  tags_json TEXT NOT NULL DEFAULT '[]',
-  artists_json TEXT NOT NULL DEFAULT '[]',
-  language TEXT,
-  fetched_at TEXT NOT NULL DEFAULT (current_timestamp)
-);
-CREATE TABLE IF NOT EXISTS owned_galleries (
-  source TEXT NOT NULL,
-  gallery_id TEXT NOT NULL,
-  marked_at TEXT NOT NULL DEFAULT (current_timestamp)
-);
-CREATE TABLE IF NOT EXISTS dismissed_galleries (
-  source TEXT NOT NULL,
-  gallery_id TEXT NOT NULL,
-  dismissed_at TEXT NOT NULL DEFAULT (current_timestamp)
-);
-CREATE TABLE IF NOT EXISTS recommendation_history (
-  source TEXT NOT NULL,
-  gallery_id TEXT NOT NULL,
-  served_date TEXT NOT NULL,
-  served_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-  item_json TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS key_value_store (
-  key TEXT PRIMARY KEY,
-  value_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_job_logs_job_id ON job_logs(job_id);
-CREATE INDEX IF NOT EXISTS idx_sync_history_series ON sync_history(kavita_series_id);
-CREATE INDEX IF NOT EXISTS idx_download_queue_gallery ON download_queue(source, gallery_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_watched_search_seen_unique ON watched_search_seen(search_id, source, gallery_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_watched_search_new_unique ON watched_search_new(search_id, source, gallery_id);
-CREATE INDEX IF NOT EXISTS idx_watched_search_new_found ON watched_search_new(found_at, id);
-CREATE INDEX IF NOT EXISTS idx_watched_search_new_gallery ON watched_search_new(source, gallery_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_tags_unique ON gallery_tags(source, gallery_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_owned_galleries_unique ON owned_galleries(source, gallery_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_dismissed_galleries_unique ON dismissed_galleries(source, gallery_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_recommendation_history_unique ON recommendation_history(source, gallery_id);
-CREATE INDEX IF NOT EXISTS idx_recommendation_history_served ON recommendation_history(served_at);
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
-CREATE INDEX IF NOT EXISTS idx_download_queue_claim ON download_queue(status, priority);
-CREATE INDEX IF NOT EXISTS idx_jobs_finished_at ON jobs(finished_at);
-CREATE INDEX IF NOT EXISTS idx_sync_history_created ON sync_history(created_at);
-`;
 
 export function getDb(): Db {
   if (!db) return initDb();

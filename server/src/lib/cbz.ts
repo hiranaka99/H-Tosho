@@ -1,3 +1,7 @@
+export { lastSegment, pathContains } from './paths.js';
+export { mapKavitaPathToLocalPath, resolveSeriesHostDir, type LibraryPathMapping } from '../kavita/libraryPaths.js';
+import { randomUUID } from 'node:crypto';
+import { archiveMutations, archiveResource } from './mutations.js';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -244,16 +248,21 @@ const CHUNK = 8 * 1024 * 1024;
  * All other entries are copied byte-for-byte in their original order. The new
  * archive is written next to the source and atomically renamed over it.
  */
-export async function rewriteZipEntry(srcPath: string, entryName: string, data: Buffer): Promise<void> {
+export function rewriteZipEntry(srcPath: string, entryName: string, data: Buffer): Promise<void> {
+  return archiveMutations.run([archiveResource(srcPath)], () => rewriteZipEntryUnlocked(srcPath, entryName, data));
+}
+
+async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data: Buffer): Promise<void> {
   // Encode the replacement entry up front (deflate only when it saves space).
   const compressed = deflateRawSync(data);
   const useDeflate = compressed.length < data.length;
   const repMethod = useDeflate ? 8 : 0;
   const repCrc = crc32(data);
 
-  const tmpPath = `${srcPath}.cbztmp${process.pid}`;
+  const tmpPath = `${srcPath}.cbztmp-${randomUUID()}`;
   const src = await fs.promises.open(srcPath, 'r');
-  const out = await fs.promises.open(tmpPath, 'w');
+  const out = await fs.promises.open(tmpPath, 'wx').catch(async error => { await src.close(); throw error; });
+  let written = false;
   try {
     const stat = await src.stat();
     const entries = await readZipEntriesFromDisk(src, stat.size);
@@ -315,12 +324,15 @@ export async function rewriteZipEntry(srcPath: string, entryName: string, data: 
     const centralStart = offset;
     for (const c of centrals) await out.appendFile(c);
     await out.appendFile(endOfCentralDirectory(centrals.length, centralStart, centralSize));
+    written = true;
   } finally {
     await src.close();
     await out.close();
+    if (!written) await fs.promises.rm(tmpPath, { force: true });
   }
 
-  await fs.promises.rename(tmpPath, srcPath);
+  try { await fs.promises.rename(tmpPath, srcPath); }
+  catch (error) { await fs.promises.rm(tmpPath, { force: true }); throw error; }
 }
 
 /**
@@ -496,19 +508,6 @@ export function resolveExistingFile(p: string): string | null {
   }
 }
 
-/** Last path segment, tolerant of both separator styles (works cross-platform). */
-export function lastSegment(p: string): string {
-  return p.split(/[\\/]+/).filter(Boolean).pop() ?? '';
-}
-
-/** True when candidate is root itself or a descendant, never merely a shared prefix. */
-export function pathContains(root: string, candidate: string): boolean {
-  const normalize = (value: string) => value.replace(/\\/g, '/').replace(/\/+$/, '');
-  const normalizedRoot = normalize(root);
-  const normalizedCandidate = normalize(candidate);
-  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}/`);
-}
-
 /** .cbz files under dir, recursive to a bounded depth (series folders may nest volume subfolders). */
 export function listCbzFiles(dir: string, maxDepth = 3): string[] {
   const out: string[] = [];
@@ -529,95 +528,6 @@ export function listCbzFiles(dir: string, maxDepth = 3): string[] {
   };
   walk(dir, 0);
   return out.sort((a, b) => a.localeCompare(b));
-}
-
-/**
- * Resolve the on-disk folder for a Kavita series. Kavita reports paths from its
- * own filesystem view — under Docker that is container paths (/media/Doujins)
- * while this host sees drive letters (Z:\Doujins) or another mount point
- * (/mnt/downloads). Strategy:
- *  1. Use the library path directly when it exists locally (native installs, or
- *     identical mount points in both containers).
- *  2. Otherwise match a known local anchor (e.g. the download directory) by
- *     folder name.
- *  3. When the mount point names differ entirely, match by content: the series'
- *     own subpath — or its trailing segments — under each anchor. The same
- *     physical folder is bind-mounted under different names per container, so
- *     the series folder exists verbatim below the local anchor.
- * Every candidate is verified to exist before being returned; null means no
- * host-side location could be determined.
- */
-export interface LibraryPathMapping {
-  /** Absolute folder path as seen by Kavita. */
-  kavitaPath: string;
-  /** The same folder as mounted into H-Tosho. */
-  localPath: string;
-}
-
-/** Translate a Kavita path using the most specific configured root. */
-export function mapKavitaPathToLocalPath(kavitaPath: string, mappings: LibraryPathMapping[] = []): string | null {
-  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '');
-  const remote = norm(kavitaPath);
-  const matches = mappings.filter((mapping) => {
-    const root = norm(mapping.kavitaPath);
-    const windowsPath = /^[a-z]:\//i.test(root) || root.startsWith('//');
-    const a = windowsPath ? remote.toLowerCase() : remote;
-    const b = windowsPath ? root.toLowerCase() : root;
-    return a === b || a.startsWith(b + '/');
-  }).sort((a, b) => norm(b.kavitaPath).length - norm(a.kavitaPath).length);
-  const mapping = matches[0];
-  if (!mapping) return null;
-  const relative = remote.slice(norm(mapping.kavitaPath).length).replace(/^\/+/, '');
-  if (relative.split('/').some((segment) => segment === '..' || segment === '.')) return null;
-  const local = path.resolve(mapping.localPath, ...relative.split('/'));
-  return pathContains(path.resolve(mapping.localPath), local) ? local : null;
-}
-
-export function resolveSeriesHostDir(opts: { libraryPath?: string | null; folderPath?: string | null; anchors: string[]; mappings?: LibraryPathMapping[] }): string | null {
-  const { libraryPath, folderPath, anchors } = opts;
-  if (folderPath) {
-    if (folderPath.replace(/\\/g, '/').split('/').some((segment) => segment === '..' || segment === '.')) return null;
-    const mapped = mapKavitaPathToLocalPath(folderPath, opts.mappings);
-    if (mapped) {
-      // An explicit mapping takes precedence over guessed download folders.
-      // A missing mount must not redirect a rename to another library.
-      try { return fs.statSync(mapped).isDirectory() ? mapped : null; } catch { return null; }
-    }
-  }
-  if (!libraryPath || !folderPath) return null;
-  // Series subpath = folderPath with the library prefix stripped (Kavita-side paths).
-  const norm = (p: string): string => p.replace(/\\/g, '/');
-  const lib = norm(libraryPath).replace(/\/+$/, '');
-  let rel = norm(folderPath);
-  if (rel.startsWith(lib + '/')) rel = rel.slice(lib.length + 1);
-  else if (rel === lib) rel = '';
-
-  // Candidate roots, most specific first: the library path itself when it exists
-  // locally, then anchors whose folder name matches the library's.
-  const roots: string[] = [];
-  if (fs.existsSync(libraryPath)) roots.push(libraryPath);
-  const want = lastSegment(libraryPath);
-  for (const a of anchors) if (lastSegment(a) === want) roots.push(a);
-
-  for (const root of roots) {
-    if (!rel) return root;
-    const candidate = path.join(root, ...rel.split('/'));
-    if (fs.existsSync(candidate)) return candidate;
-  }
-
-  // Mount point names differ (e.g. /media/Doujins vs /mnt/downloads): fall back
-  // to the series folder's own trailing segments under every anchor. Deeper
-  // matches are tried first so a nested layout wins over a bare name collision.
-  if (!rel) return null;
-  const tail = rel.split('/');
-  const fallbackAnchors = [libraryPath, ...anchors];
-  for (let depth = Math.min(3, tail.length); depth >= 1; depth--) {
-    for (const a of fallbackAnchors) {
-      const candidate = path.join(a, ...tail.slice(-depth));
-      if (fs.existsSync(candidate)) return candidate;
-    }
-  }
-  return null;
 }
 
 export interface MergeCbzOutcome {
@@ -649,6 +559,7 @@ export async function mergeCbzFiles(
   chapters?: Record<string, string>,
   seriesName?: string,
   onMoved?: (source: string, destination: string) => void,
+  signal?: AbortSignal,
 ): Promise<MergeCbzOutcome> {
   if (!path.isAbsolute(targetDir)) throw new Error('targetDir must be an absolute path');
   const out: MergeCbzOutcome = { moved: [], skipped: [], chaptered: [], failed: [] };
@@ -659,45 +570,48 @@ export async function mergeCbzFiles(
     if (seen.has(src)) continue;
     seen.add(src);
     try {
-      const file = resolveExistingFile(src);
-      if (!file) throw new Error('file not found');
-      if (!file.toLowerCase().endsWith('.cbz')) throw new Error('not a .cbz file');
+      await archiveMutations.run([archiveResource(src), archiveResource(targetDir)], async () => {
+        const file = resolveExistingFile(src);
+        if (!file) throw new Error('file not found');
+        if (!file.toLowerCase().endsWith('.cbz')) throw new Error('not a .cbz file');
 
-      // Move into the target (or keep in place), resolving name collisions.
-      let dest = path.join(targetDir, path.basename(file));
-      const alreadyThere = path.resolve(dest) === path.resolve(file);
-      if (!alreadyThere && fs.existsSync(dest)) {
-        const ext = path.extname(file);
-        const stem = path.basename(file, ext);
-        for (let n = 2; ; n++) {
-          const candidate = path.join(targetDir, `${stem} (${n})${ext}`);
-          if (!fs.existsSync(candidate)) {
-            dest = candidate;
-            break;
+        // Move into the target (or keep in place), resolving name collisions.
+        let dest = path.join(targetDir, path.basename(file));
+        const alreadyThere = path.resolve(dest) === path.resolve(file);
+        if (!alreadyThere && fs.existsSync(dest)) {
+          const ext = path.extname(file);
+          const stem = path.basename(file, ext);
+          for (let n = 2; ; n++) {
+            const candidate = path.join(targetDir, `${stem} (${n})${ext}`);
+            if (!fs.existsSync(candidate)) {
+              dest = candidate;
+              break;
+            }
           }
         }
-      }
-      if (!alreadyThere) {
-        await moveFileAcross(file, dest);
-        removeEmptiedSourceDir(file, targetDir);
-      }
-      out.moved.push(dest);
-      onMoved?.(src, dest);
+        if (!alreadyThere) {
+          await moveFileAcross(file, dest);
+          removeEmptiedSourceDir(file, targetDir);
+        }
+        out.moved.push(dest);
+        onMoved?.(src, dest);
 
-      const chapter = chapters?.[src];
-      const wantNumber = chapter && chapter.trim() ? chapter.trim() : undefined;
-      const wantSeries = seriesName && seriesName.trim() ? seriesName.trim() : undefined;
-      if (wantNumber || wantSeries) {
-        const existing = await readComicInfo(dest);
-        const doc = existing ? parseComicInfo(existing) : null;
-        const fields: Record<string, string> = {};
-        if (wantNumber && doc?.fields.Number !== wantNumber) fields.Number = wantNumber;
-        if (wantSeries && doc?.fields.Series !== wantSeries) fields.Series = wantSeries;
-        // Skip the rewrite when nothing changed — rewriting rewrites the whole archive.
-        if (Object.keys(fields).length > 0) await setComicInfoFields(dest, fields);
-        if (wantNumber) out.chaptered.push(dest);
-      }
+        const chapter = chapters?.[src];
+        const wantNumber = chapter && chapter.trim() ? chapter.trim() : undefined;
+        const wantSeries = seriesName && seriesName.trim() ? seriesName.trim() : undefined;
+        if (wantNumber || wantSeries) {
+          const existing = await readComicInfo(dest);
+          const doc = existing ? parseComicInfo(existing) : null;
+          const fields: Record<string, string> = {};
+          if (wantNumber && doc?.fields.Number !== wantNumber) fields.Number = wantNumber;
+          if (wantSeries && doc?.fields.Series !== wantSeries) fields.Series = wantSeries;
+          // Skip the rewrite when nothing changed — rewriting rewrites the whole archive.
+          if (Object.keys(fields).length > 0) await setComicInfoFieldsUnlocked(dest, fields);
+          if (wantNumber) out.chaptered.push(dest);
+        }
+      }, signal);
     } catch (e) {
+      if (signal?.aborted) throw signal.reason;
       out.failed.push({ file: src, error: e instanceof Error ? e.message : String(e) });
     }
   }
@@ -731,7 +645,11 @@ async function moveFileAcross(src: string, dest: string): Promise<void> {
 }
 
 /** Write the given ComicInfo fields into a CBZ, preserving the other fields of any existing entry. */
-export async function setComicInfoFields(file: string, fields: Record<string, string>): Promise<void> {
+export function setComicInfoFields(file: string, fields: Record<string, string>): Promise<void> {
+  return archiveMutations.run([archiveResource(file)], () => setComicInfoFieldsUnlocked(file, fields));
+}
+
+async function setComicInfoFieldsUnlocked(file: string, fields: Record<string, string>): Promise<void> {
   const existing = await readComicInfo(file);
   let xml: string;
   if (existing) {
@@ -749,7 +667,7 @@ export async function setComicInfoFields(file: string, fields: Record<string, st
       .join('\n');
     xml = '<?xml version="1.0" encoding="UTF-8"?>\n<ComicInfo>\n' + body + '\n</ComicInfo>\n';
   }
-  await rewriteZipEntry(file, 'ComicInfo.xml', Buffer.from(xml, 'utf8'));
+  await rewriteZipEntryUnlocked(file, 'ComicInfo.xml', Buffer.from(xml, 'utf8'));
 }
 
 export interface SeriesTitleRewriteResult {
@@ -758,7 +676,12 @@ export interface SeriesTitleRewriteResult {
 }
 
 /** Rewrite ComicInfo.Series across every CBZ, restoring earlier archives if any rewrite or verification fails. */
-export async function setSeriesTitleInCbzFiles(files: string[], seriesTitle: string): Promise<SeriesTitleRewriteResult> {
+export function setSeriesTitleInCbzFiles(files: string[], seriesTitle: string, signal?: AbortSignal): Promise<SeriesTitleRewriteResult> {
+  if (!files.length) return Promise.resolve({ changed: 0, verified: 0 });
+  return archiveMutations.run(files.map(archiveResource), () => rewriteSeriesTitles(files, seriesTitle), signal);
+}
+
+async function rewriteSeriesTitles(files: string[], seriesTitle: string): Promise<SeriesTitleRewriteResult> {
   const originals = new Map<string, string | null>();
   for (const file of files) originals.set(file, await readComicInfo(file));
 
@@ -767,7 +690,7 @@ export async function setSeriesTitleInCbzFiles(files: string[], seriesTitle: str
     for (const file of files) {
       const existing = originals.get(file);
       if (!existing || parseComicInfo(existing).fields.Series?.trim() !== seriesTitle) {
-        await setComicInfoFields(file, { Series: seriesTitle });
+        await setComicInfoFieldsUnlocked(file, { Series: seriesTitle });
         changed.push(file);
       }
       const written = await readComicInfo(file);
@@ -779,10 +702,22 @@ export async function setSeriesTitleInCbzFiles(files: string[], seriesTitle: str
     for (const file of changed.reverse()) {
       const original = originals.get(file);
       if (original !== undefined && original !== null) {
-        await rewriteZipEntry(file, 'ComicInfo.xml', Buffer.from(original, 'utf8'));
+        await rewriteZipEntryUnlocked(file, 'ComicInfo.xml', Buffer.from(original, 'utf8'));
       }
     }
     throw error;
   }
   return { changed: changed.length, verified: files.length };
+}
+
+
+/** Read, merge and publish one complete editor action under the same archive ownership. */
+export function editComicInfo(file: string, edit: { xml?: string; fields?: Record<string, string> }, signal?: AbortSignal): Promise<{ previousSeriesName?: string; xml: string }> {
+  return archiveMutations.run([archiveResource(file)], async () => {
+    const existing = await readComicInfo(file);
+    const doc = existing ? parseComicInfo(existing) : { order: [], fields: {}, rawInner: {} };
+    const xml = edit.xml?.trim() ? edit.xml : renderComicInfoXml({ values: { ...doc.fields, ...edit.fields }, order: doc.order, rawInner: doc.rawInner, edited: Object.keys(edit.fields ?? {}) });
+    await rewriteZipEntryUnlocked(file, 'ComicInfo.xml', Buffer.from(xml, 'utf8'));
+    return { previousSeriesName: doc.fields.Series?.trim(), xml };
+  }, signal);
 }

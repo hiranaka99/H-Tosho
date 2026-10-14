@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
 /**
@@ -51,18 +51,23 @@ export const jobs = sqliteTable('jobs', {
   /** scan-new | match-unmatched | match-library | match-series | sync-series | apply-series | clear-overrides | check-watched-searches | edit-comicinfo | merge-series (see src/jobs/queue.ts JOB_TYPES) */
   type: text('type').notNull(),
   payloadJson: text('payload_json').notNull().default('{}'),
+  stateJson: text('state_json').notNull().default('{}'),
   /** queued | running | completed | failed */
   status: text('status').notNull().default('queued'),
   progressCurrent: integer('progress_current').notNull().default(0),
   progressTotal: integer('progress_total').notNull().default(0),
   resultJson: text('result_json'),
   errorMessage: text('error_message'),
+  errorCode: text('error_code'),
   createdAt: text('created_at')
     .notNull()
     .default(sql`(current_timestamp)`),
   startedAt: text('started_at'),
   finishedAt: text('finished_at'),
-});
+}, (table) => [
+  index('idx_jobs_status').on(table.status),
+  index('idx_jobs_finished_at').on(table.finishedAt),
+]);
 
 export const jobLogs = sqliteTable('job_logs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -72,7 +77,9 @@ export const jobLogs = sqliteTable('job_logs', {
   createdAt: text('created_at')
     .notNull()
     .default(sql`(current_timestamp)`),
-});
+}, (table) => [
+  index('idx_job_logs_job_id').on(table.jobId),
+]);
 
 export const syncHistory = sqliteTable('sync_history', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -84,7 +91,10 @@ export const syncHistory = sqliteTable('sync_history', {
   createdAt: text('created_at')
     .notNull()
     .default(sql`(current_timestamp)`),
-});
+}, (table) => [
+  index('idx_sync_history_series').on(table.kavitaSeriesId),
+  index('idx_sync_history_created').on(table.createdAt),
+]);
 
 export const downloadQueue = sqliteTable('download_queue', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -114,12 +124,21 @@ export const downloadQueue = sqliteTable('download_queue', {
   /** Queue priority: claimNext picks higher values first (ties break on id ASC). */
   priority: integer('priority').notNull().default(0),
   errorMessage: text('error_message'),
+  phase: text('phase'),
+  errorCode: text('error_code'),
+  retryAt: text('retry_at'),
+  retryCount: integer('retry_count').notNull().default(0),
+  attempt: integer('attempt').notNull().default(0),
+  revision: integer('revision').notNull().default(0),
   createdAt: text('created_at')
     .notNull()
     .default(sql`(current_timestamp)`),
   startedAt: text('started_at'),
   finishedAt: text('finished_at'),
-});
+}, (table) => [
+  index('idx_download_queue_gallery').on(table.source, table.galleryId),
+  index('idx_download_queue_claim').on(table.status, table.priority),
+]);
 
 /**
  * Saved doujin searches that are re-run periodically; new results trigger a
@@ -154,7 +173,9 @@ export const watchedSearchSeen = sqliteTable('watched_search_seen', {
   firstSeenAt: text('first_seen_at')
     .notNull()
     .default(sql`(current_timestamp)`),
-});
+}, (table) => [
+  uniqueIndex('idx_watched_search_seen_unique').on(table.searchId, table.source, table.galleryId),
+]);
 /**
  * Galleries a watch reported as new, with enough metadata to render them in
  * the Downloader's inbox and history without re-scraping. Discoveries remain
@@ -176,7 +197,11 @@ export const watchedSearchNew = sqliteTable('watched_search_new', {
   reviewedAt: text('reviewed_at'),
   /** ISO 8601 timestamp of the check that first reported the gallery. */
   foundAt: text('found_at').notNull(),
-});
+}, (table) => [
+  uniqueIndex('idx_watched_search_new_unique').on(table.searchId, table.source, table.galleryId),
+  index('idx_watched_search_new_found').on(table.foundAt, table.id),
+  index('idx_watched_search_new_gallery').on(table.source, table.galleryId),
+]);
 /**
  * Tag/artist profile data for downloaded galleries, powering the daily
  * recommendations. Written when a download resolves its gallery metadata and
@@ -195,7 +220,9 @@ export const galleryTags = sqliteTable('gallery_tags', {
   fetchedAt: text('fetched_at')
     .notNull()
     .default(sql`(current_timestamp)`),
-});
+}, (table) => [
+  uniqueIndex('idx_gallery_tags_unique').on(table.source, table.galleryId),
+]);
 
 
 export const keyValueStore = sqliteTable('key_value_store', {
@@ -209,21 +236,28 @@ export const ownedGalleries = sqliteTable('owned_galleries', {
   markedAt: text('marked_at')
     .notNull()
     .default(sql`(current_timestamp)`),
-});
+}, (table) => [
+  uniqueIndex('idx_owned_galleries_unique').on(table.source, table.galleryId),
+]);
 
 /** Explicit recommendation feedback, separate from ownership and taste. */
 export const dismissedGalleries = sqliteTable('dismissed_galleries', {
   source: text('source').notNull(),
   galleryId: text('gallery_id').notNull(),
   dismissedAt: text('dismissed_at').notNull().default(sql`(current_timestamp)`),
-});
+}, (table) => [
+  uniqueIndex('idx_dismissed_galleries_unique').on(table.source, table.galleryId),
+]);
 
 /** Recently served recommendation payloads, one row per gallery. */
 export const recommendationHistory = sqliteTable('recommendation_history', {
   source: text('source').notNull(),
   galleryId: text('gallery_id').notNull(),
   servedDate: text('served_date').notNull(),
-  servedAt: text('served_at').notNull(),
+  servedAt: text('served_at').notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
   itemJson: text('item_json').notNull(),
-});
+}, (table) => [
+  uniqueIndex('idx_recommendation_history_unique').on(table.source, table.galleryId),
+  index('idx_recommendation_history_served').on(table.servedAt),
+]);
 

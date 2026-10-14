@@ -1,9 +1,11 @@
+import { upsertMatch, recordHistory } from './matchRecords.js';
+import { PUBLICATION_STATUS, releaseYear, mergeTagLists, selectMetadataFields } from '../contracts/metadata.js';
+export { mergeTagLists } from '../contracts/metadata.js';
 import { eq } from 'drizzle-orm';
 import path from 'node:path';
 import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
 import {
-  KavitaPublicationStatus,
   type SeriesMetadataPayload,
 } from '../kavita/types.js';
 import type { SeriesMetadata, VolumeCover } from '../providers/types.js';
@@ -37,21 +39,6 @@ export interface VolumeCoverAssignment {
   url: string;
 }
 
-const PUBLICATION_STATUS: Record<NonNullable<SeriesMetadata['status']>, KavitaPublicationStatus | undefined> = {
-  ONGOING: KavitaPublicationStatus.Ongoing,
-  HIATUS: KavitaPublicationStatus.Hiatus,
-  COMPLETED: KavitaPublicationStatus.Completed,
-  CANCELLED: KavitaPublicationStatus.Cancelled,
-  UNKNOWN: undefined,
-};
-
-function releaseYear(meta: SeriesMetadata): number | undefined {
-  if (meta.year && meta.year >= 1 && meta.year <= 9999) return meta.year;
-  if (!meta.releaseDate) return undefined;
-  const year = Number(meta.releaseDate.slice(0, 4));
-  return year >= 1 && year <= 9999 ? year : undefined;
-}
-
 /** Map a unified SeriesMetadata onto a Kavita series metadata payload. */
 export function buildSeriesPayload(meta: SeriesMetadata): SeriesMetadataPayload {
   const payload: SeriesMetadataPayload = {};
@@ -72,39 +59,6 @@ export function buildSeriesPayload(meta: SeriesMetadata): SeriesMetadataPayload 
   if (meta.url) payload.webLinks = meta.url;
   return payload;
 }
-/**
- * Union of the series' existing tags and incoming provider tags, deduplicated
- * case-insensitively (the first spelling wins, so existing tags keep their
- * casing). Whitespace-only entries are dropped.
- */
-export function mergeTagLists(existing: string[], incoming: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of [...existing, ...incoming]) {
-    const tag = raw.trim();
-    if (!tag) continue;
-    const key = tag.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(tag);
-  }
-  return out;
-}
-
-/** User-selectable sync fields (identify dialog checkboxes) -> payload property names. */
-const EXCLUDABLE_FIELDS: Record<string, string> = {
-  title: 'name',
-  summary: 'summary',
-  genres: 'genres',
-  tags: 'tags',
-  writers: 'writers',
-  artists: 'artists',
-  releaseDate: 'releaseYear',
-  language: 'language',
-  status: 'publicationStatus',
-  url: 'webLinks',
-};
-
 /**
  * Apply matched metadata to a Kavita series:
  * 1. Read/merge/write identity and metadata fields
@@ -135,12 +89,7 @@ export async function applyToKavita(
   let coverUpdated = false;
   let volumeCoversUpdated = 0;
 
-  const payload = buildSeriesPayload(meta);
-  // Drop fields the user explicitly deselected for this sync.
-  for (const f of opts.excludedFields ?? []) {
-    const prop = EXCLUDABLE_FIELDS[f];
-    if (prop) delete payload[prop as keyof typeof payload];
-  }
+  const payload = selectMetadataFields(buildSeriesPayload(meta), opts.excludedFields ?? []);
   // Merge provider tags with the series' existing Kavita tags instead of
   // replacing them (Kavita's metadata update is a full-field write).
   let currentMetadata: KavitaSeriesMetadataDto | undefined;
@@ -209,20 +158,7 @@ export async function applyToKavita(
     if (volResult.updated > 0) pushed.push(`volumeCovers:${volResult.updated}`);
   }
 
-  const db = getDb();
-  // Update match row
-  const row = db.select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
-  if (row) {
-    db.update(schema.seriesMatches)
-      .set({
-        status: errors.length ? 'failed' : 'matched',
-        lastSyncedAt: new Date().toISOString(),
-        errorMessage: errors.length ? errors.join('; ') : null,
-      })
-      .where(eq(schema.seriesMatches.kavitaSeriesId, seriesId))
-      .run();
-  }
-
+  invalidateSeriesArtists(seriesId);
   return { seriesId, pushed, coverUpdated, volumeCoversUpdated, errors, warnings };
 }
 
@@ -357,8 +293,12 @@ export interface ApplySeriesOptions {
   cover?: boolean;
   /** Match score from the dialog's candidate; kept on the match row. */
   score?: number | null;
+  /** Automatic matches retain existing approval only for the same identity. */
+  confirm?: boolean;
+  historyAction?: 'matched' | 'updated';
   /** Job cancellation probe. */
   isCancelled?: () => boolean;
+  signal?: AbortSignal;
   /** Preserve the authoritative target before any title or file mutation. */
   onSeriesResolved?: (series: KavitaSeries) => void | Promise<void>;
 }
@@ -389,11 +329,22 @@ export interface ApplySeriesResult {
  */
 export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOptions): Promise<ApplySeriesResult> {
   const seriesId = opts.seriesId;
-  if (opts.isCancelled?.()) throw new JobCancelled();
+  if (opts.signal?.aborted || opts.isCancelled?.()) throw opts.signal?.reason ?? new JobCancelled();
   const series = await client.getSeriesById(seriesId);
   await opts.onSeriesResolved?.(series);
   const { credentials } = getCredentialMap();
   const meta = await fetchProviderMetadata(opts.providerId, opts.providerSeriesId, credentials);
+  return applyResolvedSeriesMatch(client, opts, meta, series);
+}
+
+/** Every matching path applies the same archive/title and metadata policy. */
+export async function applyResolvedSeriesMatch(
+  client: KavitaClient, opts: ApplySeriesOptions, meta: SeriesMetadata,
+  resolvedSeries?: KavitaSeries,
+): Promise<ApplySeriesResult> {
+  const seriesId = opts.seriesId;
+  if (opts.signal?.aborted || opts.isCancelled?.()) throw opts.signal?.reason ?? new JobCancelled();
+  const series = resolvedSeries ?? await client.getSeriesById(seriesId);
   const selectedTitle = opts.selectedTitle?.trim();
   if (selectedTitle) {
     const allowedTitles = meta.titleOptions ?? [meta.title];
@@ -427,7 +378,8 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
         `Title was not changed because H-Tosho cannot access this series' CBZ files. Kavita folder: ${series.folderPath ?? '(not reported)'}. H-Tosho download directory: ${dl.downloadDirectory || '(not configured)'}. Mount the series' library folder into H-Tosho (or configure the shared download directory), then retry Apply & Sync. Other selected metadata and covers were still synced.`,
       );
     } else {
-      const rewrite = await setSeriesTitleInCbzFiles(files, newTitle);
+      if (opts.signal?.aborted || opts.isCancelled?.()) throw opts.signal?.reason ?? new JobCancelled();
+      const rewrite = await setSeriesTitleInCbzFiles(files, newTitle, opts.signal);
       titleFilesUpdated = rewrite.changed;
       titleFilesVerified = rewrite.verified;
     }
@@ -436,6 +388,8 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
   // skips the series cover + volume covers. A title is also skipped when its
   // CBZ files are inaccessible, preventing Kavita's next scan from splitting
   // the series while still allowing the match and all other fields to apply.
+  // Once file titles are committed, finish the paired Kavita update at this checkpoint.
+  if (!titleFilesUpdated && (opts.signal?.aborted || opts.isCancelled?.())) throw opts.signal?.reason ?? new JobCancelled();
   const pushCovers = opts.cover !== false;
   const result = await applyToKavita(client, seriesId, meta, {
     coverUrl: pushCovers ? meta.coverUrl : undefined,
@@ -448,42 +402,23 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
   // History/notifications show the name Kavita displays after this sync.
   const renamed = !excludedFields.includes('title') && newTitle !== series.name.trim() && result.pushed.includes('name');
   invalidateSeriesArtists(seriesId);
-  const db = getDb();
-  // The dialog sends the applied candidate's current score; keep the stored
-  // value when absent (older clients).
-  const existingRow = db.select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
-  const sentScore = typeof opts.score === 'number' && Number.isFinite(opts.score) ? Math.min(1, Math.max(0, opts.score)) : undefined;
-  const matchScore = sentScore ?? existingRow?.matchScore ?? null;
-  const sameCandidate = existingRow?.providerId === opts.providerId && existingRow?.providerSeriesId === opts.providerSeriesId;
-  const confirmed = result.errors.length === 0 || (sameCandidate && existingRow?.confirmed === true);
-  db.insert(schema.seriesMatches)
-    .values({
-      kavitaSeriesId: seriesId,
-      status: result.errors.length ? 'failed' : 'matched',
-      providerId: opts.providerId,
-      providerSeriesId: opts.providerSeriesId,
-      matchScore,
-      confirmed,
-      metadataJson: JSON.stringify(meta),
-      errorMessage: result.errors.length ? result.errors.join('; ') : null,
-      lastSyncedAt: new Date().toISOString(),
-    })
-    .onConflictDoUpdate({
-      target: schema.seriesMatches.kavitaSeriesId,
-      set: {
-        status: result.errors.length ? 'failed' : 'matched',
-        providerId: opts.providerId,
-        providerSeriesId: opts.providerSeriesId,
-        matchScore,
-        confirmed,
-        metadataJson: JSON.stringify(meta),
-        errorMessage: result.errors.length ? result.errors.join('; ') : null,
-        lastSyncedAt: new Date().toISOString(),
-      },
-    })
-    .run();
+  const name = renamed ? newTitle : series.name;
+  getDb().transaction(() => {
+    const existing = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
+    const sentScore = typeof opts.score === 'number' && Number.isFinite(opts.score) ? Math.min(1, Math.max(0, opts.score)) : undefined;
+    const sameCandidate = existing?.providerId === opts.providerId && existing?.providerSeriesId === opts.providerSeriesId;
+    upsertMatch({ kavitaSeriesId: seriesId, status: result.errors.length ? 'failed' : 'matched',
+      providerId: opts.providerId, providerSeriesId: opts.providerSeriesId, matchScore: sentScore ?? existing?.matchScore ?? null,
+      confirmed: (opts.confirm !== false && result.errors.length === 0) || Boolean(sameCandidate && existing?.confirmed),
+      metadataJson: JSON.stringify(meta), errorMessage: result.errors.length ? result.errors.join('; ') : null });
+    recordHistory(seriesId, name, result.errors.length ? 'failed' : opts.historyAction ?? 'updated', {
+      providerId: opts.providerId, score: sentScore ?? existing?.matchScore ?? null, pushed: result.pushed,
+      coverUpdated: result.coverUpdated, volumeCoversUpdated: result.volumeCoversUpdated,
+      errors: result.errors, warnings: result.warnings,
+    });
+  });
   return {
-    name: renamed ? newTitle : series.name,
+    name,
     pushed: result.pushed,
     errors: result.errors,
     warnings: result.warnings,

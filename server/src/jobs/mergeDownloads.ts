@@ -1,33 +1,11 @@
 import { prepareDuplicateCheck, findDuplicateReports } from '../services/galleryDuplicates.js';
 import fs from 'node:fs';
 import { downloadQueue } from '../downloader/engine.js';
-import { getDoujinProvider } from '../downloader/providers.js';
 import { getDownloaderSettings } from '../services/settings.js';
 import { sleep } from '../lib/http.js';
-import { JobCancelled, jobQueue, type Job, type JobPayload, type LogFn } from './queue.js';
+import { JobCancelled, jobQueue, type Job, type LogFn } from './queue.js';
 
-export function validMergeChapter(value: unknown): value is string {
-  if (typeof value !== 'string') return false;
-  const trimmed = value.trim();
-  return !trimmed || (/^\d+(?:\.\d+)?$/.test(trimmed) && Number(trimmed) > 0 && Number(trimmed) < Number.MAX_SAFE_INTEGER);
-}
-
-/** Validate the complete plan before enqueueing any network work. */
-export function validateMergeDownloads(value: unknown): asserts value is JobPayload['downloads'] {
-  if (value === undefined) return;
-  if (!Array.isArray(value)) throw new Error('downloads must be a list of galleries');
-  const keys = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry.source !== 'string' || getDoujinProvider(entry.source)?.id !== entry.source || typeof entry.galleryId !== 'string' || !entry.galleryId.trim() || typeof entry.title !== 'string') {
-      throw new Error('Each merge download needs a supported source, galleryId, and title');
-    }
-    if (entry.allowDuplicate !== undefined && typeof entry.allowDuplicate !== 'boolean') throw new Error('allowDuplicate must be a boolean');
-    if (!validMergeChapter(entry.chapter)) throw new Error('Download chapters must be positive numbers or blank');
-    const key = `${entry.source}:${entry.galleryId}`;
-    if (keys.has(key)) throw new Error('A gallery can only appear once in merge downloads');
-    keys.add(key);
-  }
-}
+export { validMergeChapter, validateMergeDownloads } from '../contracts/jobs.js';
 
 /** All galleries must finish before any archives move or existing chapter drafts commit. */
 export async function prepareMergeDownloads(job: Job, log: LogFn): Promise<{ files: string[]; chapters: Record<string, string> }> {

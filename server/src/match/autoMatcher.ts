@@ -12,7 +12,6 @@ export interface CandidateMatch {
   coverUrl?: string;
   summary?: string;
   score: number;
-  fromProvider: SearchResult;
 }
 
 export interface MatchOutcome {
@@ -106,7 +105,6 @@ export async function autoMatch(
             coverUrl: r.coverUrl,
             summary: r.summary,
             score,
-            fromProvider: r,
           });
         }
         // Early exit: a confident exact/near-exact match from the top provider.

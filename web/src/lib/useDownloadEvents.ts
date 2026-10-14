@@ -1,3 +1,4 @@
+import { newerDownload } from './downloadPoll';
 import * as React from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { type DownloadEvent, type DownloadTask } from './api';
@@ -31,7 +32,7 @@ export function useDownloadEvents(): boolean {
         const idx = list.findIndex((t) => t.id === task.id);
         if (idx === -1) return [task, ...list];
         const next = [...list];
-        next[idx] = { ...next[idx], ...task };
+        next[idx] = newerDownload(next[idx], task);
         return next;
       });
     };

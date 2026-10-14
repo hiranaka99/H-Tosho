@@ -1,4 +1,4 @@
-import { fetchBuffer, fetchJsonRetry } from '../lib/http.js';
+import { fetchJsonRetry } from '../lib/http.js';
 import type {
   MetadataProvider,
   MediaType,
@@ -27,10 +27,6 @@ export abstract class BaseProvider implements MetadataProvider {
 
   setCredentials(credentials: ProviderCredentials): void {
     this.credentials = { ...credentials };
-  }
-
-  getCredentials(): ProviderCredentials {
-    return { ...this.credentials };
   }
 
   protected abstract baseUrl: string;
@@ -71,14 +67,6 @@ export abstract class BaseProvider implements MetadataProvider {
       throw new Error(this.describeError(res.status, res.data));
     }
     return res.data;
-  }
-
-  protected async getImage(url: string): Promise<Buffer | null> {
-    try {
-      return await fetchBuffer(url, { headers: { 'User-Agent': 'H-Tosho/1.0' } }, 30_000);
-    } catch {
-      return null;
-    }
   }
 
   async testConnection(): Promise<void> {

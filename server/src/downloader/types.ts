@@ -90,24 +90,6 @@ export interface DoujinGallery extends DoujinSearchResult {
   resolvePageUrl?: (index: number, opts?: { forceRefresh?: boolean }) => Promise<{ url: string; fallback?: string | null } | null>;
 }
 
-/** Progress payload persisted on the queue row during a run. */
-export interface DownloadProgress {
-  /** Pages (or items) fully downloaded. */
-  downloaded: number;
-  /** Total pages (or items) to download. */
-  total: number;
-  /** Estimated transfer speed in bytes/second (EMA). */
-  bytesPerSecond: number;
-  /** Filename of the item currently being written, if any. */
-  currentFile: string | null;
-  /** Total image bytes received so far this run. */
-  bytesCurrent?: number;
-  /** Total image bytes expected for the run (0/undefined until known). */
-  bytesTotal?: number;
-  /** Coarse phase label for UI display, e.g. 'resolving' | 'downloading' | 'packing'. */
-  phase?: string | null;
-}
-
 export interface DownloadEnqueueResult {
   id: number;
   status: string;

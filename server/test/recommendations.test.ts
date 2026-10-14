@@ -13,6 +13,7 @@ process.env.HTOSHO_DATA_DIR = dataDir;
 const { initDb, getDb, schema } = await import('../src/db/index.js');
 const { doujinProviders } = await import('../src/downloader/providers.js');
 const recs = await import('../src/services/recommendations.js');
+const { buildProfile } = await import('../src/services/recommendationProfile.js');
 const { DEFAULT_DOWNLOADER, setDownloaderSettings } = await import('../src/services/settings.js');
 
 initDb();
@@ -404,7 +405,7 @@ test('completed downloads preserve remaining picks and their order until an expl
   const refreshed = await recs.refreshRecommendations();
   assert.ok(refreshed.items.length > 0);
   assert.equal(overlap(keySet(initial.items), keySet(refreshed.items)), 0);
-  assert.ok(refreshed.profile.artists.includes('new artist'), 'refresh did not learn from completed downloads');
+  assert.ok(buildProfile([]).terms.some(term => term.kind === 'artist' && term.name === 'new artist' && term.weight >= 12), 'completed downloads did not update the taste inputs');
 });
 
 test('malformed cached recommendation payloads are regenerated', async () => {
@@ -594,4 +595,45 @@ test('the next day generates new recommendations only when the app requests them
   assert.equal(next.date, '2030-01-11');
   assert.ok(calls > before);
   assert.equal(overlap(keySet(first.items), keySet(next.items)), 0);
+});
+
+
+test('concurrent dismissals preserve both replacements when provider eligibility is delayed', async () => {
+  const { getDownloaderSettings } = await import('../src/services/settings.js');
+  const previousSettings = getDownloaderSettings();
+  let serial = 0;
+  doujinProviders.hitomi = {
+    ...stubProvider('hitomi', () => []),
+    async search(_query, limit = 30) {
+      return Array.from({ length: limit }, () => ({ source: 'hitomi' as const, galleryId: `concurrent-${++serial}`, title: `Concurrent ${serial}`, tags: [], artists: [] }));
+    },
+  };
+  setDownloaderSettings({ ...previousSettings, hitomiBannedTags: [] });
+  const initial = await recs.refreshRecommendations();
+  assert.equal(initial.items.length, 12);
+  const [first, second] = initial.items;
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  let checks = 0;
+  doujinProviders.hitomi.filterRecommendations = async items => {
+    if (++checks === 1) { entered.resolve(); await release.promise; }
+    return items;
+  };
+  try {
+    setDownloaderSettings({ ...previousSettings, hitomiBannedTags: ['blocked'] });
+    const a = recs.dismissAndReplace(first.source, first.galleryId);
+    await entered.promise;
+    const b = recs.dismissAndReplace(second.source, second.galleryId);
+    await Promise.resolve();
+    assert.equal(checks, 1, 'a second displayed mutation crossed the in-flight commit');
+    release.resolve();
+    await Promise.all([a, b]);
+    const result = await recs.getRecommendations();
+    assert.equal(result.items.length, 12);
+    assert.ok(!result.items.some(item => item.galleryId === first.galleryId || item.galleryId === second.galleryId));
+    const cached = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${result.date}`)).get()!;
+    assert.deepEqual(JSON.parse(cached.valueJson).items, result.items);
+  } finally {
+    release.resolve();
+    setDownloaderSettings(previousSettings);
+  }
 });

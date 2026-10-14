@@ -40,7 +40,7 @@ class MyAnimeListProvider extends BaseProvider {
     );
   }
 
-  async search(query: string, type?: string): Promise<SearchResult[]> {
+  async search(query: string, _type?: string): Promise<SearchResult[]> {
     const params = new URLSearchParams({ q: query, limit: '20' });
     const data = await this.get<{ data: any[] }>(`/manga?${params.toString()}`, {
       headers: this.headers(),

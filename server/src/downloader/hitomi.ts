@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { hitomiNozomiPath, hitomiStateForTerm, normalizeHitomiQuery, parseHitomiSearch, type HitomiSearchState } from './hitomiSearch.js';
+import { hitomiNozomiPath, hitomiStateForTerm, normalizeHitomiQuery, parseHitomiSearch } from './hitomiSearch.js';
 import { fetchBuffer } from '../lib/http.js';
 import { getDownloaderSettings } from '../services/settings.js';
 import { extractGalleryId, stripTags, toIsoDate } from './util.js';

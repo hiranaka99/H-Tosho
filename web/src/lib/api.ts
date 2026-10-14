@@ -1,3 +1,4 @@
+import type { JobType, JobPayloads } from '../../../server/src/contracts/jobs';
 // Typed client for the H-Tosho REST API.
 
 export interface KavitaConnection {
@@ -152,23 +153,8 @@ export interface SearchResult {
   summary?: string;
 }
 
-export interface SeriesMetadata {
-  providerId: string;
-  providerSeriesId: string;
-  title: string;
-  titleOptions?: string[];
-  year?: number;
-  releaseDate?: string;
-  summary?: string;
-  coverUrl?: string;
-  genres: string[];
-  tags: string[];
-  writers: string[];
-  artists: string[];
-  language?: string;
-  status?: string;
-  url?: string;
-}
+export type { SeriesMetadata } from '../../../server/src/providers/types';
+import type { SeriesMetadata } from '../../../server/src/providers/types';
 
 /** A scored match candidate (mirrors the server's CandidateMatch). */
 export interface MatchCandidate extends SearchResult {
@@ -271,29 +257,8 @@ export interface LibraryPathMapping {
   localPath: string;
 }
 
-export type DownloadStatus = 'queued' | 'downloading' | 'completed' | 'failed' | 'paused';
-
-export interface DownloadTask {
-  id: number;
-  source: DoujinSource;
-  galleryId: string;
-  title: string | null;
-  status: DownloadStatus;
-  progressCurrent: number;
-  progressTotal: number;
-  speed: number | null;
-  currentFile: string | null;
-  /** Total image bytes received so far this run. */
-  bytesCurrent?: number;
-  /** Total image bytes expected for the run (0 until known). */
-  bytesTotal?: number;
-  outputFormat: 'cbz' | 'folder';
-  outputPath: string | null;
-  errorMessage: string | null;
-  createdAt: string;
-  startedAt?: string | null;
-  finishedAt?: string | null;
-}
+export type { DownloadStatus, DownloadTask } from '../../../server/src/contracts/downloads';
+import type { DownloadTask } from '../../../server/src/contracts/downloads';
 
 /** A single frame pushed over the download SSE stream. */
 export type DownloadEvent =
@@ -541,7 +506,7 @@ export const api = {
   saveWatchedSearchInterval: (minutes: number) =>
     request<{ ok: boolean }>('/settings/watched-search-interval', { method: 'PUT', body: JSON.stringify({ minutes }) }),
 
-  enqueue: (type: string, payload: Record<string, unknown> = {}) =>
+  enqueue: <T extends JobType>(type: T, payload: JobPayloads[NoInfer<T>]) =>
     request<{ id: number }>('/jobs', { method: 'POST', body: JSON.stringify({ type, ...payload }) }),
   jobs: () => request<Job[]>('/jobs'),
   job: (id: number) => request<{ job: Job; logs: JobLog[] }>(`/jobs/${id}`),

@@ -18,10 +18,6 @@ export function getProvider(id: string): MetadataProvider | undefined {
   return PROVIDERS.find((p) => p.id === id);
 }
 
-export function getProvidersForType(type: MediaType): MetadataProvider[] {
-  return PROVIDERS.filter((p) => p.supportedTypes.includes(type));
-}
-
 /** All provider IDs in canonical order (used to seed priorities). */
 export function allProviderIds(): string[] {
   return PROVIDERS.map((p) => p.id);

@@ -1,6 +1,7 @@
+import { PUBLICATION_STATUS as CANDIDATE_STATUS, mergeTagLists, releaseYear } from '../../../server/src/contracts/metadata';
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, Sparkles, AlertTriangle, X, ArrowLeft, ArrowRight, Link2, Unlink, ChevronRight } from 'lucide-react';
+import { Search, Sparkles, AlertTriangle, ArrowLeft, ArrowRight, Link2, Unlink, ChevronRight } from 'lucide-react';
 import { Link } from 'react-router';
 import {
   api,
@@ -22,15 +23,6 @@ const STATUS_LABELS: Record<number, string> = {
   2: 'Completed',
   3: 'Cancelled',
   4: 'Ended',
-};
-
-/** Maps the unified provider status onto Kavita's publicationStatus value. */
-const CANDIDATE_STATUS: Record<string, number | null> = {
-  ONGOING: 0,
-  HIATUS: 1,
-  COMPLETED: 2,
-  CANCELLED: 3,
-  UNKNOWN: null,
 };
 
 interface CurrentKavita {
@@ -58,29 +50,9 @@ const tagNames = (tags: KavitaTag[] | null | undefined): string =>
 
 const peopleNames = (people: KavitaPerson[] | null | undefined): string =>
   (people ?? []).map((p) => p.name).filter(Boolean).join(', ');
-/** Mirrors the server's mergeTagLists (server/src/services/sync.ts) so the preview matches what Apply & Sync writes: union of existing + provider tags, deduped case-insensitively, existing spelling wins. */
-function mergeTagLists(existing: string[], incoming: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of [...existing, ...incoming]) {
-    const tag = raw.trim();
-    if (!tag) continue;
-    const key = tag.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(tag);
-  }
-  return out;
-}
-
-/** Mirrors the server's releaseYear resolution (year, else releaseDate). */
 function candidateYear(meta: SeriesMetadata | undefined, fallbackYear?: number): string {
-  if (meta?.year && meta.year >= 1 && meta.year <= 9999) return String(meta.year);
-  if (meta?.releaseDate) {
-    const y = Number(meta.releaseDate.slice(0, 4));
-    if (y >= 1 && y <= 9999) return String(y);
-  }
-  return fallbackYear ? String(fallbackYear) : '';
+  const year = meta ? releaseYear(meta) : undefined;
+  return year !== undefined ? String(year) : fallbackYear ? String(fallbackYear) : '';
 }
 
 interface DiffRow {
@@ -383,7 +355,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const diff = React.useMemo(() => {
     if (!selected) return null;
     const m = preview.data;
-    const candStatus = m?.status != null ? (CANDIDATE_STATUS[m.status] ?? null) : null;
+    const candStatus = m?.status != null ? (CANDIDATE_STATUS[m.status as keyof typeof CANDIDATE_STATUS] ?? null) : null;
     const rows: DiffRow[] = [
       { label: 'Title', current: current.name, candidate: resolvedTitle, field: 'title' },
       {

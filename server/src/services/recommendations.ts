@@ -1,3 +1,6 @@
+import { buildProfile, backfillMissingTags, type ProfileTerm, type TasteProfile } from './recommendationProfile.js';
+import { MutationCoordinator } from '../lib/mutations.js';
+const recommendationMutations = new MutationCoordinator();
 import { and, asc, desc, eq, like, lt, ne } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
@@ -5,12 +8,11 @@ import type { DoujinGallery, DoujinSearchResult, DoujinSource, DoujinSort } from
 import { mapLimit } from '../lib/http.js';
 import { getDownloaderSettings, onSettingChange, setRecommendationSettings } from './settings.js';
 import { buildKavitaSignals, clearRecommendationSignals, onRecommendationSeriesChange } from './recommendationSignals.js';
-import type { KavitaSeriesSignal } from './recommendationSignals.js';
 import { eligibleRecommendations } from './recommendationEligibility.js';
 import type { DoujinProvider } from '../downloader/types.js';
 import { rankCandidates, selectRecommendations } from './recommendationRanking.js';
 import type { Candidate } from './recommendationRanking.js';
-import { getRecommendationFeedback, normalizeArtist, saveRecommendationFeedback, type FeedbackAction, type RecommendationFeedback } from './recommendationFeedback.js';
+import { getRecommendationFeedback, saveRecommendationFeedback, type FeedbackAction, type RecommendationFeedback } from './recommendationFeedback.js';
 
 /**
  * Daily doujinshi recommendations based on the user's downloaded library.
@@ -85,8 +87,6 @@ const TOTAL_PICKS = 12;
 const RESERVE_PICKS = 12;
 /** Fewer profile terms than this → cold-start popularity fallback. */
 const MIN_PROFILE_TERMS = 3;
-/** Maximum legacy download metadata backfills per generation. */
-const BACKFILL_LIMIT = 25;
 
 export interface GalleryTagEntry {
   name: string;
@@ -176,171 +176,6 @@ export function recordGalleryTags(source: DoujinSource, gallery: DoujinGallery):
 // ---------------------------------------------------------------------------
 // Taste profile
 // ---------------------------------------------------------------------------
-
-interface ProfileTerm {
-  kind: 'artist' | 'tag' | 'series';
-  name: string;
-  /** Number of tagged galleries (or owned .cbz, for series) carrying this term. */
-  weight: number;
-  /** Search namespace observed per source (null = plain keyword). */
-  nsBySource: Partial<Record<DoujinSource, string | null>>;
-}
-
-interface TasteProfile {
-  terms: ProfileTerm[];
-  /** Dominant language of the library, when one covers ≥60% of tagged galleries. */
-  language: string | null;
-}
-
-function bumpTerm(terms: Map<string, ProfileTerm>, kind: 'artist' | 'tag' | 'series', name: string, source: DoujinSource | null, ns: string | null, weight = 1): void {
-  const key = `${kind}:${name.toLowerCase()}`;
-  let t = terms.get(key);
-  if (!t) {
-    t = { kind, name, weight: 0, nsBySource: {} };
-    terms.set(key, t);
-  }
-  t.weight += weight;
-  if (source === null) return; // library-scan terms are source-agnostic keywords
-  const existing = t.nsBySource[source];
-  // Prefer a concrete namespace over a keyword slot once seen.
-  if (existing === undefined || (existing === null && ns !== null)) t.nsBySource[source] = ns;
-}
-
-function parseEntries(json: string): unknown[] {
-  try {
-    const v = JSON.parse(json);
-    return Array.isArray(v) ? v : [];
-  } catch {
-    return [];
-  }
-}
-
-/** Aggregate the per-gallery tag rows plus Kavita library signals into a weighted artist/tag/series profile. */
-function buildProfile(signals: KavitaSeriesSignal[]): TasteProfile {
-  const rows = getDb().select().from(schema.galleryTags).all();
-  const terms = new Map<string, ProfileTerm>();
-  const langCounts = new Map<string, number>();
-  let taggedWithLang = 0;
-
-  for (const row of rows) {
-    const tags = parseEntries(row.tagsJson);
-    const artists = parseEntries(row.artistsJson);
-    const seenArtists = new Set<string>();
-    for (const raw of artists) {
-      const name = String(raw ?? '').trim();
-      if (!name || seenArtists.has(name.toLowerCase())) continue;
-      seenArtists.add(name.toLowerCase());
-      bumpTerm(terms, 'artist', name, row.source as DoujinSource, null);
-    }
-    const seenTags = new Set<string>();
-    for (const raw of tags) {
-      const entry: GalleryTagEntry = typeof raw === 'string' ? { name: raw, ns: null } : { name: String((raw as GalleryTagEntry)?.name ?? ''), ns: (raw as GalleryTagEntry)?.ns ?? null };
-      const name = entry.name.trim();
-      if (!name || seenTags.has(name.toLowerCase())) continue;
-      seenTags.add(name.toLowerCase());
-      bumpTerm(terms, 'tag', name, row.source as DoujinSource, entry.ns);
-    }
-    const lang = row.language?.trim().toLowerCase();
-    if (lang) {
-      taggedWithLang += 1;
-      langCounts.set(lang, (langCounts.get(lang) ?? 0) + 1);
-    }
-  }
-
-  // Existing-library signals: ownership is one vote per series. Page count is
-  // work length, not preference or engagement, and must not dominate tags from
-  // several genuinely distinct owned works.
-  for (const sig of signals) {
-    const name = sig.name.trim();
-    if (!name) continue;
-    bumpTerm(terms, 'series', name, null, null);
-    const seenTags = new Set<string>();
-    for (const tag of sig.tags) {
-      const t = tag.trim();
-      if (!t || seenTags.has(t.toLowerCase())) continue;
-      seenTags.add(t.toLowerCase());
-      bumpTerm(terms, 'tag', t, null, null);
-    }
-    const seenArtists = new Set<string>();
-    for (const artist of sig.artists) {
-      const a = artist.trim();
-      if (!a || seenArtists.has(a.toLowerCase())) continue;
-      seenArtists.add(a.toLowerCase());
-      bumpTerm(terms, 'artist', a, null, null);
-    }
-  }
-
-  const feedback = getRecommendationFeedback();
-  const muted = new Set(feedback.mutedArtists.map(normalizeArtist));
-  for (const item of feedback.liked) {
-    // A positive signal strengthens similar work without marking this gallery owned.
-    for (const artist of new Set(item.artists)) bumpTerm(terms, 'artist', artist, item.source, 'artist', 3);
-    for (const tag of new Set(item.tags)) bumpTerm(terms, 'tag', tag, item.source, null, 2);
-  }
-  for (const [key, term] of terms) if (term.kind === 'artist' && muted.has(normalizeArtist(term.name))) terms.delete(key);
-
-  let language: string | null = null;
-  if (taggedWithLang >= 5) {
-    let best: [string, number] | null = null;
-    for (const [l, n] of langCounts) if (!best || n > best[1]) best = [l, n];
-    if (best && best[1] / taggedWithLang >= 0.6) language = best[0];
-  }
-
-  return { terms: [...terms.values()].sort((a, b) => b.weight - a.weight), language };
-}
-
-
-/**
- * Fill in tag data for completed downloads that predate the gallery_tags table
- * (or whose capture failed). Capped per run so the first recommendation pass
- * stays bounded; remaining galleries fill in on later generations.
- */
-async function backfillMissingTags(): Promise<void> {
-  const db = getDb();
-  // Always inspect a bounded missing batch. A global row-count threshold would
-  // strand large legacy libraries forever once any ten galleries were tagged.
-
-  const tagged = new Set(
-    db
-      .select({ source: schema.galleryTags.source, galleryId: schema.galleryTags.galleryId })
-      .from(schema.galleryTags)
-      .all()
-      .map((r) => `${r.source}:${r.galleryId}`),
-  );
-  const completed = db
-    .select({ source: schema.downloadQueue.source, galleryId: schema.downloadQueue.galleryId })
-    .from(schema.downloadQueue)
-    .where(eq(schema.downloadQueue.status, 'completed'))
-    .orderBy(desc(schema.downloadQueue.id))
-    .all();
-  const missing = completed.filter((r) => !tagged.has(`${r.source}:${r.galleryId}`)).slice(0, BACKFILL_LIMIT);
-  if (!missing.length) return;
-
-  const bySource = new Map<DoujinSource, typeof missing>();
-  for (const row of missing) {
-    if (row.source !== 'hitomi' && row.source !== 'nhentai') continue;
-    const source = row.source;
-    const rows = bySource.get(source);
-    if (rows) rows.push(row);
-    else bySource.set(source, [row]);
-  }
-  for (const [source, rows] of bySource) {
-    const provider = getDoujinProvider(source);
-    if (!provider) continue;
-    for (let i = 0; i < rows.length; i += 8) {
-      await Promise.all(
-        rows.slice(i, i + 8).map(async (row) => {
-          try {
-            const gallery = await provider.getGallery(row.galleryId);
-            persistGalleryTags(source, gallery, false);
-          } catch {
-            /* skip unreachable galleries — they stay untagged until a later pass */
-          }
-        }),
-      );
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Candidate queries
@@ -717,7 +552,7 @@ function termsFromPicks(items: RecommendationItem[]): { artists: string[]; tags:
 }
 async function doGenerate(date: string, nonce: number): Promise<CachedRecommendationSet> {
   const rng = mulberry32(hashSeed(`${date}:${nonce}`));
-  await backfillMissingTags();
+  await backfillMissingTags(persistGalleryTags);
   const kavitaSignals = await buildKavitaSignals();
   const profile = buildProfile(kavitaSignals);
   // Downloaded and owned galleries are hard exclusions. History is initially a
@@ -877,10 +712,7 @@ function generateFor(date: string, nonce: number): Promise<CachedRecommendationS
         generationNonce += 1;
         continue;
       }
-      const history = pruneHistory();
-      addHistory(date, set.items, history);
-      // An empty first pass also stays stable for the day. Recovery is explicit.
-      writeCached(set);
+      commitDisplayedSet(set, set.items);
       return set;
     }
   })().finally(() => {
@@ -916,13 +748,15 @@ function displayedRecommendations(): Promise<RecommendationResponse> {
 }
 
 export async function getRecommendations(): Promise<RecommendationResponse> {
-  const date = localDate();
-  const cached = readCached(date);
-  if (cached) {
-    // Completed downloads leave gaps, not a new roll. Refresh explicitly to refill.
-    return withOwned(cached);
-  }
-  return generateFor(date, 0).then(withOwned);
+  return recommendationMutations.run(['displayed-set'], async () => {
+    const date = localDate();
+    const cached = readCached(date);
+    if (cached) {
+      // Completed downloads leave gaps, not a new roll. Refresh explicitly to refill.
+      return withOwned(cached);
+    }
+    return generateFor(date, 0).then(withOwned);
+  });
 }
 
 /** Monotonic nonce so each refresh draws differently (deterministic, unlike Math.random). */
@@ -930,88 +764,94 @@ let refreshNonce = 0;
 
 /** Re-roll today's picks with a fresh seed (manual refresh). */
 export async function refreshRecommendations(): Promise<RecommendationResponse> {
-  const date = localDate();
-  // If a generation is already running (the day's first pass, another tab),
-  // wait for it and then roll anyway: joining its promise would silently
-  // discard this click's fresh seed and hand back whatever was in flight.
-  if (inflight?.date === date) await inflight.promise.catch(() => {});
-  // No cache pre-delete: a successful generation overwrites today's row, and
-  // keeping the last good set means a failed refresh degrades to stale picks
-  // instead of forcing every request into a full regeneration.
-  return withOwned(await generateFor(date, ++refreshNonce));
+  return recommendationMutations.run(['displayed-set'], async () => {
+    const date = localDate();
+    // If a generation is already running (the day's first pass, another tab),
+    // wait for it and then roll anyway: joining its promise would silently
+    // discard this click's fresh seed and hand back whatever was in flight.
+    if (inflight?.date === date) await inflight.promise.catch(() => {});
+    // No cache pre-delete: a successful generation overwrites today's row, and
+    // keeping the last good set means a failed refresh degrades to stale picks
+    // instead of forcing every request into a full regeneration.
+    return withOwned(await generateFor(date, ++refreshNonce));
+  });
 }
 /** Explicit feedback excludes only this gallery; it never becomes an ownership/taste vote. */
 export async function dismissAndReplace(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
-  getDb().insert(schema.dismissedGalleries).values({ source, galleryId }).onConflictDoNothing().run();
-  profileRevision += 1;
-  const cached = readDisplayedSet();
-  if (!cached) return displayedRecommendations();
-  const date = cached.date;
-  const items = await eligibleRecommendations(cached.items);
+  return recommendationMutations.run(['displayed-set'], async () => {
+    getDb().insert(schema.dismissedGalleries).values({ source, galleryId }).onConflictDoNothing().run();
+    profileRevision += 1;
+    const cached = readDisplayedSet();
+    if (!cached) return displayedRecommendations();
+    const updated = await reconcileDisplayedSet(cached);
+    return withOwned(updated);
+  });
+}
+
+/** Revalidate visible cards and promote spares using one policy for every feedback action. */
+async function reconcileDisplayedSet(cached: CachedRecommendationSet, restore?: RecommendationItem): Promise<CachedRecommendationSet> {
+  const eligible = await eligibleRecommendations([...cached.items, ...cached.reserve, ...(restore ? [restore] : [])]);
+  const eligibleKeys = new Set(eligible.map(keyOf));
+  let items = cached.items.filter(item => eligibleKeys.has(keyOf(item)));
+  if (restore && eligibleKeys.has(keyOf(restore))) {
+    const remaining = items.filter(item => keyOf(item) !== keyOf(restore));
+    items = [restore, ...selectRecommendations(remaining.map(item => ({ result: item, score: 1, reasons: item.reasons, matched: new Set<string>() })), TOTAL_PICKS - 1, () => 0, [restore])];
+  }
   const keys = new Set(items.map(keyOf));
-  const reserve = (await eligibleRecommendations(cached.reserve)).filter((item) => !keys.has(keyOf(item)));
-  const promoted = selectRecommendations(reserve.map((item) => ({ result: item, score: 1, reasons: item.reasons, matched: new Set<string>() })), Math.max(0, TOTAL_PICKS - items.length), () => 0, items);
-  const promotedKeys = new Set(promoted.map(keyOf));
+  const reserve = [...cached.items, ...cached.reserve].filter(item => eligibleKeys.has(keyOf(item)) && !keys.has(keyOf(item)));
+  const promoted = selectRecommendations(reserve.map(item => ({ result: item, score: 1, reasons: item.reasons, matched: new Set<string>() })), Math.max(0, TOTAL_PICKS - items.length), () => 0, items);
   items.push(...promoted);
-  const updated: CachedRecommendationSet = { ...cached, items, reserve: reserve.filter((item) => !promotedKeys.has(keyOf(item))), profile: { ...termsFromPicks(items), language: cached.profile.language }, degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' : cached.degradedReason };
-  writeCached(updated);
-  if (promoted.length) addHistory(date, promoted, pruneHistory());
-  return withOwned(updated);
+  const used = new Set(items.map(keyOf));
+  const updated: CachedRecommendationSet = { ...cached, items, reserve: reserve.filter(item => !used.has(keyOf(item))),
+    profile: { ...termsFromPicks(items), language: cached.profile.language },
+    degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' : cached.degradedReason === 'same-day-pool-exhausted' ? cached.degradedReason : null };
+  commitDisplayedSet(updated, promoted);
+  return updated;
+}
+
+/** Commit the displayed snapshot and its serve history as one local transaction. */
+function commitDisplayedSet(set: CachedRecommendationSet, served: RecommendationItem[] = []): void {
+  getDb().transaction(() => {
+    if (served.length) addHistory(set.date, served, pruneHistory());
+    writeCached(set);
+  });
 }
 
 /** Undo removes feedback, not true ownership; restore the original card when still eligible. */
 export async function undoDismiss(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
-  getDb().delete(schema.dismissedGalleries).where(and(eq(schema.dismissedGalleries.source, source), eq(schema.dismissedGalleries.galleryId, galleryId))).run();
-  profileRevision += 1;
-  return restoreHistoryItem(source, galleryId);
+  return recommendationMutations.run(['displayed-set'], async () => {
+    getDb().delete(schema.dismissedGalleries).where(and(eq(schema.dismissedGalleries.source, source), eq(schema.dismissedGalleries.galleryId, galleryId))).run();
+    profileRevision += 1;
+    return restoreHistoryItem(source, galleryId);
+  });
 }
 
 async function restoreHistoryItem(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
   const cached = readDisplayedSet();
   const original = readHistory().find((entry) => entry.key === `${source}:${galleryId}`)?.item;
-  if (cached && original && (await eligibleRecommendations([original])).length) {
-    const remaining = cached.items.filter((item) => keyOf(item) !== keyOf(original));
-    const items = [original, ...selectRecommendations(remaining.map((item) => ({ result: item, score: 1, reasons: item.reasons, matched: new Set<string>() })), TOTAL_PICKS - 1, () => 0, [original])];
-    const kept = new Set(items.map(keyOf));
-    const reserve = [...remaining.filter((item) => !kept.has(keyOf(item))), ...cached.reserve.filter((item) => !kept.has(keyOf(item)))];
-    const updated = { ...cached, items, reserve, profile: { ...termsFromPicks(items), language: cached.profile.language }, degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' as const : cached.degradedReason };
-    writeCached(updated);
-    return withOwned(updated);
-  }
+  if (cached && original) return withOwned(await reconcileDisplayedSet(cached, original));
   return displayedRecommendations();
 }
 
 /** Use server-side history/provider metadata, not client-supplied taste signals. */
 export async function applyRecommendationFeedback(action: FeedbackAction, target: { source: DoujinSource; galleryId: string; artist?: string }): Promise<{ feedback: RecommendationFeedback; recommendations: RecommendationResponse }> {
-  let item: DoujinSearchResult | undefined;
-  if (action === 'like' || action === 'mute-artist') {
-    item = readHistory().find(entry => entry.key === `${target.source}:${target.galleryId}`)?.item;
-    if (!item) {
-      const provider = getDoujinProvider(target.source);
-      if (!provider?.getGallery) throw new Error('Gallery metadata is unavailable');
-      item = await provider.getGallery(target.galleryId);
+  return recommendationMutations.run(['displayed-set'], async () => {
+    let item: DoujinSearchResult | undefined;
+    if (action === 'like' || action === 'mute-artist') {
+      item = readHistory().find(entry => entry.key === `${target.source}:${target.galleryId}`)?.item;
+      if (!item) {
+        const provider = getDoujinProvider(target.source);
+        if (!provider?.getGallery) throw new Error('Gallery metadata is unavailable');
+        item = await provider.getGallery(target.galleryId);
+      }
     }
-  }
-  const feedback = saveRecommendationFeedback(action, target, item);
-  profileRevision++;
-  candidatePool = null;
-  let recommendations: RecommendationResponse;
-  // Revalidate visible cards and promote spares immediately. Preference boosts
-  // affect the next refresh; leave existing good cards in place after a like.
-  const cached = readDisplayedSet();
-  if (cached) {
-    const items = await eligibleRecommendations(cached.items);
-    const reserves = await eligibleRecommendations(cached.reserve);
-    const keys = new Set(items.map(keyOf));
-    const promoted = selectRecommendations(reserves.filter(i => !keys.has(keyOf(i))).map(i => ({ result: i, score: 1, reasons: i.reasons, matched: new Set<string>() })), TOTAL_PICKS - items.length, () => 0, items);
-    items.push(...promoted);
-    const used = new Set(items.map(keyOf));
-    const updated: CachedRecommendationSet = { ...cached, items, reserve: reserves.filter(i => !used.has(keyOf(i))), degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' : cached.degradedReason };
-    writeCached(updated);
-    if (promoted.length) addHistory(cached.date, promoted, pruneHistory());
-    recommendations = await withOwned(updated);
-  } else recommendations = await displayedRecommendations();
-  return { feedback, recommendations };
+    const feedback = saveRecommendationFeedback(action, target, item);
+    profileRevision++;
+    candidatePool = null;
+    const cached = readDisplayedSet();
+    const recommendations = cached ? await withOwned(await reconcileDisplayedSet(cached)) : await displayedRecommendations();
+    return { feedback, recommendations };
+  });
 }
 
 /** Library preferences apply to the next daily generation or explicit refresh. */

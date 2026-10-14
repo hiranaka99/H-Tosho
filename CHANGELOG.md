@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## v3.0.0
+
+- Split large API, background-job, downloader, recommendation, and frontend
+  modules into focused components with documented ownership.
+- Share metadata preview/application rules and use one automatic/manual sync
+  flow, with transactional match and history updates.
+- Validate typed job commands at the queue boundary, keep immutable commands
+  separate from execution checkpoints, and preserve legacy history without
+  writing during reads.
+- Coordinate overlapping series, archive, download, merge, and deletion work;
+  make pending ownership cancellable and use unique archive staging files.
+- Persist download retry deadlines and explicit lifecycle/error state, recover
+  interrupted work, and order progress snapshots by attempt and revision.
+- Serialize recommendation changes and share eligibility/replacement policy
+  across dismissal, feedback, and undo.
+- Bootstrap SQLite from the declared schema and apply numbered transactional
+  migrations that preserve existing data and job checkpoints.
+- Extract downloader search/selection models and focused UI components; observe
+  only relevant download progress and remove unused code.
+- Copy shared server contracts before compiling the frontend in Docker.
+- Verify 429 server tests, 37 frontend tests, 32 desktop/mobile browser checks,
+  and isolated production/Docker startup, archive, SQLite, and restart checks.
+
+Existing installations upgrade their SQLite data automatically. Keep the
+existing data directory or Docker volume when updating. Node.js 22.22 or newer
+remains required.
+
 ## v2.14.0
 
 - Load daily recommendations when the app opens, keep picks stable through

@@ -77,64 +77,6 @@ export interface StreamProgressHandlers {
   onProgress?: (receivedBytes: number, totalBytes: number | null) => void;
 }
 
-/**
- * Fetch a URL into a Buffer while streaming the body so callers can observe
- * byte-level progress. `timeoutMs` is an IDLE timeout: it aborts when no bytes
- * arrive for that long (header phase or between chunks), and each received
- * chunk resets the window — so large, slow page images are not aborted mid-body
- * and retried from byte zero. Falls back to a single arrayBuffer read when the
- * response exposes no readable stream.
- */
-export async function fetchBufferStreaming(
-  url: string,
-  init: RequestInit = {},
-  handlers: StreamProgressHandlers = {},
-  timeoutMs = 30_000,
-): Promise<Buffer> {
-  const controller = new AbortController();
-  let timer = setTimeout(() => controller.abort(), timeoutMs);
-  const armTimer = (): void => {
-    clearTimeout(timer);
-    timer = setTimeout(() => controller.abort(), timeoutMs);
-  };
-  try {
-    const res = await fetch(url, { ...init, signal: controller.signal, redirect: 'follow' });
-    if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
-    armTimer(); // headers received — start the idle window for the body
-    const lengthHeader = res.headers.get('content-length');
-    const totalBytes = lengthHeader ? Number(lengthHeader) || null : null;
-    handlers.onAttemptStart?.();
-
-    interface StreamReader {
-      read(): Promise<{ done: boolean; value?: Uint8Array }>;
-    }
-    const body = res.body as unknown as { getReader?: () => StreamReader } | null;
-    if (body && typeof body.getReader === 'function') {
-      const reader = body.getReader();
-      const chunks: Buffer[] = [];
-      let received = 0;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) {
-          armTimer(); // bytes arrived — reset the idle window
-          const buf = Buffer.from(value);
-          chunks.push(buf);
-          received += buf.length;
-          handlers.onProgress?.(received, totalBytes);
-        }
-      }
-      return Buffer.concat(chunks);
-    }
-
-    const buf = Buffer.from(await res.arrayBuffer());
-    handlers.onProgress?.(buf.length, totalBytes ?? buf.length);
-    return buf;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -220,10 +162,9 @@ export async function mapLimit<T, R>(
 
 /**
  * Fetch a URL straight to a file, streaming the body to disk so page-sized
- * images never transit RAM twice (fetchBufferStreaming buffers the whole
- * body). Writes to `destPath + '.part'` and atomically renames on success so
+ * images never transit RAM twice. Writes to `destPath + '.part'` and atomically renames on success so
  * consumers only ever see complete files; the .part file is removed on
- * failure. `timeoutMs` is an IDLE timeout, identical to fetchBufferStreaming.
+ * failure. `timeoutMs` aborts an idle transfer, not a slow transfer receiving bytes.
  * Returns the number of bytes written.
  */
 export async function fetchToFileStreaming(

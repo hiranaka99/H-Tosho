@@ -494,8 +494,6 @@ export class KavitaClient {
       : undefined;
     if (removeName && currentDto) {
       const current = await currentDto;
-      const same = (left: string | null | undefined, right: string | undefined): boolean =>
-        right !== undefined && (left ?? '').trim().toLowerCase() === right.trim().toLowerCase();
       const update: KavitaUpdateSeriesDto = {
         id: seriesId,
         name: current.name ?? null,
@@ -689,8 +687,4 @@ export class KavitaClient {
   async scanAllLibraries(): Promise<void> {
     await this.postJson('/Library/scan-all', {}, 'Scan all libraries');
   }
-}
-
-export function createKavitaClient(baseUrl: string, apiKey: string): KavitaClient {
-  return new KavitaClient(baseUrl, apiKey);
 }

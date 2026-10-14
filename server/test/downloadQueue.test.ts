@@ -234,3 +234,50 @@ test('re-download replaces an existing CBZ when the platform does not overwrite 
     globalThis.fetch = originalFetch;
   }
 });
+
+
+test('startup restores durable retry deadlines and does not duplicate timers on repeated start', async () => {
+  const row = getDb().insert(schema.downloadQueue).values({ source: 'hitomi', galleryId: 'durable-retry', status: 'failed', outputFormat: 'cbz', errorCode: 'network', retryCount: 1, retryAt: new Date(Date.now() + 60_000).toISOString() }).run();
+  const queue = new DownloadQueue(() => ({ downloadDirectory: '', format: 'cbz', maxConcurrentDownloads: 1, maxImageConcurrency: 1, requestDelayMs: 0, autoSyncKavita: false, nhentaiApiKey: '', nhentaiBannedTags: [] }));
+  const id = Number(row.lastInsertRowid);
+  queue.start();
+  queue.start();
+  assert.equal(queue.get(id)!.state.type, 'retry-wait');
+  assert.equal(queue.hasPendingRetry(id), true);
+  assert.equal(queue.findActive('hitomi', 'durable-retry')!.id, id);
+  assert.equal(queue.cancel(id), true);
+  assert.equal(queue.get(id)!.state.type, 'cancelled');
+  assert.equal(queue.get(id)!.retryAt, null);
+  assert.equal(queue.hasPendingRetry(id), false);
+  queue.remove(id);
+});
+
+
+test('retry output ownership protects edits until a cancelled download unwinds', async () => {
+  const { buildZip } = await import('../src/downloader/zip.js');
+  const { editComicInfo, readComicInfo } = await import('../src/lib/cbz.js');
+  const previous = path.join(outputDir, 'owned-before-retry.cbz');
+  fs.mkdirSync(outputDir, { recursive: true });
+  fs.writeFileSync(previous, buildZip([{ name: '001.jpg', data: Buffer.from('old image') }, { name: 'ComicInfo.xml', data: Buffer.from('<ComicInfo><Series>Old</Series></ComicInfo>') }]));
+  const row = getDb().insert(schema.downloadQueue).values({ source: 'hitomi', galleryId: 'reserved-output', status: 'completed', outputFormat: 'cbz', outputPath: previous }).run();
+  const id = Number(row.lastInsertRowid);
+  const queue = new DownloadQueue(() => ({ downloadDirectory: outputDir, format: 'cbz', maxConcurrentDownloads: 1, maxImageConcurrency: 1, requestDelayMs: 0, autoSyncKavita: false, nhentaiApiKey: '', nhentaiBannedTags: [] }));
+  const originalFetch = globalThis.fetch;
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), settled = Promise.withResolvers<void>();
+  globalThis.fetch = (async () => { entered.resolve(); await release.promise; return new Response(Buffer.from('new image')); }) as typeof fetch;
+  const unsubscribe = queue.subscribe(task => { if (task.id === id && task.status === 'failed' && !queue.isRunning(id)) settled.resolve(); });
+  try {
+    assert.equal(queue.retry(id), true);
+    await entered.promise;
+    let edited = false;
+    const edit = editComicInfo(previous, { fields: { Number: '7' } }).then(() => { edited = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(edited, false, 'edit crossed an active retry reservation');
+    queue.cancel(id);
+    release.resolve();
+    await settled.promise;
+    await edit;
+    assert.match((await readComicInfo(previous))!, /<Number>(?:<!\[CDATA\[)?7(?:\]\]>)?<\/Number>/);
+    assert.equal(queue.get(id)!.state.type, 'cancelled');
+  } finally { release.resolve(); unsubscribe(); globalThis.fetch = originalFetch; }
+});
