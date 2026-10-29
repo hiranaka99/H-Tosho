@@ -35,6 +35,8 @@ export interface EditComicInfoCommand { path: string; seriesId?: number; xml?: s
 export interface MergeSeriesCommand {
   seriesId?: number; targetDir?: string; sourceFiles?: string[]; chapters?: Record<string, string>;
   existingChapters?: Record<string, string>;
+  /** Optional Series metadata and Kavita display name; the target folder is retained. */
+  seriesName?: string;
   downloads?: { source: DoujinSource; galleryId: string; title: string; chapter: string; allowDuplicate?: boolean }[];
 }
 export interface JobExecutionState {
@@ -67,7 +69,7 @@ const fieldsByType: Record<JobType, readonly string[]> = {
   'apply-series': ['seriesId', 'providerId', 'providerSeriesId', 'selectedTitle', 'excludedFields', 'cover', 'score'],
   'clear-overrides': ['libraryId'], 'check-watched-searches': [],
   'edit-comicinfo': ['seriesId', 'path', 'xml', 'fields'],
-  'merge-series': ['seriesId', 'sourceFiles', 'targetDir', 'chapters', 'existingChapters', 'downloads'],
+  'merge-series': ['seriesId', 'sourceFiles', 'targetDir', 'chapters', 'existingChapters', 'downloads', 'seriesName'],
   'delete-series': ['seriesId'],
 };
 const id = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
@@ -117,6 +119,10 @@ export function parseJobCommand(type: unknown, value: unknown): JobCommand {
   if (type === 'sync-series' && !id(payload.libraryId) && !(payload.seriesIds as number[] | undefined)?.length) throw new Error('seriesIds or libraryId required');
   if (type === 'edit-comicinfo' && !payload.path) throw new Error('path required');
   if (type === 'merge-series') {
+    if (payload.seriesName !== undefined) {
+      if (typeof payload.seriesName !== 'string' || !payload.seriesName.trim() || /[\u0000-\u001f\u007f]/.test(payload.seriesName)) throw new Error('Series name must be non-empty text without control characters');
+      payload.seriesName = payload.seriesName.trim();
+    }
     validateMergeDownloads(payload.downloads);
     for (const field of ['chapters', 'existingChapters']) if (payload[field] && !Object.values(payload[field] as Record<string, string>).every(validMergeChapter)) throw new Error('Chapter numbers must be positive numbers or blank');
   }

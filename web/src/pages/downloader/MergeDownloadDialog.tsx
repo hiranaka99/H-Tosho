@@ -4,12 +4,11 @@ import { Loader2, RotateCcw, Combine } from 'lucide-react';
 import { type DoujinSearchResult } from '../../lib/api';
 import { Button, Input, Dialog, DialogContent, DialogTitle, DialogDescription } from '../../components/ui';
 import { chapterErrors } from '../../lib/chapterNumbers';
+import { mergeSeriesNameError } from '../../lib/mergeNames';
+export { folderNameFrom } from '../../lib/mergeNames';
 
 import { DOWNLOADER_SETTINGS_URL, type DownloadSetup } from './state';
 import { DownloadDestination } from './DownloadSetup';
-export function folderNameFrom(title: string): string {
-  return title.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
-}
 
 /**
  * Confirm dialog for queued merged downloads: all selected galleries land in one
@@ -39,14 +38,14 @@ export function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm, 
     setNumbers((prev) => prev.map((n, j) => (j === i ? v : n)));
   };
   const numberErrors = chapterErrors(numbers.map((value, index) => ({ key: String(index), value, changed: true })));
-  const folderError = /[\\/]/.test(folder) ? 'Use a folder name without slashes.' : null;
+  const folderError = /[\\/]/.test(folder) ? 'Use a series name without slashes.' : mergeSeriesNameError(folder);
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !pending) onClose(); }}>
       <DialogContent className="sm:max-w-lg" onEscapeKeyDown={event => { if (pending) event.preventDefault(); }} onPointerDownOutside={event => { if (pending) event.preventDefault(); }}>
         <div className="flex max-h-[calc(100vh-9rem)] flex-col gap-3 overflow-y-auto p-5 pr-12">
           <div>
             <DialogTitle>Merged download</DialogTitle>
-            <DialogDescription className="sr-only">Download the selected galleries as one series.</DialogDescription>
+            <DialogDescription>Name the new series and review chapter numbers before downloading.</DialogDescription>
           </div>
           <DownloadDestination setup={setup} />
           {result && result.failures.length > 0 && <div role="alert" className="space-y-1 text-sm">
@@ -54,8 +53,9 @@ export function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm, 
           </div>}
           {setup.status === 'ready' && setup.format !== 'cbz' && <p className="text-sm text-danger">Merged downloads need CBZ format. <Link className="underline underline-offset-4" to={DOWNLOADER_SETTINGS_URL}>Change the output format</Link> first.</p>}
           <div className="flex flex-col gap-1">
-            <span id="merge-folder-label" className="text-xs font-medium text-muted">Series folder name</span>
-            <Input id="merge-folder" aria-labelledby="merge-folder-label" value={folder} onChange={(e) => setFolder(e.target.value)} placeholder="Series folder" disabled={pending || settled.size > 0} aria-invalid={!!folderError} aria-describedby={folderError ? "merge-folder-error" : undefined} autoFocus />
+            <span id="merge-folder-label" className="text-xs font-medium text-muted">Merged series name</span>
+            <Input id="merge-folder" aria-labelledby="merge-folder-label" value={folder} onChange={(e) => setFolder(e.target.value)} placeholder="Series name" disabled={pending || settled.size > 0} aria-invalid={!!folderError} aria-describedby={`merge-name-help${folderError ? ' merge-folder-error' : ''}`} autoFocus />
+            <p id="merge-name-help" className="text-xs text-muted">Used for every chapter in Kavita and for the shared download folder.</p>
             {folderError && <p id="merge-folder-error" className="text-xs text-danger">{folderError}</p>}
           </div>
           <hr className="border-border" />

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v3.1.0
+
+- Rename the destination series while merging galleries from Search,
+  Recommended, or Watched. Review the proposed name before queueing; the
+  merge updates existing and incoming archive metadata and Kavita together.
+- Add gallery selection and both merge actions to Recommended, using the
+  same desktop shortlist and mobile action tray as Search and Watched.
+- Apply the chosen library merge name independently of a custom target folder,
+  and prefer the exact mapped destination when folders share a name.
+- Clarify the resulting series name for new merged downloads, validate name
+  drafts, and lock library merge inputs while the job is being queued.
+- Preserve rename drafts after queue errors and reuse completed downloads when
+  retrying a failed merge or Kavita name update.
+
 ## v3.0.0
 
 - Split large API, background-job, downloader, recommendation, and frontend

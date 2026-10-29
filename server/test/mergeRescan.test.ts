@@ -113,6 +113,41 @@ test('invalid existing chapter edits fail before any incoming archive moves', as
   assert.equal(parseComicInfo((await readComicInfo(existing))!).fields.Number, '12');
 });
 
+for (const preExistingSeries of [false, true]) test(`library merge uses the chosen name with a custom folder (${preExistingSeries ? 'existing' : 'new'} destination)`, async t => {
+  const sources = makeSources();
+  const targetDir = path.join(dataDir, `custom-folder-${preExistingSeries}`);
+  fs.mkdirSync(targetDir, { recursive: true });
+  const existing = path.join(targetDir, 'Existing.cbz');
+  fs.writeFileSync(existing, buildZip([{ name: 'ComicInfo.xml', data: Buffer.from('<ComicInfo><Series>Old Name</Series><Number>7</Number><Writer>Keep Author</Writer></ComicInfo>') }]));
+  const state: FakeKavita = { requests: [], indexed: preExistingSeries ? [existing] : [], lastScanned: 't0', preExistingSeries, preExistingFiles: [existing], dropFirstLibraryScan: false, taskPending: false };
+  const fixtureFetch = fakeKavita(state, targetDir, sources.map(file => path.join(targetDir, path.basename(file))));
+  const updates: { id: number; name: string }[] = [];
+  globalThis.fetch = (async (input, init) => {
+    if (String(input).endsWith('/api/Series/update')) updates.push(JSON.parse(String(init?.body)));
+    const response = await fixtureFetch(input, init);
+    if (String(input).includes('/api/Series/all-v2')) {
+      const series = await response.json() as { id: number; libraryId: number; name: string; folderPath: string }[];
+      if (series.length) series.unshift({ id: 49, libraryId: 7, name: 'Unrelated series', folderPath: path.join(dataDir, 'Other artist', path.basename(targetDir)) });
+      return Response.json(series);
+    }
+    return response;
+  }) as typeof fetch;
+  const job = makeJob(sources, targetDir);
+  job.payload.seriesName = '  Collected & Renamed  ';
+  job.payload.chapters = { [sources[0]]: '1.5' };
+  const result = await finishWithScanClock(t, () => runJob(job, () => {}));
+  assert.equal(result.failed, 0);
+  assert.deepEqual(updates.map(update => ({ id: update.id, name: update.name })), [{ id: 50, name: 'Collected & Renamed' }]);
+  const updateIndex = state.requests.findIndex(url => url.endsWith('/api/Series/update'));
+  const scanIndex = state.requests.findIndex(url => url.includes('/api/Library/scan') || url.endsWith('/api/Series/scan'));
+  assert.equal(updateIndex < scanIndex, preExistingSeries, 'Existing destinations are renamed before scanning; new ones after discovery');
+  for (const file of fs.readdirSync(targetDir)) assert.equal(parseComicInfo((await readComicInfo(path.join(targetDir, file)))!).fields.Series, 'Collected & Renamed');
+  const metadata = parseComicInfo((await readComicInfo(existing))!).fields;
+  assert.equal(metadata.Number, '7');
+  assert.equal(metadata.Writer, 'Keep Author');
+  assert.equal(parseComicInfo((await readComicInfo(path.join(targetDir, path.basename(sources[0]))))!).fields.Number, '1.5');
+});
+
 interface FakeKavita {
   requests: string[];
   /** Files Kavita has indexed for the merged series (absolute paths). */

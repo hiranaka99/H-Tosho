@@ -4,6 +4,7 @@ import { Combine, FolderInput } from 'lucide-react';
 import { api, type SeriesRow } from '../lib/api';
 import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, EmptyState } from './ui';
 import { toast } from '../lib/toast';
+import { folderNameFrom, mergeSeriesNameError } from '../lib/mergeNames';
 
 interface MergeSeriesModalProps {
   /** The selected Kavita series (two or more) whose files will be merged. */
@@ -83,9 +84,10 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
   // Default target = the download directory (first root) + the merged series name.
   const defaultTarget = React.useMemo(() => {
     const root = roots.data?.roots[0];
-    if (!root || !seriesName.trim()) return '';
+    const folder = folderNameFrom(seriesName);
+    if (!root || !folder) return '';
     const sep = root.includes('\\') ? '\\' : '/';
-    return `${root}${sep}${seriesName.trim()}`;
+    return `${root}${sep}${folder}`;
   }, [roots.data, seriesName]);
 
   const targetDir = targetOverride.trim() || defaultTarget;
@@ -94,7 +96,8 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
     setFiles((prev) => prev?.map((f) => (f.path === path ? { ...f, chapter } : f)) ?? null);
   };
 
-  const canSave = !!seriesName.trim() && !!targetDir && (files?.length ?? 0) > 0;
+  const nameError = mergeSeriesNameError(seriesName);
+  const canSave = !nameError && !!targetDir && (files?.length ?? 0) > 0;
 
   const save = useMutation({
     mutationFn: () => {
@@ -103,6 +106,7 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
       return api.enqueue('merge-series', {
         sourceFiles: (files ?? []).map((f) => f.path),
         targetDir,
+        seriesName: seriesName.trim(),
         chapters,
       });
     },
@@ -115,8 +119,8 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
   });
 
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-2xl">
+    <Dialog open onOpenChange={(o) => { if (!o && !save.isPending) onClose(); }}>
+      <DialogContent className="max-w-2xl" onEscapeKeyDown={event => { if (save.isPending) event.preventDefault(); }} onPointerDownOutside={event => { if (save.isPending) event.preventDefault(); }}>
         <div className="flex max-h-[85vh] flex-col gap-4 overflow-y-auto p-5">
           <div className="flex items-start gap-2 pr-10">
             <Combine className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
@@ -130,13 +134,15 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
           <div className="flex flex-col gap-3 rounded-lg border border-border-2 bg-surface-2 p-3">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="merge-name">Merged series name</Label>
-              <Input id="merge-name" value={seriesName} onChange={(e) => setSeriesName(e.target.value)} placeholder="e.g. A Fifth of Romance" />
+              <Input id="merge-name" value={seriesName} onChange={(e) => setSeriesName(e.target.value)} placeholder="e.g. A Fifth of Romance" disabled={save.isPending} aria-invalid={!!nameError} aria-describedby={`merge-name-help${nameError ? ' merge-name-error' : ''}`} />
+              <p id="merge-name-help" className="text-xs text-muted">All chapters use this series name in Kavita when the merge runs.</p>
+              {nameError && <p id="merge-name-error" role="alert" className="text-xs text-danger">{nameError}</p>}
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="merge-target">Target folder</Label>
-              <Input id="merge-target" value={targetOverride} onChange={(e) => setTargetOverride(e.target.value)} placeholder={defaultTarget || 'Select a series name first'} />
-              <p className="text-xs text-muted">
-                All files move into this folder — Kavita shows one series per folder, so the folder name becomes the series name.
+              <Input id="merge-target" value={targetOverride} onChange={(e) => setTargetOverride(e.target.value)} placeholder={defaultTarget || 'Enter a target folder'} disabled={save.isPending} aria-describedby="merge-target-help" />
+              <p id="merge-target-help" className="text-xs text-muted">
+                All archives move here. Leave blank to use a folder based on the series name, or choose a different folder.
               </p>
             </div>
           </div>
@@ -158,7 +164,7 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
                   <div key={f.path} className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 rounded-md border border-border-2 bg-surface px-2 py-1.5 sm:grid-cols-[minmax(0,1fr)_8rem_5rem]">
                     <span className="min-w-0 truncate text-xs" title={`${f.path}\n(from ${f.fromSeries})`}>{f.name}</span>
                     <span className="hidden truncate text-xs text-muted sm:block" title={f.fromSeries}>{f.fromSeries}</span>
-                    <Input value={f.chapter} onChange={(e) => setChapter(f.path, e.target.value)} placeholder="Ch #" inputMode="decimal" className="h-8 w-full px-2 text-xs" aria-label={`Chapter number for ${f.name}`} />
+                    <Input value={f.chapter} onChange={(e) => setChapter(f.path, e.target.value)} placeholder="Ch #" inputMode="decimal" disabled={save.isPending} className="h-8 w-full px-2 text-xs" aria-label={`Chapter number for ${f.name}`} />
                   </div>
                 ))}
               </div>
@@ -171,10 +177,10 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
 
           <div className="flex flex-col gap-3 border-t border-border pt-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="min-w-0 flex-1 text-sm text-muted">
-              After the merge, Kavita shows these files as one series. Empty leftover series may remain — delete them in Kavita.
+              {nameError ? 'Enter a name for the merged series.' : <>Merged series: <span className="break-words font-medium text-foreground">{seriesName.trim()}</span></>}
             </p>
             <div className="flex shrink-0 justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
+              <Button variant="outline" size="sm" onClick={onClose} disabled={save.isPending}>Cancel</Button>
               <Button size="sm" onClick={() => save.mutate()} disabled={!canSave || save.isPending || perSeries.isLoading}>
                 {save.isPending ? <Spinner /> : <Combine className="h-3.5 w-3.5" />} Queue merge
               </Button>

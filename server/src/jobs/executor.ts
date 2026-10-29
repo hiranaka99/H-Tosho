@@ -24,7 +24,7 @@ import { applyResolvedSeriesMatch, applySeriesMatch, type ApplySeriesResult } fr
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
-import { listCbzFiles, mapKavitaPathToLocalPath, mergeCbzFiles, pathContains, editComicInfo, resolveExistingFile, resolveSeriesHostDir, setComicInfoFields } from '../lib/cbz.js';
+import { listCbzFiles, mapKavitaPathToLocalPath, mergeCbzFiles, pathContains, editComicInfo, readComicInfo, resolveExistingFile, resolveSeriesHostDir, setComicInfoFields } from '../lib/cbz.js';
 import { mapLimit } from '../lib/http.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
 import type { KavitaSeries } from '../kavita/types.js';
@@ -465,7 +465,8 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
   for (const file of sourceFiles) if (!resolveExistingFile(file) || !file.toLowerCase().endsWith('.cbz')) throw new Error(`Source archive not found: ${file}`);
   for (const number of Object.values(job.payload.chapters ?? {})) if (!validMergeChapter(number)) throw new Error('Incoming chapter numbers must be positive numbers or blank');
   let targetDir = job.payload.targetDir;
-  let stampName: string | undefined;
+  const renamedSeries = job.payload.seriesName?.trim();
+  let stampName: string | undefined = renamedSeries;
   let targetLibraryId: number | null = null;
   if (job.payload.seriesId != null) {
     const client = connectedClientOrNull();
@@ -494,7 +495,7 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
     targetLibraryId = s.libraryId;
     // Match the Series value the existing files carry so Kavita groups the
     // merged files with them; fall back to the series name when unknown.
-    stampName = (await pickSeriesStampName(dir, new Set(sourceFiles.map((f) => path.resolve(f))))) ?? s.name;
+    stampName ??= (await pickSeriesStampName(dir, new Set(sourceFiles.map((f) => path.resolve(f))))) ?? s.name;
   }
   if (!targetDir) throw new Error('targetDir required');
   // The merge and existing chapter edits share one queue commitment. Check
@@ -544,9 +545,27 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
       log('warn', `Could not update existing chapter ${file}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  if (renamedSeries) {
+    // Include every target archive, even chapters with no number edit and
+    // incoming files whose first metadata write failed. A retry can repair
+    // a partial rename without downloading completed galleries again.
+    for (const file of listCbzFiles(targetDir)) {
+      throwIfJobCancelled(job.id);
+      const xml = await readComicInfo(file);
+      if (!xml || parseComicInfo(xml).fields.Series !== renamedSeries) await setComicInfoFields(file, { Series: renamedSeries });
+    }
+    throwIfJobCancelled(job.id);
+    if (job.payload.seriesId != null) {
+      const client = connectedClientOrNull();
+      if (!client) throw new Error('Kavita is required to finish the series rename. Retry the merge after reconnecting.');
+      await client.updateSeriesMetadata(job.payload.seriesId, { name: renamedSeries });
+      rememberTargets(job, [{ id: job.payload.seriesId, name: renamedSeries, libraryId: targetLibraryId! }]);
+    }
+    log('success', `Set merged series name to "${renamedSeries}" in all target archives`);
+  }
   log('success', `Moved ${r.moved.length} file(s) into one folder as "${stampName ?? lastSegment(targetDir)}"; stamped chapter numbers on ${r.chaptered.length}`);
   await removeSourceSeriesFromKavita(sourceSeriesIds, log);
-  await rescanAndVerifyMerge(targetDir, r.moved, log, { job, seriesId: job.payload.seriesId ?? null, libraryId: targetLibraryId });
+  await rescanAndVerifyMerge(targetDir, r.moved, log, { job, seriesId: job.payload.seriesId ?? null, libraryId: targetLibraryId, seriesName: job.payload.seriesId == null ? renamedSeries : undefined });
   invalidateDuplicateLibrary();
   return { processed: r.moved.length, matched: 0, failed: r.failed.length + chapterEditFailures };
 }

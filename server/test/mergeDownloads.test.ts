@@ -126,9 +126,11 @@ test('final merge downloads missing galleries as CBZ, reuses existing files, and
 test('download failure preserves existing chapters; job retry reuses successful and failed download task IDs', async t => {
   const f = fixture('retry');
   f.fail('retry-b', 'retry-a');
-  const job = runningJob({ seriesId: 50, existingChapters: { [f.existing]: '9' }, downloads: [plan('retry-a'), plan('retry-b', '14')] });
+  const job = runningJob({ seriesId: 50, seriesName: 'Renamed after retry', existingChapters: { [f.existing]: '9' }, downloads: [plan('retry-a'), plan('retry-b', '14')] });
   await assert.rejects(clock(t, () => runJob(job, () => {})), /Download failed.*retry-b/);
   assert.equal((await fields(f.existing)).Number, '12');
+  assert.equal((await fields(f.existing)).Series, 'Target Stamp');
+  assert.ok(!f.requests.some(url => url.endsWith('/api/Series/update')));
   assert.deepEqual(fs.readdirSync(f.target), ['Existing.cbz']);
   assert.equal(f.scans.length, 0);
   assert.ok(downloadQueue.findCompleted('hitomi', 'retry-a'), 'First gallery is complete before the failure');
@@ -146,6 +148,69 @@ test('download failure preserves existing chapters; job retry reuses successful 
   assert.ok((f.counts.get('retry-b') ?? 0) >= 2, 'The failed gallery is resolved again for retry');
   assert.deepEqual(jobQueue.get(retryId)!.payload.mergeDownloadIds, checkpoints);
   assert.equal((await fields(f.existing)).Number, '9');
+  assert.equal((await fields(f.existing)).Series, 'Renamed after retry');
+});
+
+test('optional rename stamps every existing and incoming chapter and updates Kavita before scanning', async t => {
+  const f = fixture('rename');
+  const extra = path.join(f.target, 'Extra.cbz');
+  archive(extra, '5');
+  const job = runningJob({ seriesId: 50, seriesName: '  Collection & Stories  ', existingChapters: { [f.existing]: '' }, downloads: [plan('rename-incoming')] });
+  assert.equal(job.payload.seriesName, 'Collection & Stories');
+  assert.equal((await fields(f.existing)).Series, 'Target Stamp', 'Queueing alone never renames');
+  const updates: unknown[] = [];
+  const fixtureFetch = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    if (String(input).endsWith('/api/Series/update')) {
+      updates.push(JSON.parse(String(init?.body)));
+      for (const file of fs.readdirSync(f.target)) assert.equal((await fields(path.join(f.target, file))).Series, 'Collection & Stories');
+      assert.equal(f.scans.length, 0);
+    }
+    return fixtureFetch(input, init);
+  }) as typeof fetch;
+  const result = await clock(t, () => runJob(job, () => {}));
+  assert.equal(result.failed, 0);
+  assert.equal(updates.length, 1);
+  assert.equal((updates[0] as { name: string; nameLocked: boolean }).name, 'Collection & Stories');
+  assert.equal((updates[0] as { nameLocked: boolean }).nameLocked, true);
+  assert.equal((await fields(f.existing)).Number ?? '', '');
+  assert.equal((await fields(extra)).Number, '5');
+  assert.equal((await fields(extra)).Writer, 'Keep Author');
+  assert.equal(path.dirname(downloadQueue.findCompleted('hitomi', 'rename-incoming')!.outputPath!), f.target);
+  assert.equal(f.scans.length, 1);
+});
+
+test('jobs API rejects invalid rename drafts without queueing work', async () => {
+  const before = jobQueue.list().length;
+  for (const seriesName of ['', '  ', 42, null, 'Bad\u0000name', 'Bad\nname']) {
+    const response = await api.request('/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'merge-series', seriesId: 50, seriesName, downloads: [plan('invalid-name')] }) });
+    assert.equal(response.status, 400);
+  }
+  assert.throws(() => runningJob({ seriesName: 'No target', downloads: [plan('invalid-name')] }), /requires a target/);
+  assert.equal(jobQueue.list().length, before);
+});
+
+test('a failed Kavita rename can be retried without downloading or moving chapters twice', async t => {
+  const f = fixture('rename-api-retry');
+  const job = runningJob({ seriesId: 50, seriesName: 'Retried name', downloads: [plan('rename-retry-gallery')] });
+  const fixtureFetch = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => String(input).endsWith('/api/Series/update')
+    ? new Response('temporarily unavailable', { status: 503 }) : fixtureFetch(input, init)) as typeof fetch;
+  await assert.rejects(clock(t, () => runJob(job, () => {})), /503/);
+  assert.equal(f.scans.length, 0);
+  const published = downloadQueue.findCompleted('hitomi', 'rename-retry-gallery')!.outputPath!;
+  assert.equal((await fields(f.existing)).Series, 'Retried name');
+  getDb().update(schema.jobs).set({ status: 'failed' }).where(eq(schema.jobs.id, job.id)).run();
+  const retryId = jobQueue.retryJob(job.id)!;
+  getDb().update(schema.jobs).set({ status: 'running' }).where(eq(schema.jobs.id, retryId)).run();
+  globalThis.fetch = fixtureFetch;
+  t.mock.timers.reset();
+  const result = await clock(t, () => runJob(jobQueue.get(retryId)!, () => {}));
+  assert.equal(result.failed, 0);
+  assert.equal(f.requests.filter(url => url === 'https://images.example/rename-retry-gallery.jpg').length, 1);
+  assert.equal(downloadQueue.findCompleted('hitomi', 'rename-retry-gallery')!.outputPath, published);
+  assert.equal(fs.readdirSync(f.target).filter(file => file.endsWith('.cbz')).length, 2);
+  assert.equal(f.scans.length, 1);
 });
 
 test('invalid staged target edits reject the plan before any gallery download', async () => {

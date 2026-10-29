@@ -299,7 +299,7 @@ export async function rescanAndVerifyMerge(
   targetDir: string,
   movedFiles: string[],
   log: LogFn,
-  opts: { job: Job; seriesId?: number | null; libraryId?: number | null },
+  opts: { job: Job; seriesId?: number | null; libraryId?: number | null; seriesName?: string },
 ): Promise<void> {
   try {
     const conn = getKavitaConnection();
@@ -336,6 +336,15 @@ export async function rescanAndVerifyMerge(
     }
     const library = lib;
     rememberLibraries(opts.job, [library]);
+    const renamedIds = new Set<number>();
+    const renameSeries = async (series: { id: number; name: string } | undefined) => {
+      if (!series || !opts.seriesName || renamedIds.has(series.id)) return;
+      throwIfJobCancelled(opts.job.id);
+      await client.updateSeriesMetadata(series.id, { name: opts.seriesName });
+      renamedIds.add(series.id);
+      rememberTargets(opts.job, [{ id: series.id, name: opts.seriesName, libraryId: library.id }]);
+      log('success', `Set Kavita series name to "${opts.seriesName}"`);
+    };
 
     const targetName = lastSegment(targetDir).toLowerCase();
     const findSeries = async (): Promise<{ id: number; name: string } | undefined> => {
@@ -349,7 +358,16 @@ export async function rescanAndVerifyMerge(
         }
       }
       const series = await client.getSeries(library.id);
-      const found = series.find((s) => s.folderPath && lastSegment(s.folderPath).toLowerCase() === targetName);
+      const candidates = series.filter((s) => s.folderPath && lastSegment(s.folderPath).toLowerCase() === targetName);
+      const normalize = (value: string) => {
+        const resolved = safeRealpath(value).replace(/\\/g, '/').replace(/\/+$/, '');
+        return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+      };
+      const mappings = getDownloaderSettings().libraryPathMappings ?? [];
+      // Two artist folders may contain a series with the same folder name.
+      // Prefer the exact mapped destination before changing its Kavita name.
+      const found = candidates.find(s => normalize(mapKavitaPathToLocalPath(s.folderPath!, mappings) ?? s.folderPath!) === normalize(targetDir))
+        ?? (candidates.length === 1 ? candidates[0] : undefined);
       if (found) rememberTargets(opts.job, [{ id: found.id, name: found.name, libraryId: library.id }]);
       return found;
     };
@@ -370,6 +388,7 @@ export async function rescanAndVerifyMerge(
     const deadline = Date.now() + MERGE_VERIFY_TIMEOUT_MS;
     for (;;) {
       const series = await findSeries().catch(() => undefined);
+      await renameSeries(series);
       if (series) {
         await client.scanSeries(library.id, series.id);
         log('info', `Requested Kavita rescan of series "${series.name}"`);
@@ -383,6 +402,7 @@ export async function rescanAndVerifyMerge(
       await waitForKavitaTasksToDrain(client, log, `series "${library.name}"`, deadline, opts.job.id);
 
       const after = await findSeries().catch(() => undefined);
+      await renameSeries(after);
       let missing: string[] | null = null;
       if (after) {
         try {
@@ -411,6 +431,7 @@ export async function rescanAndVerifyMerge(
     }
   } catch (e) {
     if (e instanceof JobCancelled) throw e;
+    if (opts.seriesName) throw new Error(`Archives were merged, but Kavita could not confirm the series name. Retry the merge: ${e instanceof Error ? e.message : String(e)}`);
     log('warn', `Kavita merge verification failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }

@@ -274,7 +274,7 @@ export function Downloader() {
   const clearSelection = selection.clear;
   const cancelSelection = React.useCallback(() => { selection.clear(); setSelectMode(false); }, [selection.clear]);
 
-  const showSelection = (tab === 'search' || tab === 'watched') && (selectMode || selectedGalleries.size > 0);
+  const showSelection = (tab === 'search' || tab === 'recommend' || tab === 'watched') && (selectMode || selectedGalleries.size > 0);
   const selectionActions = {
     items: selectedItems,
     onMerge: openMergedDownload,
@@ -568,6 +568,9 @@ export function Downloader() {
               <div className="grid grid-cols-2 items-center gap-2 sm:ml-auto sm:flex sm:shrink-0 sm:flex-wrap">
                 {recs?.mode === 'popular' && <span className="col-span-2 w-fit"><Badge tone="muted">Popular picks</Badge></span>}
                 {recs?.mode === 'mixed' && <span className="col-span-2 w-fit"><Badge tone="muted">Personalized + popular</Badge></span>}
+                <Button size="sm" variant={selectMode ? 'default' : 'outline'} className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 w-full sm:w-auto" aria-pressed={selectMode} onClick={() => setSelectMode(current => !current)} disabled={!visibleRecs.length && !selectedGalleries.size}>
+                  <CheckSquare className="h-3.5 w-3.5 shrink-0" />{selectMode ? 'Done selecting' : 'Select galleries'}
+                </Button>
                 <RecommendationFeedbackManager feedback={feedbackQuery.data} pending={feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading} onAction={request => void updateFeedback(request)} />
                 <Button size="sm" variant="outline" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 w-full sm:w-auto" onClick={() => void doRefreshRecs()} disabled={recsRefreshing || recLibraryPending !== null || feedbackPending !== null || recsLoading} title="Get a fresh selection of recommendations">
                   <RotateCcw className={cn('h-3.5 w-3.5 shrink-0', recsRefreshing && 'animate-spin')} /> {recsRefreshing ? 'Refreshing…' : 'Refresh picks'}
@@ -621,6 +624,8 @@ export function Downloader() {
             <div role="status" className="flex items-start justify-center gap-2 px-4 py-12 text-sm text-muted"><Spinner /><span className="max-w-sm">Building your picks — the first pass of the day can take a minute…</span>
             </div>
           ) : visibleRecs.length > 0 ? (
+            <>
+            {showSelection && <GallerySelectionBar {...selectionActions} />}
             <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
               {visibleRecs.map(item => (
                 <div key={item.source + item.galleryId} className="flex flex-col gap-1 [&>article]:flex-1">
@@ -632,10 +637,11 @@ export function Downloader() {
                     downloadSetup={downloadStatus}
 
 
-                   ownership={{ type: libraryMatches.get(`${item.source}:${item.galleryId}`) === 'owned' ? 'in-library' : downloadedAt.has(`${item.source}:${item.galleryId}`) || ownedKeys.has(`${item.source}:${item.galleryId}`) ? 'downloaded' : libraryMatches.get(`${item.source}:${item.galleryId}`) === 'possible' ? 'possible-duplicate' : 'available', downloadedAt: downloadedAt.get(`${item.source}:${item.galleryId}`), preferenceOwned: ownedKeys.has(`${item.source}:${item.galleryId}`) }} display="recommendation" feedback={{ pending: feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading, onOpen: setFeedbackItem }} />
+                   ownership={{ type: libraryMatches.get(`${item.source}:${item.galleryId}`) === 'owned' ? 'in-library' : downloadedAt.has(`${item.source}:${item.galleryId}`) || ownedKeys.has(`${item.source}:${item.galleryId}`) ? 'downloaded' : libraryMatches.get(`${item.source}:${item.galleryId}`) === 'possible' ? 'possible-duplicate' : 'available', downloadedAt: downloadedAt.get(`${item.source}:${item.galleryId}`), preferenceOwned: ownedKeys.has(`${item.source}:${item.galleryId}`) }} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(`${item.source}:${item.galleryId}`), onToggle: toggleGallerySelect }} display="recommendation" feedback={{ pending: feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading, onOpen: setFeedbackItem }} />
                 </div>
               ))}
             </div>
+            </>
           ) : (
             <EmptyState icon={<Sparkles className="h-8 w-8" />} title="No picks available" description="Hitomi returned no eligible galleries — try refreshing, or check back later." />
           )}

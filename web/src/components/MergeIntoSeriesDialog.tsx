@@ -6,7 +6,7 @@ import { Link } from 'react-router';
 import { api, ApiError, type DuplicateCheck, type DoujinSearchResult, type DoujinSource } from '../lib/api';
 import { chapterErrors, chapterNumber } from '../lib/chapterNumbers';
 import { useDownloads } from '../lib/DownloadsContext';
-import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner } from './ui';
+import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, Switch } from './ui';
 import { toast } from '../lib/toast';
 
 interface TargetOption {
@@ -34,6 +34,7 @@ interface MergeSubmission {
   downloads: { source: DoujinSource; galleryId: string; title: string; chapter: string; allowDuplicate?: boolean }[];
   keys: string[];
   targetName: string;
+  seriesName?: string;
 }
 
 const galleryKey = (item: DoujinSearchResult) => `${item.source}:${item.galleryId}`;
@@ -54,6 +55,8 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
   const id = React.useId();
   const [filter, setFilter] = React.useState('');
   const [targetId, setTargetId] = React.useState<number | null>(null);
+  const [rename, setRename] = React.useState(false);
+  const [seriesName, setSeriesName] = React.useState('');
   // Only user edits are stored. Generated values are derived after target inspection.
   const [drafts, setDrafts] = React.useState<Record<string, string>>({});
   const submitting = React.useRef(false);
@@ -111,6 +114,9 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
     },
   });
   const target = options.data?.options.find(option => option.id === targetId);
+  const nameError = rename && !seriesName.trim() ? 'Enter a series name, or turn off Rename series.'
+    : rename && /[\u0000-\u001f\u007f]/.test(seriesName) ? 'Use a series name without control characters.' : null;
+  const renamed = rename && !!seriesName.trim() && seriesName.trim() !== target?.name;
   const targetFiles = useQuery({
     queryKey: ['cbz-series-files', targetId],
     queryFn: () => api.cbzSeriesFiles(targetId!),
@@ -145,7 +151,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
   const hasErrors = Object.keys(errors).length > 0;
   const resolving = entries.some(entry => entry.resolving);
   const downloadReady = !downloadEntries.length || (setup.status === 'ready' && !!setup.directory);
-  const canQueue = targetReady && items.length > 0 && !resolving && !entries.some(entry => entry.lookupError) && downloadReady && !hasErrors;
+  const canQueue = targetReady && items.length > 0 && !resolving && !entries.some(entry => entry.lookupError) && downloadReady && !hasErrors && !nameError;
 
   const { checkDuplicates, reviewCheck, dialog: duplicateDialog } = useDuplicateReview();
   const save = useMutation({
@@ -157,6 +163,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
         sourceFiles: submission.sourceFiles,
         chapters: submission.chapters,
         existingChapters: submission.existingChapters,
+        ...(submission.seriesName ? { seriesName: submission.seriesName } : {}),
         downloads: submission.downloads.map(plan => ({ ...plan, allowDuplicate: keys.has(`${plan.source}:${plan.galleryId}`) })),
       });
       try { return await enqueue(approved); }
@@ -191,7 +198,8 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
       existingChapters: Object.fromEntries(editedExisting.filter(file => !sourceFiles.includes(file)).map(file => [file, existingValue(file).trim()])),
       downloads: downloadEntries.map(entry => ({ source: entry.item.source, galleryId: entry.item.galleryId, title: entry.item.title, chapter: incomingValue(entry.chapterKey).trim() })),
       keys: entries.map(entry => entry.key),
-      targetName: target.name,
+      targetName: renamed ? seriesName.trim() : target.name,
+      seriesName: renamed ? seriesName.trim() : undefined,
     });
   };
 
@@ -214,7 +222,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
             <Merge className="mt-0.5 h-5 w-5 shrink-0 text-primary" aria-hidden="true" />
             <div className="min-w-0">
               <DialogTitle>Merge into series</DialogTitle>
-              <DialogDescription className="sr-only">Choose a target and review chapter numbers. Downloads and chapter edits start after Queue merge.</DialogDescription>
+              <DialogDescription>Choose a series, optionally rename it, and review chapter numbers before queueing.</DialogDescription>
             </div>
           </div>
 
@@ -235,7 +243,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
                     key={option.id}
                     type="button"
                     disabled={busy}
-                    onClick={() => { if (targetId !== option.id) { setTargetId(option.id); setDrafts({}); save.reset(); } }}
+                    onClick={() => { if (targetId !== option.id) { setTargetId(option.id); setRename(false); setSeriesName(option.name); setDrafts({}); save.reset(); } }}
                     aria-pressed={targetId === option.id}
                     aria-label={`Select ${option.name} as merge target`}
                     className={`flex min-w-0 flex-col gap-2 rounded-lg border p-2 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${targetId === option.id ? 'border-primary bg-primary/10' : 'border-border hover:border-border-2 hover:bg-surface-2'}`}
@@ -255,8 +263,24 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
           {target && <section className="space-y-2 border-t border-border pt-4">
             <div className="flex items-center gap-3">
               <TargetCover option={target} className="w-12 shrink-0" />
-              <h3 className="min-w-0 break-words text-sm font-semibold">Existing chapters · {target.name}</h3>
+              <div className="min-w-0 flex-1">
+                <h3 className="break-words text-sm font-semibold">{target.name}</h3>
+                <p className="break-words text-xs text-muted">{target.library}</p>
+              </div>
             </div>
+            <div className="space-y-3 py-2">
+              <div className="flex min-h-11 items-center justify-between gap-3">
+                <Label htmlFor={`${id}-rename`} className="cursor-pointer text-sm text-foreground">Rename series</Label>
+                <Switch id={`${id}-rename`} checked={rename} onCheckedChange={setRename} disabled={busy} aria-label="Rename series" aria-controls={`${id}-name-fields`} />
+              </div>
+              {rename && <div id={`${id}-name-fields`} className="space-y-2">
+                <Label htmlFor={`${id}-name`}>New series name</Label>
+                <Input id={`${id}-name`} value={seriesName} onChange={event => setSeriesName(event.target.value)} disabled={busy} aria-invalid={!!nameError} aria-describedby={`${id}-name-help${nameError ? ` ${id}-name-error` : ''}`} />
+                <p id={`${id}-name-help`} className="text-xs text-muted">Applies to existing and incoming chapters in Kavita when the merge runs. The folder name stays the same.</p>
+                {nameError && <p id={`${id}-name-error`} role="alert" className="text-xs text-danger">{nameError}</p>}
+              </div>}
+            </div>
+            <h3 className="text-sm font-semibold">Existing chapters</h3>
             {targetFiles.isFetching ? <p role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner /> Inspecting target archives…</p>
               : targetFiles.isError || !targetFiles.data?.dir || targetFiles.data.reason ? <div role="alert" className="space-y-2 text-sm">
                 <p className="text-danger">{targetFiles.isError ? 'Could not inspect the target series. Retry before merging.' : 'Could not locate the target series folder. Check library folder mappings in Downloader settings, then retry.'}</p>
@@ -304,6 +328,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
         </div>
 
         <div className="shrink-0 space-y-3 border-t border-border p-4">
+          {renamed && !nameError && <p className="break-words text-xs text-muted">Rename on merge: <span className="text-foreground">{target?.name}</span> → <span className="font-medium text-foreground">{seriesName.trim()}</span></p>}
           {save.isError && <p role="alert" className="text-sm text-danger">Could not queue the merge. Drafts kept; try again.</p>}
           {hasErrors && <p role="alert" className="text-xs text-danger">Fix the chapter numbers above.</p>}
           {!downloadReady && <div role="status" className="flex flex-wrap items-center gap-2 text-xs text-muted">
