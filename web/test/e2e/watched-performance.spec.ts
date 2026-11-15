@@ -36,7 +36,7 @@ test('Watched keeps large saved lists cheap and follows checks promptly', async 
   await page.getByLabel('Username', { exact: true }).fill('upgrade-test');
   await page.getByLabel('Password', { exact: true }).fill('upgrade-test-password');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(page).toHaveURL(/\/libraries$/);
+  await expect(page.getByRole('heading', { name: 'Home', exact: true })).toBeVisible();
   const session = await page.context().newCDPSession(page);
   // Controlled browser workload, not a claim about real-device speed or Web Vitals.
   await session.send('Emulation.setCPUThrottlingRate', { rate: 4 });

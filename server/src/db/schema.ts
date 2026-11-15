@@ -46,6 +46,27 @@ export const seriesMatches = sqliteTable('series_matches', {
     .default(sql`(current_timestamp)`),
 });
 
+/** Read-only discovery results, separate from accepted matches and Kavita metadata. */
+export const matchSuggestions = sqliteTable('match_suggestions', {
+  connectionKey: text('connection_key').notNull(),
+  seriesId: integer('series_id').notNull(),
+  name: text('name').notNull(),
+  libraryId: integer('library_id').notNull(),
+  libraryName: text('library_name').notNull(),
+  cover: text('cover'),
+  candidatesJson: text('candidates_json').notNull(),
+  checkedAt: text('checked_at').notNull(),
+}, table => [uniqueIndex('idx_match_suggestions_series').on(table.connectionKey, table.seriesId)]);
+
+/** A rejection applies to one candidate; a different candidate can surface later. */
+export const rejectedMatchCandidates = sqliteTable('rejected_match_candidates', {
+  connectionKey: text('connection_key').notNull(),
+  seriesId: integer('series_id').notNull(),
+  providerId: text('provider_id').notNull(),
+  providerSeriesId: text('provider_series_id').notNull(),
+  rejectedAt: text('rejected_at').notNull(),
+}, table => [uniqueIndex('idx_rejected_match_candidate').on(table.connectionKey, table.seriesId, table.providerId, table.providerSeriesId)]);
+
 export const jobs = sqliteTable('jobs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   /** scan-new | match-unmatched | match-library | match-series | sync-series | apply-series | clear-overrides | check-watched-searches | edit-comicinfo | merge-series (see src/jobs/queue.ts JOB_TYPES) */

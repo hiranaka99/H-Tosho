@@ -68,6 +68,10 @@ export function migrateSchema(sqlite: Database.Database): void {
       sqlite.exec("UPDATE download_queue SET error_code = 'cancelled' WHERE status = 'failed' AND error_message = 'Cancelled by user'");
       splitLegacyJobState(sqlite);
     },
+    () => {
+      createSchemaTables(sqlite);
+      createIndexes(sqlite);
+    },
   ];
   for (const [index, migration] of migrations.entries()) {
     const version = index + 1;

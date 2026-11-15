@@ -46,6 +46,7 @@ export const PROVIDER_NAMES: Record<string, string> = {
 
 /** Human-facing names for background job types (raw types are snake_case). */
 export const JOB_LABELS: Record<string, string> = {
+  'scan-matchable': 'Find matchable galleries',
   'scan-new': 'Scan new series',
   'match-unmatched': 'Match unmatched',
   'match-library': 'Match library',

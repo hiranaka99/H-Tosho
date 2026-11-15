@@ -36,7 +36,7 @@ this library-management workflow. No competitive superiority claim is establishe
 - Kavita connection setup uses a server address and an admin Auth Key. Container
   installations need an address reachable from inside the container.
 - Desktop and mobile browsers access the same web application. The main areas
-  are Libraries, Downloader, Jobs, and Settings.
+  are Home, Libraries, Downloader, Jobs, and Settings.
 - Typical library workflow: choose a library and series, identify a candidate,
   compare metadata, choose fields to update, and use Apply & Sync. Jobs exposes
   progress and warnings; uncertain automatic matches appear in Needs review.

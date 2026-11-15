@@ -2,6 +2,7 @@ import type { DoujinSource } from '../downloader/types.js';
 /** Types of background jobs the queue can run. */
 export const JOB_TYPES = [
   'scan-new',
+  'scan-matchable',
   'match-unmatched',
   'match-library',
   'match-series',
@@ -49,6 +50,7 @@ export interface JobExecutionState {
 /** Read-only transport projection for legacy history and shared target resolution. */
 export type JobPayload = Partial<SeriesTargets & ApplySeriesCommand & EditComicInfoCommand & MergeSeriesCommand> & JobExecutionState;
 export interface JobPayloads {
+  'scan-matchable': Record<string, never>;
   'scan-new': Pick<SeriesTargets, 'libraryId'>;
   'match-unmatched': Pick<SeriesTargets, 'libraryId'>;
   'match-library': { libraryId: number };
@@ -64,6 +66,7 @@ export interface JobPayloads {
 export type JobCommand = { [T in JobType]: { type: T; payload: JobPayloads[T] } }[JobType];
 
 const fieldsByType: Record<JobType, readonly string[]> = {
+  'scan-matchable': [],
   'scan-new': ['libraryId'], 'match-unmatched': ['libraryId'], 'match-library': ['libraryId'],
   'match-series': ['seriesId', 'seriesIds', 'libraryId'], 'sync-series': ['seriesIds', 'libraryId'],
   'apply-series': ['seriesId', 'providerId', 'providerSeriesId', 'selectedTitle', 'excludedFields', 'cover', 'score'],

@@ -3,13 +3,12 @@ import { useWatchedFeed } from './downloader/useWatchedFeed';
 import { useRecommendations } from './downloader/useRecommendations';
 import { gallerySearchReducer } from './downloader/searchState';
 import { GallerySearchInput } from '../components/GallerySearchInput';
-import { useDuplicateReview } from '../components/DuplicateReview';
+import { useGalleryDownload } from './downloader/useGalleryDownload';
 import * as React from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { useNavigate, useSearchParams } from 'react-router';
+import { useSearchParams } from 'react-router';
 import { Search, Loader2, RotateCcw, CheckCircle2, Check, ListVideo, Star, Sparkles, CheckSquare } from 'lucide-react';
-import { api, ApiError, type DuplicateCheck, type DoujinSource, type DoujinSort, type DoujinSearchResult } from '../lib/api';
-import { useDownloadActions } from '../lib/DownloadsContext';
+import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult } from '../lib/api';
 import { cn, timeAgo } from '../lib/utils';
 import { downloadErrorHelp } from '../lib/downloadErrors';
 import { toast } from '../lib/toast';
@@ -19,7 +18,7 @@ import { GalleryFeedbackDialog, RecommendationFeedbackManager } from '../compone
 import { GallerySelectionBar } from '../components/GallerySelectionBar';
 import { switchProviderSearch, type TranslationLink } from '../lib/searchTranslation';
 
-import { FALLBACK_SOURCES, SOURCE_COLORS, SOURCE_LABELS, sortsFor, readDownloaderState, writeDownloaderState, DOWNLOADER_SETTINGS_URL, type DownloaderTab, type DownloaderStateCache, type DownloadSetup } from './downloader/state';
+import { FALLBACK_SOURCES, SOURCE_COLORS, SOURCE_LABELS, sortsFor, readDownloaderState, writeDownloaderState, type DownloaderTab, type DownloaderStateCache } from './downloader/state';
 import { DownloadDestination } from './downloader/DownloadSetup';
 import { GalleryCard } from './downloader/GalleryCard';
 import { GalleryDetailModal } from './downloader/GalleryDetailModal';
@@ -30,7 +29,6 @@ import { useDownloaderTransitions } from './downloader/motion';
 const RESULTS_PAGE_SIZE = 25;
 const EMPTY_GALLERIES: DoujinSearchResult[] = [];
 export function Downloader() {
-  const navigate = useNavigate();
   // Search cards consume live tasks so each doujin reflects queued, downloading,
   // or paused state. Deep links from the Libraries page override cached search
   // state; ordinary navigation restores the last input, committed search, and
@@ -107,22 +105,8 @@ export function Downloader() {
   const [selectionHeight, setSelectionHeight] = React.useState(0);
   const [mergeIntoOpen, setMergeIntoOpen] = React.useState(false);
 
-  const { startDownload } = useDownloadActions();
-  const { checkDuplicates, reviewCheck, dialog: duplicateDialog } = useDuplicateReview();
-  const downloadSettings = useQuery({ queryKey: ['downloader-settings'], queryFn: api.downloaderSettings });
-  const setup: DownloadSetup = {
-    status: downloadSettings.isError ? 'error' : !downloadSettings.data ? 'loading' : downloadSettings.data.downloadDirectory.trim() ? 'ready' : 'missing',
-    directory: downloadSettings.data?.downloadDirectory,
-    format: downloadSettings.data?.format,
-    onRetry: () => { void downloadSettings.refetch(); },
-  };
+  const { setup, startDownload, checkDuplicates, duplicateDialog, ensureDownloadReady, pendingKeys, doStartDownload } = useGalleryDownload();
   const downloadStatus = setup.status;
-  const ensureDownloadReady = React.useCallback(() => {
-    if (downloadStatus === 'ready') return true;
-    if (downloadStatus === 'missing') navigate(DOWNLOADER_SETTINGS_URL);
-    else toast({ tone: 'info', title: downloadStatus === 'loading' ? 'Checking download settings' : 'Download settings unavailable', description: 'Retry the settings check before starting a download.' });
-    return false;
-  }, [downloadStatus, navigate]);
   // Top-of-page view tabs: search results vs. the download manager queue.
   const [rememberedTab, setRememberedTab] = React.useState<DownloaderTab>(() =>
     ['search', 'recommend', 'watched', 'manager'].includes(initialState.tab ?? '') ? initialState.tab! : 'search');
@@ -205,10 +189,6 @@ export function Downloader() {
   const toggleGallerySelect = selection.toggle;
   const { recs, recsLoading, recsFailed, recsError, refetchRecs, recsRefreshing, doRefreshRecs, ownedKeys, visibleRecs, dismissedGalleries, feedbackPending, feedbackItem, setFeedbackItem, feedbackQuery, updateFeedback, doDismissGallery, undoDismissGallery, recLibs, recSettings, recLibraryPending, toggleRecLibrary } = useRecommendations(tab);
 
-  // Tracks every gallery whose start request is in flight. A set preserves the
-  // indicators when downloads are queued concurrently from different surfaces.
-  const [pendingKeys, setPendingKeys] = React.useState<ReadonlySet<string>>(new Set());
-
   const searchMounted = React.useRef(false);
   React.useEffect(() => {
     if (!searchMounted.current) {
@@ -228,40 +208,6 @@ export function Downloader() {
     return () => window.clearTimeout(t);
   }, [source, query, searchKey, sort, page]);
 
-
-  // Item-argument style and stable (startDownload is stable, state updates are
-  // functional) so memoized GalleryCards can keep this reference.
-  const doStartDownload = React.useCallback(async (item: DoujinSearchResult) => {
-    if (!ensureDownloadReady()) return;
-    const key = `${item.source}:${item.galleryId}`;
-    setPendingKeys((current) => new Set(current).add(key));
-    try {
-      const approved = await checkDuplicates([item]);
-      if (approved === null) return;
-      const input = { source: item.source, galleryId: item.galleryId, title: item.title ?? undefined, allowDuplicate: approved.has(key) };
-      try { await startDownload(input); }
-      catch (error) {
-        if (!(error instanceof ApiError) || error.message !== 'possible-duplicate') throw error;
-        const approval = await reviewCheck(error.details as unknown as DuplicateCheck);
-        if (approval !== null) await startDownload({ ...input, allowDuplicate: approval.has(key) });
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg === 'already-downloaded') {
-        toast({ tone: 'info', title: 'Already downloaded', description: 'This gallery has already been downloaded. Open Downloads and choose Download again to get another copy.' });
-      } else if (msg === 'Could not check for duplicates') {
-        toast({ tone: 'danger', title: 'Could not check for duplicates', description: 'Retry the download to check again.' });
-      } else if (msg !== 'already-queued') {
-        toast({ tone: 'danger', title: 'Could not start download', description: downloadErrorHelp(msg).message });
-      }
-    } finally {
-      setPendingKeys((current) => {
-        const next = new Set(current);
-        next.delete(key);
-        return next;
-      });
-    }
-  }, [startDownload, ensureDownloadReady, checkDuplicates, reviewCheck]);
 
   const openMergedDownload = React.useCallback(() => {
     if (!selectedItems.length) return;

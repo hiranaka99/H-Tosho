@@ -44,7 +44,7 @@ test.beforeEach(async ({ page }) => {
   await page.getByLabel('Username', { exact: true }).fill('upgrade-test');
   await page.getByLabel('Password', { exact: true }).fill('upgrade-test-password');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(page).toHaveURL(/\/libraries$/);
+  await expect(page.getByRole('heading', { name: 'Home', exact: true })).toBeVisible();
 });
 
 test('library merges apply the chosen name independently of a custom folder', async ({ page }, testInfo) => {

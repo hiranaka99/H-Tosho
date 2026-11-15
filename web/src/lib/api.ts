@@ -171,6 +171,18 @@ export interface MatchOutcome {
   errors?: Record<string, string>;
 }
 
+export interface MatchSuggestion {
+  seriesId: number;
+  name: string;
+  libraryId: number;
+  libraryName: string;
+  cover: string | null;
+  checkedAt: string;
+  candidate: MatchCandidate;
+}
+export interface HomeMatches { items: MatchSuggestion[]; configured: boolean; scan: Job | null }
+export interface HomeActivity { id: string; title: string; action: string; createdAt: string; href: string }
+
 // ---------------- Doujinshi downloader types ----------------
 
 export type DoujinSource = 'hitomi' | 'nhentai';
@@ -397,6 +409,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  homeMatches: () => request<HomeMatches>('/home/matches'),
+  scanMatchable: () => request<{ id: number; alreadyRunning: boolean }>('/home/matches/scan', { method: 'POST' }),
+  rejectMatchCandidate: (item: MatchSuggestion) => request<{ ok: boolean }>(`/home/matches/${item.seriesId}/reject`, { method: 'POST', body: JSON.stringify({ providerId: item.candidate.providerId, providerSeriesId: item.candidate.providerSeriesId }) }),
+  homeActivity: () => request<HomeActivity[]>('/home/activity'),
   authStatus: () => request<AuthStatus>('/auth/status'),
   version: () => request<{ version: string | null }>('/version'),
   setup: (username: string, password: string) => request<{ authenticated: true; username: string }>('/auth/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),

@@ -119,6 +119,9 @@ export function SidebarStatus() {
       void qc.invalidateQueries({ queryKey: ['library-series'] });
       void qc.invalidateQueries({ queryKey: ['libraries'] });
       void qc.invalidateQueries({ queryKey: ['low-confidence'] });
+      void qc.invalidateQueries({ queryKey: ['home-matches'] });
+      void qc.invalidateQueries({ queryKey: ['home-activity'] });
+      void qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
     }
     previousJobs.current = current;
   }, [jobs, qc]);

@@ -22,6 +22,7 @@ import {
 import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/autoMatcher.js';
 import { applyResolvedSeriesMatch, applySeriesMatch, type ApplySeriesResult } from '../services/sync.js';
 import { checkWatchedSearches } from '../services/watchedSearches.js';
+import { scanMatchSuggestions } from '../services/matchSuggestions.js';
 import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
 import { listCbzFiles, mapKavitaPathToLocalPath, mergeCbzFiles, pathContains, editComicInfo, readComicInfo, resolveExistingFile, resolveSeriesHostDir, setComicInfoFields } from '../lib/cbz.js';
@@ -199,7 +200,7 @@ const MATCH_CONCURRENCY = 3;
 
 /** Run a queued job. Returns a small summary stored on the job row. */
 export function runJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<JobResult> {
-  if (job.type === 'check-watched-searches' || job.type === 'clear-overrides') return executeJob(job, log, signal);
+  if (job.type === 'check-watched-searches' || job.type === 'scan-matchable' || job.type === 'clear-overrides') return executeJob(job, log, signal);
   // Broad scans, merges, deletes and path-only edits conflict with every series.
   const scoped = ['apply-series', 'sync-series', 'match-series', 'edit-comicinfo'].includes(job.type);
   const ids = [...(job.payload.seriesId === undefined ? [] : [job.payload.seriesId]), ...(job.payload.seriesIds ?? [])];
@@ -214,6 +215,11 @@ async function executeJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<J
   const typed = { ...job, type: command.type, payload: { ...job.payload, ...command.payload } } as ExecutableJob;
   invalidateDuplicateLibrary();
   switch (typed.type) {
+    case 'scan-matchable': return scanMatchSuggestions({
+      checkCancelled: () => throwIfJobCancelled(job.id),
+      progress: (current, total) => jobQueue.setProgress(job.id, current, total),
+      log,
+    });
     case 'check-watched-searches': return runWatchedSearchJob(typed, log);
     case 'edit-comicinfo': return runEditComicInfoJob(typed, log, signal);
     case 'merge-series': return runMergeSeriesJob(typed, log, signal);

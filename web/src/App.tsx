@@ -1,11 +1,12 @@
 import * as React from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router';
-import { Library, Settings as SettingsIcon, ListChecks, Download, Menu, X, LogOut, Monitor, Sun, Moon } from 'lucide-react';
+import { House, Library, Settings as SettingsIcon, ListChecks, Download, Menu, X, LogOut, Monitor, Sun, Moon } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './lib/api';
 // Route-level code splitting: each page (and the modals only it imports) loads
 // on first navigation instead of one upfront bundle.
 const Libraries = React.lazy(() => import('./pages/Libraries').then((m) => ({ default: m.Libraries })));
+const Home = React.lazy(() => import('./pages/Home').then((m) => ({ default: m.Home })));
 const Downloader = React.lazy(() => import('./pages/Downloader').then((m) => ({ default: m.Downloader })));
 const Jobs = React.lazy(() => import('./pages/Jobs').then((m) => ({ default: m.Jobs })));
 const Settings = React.lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
@@ -97,6 +98,7 @@ function ThemeToggle() {
 }
 
 const NAV = [
+  { to: '/', label: 'Home', icon: House },
   { to: '/libraries', label: 'Libraries', icon: Library },
   { to: '/downloader', label: 'Downloader', icon: Download },
   { to: '/jobs', label: 'Jobs', icon: ListChecks },
@@ -200,6 +202,7 @@ export default function App() {
             <div key={item.to} className="relative z-10">
               <NavLink
                 to={item.to}
+                end={item.to === '/'}
                 className={({ isActive }) => cn(
                   'app-nav-link ui-choice group flex h-9 items-center gap-2.5 rounded-lg px-3 pr-11 text-sm transition-colors duration-150',
                   isActive ? 'font-medium text-primary' : 'text-muted hover:bg-surface-2/70 hover:text-foreground',
@@ -234,14 +237,14 @@ export default function App() {
             <PageErrorBoundary>
               <React.Suspense fallback={<div className="flex h-40 items-center justify-center text-sm text-muted">Loading…</div>}>
                 <Routes>
-                  <Route path="/" element={<Navigate to="/libraries" replace />} />
+                  <Route path="/" element={<Home />} />
                   <Route path="/libraries" element={<Libraries />} />
                   <Route path="/libraries/review" element={<Libraries review />} />
                   <Route path="/libraries/:libraryId" element={<Libraries />} />
                   <Route path="/downloader" element={<Downloader />} />
                   <Route path="/jobs" element={<Jobs />} />
                   <Route path="/settings" element={<Settings />} />
-                  <Route path="*" element={<Navigate to="/libraries" replace />} />
+                  <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </React.Suspense>
             </PageErrorBoundary>

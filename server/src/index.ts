@@ -4,7 +4,7 @@ import { getDb, initDb, schema } from './db/index.js';
 import { createApp } from './app.js';
 import { jobQueue } from './jobs/queue.js';
 import { runJob } from './jobs/executor.js';
-import { getKavitaConnection, getPollIntervalHours, getWatchedSearchIntervalMinutes, onSettingChange } from './services/settings.js';
+import { getCredentialMap, getKavitaConnection, getPollIntervalHours, getWatchedSearchIntervalMinutes, onSettingChange } from './services/settings.js';
 import { backfillNewGalleries, countWatchedSearches } from './services/watchedSearches.js';
 import { downloadQueue } from './downloader/engine.js';
 
@@ -30,6 +30,21 @@ function main(): void {
   jobQueue.registerHandler(runJob);
   downloadQueue.start();
 
+  // Discovery is independent of the auto-apply scan. Catch up once at startup,
+  // then check daily, including installations that disable automatic matching.
+  const scanMatchableIfDue = () => {
+    const connection = getKavitaConnection();
+    if (!connection.baseUrl || !connection.apiKey || !getCredentialMap().enabledProviders.length) return;
+    if (jobQueue.active().some(job => job.type === 'scan-matchable')) return;
+    const latest = jobQueue.latest('scan-matchable');
+    const createdAt = latest?.createdAt;
+    const lastAttempt = createdAt ? Date.parse(createdAt.includes('T') ? createdAt : createdAt.replace(' ', 'T') + 'Z') : 0;
+    if (!lastAttempt || Date.now() - lastAttempt >= 86_400_000) jobQueue.enqueue('scan-matchable', {});
+  };
+  scanMatchableIfDue();
+  const matchableTimer = setInterval(scanMatchableIfDue, 60_000);
+  matchableTimer.unref();
+
 // Watched doujin searches run on a configurable cadence independent of the
 // series scan interval, so release detection stays responsive at long scan intervals.
   let pollTimer: NodeJS.Timeout | undefined;
@@ -52,6 +67,7 @@ function main(): void {
   let watchedTimer: NodeJS.Timeout | undefined;
   function scheduleWatchedSearches(): void {
     clearTimeout(watchedTimer);
+    clearInterval(matchableTimer);
     const intervalMinutes = getWatchedSearchIntervalMinutes();
     if (intervalMinutes > 0) {
       watchedTimer = setTimeout(async () => {

@@ -8,6 +8,12 @@
 - `kavita/libraryPaths.ts` owns filesystem translation. `kavita/scans.ts` distinguishes completed, unavailable and timed-out waits; callers retain operation-specific verification in `libraryOperations.ts`.
 - `downloader/engine.ts` owns queue transitions and durable retry deadlines. Request retries and image transfer live in `requests.ts` and `transfer.ts`. The coarse `status` remains compatible with older clients; `state`, `errorCode`, `retryAt` and `phase` expose the precise lifecycle. `attempt` and `revision` order polling and SSE snapshots.
 - `services/recommendations.ts` serializes displayed-set mutations and commits selections with serve history in a transaction. Dismissal, feedback and undo share eligibility and reconciliation. Taste aggregation lives in `recommendationProfile.ts`.
+- `services/matchSuggestions.ts` discovers candidates without applying metadata. The
+  `scan-matchable` job runs daily and on demand; suggestions and candidate rejections
+  persist separately from accepted matches, scoped to the Kavita server address.
+  Home reuses the Downloader’s recommendation cache, watched inbox, gallery cards,
+  previews, and shared `useGalleryDownload` setup/duplicate/queue workflow. Activity
+  combines existing sync history and completed download records.
 - `db/schema.ts` is the schema authoring source, including defaults and indexes. `db/migrations.ts` bootstraps from those declarations and runs numbered upgrades transactionally. Add an explicit new migration for changes to existing installations; never rely on bootstrap to alter an existing table. Legacy filename imports retain ownership, approvals and job checkpoints.
 - `web/src/pages/downloader/` owns search transitions, selection, recommendation and watched-feed models, and focused presentation. Gallery components observe only their own download task through a query selector.
 

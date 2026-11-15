@@ -43,6 +43,8 @@ interface IdentifyModalProps {
   reviewPosition?: string;
   onNext?: () => void;
   autoReview?: boolean;
+  /** Open a background-discovered candidate directly in the normal comparison. */
+  initialCandidate?: MatchCandidate;
 }
 
 const tagNames = (tags: KavitaTag[] | null | undefined): string =>
@@ -204,9 +206,9 @@ function CandidateCover({ src }: { src?: string }) {
   if (!src || failed) return <Search className="h-4 text-muted" />;
   return <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} className="h-full w-full object-cover" />;
 }
-export function IdentifyModal({ seriesId, current, currentLoading, currentError, onRetryCurrent, match, currentCover, onClose, reviewPosition, onNext, autoReview = false }: IdentifyModalProps) {
+export function IdentifyModal({ seriesId, current, currentLoading, currentError, onRetryCurrent, match, currentCover, onClose, reviewPosition, onNext, autoReview = false, initialCandidate }: IdentifyModalProps) {
   const qc = useQueryClient();
-  const [selected, setSelected] = React.useState<MatchCandidate | null>(null);
+  const [selected, setSelected] = React.useState<MatchCandidate | null>(initialCandidate ?? null);
   const [reviewingExistingMatch, setReviewingExistingMatch] = React.useState(false);
   const selectedId = selected ? `${selected.providerId}:${selected.providerSeriesId}` : null;
   const currentErrorMessage = currentError ?? (!currentLoading && !current.metadata ? 'Kavita did not return current metadata. Check the connection and retry.' : null);
@@ -265,6 +267,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const identify = useQuery({
     queryKey: ['identify', seriesId],
     queryFn: () => api.identify(seriesId),
+    enabled: !initialCandidate,
     staleTime: 60_000,
   });
 
@@ -318,11 +321,11 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
 
   const outcome: MatchOutcome | undefined = identify.data;
   const candidates = React.useMemo(() => {
-    const found = outcome?.candidates ?? [];
+    const found = outcome?.candidates ?? (initialCandidate ? [initialCandidate] : []);
     if (!manualCandidate) return found;
     const key = manualCandidate.providerId + ':' + manualCandidate.providerSeriesId;
     return [manualCandidate, ...found.filter((c) => c.providerId + ':' + c.providerSeriesId !== key)];
-  }, [outcome, manualCandidate]);
+  }, [outcome, manualCandidate, initialCandidate]);
   const autoBest = outcome?.best;
   const currentCandidate = candidates.find((candidate) => candidate.providerId === match?.providerId && candidate.providerSeriesId === match.providerSeriesId);
   const alternatives = React.useMemo(() => candidates.filter((candidate) => candidate.providerId !== match?.providerId || candidate.providerSeriesId !== match.providerSeriesId), [candidates, match?.providerId, match?.providerSeriesId]);

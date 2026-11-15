@@ -121,7 +121,10 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
         toast({ tone: 'danger', title: 'Download failed', description: t.errorMessage ? downloadErrorHelp(t.errorMessage, t.errorCode).message : title });
       }
     }
-    if (completed) void qc.invalidateQueries({ queryKey: ['downloads-completed'] });
+    if (completed) {
+      void qc.invalidateQueries({ queryKey: ['downloads-completed'] });
+      void qc.invalidateQueries({ queryKey: ['home-activity'] });
+    }
   }, [tasks, qc]);
 
   // mutate/mutateAsync are stable references, so this value only changes when

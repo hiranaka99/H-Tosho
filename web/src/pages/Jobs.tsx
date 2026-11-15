@@ -119,6 +119,7 @@ function AffectedSeries({ job }: { job: Job }) {
 }
 
 const JOB_PURPOSE: Record<string, string> = {
+  'scan-matchable': 'Find metadata candidates for unmatched galleries to review on Home',
   'scan-new': 'Refresh Kavita libraries and match newly discovered series',
   'match-unmatched': 'Find and apply metadata matches for unmatched series',
   'match-library': 'Find and apply metadata matches for every series in the library',
@@ -139,7 +140,9 @@ function jobOutcome(job: Job): string {
   if (!job.result || typeof job.result !== 'object' || Array.isArray(job.result)) return job.status === 'failed' ? 'Stopped with an error. Check logs for any work performed before the failure.' : 'Finished. No outcome summary was recorded; check the logs.';
   const result = job.result as Record<string, unknown>;
   const parts: string[] = [];
-  if (job.type === 'check-watched-searches') {
+  if (job.type === 'scan-matchable') {
+    for (const [key, label] of [['processed', 'galleries checked'], ['matchable', 'galleries with candidates'], ['failed', 'galleries with provider errors']]) if (typeof result[key] === 'number') parts.push(`${result[key]} ${label}`);
+  } else if (job.type === 'check-watched-searches') {
     for (const [key, label] of [['processed', 'saved searches checked'], ['newGalleries', 'new galleries found'], ['notified', 'notifications sent']]) if (typeof result[key] === 'number') parts.push(`${result[key]} ${label}`);
   } else if (job.type === 'delete-series' && typeof result.deleted === 'number') {
     parts.push(`${result.deleted} archives deleted`);

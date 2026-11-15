@@ -13,6 +13,7 @@ import { api as watched } from './api/watched.js';
 import { api as recommendations } from './api/recommendations.js';
 import { api as archives } from './api/archives.js';
 import { api as jobs } from './api/jobs.js';
+import { api as home } from './api/home.js';
 export { kavitaCoverUrl } from './api/helpers.js';
 
 export const api = new Hono();
@@ -50,3 +51,4 @@ api.route('/', watched);
 api.route('/', recommendations);
 api.route('/', archives);
 api.route('/', jobs);
+api.route('/', home);

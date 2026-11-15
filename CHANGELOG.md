@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v3.2.0
+
+- Add Home as the default page and the first sidebar item, with shared daily
+  recommendations, unreviewed saved-search finds, and recent match/download activity.
+- Discover metadata candidates for unmatched Kavita galleries in a daily background
+  scan or with Scan now. Review candidates before applying metadata; No match found
+  remembers rejected candidates while allowing different candidates to appear later.
+
 ## v3.1.2
 
 - Keep Unmatch cover resets within the current matching cycle and reset only
