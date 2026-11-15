@@ -175,7 +175,7 @@ export async function downloadPages(
       for (const force of [false, true]) {
         if (ctx.cancelled) throw new Error('Cancelled by user');
         if (ctx.stopped) return;
-        if (force) await sleep(30_000); // let a CDN storm clear before re-resolving URLs
+        if (force) await sleep(30_000, ctx.controller.signal); // let a CDN storm clear before re-resolving URLs
         if (ctx.cancelled) throw new Error('Cancelled by user');
         if (ctx.stopped) return;
         const candidates = await resolvePageCandidates(gallery, i, force);
@@ -188,7 +188,7 @@ export async function downloadPages(
                 bs.inflight.set(i, 0);
               },
               onProgress: (received, totalBytes) => onChunk(i, received, totalBytes),
-            });
+            }, ctx.controller.signal);
             usedUrl = url;
             break;
           } catch (err) {
@@ -201,12 +201,13 @@ export async function downloadPages(
       const name = `${padPage(i + 1, total)}.${extFromUrl(usedUrl ?? pages[i])}`;
       out[i] = { name, path: filePath };
       onPageDone(i, size);
-      if (delay > 0) await sleep(delay);
+      if (delay > 0) await sleep(delay, ctx.controller.signal);
     }
   };
 
   const workers = Array.from({ length: Math.min(concurrency, total) }, () => worker().catch((error) => {
     ctx.stopped = true;
+    ctx.controller.abort(error);
     wakePaused(ctx);
     throw error;
   }));

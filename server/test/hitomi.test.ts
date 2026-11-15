@@ -180,6 +180,26 @@ beforeEach(() => {
 // Tests
 // ---------------------------------------------------------------------------
 
+for (const input of ['101', 'https://hitomi.la/reader/101.html#2', 'https://hitomi.la/galleries/101.html', 'https://hitomi.la/doujinshi/123-example-english-101.html?x=1', 'https://hitomi.la/101']) {
+  test(`direct Hitomi lookup and paged search accept ${input}`, async () => {
+    const gallery = await hitomiProvider.getGallery(input);
+    assert.equal(gallery.galleryId, '101');
+    const results = await hitomiProvider.search(input);
+    assert.deepEqual(results.map(item => item.galleryId), ['101']);
+    const page = await hitomiProvider.searchPage!(input, 0, 25);
+    assert.equal(page.total, 1);
+    assert.deepEqual(page.items.map(item => item.galleryId), ['101']);
+    assert.deepEqual((await hitomiProvider.searchPage!(input, 25, 25)).items, []);
+    assert.ok(!fetchedUrls.some(url => url.includes('/galleriesindex/') || url.includes('/n/')));
+  });
+}
+test('Hitomi lookup rejects unrelated hosts and non-gallery URLs', async () => {
+  for (const input of ['https://hitomi.la.evil.test/reader/101.html', 'https://example.test/reader/101.html', 'https://hitomi.la/artist/example.html', 'https://hitomi.la/reader/101.html/extra']) {
+    await assert.rejects(hitomiProvider.getGallery(input), /Could not parse/);
+  }
+  assert.deepEqual(fetchedUrls, []);
+});
+
 test('search omits image set galleries but keeps artist CG, backfilling to the limit', async () => {
   const results = await hitomiProvider.search('cat', 5);
 

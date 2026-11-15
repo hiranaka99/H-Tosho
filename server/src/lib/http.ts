@@ -77,8 +77,13 @@ export interface StreamProgressHandlers {
   onProgress?: (receivedBytes: number, totalBytes: number | null) => void;
 }
 
-export function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); reject(signal?.reason); };
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, ms);
+    signal?.addEventListener('abort', abort, { once: true });
+  });
 }
 
 const RETRYABLE_STATUS: Record<number, true> = { 429: true, 502: true, 503: true, 504: true };
@@ -174,16 +179,19 @@ export async function fetchToFileStreaming(
   handlers: StreamProgressHandlers = {},
   timeoutMs = 30_000,
 ): Promise<number> {
+  init.signal?.throwIfAborted();
+  const partPath = `${destPath}.part`;
+  const fh = await fsp.open(partPath, 'w');
   const controller = new AbortController();
+  const signal = init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal;
   let timer = setTimeout(() => controller.abort(), timeoutMs);
   const armTimer = (): void => {
     clearTimeout(timer);
     timer = setTimeout(() => controller.abort(), timeoutMs);
   };
-  const partPath = `${destPath}.part`;
-  const fh = await fsp.open(partPath, 'w');
   try {
-    const res = await fetch(url, { ...init, signal: controller.signal, redirect: 'follow' });
+    signal.throwIfAborted();
+    const res = await fetch(url, { ...init, signal, redirect: 'follow' });
     if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
     armTimer(); // headers received — start the idle window for the body
     const lengthHeader = res.headers.get('content-length');
@@ -196,6 +204,7 @@ export async function fetchToFileStreaming(
     const body = res.body as unknown as { getReader?: () => StreamReader } | null;
     if (!body || typeof body.getReader !== 'function') {
       const buf = Buffer.from(await res.arrayBuffer());
+      signal.throwIfAborted();
       await fh.write(buf);
       handlers.onProgress?.(buf.length, totalBytes ?? buf.length);
       await fh.close();
@@ -207,6 +216,7 @@ export async function fetchToFileStreaming(
     let written = 0;
     for (;;) {
       const { done, value } = await reader.read();
+      signal.throwIfAborted();
       if (done) break;
       if (value) {
         armTimer(); // bytes arrived — reset the idle window

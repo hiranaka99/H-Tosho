@@ -1,0 +1,51 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { test } from 'node:test';
+process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-connection-state-'));
+const { initDb, getDb, schema } = await import('../src/db/index.js');
+const { setKavitaConnection, getKavitaConnection, setLibraryOverride, getLibraryOverride } = await import('../src/services/settings.js');
+const { api } = await import('../src/routes/api.js');
+const { jobQueue } = await import('../src/jobs/queue.js');
+initDb();
+
+test('server changes isolate and restore matches, approvals, history, overrides and retryable jobs', () => {
+  const db = getDb();
+  setKavitaConnection({ baseUrl: 'https://a.test', apiKey: 'key' });
+  db.insert(schema.seriesMatches).values({ kavitaSeriesId: 7, status: 'matched', confirmed: true, providerId: 'mangadex', providerSeriesId: 'original' }).run();
+  db.insert(schema.syncHistory).values({ kavitaSeriesId: 7, seriesTitle: 'Server A title', action: 'matched', detailsJson: '{"coverUpdated":true}' }).run();
+  assert.equal(jobQueue.contextForPayload({seriesId: 7})?.series[0].name, 'Server A title');
+  setLibraryOverride({ libraryId: 1, autoMatch: false, priority: ['mangadex'] });
+  const jobId = Number(db.insert(schema.jobs).values({ type: 'delete-series', payloadJson: '{"seriesId":7}', status: 'failed' }).run().lastInsertRowid);
+  db.insert(schema.jobLogs).values({ jobId, level: 'error', message: 'Original job' }).run();
+  const watchId = Number(db.insert(schema.jobs).values({ type: 'check-watched-searches', status: 'completed' }).run().lastInsertRowid);
+  setKavitaConnection({ baseUrl: 'https://a.test/', apiKey: 'rotated' });
+  assert.equal(db.select().from(schema.seriesMatches).get()?.confirmed, true);
+  setKavitaConnection({ baseUrl: 'https://b.test', apiKey: 'key' });
+  assert.equal(db.select().from(schema.seriesMatches).all().length, 0);
+  assert.equal(db.select().from(schema.syncHistory).all().length, 0);
+  assert.equal(getLibraryOverride(1), null);
+  assert.deepEqual(db.select().from(schema.jobs).all().map(row => row.id), [watchId]);
+  assert.equal(db.select().from(schema.jobLogs).all().length, 0);
+  db.insert(schema.seriesMatches).values({ kavitaSeriesId: 7, status: 'unmatched', confirmed: false }).run();
+  db.insert(schema.syncHistory).values({ kavitaSeriesId: 7, seriesTitle: 'Server B title', action: 'failed' }).run();
+  assert.equal(jobQueue.contextForPayload({seriesId: 7})?.series[0].name, 'Server B title');
+  setKavitaConnection({ baseUrl: 'https://a.test', apiKey: 'rotated' });
+  assert.equal(db.select().from(schema.seriesMatches).get()?.providerSeriesId, 'original');
+  assert.equal(db.select().from(schema.seriesMatches).get()?.confirmed, true);
+  assert.equal(db.select().from(schema.syncHistory).all().length, 1);
+  assert.equal(getLibraryOverride(1)?.autoMatch, false);
+  assert.equal(jobQueue.contextForPayload({seriesId: 7})?.series[0].name, 'Server A title');
+  assert.equal(db.select().from(schema.jobLogs).get()?.jobId, jobId);
+  setKavitaConnection({ baseUrl: 'https://b.test', apiKey: 'key' });
+  assert.equal(db.select().from(schema.seriesMatches).get()?.confirmed, false);
+});
+
+test('changing servers while a library job is queued is rejected without changing state', async () => {
+  getDb().insert(schema.jobs).values({ type: 'apply-series', payloadJson: '{}', status: 'queued' }).run();
+  const response = await api.request('/kavita/connection', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ baseUrl: 'https://c.test', apiKey: 'key' }) });
+  assert.equal(response.status, 409);
+  assert.equal(getKavitaConnection().baseUrl, 'https://b.test');
+  assert.equal(getDb().select().from(schema.seriesMatches).get()?.confirmed, false);
+});

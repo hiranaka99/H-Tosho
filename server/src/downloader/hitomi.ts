@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { hitomiNozomiPath, hitomiStateForTerm, normalizeHitomiQuery, parseHitomiSearch } from './hitomiSearch.js';
 import { fetchBuffer } from '../lib/http.js';
 import { getDownloaderSettings } from '../services/settings.js';
-import { extractGalleryId, stripTags, toIsoDate } from './util.js';
+import { stripTags, toIsoDate } from './util.js';
 import type { DoujinGallery, DoujinProvider, DoujinSearchOptions, DoujinSearchResult, DoujinSuggestion, DoujinSort } from './types.js';
 
 /**
@@ -44,7 +44,18 @@ const API_BASE = `https://ltn.${CDN}`;
 // is exactly what powers the live site's search dropdown (see search.js).
 const TAG_INDEX = 'https://tagindex.hitomi.la';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0';
-const GALLERY_URL_RE = /\/(\d+)/;
+/** Accept the site's reader, gallery, and title-slug URLs, with an exact host. */
+function galleryIdFromInput(input: string): string | null {
+  const value = input.trim();
+  if (/^\d+$/.test(value)) return value;
+  try {
+    const url = new URL(value);
+    if (url.hostname !== 'hitomi.la' || !['https:', 'http:'].includes(url.protocol)) return null;
+    return url.pathname.match(/^\/(?:reader|galleries)\/(\d+)\.html$/)?.[1]
+      ?? url.pathname.match(/^\/[^/]+\/[^/]+-(\d+)\.html$/)?.[1]
+      ?? url.pathname.match(/^\/(\d+)\/?$/)?.[1] ?? null;
+  } catch { return null; }
+}
 
 const MAX_NODE_SIZE = 464;
 const B = 16;
@@ -753,8 +764,8 @@ export const hitomiProvider: DoujinProvider = {
     if (!q) return [];
 
     // A bare gallery id / URL resolves to that single gallery.
-    const directId = extractGalleryId(q, GALLERY_URL_RE);
-    if (directId && /^\d+$/.test(q)) {
+    const directId = galleryIdFromInput(q);
+    if (directId) {
       const g = await this.getGallery(directId);
       return [
         {
@@ -780,7 +791,7 @@ export const hitomiProvider: DoujinProvider = {
   },
 
   async searchPage(query: string, offset: number, limit: number, sort?: DoujinSort) {
-    if (/^\d+$/.test(query.trim())) {
+    if (galleryIdFromInput(query)) {
       const items = await this.search(query, 1, sort);
       return { items: offset ? [] : items, total: items.length };
     }
@@ -839,7 +850,7 @@ export const hitomiProvider: DoujinProvider = {
   },
 
   async getGallery(idOrUrl: string): Promise<DoujinGallery> {
-    const id = extractGalleryId(idOrUrl, GALLERY_URL_RE);
+    const id = galleryIdFromInput(idOrUrl);
     if (!id) throw new Error('Could not parse a Hitomi gallery ID from the input.');
 
     // The gallery JSON and the gg.js routing table are independent fetches (gg

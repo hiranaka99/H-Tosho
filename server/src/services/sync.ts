@@ -24,6 +24,7 @@ export interface ApplyResult {
   coverUpdated: boolean;
   /** Number of volume covers successfully pushed. */
   volumeCoversUpdated: number;
+  volumeCoverIds: number[];
   errors: string[];
   /** Non-fatal notes, e.g. fields the server accepted but did not apply. */
   warnings: string[];
@@ -88,6 +89,7 @@ export async function applyToKavita(
   const warnings: string[] = [];
   let coverUpdated = false;
   let volumeCoversUpdated = 0;
+  let volumeCoverIds: number[] = [];
 
   const payload = selectMetadataFields(buildSeriesPayload(meta), opts.excludedFields ?? []);
   // Merge provider tags with the series' existing Kavita tags instead of
@@ -154,12 +156,13 @@ export async function applyToKavita(
   if (opts.volumeCovers?.length) {
     const volResult = await applyVolumeCovers(client, seriesId, opts.volumeCovers);
     volumeCoversUpdated = volResult.updated;
+    volumeCoverIds = volResult.volumeIds;
     errors.push(...volResult.errors);
     if (volResult.updated > 0) pushed.push(`volumeCovers:${volResult.updated}`);
   }
 
   invalidateSeriesArtists(seriesId);
-  return { seriesId, pushed, coverUpdated, volumeCoversUpdated, errors, warnings };
+  return { seriesId, pushed, coverUpdated, volumeCoversUpdated, volumeCoverIds, errors, warnings };
 }
 
 /**
@@ -211,12 +214,12 @@ export async function applyVolumeCovers(
   client: KavitaClient,
   seriesId: number,
   covers: VolumeCover[],
-): Promise<{ updated: number; errors: string[] }> {
+): Promise<{ updated: number; errors: string[]; volumeIds: number[] }> {
   let volumes: KavitaVolume[];
   try {
     volumes = await client.getVolumes(seriesId);
   } catch (err) {
-    return { updated: 0, errors: [`volumes: ${err instanceof Error ? err.message : String(err)}`] };
+    return { updated: 0, errors: [`volumes: ${err instanceof Error ? err.message : String(err)}`], volumeIds: [] };
   }
   // Up to three covers in flight; each apply is up to two network ops and
   // failures are collected per volume without aborting the rest. mapLimit
@@ -229,13 +232,13 @@ export async function applyVolumeCovers(
         (url) => client.updateVolumeCoverFromUrl(assignment.volumeId, url, true),
         (image) => client.updateVolumeCover(assignment.volumeId, image, true),
       );
-      return null;
+      return assignment.volumeId;
     } catch (err) {
       return `vol ${assignment.number}: ${err instanceof Error ? err.message : String(err)}`;
     }
   });
-  const errors = results.filter((error): error is string => error !== null);
-  return { updated: results.length - errors.length, errors };
+  const errors = results.filter((error): error is string => typeof error === 'string');
+  return { updated: results.length - errors.length, errors, volumeIds: results.filter((id): id is number => typeof id === 'number') };
 }
 
 /**
@@ -414,6 +417,7 @@ export async function applyResolvedSeriesMatch(
     recordHistory(seriesId, name, result.errors.length ? 'failed' : opts.historyAction ?? 'updated', {
       providerId: opts.providerId, score: sentScore ?? existing?.matchScore ?? null, pushed: result.pushed,
       coverUpdated: result.coverUpdated, volumeCoversUpdated: result.volumeCoversUpdated,
+      volumeCoverIds: result.volumeCoverIds,
       errors: result.errors, warnings: result.warnings,
     });
   });

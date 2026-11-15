@@ -1,4 +1,5 @@
 import { classifyJobError, type JobErrorCode } from './errors.js';
+import { onSettingChange } from '../services/settings.js';
 import { readJobPayload } from './storage.js';
 import { and, asc, desc, eq, gt, inArray } from 'drizzle-orm';
 import { getDb, schema, type Db } from '../db/index.js';
@@ -103,6 +104,11 @@ function safeParse<T>(json: string, fallback: T): T {
  * execute with a bounded concurrency.
  */
 class JobQueue {
+  clearContextCache(): void {
+    this.legacyContexts.clear();
+    this.historyNames.clear();
+    this.historyId = 0;
+  }
   private handler: JobHandler | null = null;
   private running = 0;
   private pumping = false;
@@ -404,3 +410,4 @@ class JobQueue {
 }
 
 export const jobQueue = new JobQueue();
+onSettingChange('kavita-connection', () => jobQueue.clearContextCache());

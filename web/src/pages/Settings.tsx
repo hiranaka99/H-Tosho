@@ -148,6 +148,10 @@ export function Settings() {
     save: async (value) => {
       const result = await api.saveConnection(value);
       if (!result.saved) throw new Error(result.test);
+      const connectionQueries = new Set(['libraries', 'library-series', 'series', 'identify', 'low-confidence', 'review-series', 'library-override', 'jobs', 'job', 'logs', 'history', 'cbz-roots', 'cbz-series-files', 'recommendation-libraries']);
+      await qc.cancelQueries({ predicate: query => connectionQueries.has(String(query.queryKey[0])) });
+      qc.removeQueries({ predicate: query => connectionQueries.has(String(query.queryKey[0])) && query.getObserversCount() === 0 });
+      void qc.resetQueries({ predicate: query => connectionQueries.has(String(query.queryKey[0])) });
       qc.setQueryData(['kavita-status'], { ...kavita.data, baseUrl: value.baseUrl, configured: true, hasApiKey: Boolean(value.apiKey) || kavita.data?.hasApiKey, error: result.connected ? null : result.test });
       void qc.invalidateQueries({ queryKey: ['kavita-status'] });
       setKavitaMsg({ ok: result.connected, text: result.test });

@@ -6,7 +6,7 @@ H-Tosho helps you identify manga and light novels, review metadata before applyi
 it, and keep new additions organized. It also includes a doujinshi downloader,
 recommendations, and watched searches for new releases.
 
-Works with **Kavita v0.9.x or newer**. Current version: **v3.1.1** ·
+Works with **Kavita v0.9.x or newer**. Current version: **v3.1.2** ·
 [Release notes](CHANGELOG.md)
 
 ![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
@@ -89,6 +89,11 @@ For Docker, the Kavita address must be reachable **from the H-Tosho container**.
 Use a hostname such as `http://kavita:5000` when both containers share a Docker
 network, or your Kavita server's network address. `localhost` inside the
 H-Tosho container refers to H-Tosho itself.
+
+Matches, approvals, sync history, library overrides, and library jobs are saved
+separately for each Kavita server address. Switching back to a saved address
+restores its data; changing an Auth Key keeps the same data. Finish or cancel
+active library jobs and downloads before changing servers.
 
 ### Make your library folders accessible
 

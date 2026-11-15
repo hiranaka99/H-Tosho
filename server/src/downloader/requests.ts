@@ -27,17 +27,20 @@ export async function fetchPageToFileWithRetry(
   headers: Record<string, string>,
   destPath: string,
   handlers: StreamProgressHandlers,
+  signal?: AbortSignal,
 ): Promise<number> {
   const attempts = 5;
   const delays = [2000, 6000, 15000, 40000];
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
+    signal?.throwIfAborted();
     try {
-      return await fetchToFileStreaming(url, { headers }, destPath, handlers);
+      return await fetchToFileStreaming(url, { headers, signal }, destPath, handlers);
     } catch (err) {
       lastErr = err;
+      signal?.throwIfAborted();
       if (!isTransientError(err)) throw err;
-      if (i < attempts - 1) await sleep(delays[i] ?? delays[delays.length - 1]);
+      if (i < attempts - 1) await sleep(delays[i] ?? delays[delays.length - 1], signal);
     }
   }
   throw lastErr;

@@ -17,7 +17,8 @@ export function removeSeriesMatch(client: KavitaClient, seriesId: number): Promi
         .where(eq(schema.syncHistory.kavitaSeriesId, seriesId))
         .orderBy(desc(schema.syncHistory.id))
         .all();
-      const details = history.map((entry) => parseHistoryDetails(entry.detailsJson));
+      const boundary = history.findIndex(entry => entry.action === 'unmatched');
+      const details = (boundary < 0 ? history : history.slice(0, boundary)).map((entry) => parseHistoryDetails(entry.detailsJson));
       const pushed = [...new Set(details.flatMap((entry) =>
         Array.isArray(entry?.pushed) ? entry.pushed.filter((field): field is string => typeof field === 'string') : [],
       ))];
@@ -27,7 +28,15 @@ export function removeSeriesMatch(client: KavitaClient, seriesId: number): Promi
       if (coverUpdated) await client.resetSeriesCover(seriesId);
       const volumeCoversUpdated = details.some((entry) => typeof entry?.volumeCoversUpdated === 'number' && entry.volumeCoversUpdated > 0);
       if (volumeCoversUpdated) {
-        for (const volume of await client.getVolumes(seriesId)) await client.resetVolumeCover(volume.id);
+        const volumes = await client.getVolumes(seriesId);
+        const ids = new Set(details.flatMap(entry => Array.isArray(entry?.volumeCoverIds)
+          ? entry.volumeCoverIds.filter((id): id is number => typeof id === 'number' && Number.isSafeInteger(id)) : []));
+        // Older history stored only a count. Limit its fallback to volumes
+        // present in the saved provider metadata, never every Kavita volume.
+        const legacy = details.some(entry => Number(entry?.volumeCoversUpdated) > 0 && !Array.isArray(entry?.volumeCoverIds));
+        for (const volume of volumes) if (ids.has(volume.id) || (legacy && metadata?.volumeCovers?.some(cover => cover.number === volume.number))) {
+          await client.resetVolumeCover(volume.id);
+        }
       }
       await client.scanSeries(series.libraryId, seriesId);
 

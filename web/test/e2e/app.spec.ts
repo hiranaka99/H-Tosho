@@ -25,6 +25,33 @@ test.beforeEach(async ({ page }) => {
   await expect(page).toHaveURL(/\/libraries$/);
 });
 
+test('changing Kavita servers clears cached library series before returning to Libraries', async ({ page }) => {
+  let server = 'a';
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.route('**/api/kavita/status', route => route.fulfill({ json: { configured: true, baseUrl: `https://${server}.test`, hasApiKey: true } }));
+  await page.route('**/api/kavita/libraries', route => route.fulfill({ json: [{id: 7, name: 'Manga', seriesCount: 1, matchedCount: 0}] }));
+  await page.route('**/api/kavita/libraries/7/series', async route => {
+    if (server === 'b') await new Promise(resolve => setTimeout(resolve, 250));
+    await route.fulfill({ json: [{id: 7, name: `Server ${server.toUpperCase()} series`, status: 'unmatched', artists: [], tags: []}] });
+  });
+  await page.route('**/api/libraries/7/override', route => route.fulfill({ json: {libraryId: 7, priority: [], autoMatch: false} }));
+  await page.route('**/api/kavita/connection', async route => {
+    server = 'b';
+    await route.fulfill({ json: {saved: true, connected: true, test: 'Connected'} });
+  });
+  await page.goto('/libraries/7');
+  await expect(page.getByText('Server A series', {exact: true})).toBeVisible();
+  await navigate(page, 'Settings');
+  await page.locator('#kavita-base-url').fill('https://b.test');
+  await page.getByRole('button', {name: 'Save & test connection', exact: true}).click();
+  await expect(page.locator('#kavita-base-url')).toBeEnabled();
+  await navigate(page, 'Libraries');
+  await expect(page.getByText('Server A series', {exact: true})).toHaveCount(0);
+  await expect(page.getByText('Server B series', {exact: true})).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test('login, lazy page navigation, deep links, theme and logout work', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));

@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import { switchKavitaState } from './kavitaState.js';
 import { getDb, schema } from '../db/index.js';
 import { allProviderIds, getProvider } from '../providers/registry.js';
 import type { ProviderCredentials } from '../providers/types.js';
@@ -92,10 +93,15 @@ export function getKavitaConnection(): KavitaConnection {
 
 export function setKavitaConnection(conn: KavitaConnection): void {
   const db = getDb();
-  db.insert(schema.keyValueStore)
-    .values({ key: 'kavita', valueJson: JSON.stringify(conn) })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(conn) } })
-    .run();
+  const previous = getKavitaConnection();
+  db.transaction(() => {
+    switchKavitaState(previous.baseUrl, conn.baseUrl);
+    db.insert(schema.keyValueStore)
+      .values({ key: 'kavita', valueJson: JSON.stringify(conn) })
+      .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(conn) } })
+      .run();
+  });
+  for (const key of settingsCache.keys()) if (key.startsWith('library-override:')) settingsCache.delete(key);
   settingsCache.delete('kavita-connection');
   notifySettingChange('kavita-connection');
 }

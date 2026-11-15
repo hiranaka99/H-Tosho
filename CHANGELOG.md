@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v3.1.2
+
+- Keep Unmatch cover resets within the current matching cycle and reset only
+  volume covers H-Tosho applied, preserving unrelated custom covers.
+- Keep matches, approvals, sync history, library overrides, and library jobs
+  separate for each Kavita server address; restore them when switching back.
+  Finish active library work before changing servers.
+- Abort active download transfers and retry waits on Cancel so queue slots
+  are freed promptly.
+- Accept Hitomi reader and gallery URLs in direct lookup and paged search,
+  including title slugs, query strings, and reader page fragments.
+
 ## v3.1.1
 
 - Fix MangaDex covers failing to load when the image proxy's browser

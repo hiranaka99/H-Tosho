@@ -134,6 +134,18 @@ describe('applyToKavita name verification', () => {
 });
 
 describe('cover locking', () => {
+  it('records only the volume IDs whose covers were successfully applied', async () => {
+    const client = {
+      getVolumes: async () => [{ id: 71, number: 1 }, { id: 72, number: 2 }],
+      updateVolumeCoverFromUrl: async (id: number) => { if (id === 71) throw new Error('Cover unavailable'); },
+      downloadImage: async () => { throw new Error('Cover unavailable'); },
+    } as unknown as KavitaClient;
+    const result = await applyVolumeCovers(client, 5, [{ number: 1, url: 'https://cdn.example/1.jpg' }, { number: 2, url: 'https://cdn.example/2.jpg' }]);
+    assert.equal(result.updated, 1);
+    assert.deepEqual(result.volumeIds, [72]);
+    assert.equal(result.errors.length, 1);
+    assert.match(result.errors[0], /vol 1:/);
+  });
   it('locks a matched series cover so Kavita scans cannot replace it', async () => {
     let locked: boolean | undefined;
     const client = {
@@ -165,7 +177,7 @@ describe('cover locking', () => {
 
     const result = await applyVolumeCovers(client, 5, [{ number: 1, url: 'https://cdn.example/vol-1.jpg' }]);
 
-    assert.deepEqual(result, { updated: 1, errors: [] });
+    assert.deepEqual(result, { updated: 1, errors: [], volumeIds: [71] });
     assert.deepEqual(locks, [true]);
   });
 });

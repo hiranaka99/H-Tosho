@@ -1,5 +1,9 @@
 import { rememberDuplicateLibraryRoots } from '../../services/galleryDuplicates.js';
 import { Hono } from 'hono';
+import { libraryMutations } from '../../lib/mutations.js';
+import { jobQueue } from '../../jobs/queue.js';
+import { downloadQueue } from '../../downloader/engine.js';
+import { kavitaConnectionKey } from '../../services/kavitaState.js';
 import { getDb, schema } from '../../db/index.js';
 import { KavitaClient } from '../../kavita/client.js';
 import { KAVITA_OPENAPI_VERSION, type KavitaLibrary, type KavitaSeries } from '../../kavita/types.js';
@@ -27,6 +31,10 @@ api.post('/kavita/connection', async (c) => {
   // re-entering the secret (the server never returns it).
   const apiKey = body.apiKey?.trim() ? body.apiKey.trim() : getKavitaConnection().apiKey;
   if (!apiKey) return c.json({ error: 'apiKey is required' }, 400);
+  if (kavitaConnectionKey(body.baseUrl) !== kavitaConnectionKey(getKavitaConnection().baseUrl)
+    && (libraryMutations.isBusy('*') || downloadQueue.activeCount() > 0 || jobQueue.active().some(job => job.type !== 'check-watched-searches'))) {
+    return c.json({ error: 'Finish or cancel active library jobs and downloads before changing Kavita servers.' }, 409);
+  }
   setKavitaConnection({ baseUrl: body.baseUrl, apiKey });
   let test: string;
   let connected: boolean;
