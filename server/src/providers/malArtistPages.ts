@@ -1,6 +1,6 @@
 import { fetchJson, sleep } from '../lib/http.js';
 import { decodeHtmlEntities, stripTags as stripHtml } from '../downloader/util.js';
-import type { ProviderArtist, ArtistSearchPage, ArtistWorksPage } from '../contracts/artists.js';
+import { parseProviderArtistUrl, type ProviderArtist, type ArtistSearchPage, type ArtistWorksPage } from '../contracts/artists.js';
 import type { SearchResult } from './types.js';
 
 const origin = 'https://myanimelist.net';
@@ -53,9 +53,21 @@ function artist(id: string, name: string, aliases: string[] = []): ProviderArtis
 }
 function unexpected(): never { throw new Error('MyAnimeList returned an unrecognized artist page. It may be temporarily blocked or its layout has changed. Please retry later.'); }
 
+function metaContent(html: string, property: string): string {
+  const meta = [...html.matchAll(/<meta\b[^>]*>/gi)].find(tag => attribute(tag[0], 'property') === property);
+  return meta ? attribute(meta[0], 'content') : '';
+}
+
 export function parseMalArtistSearch(html: string, page: number): ArtistSearchPage {
   const section = html.match(/Search Results<\/div>\s*<table\b[^>]*>([\s\S]*?)<\/table>/i)?.[1];
-  if (section === undefined) unexpected();
+  if (section === undefined) {
+    // MAL redirects a unique name search to the person's profile. Validate its
+    // canonical identity and profile structure before treating it as one result.
+    const reference = parseProviderArtistUrl(metaContent(html, 'og:url'));
+    if (reference?.providerId !== 'myanimelist') unexpected();
+    const item = parseMalArtist(html, reference.artistId);
+    return { items: page === 1 ? [item] : [], page, hasNextPage: false };
+  }
   const items = new Map<string, ProviderArtist>();
   for (const link of section.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
     const href = attribute(link[1], 'href');
@@ -73,8 +85,7 @@ export function parseMalArtistSearch(html: string, page: number): ArtistSearchPa
 }
 
 export function parseMalArtist(html: string, id: string): ProviderArtist {
-  const meta = [...html.matchAll(/<meta\b[^>]*>/gi)].find(tag => attribute(tag[0], 'property') === 'og:title');
-  const name = meta && attribute(meta[0], 'content');
+  const name = metaContent(html, 'og:title');
   if (!name || !/Published Manga/i.test(html)) unexpected();
   const alternate = html.match(/Alternate names:<\/span>([^<]*)/i)?.[1];
   return artist(id, name, alternate ? decodeHtmlEntities(alternate).split(',').map(value => value.trim()).filter(Boolean) : []);

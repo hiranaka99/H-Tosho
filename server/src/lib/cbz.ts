@@ -259,7 +259,10 @@ async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data:
   const repMethod = useDeflate ? 8 : 0;
   const repCrc = crc32(data);
 
-  const tmpPath = `${srcPath}.cbztmp-${randomUUID()}`;
+  // A valid archive name can already use the filesystem's entire component
+  // limit. Keep staging names independent of it, on the same filesystem for
+  // atomic replacement.
+  const tmpPath = path.join(path.dirname(srcPath), `.cbztmp-${randomUUID()}`);
   const src = await fs.promises.open(srcPath, 'r');
   const out = await fs.promises.open(tmpPath, 'wx').catch(async error => { await src.close(); throw error; });
   let written = false;

@@ -143,6 +143,33 @@ describe('cbz zip reader', () => {
 });
 
 describe('cbz rewrite', () => {
+  it('rewrites maximum-length ASCII and Unicode archive names without extending them', async () => {
+    const fixture = mkdtempSync(path.join(tmpdir(), 'htosho-long-cbz-'));
+    const names = ['a'.repeat(251) + '.cbz', '界'.repeat(83) + 'aa.cbz'];
+    const image = Buffer.from('image data must survive');
+    const metadata = Buffer.from('<ComicInfo><Series>Updated</Series></ComicInfo>');
+    for (const name of names) {
+      assert.equal(Buffer.byteLength(name), 255);
+      writeFileSync(path.join(fixture, name), buildZip([{ name: '001.jpg', data: image }]));
+    }
+    await Promise.all(names.map(name => rewriteZipEntry(path.join(fixture, name), 'ComicInfo.xml', metadata)));
+    for (const name of names) {
+      const archive = readFileSync(path.join(fixture, name));
+      assert.deepEqual(readZipEntry(archive, '001.jpg'), image);
+      assert.deepEqual(readZipEntry(archive, 'ComicInfo.xml'), metadata);
+    }
+    assert.deepEqual(readdirSync(fixture).sort(), names.sort(), 'only the original archive names remain');
+  });
+
+  it('preserves a long-named source and removes staging files when rewriting fails', async () => {
+    const fixture = mkdtempSync(path.join(tmpdir(), 'htosho-long-fail-'));
+    const name = 'b'.repeat(251) + '.cbz', file = path.join(fixture, name);
+    writeFileSync(file, 'invalid archive');
+    await assert.rejects(rewriteZipEntry(file, 'ComicInfo.xml', Buffer.from('<ComicInfo/>')), /Not a ZIP/);
+    assert.equal(readFileSync(file, 'utf8'), 'invalid archive');
+    assert.deepEqual(readdirSync(fixture), [name]);
+  });
+
   it('replaces an entry, preserving all others byte-for-byte', async () => {
     const { entries } = makeSampleArchive();
     const before = readZipEntries(readFileSync(cbzPath));

@@ -7,6 +7,7 @@ import { parseMalArtistSearch, parseMalArtist, parseMalArtistWorks } from '../sr
 const originalFetch = globalThis.fetch;
 const searchHtml = readFileSync(new URL('./fixtures/mal-people.html', import.meta.url), 'utf8');
 const artistHtml = readFileSync(new URL('./fixtures/mal-artist.html', import.meta.url), 'utf8');
+const kirinHtml = readFileSync(new URL('./fixtures/mal-kirin-profile.html', import.meta.url), 'utf8');
 afterEach(() => { globalThis.fetch = originalFetch; });
 
 test('MAL people URLs resolve safely, including the supplied artist link', () => {
@@ -30,6 +31,32 @@ test('real MAL artist HTML supplies names, works, full covers, types and years',
   assert.equal(works[2].year, 2011);
   assert.equal(works[1].type, 'COMIC');
   assert.equal(works[0].coverUrl, 'https://cdn.myanimelist.net/images/manga/3/98365.jpg');
+});
+test('a unique MAL name search redirected to a profile becomes one artist result', () => {
+  const result = parseMalArtistSearch(kirinHtml, 1);
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].artistId, '11741');
+  assert.equal(result.items[0].name, 'Kakeru Kirin');
+  assert.equal(result.items[0].url, 'https://myanimelist.net/people/11741');
+  assert.equal(result.hasNextPage, false);
+  assert.equal(parseMalArtistSearch(kirinHtml, 2).items.length, 0);
+  assert.ok(parseMalArtistWorks(kirinHtml).length > 0);
+});
+test('redirect recognition rejects foreign identities, non-artist pages and incomplete profiles', () => {
+  for (const html of [kirinHtml.replace('https://myanimelist.net/people/', 'https://myanimelist.net.evil.test/people/'),
+    kirinHtml.replace('/people/11741/', '/manga/11741/'), kirinHtml.replace('Published Manga', 'Please complete verification')]) {
+    assert.throws(() => parseMalArtistSearch(html, 1), /unrecognized artist page/);
+  }
+});
+test('reported artist search and direct people URL both load the redirected profile works', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = async input => { requests.push(String(input)); return new Response(kirinHtml); };
+  const result = await myAnimeListProvider.searchArtists('kirin kakeru');
+  assert.equal(result.items[0].artistId, '11741');
+  assert.equal((await myAnimeListProvider.getArtist('11741')).name, 'Kakeru Kirin');
+  assert.ok((await myAnimeListProvider.getArtistWorks('11741')).items.length > 0);
+  assert.equal(requests.length, 2, 'the profile and works reuse the same cached page');
+  assert.equal(new URL(requests[0]).searchParams.get('q'), 'kirin kakeru');
 });
 test('MAL artist search uses MAL directly without API credentials or the retired Jikan host', async () => {
   myAnimeListProvider.setCredentials({ clientId: 'must-not-leak' });

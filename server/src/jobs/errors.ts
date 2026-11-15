@@ -1,6 +1,7 @@
-export type JobErrorCode = 'conflicting-title' | 'missing-files' | 'permissions' | 'kavita-connection' | 'provider-configuration' | 'upstream-unavailable' | 'job-failed';
+export type JobErrorCode = 'path-too-long' | 'conflicting-title' | 'missing-files' | 'permissions' | 'kavita-connection' | 'provider-configuration' | 'upstream-unavailable' | 'job-failed';
 /** Normalize errors at the external/filesystem boundary. Legacy rows use this same decoder. */
 export function classifyJobError(message: string): JobErrorCode {
+  if (/\bENAMETOOLONG\b|(?:file ?name|name|path) too long/i.test(message)) return 'path-too-long';
   if (/series with this name already exists|duplicate (?:series|title)|title.*already exists/i.test(message)) return 'conflicting-title';
   if (/could not locate.*(?:folder|file)|folder.*(?:not found|unavailable|inaccessible)|no .*cbz|ENOENT|not accessible|not readable|mount/i.test(message)) return 'missing-files';
   if (/EACCES|EPERM|permission denied|read.only|EROFS/i.test(message)) return 'permissions';

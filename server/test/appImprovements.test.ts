@@ -180,6 +180,10 @@ test('known failures offer relevant safe destinations, unknown failures are not 
   assert.ok(jobRecovery({ ...job, errorMessage: 'HTTP 401 - Invalid admin Auth Key' })?.actions[0].href.includes('kavita-connection'));
   assert.equal(jobRecovery({ ...job, errorMessage: 'Random failure https://evil.test' }), undefined);
   assert.equal(jobRecovery({ ...job, status: 'completed' }), undefined);
+  const longPath = jobRecovery({ ...job, errorCode: 'missing-files', errorMessage: "ENAMETOOLONG: name too long, open '/mnt/library/book.cbz.cbztmp-id'" });
+  assert.match(longPath!.explanation, /filesystem limit/);
+  assert.ok(!longPath!.explanation.includes('mounted'));
+  assert.equal(longPath!.actions[0].href, '/libraries?series=315');
 });
 
 test('paged search exposes full totals, validates page bounds and avoids bulk hydration', async () => {

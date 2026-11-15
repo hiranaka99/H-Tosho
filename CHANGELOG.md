@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.5.2
+
+- Include AniList one-shots and alternate titles in metadata searches, fixing
+  missed candidates such as `Warui Ko to no Bukiyou de Ecchi na Kyoudou Seikatsu`.
+
+- Use short temporary names when rewriting CBZ metadata so valid long archive
+  names do not exceed filesystem limits during Apply & Sync. Preserve atomic
+  replacement and report genuine path-length errors separately from mount errors.
+- Accept MyAnimeList name searches that redirect directly to a single artist's
+  profile, fixing the “unrecognized artist page” error for queries such as
+  `kirin kakeru`.
+
 ## v3.5.1
 
 - Replace the discontinued Jikan public API with direct MyAnimeList artist-page

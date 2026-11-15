@@ -7,13 +7,19 @@ export interface JobRecovery {
 export function jobRecovery(job: { status: string; type: string; payload: Record<string, unknown>; errorMessage: string | null; errorCode?: JobErrorCode | null }): JobRecovery | undefined {
   if (job.status !== 'failed' || !job.errorMessage || !job.payload || typeof job.payload !== 'object' || Array.isArray(job.payload)) return;
   const message = job.errorMessage;
-  const code = job.errorCode ?? classifyJobError(message);
+  const classified = classifyJobError(message);
+  // Older jobs can have stored misleading mount/path classifications.
+  const code = classified === 'path-too-long' ? classified : job.errorCode ?? classified;
   const fromMessage = /\bseries\s+(\d+)\b/i.exec(message)?.[1];
   const seriesId = Number(job.payload.seriesId ?? fromMessage);
   const hasSeries = Number.isSafeInteger(seriesId) && seriesId > 0;
   const file = typeof job.payload.path === 'string' ? job.payload.path : undefined;
   const editor = new URLSearchParams(hasSeries ? { series: String(seriesId), action: 'comicinfo' } : file ? { file } : {});
   const target = hasSeries ? `/libraries?series=${seriesId}` : '/libraries';
+  if (code === 'path-too-long') {
+    return { explanation: 'A file name or path exceeds the filesystem limit. Shorten the affected name or parent path before retrying.',
+      actions: hasSeries ? [{ label: 'Inspect series', href: target }] : [] };
+  }
   if (code === 'conflicting-title') {
     const actions = [{ label: 'Inspect series', href: target }];
     const fields = job.payload.fields && typeof job.payload.fields === 'object' ? job.payload.fields as Record<string, unknown> : {};

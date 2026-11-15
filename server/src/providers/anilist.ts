@@ -65,13 +65,14 @@ export class AniListProvider extends BaseProvider {
 
   async search(query: string, type?: string, signal?: AbortSignal): Promise<SearchResult[]> {
     const isNovel = type === 'NOVEL';
-    const formatIn = isNovel ? 'NOVEL' : 'MANGA, NOVEL';
+    const formatIn = isNovel ? 'NOVEL' : 'MANGA, ONE_SHOT, NOVEL';
     const result = await this.gql<{ Page?: { media?: AniListMedia[] } | null }>(
       `query ($search: String) {
         Page(perPage: 20, page: 1) {
           media(format_in: [${formatIn}] search: $search sort: SEARCH_MATCH) {
             id
             title { romaji english native }
+            synonyms
             format
             coverImage { extraLarge }
             averageScore
@@ -89,6 +90,8 @@ export class AniListProvider extends BaseProvider {
         providerId: this.id,
         providerSeriesId: String(m.id),
         title: m.title.romaji || m.title.english || m.title.native || 'Unknown',
+        altTitles: [...new Set([m.title.romaji, m.title.english, m.title.native, ...(m.synonyms ?? [])]
+          .filter((value): value is string => typeof value === 'string' && !!value.trim()).map(value => value.trim()))],
         type: (m.format === 'NOVEL' ? 'NOVEL' : 'MANGA') as SearchResult['type'],
         year: m.startDate?.year,
         coverUrl: m.coverImage?.extraLarge,
