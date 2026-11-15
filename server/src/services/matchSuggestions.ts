@@ -46,6 +46,7 @@ export async function scanMatchSuggestions(options: {
   log: (level: 'info' | 'warn', message: string) => void;
   /** Already resolved targets for a download scan; other suggestions stay untouched. */
   targets?: MatchSuggestionTarget[];
+  signal?: AbortSignal;
 }) {
   const connection = getKavitaConnection(), connectionKey = currentMatchConnection();
   if (!connection.baseUrl || !connection.apiKey) throw new Error('Kavita is not configured');
@@ -85,7 +86,7 @@ export async function scanMatchSuggestions(options: {
     check();
     const providerOrder = providerOrderFor(series.libraryId, enabledProviders);
     if (!providerOrder.length) { failed++; options.progress(++processed, targets.length); continue; }
-    const outcome = await autoMatch(series, { providerOrder, credentials, enabledProviders, searchAll: true });
+    const outcome = await autoMatch(series, { providerOrder, credentials, enabledProviders, searchAll: true, signal: options.signal });
     check();
     if (outcome.searchedProviders.length) checked++;
     const candidates = outcome.candidates.filter(item => item.score >= AUTO_MATCH_THRESHOLD);

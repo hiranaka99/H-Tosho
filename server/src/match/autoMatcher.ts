@@ -36,6 +36,7 @@ export interface AutoMatchOptions {
   /** Credentials map: providerId -> Record<string,string>. */
   credentials: Record<string, Record<string, string>>;
   enabledProviders: string[];
+  signal?: AbortSignal;
 }
 
 /**
@@ -83,12 +84,13 @@ export async function autoMatch(
 
   const searchProviders = async (searchQuery: string): Promise<void> => {
     for (const providerId of order) {
+      options.signal?.throwIfAborted();
       const provider = getProvider(providerId);
       if (!provider) continue;
       if (options.type && !provider.supportedTypes.includes(options.type)) continue;
       try {
         provider.setCredentials(options.credentials[providerId] ?? {});
-        const results = await provider.search(searchQuery, options.type);
+        const results = await provider.search(searchQuery, options.type, options.signal);
         if (!searchedProviders.includes(providerId)) searchedProviders.push(providerId);
         for (const r of results) {
           if (!r.title) continue;
@@ -115,6 +117,7 @@ export async function autoMatch(
           .sort((a, b) => b.score - a.score)[0];
         if (!options.searchAll && top && top.score >= 0.97) break;
       } catch (err) {
+        options.signal?.throwIfAborted();
         errors[providerId] = err instanceof Error ? err.message : String(err);
       }
     }
@@ -177,9 +180,10 @@ export async function fetchProviderMetadata(
   providerId: string,
   providerSeriesId: string,
   credentials: Record<string, Record<string, string>>,
+  signal?: AbortSignal,
 ): Promise<SeriesMetadata> {
   const provider = getProvider(providerId);
   if (!provider) throw new Error(`Unknown provider: ${providerId}`);
   provider.setCredentials(credentials[providerId] ?? {});
-  return provider.getSeriesMetadata(providerSeriesId);
+  return provider.getSeriesMetadata(providerSeriesId, signal);
 }

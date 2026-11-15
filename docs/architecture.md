@@ -9,6 +9,10 @@
 - `jobs/executor.ts` dispatches validated commands to focused handlers. `lib/mutations.ts` coordinates overlapping series work; broad scans, merges, deletion and path-only edits require exclusive library ownership. Independent explicit series can run concurrently.
 - `lib/cbz.ts` coordinates complete archive edits and publishes through unique staging files. Downloads reserve their output paths; folder merges and deletion use the same coordinator with ancestor/descendant conflicts. Waiting for ownership is cancellable.
 - `services/sync.ts` owns the common automatic/manual application flow and atomic match/history persistence. `contracts/metadata.ts` supplies shared preview and application rules. `services/unmatch.ts` uses the same mutation boundary.
+- `providers/anilistClient.ts` serializes AniList calls across all workflows,
+  paces requests below its documented degraded limit, and respects response quota
+  and cooldown headers. Bounded retries and abort signals cover both queued and
+  in-flight requests; recovered rate limits are not recorded as failed searches.
 - `kavita/libraryPaths.ts` owns filesystem translation. `kavita/scans.ts` distinguishes completed, unavailable and timed-out waits; callers retain operation-specific verification in `libraryOperations.ts`.
 - `downloader/engine.ts` owns queue transitions and durable retry deadlines. Request retries and image transfer live in `requests.ts` and `transfer.ts`. The coarse `status` remains compatible with older clients; `state`, `errorCode`, `retryAt` and `phase` expose the precise lifecycle. `attempt` and `revision` order polling and SSE snapshots.
 - `services/recommendations.ts` serializes displayed-set mutations and commits selections with serve history in a transaction. Dismissal, feedback and undo share eligibility and reconciliation. Taste aggregation lives in `recommendationProfile.ts`.

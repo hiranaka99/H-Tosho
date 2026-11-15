@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.4.1
+
+- Pace AniList requests across scans, metadata review, and artist browsing, and
+  honor full rate-limit cooldowns before retrying HTTP 429 or GraphQL rate-limit
+  responses. Keep scans cancellable while waiting and preserve genuine errors
+  after bounded retries.
+
 ## v3.4.0
 
 - Import completed downloads into Kavita and discover metadata candidates in

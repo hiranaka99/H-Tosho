@@ -27,12 +27,13 @@ export async function fetchJson<T = unknown>(
   timeoutMs = 15_000,
   opts: FetchJsonOptions = {},
 ): Promise<HttpResponse<T>> {
+  init.signal?.throwIfAborted();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, {
       ...init,
-      signal: controller.signal,
+      signal: init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal,
       redirect: 'follow',
     });
     const text = await res.text();

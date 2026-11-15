@@ -75,7 +75,7 @@ export async function runDownloadedMatchDiscovery(job: Job & { payload: Download
     }
     if (targets.length) {
       rememberTargets(job, targets);
-      return scanMatchSuggestions({ targets, checkCancelled: check, log,
+      return scanMatchSuggestions({ targets, checkCancelled: check, log, signal,
         progress: (current, total) => jobQueue.setProgress(job.id, current, total) });
     }
     if (Date.now() >= deadline) throw new Error('Kavita has not indexed this downloaded gallery yet. Check its library and retry this discovery job.');

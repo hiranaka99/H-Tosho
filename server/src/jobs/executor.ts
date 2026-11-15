@@ -78,7 +78,7 @@ async function matchAndApply(
     return base;
   }
 
-  const outcome = await autoMatch(series, { providerOrder: order, credentials, enabledProviders });
+  const outcome = await autoMatch(series, { providerOrder: order, credentials, enabledProviders, signal });
   log?.('info', `${series.name}: ${outcome.candidates.length} candidate(s) across [${outcome.searchedProviders.join(', ')}]`);
 
   const best: CandidateMatch | null = outcome.best;
@@ -98,7 +98,7 @@ async function matchAndApply(
 
   base.matched = true;
   try {
-    const meta = await fetchProviderMetadata(best.providerId, best.providerSeriesId, credentials);
+    const meta = await fetchProviderMetadata(best.providerId, best.providerSeriesId, credentials, signal);
     // The cover URL is applied inside applyToKavita: it prefers a Kavita-side
     // fetch (upload-by-url) and falls back to a local download + base64 apply.
     const result = await applyResolvedSeriesMatch(client, {
@@ -218,6 +218,7 @@ async function executeJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<J
   switch (typed.type) {
     case 'scan-downloaded': return runDownloadedMatchDiscovery(typed, log, signal);
     case 'scan-matchable': return scanMatchSuggestions({
+      signal,
       checkCancelled: () => throwIfJobCancelled(job.id),
       progress: (current, total) => jobQueue.setProgress(job.id, current, total),
       log,

@@ -1,8 +1,7 @@
 import { BaseProvider } from './base.js';
 import type { MediaType, SeriesMetadata, SearchResult } from './types.js';
 import type { ProviderArtist, ArtistSearchPage, ArtistWorksPage } from '../contracts/artists.js';
-
-const API_URL = 'https://graphql.anilist.co';
+import { anilistClient, ANILIST_API_URL } from './anilistClient.js';
 
 interface AniListMedia {
   id: number;
@@ -35,7 +34,8 @@ interface AniListStaff {
  * AniList (GraphQL) — primary source for manga & light novel metadata:
  * summary, tags, release date.
  */
-class AniListProvider extends BaseProvider {
+export class AniListProvider extends BaseProvider {
+  constructor(private readonly client = anilistClient) { super(); }
   id = 'anilist';
   name = 'AniList';
   color = '#02b304';
@@ -46,12 +46,12 @@ class AniListProvider extends BaseProvider {
     'title', 'summary', 'genres', 'tags', 'writers', 'artists',
     'releaseDate', 'status', 'cover',
   ];
-  protected baseUrl = API_URL;
+  protected baseUrl = ANILIST_API_URL;
 
-  private async gql<TData>(query: string, variables: Record<string, unknown>): Promise<GqlEnvelope<TData>> {
-    const result = await this.getPost<GqlEnvelope<TData>>('', { query, variables }, {
-      'Content-Type': 'application/json',
-    });
+  private async gql<TData>(query: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<GqlEnvelope<TData>> {
+    const response = await this.client.post<GqlEnvelope<TData>>({ query, variables }, signal);
+    if (response.status >= 400) throw new Error(this.describeError(response.status, response.data));
+    const result = response.data;
     // GraphQL can return validation/execution errors with HTTP 200 — surface them
     // instead of silently treating the response as an empty result.
     const err = result.errors?.[0]?.message;
@@ -63,7 +63,7 @@ class AniListProvider extends BaseProvider {
     await this.gql<{ Media?: { id: number } | null }>('{ Media(id: 1) { id } }', {});
   }
 
-  async search(query: string, type?: string): Promise<SearchResult[]> {
+  async search(query: string, type?: string, signal?: AbortSignal): Promise<SearchResult[]> {
     const isNovel = type === 'NOVEL';
     const formatIn = isNovel ? 'NOVEL' : 'MANGA, NOVEL';
     const result = await this.gql<{ Page?: { media?: AniListMedia[] } | null }>(
@@ -80,7 +80,7 @@ class AniListProvider extends BaseProvider {
           }
         }
       }`,
-      { search: query },
+      { search: query }, signal,
     );
     const media: AniListMedia[] = result.data?.Page?.media ?? [];
     return media
@@ -96,7 +96,7 @@ class AniListProvider extends BaseProvider {
       }));
   }
 
-  async getSeriesMetadata(providerSeriesId: string): Promise<SeriesMetadata> {
+  async getSeriesMetadata(providerSeriesId: string, signal?: AbortSignal): Promise<SeriesMetadata> {
     const result = await this.gql<{ Media?: AniListMedia | null }>(
       `query ($id: Int) {
         Media(id: $id) {
@@ -114,7 +114,7 @@ class AniListProvider extends BaseProvider {
           synonyms
         }
       }`,
-      { id: Number(providerSeriesId) },
+      { id: Number(providerSeriesId) }, signal,
     );
     const m = result.data?.Media;
     if (!m) throw new Error(`AniList: media ${providerSeriesId} not found`);

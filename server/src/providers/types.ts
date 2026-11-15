@@ -82,8 +82,8 @@ export interface MetadataProvider {
   setCredentials(credentials: ProviderCredentials): void;
   /** Validate the currently-set credentials; throws on failure. */
   testConnection(): Promise<void>;
-  search(query: string, type?: MediaType): Promise<SearchResult[]>;
-  getSeriesMetadata(providerSeriesId: string): Promise<SeriesMetadata>;
+  search(query: string, type?: MediaType, signal?: AbortSignal): Promise<SearchResult[]>;
+  getSeriesMetadata(providerSeriesId: string, signal?: AbortSignal): Promise<SeriesMetadata>;
   getBookMetadata?(providerBookId: string): Promise<BookMetadata>;
   searchArtists?(query: string, page?: number): Promise<import('../contracts/artists.js').ArtistSearchPage>;
   getArtist?(artistId: string): Promise<import('../contracts/artists.js').ProviderArtist>;

@@ -336,7 +336,7 @@ export async function applySeriesMatch(client: KavitaClient, opts: ApplySeriesOp
   const series = await client.getSeriesById(seriesId);
   await opts.onSeriesResolved?.(series);
   const { credentials } = getCredentialMap();
-  const meta = await fetchProviderMetadata(opts.providerId, opts.providerSeriesId, credentials);
+  const meta = await fetchProviderMetadata(opts.providerId, opts.providerSeriesId, credentials, opts.signal);
   return applyResolvedSeriesMatch(client, opts, meta, series);
 }
 
