@@ -634,7 +634,7 @@ export function Downloader() {
                     </div>;
                   })}
                 </div>
-                <Pager page={feedCurPage} count={feedPageCount} showJump={false} onPageChange={page => { setFeedPage(page); document.querySelector('main')?.scrollTo({ top: 0 }); }} />
+                <Pager page={feedCurPage} count={feedPageCount} onPageChange={page => { setFeedPage(page); document.querySelector('main')?.scrollTo({ top: 0 }); }} />
               </>
             ) : <EmptyState icon={<Star className="h-8 w-8" />} title={feedWatch || feedSource ? 'No matching discoveries' : feedView === 'inbox' ? 'Inbox is clear' : 'No discoveries yet'} />}
           </section>

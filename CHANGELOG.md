@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.3.2
+
+- Remove the duplicate jump-to-page input and Go button from pagination, keeping
+  Previous, numbered pages, and Next.
+
 ## v3.3.1
 
 - Show artist works as a responsive cover grid in matching dialogs, with larger

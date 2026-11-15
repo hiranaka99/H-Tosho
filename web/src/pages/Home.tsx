@@ -124,7 +124,7 @@ export function Home() {
             <div className="min-w-0 flex-1"><p className="break-words text-sm font-medium">{item.name}</p><p className="mt-1 break-words text-xs text-muted">{item.libraryName}</p><p className="mt-2 break-words text-xs"><span className="font-medium text-success">{Math.round(item.candidate.score * 100)}% match</span><span className="text-muted"> · {PROVIDER_NAMES[item.candidate.providerId] ?? item.candidate.providerId} · {item.candidate.title}</span></p>
               <div className="mt-3 flex flex-wrap items-center gap-2"><Button size="sm" variant="outline" onClick={() => setReview(item)}>Review match<ArrowRight aria-hidden="true" className="h-3.5 w-3.5" /></Button><Button size="sm" variant="ghost" disabled={rejectedIds.has(item.seriesId)} onClick={() => void reject(item)}>{rejectedIds.has(item.seriesId) ? <Spinner /> : <X aria-hidden="true" className="h-3.5 w-3.5" />}No match found</Button></div>
             </div>
-          </li>)}</ul><div className="mt-3"><Pager page={currentMatchPage} count={matchPageCount} onPageChange={setMatchPage} showJump={false} /></div></>}
+          </li>)}</ul><div className="mt-3"><Pager page={currentMatchPage} count={matchPageCount} onPageChange={setMatchPage} /></div></>}
       </section>
 
       <section aria-labelledby="home-inbox" className="min-w-0 rounded-xl border border-border bg-surface p-4 sm:p-5">

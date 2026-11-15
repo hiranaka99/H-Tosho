@@ -212,16 +212,9 @@ function pageList(page: number, count: number): (number | '…')[] {
   return pages;
 }
 
-/** Prev/next + numbered pager, with an optional jump-to-page input for long result sets. */
-export function Pager({ page, count, onPageChange, showJump = true }: { page: number; count: number; onPageChange: (p: number) => void; showJump?: boolean }) {
-  const [jump, setJump] = React.useState('');
-  const jumpId = React.useId();
+/** Previous/next and numbered pages share one navigation control. */
+export function Pager({ page, count, onPageChange }: { page: number; count: number; onPageChange: (p: number) => void }) {
   if (count <= 1) return null;
-  const commitJump = () => {
-    const n = Math.floor(Number(jump));
-    if (Number.isFinite(n)) onPageChange(Math.min(count, Math.max(1, n)));
-    setJump('');
-  };
   return (
     <nav aria-label="Pages" className="flex flex-wrap items-center justify-center gap-1">
       <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
@@ -239,11 +232,6 @@ export function Pager({ page, count, onPageChange, showJump = true }: { page: nu
       <Button size="sm" variant="outline" disabled={page >= count} onClick={() => onPageChange(page + 1)}>
         Next <ChevronRight className="h-3.5 w-3.5" />
       </Button>
-      {showJump && <form className="ml-2 flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); commitJump(); }} aria-label="Jump to page">
-        <label className="sr-only" htmlFor={jumpId}>Page number</label>
-        <Input id={jumpId} type="number" min={1} max={count} value={jump} onChange={(e) => setJump(e.target.value)} placeholder={`${page}/${count}`} className="w-16 px-2 text-center text-xs tabular-nums" />
-        <Button size="sm" variant="ghost" type="submit">Go</Button>
-      </form>}
     </nav>
   );
 }

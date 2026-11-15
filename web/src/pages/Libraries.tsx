@@ -614,7 +614,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
             )}
             {filtered.length > SERIES_PAGE_SIZE && (
               <div className="pt-2">
-                <Pager page={currentPage} count={pageCount} onPageChange={changePage} showJump={false} />
+                <Pager page={currentPage} count={pageCount} onPageChange={changePage} />
               </div>
             )}
           </>
