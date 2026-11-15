@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.5.3
+
+- Run one matching scan for galleries downloaded as a new merged series, after
+  every chapter has settled. Register the selected galleries together and scan
+  the shared series folder so quick downloads cannot start premature checks.
+- Show Hitomi group/circle names in gallery details and keep their group search
+  links working, including `shirukke no ooi zakuro`.
+
 ## v3.5.2
 
 - Include AniList one-shots and alternate titles in metadata searches, fixing

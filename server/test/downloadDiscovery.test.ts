@@ -15,7 +15,7 @@ const { queueDownloadedMatchDiscovery } = await import('../src/services/download
 const { listMatchSuggestions, rejectMatchCandidate } = await import('../src/services/matchSuggestions.js');
 const { runJob } = await import('../src/jobs/executor.js');
 const { jobQueue, JobCancelled } = await import('../src/jobs/queue.js');
-const { DownloadQueue } = await import('../src/downloader/engine.js');
+const { DownloadQueue, downloadQueue } = await import('../src/downloader/engine.js');
 const { doujinProviders } = await import('../src/downloader/providers.js');
 const { getProvider } = await import('../src/providers/registry.js');
 const { parseJobCommand } = await import('../src/contracts/jobs.js');
@@ -78,6 +78,107 @@ async function clock<T>(t: TestContext, run: () => Promise<T>): Promise<T> {
   assert.fail('Discovery did not settle within its indexing deadline');
 }
 const queued = () => jobQueue.get(queueDownloadedMatchDiscovery(downloadPath, 'Sample title')!)!;
+
+async function finishDownloads(queue: InstanceType<typeof DownloadQueue>, ids: number[]) {
+  for (let step = 0; step < 2000; step++) {
+    if (ids.every(id => queue.get(id)?.status === 'completed' && !queue.isRunning(id))) return;
+    await setImmediate();
+  }
+  assert.fail('Downloads did not complete');
+}
+
+for (const concurrency of [1, 3]) {
+  test(`three galleries merged into one series run discovery once after publication (concurrency ${concurrency})`, async t => {
+    const queue = new DownloadQueue(() => ({ ...DEFAULT_DOWNLOADER, downloadDirectory: output, maxConcurrentDownloads: concurrency, requestDelayMs: 0 }));
+    const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    doujinProviders.hitomi = { ...originalHitomi, getGallery: async id => {
+      if (id.endsWith('-3')) { started.resolve(); await release.promise; }
+      return { source: 'hitomi', galleryId: id, title: `Gallery ${id}`, artists: [], tags: [], pages: ['https://images.test/1.jpg'] };
+    } };
+    const ids = [1, 2, 3].map(chapter => queue.enqueue('hitomi', `merged-${concurrency}-${chapter}`, 'Sample title', 'cbz', 'Sample title', chapter));
+    try {
+      await started.promise;
+      await finishDownloads(queue, ids.slice(0, 2));
+      assert.equal(jobQueue.active().length, 0, 'No scan runs while the final chapter is still downloading');
+    } finally { release.resolve(); }
+    await finishDownloads(queue, ids);
+    const discoveries = jobQueue.list().filter(job => job.type === 'scan-downloaded');
+    assert.equal(discoveries.length, 1);
+    assert.equal(discoveries[0].payload.path, path.join(output, 'Sample title'));
+    assert.equal(discoveries[0].payload.seriesName, 'Sample title');
+    const result = await clock(t, () => runJob(discoveries[0], () => {}));
+    assert.equal(result.matchable, 1);
+    assert.equal(scanBodies.length, 1);
+    assert.deepEqual(searches, ['Sample title']);
+    t.mock.timers.reset();
+    const added = queue.enqueue('hitomi', `added-${concurrency}`, 'Sample title', 'cbz', 'Sample title', 4);
+    getDb().update(schema.jobs).set({ status: 'completed' }).where(eq(schema.jobs.id, discoveries[0].id)).run();
+    await finishDownloads(queue, [added]);
+    assert.equal(jobQueue.list().filter(job => job.type === 'scan-downloaded').length, 2, 'A later chapter still gets a fresh check');
+  });
+}
+
+test('merged API registers the entire selection after slow preflights and before any worker finishes', async () => {
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  doujinProviders.hitomi = { ...originalHitomi, getGallery: async id => {
+    if (id === 'batch-3') { started.resolve(); await release.promise; }
+    return { source: 'hitomi', galleryId: id, title: `Gallery ${id}`, artists: [], tags: [], pages: ['https://images.test/1.jpg'] };
+  } };
+  const request = api.request('/downloads/merged', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+    mergeFolder: 'Batch series', items: [1, 2, 3].map(chapter => ({ source: 'hitomi', galleryId: `batch-${chapter}`, chapter, allowDuplicate: true })),
+  }) });
+  try {
+    await started.promise;
+    await setImmediate();
+    assert.equal(downloadQueue.list().length, 0, 'A fast preflight cannot start its gallery before the slower siblings are known');
+  } finally { release.resolve(); }
+  const response = await request;
+  assert.equal(response.status, 202);
+  const result = await response.json();
+  assert.equal(result.items.length, 3);
+  const ids = result.items.map((item: { id: number }) => { assert.ok(item.id); return item.id; });
+  await finishDownloads(downloadQueue, ids);
+  assert.deepEqual(ids.map((id: number) => downloadQueue.get(id)!.chapterNumber), [1, 2, 3]);
+  const discoveries = jobQueue.list().filter(job => job.type === 'scan-downloaded');
+  assert.equal(discoveries.length, 1);
+  assert.equal(discoveries[0].payload.path, path.join(output, 'Batch series'));
+});
+
+test('merged API rejects malformed or repeated selections without starting downloads', async () => {
+  const item = { source: 'hitomi', galleryId: 'invalid-batch' };
+  for (const body of [null, {}, { mergeFolder: '../bad', items: [item] }, { mergeFolder: 'Good', items: [] },
+    { mergeFolder: 'Good', items: [null] }, { mergeFolder: 'Good', items: [item, item] },
+    { mergeFolder: 'Good', items: Array.from({ length: 101 }, (_, i) => ({ ...item, galleryId: String(i) })) }]) {
+    const response = await api.request('/downloads/merged', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    assert.equal(response.status, 400);
+  }
+  assert.equal(downloadQueue.list().length, 0);
+});
+
+test('canceling the final paused chapter discovers the successfully published siblings once', async () => {
+  const queue = new DownloadQueue(() => ({ ...DEFAULT_DOWNLOADER, downloadDirectory: output, maxConcurrentDownloads: 1, requestDelayMs: 0 }));
+  const ids = [1, 2, 3].map(chapter => queue.enqueue('hitomi', `paused-merge-${chapter}`, 'Sample title', 'cbz', 'Paused series', chapter));
+  assert.equal(queue.pause(ids[2]), true);
+  await finishDownloads(queue, ids.slice(0, 2));
+  assert.equal(jobQueue.active().length, 0);
+  assert.equal(queue.cancel(ids[2]), true);
+  assert.equal(jobQueue.active().filter(job => job.type === 'scan-downloaded').length, 1);
+  assert.equal(jobQueue.active()[0].payload.path, path.join(output, 'Paused series'));
+});
+
+test('a final failed chapter still schedules one check for the completed merged chapters', async () => {
+  const queue = new DownloadQueue(() => ({ ...DEFAULT_DOWNLOADER, downloadDirectory: output, maxConcurrentDownloads: 1, requestDelayMs: 0 }));
+  doujinProviders.hitomi = { ...originalHitomi, getGallery: async id => ({
+    source: 'hitomi', galleryId: id, title: id, artists: [], tags: [], pages: id.endsWith('-3') ? [] : ['https://images.test/1.jpg'],
+  }) };
+  const ids = [1, 2, 3].map(chapter => queue.enqueue('hitomi', `failed-merge-${chapter}`, 'Sample title', 'cbz', 'Partial series', chapter));
+  await finishDownloads(queue, ids.slice(0, 2));
+  for (let step = 0; step < 2000 && queue.get(ids[2])!.status !== 'failed'; step++) await setImmediate();
+  await setImmediate();
+  assert.equal(queue.get(ids[2])!.status, 'failed');
+  assert.equal(jobQueue.active().filter(job => job.type === 'scan-downloaded').length, 1);
+  assert.equal(jobQueue.active()[0].payload.path, path.join(output, 'Partial series'));
+});
 
 test('completed CBZ and folder downloads queue discovery with either legacy auto-sync value, without blocking downloads', async () => {
   for (const format of ['cbz', 'folder'] as const) {

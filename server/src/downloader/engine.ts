@@ -407,6 +407,7 @@ export class DownloadQueue {
       this.retryTimers.delete(id);
       getDb().update(schema.downloadQueue).set({ errorMessage: 'Cancelled by user', errorCode: 'cancelled', retryAt: null }).where(eq(schema.downloadQueue.id, id)).run();
       this.syncLive(id);
+      this.discoverCompletedDownload(id);
       return true;
     }
     if (this.activeRuns.get(id)?.committing) return false;
@@ -420,6 +421,7 @@ export class DownloadQueue {
       }
       getDb().update(schema.downloadQueue).set({ errorMessage: 'Cancelled by user', errorCode: 'cancelled', retryAt: null }).where(eq(schema.downloadQueue.id, id)).run();
       this.setStatus(id, 'failed');
+      if (!run) this.discoverCompletedDownload(id);
       return true;
     }
     return false;
@@ -603,12 +605,29 @@ export class DownloadQueue {
 
   // ---------------- Execution ----------------
 
+  /** Discover a merged series only once every sibling has settled. */
+  private discoverCompletedDownload(id: number, seriesName?: string): void {
+    const task = this.readRow(id);
+    if (!task || task.mergeJobId != null) return;
+    let outputPath = task.status === 'completed' ? task.outputPath : null;
+    if (task.mergeFolder) {
+      const siblings = getDb().select().from(schema.downloadQueue).where(eq(schema.downloadQueue.mergeFolder, task.mergeFolder)).all();
+      if (siblings.some(sibling => ['queued', 'downloading', 'paused'].includes(sibling.status)
+        || sibling.retryAt || this.activeRuns.has(sibling.id))) return;
+      outputPath ??= siblings.find(sibling => sibling.status === 'completed' && sibling.outputPath)?.outputPath ?? null;
+    }
+    if (!outputPath) return;
+    try { queueDownloadedMatchDiscovery(task.mergeFolder ? path.dirname(outputPath) : outputPath, task.mergeFolder ?? seriesName ?? task.title ?? undefined); }
+    catch (error) { console.warn('[h-tosho] Could not queue download match discovery:', error instanceof Error ? error.message : error); }
+  }
+
   private async process(row: DownloadRow): Promise<void> {
     const ctx: RunContext = { cancelled: false, controller: new AbortController(), stopped: false, committing: false, pauseSignal: { paused: false, waiters: [] } };
     this.activeRuns.set(row.id, ctx);
     // Per-task scratch space: pages stream to disk here so only the in-flight
     // images (bounded by maxImageConcurrency) live in RAM.
     const tmpDir = path.join(getTmpDir(), 'downloads', String(row.id));
+    let discoverySeriesName: string | undefined;
     const perform = async () => {
       try {
         const settings = this.settingsProvider();
@@ -621,6 +640,7 @@ export class DownloadQueue {
         // Resolve the full gallery (metadata + image list).
         this.updateProgress(row.id, { phase: 'resolving', progressCurrent: 0, progressTotal: 0, speed: 0, currentFile: 'Resolving gallery…', bytesCurrent: 0, bytesTotal: 0 }, { force: true });
         const gallery = await retryTransient(() => resolveDuplicateGallery(row.source as DoujinSource, row.galleryId, true), 4, [2000, 10000, 30000]);
+        discoverySeriesName = gallery.series ?? gallery.title;
         if (ctx.cancelled) throw new Error('Cancelled by user');
         recordGalleryIdentity(gallery);
         const total = gallery.pages.length;
@@ -649,11 +669,6 @@ export class DownloadQueue {
           // must not permanently bias the recommendation profile.
           recordGalleryTags(row.source as DoujinSource, gallery);
           this.updateProgress(row.id, { progressCurrent: total, progressTotal: total, speed: 0, currentFile: null }, { force: true });
-          if (row.mergeJobId == null) {
-            try { queueDownloadedMatchDiscovery(outputPath, row.mergeFolder ?? gallery.series ?? gallery.title); }
-            catch (error) { console.warn('[h-tosho] Could not queue download match discovery:', error instanceof Error ? error.message : error); }
-          }
-
         };
         const old = row.outputPath ? archiveResource(row.outputPath) : null;
         const next = archiveResource(destination);
@@ -680,6 +695,7 @@ export class DownloadQueue {
         // Defensive: no worker may stay parked on the pause gate after the run ends.
         wakePaused(ctx);
         this.activeRuns.delete(row.id);
+        this.discoverCompletedDownload(row.id, discoverySeriesName);
         const final = this.readRow(row.id);
         if (final) this.broadcast(final);
       }

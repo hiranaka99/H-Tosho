@@ -246,7 +246,7 @@ interface HitomiTagEntry {
 
 function tagValue(t: HitomiTagEntry | string): string {
   if (typeof t === 'string') return t;
-  return String(t.tag ?? t.artist ?? t.character ?? '');
+  return String(t.tag ?? t.artist ?? t.character ?? t.group ?? '');
 }
 
 /**

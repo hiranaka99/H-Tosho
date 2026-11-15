@@ -5,7 +5,7 @@ import { gallerySearchReducer } from './downloader/searchState';
 import { GallerySearchInput } from '../components/GallerySearchInput';
 import { useGalleryDownload } from './downloader/useGalleryDownload';
 import * as React from 'react';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import { Search, Loader2, RotateCcw, CheckCircle2, Check, ListVideo, Star, Sparkles, CheckSquare } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult } from '../lib/api';
@@ -29,6 +29,7 @@ import { useDownloaderTransitions } from './downloader/motion';
 const RESULTS_PAGE_SIZE = 25;
 const EMPTY_GALLERIES: DoujinSearchResult[] = [];
 export function Downloader() {
+  const qc = useQueryClient();
   // Search cards consume live tasks so each doujin reflects queued, downloading,
   // or paused state. Deep links from the Libraries page override cached search
   // state; ordinary navigation restores the last input, committed search, and
@@ -105,7 +106,7 @@ export function Downloader() {
   const [selectionHeight, setSelectionHeight] = React.useState(0);
   const [mergeIntoOpen, setMergeIntoOpen] = React.useState(false);
 
-  const { setup, startDownload, checkDuplicates, duplicateDialog, ensureDownloadReady, pendingKeys, doStartDownload } = useGalleryDownload();
+  const { setup, checkDuplicates, duplicateDialog, ensureDownloadReady, pendingKeys, doStartDownload } = useGalleryDownload();
   const downloadStatus = setup.status;
   // Top-of-page view tabs: search results vs. the download manager queue.
   const [rememberedTab, setRememberedTab] = React.useState<DownloaderTab>(() =>
@@ -243,21 +244,21 @@ export function Downloader() {
     try {
       const approved = await checkDuplicates(mergeItems.filter(item => !settled.has(`${item.source}:${item.galleryId}`)));
       if (approved === null) return;
-      for (let i = 0; i < mergeItems.length; i++) {
-        const item = mergeItems[i];
+      const items = mergeItems.flatMap((item, i) => {
         const key = `${item.source}:${item.galleryId}`;
-        if (settled.has(key)) continue;
-        try {
-          await startDownload({ source: item.source, galleryId: item.galleryId, title: item.title ?? undefined, mergeFolder: folder, chapter: numbers[i] ?? undefined, allowDuplicate: approved.has(key) });
+        return settled.has(key) ? [] : [{ source: item.source, galleryId: item.galleryId, chapter: numbers[i] ?? undefined, allowDuplicate: approved.has(key) }];
+      });
+      const result = await api.startMergedDownloads({ mergeFolder: folder, items });
+      void qc.invalidateQueries({ queryKey: ['downloads'] });
+      for (const item of result.items) {
+        const key = `${item.source}:${item.galleryId}`;
+        if (item.id !== undefined) {
           queuedKeys.push(key);
           settled.add(key);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (message === 'already-downloaded' || message === 'already-queued') {
-            skippedKeys.push(key);
-            settled.add(key);
-          } else failures.push({ key, message: downloadErrorHelp(message).message });
-        }
+        } else if (item.error === 'already-downloaded' || item.error === 'already-queued') {
+          skippedKeys.push(key);
+          settled.add(key);
+        } else failures.push({ key, message: downloadErrorHelp(item.error ?? 'Could not queue download').message });
       }
       setMergeResult({ queuedKeys, skippedKeys, failures });
       selection.remove(settled);

@@ -121,13 +121,81 @@ for (const tab of ['search', 'recommend']) {
     await name.fill('Garden Collection');
     if (tab === 'search') await capture(page, testInfo, 'new-merge-name');
     let submission: Record<string, unknown> | undefined;
-    await page.route('**/api/downloads', route => {
+    await page.route('**/api/downloads/merged', route => {
       if (route.request().method() !== 'POST') return route.fallback();
       submission = route.request().postDataJSON();
-      return route.fulfill({ json: { id: 9102, status: 'queued' } });
+      return route.fulfill({ json: { items: [{ source: gallery.source, galleryId: gallery.galleryId, id: 9102, status: 'queued' }] } });
     });
     await dialog.getByRole('button', { name: 'Download 1 gallery', exact: true }).click();
     await expect(dialog).toHaveCount(0);
-    expect(submission).toMatchObject({ mergeFolder: 'Garden Collection', galleryId: gallery.galleryId, chapter: 1 });
+    expect(submission).toMatchObject({ mergeFolder: 'Garden Collection', items: [{ galleryId: gallery.galleryId, chapter: 1 }] });
   });
 }
+
+test('three selected galleries are submitted as one merged batch with their chapter order', async ({ page }) => {
+  const galleries = [1, 2, 3].map(chapter => ({ ...gallery, galleryId: `batch-${chapter}`, title: `Garden Chapter ${chapter}` }));
+  await page.route('**/api/doujin/search', route => route.fulfill({ json: { items: galleries, total: galleries.length } }));
+  await page.goto('/downloader?tab=search&q=garden');
+  await page.getByRole('button', { name: 'Select galleries', exact: true }).click();
+  for (const item of galleries) await page.getByRole('button', { name: `Select ${item.title}`, exact: true }).click();
+  await page.getByRole('button', { name: 'Download as new series', exact: true }).filter({ visible: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Merged download', exact: true });
+  await dialog.getByLabel('Merged series name', { exact: true }).fill('Garden Collection');
+  const submissions: Record<string, unknown>[] = [];
+  await page.route('**/api/downloads/merged', route => {
+    submissions.push(route.request().postDataJSON());
+    return route.fulfill({ json: { items: galleries.map((item, i) => ({ source: item.source, galleryId: item.galleryId, id: 9200 + i })) } });
+  });
+  await dialog.getByRole('button', { name: 'Download 3 galleries', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(submissions).toEqual([{ mergeFolder: 'Garden Collection', items: galleries.map((item, i) => ({ source: item.source, galleryId: item.galleryId, chapter: i + 1, allowDuplicate: false })) }]);
+});
+
+test('gallery details show searchable groups and circles', async ({ page }, testInfo) => {
+  const queries: string[] = [];
+  await page.route('**/api/doujin/search', route => {
+    queries.push(route.request().postDataJSON().query);
+    return route.fulfill({ json: { items: [gallery], total: 1 } });
+  });
+  await page.route('**/api/doujin/gallery', route => route.fulfill({ json: { ...gallery, groups: ['shirukke no ooi zakuro'], pages: [] } }));
+  await page.goto('/downloader?tab=search&q=garden');
+  await page.getByRole('button', { name: `View details for ${gallery.title}`, exact: true }).first().click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('Groups / circles', { exact: true })).toBeVisible();
+  const circle = dialog.getByRole('button', { name: 'shirukke no ooi zakuro', exact: true });
+  await expect(circle).toBeVisible();
+  await expect(circle).toHaveAttribute('title', 'Search for “group:shirukke_no_ooi_zakuro”');
+  const directory = path.resolve('.impeccable/review');
+  fs.mkdirSync(directory, { recursive: true });
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(value => document.documentElement.classList.toggle('dark', value === 'dark'), theme);
+    await dialog.screenshot({ path: path.join(directory, `gallery-circles-${testInfo.project.name}-${theme}.png`), animations: 'disabled' });
+  }
+  await circle.click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => queries).toContain('group:shirukke_no_ooi_zakuro');
+});
+
+test('a merged batch retry keeps successful entries and the remaining chapter number', async ({ page }) => {
+  const galleries = [1, 2, 3].map(chapter => ({ ...gallery, galleryId: `retry-${chapter}`, title: `Retry Chapter ${chapter}` }));
+  await page.route('**/api/doujin/search', route => route.fulfill({ json: { items: galleries, total: galleries.length } }));
+  await page.goto('/downloader?tab=search&q=garden');
+  await page.getByRole('button', { name: 'Select galleries', exact: true }).click();
+  for (const item of galleries) await page.getByRole('button', { name: `Select ${item.title}`, exact: true }).click();
+  await page.getByRole('button', { name: 'Download as new series', exact: true }).filter({ visible: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Merged download', exact: true });
+  const submissions: { items: { galleryId: string; chapter: number }[] }[] = [];
+  await page.route('**/api/downloads/merged', route => {
+    submissions.push(route.request().postDataJSON());
+    const items = submissions.length === 1
+      ? [{ ...galleries[0], id: 9301 }, { ...galleries[1], error: 'already-downloaded' }, { ...galleries[2], error: 'Provider unavailable' }]
+      : [{ ...galleries[2], id: 9303 }];
+    return route.fulfill({ json: { items } });
+  });
+  await dialog.getByRole('button', { name: 'Download 3 galleries', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('1 queued · 1 already owned or queued · 1 needs retry');
+  await dialog.getByRole('button', { name: 'Retry remaining (1)', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(submissions).toHaveLength(2);
+  expect(submissions[1].items).toEqual([{ source: 'hitomi', galleryId: 'retry-3', chapter: 3, allowDuplicate: false }]);
+});

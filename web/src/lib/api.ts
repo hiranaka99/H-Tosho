@@ -570,6 +570,8 @@ export const api = {
     }),
   startDownload: (body: { source: DoujinSource; galleryId: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number; allowDuplicate?: boolean }) =>
     request<{ id: number; status: string }>('/downloads', { method: 'POST', body: JSON.stringify(body) }),
+  startMergedDownloads: (body: { mergeFolder: string; items: { source: DoujinSource; galleryId: string; chapter?: number; allowDuplicate?: boolean }[] }) =>
+    request<{ items: { source: DoujinSource; galleryId: string; id?: number; error?: string }[] }>('/downloads/merged', { method: 'POST', body: JSON.stringify(body) }),
   checkDuplicates: (items: { source: DoujinSource; galleryId: string }[], refreshLibrary = false) => request<DuplicateCheck>('/downloads/duplicates', { method: 'POST', body: JSON.stringify({ items, refreshLibrary }) }),
   libraryMatches: (items: DoujinSearchResult[]) => request<DuplicateCheck>('/downloads/library-matches', { method: 'POST', body: JSON.stringify({ items: items.map(({ source, galleryId, title, artists, language, pageCount }) => ({ source, galleryId, title, artists, language, pageCount })) }) }),
   downloads: () => request<DownloadTask[]>('/downloads'),

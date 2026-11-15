@@ -122,6 +122,7 @@ function galleryInfo(id: number): string {
     files: [{ name: 'page1.jpg', hash: 'ab'.repeat(32), haswebp: 1 }],
     tags: [],
     artists: [],
+    groups: id === 101 ? [{ group: 'shirukke no ooi zakuro', url: '/group/shirukke-no-ooi-zakuro-all.html' }] : [],
   })};`;
 }
 
@@ -179,6 +180,11 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+test('gallery details retain Hitomi group objects for circle display and ComicInfo metadata', async () => {
+  const gallery = await hitomiProvider.getGallery('101');
+  assert.deepEqual(gallery.groups, ['shirukke no ooi zakuro']);
+});
 
 for (const input of ['101', 'https://hitomi.la/reader/101.html#2', 'https://hitomi.la/galleries/101.html', 'https://hitomi.la/doujinshi/123-example-english-101.html?x=1', 'https://hitomi.la/101']) {
   test(`direct Hitomi lookup and paged search accept ${input}`, async () => {
