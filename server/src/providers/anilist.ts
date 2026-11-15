@@ -1,5 +1,6 @@
 import { BaseProvider } from './base.js';
 import type { MediaType, SeriesMetadata, SearchResult } from './types.js';
+import type { ProviderArtist, ArtistSearchPage, ArtistWorksPage } from '../contracts/artists.js';
 
 const API_URL = 'https://graphql.anilist.co';
 
@@ -24,6 +25,10 @@ interface GqlEnvelope<TData> {
   data?: TData | null;
   errors?: { message?: string }[];
 }
+interface AniListStaff {
+  id: number;
+  name: { full?: string; native?: string; alternative?: string[] };
+}
 
 
 /**
@@ -44,7 +49,7 @@ class AniListProvider extends BaseProvider {
   protected baseUrl = API_URL;
 
   private async gql<TData>(query: string, variables: Record<string, unknown>): Promise<GqlEnvelope<TData>> {
-    const result = await this.getPost<GqlEnvelope<TData>>('/graphql', { query, variables }, {
+    const result = await this.getPost<GqlEnvelope<TData>>('', { query, variables }, {
       'Content-Type': 'application/json',
     });
     // GraphQL can return validation/execution errors with HTTP 200 — surface them
@@ -149,6 +154,55 @@ class AniListProvider extends BaseProvider {
       status: mapAniListStatus(m.status),
       url: `https://anilist.co/manga/${m.id}`,
     };
+  }
+
+  private artist(staff: AniListStaff): ProviderArtist {
+    return { providerId: 'anilist', artistId: String(staff.id), name: staff.name.full || staff.name.native || `Staff #${staff.id}`,
+      aliases: [...new Set([staff.name.native, ...(staff.name.alternative ?? [])].filter((value): value is string => !!value?.trim()))],
+      url: `https://anilist.co/staff/${staff.id}` };
+  }
+
+  async searchArtists(search: string, page = 1): Promise<ArtistSearchPage> {
+    const result = await this.gql<{ Page?: { staff: AniListStaff[]; pageInfo: { hasNextPage: boolean } } }>(
+      `query ($search: String!, $page: Int!) {
+        Page(page: $page, perPage: 25) {
+          pageInfo { hasNextPage }
+          staff(search: $search, sort: SEARCH_MATCH) { id name { full native alternative } }
+        }
+      }`, { search, page });
+    if (!result.data?.Page) throw new Error('AniList did not return artist results');
+    return { items: result.data.Page.staff.map(item => this.artist(item)), page, hasNextPage: result.data.Page.pageInfo.hasNextPage };
+  }
+
+  async getArtist(artistId: string): Promise<ProviderArtist> {
+    const result = await this.gql<{ Staff?: AniListStaff }>(
+      `query ($id: Int!) { Staff(id: $id) { id name { full native alternative } } }`, { id: Number(artistId) });
+    if (!result.data?.Staff) throw new Error('AniList artist not found');
+    return this.artist(result.data.Staff);
+  }
+
+  async getArtistWorks(artistId: string, page = 1): Promise<ArtistWorksPage> {
+    const result = await this.gql<{ Staff?: { staffMedia: { nodes: AniListMedia[]; pageInfo: { hasNextPage: boolean } } } }>(
+      `query ($id: Int!, $page: Int!) {
+        Staff(id: $id) {
+          staffMedia(type: MANGA, page: $page, perPage: 25, sort: [TITLE_ROMAJI, ID]) {
+            pageInfo { hasNextPage }
+            nodes { id title { romaji english native } synonyms format coverImage { extraLarge } startDate { year } description }
+          }
+        }
+      }`, { id: Number(artistId), page });
+    if (!result.data?.Staff) throw new Error('AniList artist not found');
+    const works = result.data.Staff.staffMedia;
+    // staffMedia includes every production role and has no title-search filter.
+    // Keep the whole page; title similarity must not hide manual candidates.
+    const items: SearchResult[] = [...new Map(works.nodes.map(media => [media.id, media])).values()].map(media => ({
+      providerId: this.id, providerSeriesId: String(media.id),
+      title: media.title.romaji || media.title.english || media.title.native || 'Unknown',
+      altTitles: [...new Set([media.title.romaji, media.title.english, media.title.native, ...(media.synonyms ?? [])].filter((value): value is string => !!value?.trim()))],
+      type: media.format === 'NOVEL' ? 'NOVEL' : 'MANGA', year: media.startDate?.year,
+      coverUrl: media.coverImage?.extraLarge, summary: media.description?.replace(/<[^>]*>/g, '').trim(),
+    }));
+    return { items, page, hasNextPage: works.pageInfo.hasNextPage };
   }
 }
 

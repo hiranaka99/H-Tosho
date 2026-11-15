@@ -1,6 +1,11 @@
 import { BaseProvider } from './base.js';
 import type { MediaType, SeriesMetadata, SearchResult } from './types.js';
 
+// MAL rejects search keywords outside 3–64 characters with HTTP 400 "invalid q".
+// Count Unicode code points so truncation never splits a surrogate pair.
+const MIN_SEARCH_LENGTH = 3;
+const MAX_SEARCH_LENGTH = 64;
+
 /**
  * MyAnimeList - REST API v2. Requires a Client ID (obtain at
  * https://myanimelist.net/devs). Auth uses `Authorization: <clientId>`.
@@ -41,7 +46,10 @@ class MyAnimeListProvider extends BaseProvider {
   }
 
   async search(query: string, _type?: string): Promise<SearchResult[]> {
-    const params = new URLSearchParams({ q: query, limit: '20' });
+    const characters = Array.from(query.replace(/\s+/gu, ' ').trim());
+    if (characters.length < MIN_SEARCH_LENGTH) return [];
+    const keyword = characters.slice(0, MAX_SEARCH_LENGTH).join('').trimEnd();
+    const params = new URLSearchParams({ q: keyword, limit: '20' });
     const data = await this.get<{ data: any[] }>(`/manga?${params.toString()}`, {
       headers: this.headers(),
     });

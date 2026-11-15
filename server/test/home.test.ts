@@ -82,6 +82,27 @@ test('a partial provider outage keeps successful discoveries and records a warni
   } finally { other.search = original; }
 });
 
+test('a long gallery title scans through the real MAL adapter without provider warnings', async () => {
+  const title = 'Would You Still Crush on Your Older Childhood Friend Even if She Was a Naughty Girl?';
+  setProviderSetting('myanimelist', { enabled: true, credentials: { clientId: 'fixture-client-id' } });
+  const fixtureFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.origin === 'https://api.myanimelist.net') {
+      if (Array.from(url.searchParams.get('q') ?? '').length > 64) return Response.json({ message: 'invalid q' }, { status: 400 });
+      return Response.json({ data: [{ node: { id: 42, title, type: 'manga' } }] });
+    }
+    if (url.pathname.endsWith('/Series/all-v2')) return Response.json([{ id: 1, name: title, libraryId: 1 }]);
+    return fixtureFetch(input, init);
+  };
+  const warnings: string[] = [];
+  const result = await scanMatchSuggestions({ checkCancelled() {}, progress() {}, log: (level, message) => { if (level === 'warn') warnings.push(message); } });
+  assert.deepEqual(result, { processed: 1, matchable: 1, failed: 0 });
+  assert.deepEqual(warnings, []);
+  assert.equal(listMatchSuggestions()[0].candidate.providerId, 'myanimelist');
+  assert.equal(listMatchSuggestions()[0].candidate.score, 1);
+});
+
 test('accepted and removed galleries disappear from suggestions, and scans support cancellation', async () => {
   await scan();
   getDb().insert(schema.seriesMatches).values({ kavitaSeriesId: 1, status: 'matched' }).run();

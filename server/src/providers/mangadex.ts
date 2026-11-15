@@ -1,5 +1,6 @@
 import { BaseProvider } from './base.js';
 import type { MediaType, SeriesMetadata, SearchResult, VolumeCover } from './types.js';
+import type { ProviderArtist, ArtistSearchPage, ArtistWorksPage } from '../contracts/artists.js';
 
 /**
  * Every contentRating value in MangaDex's current enum. The API's default
@@ -367,6 +368,11 @@ class MangaDexProvider extends BaseProvider {
     const fallback = found.length === 0 ? fallbackTitleQuery(query) : null;
     if (fallback) found = await search(fallback);
 
+    return this.mapSearchResults(found);
+  }
+
+  private async mapSearchResults(found: MangaListItem[]): Promise<SearchResult[]> {
+
     // List items only carry cover_art relationship stubs ({id, type}), so the
     // fileNames the CDN actually serves must be resolved through the /cover
     // collection — in bulk (one request per 100 manga) instead of one GET per
@@ -403,6 +409,32 @@ class MangaDexProvider extends BaseProvider {
       coverUrl: item.coverUrl,
       summary: item.summary,
     }) as SearchResult);
+  }
+
+  private artist(item: { id: string; attributes?: { name?: string } }): ProviderArtist {
+    return { providerId: 'mangadex', artistId: item.id, name: item.attributes?.name || `Artist ${item.id}`,
+      aliases: [], url: `https://mangadex.org/author/${item.id}` };
+  }
+
+  async searchArtists(name: string, page = 1): Promise<ArtistSearchPage> {
+    const params = new URLSearchParams({ name, limit: '25', offset: String((page - 1) * 25), 'order[name]': 'asc' });
+    const data = await this.get<{ data: { id: string; attributes?: { name?: string } }[]; total: number; offset: number; limit: number }>(`/author?${params}`, { headers: this.headers() });
+    return { items: data.data.map(item => this.artist(item)), page, hasNextPage: data.offset + data.limit < data.total };
+  }
+
+  async getArtist(artistId: string): Promise<ProviderArtist> {
+    const data = await this.get<{ data?: { id: string; attributes?: { name?: string } } }>(`/author/${encodeURIComponent(artistId)}`, { headers: this.headers() });
+    if (!data.data) throw new Error('MangaDex artist not found');
+    return this.artist(data.data);
+  }
+
+  async getArtistWorks(artistId: string, page = 1): Promise<ArtistWorksPage> {
+    // authorOrArtist is an OR filter: using authors[] and artists[] together
+    // would omit works where this person filled only one of those roles.
+    const params = new URLSearchParams({ authorOrArtist: artistId, limit: '25', offset: String((page - 1) * 25), 'order[title]': 'asc' });
+    for (const rating of CONTENT_RATINGS) params.append('contentRating[]', rating);
+    const data = await this.get<{ data: MangaListItem[]; total: number; offset: number; limit: number }>(`/manga?${params}`, { headers: this.headers() });
+    return { items: await this.mapSearchResults(data.data), page, hasNextPage: data.offset + data.limit < data.total };
   }
 
   async getSeriesMetadata(providerSeriesId: string): Promise<SeriesMetadata> {

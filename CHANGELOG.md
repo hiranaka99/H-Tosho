@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## v3.3.0
+
+- Browse artists’ works from matching dialogs, separated into AniList and MangaDex
+  tabs. Search saved artist names or paste a provider artist URL, page through
+  works, and review a selection in the existing metadata comparison before syncing.
+- Use AniList’s documented GraphQL endpoint for metadata and artist requests.
+- Bound MyAnimeList search keywords to its accepted length, avoiding HTTP 400
+  `invalid q` warnings for long gallery titles and too-short search terms.
+  Keep the original title for match confidence scoring and report genuine
+  provider failures normally.
+- Keep the Home matching and saved-search panels at equal heights on desktop.
 
 ## v3.2.0
 

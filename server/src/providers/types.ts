@@ -85,4 +85,7 @@ export interface MetadataProvider {
   search(query: string, type?: MediaType): Promise<SearchResult[]>;
   getSeriesMetadata(providerSeriesId: string): Promise<SeriesMetadata>;
   getBookMetadata?(providerBookId: string): Promise<BookMetadata>;
+  searchArtists?(query: string, page?: number): Promise<import('../contracts/artists.js').ArtistSearchPage>;
+  getArtist?(artistId: string): Promise<import('../contracts/artists.js').ProviderArtist>;
+  getArtistWorks?(artistId: string, page?: number): Promise<import('../contracts/artists.js').ArtistWorksPage>;
 }

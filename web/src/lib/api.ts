@@ -1,4 +1,6 @@
 import type { JobType, JobPayloads } from '../../../server/src/contracts/jobs';
+import type { ArtistProviderId, ArtistSearchPage, ArtistWorksPage } from '../../../server/src/contracts/artists';
+export type { ArtistProviderId, ProviderArtist, ArtistSearchPage, ArtistWorksPage } from '../../../server/src/contracts/artists';
 // Typed client for the H-Tosho REST API.
 
 export interface KavitaConnection {
@@ -447,6 +449,8 @@ export const api = {
       kavita: KavitaSeriesMetadata | null;
     }>(`/series/${id}`),
   identify: (id: number) => request<MatchOutcome>(`/series/${id}/identify`),
+  providerArtists: (provider: ArtistProviderId, query: string, page: number) => request<ArtistSearchPage>(`/providers/${provider}/artists?${new URLSearchParams({ query, page: String(page) })}`),
+  artistWorks: (provider: ArtistProviderId, artistId: string, page: number) => request<ArtistWorksPage>(`/providers/${provider}/artists/${encodeURIComponent(artistId)}/works?page=${page}`),
   manualMatch: (id: number, url: string) => request<MatchCandidate>(`/series/${id}/manual-match`, {
     method: 'POST',
     body: JSON.stringify({ url }),

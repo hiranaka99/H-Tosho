@@ -108,7 +108,7 @@ export function Home() {
         })}</div>}
     </section>
 
-    <div className="grid min-w-0 items-start gap-6 xl:grid-cols-2">
+    <div className="grid min-w-0 items-stretch gap-6 xl:grid-cols-2">
       <section aria-labelledby="home-matches" className="min-w-0 rounded-xl border border-border bg-surface p-4 sm:p-5">
         <SectionHeading id="home-matches" title="Galleries that can be matched" count={matches.data ? matchItems.length : undefined} description="New metadata candidates for your unmatched galleries.">
           <Button variant="outline" size="sm" disabled={scanning || scanNow.isPending || !matches.data?.configured} onClick={() => scanNow.mutate()}>{scanning || scanNow.isPending ? <Spinner /> : <Search aria-hidden="true" className="h-3.5 w-3.5" />}{scanning ? 'Scanning…' : 'Scan now'}</Button>

@@ -1,7 +1,7 @@
 import { PUBLICATION_STATUS as CANDIDATE_STATUS, mergeTagLists, releaseYear } from '../../../server/src/contracts/metadata';
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, Sparkles, AlertTriangle, ArrowLeft, ArrowRight, Link2, Unlink, ChevronRight } from 'lucide-react';
+import { Search, Sparkles, AlertTriangle, ArrowLeft, ArrowRight, Link2, Unlink, ChevronRight, Users } from 'lucide-react';
 import { Link } from 'react-router';
 import {
   api,
@@ -16,6 +16,7 @@ import {
 import { PROVIDER_NAMES, cn } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, ProviderBadge, Spinner, ConfirmDialog } from './ui';
+import { ArtistWorksBrowser } from './ArtistWorksBrowser';
 
 const STATUS_LABELS: Record<number, string> = {
   0: 'Ongoing',
@@ -208,6 +209,10 @@ function CandidateCover({ src }: { src?: string }) {
 }
 export function IdentifyModal({ seriesId, current, currentLoading, currentError, onRetryCurrent, match, currentCover, onClose, reviewPosition, onNext, autoReview = false, initialCandidate }: IdentifyModalProps) {
   const qc = useQueryClient();
+  const [browseArtists, setBrowseArtists] = React.useState(false);
+  const artistBrowser = React.useRef<HTMLDivElement>(null);
+  const artistTrigger = React.useRef<HTMLButtonElement>(null);
+  const artistBrowserId = React.useId();
   const [selected, setSelected] = React.useState<MatchCandidate | null>(initialCandidate ?? null);
   const [reviewingExistingMatch, setReviewingExistingMatch] = React.useState(false);
   const selectedId = selected ? `${selected.providerId}:${selected.providerSeriesId}` : null;
@@ -249,11 +254,11 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
       returningToMatches.current = false;
       if (candidateList.current) candidateList.current.scrollTop = savedListScroll.current;
       if (dialogScroll.current) dialogScroll.current.scrollTop = savedDialogScroll.current;
-      const previous = Array.from(candidateList.current?.querySelectorAll<HTMLButtonElement>('[data-candidate-key]') ?? []).find((button) => button.dataset.candidateKey === savedCandidateKey.current);
+      const previous = Array.from((browseArtists ? artistBrowser.current : candidateList.current)?.querySelectorAll<HTMLButtonElement>('[data-candidate-key]') ?? []).find((button) => button.dataset.candidateKey === savedCandidateKey.current);
       const origin = savedReviewOrigin.current === 'manual' ? manualLoadButton.current : existingReviewButton.current;
       (previous ?? origin)?.focus({ preventScroll: true });
     }
-  }, [selectedId]);
+  }, [selectedId, browseArtists]);
 
   const reviewCandidate = (candidate: MatchCandidate, fromList = false, existing = false) => {
     savedListScroll.current = candidateList.current?.scrollTop ?? 0;
@@ -267,7 +272,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const identify = useQuery({
     queryKey: ['identify', seriesId],
     queryFn: () => api.identify(seriesId),
-    enabled: !initialCandidate,
+    enabled: !initialCandidate && !browseArtists,
     staleTime: 60_000,
   });
 
@@ -409,9 +414,16 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
             <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
             <div>
               <DialogTitle className="break-words">Identify “{current.name}”</DialogTitle>
-              <DialogDescription>{selected ? 'Review the changes and choose which fields to sync.' : 'Choose a match to review its metadata before syncing.'}</DialogDescription>
+              <DialogDescription>{selected ? 'Review the changes and choose which fields to sync.' : browseArtists ? 'Find the artist, browse their works by provider, and choose a work to review.' : 'Choose a match to review its metadata before syncing.'}</DialogDescription>
             </div>
           </div>
+
+          {(!selected || !browseArtists) && <Button ref={artistTrigger} size="sm" variant="outline" className="self-start" aria-expanded={browseArtists && !selected} aria-controls={artistBrowserId} onClick={() => { if (selected) { setSelected(null); setBrowseArtists(true); } else setBrowseArtists(value => !value); }}>
+            {browseArtists && !selected ? <ArrowLeft className="h-4 w-4" /> : <Users className="h-4 w-4" />}{browseArtists && !selected ? 'Back to matches' : 'Browse artist works'}
+          </Button>}
+          {browseArtists && <div ref={artistBrowser} id={artistBrowserId} hidden={!!selected}>
+            <ArtistWorksBrowser active={!selected} seriesTitle={current.name} artists={[...new Set([...(current.metadata?.pencillers ?? []), ...(current.metadata?.writers ?? []), ...(current.metadata?.coverArtists ?? [])].map(person => person.name?.trim()).filter((name): name is string => !!name))]} onSelect={candidate => { setManualCandidate(candidate); reviewCandidate(candidate, true); }} />
+          </div>}
 
           {selected && (currentLoading ? (
             <div role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner /> Loading current metadata…</div>
@@ -423,10 +435,10 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
           ) : null)}
 
           {selected && (
-            <Button ref={backButton} size="sm" variant="ghost" className="self-start" disabled={apply.isPending} onClick={() => { returningToMatches.current = true; setSelected(null); }}><ArrowLeft className="h-4 w-4" /> Back to matches</Button>
+            <Button ref={backButton} size="sm" variant="ghost" className="self-start" disabled={apply.isPending} onClick={() => { returningToMatches.current = true; setSelected(null); }}><ArrowLeft className="h-4 w-4" />{browseArtists ? 'Back to artist works' : 'Back to matches'}</Button>
           )}
 
-          {!selected && match?.providerId && (
+          {!selected && !browseArtists && match?.providerId && (
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
                 <div className="min-w-0">
                   {currentCandidate && <p className="mb-1 break-words text-sm font-semibold">{currentCandidate.title}</p>}
@@ -450,13 +462,13 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
             </div>
           )}
 
-          {!selected && identify.isPending && (
+          {!selected && !browseArtists && identify.isPending && (
             <div className="flex items-center gap-2 py-8 text-muted">
               <Spinner /> Searching providers…
             </div>
           )}
 
-          {!selected && identify.isError && (
+          {!selected && !browseArtists && identify.isError && (
             <div role="alert" className="flex flex-wrap items-center gap-3 text-sm">
               <AlertTriangle className="h-4 w-4" />
               <div className="min-w-0 flex-1"><p className="font-medium">Could not search for matches</p><p className="mt-1 break-words text-muted">{identify.error instanceof Error ? identify.error.message : String(identify.error)}</p></div>
@@ -466,8 +478,8 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
 
           {(outcome || selected || identify.isError) && (
             <>
-              {!selected && outcome && alternatives.length > 0 && <h3 className="text-sm font-semibold">{match?.providerId ? 'Other matches' : 'Choose a match'}</h3>}
-              {!selected && tabProviders.length > 1 && (
+              {!selected && !browseArtists && outcome && alternatives.length > 0 && <h3 className="text-sm font-semibold">{match?.providerId ? 'Other matches' : 'Choose a match'}</h3>}
+              {!selected && !browseArtists && tabProviders.length > 1 && (
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   onClick={() => setTab('all')}
@@ -485,7 +497,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                   </button>
                 ))}
               </div>)}
-              {!selected && outcome && (
+              {!selected && !browseArtists && outcome && (
               <div ref={candidateList} className="max-h-[42vh] overflow-y-auto">
                 {visibleCandidates.length === 0 && (
                   <p className="py-2 text-sm text-muted">{tab === 'all' ? (match?.providerId ? 'No other matches found.' : 'No matches found. Try a provider URL below.') : `No matches from ${PROVIDER_NAMES[tab] ?? tab}.`}</p>
@@ -520,7 +532,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                 })}
               </div>)}
 
-              {!selected && (
+              {!selected && !browseArtists && (
                 <div className="flex flex-col gap-3 border-t border-border pt-4">
                   <details className="group" open={manualOpen} onToggle={(event) => setManualOpen(event.currentTarget.open)}>
                     <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-3 text-sm text-muted sm:min-h-9 sm:py-2 [&::-webkit-details-marker]:hidden"><ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 group-open:rotate-90" />Use a provider URL</summary>
