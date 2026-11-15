@@ -1,6 +1,6 @@
 import { BaseProvider } from './base.js';
 import type { MediaType, SeriesMetadata, SearchResult } from './types.js';
-import { searchMalArtists, getMalArtist, getMalArtistWorks } from './jikanArtists.js';
+import { searchMalArtists, getMalArtist, getMalArtistWorks } from './malArtistPages.js';
 
 // MAL rejects search keywords outside 3–64 characters with HTTP 400 "invalid q".
 // Count Unicode code points so truncation never splits a surrogate pair.

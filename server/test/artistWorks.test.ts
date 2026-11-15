@@ -3,6 +3,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { parseProviderArtistUrl } from '../src/contracts/artists.js';
 import { anilistProvider } from '../src/providers/anilist.js';
 import { mangaDexProvider } from '../src/providers/mangadex.js';
@@ -119,10 +120,9 @@ test('MAL artist routes accept the supplied people link, paginate works, and hon
   setProviderSetting('myanimelist', { enabled: true, credentials: { clientId: 'private-key' } });
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
-    assert.equal(url.origin, 'https://api.jikan.moe');
+    assert.equal(url.origin, 'https://myanimelist.net');
     assert.equal(new Headers(init?.headers).has('X-MAL-CLIENT-ID'), false);
-    if (url.pathname.endsWith('/manga')) return Response.json({ data: [{ manga: { mal_id: 99, title: 'Artist work' } }] });
-    return Response.json({ data: { mal_id: 15043, name: 'Myuuto Akatsuki' } });
+    return new Response(readFileSync(new URL('./fixtures/mal-artist.html', import.meta.url), 'utf8'));
   };
   const search = await api.request(`/providers/myanimelist/artists?${new URLSearchParams({ query: 'https://myanimelist.net/people/15043/Myuuto_Akatsuki?q=akatsuki%20myuuto&cat=person' })}`);
   assert.equal(search.status, 200);

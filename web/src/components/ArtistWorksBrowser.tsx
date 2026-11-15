@@ -70,7 +70,7 @@ export function ArtistWorksBrowser({ artists, seriesTitle, active, onSelect }: {
       {artists.length > 1 && <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted">Saved artists</span>{artists.map(name => <Button key={name} size="sm" variant="ghost" onClick={() => { setDraft(name); setQuery(name); }}>{name}</Button>)}</div>}
     </form>
     <SegmentedTabs items={[{ id: 'anilist', label: 'AniList' }, { id: 'mangadex', label: 'MangaDex' }, { id: 'myanimelist', label: 'MyAnimeList' }]} value={provider} onChange={setProvider} label="Artist providers" panelId={panelId} />
-    {provider === 'myanimelist' && <p className="text-xs text-muted">Artist works via Jikan. Metadata review uses MyAnimeList and requires its Client ID in Settings.</p>}
+    {provider === 'myanimelist' && <p className="text-xs text-muted">Browse MyAnimeList artist pages. Metadata review requires a MyAnimeList Client ID in Settings.</p>}
     <div id={panelId} role="tabpanel" aria-labelledby={`${panelId}-tab-${provider}`}>
       {(['anilist', 'mangadex', 'myanimelist'] as const).map(id => <div key={id} hidden={id !== provider}><ProviderResults key={`${id}:${query}`} provider={id} query={query} active={active && provider === id} seriesTitle={seriesTitle} onSelect={onSelect} /></div>)}
     </div>

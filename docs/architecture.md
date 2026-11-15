@@ -3,8 +3,8 @@
 - `server/src/contracts/` defines job commands, download snapshots and pure metadata rules. The frontend imports shared types and preview rules without importing server I/O.
 - `contracts/artists.ts` shares artist identities, paginated results and safe URL
   parsing. Optional provider artist methods back the authenticated artist routes;
-  MyAnimeList people/works use the public Jikan API with shared pacing and a
-  bounded five-minute cache; credentials remain on official MAL metadata calls.
+  MyAnimeList people/works read public MAL pages with shared pacing and a
+  bounded five-minute HTML cache; credentials remain on official MAL metadata calls.
   `ArtistWorksBrowser` keeps provider selection and pagination inside IdentifyModal
   and sends chosen works through its existing metadata review/application flow.
 - `jobs/queue.ts` validates every enqueue, owns job conflicts, and stores immutable command JSON separately from execution state. Read APIs project legacy history without writing it. `jobs/storage.ts` keeps invalid saved commands inspectable and prevents execution.

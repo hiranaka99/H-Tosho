@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.5.1
+
+- Replace the discontinued Jikan public API with direct MyAnimeList artist-page
+  browsing. Keep artist search, people URLs, cached covers, and pagination working
+  without another service. Retry transient failures and show actionable connection
+  errors instead of a bare “fetch failed” message.
+
 ## v3.5.0
 
 - Add MyAnimeList artist browsing through Jikan, including people URLs, cached
