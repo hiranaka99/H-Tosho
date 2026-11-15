@@ -51,3 +51,4 @@ downloads/
 .DS_Store
 Thumbs.db
 desktop.ini
+.codex/hooks.json
