@@ -163,7 +163,11 @@ function refererForHost(hostname: string): string | undefined {
 function hopHeaders(hostname: string): Record<string, string> {
   const referer = refererForHost(hostname);
   return {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0',
+    // MangaDex challenges browser identities with HTTP 403. Identify our
+    // server as an application so public cover downloads remain accessible.
+    'User-Agent': hostname === 'uploads.mangadex.org'
+      ? 'H-Tosho/1.0'
+      : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0',
     ...(referer ? { Referer: referer } : {}),
     Accept: 'image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8',
   };

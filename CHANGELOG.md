@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v3.1.1
+
+- Fix MangaDex covers failing to load when the image proxy's browser
+  User-Agent triggers MangaDex's bot challenge.
+
 ## v3.1.0
 
 - Rename the destination series while merging galleries from Search,

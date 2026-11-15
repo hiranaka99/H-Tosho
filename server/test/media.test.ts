@@ -22,11 +22,17 @@ function proxyRequest(url: string): string {
 }
 
 describe('media proxy', () => {
-  it('fetches MangaDex covers without a Referer (CDN serves a placeholder card to third-party referers)', async () => {
-    const calls: Array<{ url: string; referer: string | null }> = [];
+  it('fetches MangaDex covers with an application User-Agent and no Referer', async () => {
+    const calls: Array<{ url: string; referer: string | null; userAgent: string | null }> = [];
     globalThis.fetch = async (input, init) => {
       const headers = new Headers(init?.headers);
-      calls.push({ url: String(input), referer: headers.get('referer') });
+      const userAgent = headers.get('user-agent');
+      calls.push({ url: String(input), referer: headers.get('referer'), userAgent });
+      // MangaDex challenges browser identities; the server must identify itself
+      // as an application rather than claiming to be a browser without its session.
+      if (userAgent !== 'H-Tosho/1.0') {
+        return new Response('Bot challenge not passed, refresh this page.', { status: 403 });
+      }
       return new Response(new Uint8Array([0xff, 0xd8, 0xff]), {
         status: 200,
         headers: { 'Content-Type': 'image/jpeg' },
@@ -39,7 +45,7 @@ describe('media proxy', () => {
 
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('content-type'), 'image/jpeg');
-    assert.deepEqual(calls, [{ url, referer: null }]);
+    assert.deepEqual(calls, [{ url, referer: null, userAgent: 'H-Tosho/1.0' }]);
   });
 
   it('still sends the hitomi.la Referer for other hosts', async () => {
@@ -56,6 +62,25 @@ describe('media proxy', () => {
 
     assert.equal(res.status, 200);
     assert.deepEqual(calls, [{ url, referer: 'https://hitomi.la/' }]);
+  });
+
+  it('rebuilds headers for a redirect to MangaDex without forwarding the previous Referer', async () => {
+    const start = 'https://a2.gold-usergeneratedcontent.net/redirect-to-mangadex.avif';
+    const cover = 'https://uploads.mangadex.org/covers/redirected/main.jpg';
+    const calls: Array<{ url: string; referer: string | null; userAgent: string | null }> = [];
+    globalThis.fetch = async (input, init) => {
+      const headers = new Headers(init?.headers);
+      calls.push({ url: String(input), referer: headers.get('referer'), userAgent: headers.get('user-agent') });
+      if (String(input) === start) return new Response(null, { status: 302, headers: { Location: cover } });
+      return new Response(new Uint8Array([0xff, 0xd8, 0xff]), { headers: { 'Content-Type': 'image/jpeg' } });
+    };
+
+    const res = await mediaRouter().request(proxyRequest(start));
+    assert.equal(res.status, 200);
+    assert.deepEqual(calls, [
+      { url: start, referer: 'https://hitomi.la/', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0' },
+      { url: cover, referer: null, userAgent: 'H-Tosho/1.0' },
+    ]);
   });
 
   it('proxies nHentai preview images with the provider Referer', async () => {
