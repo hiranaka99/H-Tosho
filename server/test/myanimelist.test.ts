@@ -14,7 +14,10 @@ test('MAL normalizes search whitespace and preserves valid keywords and result m
     assert.equal(url.pathname, '/v2/manga');
     assert.equal(url.searchParams.get('q'), 'Sample Title');
     assert.equal(url.searchParams.get('limit'), '20');
+    assert.equal(url.searchParams.get('nsfw'), 'true');
+    assert.ok(url.searchParams.get('fields')?.includes('alternative_titles'));
     assert.equal(new Headers(init?.headers).get('X-MAL-CLIENT-ID'), 'fixture-client-id');
+    assert.equal(new Headers(init?.headers).has('Authorization'), false);
     return Response.json({ data: [{ node: { id: 12, title: 'Sample Title', type: 'manga', main_picture: { large: 'https://example.test/cover.jpg' } } }] });
   };
   const results = await myAnimeListProvider.search('  Sample\n\t Title  ');
@@ -79,4 +82,38 @@ test('MAL still reports genuine query, authentication and provider errors', asyn
     await assert.rejects(myAnimeListProvider.search('Sample title'), error => error instanceof Error && error.message.includes(`HTTP ${status}`) && error.message.includes(message));
     assert.equal(calls, 1, 'do not retry or hide permanent provider failures');
   }
+});
+
+test('MAL includes adult results and scores official alternate titles while preserving media types', async () => {
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    if (url.searchParams.get('nsfw') !== 'true') return Response.json({ data: [] });
+    return Response.json({ data: [{ node: { id: 42, title: 'Different romanized title',
+      alternative_titles: { en: 'Gallery title', ja: '日本語', synonyms: ['Another title'] },
+      media_type: 'doujinshi', start_date: '2020-01-01' } }] });
+  };
+  const result = await autoMatch({ id: 1, name: 'Gallery title' }, {
+    providerOrder: ['myanimelist'], enabledProviders: ['myanimelist'],
+    credentials: { myanimelist: { clientId: 'fixture-client-id' } }, searchAll: true,
+  });
+  assert.equal(result.best?.score, 1);
+  assert.equal(result.best?.providerId, 'myanimelist');
+  assert.equal(result.best?.type, 'COMIC');
+  assert.equal(result.best?.year, 2020);
+});
+
+test('MAL metadata requests official author fields and keeps alternate title choices and publishing status', async () => {
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    assert.equal(url.origin, 'https://api.myanimelist.net');
+    assert.equal(url.pathname, '/v2/manga/42');
+    assert.ok(url.searchParams.get('fields')?.includes('authors{first_name,last_name}'));
+    return Response.json({ id: 42, title: 'Original title', alternative_titles: { en: 'English title', synonyms: ['Other title'] },
+      status: 'currently_publishing', authors: [{ node: { id: 1, first_name: 'Myuuto', last_name: 'Akatsuki' }, role: 'Story & Art' }] });
+  };
+  const result = await myAnimeListProvider.getSeriesMetadata('42');
+  assert.deepEqual(result.titleOptions, ['Original title', 'English title', 'Other title']);
+  assert.deepEqual(result.artists, ['Myuuto Akatsuki']);
+  assert.deepEqual(result.writers, ['Myuuto Akatsuki']);
+  assert.equal(result.status, 'ONGOING');
 });

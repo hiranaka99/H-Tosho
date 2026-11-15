@@ -58,7 +58,7 @@ and the repository:
   v0.9.x or newer; verify compatibility when changing the integration.
 - Users can choose which proposed metadata fields to apply and supply a
   provider URL when a suggested match is wrong.
-- Matching dialogs can browse AniList or MangaDex works by artist name or
+- Matching dialogs can browse AniList, MangaDex, or MyAnimeList works by artist name or
   supported artist URL, prefill saved artist names, and send a selected work
   through the existing metadata comparison before Apply & Sync.
 - Automatic matching, a review queue, ComicInfo.xml editing, and series merging

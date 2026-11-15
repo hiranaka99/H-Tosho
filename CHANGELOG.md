@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.5.0
+
+- Add MyAnimeList artist browsing through Jikan, including people URLs, cached
+  cover tiles, and the existing official MAL metadata review before applying.
+- Include adult titles and alternate titles in MyAnimeList searches; use its
+  Client ID header, official media types, author fields, and publishing status.
+
 ## v3.4.1
 
 - Pace AniList requests across scans, metadata review, and artist browsing, and

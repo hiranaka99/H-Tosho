@@ -39,7 +39,7 @@ function ProviderResults({ provider, query, active, seriesTitle, onSelect }: { p
   }, [search.data, artistPage]);
   const chooseArtist = (item: ProviderArtist) => { setArtist(item); setWorksPage(1); };
   const problem = artist ? works : search;
-  if (!query) return <p className="py-5 text-sm text-muted">Enter an artist name, or paste an AniList staff or MangaDex author URL.</p>;
+  if (!query) return <p className="py-5 text-sm text-muted">Enter an artist name, or paste an AniList staff, MangaDex author, or MyAnimeList people URL.</p>;
   if (problem.isError) return <div role="alert" className="space-y-3 py-3"><p className="text-sm font-medium">Could not load {artist ? 'this artist’s works' : `${PROVIDER_NAMES[provider]} artists`}</p><p className="break-words text-sm text-muted">{problem.error.message}</p><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => void problem.refetch()} disabled={problem.isFetching}>{problem.isFetching && <Spinner />}Retry</Button>{artist && <Button size="sm" variant="ghost" onClick={() => setArtist(null)}>Choose another artist</Button>}</div></div>;
   if (artist) return <div className="space-y-3">
     <div className="flex flex-wrap items-start justify-between gap-2 border-b border-border pb-3"><div className="min-w-0"><h3 className="break-words text-sm font-semibold">Works by {artist.name}</h3><a href={artist.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-9 items-center gap-1.5 text-xs text-primary underline-offset-4 hover:underline">View artist on {PROVIDER_NAMES[provider]}<ExternalLink className="h-3 w-3" /></a></div><Button size="sm" variant="ghost" onClick={() => setArtist(null)}>Change artist</Button></div>
@@ -66,12 +66,13 @@ export function ArtistWorksBrowser({ artists, seriesTitle, active, onSelect }: {
   return <section aria-label="Browse artist works" className="space-y-4">
     <form onSubmit={event => { event.preventDefault(); const value = draft.trim(); if (!value) return; const reference = parseProviderArtistUrl(value); if (reference) setProvider(reference.providerId); setQuery(value); }} className="space-y-2">
       <Label htmlFor={inputId}>Artist name or provider artist URL</Label>
-      <div className="flex flex-col gap-2 sm:flex-row"><Input id={inputId} value={draft} onChange={event => setDraft(event.target.value)} placeholder="Artist name, AniList staff URL, or MangaDex author URL" autoComplete="off" maxLength={500} /><Button type="submit" variant="outline" className="shrink-0" disabled={!draft.trim()}><Search className="h-4 w-4" />Find artist</Button></div>
+      <div className="flex flex-col gap-2 sm:flex-row"><Input id={inputId} value={draft} onChange={event => setDraft(event.target.value)} placeholder="Artist name or provider artist URL" autoComplete="off" maxLength={500} /><Button type="submit" variant="outline" className="shrink-0" disabled={!draft.trim()}><Search className="h-4 w-4" />Find artist</Button></div>
       {artists.length > 1 && <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted">Saved artists</span>{artists.map(name => <Button key={name} size="sm" variant="ghost" onClick={() => { setDraft(name); setQuery(name); }}>{name}</Button>)}</div>}
     </form>
-    <SegmentedTabs items={[{ id: 'anilist', label: 'AniList' }, { id: 'mangadex', label: 'MangaDex' }]} value={provider} onChange={setProvider} label="Artist providers" panelId={panelId} />
+    <SegmentedTabs items={[{ id: 'anilist', label: 'AniList' }, { id: 'mangadex', label: 'MangaDex' }, { id: 'myanimelist', label: 'MyAnimeList' }]} value={provider} onChange={setProvider} label="Artist providers" panelId={panelId} />
+    {provider === 'myanimelist' && <p className="text-xs text-muted">Artist works via Jikan. Metadata review uses MyAnimeList and requires its Client ID in Settings.</p>}
     <div id={panelId} role="tabpanel" aria-labelledby={`${panelId}-tab-${provider}`}>
-      {(['anilist', 'mangadex'] as const).map(id => <div key={id} hidden={id !== provider}><ProviderResults key={`${id}:${query}`} provider={id} query={query} active={active && provider === id} seriesTitle={seriesTitle} onSelect={onSelect} /></div>)}
+      {(['anilist', 'mangadex', 'myanimelist'] as const).map(id => <div key={id} hidden={id !== provider}><ProviderResults key={`${id}:${query}`} provider={id} query={query} active={active && provider === id} seriesTitle={seriesTitle} onSelect={onSelect} /></div>)}
     </div>
   </section>;
 }

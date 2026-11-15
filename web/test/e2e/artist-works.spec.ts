@@ -106,6 +106,25 @@ test('example URLs select the right provider and artist works survive a recovera
   await expect(dialog.getByRole('heading', { name: 'Works by Yuu Ichinomiya' })).toBeVisible();
 });
 
+test('MyAnimeList people links open cover tiles and use MAL metadata review', async ({ page }, testInfo) => {
+  const dialog = page.getByRole('dialog');
+  await page.route('**/api/providers/myanimelist/artists?*', route => route.fulfill({ json: { items: [{ providerId: 'myanimelist', artistId: '15043', name: 'Myuuto Akatsuki', aliases: [], url: 'https://myanimelist.net/people/15043' }], page: 1, hasNextPage: false } }));
+  await dialog.getByLabel('Artist name or provider artist URL').fill('https://myanimelist.net/people/15043/Myuuto_Akatsuki?q=akatsuki%20myuuto&cat=person');
+  await dialog.getByRole('button', { name: 'Find artist', exact: true }).click();
+  await expect(dialog.getByRole('tab', { name: 'MyAnimeList', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog.getByRole('heading', { name: 'Works by Myuuto Akatsuki' })).toBeVisible();
+  await expect(dialog.getByRole('list', { name: 'Artist works', exact: true }).getByRole('button')).toHaveCount(8);
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  const output = path.resolve('.impeccable/review'); fs.mkdirSync(output, { recursive: true });
+  await dialog.screenshot({ path: path.join(output, `mal-artist-works-${testInfo.project.name}.png`) });
+  await dialog.getByRole('button', { name: 'Review metadata for An unexpected catalogue title', exact: true }).click();
+  await expect(dialog.getByText('Artist-discovered metadata for review', { exact: true })).toBeVisible();
+  expect(applyRequests).toEqual([]);
+  await dialog.getByRole('button', { name: 'Apply & Sync', exact: true }).click();
+  await expect.poll(() => applyRequests.length).toBe(1);
+  expect(applyRequests[0]).toMatchObject({ providerId: 'myanimelist' });
+});
+
 test('artist choice, empty states, keyboard tabs and responsive themes stay usable', async ({ page }, testInfo) => {
   const dialog = page.getByRole('dialog');
   await page.emulateMedia({ reducedMotion: 'reduce' });

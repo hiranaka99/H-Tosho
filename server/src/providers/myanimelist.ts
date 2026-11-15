@@ -1,5 +1,6 @@
 import { BaseProvider } from './base.js';
 import type { MediaType, SeriesMetadata, SearchResult } from './types.js';
+import { searchMalArtists, getMalArtist, getMalArtistWorks } from './jikanArtists.js';
 
 // MAL rejects search keywords outside 3–64 characters with HTTP 400 "invalid q".
 // Count Unicode code points so truncation never splits a surrogate pair.
@@ -8,7 +9,7 @@ const MAX_SEARCH_LENGTH = 64;
 
 /**
  * MyAnimeList - REST API v2. Requires a Client ID (obtain at
- * https://myanimelist.net/devs). Auth uses `Authorization: <clientId>`.
+ * https://myanimelist.net/devs). Auth uses `X-MAL-CLIENT-ID`.
  */
 class MyAnimeListProvider extends BaseProvider {
   id = 'myanimelist';
@@ -22,10 +23,13 @@ class MyAnimeListProvider extends BaseProvider {
     'releaseDate', 'status', 'cover',
   ];
   protected baseUrl = 'https://api.myanimelist.net/v2';
+  searchArtists = searchMalArtists;
+  getArtist = getMalArtist;
+  getArtistWorks = getMalArtistWorks;
 
   private headers(): Record<string, string> {
     const clientId = this.credentials?.['clientId'] ?? '';
-    return { Authorization: clientId, 'X-MAL-CLIENT-ID': clientId, Accept: 'application/json' };
+    return { 'X-MAL-CLIENT-ID': clientId, Accept: 'application/json' };
   }
 
   async testConnection(): Promise<void> {
@@ -49,7 +53,8 @@ class MyAnimeListProvider extends BaseProvider {
     const characters = Array.from(query.replace(/\s+/gu, ' ').trim());
     if (characters.length < MIN_SEARCH_LENGTH) return [];
     const keyword = characters.slice(0, MAX_SEARCH_LENGTH).join('').trimEnd();
-    const params = new URLSearchParams({ q: keyword, limit: '20' });
+    const params = new URLSearchParams({ q: keyword, limit: '20', nsfw: 'true',
+      fields: 'alternative_titles,media_type,start_date,synopsis' });
     const data = await this.get<{ data: any[] }>(`/manga?${params.toString()}`, {
       headers: this.headers(),
     });
@@ -67,7 +72,9 @@ class MyAnimeListProvider extends BaseProvider {
         // Approved clients expose `mal_id`; the public stub exposes `id`.
         providerSeriesId: String(a.mal_id ?? a.id),
         title: a.title ?? 'Unknown',
-        type: typeMap[a.type] ?? 'MANGA',
+        altTitles: [...new Set<string>([a.alternative_titles?.en, a.alternative_titles?.ja,
+          ...(a.alternative_titles?.synonyms ?? [])].filter((title): title is string => typeof title === 'string' && !!title.trim()))],
+        type: typeMap[a.media_type ?? a.type] ?? 'MANGA',
         year: a.start_date ? new Date(a.start_date).getFullYear() : undefined,
         coverUrl: this.coverUrl(a),
         summary: a.synopsis ?? undefined,
@@ -79,7 +86,7 @@ class MyAnimeListProvider extends BaseProvider {
     // MAL omits most fields unless `fields=` is requested; ask for exactly
     // what the mapping below consumes so the payload stays small.
     const fields =
-      'id,title,main_picture,alternative_titles,start_date,synopsis,genres,tags,authors{node{id,first_name,last_name},role},status,media_type';
+      'id,title,main_picture,alternative_titles,start_date,synopsis,genres,authors{first_name,last_name},status,media_type';
     const data = await this.get<{ data: any }>(`/manga/${providerSeriesId}?fields=${encodeURIComponent(fields)}`, {
       headers: this.headers(),
     });
@@ -109,6 +116,8 @@ class MyAnimeListProvider extends BaseProvider {
       providerId: this.id,
       providerSeriesId,
       title: node.title ?? 'Unknown',
+      titleOptions: [...new Set<string>([node.title, node.alternative_titles?.en, node.alternative_titles?.ja,
+        ...(node.alternative_titles?.synonyms ?? [])].filter((title): title is string => typeof title === 'string' && !!title.trim()))],
       year: node.start_date ? new Date(node.start_date).getFullYear() : undefined,
       releaseDate,
       summary: node.synopsis?.trim(),
@@ -127,6 +136,7 @@ class MyAnimeListProvider extends BaseProvider {
 
 function mapMalStatus(status: string | undefined): SeriesMetadata['status'] {
   switch (status) {
+    case 'currently_publishing':
     case 'ongoing':
       return 'ONGOING';
     case 'finished':

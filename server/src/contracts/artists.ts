@@ -1,6 +1,6 @@
 import type { SearchResult } from '../providers/types.js';
 
-export type ArtistProviderId = 'anilist' | 'mangadex';
+export type ArtistProviderId = 'anilist' | 'mangadex' | 'myanimelist';
 export interface ProviderArtist {
   providerId: ArtistProviderId;
   artistId: string;
@@ -20,6 +20,7 @@ export function parseProviderArtistUrl(raw: string): { providerId: ArtistProvide
   const host = url.hostname.toLowerCase().replace(/^www\./, '');
   const [kind, id] = url.pathname.split('/').filter(Boolean);
   if (host === 'anilist.co' && kind === 'staff' && /^\d+$/.test(id ?? '') && Number.isSafeInteger(Number(id)) && Number(id) > 0) return { providerId: 'anilist', artistId: String(Number(id)) };
+  if (host === 'myanimelist.net' && kind === 'people' && /^\d+$/.test(id ?? '') && Number.isSafeInteger(Number(id)) && Number(id) > 0) return { providerId: 'myanimelist', artistId: String(Number(id)) };
   if (host === 'mangadex.org' && kind === 'author' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id ?? '')) return { providerId: 'mangadex', artistId: id.toLowerCase() };
   return null;
 }

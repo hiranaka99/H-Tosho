@@ -6,7 +6,7 @@ H-Tosho helps you identify manga and light novels, review metadata before applyi
 it, and keep new additions organized. It also includes a doujinshi downloader,
 recommendations, and watched searches for new releases.
 
-Works with **Kavita v0.9.x or newer**. Current version: **v3.4.1** ·
+Works with **Kavita v0.9.x or newer**. Current version: **v3.5.0** ·
 [Release notes](CHANGELOG.md)
 
 ![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
@@ -30,9 +30,10 @@ shop; counts, match results, and metadata are example data.
   MyAnimeList, compare it with your current Kavita metadata, and choose what to
   update.
 - **Find matches through the artist.** In a matching dialog, choose **Browse artist
-  works** to search AniList or MangaDex by artist name or artist-page URL. Saved
-  artists are filled in when available. Browse each provider’s works and select
-  one to review before using **Apply & Sync**.
+  works** to search AniList, MangaDex, or MyAnimeList by artist name or artist-page
+  URL. Saved artists are filled in when available. Browse each provider’s works
+  and select one to review before using **Apply & Sync**. MyAnimeList artist
+  browsing uses Jikan; metadata review uses MAL’s API and needs a Client ID.
 - **Keep new series organized.** Enable automatic matching and review uncertain
   results in **Needs review**.
 - **Discover and download doujinshi.** Search Hitomi.la or nHentai, preview

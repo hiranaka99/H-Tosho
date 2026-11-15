@@ -95,7 +95,7 @@ test('artist name search and direct example links resolve only through provider 
 test('artist APIs validate provider, URL and page before any request and honor disabled providers', async () => {
   globalThis.fetch = async () => { throw new Error('No network request expected'); };
   for (const request of [
-    '/providers/myanimelist/artists?query=Test', '/providers/anilist/artists?query=&page=1',
+    '/providers/unknown/artists?query=Test', '/providers/anilist/artists?query=&page=1',
     '/providers/anilist/artists?query=Test&page=0', '/providers/anilist/artists?query=Test&page=201',
     '/providers/anilist/artists?query=https://example.test/staff/123',
     `/providers/anilist/artists?query=${encodeURIComponent(`https://mangadex.org/author/${artistId}`)}`,
@@ -113,4 +113,24 @@ test('artist queries surface GraphQL and upstream failures rather than pretend t
   assert.match((await response.json()).error, /Provider unavailable/);
   globalThis.fetch = async () => Response.json({ errors: [{ detail: 'Artist unavailable' }] }, { status: 404 });
   await assert.rejects(mangaDexProvider.getArtist(artistId), /HTTP 404/);
+});
+
+test('MAL artist routes accept the supplied people link, paginate works, and honor disabled settings', async () => {
+  setProviderSetting('myanimelist', { enabled: true, credentials: { clientId: 'private-key' } });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    assert.equal(url.origin, 'https://api.jikan.moe');
+    assert.equal(new Headers(init?.headers).has('X-MAL-CLIENT-ID'), false);
+    if (url.pathname.endsWith('/manga')) return Response.json({ data: [{ manga: { mal_id: 99, title: 'Artist work' } }] });
+    return Response.json({ data: { mal_id: 15043, name: 'Myuuto Akatsuki' } });
+  };
+  const search = await api.request(`/providers/myanimelist/artists?${new URLSearchParams({ query: 'https://myanimelist.net/people/15043/Myuuto_Akatsuki?q=akatsuki%20myuuto&cat=person' })}`);
+  assert.equal(search.status, 200);
+  assert.equal((await search.json()).items[0].artistId, '15043');
+  const works = await api.request('/providers/myanimelist/artists/15043/works?page=1');
+  assert.equal(works.status, 200);
+  assert.equal((await works.json()).items[0].providerId, 'myanimelist');
+  for (const url of ['/providers/myanimelist/artists/0/works', '/providers/myanimelist/artists/15043/works?page=201', '/providers/anilist/artists?query=https://myanimelist.net/people/15043']) assert.equal((await api.request(url)).status, 400);
+  setProviderSetting('myanimelist', { enabled: false });
+  assert.equal((await api.request('/providers/myanimelist/artists/15043/works')).status, 409);
 });
