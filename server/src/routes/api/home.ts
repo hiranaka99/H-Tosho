@@ -13,7 +13,8 @@ api.get('/home/matches', c => {
     cover: item.cover ? kavitaCoverUrl(item.seriesId, item.cover) : null,
     candidate: { ...item.candidate, coverUrl: rewriteMangaDexCoverUrl(item.candidate.coverUrl) },
   }));
-  return c.json({ items, configured: !!connectedClient(), scan: jobQueue.active().find(job => job.type === 'scan-matchable') ?? jobQueue.latest('scan-matchable') });
+  const latest = [jobQueue.latest('scan-matchable'), jobQueue.latest('scan-downloaded')].filter(job => !!job).sort((a, b) => b.id - a.id)[0];
+  return c.json({ items, configured: !!connectedClient(), scan: jobQueue.active().find(job => job.type === 'scan-matchable' || job.type === 'scan-downloaded') ?? latest });
 });
 
 api.post('/home/matches/scan', c => {

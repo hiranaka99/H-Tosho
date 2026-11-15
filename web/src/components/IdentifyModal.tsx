@@ -272,7 +272,8 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const identify = useQuery({
     queryKey: ['identify', seriesId],
     queryFn: () => api.identify(seriesId),
-    enabled: !initialCandidate && !browseArtists,
+    // Home opens its saved candidate directly; search when returning to the list.
+    enabled: !browseArtists && (!initialCandidate || !selected),
     staleTime: 60_000,
   });
 
@@ -462,7 +463,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
             </div>
           )}
 
-          {!selected && !browseArtists && identify.isPending && (
+          {!selected && !browseArtists && identify.isLoading && (
             <div className="flex items-center gap-2 py-8 text-muted">
               <Spinner /> Searching providers…
             </div>

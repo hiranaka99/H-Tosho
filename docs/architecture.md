@@ -15,6 +15,10 @@
 - `services/matchSuggestions.ts` discovers candidates without applying metadata. The
   `scan-matchable` job runs daily and on demand; suggestions and candidate rejections
   persist separately from accepted matches, scoped to the Kavita server address.
+  `services/downloadDiscovery.ts` queues persistent `scan-downloaded` jobs after
+  publication, imports only the output folder through Kavita's path mappings,
+  waits for indexing, and scopes candidate discovery to the resulting series.
+  Merge-owned downloads enqueue discovery only after their final merge publishes.
   Home reuses the Downloader’s recommendation cache, watched inbox, gallery cards,
   previews, and shared `useGalleryDownload` setup/duplicate/queue workflow. Activity
   combines existing sync history and completed download records.

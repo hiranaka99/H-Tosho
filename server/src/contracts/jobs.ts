@@ -3,6 +3,7 @@ import type { DoujinSource } from '../downloader/types.js';
 export const JOB_TYPES = [
   'scan-new',
   'scan-matchable',
+  'scan-downloaded',
   'match-unmatched',
   'match-library',
   'match-series',
@@ -28,6 +29,7 @@ export interface JobContext {
 }
 
 export interface SeriesTargets { libraryId?: number; seriesId?: number; seriesIds?: number[] }
+export interface DownloadDiscoveryCommand { path: string; connectionKey: string; seriesName?: string }
 export interface ApplySeriesCommand {
   seriesId: number; providerId: string; providerSeriesId: string; selectedTitle?: string;
   excludedFields?: string[]; cover?: boolean; score?: number;
@@ -48,9 +50,10 @@ export interface JobExecutionState {
   chapters?: Record<string, string>;
 }
 /** Read-only transport projection for legacy history and shared target resolution. */
-export type JobPayload = Partial<SeriesTargets & ApplySeriesCommand & EditComicInfoCommand & MergeSeriesCommand> & JobExecutionState;
+export type JobPayload = Partial<SeriesTargets & ApplySeriesCommand & EditComicInfoCommand & MergeSeriesCommand & DownloadDiscoveryCommand> & JobExecutionState;
 export interface JobPayloads {
   'scan-matchable': Record<string, never>;
+  'scan-downloaded': DownloadDiscoveryCommand;
   'scan-new': Pick<SeriesTargets, 'libraryId'>;
   'match-unmatched': Pick<SeriesTargets, 'libraryId'>;
   'match-library': { libraryId: number };
@@ -67,6 +70,7 @@ export type JobCommand = { [T in JobType]: { type: T; payload: JobPayloads[T] } 
 
 const fieldsByType: Record<JobType, readonly string[]> = {
   'scan-matchable': [],
+  'scan-downloaded': ['path', 'connectionKey', 'seriesName'],
   'scan-new': ['libraryId'], 'match-unmatched': ['libraryId'], 'match-library': ['libraryId'],
   'match-series': ['seriesId', 'seriesIds', 'libraryId'], 'sync-series': ['seriesIds', 'libraryId'],
   'apply-series': ['seriesId', 'providerId', 'providerSeriesId', 'selectedTitle', 'excludedFields', 'cover', 'score'],
@@ -121,6 +125,11 @@ export function parseJobCommand(type: unknown, value: unknown): JobCommand {
   if (type === 'match-series' && !id(payload.seriesId) && !(payload.seriesIds as number[] | undefined)?.length) throw new Error('seriesId or seriesIds required');
   if (type === 'sync-series' && !id(payload.libraryId) && !(payload.seriesIds as number[] | undefined)?.length) throw new Error('seriesIds or libraryId required');
   if (type === 'edit-comicinfo' && !payload.path) throw new Error('path required');
+  if (type === 'scan-downloaded') {
+    if (typeof payload.path !== 'string' || !/^(?:[\\/]|[a-z]:[\\/])/i.test(payload.path) || payload.path.includes('\0')) throw new Error('An absolute download path is required');
+    if (typeof payload.connectionKey !== 'string' || !payload.connectionKey.trim()) throw new Error('Kavita connection required');
+    if (payload.seriesName !== undefined && (typeof payload.seriesName !== 'string' || !payload.seriesName.trim())) throw new Error('Series name must be non-empty text');
+  }
   if (type === 'merge-series') {
     if (payload.seriesName !== undefined) {
       if (typeof payload.seriesName !== 'string' || !payload.seriesName.trim() || /[\u0000-\u001f\u007f]/.test(payload.seriesName)) throw new Error('Series name must be non-empty text without control characters');

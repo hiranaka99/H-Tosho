@@ -124,6 +124,8 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
     if (completed) {
       void qc.invalidateQueries({ queryKey: ['downloads-completed'] });
       void qc.invalidateQueries({ queryKey: ['home-activity'] });
+      void qc.invalidateQueries({ queryKey: ['home-matches'] });
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
     }
   }, [tasks, qc]);
 

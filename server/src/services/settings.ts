@@ -363,7 +363,7 @@ export interface DownloaderSettings {
   maxImageConcurrency: number;
   /** Delay (ms) between individual image requests to avoid rate limits. */
   requestDelayMs: number;
-  /** Trigger a Kavita library scan after a download completes. */
+  /** Legacy preference retained for stored-settings compatibility; downloads now always discover review candidates. */
   autoSyncKavita: boolean;
   /** Optional nhentai.net API key for higher rate limits. Falls back to the NHENTAI_API_KEY env var when empty. */
   nhentaiApiKey: string;

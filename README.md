@@ -6,7 +6,7 @@ H-Tosho helps you identify manga and light novels, review metadata before applyi
 it, and keep new additions organized. It also includes a doujinshi downloader,
 recommendations, and watched searches for new releases.
 
-Works with **Kavita v0.9.x or newer**. Current version: **v3.3.2** ·
+Works with **Kavita v0.9.x or newer**. Current version: **v3.4.0** ·
 [Release notes](CHANGELOG.md)
 
 ![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
@@ -135,7 +135,10 @@ folders.
 
 For new downloads, set **Settings → Downloader → Output folder** to
 `/mnt/downloads` and make sure Kavita also has a library pointed at that shared
-folder. Enable **Auto-sync Kavita** to request a scan after downloads finish.
+folder. Completed downloads are imported into Kavita and checked for metadata
+candidates in background jobs. Review discovered matches on **Home** before using
+**Apply & Sync**. This runs automatically, including when automatic library
+matching is disabled; download completion does not apply metadata matches.
 
 Prefer app data and downloads in local folders? The included
 [bind-mount example](docker-compose.example.yml) uses `./data` and `./downloads`:

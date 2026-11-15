@@ -67,7 +67,6 @@ function main(): void {
   let watchedTimer: NodeJS.Timeout | undefined;
   function scheduleWatchedSearches(): void {
     clearTimeout(watchedTimer);
-    clearInterval(matchableTimer);
     const intervalMinutes = getWatchedSearchIntervalMinutes();
     if (intervalMinutes > 0) {
       watchedTimer = setTimeout(async () => {
@@ -94,6 +93,7 @@ function main(): void {
     unsubscribeWatchedSearchInterval();
     clearTimeout(pollTimer);
     clearTimeout(watchedTimer);
+    clearInterval(matchableTimer);
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 2000).unref();
   };

@@ -23,6 +23,7 @@ import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/
 import { applyResolvedSeriesMatch, applySeriesMatch, type ApplySeriesResult } from '../services/sync.js';
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { scanMatchSuggestions } from '../services/matchSuggestions.js';
+import { queueDownloadedMatchDiscovery, runDownloadedMatchDiscovery } from '../services/downloadDiscovery.js';
 import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
 import { listCbzFiles, mapKavitaPathToLocalPath, mergeCbzFiles, pathContains, editComicInfo, readComicInfo, resolveExistingFile, resolveSeriesHostDir, setComicInfoFields } from '../lib/cbz.js';
@@ -215,6 +216,7 @@ async function executeJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<J
   const typed = { ...job, type: command.type, payload: { ...job.payload, ...command.payload } } as ExecutableJob;
   invalidateDuplicateLibrary();
   switch (typed.type) {
+    case 'scan-downloaded': return runDownloadedMatchDiscovery(typed, log, signal);
     case 'scan-matchable': return scanMatchSuggestions({
       checkCancelled: () => throwIfJobCancelled(job.id),
       progress: (current, total) => jobQueue.setProgress(job.id, current, total),
@@ -572,6 +574,10 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
   log('success', `Moved ${r.moved.length} file(s) into one folder as "${stampName ?? lastSegment(targetDir)}"; stamped chapter numbers on ${r.chaptered.length}`);
   await removeSourceSeriesFromKavita(sourceSeriesIds, log);
   await rescanAndVerifyMerge(targetDir, r.moved, log, { job, seriesId: job.payload.seriesId ?? null, libraryId: targetLibraryId, seriesName: job.payload.seriesId == null ? renamedSeries : undefined });
+  if (job.payload.downloads?.length) {
+    try { queueDownloadedMatchDiscovery(targetDir, renamedSeries ?? undefined); }
+    catch (error) { log('warn', `Could not queue match discovery: ${error instanceof Error ? error.message : error}`); }
+  }
   invalidateDuplicateLibrary();
   return { processed: r.moved.length, matched: 0, failed: r.failed.length + chapterEditFailures };
 }

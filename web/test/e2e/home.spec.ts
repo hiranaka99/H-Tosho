@@ -80,16 +80,82 @@ test('No match found persists the displayed candidate identity; reviewed finds l
   await expect(page.getByText('Your inbox is clear', { exact: true })).toBeVisible();
 });
 
-test('review opens the discovered candidate directly and previews gallery details on Home', async ({ page }) => {
+test('review opens the discovered candidate directly, returns to provider matches, and previews galleries on Home', async ({ page }, testInfo) => {
   await page.route('**/api/series/11', route => route.fulfill({ json: { series: { id: 11, libraryId: 7, name: 'Summer anthology' }, kavita: { summary: 'Current summary' }, match: null } }));
   await page.route('**/api/providers/anilist/series/new-candidate', route => route.fulfill({ json: { providerId: 'anilist', providerSeriesId: 'new-candidate', title: 'Summer anthology', titleOptions: ['Summer anthology'], summary: 'Proposed summary', tags: [], artists: [], writers: [], genres: [] } }));
+  let searches = 0;
+  let finishSearch!: () => void;
+  const pendingSearch = new Promise<void>(resolve => { finishSearch = resolve; });
+  await page.route('**/api/series/11/identify', async route => {
+    searches++;
+    await pendingSearch;
+    await route.fulfill({ json: { candidates: [match.candidate, { ...match.candidate, providerId: 'mangadex', providerSeriesId: 'alternative', title: 'Alternative edition' }], best: match.candidate, searchedProviders: ['anilist', 'mangadex'], matched: false } });
+  });
   await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
-  await expect(page.getByRole('dialog')).toBeVisible();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
   await expect(page.getByText('Proposed summary', { exact: true })).toBeVisible();
+  expect(searches).toBe(0);
+  try {
+    await dialog.getByRole('button', { name: 'Back to matches', exact: true }).click();
+    await expect.poll(() => searches).toBe(1);
+    await expect(dialog.getByText('Searching providers…', { exact: true })).toBeVisible();
+  } finally { finishSearch(); }
+  await expect(dialog.getByRole('button', { name: /Alternative edition/ })).toBeVisible();
+  await expect(dialog.getByText('Searching providers…', { exact: true })).toHaveCount(0);
+  await dialog.screenshot({ path: `.impeccable/review/home-back-to-matches-${testInfo.project.name}.png` });
+  await dialog.getByRole('button', { name: /Summer anthology/ }).click();
+  await expect(dialog.getByText('Proposed summary', { exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
   await page.route('**/api/doujin/gallery', route => route.fulfill({ json: { ...items[0], url: 'https://hitomi.la/galleries/100.html', tags: [], previewPages: [] } }));
   await page.getByRole('button', { name: 'View details for After the rain', exact: true }).click();
   await expect(page.getByRole('dialog').getByRole('heading', { name: 'After the rain', exact: true })).toBeVisible();
+});
+
+test('Home match search shows a recoverable error after Back to matches and handles an empty retry', async ({ page }) => {
+  let failing = true;
+  await page.route('**/api/series/11', route => route.fulfill({ json: { series: { id: 11, libraryId: 7, name: match.name }, kavita: { summary: 'Current summary' }, match: null } }));
+  await page.route('**/api/providers/anilist/series/new-candidate', route => route.fulfill({ json: { ...match.candidate, titleOptions: [match.name], summary: 'Proposed summary', tags: [], artists: [], writers: [], genres: [] } }));
+  await page.route('**/api/series/11/identify', route => route.fulfill(failing ? { status: 502, json: { error: 'Provider search temporarily unavailable' } } : { json: { candidates: [], searchedProviders: ['anilist'], matched: false } }));
+  await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('Proposed summary', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Back to matches', exact: true }).click();
+  await expect(dialog.getByText('Could not search for matches', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Provider search temporarily unavailable', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Searching providers…', { exact: true })).toHaveCount(0);
+  failing = false;
+  await dialog.getByRole('button', { name: 'Retry search', exact: true }).click();
+  await expect(dialog.getByText('No matches found. Try a provider URL below.', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Searching providers…', { exact: true })).toHaveCount(0);
+});
+
+test('download discovery updates Home automatically and explains its review-only outcome in Jobs and Settings', async ({ page }, testInfo) => {
+  let done = false;
+  const job = () => ({ id: 71, type: 'scan-downloaded', payload: { path: '/downloads/Summer anthology/gallery.cbz', connectionKey: 'https://kavita.test', seriesName: match.name }, status: done ? 'completed' : 'running', progressCurrent: done ? 1 : 0, progressTotal: 1, result: done ? { processed: 1, matchable: 1, failed: 0 } : null, createdAt: '2026-11-15T09:00:00Z', startedAt: '2026-11-15T09:00:00Z', finishedAt: done ? '2026-11-15T09:01:00Z' : null, errorMessage: null });
+  await page.route('**/api/home/matches', route => route.fulfill({ json: { configured: true, items: done ? [match] : [], scan: job() } }));
+  await page.route('**/api/jobs', route => route.fulfill({ json: [job()] }));
+  await page.route('**/api/jobs/71', route => route.fulfill({ json: { job: job(), logs: [] } }));
+  await page.reload();
+  await expect(page.getByText('Checking 0 of 1 galleries', { exact: true })).toBeVisible();
+  await expect(page.getByText('Looking for candidates', { exact: true })).toBeVisible();
+  done = true;
+  await expect(page.getByRole('button', { name: 'Review match', exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText('Checking 0 of 1 galleries', { exact: true })).toHaveCount(0);
+  await page.locator('section[aria-labelledby="home-matches"]').screenshot({ path: `.impeccable/review/download-discovery-home-${testInfo.project.name}.png` });
+  await navigate(page, 'Jobs');
+  await page.getByRole('button', { name: `View details for job #71: ${match.name}`, exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('1 galleries checked · 1 galleries with candidates · 0 galleries with provider errors.', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Find matches for downloaded gallery · Job #71', { exact: true })).toBeVisible();
+  await dialog.screenshot({ path: `.impeccable/review/download-discovery-job-${testInfo.project.name}.png` });
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await page.route('**/api/settings/downloader', route => route.fulfill({ json: { downloadDirectory: 'C:/Downloads', format: 'cbz', maxConcurrentDownloads: 2, maxImageConcurrency: 4, requestDelayMs: 150, autoSyncKavita: false, nhentaiApiKey: '', nhentaiBannedTags: [], hitomiBannedTags: [], libraryPathMappings: [] } }));
+  await navigate(page, 'Settings');
+  await page.getByRole('tab', { name: 'Downloader', exact: true }).click();
+  await expect(page.getByText('Completed downloads in a shared Kavita library are imported and checked for matches in the background. Review candidates on Home before applying metadata.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('switch', { name: 'Auto-sync Kavita after downloads', exact: true })).toHaveCount(0);
 });
 
 test('responsive visual review in light and dark themes', async ({ page }, testInfo) => {

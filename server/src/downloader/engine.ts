@@ -6,8 +6,7 @@ import { isTransientError, retryTransient, classifyDownloadError } from './reque
 export { isTransientError, retryTransient } from './requests.js';
 import { downloadState, type DownloadTask, type DownloadStatus, type DownloadErrorCode } from '../contracts/downloads.js';
 export type { DownloadTask, DownloadStatus } from '../contracts/downloads.js';
-import { waitForScan } from '../kavita/scans.js';
-import { libraryContainingPath, mapLocalPathToKavita } from '../kavita/libraryPaths.js';
+import { queueDownloadedMatchDiscovery } from '../services/downloadDiscovery.js';
 import { recordGalleryIdentity, invalidateDuplicateLibrary, resolveDuplicateGallery } from '../services/galleryDuplicates.js';
 import { and, asc, desc, eq, inArray, or, isNotNull } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
@@ -40,8 +39,6 @@ import { recordGalleryTags } from '../services/recommendations.js';
 
 const MAX_AUTO_RETRIES = 3;
 const AUTO_RETRY_DELAY_MS = 60_000;
-const SCAN_COMPLETION_TIMEOUT_MS = 120_000;
-const SCAN_COMPLETION_POLL_MS = 2_000;
 
 /**
  * Replace a published file with a staged file without relying on POSIX rename
@@ -652,6 +649,10 @@ export class DownloadQueue {
           // must not permanently bias the recommendation profile.
           recordGalleryTags(row.source as DoujinSource, gallery);
           this.updateProgress(row.id, { progressCurrent: total, progressTotal: total, speed: 0, currentFile: null }, { force: true });
+          if (row.mergeJobId == null) {
+            try { queueDownloadedMatchDiscovery(outputPath, row.mergeFolder ?? gallery.series ?? gallery.title); }
+            catch (error) { console.warn('[h-tosho] Could not queue download match discovery:', error instanceof Error ? error.message : error); }
+          }
 
         };
         const old = row.outputPath ? archiveResource(row.outputPath) : null;
@@ -660,8 +661,6 @@ export class DownloadQueue {
         if (old && (pathContains(old, next) || pathContains(next, old))) await publish();
         else await archiveMutations.run([next], publish, ctx.controller.signal);
 
-        // Optional Kavita auto-sync.
-        if (settings.autoSyncKavita && row.mergeJobId == null) await this.triggerKavitaScan(destination);
       } catch (e) {
         ctx.stopped = true;
         wakePaused(ctx);
@@ -770,44 +769,6 @@ export class DownloadQueue {
     };
   }
 
-  /**
-   * Best-effort Kavita rescan so newly written media appears immediately, then
-   * match exactly the series the rescan registered (existing ones untouched).
-   */
-  private async triggerKavitaScan(outputPath: string): Promise<void> {
-    try {
-      // Lazy imports: the Kavita client and sync services are only needed when
-      // auto-sync is on; static imports would drag settings/job deps into every
-      // engine import (and their module side effects into tests).
-      const { getKavitaConnection } = await import('../services/settings.js');
-      const conn = getKavitaConnection();
-      if (!conn.baseUrl || !conn.apiKey) return;
-      const { KavitaClient } = await import('../kavita/client.js');
-      const client = new KavitaClient(conn.baseUrl, conn.apiKey);
-      // If a specific library path contains our output, scan just that one.
-      const libraries = await client.getLibraries();
-      const matched = libraryContainingPath(libraries, outputPath, this.settingsProvider().libraryPathMappings);
-      if (!matched) {
-        await client.scanAllLibraries();
-        return; // Library unknown — the periodic scan picks up whatever appears.
-      }
-      // Snapshot current series so only what this rescan adds gets matched.
-      const seen = new Set((await client.getSeries(matched.id)).map((s) => s.id));
-      // Scan just the folder this download wrote into (the .cbz's parent folder
-      // for archive output) — far cheaper than a whole-library scan.
-      const outputDir = outputPath.toLowerCase().endsWith('.cbz') ? path.dirname(outputPath) : outputPath;
-      await client.scanFolder(matched.id, mapLocalPathToKavita(outputDir, this.settingsProvider().libraryPathMappings));
-      // Kavita runs scans as background tasks; wait for the task queue to drain
-      // before diffing the series list, otherwise the new entry is not visible yet.
-      const outcome = await waitForScan(client, { deadline: Date.now() + SCAN_COMPLETION_TIMEOUT_MS, pollMs: SCAN_COMPLETION_POLL_MS });
-      if (outcome !== 'completed') return; // Scheduled scans retry an unverified refresh.
-      const { enqueueMatchForNewSeries } = await import('../services/sync.js');
-      const fresh = await enqueueMatchForNewSeries(client, matched.id, seen);
-      if (fresh.length > 0) console.log(`[h-tosho] auto-matching ${fresh.length} new series in "${matched.name}"`);
-    } catch {
-      // Auto-sync is best-effort; never fail the download over it.
-    }
-  }
 }
 
 

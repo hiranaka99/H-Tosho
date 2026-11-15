@@ -65,6 +65,8 @@ and the repository:
   support ongoing library maintenance.
 - Gallery sources are Hitomi.la and nHentai. Downloads support CBZ archives or
   image folders, queue controls, and duplicate prevention.
+- Completed downloads in a shared Kavita library are imported in background jobs
+  and checked for metadata candidates to review on Home before applying changes.
 - Recommendation feedback, muted artists, dismissed galleries, watched
   searches, and optional Discord notifications are existing features.
 - File edits, title changes written into CBZ metadata, merges, and downloads

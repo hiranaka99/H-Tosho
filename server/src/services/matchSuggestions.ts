@@ -37,11 +37,15 @@ export function rejectMatchCandidate(seriesId: number, providerId: string, provi
   return true;
 }
 
+export interface MatchSuggestionTarget { id: number; name: string; libraryId: number; libraryName: string; cover?: string }
+
 /** Search only: never creates matches, fetches full metadata, or writes to Kavita. */
 export async function scanMatchSuggestions(options: {
   checkCancelled: () => void;
   progress: (current: number, total: number) => void;
   log: (level: 'info' | 'warn', message: string) => void;
+  /** Already resolved targets for a download scan; other suggestions stay untouched. */
+  targets?: MatchSuggestionTarget[];
 }) {
   const connection = getKavitaConnection(), connectionKey = currentMatchConnection();
   if (!connection.baseUrl || !connection.apiKey) throw new Error('Kavita is not configured');
@@ -52,22 +56,27 @@ export async function scanMatchSuggestions(options: {
     options.checkCancelled();
     if (currentMatchConnection() !== connectionKey) throw new Error('Kavita connection changed during scan. Scan again.');
   };
-  const libraries = await client.getLibraries();
-  check();
   const statuses = new Map(db.select({ id: schema.seriesMatches.kavitaSeriesId, status: schema.seriesMatches.status }).from(schema.seriesMatches).all().map(row => [row.id, row.status]));
-  const targets: { id: number; name: string; libraryId: number; libraryName: string; cover?: string }[] = [];
-  for (const library of libraries) {
-    const series = await client.getSeries(library.id);
+  const targets: MatchSuggestionTarget[] = [];
+  const scopedIds = options.targets ? new Set(options.targets.map(item => item.id)) : null;
+  if (options.targets) {
+    targets.push(...options.targets.filter(item => !['matched', 'syncing'].includes(statuses.get(item.id) ?? '')));
+  } else {
+    const libraries = await client.getLibraries();
     check();
-    for (const item of series) {
-      if (['matched', 'syncing'].includes(statuses.get(item.id) ?? '')) continue;
-      targets.push({ id: item.id, name: item.name, libraryId: library.id, libraryName: library.name, cover: item.cover });
+    for (const library of libraries) {
+      const series = await client.getSeries(library.id);
+      check();
+      for (const item of series) {
+        if (['matched', 'syncing'].includes(statuses.get(item.id) ?? '')) continue;
+        targets.push({ id: item.id, name: item.name, libraryId: library.id, libraryName: library.name, cover: item.cover });
+      }
     }
   }
-  // All libraries were read successfully; remove results for removed or matched series.
+  // Only prune within the successfully resolved scope; download checks keep other galleries intact.
   const live = new Set(targets.map(item => item.id));
   for (const row of db.select().from(schema.matchSuggestions).where(eq(schema.matchSuggestions.connectionKey, connectionKey)).all()) {
-    if (!live.has(row.seriesId)) db.delete(schema.matchSuggestions).where(and(eq(schema.matchSuggestions.connectionKey, connectionKey), eq(schema.matchSuggestions.seriesId, row.seriesId))).run();
+    if ((!scopedIds || scopedIds.has(row.seriesId)) && !live.has(row.seriesId)) db.delete(schema.matchSuggestions).where(and(eq(schema.matchSuggestions.connectionKey, connectionKey), eq(schema.matchSuggestions.seriesId, row.seriesId))).run();
   }
   let processed = 0, failed = 0, checked = 0;
   options.progress(0, targets.length);
@@ -93,7 +102,7 @@ export async function scanMatchSuggestions(options: {
     }
     options.progress(++processed, targets.length);
   }
-  const matchable = listMatchSuggestions().length;
+  const matchable = listMatchSuggestions().filter(item => !scopedIds || scopedIds.has(item.seriesId)).length;
   options.log('info', `Checked ${processed} unmatched galleries; ${matchable} have candidates${failed ? `; ${failed} had provider errors` : ''}.`);
   if (processed > 0 && checked === 0) throw new Error('Providers could not complete the scan. Check provider settings and retry.');
   return { processed, matchable, failed };

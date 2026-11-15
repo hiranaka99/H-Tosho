@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.4.0
+
+- Import completed downloads into Kavita and discover metadata candidates in
+  background jobs for review on Home. Match only the imported galleries, keep
+  existing dismissals, and surface indexing/provider failures in Jobs without
+  failing completed downloads or automatically applying metadata.
+- Keep the daily match-discovery timer active when watched-search polling starts.
+- Start provider search when returning from a Home match review to the match
+  list, fixing a disabled search that left the dialog stuck on its loading state.
+
 ## v3.3.2
 
 - Remove the duplicate jump-to-page input and Go button from pagination, keeping

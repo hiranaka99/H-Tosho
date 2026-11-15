@@ -354,7 +354,7 @@ class JobQueue {
   }
 
   private async pump(): Promise<void> {
-    if (this.pumping) return;
+    if (this.pumping || !this.handler) return;
     this.pumping = true;
     try {
       while (this.running < CONCURRENCY) {
