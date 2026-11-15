@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.3.1
+
+- Show artist works as a responsive cover grid in matching dialogs, with larger
+  complete covers and compact title, type, and year captions.
+- Keep the Back to matches button at its intended height when the grid scrolls.
+
 ## v3.3.0
 
 - Browse artists’ works from matching dialogs, separated into AniList and MangaDex

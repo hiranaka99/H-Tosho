@@ -418,7 +418,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
             </div>
           </div>
 
-          {(!selected || !browseArtists) && <Button ref={artistTrigger} size="sm" variant="outline" className="self-start" aria-expanded={browseArtists && !selected} aria-controls={artistBrowserId} onClick={() => { if (selected) { setSelected(null); setBrowseArtists(true); } else setBrowseArtists(value => !value); }}>
+          {(!selected || !browseArtists) && <Button ref={artistTrigger} size="sm" variant="outline" className="shrink-0 self-start" aria-expanded={browseArtists && !selected} aria-controls={artistBrowserId} onClick={() => { if (selected) { setSelected(null); setBrowseArtists(true); } else setBrowseArtists(value => !value); }}>
             {browseArtists && !selected ? <ArrowLeft className="h-4 w-4" /> : <Users className="h-4 w-4" />}{browseArtists && !selected ? 'Back to matches' : 'Browse artist works'}
           </Button>}
           {browseArtists && <div ref={artistBrowser} id={artistBrowserId} hidden={!!selected}>

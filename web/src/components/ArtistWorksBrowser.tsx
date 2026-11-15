@@ -17,7 +17,10 @@ function PageControls({ page, hasNextPage, busy, onChange }: { page: number; has
   </div>;
 }
 
-function LoadingWorks() {
+const worksGrid = 'grid grid-cols-2 items-start gap-x-3 gap-y-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6';
+
+function LoadingWorks({ covers = false }: { covers?: boolean }) {
+  if (covers) return <div role="status" aria-label="Loading artist results" className={worksGrid}>{Array.from({ length: 6 }, (_, index) => <div key={index} className="min-w-0 space-y-2"><Skeleton className="aspect-[2/3] w-full rounded-lg" /><Skeleton className="h-4 w-3/4" /><Skeleton className="h-3 w-1/2" /></div>)}</div>;
   return <div role="status" aria-label="Loading artist results" className="space-y-3">{[0, 1, 2].map(index => <div key={index} className="flex gap-3"><Skeleton className="h-16 w-11 shrink-0 rounded" /><div className="flex-1 space-y-2 py-2"><Skeleton className="h-4 w-3/4" /><Skeleton className="h-3 w-1/2" /></div></div>)}</div>;
 }
 
@@ -40,9 +43,9 @@ function ProviderResults({ provider, query, active, seriesTitle, onSelect }: { p
   if (problem.isError) return <div role="alert" className="space-y-3 py-3"><p className="text-sm font-medium">Could not load {artist ? 'this artist’s works' : `${PROVIDER_NAMES[provider]} artists`}</p><p className="break-words text-sm text-muted">{problem.error.message}</p><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => void problem.refetch()} disabled={problem.isFetching}>{problem.isFetching && <Spinner />}Retry</Button>{artist && <Button size="sm" variant="ghost" onClick={() => setArtist(null)}>Choose another artist</Button>}</div></div>;
   if (artist) return <div className="space-y-3">
     <div className="flex flex-wrap items-start justify-between gap-2 border-b border-border pb-3"><div className="min-w-0"><h3 className="break-words text-sm font-semibold">Works by {artist.name}</h3><a href={artist.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-9 items-center gap-1.5 text-xs text-primary underline-offset-4 hover:underline">View artist on {PROVIDER_NAMES[provider]}<ExternalLink className="h-3 w-3" /></a></div><Button size="sm" variant="ghost" onClick={() => setArtist(null)}>Change artist</Button></div>
-    {works.isPending ? <LoadingWorks /> : !works.data?.items.length ? <p className="py-5 text-sm text-muted">No manga or light novels were returned for this artist. You can also check their provider page.</p>
-      : <ul className="max-h-[42vh] divide-y divide-border overflow-y-auto">{works.data.items.map(item => <li key={item.providerSeriesId}><button type="button" data-candidate-key={`${provider}:${item.providerSeriesId}`} onClick={() => onSelect({ ...item, score: Math.max(...[item.title, ...(item.altTitles ?? [])].map(title => titleScore(seriesTitle, title))) })} className="flex w-full min-w-0 items-center gap-3 rounded-md px-2 py-3 text-left transition-colors hover:bg-surface-2">
-        <Cover url={item.coverUrl} title={item.title} className="h-16 w-11 shrink-0 rounded" /><span className="min-w-0 flex-1"><span className="block break-words text-sm font-medium">{item.title}</span><span className="mt-1 block text-xs text-muted">{[item.type === 'NOVEL' ? 'Light novel' : 'Manga', item.year].filter(Boolean).join(' · ')} · Review metadata</span></span><ArrowRight aria-hidden="true" className="h-4 w-4 shrink-0 text-muted" />
+    {works.isPending ? <LoadingWorks covers /> : !works.data?.items.length ? <p className="py-5 text-sm text-muted">No manga or light novels were returned for this artist. You can also check their provider page.</p>
+      : <ul aria-label="Artist works" className={`${worksGrid} p-1`}>{works.data.items.map(item => <li key={item.providerSeriesId} className="min-w-0"><button type="button" aria-label={`Review metadata for ${item.title}`} title={item.title} data-candidate-key={`${provider}:${item.providerSeriesId}`} onClick={() => onSelect({ ...item, score: Math.max(...[item.title, ...(item.altTitles ?? [])].map(title => titleScore(seriesTitle, title))) })} className="group flex w-full min-w-0 flex-col gap-2 rounded-lg text-left">
+        <Cover url={item.coverUrl} title={item.title} className="aspect-[2/3] w-full rounded-lg bg-surface-2 object-contain" /><span className="block w-full min-w-0"><span className="line-clamp-2 min-h-10 break-words text-sm font-medium leading-5 group-hover:text-primary group-focus-visible:text-primary">{item.title}</span><span className="mt-1 block text-xs text-muted">{[item.type === 'NOVEL' ? 'Light novel' : 'Manga', item.year].filter(Boolean).join(' · ')}</span></span>
       </button></li>)}</ul>}
     <PageControls page={worksPage} hasNextPage={works.data?.hasNextPage ?? false} busy={works.isFetching} onChange={setWorksPage} />
   </div>;

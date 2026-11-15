@@ -5,11 +5,18 @@ import path from 'node:path';
 const mangaDexArtist = '9abe212d-e010-413d-b0de-8c14b96c19e8';
 const mangaDexWork = '12345678-1234-4234-8234-123456789abc';
 const artist = (provider: string) => ({ providerId: provider, artistId: provider === 'anilist' ? '126726' : mangaDexArtist, name: provider === 'anilist' ? 'Yuu Ichinomiya' : 'Ichinomiya Yuu', aliases: [], url: provider === 'anilist' ? 'https://anilist.co/staff/126726' : `https://mangadex.org/author/${mangaDexArtist}` });
-const work = (provider: string, page = 1) => ({ providerId: provider, providerSeriesId: provider === 'anilist' ? String(400 + page) : mangaDexWork, title: page === 1 ? 'An unexpected catalogue title' : 'The work found on the second page', type: 'MANGA', year: 2020 });
+const work = (provider: string, page = 1) => ({ providerId: provider, providerSeriesId: provider === 'anilist' ? String(400 + page) : mangaDexWork, title: page === 1 ? 'An unexpected catalogue title' : 'The work found on the second page', type: 'MANGA', year: 2020, coverUrl: '/__test__/artist-cover.svg?number=1' });
 let applyRequests: unknown[];
 
 test.beforeEach(async ({ page }) => {
   applyRequests = [];
+  // Synthetic cover fixtures exercise image sizing without external providers.
+  await page.route('**/__test__/artist-cover.svg?*', route => {
+    const number = new URL(route.request().url()).searchParams.get('number') ?? '1';
+    const color = ['#60475e', '#395d65', '#845943'][Number(number) % 3];
+    return route.fulfill({ contentType: 'image/svg+xml', body: `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="900" viewBox="0 0 600 900"><rect width="600" height="900" fill="${color}"/><g fill="#fff8fb" font-family="sans-serif"><text x="45" y="90" font-size="30">SAMPLE COVER</text><text x="45" y="520" font-size="200">${number}</text><text x="45" y="830" font-size="28">Artist works test fixture</text></g></svg>` });
+  });
+  await page.route('**/__test__/missing-cover.jpg', route => route.fulfill({ status: 404 }));
   await page.route('**/api/kavita/status', route => route.fulfill({ json: { configured: true, version: '0.9.0' } }));
   await page.route('**/api/kavita/libraries', route => route.fulfill({ json: [{ id: 7, name: 'Sample library', seriesCount: 1 }] }));
   await page.route('**/api/kavita/libraries/7/series', route => route.fulfill({ json: [{ id: 11, name: 'A difficult local gallery name', libraryId: 7, status: 'unmatched', artists: ['Yuu Ichinomiya'], tags: [] }] }));
@@ -24,7 +31,13 @@ test.beforeEach(async ({ page }) => {
   });
   await page.route('**/api/providers/*/artists/*/works?*', route => {
     const url = new URL(route.request().url()), provider = url.pathname.split('/')[3], number = Number(url.searchParams.get('page') ?? 1);
-    return route.fulfill({ json: { items: [work(provider, number)], page: number, hasNextPage: provider === 'anilist' && number === 1 } });
+    const items = number === 1 ? [work(provider), ...Array.from({ length: 7 }, (_, index) => ({
+      ...work(provider), providerSeriesId: `600${index}`,
+      title: index === 1 ? 'A very long catalogue title that wraps across several lines while the complete name remains accessible' : `Sample artist work ${index + 2}`,
+      type: index === 2 ? 'NOVEL' : 'MANGA', year: 2015 + index,
+      coverUrl: index === 5 ? undefined : index === 6 ? '/__test__/missing-cover.jpg' : `/__test__/artist-cover.svg?number=${index + 2}`,
+    }))] : [work(provider, number)];
+    return route.fulfill({ json: { items, page: number, hasNextPage: provider === 'anilist' && number === 1 } });
   });
   await page.route('**/api/providers/*/series/*', route => {
     const url = new URL(route.request().url()), provider = url.pathname.split('/')[3];
@@ -42,6 +55,21 @@ test('artist browsing bypasses title matching, preserves provider pages, and rev
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByLabel('Artist name or provider artist URL')).toHaveValue('Yuu Ichinomiya');
   await expect(dialog.getByRole('button', { name: /An unexpected catalogue title/ })).toBeVisible();
+  const grid = dialog.getByRole('list', { name: 'Artist works', exact: true });
+  const backBounds = await dialog.getByRole('button', { name: 'Back to matches', exact: true }).boundingBox();
+  expect(backBounds!.height).toBeGreaterThanOrEqual(36);
+  await expect(grid.getByRole('button')).toHaveCount(8);
+  const [first, second] = await Promise.all([grid.getByRole('button').nth(0).boundingBox(), grid.getByRole('button').nth(1).boundingBox()]);
+  expect(second!.y).toBe(first!.y);
+  expect(second!.x).toBeGreaterThan(first!.x + first!.width);
+  const cover = grid.getByRole('img', { name: 'An unexpected catalogue title', exact: true });
+  await expect(cover).toBeVisible();
+  expect(await cover.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+  const coverBounds = await cover.boundingBox();
+  expect(coverBounds!.width).toBeGreaterThan(100);
+  expect(coverBounds!.height / coverBounds!.width).toBeCloseTo(1.5);
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await grid.getByRole('button').first().focus();
   await dialog.getByRole('button', { name: 'Next', exact: true }).click();
   const chosenWork = dialog.getByRole('button', { name: /The work found on the second page/ });
   await expect(chosenWork).toBeVisible();
@@ -84,8 +112,10 @@ test('artist choice, empty states, keyboard tabs and responsive themes stay usab
   await page.addStyleTag({ content: '*, *::before, *::after { animation: none !important; transition: none !important; }' });
   await expect(dialog.getByRole('button', { name: /An unexpected catalogue title/ })).toBeVisible();
   const output = path.resolve('.impeccable/review'); fs.mkdirSync(output, { recursive: true });
+  await page.evaluate(async () => { await Promise.all(Array.from(document.images).filter(img => { const bounds = img.getBoundingClientRect(); return bounds.top < innerHeight && bounds.bottom > 0; }).map(img => img.decode().catch(() => {}))); });
   await dialog.screenshot({ path: path.join(output, `artist-works-${testInfo.project.name}.png`) });
   await page.evaluate(() => document.documentElement.classList.add('dark'));
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await dialog.screenshot({ path: path.join(output, `artist-works-${testInfo.project.name}-dark.png`) });
   await dialog.getByRole('button', { name: 'Change artist', exact: true }).click();
   await expect(dialog.getByRole('button', { name: 'Yuu Ichinomiya', exact: true })).toBeVisible();
