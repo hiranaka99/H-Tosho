@@ -19,6 +19,7 @@ export const metadataOperations = sqliteTable('metadata_operations', {
   connectionKey: text('connection_key').notNull(),
   seriesId: integer('series_id').notNull(),
   jobId: integer('job_id'),
+  restoredFromOperationId: text('restored_from_operation_id'),
   origin: text('origin').notNull(),
   status: text('status').notNull().default('running'),
   version: integer('version').notNull().default(1),
@@ -40,6 +41,45 @@ export const metadataOperationSteps = sqliteTable('metadata_operation_steps', {
   afterJson: text('after_json'),
   status: text('status').notNull().default('prepared'),
 }, table => [uniqueIndex('idx_metadata_operation_target').on(table.operationId, table.target)]);
+
+/** Unconsumed previews expire; approved plans copy all write authority durably. */
+export const metadataRestorePreviews = sqliteTable('metadata_restore_previews', {
+  id: text('id').primaryKey(),
+  connectionKey: text('connection_key').notNull(),
+  seriesId: integer('series_id').notNull(),
+  sourceOperationId: text('source_operation_id').notNull(),
+  previewJson: text('preview_json').notNull(),
+  expectedJson: text('expected_json').notNull(),
+  desiredJson: text('desired_json').notNull(),
+  archivesJson: text('archives_json').notNull().default('[]'),
+  createdAt: text('created_at').notNull(),
+  expiresAt: text('expires_at').notNull(),
+  consumedAt: text('consumed_at'),
+}, table => [index('idx_metadata_restore_preview_expiry').on(table.expiresAt)]);
+
+export const metadataRestorePlans = sqliteTable('metadata_restore_plans', {
+  id: text('id').primaryKey(),
+  previewId: text('preview_id').notNull(),
+  connectionKey: text('connection_key').notNull(),
+  seriesId: integer('series_id').notNull(),
+  sourceOperationId: text('source_operation_id').notNull(),
+  operationId: text('operation_id'),
+  jobId: integer('job_id'),
+  idempotencyKey: text('idempotency_key').notNull(),
+  status: text('status').notNull().default('approved'),
+  expectedJson: text('expected_json').notNull(),
+  desiredJson: text('desired_json').notNull(),
+  archivesJson: text('archives_json').notNull().default('[]'),
+  nativeLockFieldsJson: text('native_lock_fields_json').notNull(),
+  policyRevision: integer('policy_revision').notNull(),
+  createdAt: text('created_at').notNull(),
+  finishedAt: text('finished_at'),
+  message: text('message'),
+}, table => [
+  uniqueIndex('idx_metadata_restore_idempotency').on(table.connectionKey, table.idempotencyKey),
+  uniqueIndex('idx_metadata_restore_plan_preview').on(table.previewId),
+  index('idx_metadata_restore_plan_job').on(table.jobId),
+]);
 
 export const seriesFieldPolicies = sqliteTable('series_field_policies', {
   connectionKey: text('connection_key').notNull(),

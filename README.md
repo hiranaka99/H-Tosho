@@ -188,16 +188,46 @@ individual fields across future provider updates. Changes save immediately.
 Protected titles also skip CBZ title rewrites; cover protection includes volume
 covers. Unmatch retains protected values. Unlock a field before syncing it;
 deliberate edits in the ComicInfo editor remain allowed.
-Expand **Metadata history** in the comparison dialog to browse new updates,
+Expand **Metadata history** in the comparison dialog to browse saved updates,
 including before/observed-after values, native Kavita locks, and captured archive
 field changes. History covers provider updates, unmatch, series-associated
-ComicInfo edits, and merges into an existing series. Required before reads must
-succeed before those changes begin; interrupted and unverified results remain
-visible. Snapshots are retained for 180 days plus the latest 20 finished updates
-per series. Earlier activity, path-only edits, and newly created merge targets
-have no snapshots. Restore and historical cover images are not available yet.
-Changing a title also updates the Series field in the series' CBZ files, so
-configure your library folders before renaming.
+ComicInfo edits, merges into an existing series, and selective restores.
+Choose **Before** or **After (observed)**, select available scalar/list fields,
+then use **Preview restore** to compare current and saved values. Confirm the
+review before **Queue restore**; **Tasks** reports the verified result. Restores
+replace selected lists exactly, including empty tags/contributors and empty text,
+without fetching the original provider, changing identification, or downloading.
+Protected fields require an explicit unlock and a refreshed preview. Native
+Kavita locks are preserved unless their captured flags are explicitly selected.
+Provider **Apply & Sync** and Unmatch are disabled while Metadata history is open;
+close history before returning to those separate mutation workflows.
+Previews expire after 15 minutes; confirmed plans and their snapshots remain
+pinned through queue delays. New selected edits, protection changes, or changed
+series/installation identity require a new review. External Kavita clients cannot
+be guarded atomically: fresh reads and readback verification are best effort.
+Interrupted or partially applied restores remain inspectable and cannot be
+retried blindly; review current values and create a fresh preview instead.
+Snapshots are retained for 180 days plus the latest 20 finished updates per
+series, independently of Task/activity cleanup. Earlier activity, path-only edits,
+and newly created merge targets have no snapshots. Cover restoration remains
+unavailable. Null/absent Kavita fields and values Kavita normalizes
+or ignores are shown as unsupported rather than coerced into empty values.
+
+Title restoration updates **ComicInfo.Series in every indexed CBZ** before the
+Kavita title. It requires complete agreement between Kavita's file index and the
+readable series folder, configured library mappings, and supported native locks.
+It preserves current sort/localized names and their locks. Missing files,
+unsupported formats, changed file fingerprints, or incomplete indexing block
+the restore and require a fresh review.
+
+Expand a file under **ComicInfo.xml to restore** to select individual recorded
+fields. Other current XML, including root attributes, comments and nested page
+metadata, is preserved. **Replace complete ComicInfo.xml** explicitly replaces
+the entire document, or removes the ZIP entry if it was originally absent;
+grouping conflicts block this action. Archive restores require content identity
+captured by this version: older snapshots remain browseable but cannot authorize
+an XML restore. Moves and whole merges are not reversed. XML-only changes reach
+Kavita on its next library scan; restoration does not start a scan or a download.
 
 ### Match new additions automatically
 

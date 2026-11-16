@@ -1,6 +1,7 @@
 import { archiveMutations, archiveResource } from '../lib/mutations.js';
 import { getFieldPolicy } from '../services/fieldPolicies.js';
 import { withMetadataHistory, type MetadataJournal } from '../services/metadataHistory.js';
+import { executeMetadataRestore } from '../services/metadataRestore.js';
 import { parseJobCommand, type JobPayloads, type JobExecutionState, type JobType } from '../contracts/jobs.js';
 import { upsertMatch } from '../services/matchRecords.js';
 import { rememberTargets, rememberLibraries, rememberAvailableLibraries, rememberSeriesLibrary, throwIfJobCancelled, type Target } from './context.js';
@@ -46,7 +47,7 @@ interface MatchResult {
 }
 
 export interface JobResult {
-  [key: string]: number | string[] | boolean | undefined;
+  [key: string]: number | string | string[] | boolean | undefined;
   pushed?: string[];
   coverUpdated?: boolean;
   volumeCoversUpdated?: number;
@@ -208,7 +209,7 @@ const MATCH_CONCURRENCY = 3;
 export function runJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<JobResult> {
   if (job.type === 'check-watched-searches' || job.type === 'scan-matchable' || job.type === 'clear-overrides') return executeJob(job, log, signal);
   // Broad scans, merges, deletes and path-only edits conflict with every series.
-  const scoped = ['apply-series', 'sync-series', 'match-series', 'edit-comicinfo'].includes(job.type);
+  const scoped = ['apply-series', 'restore-metadata', 'sync-series', 'match-series', 'edit-comicinfo'].includes(job.type);
   const ids = [...(job.payload.seriesId === undefined ? [] : [job.payload.seriesId]), ...(job.payload.seriesIds ?? [])];
   return libraryMutations.run(scoped && ids.length ? ids.map(id => `series:${id}`) : ['*'], () => {
     throwIfJobCancelled(job.id);
@@ -238,6 +239,14 @@ async function executeJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<J
       return typed.payload.seriesId && client ? withMetadataHistory(client,typed.payload.seriesId,'merge-metadata',typed.payload.seriesName ? {title:typed.payload.seriesName} : {},journal=>runMergeSeriesJob(typed,log,signal,journal),typed.id) : runMergeSeriesJob(typed,log,signal);
     }
     case 'delete-series': return runDeleteSeriesJob(typed, log, signal);
+    case 'restore-metadata': {
+      const client = connectedClientOrNull();
+      if (!client) throw new Error('Kavita is not configured');
+      return executeMetadataRestore(client, typed.payload, typed.id, () => {
+        if (signal?.aborted) throw new JobCancelled();
+        throwIfJobCancelled(typed.id);
+      });
+    }
     case 'apply-series': {
       const client = connectedClientOrNull();
       if (!client) throw new Error('Kavita is not configured');

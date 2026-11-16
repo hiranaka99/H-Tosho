@@ -1,5 +1,6 @@
 import type { JobType, JobPayloads } from '../../../server/src/contracts/jobs';
 import type { ArtistProviderId, ArtistSearchPage, ArtistWorksPage } from '../../../server/src/contracts/artists';
+import type { MetadataRestorePreview, RestorePreviewRequest } from '../../../server/src/contracts/metadataRestore';
 export type { ArtistProviderId, ProviderArtist, ArtistSearchPage, ArtistWorksPage } from '../../../server/src/contracts/artists';
 // Typed client for the H-Tosho REST API.
 
@@ -413,6 +414,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const api = {
   metadataHistory: (id: number, cursor?: number) => request<{items: import('../../../server/src/contracts/metadataHistory').MetadataHistoryEntry[];nextCursor:number|null}>(`/series/${id}/metadata-history${cursor?`?cursor=${cursor}`:''}`),
   metadataHistoryDetail: (id:number, operationId:string) => request<import('../../../server/src/contracts/metadataHistory').MetadataHistoryDetail>(`/series/${id}/metadata-history/${encodeURIComponent(operationId)}`),
+  metadataRestorePreview: (id: number, operationId: string, body: RestorePreviewRequest) => request<MetadataRestorePreview>(`/series/${id}/metadata-history/${encodeURIComponent(operationId)}/restore-preview`, { method: 'POST', body: JSON.stringify(body) }),
+  restoreMetadata: (id: number, body: { previewId: string; idempotencyKey: string }) => request<{ id: number }>(`/series/${id}/metadata-restore`, { method: 'POST', body: JSON.stringify(body) }),
   fieldPolicy: (id: number) => request<import('../../../server/src/contracts/metadata').FieldPolicy>(`/series/${id}/field-locks`),
   saveFieldPolicy: (id: number, body: { lockedFields: import('../../../server/src/contracts/metadata').ProtectedField[]; expectedRevision: number }) => request<import('../../../server/src/contracts/metadata').FieldPolicy>(`/series/${id}/field-locks`, { method: 'PUT', body: JSON.stringify(body) }),
   homeMatches: () => request<HomeMatches>('/home/matches'),

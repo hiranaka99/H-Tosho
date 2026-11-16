@@ -16,6 +16,10 @@ export function jobRecovery(job: { status: string; type: string; payload: Record
   const file = typeof job.payload.path === 'string' ? job.payload.path : undefined;
   const editor = new URLSearchParams(hasSeries ? { series: String(seriesId), action: 'comicinfo' } : file ? { file } : {});
   const target = hasSeries ? `/libraries?series=${seriesId}` : '/libraries';
+  if (job.type === 'restore-metadata') {
+    return { explanation: 'Inspect current metadata and the recorded restore outcome, then create a fresh preview. This restore cannot be retried blindly.',
+      actions: hasSeries ? [{ label: 'Review metadata history', href: `${target}&action=identify` }] : [{ label: 'Open Libraries', href: '/libraries' }] };
+  }
   if (code === 'path-too-long') {
     return { explanation: 'A file name or path exceeds the filesystem limit. Shorten the affected name or parent path before retrying.',
       actions: hasSeries ? [{ label: 'Inspect series', href: target }] : [] };

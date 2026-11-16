@@ -1,4 +1,4 @@
-import { fetchBuffer, fetchJsonRetry } from '../lib/http.js';
+import { fetchBuffer, fetchJson, fetchJsonRetry } from '../lib/http.js';
 import {
   KAVITA_MIN_SERVER_VERSION,
   KavitaLibraryType,
@@ -21,6 +21,17 @@ import {
   type MediaFormat,
   type SeriesMetadataPayload,
 } from './types.js';
+import type { MetadataSnapshot, RecordedValue } from '../contracts/metadataHistory.js';
+import {
+  getMetadataRestoreFieldAvailability,
+  isRestorableMetadataField,
+  metadataValueKey,
+  titleRestoreCapability,
+  RESTORE_FIELD_MAPPINGS,
+  type ExactMetadataRestoreOptions,
+  type ExactMetadataRestoreValues,
+  type RestorableMetadataField,
+} from '../contracts/metadataRestore.js';
 
 function isVersionAtLeast(actual: string, minimum: string): boolean {
   const actualParts = (actual.match(/\d+/g) ?? []).map(Number);
@@ -385,6 +396,272 @@ export class KavitaClient {
         await this.postJson('/Series/metadata', { seriesMetadata: metadata }, `Lock series ${seriesId} metadata`);
       }
     }
+  }
+
+  /**
+   * Restore only approved scalar/list values, preserving the full current DTO.
+   * Kavita has no compare-and-swap: these fresh read/merge/post checks are best
+   * effort against other clients, and every write is followed by exact readback.
+   */
+  async restoreSeriesMetadataExact(seriesId: number, values: ExactMetadataRestoreValues, options: ExactMetadataRestoreOptions): Promise<void> {
+    for (const field of Object.keys(values)) {
+      const availability = getMetadataRestoreFieldAvailability(field,values[field as RestorableMetadataField]);
+      if (!availability.available) throw new Error(`Cannot restore ${field}: ${availability.reason}`);
+    }
+    if (!Array.isArray(options.nativeLockFields) || options.nativeLockFields.some(field => !Object.hasOwn(values,field)
+      || !getMetadataRestoreFieldAvailability(field,values[field]).nativeLockAvailable)) {
+      throw new Error('Native locks can only be restored for selected fields with supported, captured lock flags.');
+    }
+    const {title, ...scalars} = values;
+    let expected = options.expected;
+    if (title !== undefined) {
+      const availability = getMetadataRestoreFieldAvailability('title',title);
+      if (!availability.available) throw new Error(`Cannot restore title: ${availability.reason}`);
+      options.checkCancelled?.();
+      const current = await this.getSeriesDto(seriesId);
+      const cell = {present:Object.hasOwn(current,'name'),value:current.name,nativeLocked:current.nameLocked};
+      if (current.id !== seriesId || current.id !== expected.series.id || current.libraryId !== expected.series.libraryId || current.name !== expected.series.name
+        || (Object.hasOwn(expected.series,'folderPath') && current.folderPath !== expected.series.folderPath)
+        || metadataValueKey(cell) !== metadataValueKey(expected.fields.title)
+        || (expected.installationId !== undefined && (await this.getServerInfo()).installId !== expected.installationId)) {
+        throw new Error('Title restore review required: series identity, title or native lock changed after preview');
+      }
+      const lock = options.nativeLockFields.includes('title') ? title.nativeLocked : current.nameLocked;
+      if (typeof lock !== 'boolean') throw new Error('Cannot restore title without a verifiable native name lock');
+      const capability=titleRestoreCapability(current);
+      if(capability)throw new Error(capability);
+      // Kavita derives an unlocked sort name on rename even when the DTO repeats
+      // its old value. Temporarily lock it, then restore its original flag using
+      // the fresh post-rename DTO (the second request no longer renames anything).
+      const stageSortLock = current.name!==title.value && !current.sortNameLocked;
+      const post = async (body:KavitaSeriesDto) => {
+        const response=await fetchJson(this.url('/Series/update'),{method:'POST',headers:{...this.headers,'Content-Type':'application/json'},body:JSON.stringify(body)},15_000,{raw:true});
+        if(response.status<200 || response.status>=300)throw this.requestError(`Restore series ${seriesId} title`,'/Series/update',response.status,response.data);
+      };
+      let writeFailure:unknown,writeFailed=false;
+      try {await post({...current,name:title.value as string,nameLocked:lock,...(stageSortLock?{sortNameLocked:true}:{})});}
+      catch(error){writeFailed=true;writeFailure=error;}
+      let observed=await this.getSeriesDto(seriesId);
+      const untouched = ['localizedName','sortName','coverImageLocked','sortNameLocked','localizedNameLocked','metadataProviderOverride',
+        'aniListId','malId','hardcoverId','metronId','comicVineId','mangaBakaId','cbrId'];
+      const identityMatches=() => observed.id===current.id && observed.libraryId===current.libraryId && observed.folderPath===current.folderPath
+        && observed.name===title.value && observed.nameLocked===lock;
+      const differs=(key:string,before:KavitaSeriesDto) => JSON.stringify((observed as unknown as Record<string,unknown>)[key])!==JSON.stringify((before as unknown as Record<string,unknown>)[key]);
+      if(!identityMatches() || observed.sortName!==current.sortName || observed.sortNameLocked!==(stageSortLock?true:current.sortNameLocked)) {
+        throw new Error('Title restore outcome is unverified; exact title, native lock or unrelated series values were not confirmed');
+      }
+      const collateralChanged=untouched.filter(key=>key!=='sortNameLocked' && differs(key,current));
+      if(stageSortLock) {
+        const final={...observed,sortNameLocked:current.sortNameLocked};
+        let flagFailure:unknown,flagFailed=false;
+        try{await post(final);}catch(error){flagFailure=error;flagFailed=true;}
+        observed=await this.getSeriesDto(seriesId);
+        if(!identityMatches() || observed.sortNameLocked!==current.sortNameLocked || untouched.some(key=>differs(key,final))) {
+          throw new Error('Title restore native-lock outcome is unverified; review current series settings');
+        }
+        if(flagFailed)throw new Error(`Title restore native-lock request failed despite readback: ${String(flagFailure)}`,{cause:flagFailure});
+      }
+      if(collateralChanged.length || (expected.installationId!==undefined && (await this.getServerInfo()).installId!==expected.installationId)) {
+        throw new Error('Title restore outcome is unverified; unrelated series settings or installation identity changed');
+      }
+      if(writeFailed)throw new Error(`Title restore request failed despite readback: ${String(writeFailure)}`,{cause:writeFailure});
+      expected = {...expected,series:{...expected.series,name:title.value as string},fields:{...expected.fields,title:{...title,nativeLocked:lock}}};
+    }
+    if (Object.keys(scalars).length) await this.restoreScalarMetadataExact(seriesId,scalars,{
+      ...options,expected,nativeLockFields:options.nativeLockFields.filter(field => field !== 'title'),
+    });
+    else if (!title) throw new Error('No metadata fields were selected for restoration.');
+  }
+
+  private async restoreScalarMetadataExact(seriesId: number, values: ExactMetadataRestoreValues, options: ExactMetadataRestoreOptions): Promise<void> {
+    const fields = Object.keys(values);
+    if (!fields.length) throw new Error('No metadata fields were selected for restoration.');
+    for (const field of fields) {
+      const availability = getMetadataRestoreFieldAvailability(field, values[field as RestorableMetadataField]);
+      if (!availability.available) throw new Error(`Cannot restore ${field}: ${availability.reason}`);
+    }
+    // Runtime validation is intentional: historical JSON is not a trusted DTO.
+    const selected = fields as RestorableMetadataField[];
+    if (!Array.isArray(options.nativeLockFields) || options.nativeLockFields.some(field =>
+      !isRestorableMetadataField(field) || !selected.includes(field) ||
+      !getMetadataRestoreFieldAvailability(field, values[field]).nativeLockAvailable)) {
+      throw new Error('Native locks can only be restored for selected fields with supported, captured lock flags.');
+    }
+    const historicalLocks = new Set(options.nativeLockFields);
+    const prepared = new Map<RestorableMetadataField, unknown>();
+
+    options.checkCancelled?.();
+    await Promise.all(selected.map(async field => {
+      const value = values[field]!.value;
+      const names: string[] | undefined = Array.isArray(value) ? value.map(item => {
+        if (typeof item === 'string') return item;
+        // Availability validation above has already proved this historical entry.
+        const entry = item as Record<string, string>;
+        return entry[field === 'genres' || field === 'tags' ? 'title' : 'name'];
+      }) : undefined;
+      if (field === 'writers' || field === 'artists') {
+        // Do not reuse provider caches or historical ids: resolve against this
+        // connection now, and never turn a lookup failure into person creation.
+        const people = await Promise.all(names!.map(async name => {
+          const found = await this.getJson<KavitaPersonDto | null>(`/Person?name=${encodeURIComponent(name)}`, `Resolve restore person ${name}`);
+          if (found === null) return { id: 0, name };
+          if (!found || !Number.isSafeInteger(found.id) || found.id <= 0 || found.name !== name) {
+            throw new Error(`Cannot resolve the captured person name exactly: ${name}`);
+          }
+          return { id: found.id, name: found.name };
+        }));
+        prepared.set(field, people);
+      } else if (field === 'genres' || field === 'tags') {
+        prepared.set(field, names!.map(title => ({ id: 0, title })));
+      } else {
+        prepared.set(field, value);
+      }
+    }));
+
+    const readCurrent = async (): Promise<KavitaSeriesMetadataDto> => {
+      const [series, metadata, serverInfo] = await Promise.all([
+        this.getSeriesDto(seriesId), this.getSeriesMetadata(seriesId),
+        options.expected.installationId === undefined ? undefined : this.getServerInfo(),
+      ]);
+      const identity = options.expected.series;
+      if (!series || series.id !== seriesId || series.id !== identity.id || series.libraryId !== identity.libraryId ||
+        (series.name ?? null) !== identity.name ||
+        (Object.hasOwn(identity, 'folderPath') && (series.folderPath ?? null) !== identity.folderPath) ||
+        (options.expected.installationId !== undefined && options.expected.installationId !== serverInfo?.installId)) {
+        throw new Error('Metadata restore review required: series identity changed after preview.');
+      }
+      if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata) || metadata.seriesId !== seriesId ||
+        !Number.isSafeInteger(metadata.id) || metadata.id < 0) {
+        throw new Error('Metadata restore readback did not return a verifiable full series metadata DTO.');
+      }
+      return metadata;
+    };
+    const cellFrom = (metadata: KavitaSeriesMetadataDto, field: RestorableMetadataField): RecordedValue => {
+      const mapping = RESTORE_FIELD_MAPPINGS[field], record = metadata as unknown as Record<string, unknown>;
+      return { present: Object.hasOwn(record, mapping.key),
+        ...(Object.hasOwn(record, mapping.key) ? { value: record[mapping.key] } : {}),
+        ...('lock' in mapping && typeof record[mapping.lock] === 'boolean' ? { nativeLocked: record[mapping.lock] as boolean } : {}) };
+    };
+    const assertSelected = (metadata: KavitaSeriesMetadataDto, expected: MetadataSnapshot['fields'], message: string): void => {
+      const changed = selected.filter(field => metadataValueKey(cellFrom(metadata, field)) !== metadataValueKey(expected[field]));
+      if (changed.length) throw new Error(`${message}: ${changed.join(', ')}.`);
+    };
+    const selectedDtoKeys = new Set<string>();
+    for (const field of selected) {
+      const mapping = RESTORE_FIELD_MAPPINGS[field];
+      selectedDtoKeys.add(mapping.key);
+      if ('lock' in mapping) selectedDtoKeys.add(mapping.lock);
+    }
+    const assertCollateral = (metadata: KavitaSeriesMetadataDto, before: Record<string, unknown>, ageRatingOnly: boolean): void => {
+      const keys = ageRatingOnly ? ['ageRating', 'ageRatingLocked'] : [
+        ...Object.values(RESTORE_FIELD_MAPPINGS).map(mapping => mapping.key),
+        'coverArtists', 'publishers', 'characters', 'inkers', 'imprints', 'colorists',
+        'letterers', 'editors', 'translators', 'teams', 'locations', 'ageRating', 'maxCount', 'totalCount',
+        ...Object.keys(before).filter(key => key.endsWith('Locked')),
+      ];
+      const record = metadata as unknown as Record<string, unknown>;
+      const changed = keys.filter(key => !selectedDtoKeys.has(key) && metadataValueKey({
+        present: Object.hasOwn(record, key), ...(Object.hasOwn(record, key) ? { value: record[key] } : {}),
+      }, false) !== metadataValueKey({
+        present: Object.hasOwn(before, key), ...(Object.hasOwn(before, key) ? { value: before[key] } : {}),
+      }, false));
+      if (changed.length) throw new Error(`Metadata restore review required: unselected metadata changed during restoration: ${changed.join(', ')}.`);
+    };
+    const postMetadata = async (metadata: Record<string, unknown>, action: string): Promise<void> => {
+      // An ambiguous mutation must not be blindly replayed by the retry helper.
+      const response = await fetchJson(this.url('/Series/metadata'), {
+        method: 'POST', headers: { ...this.headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seriesMetadata: metadata }),
+      }, 15_000, { raw: true });
+      if (response.status < 200 || response.status >= 300) {
+        throw this.requestError(action, '/Series/metadata', response.status, response.data);
+      }
+    };
+
+    // Resolve all names first, then re-read identity and the full DTO immediately
+    // before writing; a cached/provider-normalized DTO would lose unrelated nulls.
+    const current = await readCurrent();
+    assertSelected(current, options.expected.fields, 'Metadata restore review required: selected values or native locks changed after preview');
+    const unlocked: Record<string, unknown> = { ...current };
+    const interim: MetadataSnapshot['fields'] = {}, final: MetadataSnapshot['fields'] = {};
+    let needsRelock = false;
+    for (const field of selected) {
+      const mapping = RESTORE_FIELD_MAPPINGS[field], target = values[field]!;
+      unlocked[mapping.key] = prepared.get(field);
+      interim[field] = { present: true, value: target.value };
+      final[field] = { present: true, value: target.value };
+      if ('lock' in mapping) {
+        const currentLock = cellFrom(current, field).nativeLocked;
+        if (typeof currentLock !== 'boolean') throw new Error(`Cannot preserve the current native lock for ${field}; its flag was not returned by Kavita.`);
+        const finalLock = historicalLocks.has(field) ? target.nativeLocked! : currentLock;
+        unlocked[mapping.lock] = false;
+        interim[field].nativeLocked = false;
+        final[field].nativeLocked = finalLock;
+        needsRelock ||= finalLock;
+      }
+    }
+    options.checkCancelled?.();
+    let writeFailure: unknown;
+    let writeFailed = false;
+    try {
+      await postMetadata(unlocked, `Restore series ${seriesId} metadata`);
+    } catch (error) {
+      writeFailure = error;
+      writeFailed = true;
+    }
+
+    // Even a failed request may have applied remotely. Observe it once, and only
+    // restore locks when the selected interim values and flags are proven exact.
+    // Cancellation after this point is deferred until native flags are restored.
+    let observed: KavitaSeriesMetadataDto;
+    try {
+      observed = await readCurrent();
+      assertSelected(observed, interim, 'Metadata restore review required: exact values and unlocked state were not confirmed after the write');
+    } catch (error) {
+      if (writeFailed) throw new Error(`Metadata restore outcome is unverified: ${String(writeFailure)}; ${String(error)}`, { cause: writeFailure });
+      throw error;
+    }
+    let collateralFailure: Error | undefined;
+    try {
+      // Kavita may derive ageRating from changed tags/genres even when the full
+      // DTO repeats the current rating. Do not pretend that collateral is safe.
+      assertCollateral(observed, unlocked, true);
+    } catch (error) {
+      collateralFailure = error instanceof Error ? error : new Error(String(error));
+    }
+    if (needsRelock) {
+      // This is a fresh full DTO, not the first POST body: preserve inter-post
+      // changes to unrelated fields, including fields unknown to this client.
+      const relocked: Record<string, unknown> = { ...observed };
+      for (const field of selected) {
+        const mapping = RESTORE_FIELD_MAPPINGS[field];
+        if ('lock' in mapping) relocked[mapping.lock] = final[field].nativeLocked;
+      }
+      let lockFailure: unknown;
+      let lockFailed = false;
+      try {
+        await postMetadata(relocked, `Restore series ${seriesId} native metadata locks`);
+      } catch (error) {
+        lockFailure = error;
+        lockFailed = true;
+      }
+      try {
+        observed = await readCurrent();
+        assertSelected(observed, final, 'Metadata restore review required: exact values or final native locks were not confirmed');
+        assertCollateral(observed, relocked, false);
+      } catch (error) {
+        if (lockFailed) throw new Error(`Metadata restore native-lock outcome is unverified: ${String(lockFailure)}; ${String(error)}`, { cause: lockFailure });
+        throw error;
+      }
+      if (lockFailed) throw new Error(`Metadata restore native-lock request failed despite observed readback: ${String(lockFailure)}`, { cause: lockFailure });
+    } else {
+      assertSelected(observed, final, 'Metadata restore review required: exact values or final native locks were not confirmed');
+    }
+    // Proven selected values still permit native-flag cleanup above. Never try
+    // a compensating write to the unexpectedly changed unselected metadata.
+    if (collateralFailure) throw collateralFailure;
+    if (writeFailed) throw new Error(`Metadata restore request failed despite observed readback: ${String(writeFailure)}`, { cause: writeFailure });
+    options.checkCancelled?.();
   }
 
   private hasMetadataPatch(patch: SeriesMetadataPayload): boolean {

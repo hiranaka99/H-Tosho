@@ -1,6 +1,6 @@
 export { lastSegment, pathContains } from './paths.js';
 export { mapKavitaPathToLocalPath, resolveSeriesHostDir, type LibraryPathMapping } from '../kavita/libraryPaths.js';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { archiveMutations, archiveResource } from './mutations.js';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import fs from 'node:fs';
@@ -34,6 +34,8 @@ export interface ZipEntryInfo {
   localOffset: number;
   time: number;
   date: number;
+  flags: number;
+  centralRecord: Buffer;
 }
 
 const EOCD_SIG = 0x06054b50;
@@ -56,6 +58,7 @@ function parseCentralDirectory(cd: Buffer, count: number): ZipEntryInfo[] {
     const nameLen = cd.readUInt16LE(p + 28);
     const extraLen = cd.readUInt16LE(p + 30);
     const commentLen = cd.readUInt16LE(p + 32);
+    if (p+46+nameLen+extraLen+commentLen>cd.length) throw new Error('Corrupt ZIP (truncated central directory record)');
     const localOffset = cd.readUInt32LE(p + 42);
     if (compressedSize === ZIP64_MARKER || uncompressedSize === ZIP64_MARKER) {
       throw new Error('ZIP64 archives are not supported');
@@ -70,6 +73,8 @@ function parseCentralDirectory(cd: Buffer, count: number): ZipEntryInfo[] {
       localOffset,
       time: cd.readUInt16LE(p + 12),
       date: cd.readUInt16LE(p + 14),
+      flags: cd.readUInt16LE(p + 8),
+      centralRecord: Buffer.from(cd.subarray(p,p+46+nameLen+extraLen+commentLen)),
     });
     p += 46 + nameLen + extraLen + commentLen;
   }
@@ -113,12 +118,16 @@ async function readFull(fh: fs.promises.FileHandle, buf: Buffer, position: numbe
  * into RAM whole — only its directory and the payloads actually consumed.
  */
 async function readZipEntriesFromDisk(fh: fs.promises.FileHandle, fileSize: number): Promise<ZipEntryInfo[]> {
+  return (await readZipDirectoryFromDisk(fh,fileSize)).entries;
+}
+
+async function readZipDirectoryFromDisk(fh: fs.promises.FileHandle, fileSize: number): Promise<{entries:ZipEntryInfo[];comment:Buffer}> {
   const tailLen = Math.min(fileSize, 22 + 0xffff);
   const tail = Buffer.alloc(tailLen);
   await readFull(fh, tail, fileSize - tailLen);
   let eocd = -1;
   for (let i = tail.length - 22; i >= 0; i--) {
-    if (tail.readUInt32LE(i) === EOCD_SIG) {
+    if (tail.readUInt32LE(i) === EOCD_SIG && i+22+tail.readUInt16LE(i+20)===tail.length) {
       eocd = i;
       break;
     }
@@ -127,16 +136,17 @@ async function readZipEntriesFromDisk(fh: fs.promises.FileHandle, fileSize: numb
 
   const count = tail.readUInt16LE(eocd + 10);
   const centralStart = tail.readUInt32LE(eocd + 16);
-  if (count === ZIP64_MARKER || centralStart === ZIP64_MARKER) {
+  if (count === 0xffff || centralStart === ZIP64_MARKER) {
     throw new Error('ZIP64 archives are not supported');
   }
+  if(tail.readUInt16LE(eocd+4)!==0 || tail.readUInt16LE(eocd+6)!==0 || tail.readUInt16LE(eocd+8)!==count) throw new Error('Multi-disk ZIP archives are not supported');
   // The central directory ends exactly at the EOCD, so its extent is known
   // without trusting the size field.
   const cdEnd = fileSize - tailLen + eocd;
   if (centralStart > cdEnd) throw new Error('Corrupt ZIP (central directory extends past EOCD)');
   const cd = Buffer.alloc(cdEnd - centralStart);
   await readFull(fh, cd, centralStart);
-  return parseCentralDirectory(cd, count);
+  return {entries:parseCentralDirectory(cd,count),comment:Buffer.from(tail.subarray(eocd+22))};
 }
 
 /** Payload start offset inside a file-open ZIP (reads the entry's local header). */
@@ -252,12 +262,12 @@ export function rewriteZipEntry(srcPath: string, entryName: string, data: Buffer
   return archiveMutations.run([archiveResource(srcPath)], () => rewriteZipEntryUnlocked(srcPath, entryName, data));
 }
 
-async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data: Buffer): Promise<void> {
+async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data: Buffer | null, beforePublish?: () => Promise<void>): Promise<void> {
   // Encode the replacement entry up front (deflate only when it saves space).
-  const compressed = deflateRawSync(data);
-  const useDeflate = compressed.length < data.length;
+  const compressed = data === null ? Buffer.alloc(0) : deflateRawSync(data);
+  const useDeflate = data !== null && compressed.length < data.length;
   const repMethod = useDeflate ? 8 : 0;
-  const repCrc = crc32(data);
+  const repCrc = data === null ? 0 : crc32(data);
 
   // A valid archive name can already use the filesystem's entire component
   // limit. Keep staging names independent of it, on the same filesystem for
@@ -268,7 +278,7 @@ async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data:
   let written = false;
   try {
     const stat = await src.stat();
-    const entries = await readZipEntriesFromDisk(src, stat.size);
+    const {entries,comment} = await readZipDirectoryFromDisk(src, stat.size);
     let offset = 0;
     let centralSize = 0;
     const centrals: Buffer[] = [];
@@ -276,17 +286,12 @@ async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data:
     for (const e of entries) {
       if (e.name === entryName) continue; // replaced by the new entry below
       const start = await payloadStartFromDisk(src, e);
-      const spec: EntrySpec = {
-        name: e.name,
-        method: e.method,
-        crc: e.crc,
-        compressedSize: e.compressedSize,
-        uncompressedSize: e.uncompressedSize,
-        offset,
-        time: e.time,
-        date: e.date,
-      };
-      const { local, central } = encodeHeaders(spec);
+      // Keep names, flags, extra fields, attributes and entry comments verbatim.
+      // Only the central record's local-header offset changes.
+      const local=Buffer.alloc(start-e.localOffset);
+      await readFull(src,local,e.localOffset);
+      const central=Buffer.from(e.centralRecord);
+      central.writeUInt32LE(offset,42);
       await out.appendFile(local);
       // Stream the compressed payload in chunks.
       let pos = start;
@@ -298,13 +303,23 @@ async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data:
         await out.appendFile(chunk);
         pos += bytesRead;
       }
-      offset += local.length + e.compressedSize;
+      let descriptor=Buffer.alloc(0);
+      if(e.flags & 8) {
+        const prefix=Buffer.alloc(4);await readFull(src,prefix,start+e.compressedSize);
+        const signed=prefix.readUInt32LE(0)===0x08074b50;
+        descriptor=Buffer.alloc(signed?16:12);await readFull(src,descriptor,start+e.compressedSize);
+        const base=signed?4:0;
+        if(descriptor.readUInt32LE(base)!==e.crc || descriptor.readUInt32LE(base+4)!==e.compressedSize || descriptor.readUInt32LE(base+8)!==e.uncompressedSize)throw new Error('Corrupt ZIP (unsupported data descriptor)');
+        await out.appendFile(descriptor);
+      }
+      offset += local.length + e.compressedSize + descriptor.length;
       centrals.push(central);
       centralSize += central.length;
     }
 
     // Replacement entry appended last — consumers (Kavita et al.) order pages
     // by file name, so position is cosmetic.
+    if (data !== null) {
     const now = new Date();
     const repSpec: EntrySpec = {
       name: entryName,
@@ -323,10 +338,14 @@ async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data:
     offset += repLocal.length + repPayload.length;
     centrals.push(repCentral);
     centralSize += repCentral.length;
+    }
 
     const centralStart = offset;
     for (const c of centrals) await out.appendFile(c);
-    await out.appendFile(endOfCentralDirectory(centrals.length, centralStart, centralSize));
+    const end=endOfCentralDirectory(centrals.length,centralStart,centralSize);
+    end.writeUInt16LE(comment.length,20);
+    await out.appendFile(end);
+    await out.appendFile(comment);
     written = true;
   } finally {
     await src.close();
@@ -334,8 +353,65 @@ async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data:
     if (!written) await fs.promises.rm(tmpPath, { force: true });
   }
 
-  try { await fs.promises.rename(tmpPath, srcPath); }
+  try { await beforePublish?.(); await fs.promises.rename(tmpPath, srcPath); }
   catch (error) { await fs.promises.rm(tmpPath, { force: true }); throw error; }
+}
+
+export interface ArchiveSnapshot {
+  xml: string | null;
+  size: number;
+  mtimeMs: number;
+  hash: string;
+  /** New snapshots bind the complete archive, not just its XML or timestamp. */
+  fileHash: string;
+  contentHash: string;
+  device: number;
+  inode: number;
+}
+
+export async function captureArchiveSnapshot(file: string): Promise<ArchiveSnapshot> {
+  const fh = await fs.promises.open(file, 'r');
+  try {
+    const before = await fh.stat();
+    if (!before.isFile()) throw new Error('Archive is not a regular file');
+    const hash = createHash('sha256');
+    for await (const chunk of fh.createReadStream({autoClose:false})) hash.update(chunk);
+    const content = createHash('sha256');
+    const entries = await readZipEntriesFromDisk(fh,before.size);
+    if (entries.filter(entry => entry.name === 'ComicInfo.xml').length > 1) throw new Error('Duplicate ComicInfo.xml ZIP entries are ambiguous');
+    for (const entry of entries.filter(entry => entry.name !== 'ComicInfo.xml').sort((a,b) => a.name.localeCompare(b.name))) {
+      content.update(JSON.stringify([entry.name,entry.method,entry.crc,entry.uncompressedSize,entry.compressedSize]));
+      const start = await payloadStartFromDisk(fh,entry);
+      for (let position=start;position<start+entry.compressedSize;) {
+        const chunk = Buffer.alloc(Math.min(CHUNK,start+entry.compressedSize-position));
+        await readFull(fh,chunk,position); content.update(chunk); position+=chunk.length;
+      }
+    }
+    const xml = await readComicInfo(file);
+    const after = await fs.promises.stat(file);
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+      throw new Error('Archive changed while its fingerprint was being read; review required');
+    }
+    return {xml,size:before.size,mtimeMs:before.mtimeMs,hash:createHash('sha256').update(xml ?? '<absent>').digest('hex'),
+      fileHash:hash.digest('hex'),contentHash:content.digest('hex'),device:before.dev,inode:before.ino};
+  } finally { await fh.close(); }
+}
+
+export function sameArchiveSnapshot(expected: ArchiveSnapshot, current: ArchiveSnapshot): boolean {
+  return expected.fileHash === current.fileHash && expected.size === current.size && expected.mtimeMs === current.mtimeMs
+    && expected.device === current.device && expected.inode === current.inode && expected.xml === current.xml;
+}
+
+/** Caller owns archive mutation resources. Verify the approved file again before atomic publication. */
+export async function restoreComicInfoArchive(file: string, xml: string | null, expected: ArchiveSnapshot): Promise<ArchiveSnapshot> {
+  const verify = async () => {
+    if (!sameArchiveSnapshot(expected,await captureArchiveSnapshot(file))) throw new Error('Archive changed after preview; review required');
+  };
+  await verify();
+  if (xml !== expected.xml) await rewriteZipEntryUnlocked(file,'ComicInfo.xml',xml === null ? null : Buffer.from(xml,'utf8'),verify);
+  const after = await captureArchiveSnapshot(file);
+  if (after.xml !== xml || after.contentHash !== expected.contentHash) throw new Error('ComicInfo exact restoration or unrelated archive content could not be verified');
+  return after;
 }
 
 /**
@@ -350,6 +426,7 @@ export async function readComicInfo(p: string): Promise<string | null> {
     const entries = await readZipEntriesFromDisk(fh, stat.size);
     const e = entries.find((x) => x.name === 'ComicInfo.xml');
     if (!e) return null;
+    if (e.compressedSize > 16*1024*1024 || e.uncompressedSize > 16*1024*1024) throw new Error('ComicInfo.xml exceeds the 16 MiB snapshot limit');
     const start = await payloadStartFromDisk(fh, e);
     const raw = Buffer.alloc(e.compressedSize);
     await readFull(fh, raw, start);
@@ -357,7 +434,7 @@ export async function readComicInfo(p: string): Promise<string | null> {
       case 0:
         return raw.toString('utf8');
       case 8:
-        return inflateRawSync(raw).toString('utf8');
+        return inflateRawSync(raw,{maxOutputLength:16*1024*1024}).toString('utf8');
       default:
         throw new Error(`Unsupported compression method ${e.method} for entry "ComicInfo.xml"`);
     }

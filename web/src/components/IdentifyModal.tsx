@@ -212,6 +212,7 @@ function CandidateCover({ src }: { src?: string }) {
 export function IdentifyModal({ seriesId, current, currentLoading, currentError, onRetryCurrent, match, currentCover, onClose, reviewPosition, onNext, autoReview = false, initialCandidate }: IdentifyModalProps) {
   const qc = useQueryClient();
   const [browseArtists, setBrowseArtists] = React.useState(false);
+  const [historyOpen, setHistoryOpen] = React.useState(false);
   const artistBrowser = React.useRef<HTMLDivElement>(null);
   const artistTrigger = React.useRef<HTMLButtonElement>(null);
   const artistBrowserId = React.useId();
@@ -301,6 +302,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
 
   const apply = useMutation({
     mutationFn: (p: { providerId: string; providerSeriesId: string; selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) => {
+      if (historyOpen) throw new Error('Close Metadata history before applying provider changes.');
       if (!currentReady || !preview.isSuccess || preview.isError) throw new Error('Load current and proposed metadata before applying changes.');
       return api.apply(seriesId, p.providerId, p.providerSeriesId, { selectedTitle: p.selectedTitle, excludedFields: p.excludedFields, cover: p.cover, score: p.score });
     },
@@ -435,7 +437,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
           {(!selected || !browseArtists) && <Button ref={artistTrigger} size="sm" variant="outline" className="shrink-0 self-start" aria-expanded={browseArtists && !selected} aria-controls={artistBrowserId} onClick={() => { if (selected) { setSelected(null); setBrowseArtists(true); } else setBrowseArtists(value => !value); }}>
             {browseArtists && !selected ? <ArrowLeft className="h-4 w-4" /> : <Users className="h-4 w-4" />}{browseArtists && !selected ? 'Back to matches' : 'Browse artist works'}
           </Button>}
-          <MetadataHistory key={seriesId} seriesId={seriesId} />
+          <MetadataHistory key={seriesId} seriesId={seriesId} onOpenChange={setHistoryOpen} />
           {browseArtists && <div ref={artistBrowser} id={artistBrowserId} hidden={!!selected}>
             <ArtistWorksBrowser active={!selected} seriesTitle={current.name} artists={[...new Set([...(current.metadata?.pencillers ?? []), ...(current.metadata?.writers ?? []), ...(current.metadata?.coverArtists ?? [])].map(person => person.name?.trim()).filter((name): name is string => !!name))]} onSelect={candidate => { setManualCandidate(candidate); reviewCandidate(candidate, true); }} />
           </div>}
@@ -470,7 +472,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                     <ArrowRight className="h-3.5 w-3.5" /> Review changes
                   </Button>
                 )}
-                <Button size="sm" variant="ghost" onClick={() => setConfirmUnmatch(true)} disabled={unmatch.isPending}>
+                <Button size="sm" variant="ghost" onClick={() => setConfirmUnmatch(true)} disabled={unmatch.isPending || historyOpen}>
                   <Unlink className="h-3.5 w-3.5" /> Unmatch
                 </Button>
               </div>
@@ -682,11 +684,11 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
         </div>
         {(selected || reviewPosition) && <div className="shrink-0 border-t border-border bg-surface px-3 py-3 sm:px-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p role="status" className="text-xs text-muted">{reviewPosition && `Review ${reviewPosition}${selected ? ' · ' : ''}`}{selected && (currentReady && preview.isSuccess ? `${selectedFieldCount} fields selected${coverEnabled && !protectedKeys.has('cover') && diff?.coverCandidate ? ' · cover selected' : ''}` : 'Load metadata before applying')}</p>
+            <p role="status" className="text-xs text-muted">{historyOpen ? 'Close Metadata history to apply provider changes.' : <>{reviewPosition && `Review ${reviewPosition}${selected ? ' · ' : ''}`}{selected && (currentReady && preview.isSuccess ? `${selectedFieldCount} fields selected${coverEnabled && !protectedKeys.has('cover') && diff?.coverCandidate ? ' · cover selected' : ''}` : 'Load metadata before applying')}</>}</p>
             <div className="flex w-full flex-wrap gap-2 sm:w-auto">
               <Button variant="ghost" onClick={onClose} disabled={apply.isPending}>Close</Button>
               {onNext && <Button variant="outline" onClick={onNext} disabled={apply.isPending}>Skip to next</Button>}
-              {selected && <Button className="min-h-11 flex-1 sm:flex-none" onClick={() => doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: reviewingExistingMatch ? undefined : selected.score })} disabled={!currentReady || !preview.isSuccess || preview.isError || apply.isPending || !protection.isSuccess || protect.isPending}>
+              {selected && <Button className="min-h-11 flex-1 sm:flex-none" onClick={() => doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: reviewingExistingMatch ? undefined : selected.score })} disabled={historyOpen || !currentReady || !preview.isSuccess || preview.isError || apply.isPending || !protection.isSuccess || protect.isPending}>
                 {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} {onNext ? 'Apply & next' : 'Apply & Sync'}
               </Button>}
             </div>

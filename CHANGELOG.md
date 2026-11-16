@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Add exact selective scalar/list restoration from Metadata history, with
+  Current → Restore to previews, explicit review, protection-aware field selection,
+  optional recorded native-lock restoration, and linked restore Tasks/history.
+- Keep restore warnings readable in both themes and disable provider Apply & Sync
+  and Unmatch while Metadata history is open.
+- Persist idempotent approved restore plans and pin their source snapshots through
+  queue delays. Recheck selected values, policy, connection and target identity at
+  execution; retain partial/interrupted outcomes and require fresh review instead
+  of blind retry. Covers and unsupported exact values stay gated.
+- Add paired title restoration and selected ComicInfo.xml field restoration,
+  with explicit full-document replacement/removal, allowed-root/index checks,
+  complete-file/content fingerprints, durable file checkpoints and verified
+  archive counts in Tasks. Keep unrelated XML and ZIP metadata intact, preserve
+  current sort/localized names and native flags, and block stale or incomplete
+  file sets. Older archive snapshots without content identity remain browseable.
+
 ## v3.5.3
 
 - Run one matching scan for galleries downloaded as a new merged series, after

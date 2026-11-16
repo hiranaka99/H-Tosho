@@ -1,5 +1,6 @@
 import { classifyJobError, type JobErrorCode } from './errors.js';
 import { onSettingChange } from '../services/settings.js';
+import { settleMetadataRestoreJob } from '../services/metadataRestore.js';
 import { readJobPayload } from './storage.js';
 import { and, asc, desc, eq, gt, inArray } from 'drizzle-orm';
 import { getDb, schema, type Db } from '../db/index.js';
@@ -239,7 +240,8 @@ class JobQueue {
       .run();
     const id = Number(res.lastInsertRowid);
     this.log(id, 'info', `Job enqueued: ${type}`);
-    void this.pump();
+    // Approved restore plans and their job must commit before execution starts.
+    queueMicrotask(() => void this.pump());
     return id;
   }
 
@@ -286,6 +288,7 @@ class JobQueue {
         .run();
       if (Number(res.changes ?? 0) > 0) {
         this.log(id, 'info', 'Job cancelled before start');
+        if (job.type === 'restore-metadata') settleMetadataRestoreJob(id, 'cancelled', 'Cancelled before restore started');
         return true;
       }
     }
@@ -306,7 +309,7 @@ class JobQueue {
    */
   retryJob(id: number): number | null {
     const job = this.get(id);
-    if (!job || job.status !== 'failed') return null;
+    if (!job || job.status !== 'failed' || job.type === 'restore-metadata') return null;
     const newId = this.enqueue(job.type, job.payload);
     this.log(id, 'info', `Retried as job #${newId}`);
     return newId;
@@ -401,6 +404,10 @@ class JobQueue {
         this.log(job.id, 'error', message);
       }
     } finally {
+      if (job.type === 'restore-metadata') {
+        const terminal = this.get(job.id);
+        if (terminal) settleMetadataRestoreJob(job.id, terminal.status, terminal.errorMessage ?? undefined);
+      }
       this.cancelRequested.delete(job.id);
       this.controllers.delete(job.id);
       this.running--;

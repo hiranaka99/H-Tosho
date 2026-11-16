@@ -1,4 +1,5 @@
 import type { DoujinSource } from '../downloader/types.js';
+import type { RestoreMetadataCommand } from './metadataRestore.js';
 /** Types of background jobs the queue can run. */
 export const JOB_TYPES = [
   'scan-new',
@@ -9,6 +10,7 @@ export const JOB_TYPES = [
   'match-series',
   'sync-series',
   'apply-series',
+  'restore-metadata',
   'clear-overrides',
   'check-watched-searches',
   'edit-comicinfo',
@@ -50,7 +52,7 @@ export interface JobExecutionState {
   chapters?: Record<string, string>;
 }
 /** Read-only transport projection for legacy history and shared target resolution. */
-export type JobPayload = Partial<SeriesTargets & ApplySeriesCommand & EditComicInfoCommand & MergeSeriesCommand & DownloadDiscoveryCommand> & JobExecutionState;
+export type JobPayload = Partial<SeriesTargets & ApplySeriesCommand & EditComicInfoCommand & MergeSeriesCommand & DownloadDiscoveryCommand & RestoreMetadataCommand> & JobExecutionState;
 export interface JobPayloads {
   'scan-matchable': Record<string, never>;
   'scan-downloaded': DownloadDiscoveryCommand;
@@ -60,6 +62,7 @@ export interface JobPayloads {
   'match-series': ({ seriesId: number; seriesIds?: number[] } | { seriesIds: number[]; seriesId?: number }) & { libraryId?: number };
   'sync-series': { libraryId: number; seriesIds?: number[] } | { seriesIds: number[]; libraryId?: number };
   'apply-series': ApplySeriesCommand;
+  'restore-metadata': RestoreMetadataCommand;
   'clear-overrides': Pick<SeriesTargets, 'libraryId'>;
   'check-watched-searches': Record<string, never>;
   'edit-comicinfo': EditComicInfoCommand;
@@ -74,6 +77,7 @@ const fieldsByType: Record<JobType, readonly string[]> = {
   'scan-new': ['libraryId'], 'match-unmatched': ['libraryId'], 'match-library': ['libraryId'],
   'match-series': ['seriesId', 'seriesIds', 'libraryId'], 'sync-series': ['seriesIds', 'libraryId'],
   'apply-series': ['seriesId', 'providerId', 'providerSeriesId', 'selectedTitle', 'excludedFields', 'cover', 'score'],
+  'restore-metadata': ['seriesId', 'connectionKey', 'planId'],
   'clear-overrides': ['libraryId'], 'check-watched-searches': [],
   'edit-comicinfo': ['seriesId', 'path', 'xml', 'fields'],
   'merge-series': ['seriesId', 'sourceFiles', 'targetDir', 'chapters', 'existingChapters', 'downloads', 'seriesName'],
@@ -122,6 +126,11 @@ export function parseJobCommand(type: unknown, value: unknown): JobCommand {
   if (type === 'match-library' && !id(payload.libraryId)) throw new Error('libraryId required');
   if ((type === 'apply-series' || type === 'delete-series') && !id(payload.seriesId)) throw new Error('seriesId required');
   if (type === 'apply-series' && (!payload.providerId || !payload.providerSeriesId)) throw new Error('providerId and providerSeriesId required');
+  if (type === 'restore-metadata') {
+    if (!id(payload.seriesId)) throw new Error('seriesId required');
+    if (typeof payload.connectionKey !== 'string' || !payload.connectionKey.trim() || payload.connectionKey.length > 2048) throw new Error('Kavita connection required');
+    if (typeof payload.planId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.planId)) throw new Error('Approved restore plan required');
+  }
   if (type === 'match-series' && !id(payload.seriesId) && !(payload.seriesIds as number[] | undefined)?.length) throw new Error('seriesId or seriesIds required');
   if (type === 'sync-series' && !id(payload.libraryId) && !(payload.seriesIds as number[] | undefined)?.length) throw new Error('seriesIds or libraryId required');
   if (type === 'edit-comicinfo' && !payload.path) throw new Error('path required');

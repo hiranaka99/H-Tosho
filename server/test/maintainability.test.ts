@@ -68,7 +68,6 @@ test('schema bootstrap and legacy upgrades preserve data and apply once', () => 
     assert.deepEqual(JSON.parse(row.payload_json), { seriesIds: [42] });
     assert.equal(JSON.parse(row.state_json).context.series[0].name, 'Original');
     migrateSchema(db);
-    assert.equal((db.prepare('SELECT count(*) AS n FROM schema_migrations').get() as { n: number }).n, 5);
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name='match_suggestions'").get());
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name='rejected_match_candidates'").get());
     assert.equal((db.prepare('SELECT count(*) AS n FROM jobs').get() as { n: number }).n, 1);

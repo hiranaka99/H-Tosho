@@ -1,6 +1,8 @@
 import { removeSeriesMatch, parseHistoryDetails } from '../../services/unmatch.js';
 import { getFieldPolicy, saveFieldPolicy, FieldPolicyConflict } from '../../services/fieldPolicies.js';
 import { listMetadataHistory, metadataHistoryDetail } from '../../services/metadataHistory.js';
+import { createMetadataRestorePreview, enqueueMetadataRestore, MetadataRestoreError } from '../../services/metadataRestore.js';
+import type { RestorePreviewRequest } from '../../contracts/metadataRestore.js';
 import { parseJobCommand } from '../../contracts/jobs.js';
 import { Hono } from 'hono';
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
@@ -28,6 +30,36 @@ api.get('/series/:id/metadata-history/:operationId', c=>{
   if(id===null||id<=0)return c.json({error:'Invalid series id'},400);
   const result=metadataHistoryDetail(id,c.req.param('operationId'));
   return result?c.json(result):c.json({error:'Metadata operation not found'},404);
+});
+api.post('/series/:id/metadata-history/:operationId/restore-preview', async c => {
+  const id = intParam(c.req.param('id'));
+  if (id === null || id <= 0) return c.json({error:'Invalid series id'},400);
+  const client = connectedClient();
+  if (!client) return c.json({error:'Kavita not configured'},503);
+  const body: unknown = await c.req.json().catch(() => null);
+  try {
+    return c.json(await createMetadataRestorePreview(client,id,c.req.param('operationId'),body as RestorePreviewRequest));
+  } catch (error) {
+    return c.json({error:errMsg(error)},error instanceof MetadataRestoreError ? error.status : 502);
+  }
+});
+api.post('/series/:id/metadata-restore', async c => {
+  const id = intParam(c.req.param('id'));
+  if (id === null || id <= 0) return c.json({error:'Invalid series id'},400);
+  if (!connectedClient()) return c.json({error:'Kavita not configured'},503);
+  const body: unknown = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+    || Object.keys(body).some(key => !['previewId','idempotencyKey'].includes(key))
+    || !('previewId' in body) || typeof body.previewId !== 'string'
+    || !('idempotencyKey' in body) || typeof body.idempotencyKey !== 'string') {
+    return c.json({error:'Invalid restore approval request'},400);
+  }
+  try {
+    return c.json(enqueueMetadataRestore(id,body.previewId,body.idempotencyKey,
+      command => jobQueue.enqueue('restore-metadata',command)),202);
+  } catch (error) {
+    return c.json({error:errMsg(error)},error instanceof MetadataRestoreError ? error.status : 502);
+  }
 });
 api.get('/series/:id/field-locks', (c) => {
   const id = intParam(c.req.param('id'));

@@ -9,6 +9,7 @@ import { backfillNewGalleries, countWatchedSearches } from './services/watchedSe
 import { downloadQueue } from './downloader/engine.js';
 import { startRecommendationPreloading } from './services/recommendations.js';
 import { interruptMetadataHistory } from './services/metadataHistory.js';
+import { interruptMetadataRestore } from './services/metadataRestore.js';
 
 const PORT = Number(process.env.PORT ?? 8787);
 // Local-only by default. Set HOST=0.0.0.0 deliberately for remote access;
@@ -30,6 +31,7 @@ function main(): void {
     .set({ status: 'failed', errorMessage: 'Interrupted by server restart', finishedAt: new Date().toISOString() })
     .where(eq(schema.jobs.status, 'running'))
     .run();
+  interruptMetadataRestore();
   jobQueue.registerHandler(runJob);
   downloadQueue.start();
 

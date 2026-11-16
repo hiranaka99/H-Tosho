@@ -80,6 +80,18 @@ export function migrateSchema(sqlite: Database.Database): void {
       createSchemaTables(sqlite);
       createIndexes(sqlite);
     },
+    () => {
+      const columns = sqlite.prepare('PRAGMA table_info(metadata_operations)').all() as { name: string }[];
+      if (!columns.some(column => column.name === 'restored_from_operation_id')) sqlite.exec('ALTER TABLE metadata_operations ADD COLUMN restored_from_operation_id TEXT');
+      createSchemaTables(sqlite);
+      createIndexes(sqlite);
+    },
+    () => {
+      for (const table of ['metadata_restore_previews', 'metadata_restore_plans']) {
+        const columns = sqlite.prepare(`PRAGMA table_info(${quote(table)})`).all() as { name: string }[];
+        if (!columns.some(column => column.name === 'archives_json')) sqlite.exec(`ALTER TABLE ${quote(table)} ADD COLUMN archives_json TEXT NOT NULL DEFAULT '[]'`);
+      }
+    },
   ];
   for (const [index, migration] of migrations.entries()) {
     const version = index + 1;

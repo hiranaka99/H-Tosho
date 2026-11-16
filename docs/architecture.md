@@ -11,6 +11,47 @@
 - `jobs/executor.ts` dispatches validated commands to focused handlers. `lib/mutations.ts` coordinates overlapping series work; broad scans, merges, deletion and path-only edits require exclusive library ownership. Independent explicit series can run concurrently.
 - `lib/cbz.ts` coordinates complete archive edits and publishes through unique staging files. Downloads reserve their output paths; folder merges and deletion use the same coordinator with ancestor/descendant conflicts. Waiting for ownership is cancellable.
 - `services/sync.ts` owns the common automatic/manual application flow and atomic match/history persistence. `contracts/metadata.ts` supplies shared preview and application rules. `services/unmatch.ts` uses the same mutation boundary.
+- `services/metadataHistory.ts` captures connection-scoped before/observed-after
+  snapshots before local or remote mutations. `services/metadataRestore.ts` owns
+  short-lived reviewed previews, atomic idempotent approval/Task creation,
+  durable pinned plans, expected-state checks, and linked restore operations.
+  `contracts/metadataRestore.ts` shares field mappings and exact-value availability;
+  `KavitaClient.restoreSeriesMetadataExact()` performs single-attempt writes with
+  freshly read DTOs, exact list replacement, native-lock preservation, and verified
+  readback. It does not use provider aggregation or change accepted matches.
+  External-client races are best effort, not conditional writes. Kavita v0.9.0
+  normalizes null text, summary/list whitespace and web links, and ignores release
+  years below 1000; those historical values remain explicitly unavailable
+  ([series endpoint](https://github.com/Kareadita/Kavita/blob/v0.9.0/Kavita.Services/SeriesService.cs),
+  [year validation](https://github.com/Kareadita/Kavita/blob/v0.9.0/Kavita.Common/Helpers/NumberHelper.cs)).
+  Server-derived age-rating changes are detected as review-required partial work,
+  not reported as selective success. Finalized/ambiguous restore plans never replay
+  blindly; queued never-started plans survive restart. Migration 6 adds restore
+  persistence and source links; retention pins active plans independently of logs.
+- `services/metadataArchiveRestore.ts` resolves current library roots and path
+  mappings, requires complete CBZ index/folder agreement, and prepares server-only
+  file authority. Migration 7 adds durable archive plans without manufacturing
+  authority for older approvals. Complete-file SHA-256, non-XML content SHA-256,
+  device/inode, size, timestamp and XML evidence are rechecked under archive
+  ownership and immediately before atomic publication. History records archive
+  preparation, applying and observed/unverified checkpoints; interrupted attempts
+  never replay automatically. Older archive snapshots lacking content identity
+  stay readable but cannot authorize XML restoration.
+  Consumed previews expire after approval has copied their authority; finalized
+  plan XML is released once both linked history records age out. Compact
+  idempotency receipts remain, and active plans retain their complete authority.
+- `lib/comicInfoRestore.ts` edits selected top-level XML spans without rebuilding
+  unrelated XML. Complete document replacement/removal requires explicit review;
+  unsafe grouping changes, ambiguous XML and unsupported namespaces are rejected.
+  The ZIP writer retains unrelated compressed payloads, original headers/extras,
+  attributes, comments and data descriptors, including when removing ComicInfo.
+  Title restores pair every indexed CBZ with the remote title. The exact title
+  writer temporarily protects an unlocked sort name and restores its original
+  native flag with fresh DTO/readback checks, because Kavita can derive sort names
+  during rename ([upstream controller](https://github.com/Kareadita/Kavita/blob/develop/Kavita.Server/Controllers/SeriesController.cs)).
+  Sort/localized names and flags are also recorded for inspecting interrupted
+  checkpoints. Archive-only restores do not trigger a Kavita scan; the next
+  ordinary scan reads their XML. Completed Tasks report verified archive counts.
 - `providers/anilistClient.ts` serializes AniList calls across all workflows,
   paces requests below its documented degraded limit, and respects response quota
   and cooldown headers. Bounded retries and abort signals cover both queued and

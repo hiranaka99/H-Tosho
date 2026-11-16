@@ -217,7 +217,7 @@ test('metadata history browses observed values, archive changes and older pages'
   await expect(panel.getByText('Empty list', { exact: true })).toBeVisible();
   await expect(panel.getByText('Field absent', { exact: true })).toBeVisible();
   await expect(panel.getByText('Kavita lock: locked', { exact: true })).toBeVisible();
-  await panel.locator('summary').filter({ hasText: 'chapter.cbz' }).click();
+  await panel.locator('summary').filter({ hasText: 'chapter.cbz · observed' }).click();
   await expect(panel.getByText('Number', { exact: true })).toBeVisible();
   await expect(panel.getByText('3', { exact: true })).toBeVisible();
   expect((await toggle.boundingBox())!.height).toBeGreaterThanOrEqual(44);
@@ -247,7 +247,219 @@ test('metadata history retries failed loading and explains an empty history', as
   failing = false;
   await dialog.getByRole('button', { name: 'Retry history', exact: true }).click();
   await expect(dialog.getByText('No recorded metadata changes yet.', { exact: true })).toBeVisible();
-  await expect(dialog.getByText(/Restore is not available yet; cover images are not captured/)).toBeVisible();
+  await expect(dialog.getByText(/Review selected metadata and archive values before restoring/)).toBeVisible();
+});
+
+test('metadata restore requires preview review, preserves locks by default and queues only selected fields', async ({ page }, testInfo) => {
+  const entry = { id: 'restore-source', sequence: 1, origin: 'provider-apply', status: 'completed', createdAt: '2026-11-16T08:00:00Z', finishedAt: '2026-11-16T08:01:00Z', fields: ['summary', 'tags', 'writers'], changedFields: ['summary', 'tags'], message: null, jobId: 71, restoredFromOperationId: null };
+  const before = { series: { id: 11, libraryId: 7, name: match.name }, fields: { summary: { present: true, value: '', nativeLocked: false }, tags: { present: true, value: [] }, writers: { present: true, value: null } } };
+  const availability = [{ field: 'summary', available: true, reason: null, nativeLockAvailable: true }, { field: 'tags', available: true, reason: null, nativeLockAvailable: false }, { field: 'writers', available: false, reason: 'Null lists cannot be restored exactly', nativeLockAvailable: false }];
+  let queued = 0;
+  let previewCount = 0;
+  let lastRequest: { snapshot: string; fields: string[]; nativeLockFields: string[] };
+  await page.route('**/api/series/11/field-locks', route => route.fulfill({ json: { lockedFields: [], revision: 0 } }));
+  await page.route('**/api/series/11', route => route.fulfill({ json: { series: before.series, kavita: { summary: 'Current summary' }, match: null } }));
+  await page.route('**/api/providers/anilist/series/new-candidate', route => route.fulfill({ json: { ...match.candidate, titleOptions: [match.name], summary: 'Proposed summary', tags: [], artists: [], writers: [], genres: [] } }));
+  await page.route('**/api/series/11/metadata-history', route => route.fulfill({ json: { items: [entry], nextCursor: null } }));
+  await page.route('**/api/series/11/metadata-history/restore-source', route => route.fulfill({ json: { ...entry, before, after: null, archives: [], restoreAvailability: { before: availability, after: availability.map(item => ({ ...item, available: false, reason: 'After was not verified' })) }, availability: { metadata: 'captured', archives: 'none', covers: 'not captured', restore: 'selective' } } }));
+  await page.route('**/api/series/11/metadata-history/restore-source/restore-preview', route => {
+    lastRequest = route.request().postDataJSON();
+    previewCount++;
+    return route.fulfill({ json: { id: `preview-${previewCount}`, operationId: entry.id, seriesId: 11, snapshot: lastRequest.snapshot, expiresAt: new Date(Date.now() + 600000).toISOString(), policyRevision: 0, requestedFields: lastRequest.fields, effectiveFields: lastRequest.fields, nativeLockFields: lastRequest.nativeLockFields, fields: lastRequest.fields.map(field => ({ field, current: { present: true, value: field === 'summary' ? null : [{ id: 4, title: 'A later tag with a long uninterrupted value ' + 'x'.repeat(100) }], nativeLocked: true }, restoreTo: before.fields[field as keyof typeof before.fields], protected: false, available: true, reason: null, laterEdit: true })), conflicts: [], canRestore: true } });
+  });
+  await page.route('**/api/series/11/metadata-restore', route => {
+    const body = route.request().postDataJSON();
+    expect(body.previewId).toBe('preview-3');
+    expect(body.idempotencyKey).toBeTruthy();
+    expect(Object.keys(body).sort()).toEqual(['idempotencyKey', 'previewId']);
+    queued++;
+    return route.fulfill({ json: { id: 91 } });
+  });
+  await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
+  const dialog = page.getByRole('dialog');
+  await dialog.locator('summary').filter({ hasText: /^Metadata history$/ }).click();
+  await expect(dialog.getByRole('button', { name: 'Apply & Sync', exact: true })).toBeDisabled();
+  await dialog.locator('summary').filter({ hasText: /^Metadata history$/ }).click();
+  await expect(dialog.getByRole('button', { name: 'Apply & Sync', exact: true })).toBeEnabled();
+  await dialog.locator('summary').filter({ hasText: /^Metadata history$/ }).click();
+  await dialog.getByRole('button', { name: 'View changes', exact: true }).click();
+  const restore = dialog.getByRole('region', { name: 'Restore metadata' });
+  await expect(restore.getByRole('radio', { name: 'After (observed)' })).toBeDisabled();
+  await expect(restore.getByRole('checkbox', { name: 'Writers', exact: true })).toBeDisabled();
+  await expect(restore.getByText('Null lists cannot be restored exactly')).toBeVisible();
+  await restore.getByRole('checkbox', { name: 'Description', exact: true }).check();
+  await restore.getByRole('button', { name: 'Preview restore', exact: true }).click();
+  await expect(restore.getByRole('heading', { name: 'Review restore preview' })).toBeFocused();
+  await expect(restore.getByRole('button', { name: 'Queue restore', exact: true })).toBeDisabled();
+  expect(lastRequest!.nativeLockFields).toEqual([]);
+  await restore.getByRole('checkbox', { name: 'I reviewed these current and restore values.' }).check();
+  await restore.getByRole('checkbox', { name: 'Tags', exact: true }).check();
+  await expect(restore.getByRole('button', { name: 'Queue restore', exact: true })).toHaveCount(0);
+  await restore.getByRole('button', { name: 'Preview restore', exact: true }).click();
+  await expect(restore.getByText('Empty list', { exact: true })).toBeVisible();
+  await expect(restore.getByText('Null', { exact: true })).toBeVisible();
+  await restore.getByRole('checkbox', { name: 'Restore captured Kavita lock for Description' }).check();
+  await restore.getByRole('button', { name: 'Preview restore', exact: true }).click();
+  await expect(restore.getByText('Kavita lock: unlocked', { exact: true })).toBeVisible();
+  expect(lastRequest!.nativeLockFields).toEqual(['summary']);
+  await expect(restore.getByText('Later edit: restoring will replace newer values.').first()).toBeVisible();
+  await restore.getByRole('checkbox', { name: 'I reviewed these current and restore values.' }).scrollIntoViewIfNeeded();
+  expect(await restore.evaluate(element => element.scrollWidth > element.clientWidth + 1)).toBe(false);
+  expect((await restore.getByRole('button', { name: 'Queue restore', exact: true }).boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  await page.screenshot({ path: `.impeccable/review/metadata-restore-${testInfo.project.name}.png`, animations: 'disabled' });
+  await page.evaluate(() => document.documentElement.classList.add('dark'));
+  await page.screenshot({ path: `.impeccable/review/metadata-restore-${testInfo.project.name}-dark.png`, animations: 'disabled' });
+  await restore.getByRole('checkbox', { name: 'I reviewed these current and restore values.' }).check();
+  await restore.getByRole('button', { name: 'Queue restore', exact: true }).click();
+  await expect(restore.getByRole('link', { name: 'View Task #91' })).toHaveAttribute('href', '/jobs?job=91');
+  expect(queued).toBe(1);
+  expect(lastRequest!.fields).toEqual(['summary', 'tags']);
+});
+
+test('title and archive restoration reviews paired files, explicit XML replacement and stale-file conflicts', async ({page},testInfo) => {
+  const entry={id:'archive-source',sequence:1,origin:'provider-apply',status:'completed',createdAt:'2026-11-16T08:00:00Z',fields:['title','archives'],changedFields:['title']};
+  const before={series:{id:11,libraryId:7,name:match.name},fields:{title:{present:true,value:'Saved anthology',nativeLocked:false}}};
+  const target='Chapter with a deliberately long descriptive filename '+ 'x'.repeat(70) + '.cbz';
+  const availability=[{field:'title',available:true,reason:null,nativeLockAvailable:true}];
+  let selected:{snapshot:string;fields:string[];archives?:{id:number;mode:string;fields?:string[]}[]};
+  let previews=0,approvals=0;
+  await page.route('**/api/series/11/field-locks',route=>route.fulfill({json:{lockedFields:[],revision:0}}));
+  await page.route('**/api/series/11',route=>route.fulfill({json:{series:before.series,kavita:{},match:null}}));
+  await page.route('**/api/providers/anilist/series/new-candidate',route=>route.fulfill({json:{...match.candidate,titleOptions:[match.name],summary:'Proposed',tags:[],artists:[],writers:[],genres:[]}}));
+  await page.route('**/api/series/11/metadata-history',route=>route.fulfill({json:{items:[entry],nextCursor:null}}));
+  await page.route('**/api/series/11/metadata-history/archive-source',route=>route.fulfill({json:{...entry,before,after:before,
+    archives:[{id:17,target,status:'observed',beforePresent:true,afterPresent:true,changes:[{field:'Summary',before:{present:true,value:'Saved XML summary'},after:{present:true,value:'Current XML summary'}},{field:'Series',before:before.fields.title,after:{present:true,value:match.name}}]}],
+    restoreAvailability:{before:availability,after:availability},availability:{metadata:'captured',archives:'captured',covers:'not captured',restore:'selective'}}}));
+  await page.route('**/api/series/11/metadata-history/archive-source/restore-preview',route=>{
+    selected=route.request().postDataJSON();previews++;
+    const conflict=previews===3;
+    const full=selected.archives?.[0]?.mode==='document';
+    return route.fulfill({json:{id:`archive-preview-${previews}`,operationId:entry.id,seriesId:11,snapshot:selected.snapshot,expiresAt:new Date(Date.now()+600000).toISOString(),policyRevision:0,
+      requestedFields:selected.fields,effectiveFields:selected.fields,nativeLockFields:[],
+      fields:selected.fields.map(field=>({field,current:{present:true,value:match.name},restoreTo:before.fields.title,protected:false,available:true,reason:null,laterEdit:true})),
+      archives:[{id:17,target,mode:full?'document':selected.archives?.length?'fields':'title',available:!conflict,reason:conflict?'Archive changed after preview; review required':null,laterEdit:true,
+        changes:[{field:full?'Complete ComicInfo.xml':selected.archives?.length?'Summary':'Series',current:{present:true,value:full?'<ComicInfo custom="new"><Summary>Current XML summary</Summary><Pages><Page Image="0"/></Pages></ComicInfo>':selected.archives?.length?'Current XML summary':match.name},restoreTo:{present:true,value:full?'<ComicInfo><Summary>Saved XML summary</Summary></ComicInfo>':selected.archives?.length?'Saved XML summary':'Saved anthology'}}]}],
+      conflicts:conflict?['Archive changed after preview; review required']:[],canRestore:!conflict}});
+  });
+  await page.route('**/api/series/11/metadata-restore',route=>{approvals++;return route.fulfill({json:{id:92}});});
+  await page.getByRole('button',{name:'Review match',exact:false}).first().click();
+  const dialog=page.getByRole('dialog');await dialog.locator('summary').filter({hasText:/^Metadata history$/}).click();
+  await dialog.getByRole('button',{name:'View changes',exact:true}).click();
+  const restore=dialog.getByRole('region',{name:'Restore metadata'});
+  await restore.getByRole('checkbox',{name:'Title',exact:true}).check();
+  await restore.getByRole('button',{name:'Preview restore',exact:true}).click();
+  await expect(restore.getByText(`${target} · Paired title`,{exact:true})).toBeVisible();
+  await restore.getByText(`${target} · Paired title`,{exact:true}).evaluate(element=>element.scrollIntoView({block:'center'}));
+  await page.screenshot({path:`.impeccable/review/metadata-h3-paired-${testInfo.project.name}-light.png`,animations:'disabled'});
+  await page.evaluate(()=>document.documentElement.classList.add('dark'));
+  await page.screenshot({path:`.impeccable/review/metadata-h3-paired-${testInfo.project.name}-dark.png`,animations:'disabled'});
+  await restore.locator('summary').filter({hasText:target}).click();
+  await restore.getByRole('checkbox',{name:`Restore Summary in ${target}`,exact:true}).check();
+  await expect(restore.getByRole('heading',{name:'Review restore preview'})).toHaveCount(0);
+  await restore.getByRole('button',{name:'Preview restore',exact:true}).click();
+  expect(selected!.archives).toEqual([{id:17,mode:'fields',fields:['Summary']}]);
+  await expect(restore.getByText('Saved XML summary',{exact:true})).toBeVisible();
+  await restore.getByRole('checkbox',{name:`Replace complete ComicInfo.xml in ${target}`,exact:true}).check();
+  await expect(restore.getByRole('checkbox',{name:`Restore Summary in ${target}`,exact:true})).toBeDisabled();
+  await expect(restore.getByText(/This replaces all current XML with the saved document/)).toBeVisible();
+  await restore.getByText(/This replaces all current XML with the saved document/).evaluate(element=>element.scrollIntoView({block:'center'}));
+  await page.screenshot({path:`.impeccable/review/metadata-h3-selection-${testInfo.project.name}-dark.png`,animations:'disabled'});
+  await page.evaluate(()=>document.documentElement.classList.remove('dark'));
+  await page.screenshot({path:`.impeccable/review/metadata-h3-selection-${testInfo.project.name}-light.png`,animations:'disabled'});
+  await restore.getByRole('button',{name:'Preview restore',exact:true}).click();
+  expect(selected!.archives).toEqual([{id:17,mode:'document'}]);
+  await expect(restore.getByRole('button',{name:'Queue restore',exact:true})).toBeDisabled();
+  await restore.getByText('Review required',{exact:true}).scrollIntoViewIfNeeded();
+  await page.evaluate(()=>document.documentElement.classList.add('dark'));
+  await page.screenshot({path:`.impeccable/review/metadata-h3-conflict-${testInfo.project.name}-dark.png`,animations:'disabled'});
+  await page.evaluate(()=>document.documentElement.classList.remove('dark'));
+  await page.screenshot({path:`.impeccable/review/metadata-h3-conflict-${testInfo.project.name}-light.png`,animations:'disabled'});
+  await restore.getByRole('button',{name:'Refresh restore preview',exact:true}).click();
+  await restore.getByRole('checkbox',{name:'I reviewed these current and restore values.'}).check();
+  expect(await restore.evaluate(element=>element.scrollWidth>element.clientWidth+1)).toBe(false);
+  await restore.getByRole('button',{name:'Queue restore',exact:true}).click();
+  await expect(restore.getByRole('link',{name:'View Task #92'})).toBeVisible();expect(approvals).toBe(1);
+});
+
+test('metadata restore conflicts require explicit protection unlock and a fresh preview; queue errors stay reviewable', async ({ page }, testInfo) => {
+  let policy = { lockedFields: ['summary'], revision: 0 };
+  let previews = 0;
+  let approvals = 0;
+  const entry = { id: 'protected-source', sequence: 1, origin: 'provider-apply', status: 'completed', createdAt: '2026-11-16T08:00:00Z', fields: ['summary'], changedFields: ['summary'], message: null, jobId: null, restoredFromOperationId: null };
+  const snapshot = { series: { id: 11, libraryId: 7, name: match.name }, fields: { summary: { present: true, value: 'Saved summary', nativeLocked: true } } };
+  await page.route('**/api/series/11/field-locks', route => {
+    if (route.request().method() === 'PUT') { const body = route.request().postDataJSON(); expect(body.expectedRevision).toBe(policy.revision); policy = { lockedFields: body.lockedFields, revision: policy.revision + 1 }; }
+    return route.fulfill({ json: policy });
+  });
+  await page.route('**/api/series/11', route => route.fulfill({ json: { series: snapshot.series, kavita: { summary: 'Current summary' }, match: null } }));
+  await page.route('**/api/providers/anilist/series/new-candidate', route => route.fulfill({ json: { ...match.candidate, titleOptions: [match.name], summary: 'Proposed summary', tags: [], artists: [], writers: [], genres: [] } }));
+  await page.route('**/api/series/11/metadata-history', route => route.fulfill({ json: { items: [entry], nextCursor: null } }));
+  await page.route('**/api/series/11/metadata-history/protected-source', route => route.fulfill({ json: { ...entry, before: snapshot, after: snapshot, archives: [], restoreAvailability: { before: [{ field: 'summary', available: true, reason: null, nativeLockAvailable: true }], after: [{ field: 'summary', available: true, reason: null, nativeLockAvailable: true }] } } }));
+  await page.route('**/api/series/11/metadata-history/protected-source/restore-preview', route => {
+    previews++;
+    const protectedField = policy.lockedFields.includes('summary');
+    return route.fulfill({ json: { id: `protected-${previews}`, seriesId: 11, operationId: entry.id, snapshot: 'before', expiresAt: new Date(Date.now() + (previews === 2 ? -1000 : 600000)).toISOString(), policyRevision: policy.revision, requestedFields: ['summary'], effectiveFields: protectedField ? [] : ['summary'], nativeLockFields: [], fields: [{ field: 'summary', current: snapshot.fields.summary, restoreTo: snapshot.fields.summary, protected: protectedField, available: true, reason: null, laterEdit: false }], conflicts: protectedField ? ['Description is protected; review required'] : [], canRestore: !protectedField } });
+  });
+  await page.route('**/api/series/11/metadata-restore', route => { approvals++; return route.fulfill({ status: 409, json: { error: 'Metadata changed after preview; review required' } }); });
+  await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
+  const dialog = page.getByRole('dialog');
+  await dialog.locator('summary').filter({ hasText: /^Metadata history$/ }).click();
+  await dialog.getByRole('button', { name: 'View changes', exact: true }).click();
+  const restore = dialog.getByRole('region', { name: 'Restore metadata' });
+  await restore.getByRole('checkbox', { name: 'Description', exact: false }).first().check();
+  await restore.getByRole('button', { name: 'Preview restore', exact: true }).click();
+  await expect(restore.getByText('Description is protected; review required')).toBeVisible();
+  await expect(restore.getByRole('button', { name: 'Queue restore', exact: true })).toBeDisabled();
+  await restore.getByText('Description is protected; review required').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `.impeccable/review/metadata-restore-conflict-${testInfo.project.name}-light.png`, animations: 'disabled' });
+  await page.evaluate(() => document.documentElement.classList.add('dark'));
+  await page.screenshot({ path: `.impeccable/review/metadata-restore-conflict-${testInfo.project.name}-dark.png`, animations: 'disabled' });
+  await page.evaluate(() => document.documentElement.classList.remove('dark'));
+  await restore.getByRole('button', { name: 'Unlock Description', exact: true }).click();
+  await expect(restore.getByRole('heading', { name: 'Review restore preview' })).toHaveCount(0);
+  expect(policy.lockedFields).toEqual([]);
+  await restore.getByRole('button', { name: 'Preview restore', exact: true }).click();
+  await expect(restore.getByText('This preview expired. Refresh it and review current values again.')).toBeVisible();
+  await expect(restore.getByRole('button', { name: 'Queue restore', exact: true })).toBeDisabled();
+  await restore.getByRole('button', { name: 'Refresh restore preview', exact: true }).click();
+  await restore.getByRole('radio', { name: 'After (observed)' }).check();
+  await expect(restore.getByRole('heading', { name: 'Review restore preview' })).toHaveCount(0);
+  await restore.getByRole('checkbox', { name: 'Description', exact: true }).check();
+  await restore.getByRole('button', { name: 'Preview restore', exact: true }).click();
+  await restore.getByRole('checkbox', { name: 'I reviewed these current and restore values.' }).check();
+  await restore.getByRole('button', { name: 'Queue restore', exact: true }).click();
+  await expect(restore.getByText('Metadata changed after preview; review required')).toBeVisible();
+  await expect(restore.getByRole('button', { name: 'Queue restore', exact: true })).toHaveCount(0);
+  await expect(restore.getByRole('button', { name: 'Preview restore', exact: true })).toBeEnabled();
+  expect(approvals).toBe(1);
+});
+
+test('restore Tasks show verified fields and send failed restores back to series history instead of retry', async ({ page },testInfo) => {
+  const base = { type: 'restore-metadata', payload: { seriesId: 11, planId: 'approved-plan' }, context: { series: [{ id: 11, name: match.name }] }, progressCurrent: 0, progressTotal: 0, createdAt: '2026-11-16T08:00:00Z', startedAt: '2026-11-16T08:01:00Z', finishedAt: '2026-11-16T08:02:00Z' };
+  const completed = { ...base, id: 91, status: 'completed', result: { restored: ['summary', 'tags'], operationId: 'restored-operation' }, errorMessage: null };
+  const failed = { ...base, id: 92, status: 'failed', result: null, errorMessage: 'Metadata changed after preview; review required' };
+  const archiveOnly={...base,id:93,status:'completed',result:{restored:[],restoredArchives:2,operationId:'archive-restored'},errorMessage:null};
+  await page.route('**/api/jobs', route => route.fulfill({ json: [completed, failed,archiveOnly] }));
+  await page.route('**/api/jobs/91', route => route.fulfill({ json: { job: completed, logs: [] } }));
+  await page.route('**/api/jobs/92', route => route.fulfill({ json: { job: failed, logs: [] } }));
+  await page.route('**/api/jobs/93', route => route.fulfill({ json: { job: archiveOnly, logs: [] } }));
+  await navigate(page, 'Tasks');
+  await expect(page.getByText('Restored: Summary, Tags', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: `View details for task #91: ${match.name}`, exact: true }).click();
+  await expect(page.getByRole('dialog').getByText('Verified restored fields: Summary, Tags. Inspect linked history for metadata and archive results.', { exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: `View details for task #92: ${match.name}`, exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText(/This task cannot be retried directly/)).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Retry task', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('link', { name: 'Open series metadata history' })).toHaveAttribute('href', '/libraries?series=11&action=identify');
+  await page.keyboard.press('Escape');
+  await expect(page.getByText('Restored: 2 archives',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:`View details for task #93: ${match.name}`,exact:true}).click();
+  await expect(page.getByRole('dialog').getByText('ComicInfo.xml verified in 2 archives. Inspect linked history for metadata and archive results.',{exact:true})).toBeVisible();
+  await page.screenshot({path:`.impeccable/review/metadata-h3-task-${testInfo.project.name}-light.png`,animations:'disabled'});
+  await page.evaluate(()=>document.documentElement.classList.add('dark'));
+  await page.screenshot({path:`.impeccable/review/metadata-h3-task-${testInfo.project.name}-dark.png`,animations:'disabled'});
 });
 
 test('responsive visual review in light and dark themes', async ({ page }, testInfo) => {

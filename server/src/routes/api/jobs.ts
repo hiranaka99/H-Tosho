@@ -13,6 +13,7 @@ api.post('/jobs', async (c) => {
   let command;
   try { command = parseJobCommand(body?.type, body); validateMergeDownloads('downloads' in command.payload ? command.payload.downloads : undefined); }
   catch (error) { return c.json({ error: errMsg(error) }, 400); }
+  if (command.type === 'restore-metadata') return c.json({ error: 'Restore requires a reviewed metadata preview; use the series restore action' }, 409);
   const payload: JobPayload = command.payload;
   if (body.type === 'merge-series' && payload.downloads?.length) {
     try {

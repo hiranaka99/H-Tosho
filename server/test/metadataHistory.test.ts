@@ -50,7 +50,12 @@ test('commits actual before values before mutation and retains null, absent, emp
   assert.deepEqual(detail.after!.fields.summary, { present: true, value: '', nativeLocked: true });
   assert.deepEqual(entry.changedFields, ['summary']);
   assert.equal(detail.availability.covers, 'not captured');
-  assert.equal(detail.availability.restore, 'not enabled');
+  assert.match(detail.availability.restore, /preview and approval required/);
+  assert.equal(detail.restoredFromOperationId, null);
+  assert.equal(detail.restoreAvailability.before.find(field => field.field === 'summary')!.available, false);
+  assert.match(detail.restoreAvailability.before.find(field => field.field === 'summary')!.reason!, /null/);
+  assert.equal(detail.restoreAvailability.after.find(field => field.field === 'summary')!.available, true);
+  assert.equal(detail.restoreAvailability.before.find(field => field.field === 'language')!.available, false);
   assert.equal(JSON.stringify(detail).includes('never-store-this'), false);
 });
 

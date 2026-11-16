@@ -18,6 +18,7 @@ const FILTERS: readonly { id: JobFilter; label: string }[] = [
 const LOG_COLOR: Record<string, string> = { info: 'text-muted', warn: 'text-warning', warning: 'text-warning', error: 'text-danger', success: 'text-success' };
 const controlClass = 'max-lg:min-h-11 pointer-coarse:min-h-11';
 
+
 function isActive(job: Job): boolean {
   return job.status === 'running' || job.status === 'queued';
 }
@@ -128,6 +129,7 @@ const JOB_PURPOSE: Record<string, string> = {
   'match-series': 'Find and apply metadata matches for the selected series',
   'sync-series': 'Re-match and update series metadata and covers',
   'apply-series': 'Apply the reviewed metadata candidate and selected fields',
+    'restore-metadata': 'Restore the reviewed historical metadata and selected ComicInfo values',
   'clear-overrides': 'Remove library-specific settings overrides',
   'check-watched-searches': 'Check saved searches for new galleries',
   'edit-comicinfo': 'Rewrite ComicInfo.xml in the selected archive',
@@ -136,12 +138,19 @@ const JOB_PURPOSE: Record<string, string> = {
 };
 
 function jobOutcome(job: Job): string {
+  if (job.type === 'restore-metadata' && job.status === 'failed') return 'Review required. Inspect metadata history for observed changes, then create and review a fresh restore preview. This task cannot be retried directly.';
+  if (job.type === 'restore-metadata' && job.status === 'cancelled') return 'Restore cancelled. A write may already have occurred; inspect the linked metadata history before creating a new preview.';
   if (job.status === 'queued') return 'Waiting to start. No work has been performed yet.';
   if (job.status === 'running') return job.progressTotal > 0 ? `${job.progressCurrent} of ${job.progressTotal} items processed so far.` : 'Work is in progress; no item count reported yet.';
   if (job.status === 'cancelled') return 'Cancelled. Work already performed is not undone.';
   if (!job.result || typeof job.result !== 'object' || Array.isArray(job.result)) return job.status === 'failed' ? 'Stopped with an error. Check logs for any work performed before the failure.' : 'Finished. No outcome summary was recorded; check the logs.';
   const result = job.result as Record<string, unknown>;
   const parts: string[] = [];
+  if (job.type === 'restore-metadata') {
+    if (Array.isArray(result.restored) && result.restored.length) parts.push(`Verified restored fields: ${result.restored.map(field => fieldLabel(String(field))).join(', ')}`);
+    if (typeof result.restoredArchives === 'number' && result.restoredArchives > 0) parts.push(`ComicInfo.xml verified in ${result.restoredArchives} ${result.restoredArchives === 1 ? 'archive' : 'archives'}`);
+    return `${parts.length ? parts.join('. ') : 'Restore completed'}. Inspect linked history for metadata and archive results.`;
+  }
   if (job.type === 'scan-matchable' || job.type === 'scan-downloaded') {
     for (const [key, label] of [['processed', 'galleries checked'], ['matchable', 'galleries with candidates'], ['failed', 'galleries with provider errors']]) if (typeof result[key] === 'number') parts.push(`${result[key]} ${label}`);
   } else if (job.type === 'check-watched-searches') {
@@ -171,6 +180,11 @@ function jobSummary(job: Job): string | null {
   if (job.status === 'failed') return job.recovery?.explanation ?? job.errorMessage?.split('\n')[0] ?? 'Open details for the error.';
   if (job.status !== 'completed' || !job.result || typeof job.result !== 'object' || Array.isArray(job.result)) return null;
   const result = job.result as Record<string, unknown>;
+  if (job.type === 'restore-metadata') {
+    const restored=Array.isArray(result.restored)?result.restored.map(field=>fieldLabel(String(field))):[];
+    if(typeof result.restoredArchives==='number' && result.restoredArchives>0)restored.push(`${result.restoredArchives} ${result.restoredArchives===1?'archive':'archives'}`);
+    return restored.length?`Restored: ${restored.join(', ')}`:'Restore completed; inspect history';
+  }
   if (job.type === 'check-watched-searches' && typeof result.newGalleries === 'number') {
     return result.newGalleries ? `${result.newGalleries} new ${result.newGalleries === 1 ? 'gallery' : 'galleries'}` : 'No new galleries';
   }
@@ -384,7 +398,7 @@ export function Jobs() {
   const actions = (job: Job, compact = false) => (
     <>
       {job.status === 'failed' && <>
-        <Button className={controlClass} size={compact ? 'sm' : 'default'} variant="outline" disabled={retryMutation.isPending || clearMutation.isPending} onClick={() => retryMutation.mutate(job.id)}>{retryMutation.isPending && retryMutation.variables === job.id ? <Spinner /> : <RotateCcw className="h-4 w-4" />}{retryMutation.isPending && retryMutation.variables === job.id ? 'Retrying…' : compact ? 'Retry' : 'Retry task'}</Button>
+        {job.type !== 'restore-metadata' && <Button className={controlClass} size={compact ? 'sm' : 'default'} variant="outline" disabled={retryMutation.isPending || clearMutation.isPending} onClick={() => retryMutation.mutate(job.id)}>{retryMutation.isPending && retryMutation.variables === job.id ? <Spinner /> : <RotateCcw className="h-4 w-4" />}{retryMutation.isPending && retryMutation.variables === job.id ? 'Retrying…' : compact ? 'Retry' : 'Retry task'}</Button>}
         {!compact && <Button className={controlClass} variant="outline" disabled={retryMutation.isPending || clearMutation.isPending} onClick={() => setClearTarget(job.id)}><Trash2 className="h-4 w-4" /> Clear task</Button>}
       </>}
       {isActive(job) && <Button className={controlClass} size={compact ? 'sm' : 'default'} variant="outline" disabled={cancelMutation.isPending} onClick={() => cancelMutation.mutate(job.id)}>{cancelMutation.isPending && cancelMutation.variables === job.id ? <Spinner /> : <Ban className="h-4 w-4" />}{cancelMutation.isPending && cancelMutation.variables === job.id ? 'Cancelling…' : compact ? 'Cancel' : 'Cancel task'}</Button>}
@@ -476,6 +490,7 @@ export function Jobs() {
                 {(isActive(selectedJob) || selectedJob.status === 'failed') && <div className="flex flex-wrap gap-2">{actions(selectedJob)}</div>}
                 {selectedJob.errorMessage && <section role="alert" className="rounded-lg border border-danger/30 bg-danger/5 p-3"><h3 className="mb-2 text-sm font-semibold text-danger">Failure</h3><p className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{selectedJob.errorMessage}</p></section>}
                 <RecoveryActions job={selectedJob} />
+                {selectedJob.type === 'restore-metadata' && typeof selectedJob.payload.seriesId === 'number' && <section className="space-y-2"><h3 className="text-sm font-semibold">Metadata history</h3><p className="text-sm text-muted">Inspect the observed before-and-after values. Failed or interrupted restores require a fresh reviewed preview, never a blind retry.</p><Button asChild variant="outline" className="min-h-11"><Link to={`/libraries?series=${selectedJob.payload.seriesId}&action=identify`}>Open series metadata history</Link></Button></section>}
                 {selectedJob.result !== null && selectedJob.result !== undefined && <Disclosure label="Recorded result" summaryClassName="px-0"><div className="pt-3"><StructuredValue value={selectedJob.result} /></div></Disclosure>}
                 <Disclosure label="Timing" summaryClassName="px-0"><p className="mt-2 text-sm">{duration(selectedJob)}</p><dl className="mt-3 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">{[['Created', selectedJob.createdAt], ['Started', selectedJob.startedAt], ['Finished', selectedJob.finishedAt]].map(([label, value]) => <div key={label}><dt className="text-xs text-muted">{label}</dt><dd className="mt-1 break-words">{timestamp(value)}</dd></div>)}</dl></Disclosure>
                 <Disclosure label="Technical details" summaryClassName="px-0"><p className="py-3 font-mono text-xs text-muted">{selectedJob.type} · Task #{selectedJob.id}</p><StructuredValue value={selectedJob.payload} /></Disclosure>
