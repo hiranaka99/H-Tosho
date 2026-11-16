@@ -3,6 +3,7 @@ import { getFieldPolicy, saveFieldPolicy, FieldPolicyConflict } from '../../serv
 import { listMetadataHistory, metadataHistoryDetail } from '../../services/metadataHistory.js';
 import { createMetadataRestorePreview, enqueueMetadataRestore, MetadataRestoreError } from '../../services/metadataRestore.js';
 import type { RestorePreviewRequest } from '../../contracts/metadataRestore.js';
+import { retainedCoverAsset } from '../../services/metadataCovers.js';
 import { parseJobCommand } from '../../contracts/jobs.js';
 import { Hono } from 'hono';
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
@@ -19,6 +20,15 @@ import { rewriteMangaDexCoverUrl } from '../media.js';
 
 import { connectedClient, resolveJobContext, errMsg, intParam, stringsFromMatchMetadata, kavitaCoverUrl } from './helpers.js';
 export const api = new Hono();
+api.get('/series/:id/metadata-history/:operationId/assets/:assetId',c=>{
+  const id=intParam(c.req.param('id'));
+  if(id===null||id<=0)return c.json({error:'Invalid series id'},400);
+  const asset=retainedCoverAsset(id,c.req.param('operationId'),c.req.param('assetId'));
+  if(!asset)return c.json({error:'Retained cover image not found for this operation'},404);
+  c.header('Cache-Control','private, no-store');c.header('X-Content-Type-Options','nosniff');
+  c.header('Content-Security-Policy',"default-src 'none'; sandbox");c.header('Content-Type',asset.mediaType);
+  return c.body(new Uint8Array(asset.data));
+});
 api.get('/series/:id/metadata-history', c=>{
   const id=intParam(c.req.param('id')), raw=c.req.query('cursor');
   const cursor=raw===undefined?undefined:intParam(raw);

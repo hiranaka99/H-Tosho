@@ -8,6 +8,7 @@ import { eq } from 'drizzle-orm';
 // Isolated DB before the db module loads (same module-boundary reason as
 // syncApply.test.ts): DATA_DIR is a module-level const in db/index.js.
 process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-unmatch-'));
+process.env.HTOSHO_COVER_HISTORY_LIMIT_MIB='256';
 
 const { initDb, getDb, schema } = await import('../src/db/index.js');
 initDb();
@@ -21,11 +22,15 @@ afterEach(() => {
 });
 
 function stubKavita(requests: Array<{ url: string; init?: RequestInit }> = []): void {
+  let coverLocked=true,coverImage:string|null='series.png';
   globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     requests.push({ url, init });
+    if(url.includes('/api/Server/server-info-slim'))return Response.json({kavitaVersion:'0.9.1',installId:'unmatch-install'});
     const m = url.match(/\/api\/Series\/(\d+)$/);
-    if (m) return Response.json({ id: Number(m[1]), libraryId: 1, name: `Series ${m[1]}`, sortName: `Series ${m[1]}` });
+    if (m) return Response.json({ id: Number(m[1]), libraryId: 1, name: `Series ${m[1]}`, sortName: `Series ${m[1]}`,coverImageLocked:coverLocked,coverImage });
+    if(url.includes('/api/Image/series-cover'))return coverImage?new Response(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6XxkAAAAASUVORK5CYII=','base64'),{headers:{'content-type':'image/png'}}):new Response(null,{status:404});
+    if(url.endsWith('/api/Upload/series')){coverLocked=false;coverImage=null;return Response.json({ok:true});}
     if (url.includes('/api/Series/metadata?')) return Response.json({
       id: 1, seriesId: 7, summary: 'Provider summary', genres: [{ id: 1, title: 'Action' }], tags: [{ id: 2, title: 'Provider tag' }, { id: 3, title: 'User tag' }],
       writers: [{ id: 4, name: 'Provider Writer' }], coverArtists: [], publishers: [], characters: [], pencillers: [{ id: 5, name: 'Provider Artist' }], inkers: [], imprints: [], colorists: [], letterers: [], editors: [], translators: [], teams: [], locations: [],

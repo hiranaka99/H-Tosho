@@ -229,6 +229,35 @@ captured by this version: older snapshots remain browseable but cannot authorize
 an XML restore. Moves and whole merges are not reversed. XML-only changes reach
 Kavita on its next library scan; restoration does not start a scan or a download.
 
+**Series-cover history** can retain the original bytes served by Kavita before
+and after provider cover updates and unmatch. To enable capture, choose a storage
+budget with the server/container environment variable
+`HTOSHO_COVER_HISTORY_LIMIT_MIB` (an integer from 10 through 16384), then restart
+H-Tosho. For example, add `HTOSHO_COVER_HISTORY_LIMIT_MIB=256` to your Compose
+service's `environment` list for a 256 MiB image budget. Capture is off until an
+explicit budget is configured; existing cover updates continue to work.
+
+With capture enabled, a failed required image read, unknown cover lock, stale
+image, or full budget prevents the affected series-cover write. Provider updates
+can still apply other eligible metadata; unmatch stops before its cleanup writes
+if the required cover backup fails. History distinguishes a genuinely absent
+image, failed capture, and unavailable readback, and preserves observed images
+after partial failure or cancellation. Protected covers are neither read nor
+changed.
+
+Images are deduplicated in the persistent database and follow the history
+retention policy. Each image is limited to 5 MiB; capacity for a 5 MiB readback is
+reserved before a cover write. Retained or pinned images are never evicted to
+admit new ones. Raise the configured budget and restart before retrying a write
+blocked by capacity. The limit counts image payloads and reservations, with
+additional disk space needed for SQLite bookkeeping and its write-ahead log.
+Review capacity against your library before enabling capture widely.
+
+**Cover restoration is still unavailable.** Kavita's upload path resizes and
+re-encodes images, so re-uploading retained bytes cannot promise an exact
+round-trip. Earlier operations and volume covers have no saved image backup.
+Browsing retained images does not start downloads, scans, or restore Tasks.
+
 ### Match new additions automatically
 
 Open **Library actions** to turn on **Auto-match new series** for the libraries

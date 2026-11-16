@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, blob, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
 /**
@@ -41,6 +41,30 @@ export const metadataOperationSteps = sqliteTable('metadata_operation_steps', {
   afterJson: text('after_json'),
   status: text('status').notNull().default('prepared'),
 }, table => [uniqueIndex('idx_metadata_operation_target').on(table.operationId, table.target)]);
+
+/** Content-addressed binary assets, served only through an authorized operation reference. */
+export const metadataAssets = sqliteTable('metadata_assets', {
+  id: text('id').primaryKey(),
+  mediaType: text('media_type').notNull(),
+  byteSize: integer('byte_size').notNull(),
+  data: blob('data', {mode:'buffer'}).notNull(),
+});
+
+/** One series-cover checkpoint per operation; volume covers remain outside capture/restore coverage. */
+export const metadataSeriesCovers = sqliteTable('metadata_series_covers', {
+  operationId: text('operation_id').primaryKey(),
+  status: text('status').notNull().default('preparing'),
+  beforeState: text('before_state').notNull().default('unavailable'),
+  beforeAssetId: text('before_asset_id'),
+  beforeLocked: integer('before_locked', {mode:'boolean'}),
+  beforeEvidenceJson: text('before_evidence_json'),
+  beforeReason: text('before_reason'),
+  afterState: text('after_state').notNull().default('unavailable'),
+  afterAssetId: text('after_asset_id'),
+  afterLocked: integer('after_locked', {mode:'boolean'}),
+  afterReason: text('after_reason'),
+  reservedBytes: integer('reserved_bytes').notNull().default(0),
+});
 
 /** Unconsumed previews expire; approved plans copy all write authority durably. */
 export const metadataRestorePreviews = sqliteTable('metadata_restore_previews', {

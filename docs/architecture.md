@@ -52,6 +52,38 @@
   Sort/localized names and flags are also recorded for inspecting interrupted
   checkpoints. Archive-only restores do not trigger a Kavita scan; the next
   ordinary scan reads their XML. Completed Tasks report verified archive counts.
+- `services/metadataCovers.ts` and migration 8 add series-cover checkpoints and
+  content-addressed raster BLOBs in SQLite. Capture is opt-in: a validated
+  `HTOSHO_COVER_HISTORY_LIMIT_MIB` (10–16384 MiB) confirms the operator's payload
+  budget; unset leaves the existing cover workflow available with explicit
+  not-captured history. Each image is capped at 5 MiB, and each active capture
+  reserves 5 MiB for readback before admitting its before asset. Global payload
+  accounting includes reservations and deduplicates identical assets across
+  retained references without evicting any live/pinned history. The 256 MiB
+  reference budget is provisional; actual library capacity remains an operator
+  decision, and SQLite/WAL overhead is additional.
+  Provider series-cover capture precedes title/archive/metadata writes, then
+  rechecks image hash, native cover lock and target identity before upload.
+  Failed cover preparation skips that cover while eligible scalar work can
+  finish; unmatch prepares required cover backup before any cleanup writes.
+  After observations survive cancellation/partial failure; unavailable readback
+  is unverified. Startup interruption releases reservations and retains original
+  observations. Retention deletes cover checkpoints with expired operations and
+  garbage-collects only assets unreferenced by every retained/pinned checkpoint.
+- Retained cover handlers are authenticated and scoped by the active connection,
+  series and operation reference; a content hash alone grants no access. Binary
+  reads are bounded and uncached, served as validated raster types with nosniff
+  and private/no-store headers. Cover filenames, identity paths, credentials and
+  credential-bearing provider URLs are not exposed as asset authority.
+  The current [image controller](https://github.com/Kareadita/Kavita/blob/develop/Kavita.Server/Controllers/ImageController.cs)
+  supports series and volume image reads, and its
+  [volume DTO](https://github.com/Kareadita/Kavita/blob/develop/Kavita.Models/DTOs/VolumeDto.cs)
+  exposes the native cover lock. However,
+  [cover uploads](https://github.com/Kareadita/Kavita/blob/develop/Kavita.Server/Controllers/UploadController.cs)
+  pass through [thumbnail re-encoding](https://github.com/Kareadita/Kavita/blob/develop/Kavita.Services/ImageService.cs).
+  No byte-preserving write path or safe conversion preview was verified. Series
+  cover restore is rejected by existing strict restore contracts; volume capture
+  and restore remain gated pending representative supported-version fixtures.
 - `providers/anilistClient.ts` serializes AniList calls across all workflows,
   paces requests below its documented degraded limit, and respects response quota
   and cooldown headers. Bounded retries and abort signals cover both queued and

@@ -22,6 +22,7 @@ import {
   type SeriesMetadataPayload,
 } from './types.js';
 import type { MetadataSnapshot, RecordedValue } from '../contracts/metadataHistory.js';
+import { MAX_RETAINED_COVER_BYTES } from '../contracts/metadataCovers.js';
 import {
   getMetadataRestoreFieldAvailability,
   isRestorableMetadataField,
@@ -920,6 +921,25 @@ export class KavitaClient {
       data: Buffer.from(await response.arrayBuffer()),
       contentType: response.headers.get('content-type') ?? 'application/octet-stream',
     };
+  }
+
+  /** Bounded, uncached original response bytes for history; 404 is interpreted using the series DTO by the caller. */
+  async getSeriesCoverForHistory(seriesId:number):Promise<{data:Buffer;contentType:string}|null> {
+    const target=`/Image/series-cover?seriesId=${encodeURIComponent(seriesId)}&apiKey=${encodeURIComponent(this.apiKey)}`;
+    const response=await fetch(this.url(target),{headers:this.headers,cache:'no-store',redirect:'error',signal:AbortSignal.timeout(30_000)});
+    if(response.status===404){await response.body?.cancel();return null;}
+    if(!response.ok){await response.body?.cancel();throw this.requestError(`Read series ${seriesId} cover for history`,target,response.status);}
+    const length=response.headers.get('content-length');
+    if(length!==null && Number(length)>MAX_RETAINED_COVER_BYTES){await response.body?.cancel();throw new Error('Cover exceeds the 5 MiB history asset limit');}
+    if(!response.body)throw new Error('Cover history response has no image body');
+    const reader=response.body.getReader(),chunks:Uint8Array[]=[];
+    let size=0;
+    try {
+      for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;
+        if(size>MAX_RETAINED_COVER_BYTES)throw new Error('Cover exceeds the 5 MiB history asset limit');chunks.push(value);}
+    } catch(error){await reader.cancel().catch(()=>{});throw error;} finally{reader.releaseLock();}
+    if(!size)throw new Error('Cover history response was empty');
+    return {data:Buffer.concat(chunks,size),contentType:response.headers.get('content-type')??'application/octet-stream'};
   }
 
   async downloadImage(url: string): Promise<Buffer> {

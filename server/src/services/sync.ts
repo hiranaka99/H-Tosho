@@ -84,6 +84,7 @@ export async function applyToKavita(
     excludedFields?: string[];
     /** CBZ chapters whose ComicInfo.Series the caller rewrote to the applied title. */
     titleFiles?: number;
+    journal?: MetadataJournal;
   },
 ): Promise<ApplyResult> {
   const errors: string[] = [];
@@ -138,6 +139,7 @@ export async function applyToKavita(
 
   if (!protectedFields.includes('cover') && (opts.coverUrl || (opts.cover && opts.cover.length > 0))) {
     try {
+      await opts.journal?.captureSeriesCover();
       if (opts.coverUrl) {
         await applyCover(
           client,
@@ -380,6 +382,11 @@ async function applyResolvedSeriesMatchRecorded(
   const protectedFields = getFieldPolicy(seriesId).lockedFields;
   const excludedFields = [...new Set([...(opts.excludedFields ?? []), ...protectedFields])];
   const preflightWarnings: string[] = protectedFields.length ? [`Protected from H-Tosho sync: ${protectedFields.join(', ')}`] : [];
+  let seriesCoverReady=true;
+  const coverCaptureErrors:string[]=[];
+  if(opts.cover!==false && !protectedFields.includes('cover') && meta.coverUrl) {
+    try{await journal.captureSeriesCover();}catch(error){seriesCoverReady=false;coverCaptureErrors.push(`cover: ${error instanceof Error?error.message:'Could not retain the current series cover'}; series cover was skipped`);}
+  }
   const newTitle = meta.title.trim();
   if (newTitle && !excludedFields.includes('title') && newTitle !== series.name.trim()) {
     const libraries = await client.getLibraries();
@@ -413,13 +420,15 @@ async function applyResolvedSeriesMatchRecorded(
   if (!titleFilesUpdated && (opts.signal?.aborted || opts.isCancelled?.())) throw opts.signal?.reason ?? new JobCancelled();
   const pushCovers = opts.cover !== false && !protectedFields.includes('cover');
   const result = await applyToKavita(client, seriesId, meta, {
-    coverUrl: pushCovers ? meta.coverUrl : undefined,
+    coverUrl: pushCovers && seriesCoverReady ? meta.coverUrl : undefined,
     volumeCovers: pushCovers ? meta.volumeCovers : undefined,
     excludedFields,
+    journal,
     title: meta.title,
     titleFiles: titleFilesUpdated || undefined,
   });
   result.warnings.unshift(...preflightWarnings);
+  result.errors.unshift(...coverCaptureErrors);
   // History/notifications show the name Kavita displays after this sync.
   const renamed = !excludedFields.includes('title') && newTitle !== series.name.trim() && result.pushed.includes('name');
   invalidateSeriesArtists(seriesId);

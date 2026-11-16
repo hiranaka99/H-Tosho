@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add opt-in series-cover history capture for provider updates and unmatch,
+  including retained original bytes, native locks, authenticated before/after
+  viewing, missing-image retry and truthful absent/unverified states. Configure
+  `HTOSHO_COVER_HISTORY_LIMIT_MIB` to enable bounded capture. Deduplicate assets,
+  reserve readback capacity, and retain images through restart and pinned history.
+  Exact cover restoration stays unavailable because Kavita re-encodes uploads;
+  volume-cover capture and restoration remain gated.
+
 - Add exact selective scalar/list restoration from Metadata history, with
   Current → Restore to previews, explicit review, protection-aware field selection,
   optional recorded native-lock restoration, and linked restore Tasks/history.

@@ -1,4 +1,5 @@
 import type { MetadataSnapshot, RecordedValue } from './metadataHistory.js';
+import { COVER_RESTORE_UNAVAILABLE } from './metadataCovers.js';
 
 /** Title is additionally gated on complete, accessible archive inventory. Covers remain unavailable. */
 export const RESTORABLE_METADATA_FIELDS = ['title', 'summary', 'genres', 'tags', 'writers', 'artists', 'releaseDate', 'language', 'status', 'url'] as const;
@@ -35,6 +36,7 @@ export function getMetadataRestoreFieldAvailability(field: string, cell: Recorde
   const mapping = isRestorableMetadataField(field) ? RESTORE_FIELD_MAPPINGS[field] : undefined;
   const nativeLockAvailable = !!mapping && 'lock' in mapping && typeof cell?.nativeLocked === 'boolean';
   const unavailable = (reason: string): RestoreFieldAvailability => ({ field, available: false, reason, nativeLockAvailable });
+  if(field==='cover')return unavailable(COVER_RESTORE_UNAVAILABLE);
   if (!mapping) return unavailable('This field is not supported by selective metadata restoration.');
   if (!cell) return unavailable('The field was not captured in this snapshot.');
   if (typeof cell.present !== 'boolean') return unavailable('The snapshot does not record whether this field was present.');

@@ -92,6 +92,10 @@ export function migrateSchema(sqlite: Database.Database): void {
         if (!columns.some(column => column.name === 'archives_json')) sqlite.exec(`ALTER TABLE ${quote(table)} ADD COLUMN archives_json TEXT NOT NULL DEFAULT '[]'`);
       }
     },
+    () => {
+      createSchemaTables(sqlite);
+      createIndexes(sqlite);
+    },
   ];
   for (const [index, migration] of migrations.entries()) {
     const version = index + 1;

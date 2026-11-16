@@ -15,6 +15,7 @@ export function pruneMetadataHistory(sqlite: Database.Database, now = Date.now()
   sqlite.transaction(() => {
     sqlite.prepare('DELETE FROM metadata_restore_previews WHERE julianday(expires_at) <= julianday(?)').run(new Date(now).toISOString());
     sqlite.prepare(`DELETE FROM metadata_operation_steps WHERE operation_id IN (${expired})`).run(cutoff, new Date(now).toISOString());
+    sqlite.prepare(`DELETE FROM metadata_series_covers WHERE operation_id IN (${expired})`).run(cutoff, new Date(now).toISOString());
     sqlite.prepare(`DELETE FROM metadata_operations WHERE id IN (${expired})`).run(cutoff, new Date(now).toISOString());
     // Retain the idempotency receipt, not duplicate XML after both journal sides
     // have aged out. Active plans remain fully pinned through queue/restart delays.
@@ -23,5 +24,7 @@ export function pruneMetadataHistory(sqlite: Database.Database, now = Date.now()
       WHERE plan.status NOT IN ('approved', 'running') AND julianday(plan.finished_at) < julianday(?)
       AND NOT EXISTS (SELECT 1 FROM metadata_operations operation
         WHERE operation.id = plan.source_operation_id OR operation.id = plan.operation_id)`).run(cutoff);
+    sqlite.prepare(`DELETE FROM metadata_assets AS asset WHERE NOT EXISTS (SELECT 1 FROM metadata_series_covers cover
+      WHERE cover.before_asset_id = asset.id OR cover.after_asset_id = asset.id)`).run();
   })();
 }

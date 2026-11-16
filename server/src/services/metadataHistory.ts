@@ -12,6 +12,7 @@ import { RESTORABLE_METADATA_FIELDS, getMetadataRestoreFieldAvailability, metada
 import { getKavitaConnection } from './settings.js';
 import { kavitaConnectionKey } from './kavitaState.js';
 import { getFieldPolicy } from './fieldPolicies.js';
+import { seriesCoverJournal, seriesCoverHistory, interruptSeriesCoverHistory } from './metadataCovers.js';
 
 const connection = () => kavitaConnectionKey(getKavitaConnection().baseUrl);
 export function describeMetadataPatch(payload:object):Record<string,unknown> {
@@ -38,7 +39,7 @@ export async function captureMetadataSnapshot(client: KavitaClient, seriesId: nu
     ...(Object.hasOwn(series, 'folderPath') ? {folderPath:series.folderPath} : {})},fields};
 }
 const archiveSnapshot = captureArchiveSnapshot;
-export interface MetadataJournal { captureArchives: (files: string[]) => Promise<void> }
+export interface MetadataJournal { captureArchives: (files: string[]) => Promise<void>; captureSeriesCover: () => Promise<void> }
 
 function comparable(value: unknown): unknown {
   if (!Array.isArray(value)) return value;
@@ -67,8 +68,14 @@ export async function withMetadataHistory<T>(client: KavitaClient, seriesId: num
   const id=randomUUID(), db=getDb();
   db.insert(schema.metadataOperations).values({id,connectionKey:key,seriesId,jobId,origin,fieldsJson:JSON.stringify(Object.keys(desired)),desiredJson:JSON.stringify(desired),policyRevision:getFieldPolicy(seriesId).revision,beforeJson:JSON.stringify(before),createdAt:new Date().toISOString()}).run();
   const files=new Set<string>();
+  const covers=seriesCoverJournal(client,id,seriesId,before,key);
   let capturedBytes=0;
-  const journal: MetadataJournal = {captureArchives:async targets => {
+  const journal: MetadataJournal = {captureSeriesCover:async()=>{
+    const row=db.select({fieldsJson:schema.metadataOperations.fieldsJson}).from(schema.metadataOperations).where(eq(schema.metadataOperations.id,id)).get()!;
+    const fields=JSON.parse(row.fieldsJson) as string[];
+    if(!fields.includes('cover'))db.update(schema.metadataOperations).set({fieldsJson:JSON.stringify([...fields,'cover'])}).where(eq(schema.metadataOperations.id,id)).run();
+    await covers.capture();
+  },captureArchives:async targets => {
     for(const file of targets) {
       const target=path.resolve(file);
       if(files.has(target))continue;
@@ -86,6 +93,8 @@ export async function withMetadataHistory<T>(client: KavitaClient, seriesId: num
   try {result=await operation(journal);} catch(error){failure=error;failed=true;}
   let after:MetadataSnapshot|null=null;
   const problems:string[]=[];
+  const coverProblem=await covers.finish();
+  if(coverProblem)problems.push(coverProblem);
   try {after=await captureMetadataSnapshot(client,seriesId);}catch{problems.push('Could not verify current metadata after the operation');}
   if (after && after.series.libraryId !== before.series.libraryId) problems.push('Series library changed during the operation; review target identity');
   let afterBytes = 0;
@@ -116,8 +125,9 @@ export async function withMetadataHistory<T>(client: KavitaClient, seriesId: num
 type Row=typeof schema.metadataOperations.$inferSelect;
 function summary(row:Row):MetadataHistoryEntry {
   const before:MetadataSnapshot=JSON.parse(row.beforeJson), after:MetadataSnapshot|null=row.afterJson?JSON.parse(row.afterJson):null;
+  const cover=seriesCoverHistory(row.id);
   return {id:row.id,sequence:row.sequence,origin:row.origin,status:row.status,createdAt:row.createdAt,finishedAt:row.finishedAt,
-    fields:JSON.parse(row.fieldsJson),changedFields:after?Object.keys(before.fields).filter(field=>metadataValueKey(before.fields[field])!==metadataValueKey(after.fields[field])):[],message:row.message,jobId:row.jobId,restoredFromOperationId:row.restoredFromOperationId};
+    fields:JSON.parse(row.fieldsJson),changedFields:[...(after?Object.keys(before.fields).filter(field=>metadataValueKey(before.fields[field])!==metadataValueKey(after.fields[field])):[]),...(cover?.changed?['cover']:[])],message:row.message,jobId:row.jobId,restoredFromOperationId:row.restoredFromOperationId};
 }
 export function listMetadataHistory(seriesId:number,cursor?:number) {
   const rows=getDb().select().from(schema.metadataOperations).where(and(eq(schema.metadataOperations.connectionKey,connection()),eq(schema.metadataOperations.seriesId,seriesId),cursor?lt(schema.metadataOperations.sequence,cursor):undefined)).orderBy(desc(schema.metadataOperations.sequence)).limit(21).all();
@@ -130,6 +140,7 @@ export function metadataHistoryDetail(seriesId:number,id:string):MetadataHistory
   const before = JSON.parse(row.beforeJson) as MetadataSnapshot;
   const after = row.afterJson ? JSON.parse(row.afterJson) as MetadataSnapshot : null;
   const policy = getFieldPolicy(seriesId);
+  const covers=seriesCoverHistory(id);
   const availability = (value: MetadataSnapshot | null, side: 'before' | 'after') => [...RESTORABLE_METADATA_FIELDS, 'cover'].map(field => {
     const result = getMetadataRestoreFieldAvailability(field, value?.fields[field]);
     if (row.status === 'running' || (side === 'after' && row.status === 'unverified')) {
@@ -139,10 +150,10 @@ export function metadataHistoryDetail(seriesId:number,id:string):MetadataHistory
     return policy.lockedFields.includes(field as typeof policy.lockedFields[number])
       ? {...result, available:false, reason:'Protected by H-Tosho field policy', nativeLockAvailable:false} : result;
   });
-  return {...summary(row),before:publicSnapshot(before),after:after?publicSnapshot(after):null,
+  return {...summary(row),before:publicSnapshot(before),after:after?publicSnapshot(after):null,...(covers?{covers}:{}),
     archives:getDb().select().from(schema.metadataOperationSteps).where(eq(schema.metadataOperationSteps.operationId,id)).all().map(archiveDetail),
     restoreAvailability:{before:availability(before,'before'),after:availability(after,'after')},
-    availability:{metadata:row.afterJson?'captured':'unverified',archives:'Captured files only; current identity and fingerprints must pass preview. Moves are not reversible.',covers:'not captured',restore:'Selected metadata, paired titles and ComicInfo XML; preview and approval required'}};
+    availability:{metadata:row.afterJson?'captured':'unverified',archives:'Captured files only; current identity and fingerprints must pass preview. Moves are not reversible.',covers:covers?'Series-cover observations only; image restoration and volume-cover capture are unavailable':'No series-cover mutation was captured; earlier history has no image backup',restore:'Selected metadata, paired titles and ComicInfo XML; preview and approval required'}};
 }
 
 /** Identity paths are private evidence, never historical write authority in API responses. */
@@ -170,4 +181,5 @@ function archiveDetail(row: typeof schema.metadataOperationSteps.$inferSelect): 
 }
 export function interruptMetadataHistory():void {
   getDb().update(schema.metadataOperations).set({status:'interrupted',message:'Server stopped before verification; inspect current values before retrying',finishedAt:new Date().toISOString()}).where(eq(schema.metadataOperations.status,'running')).run();
+  interruptSeriesCoverHistory();
 }

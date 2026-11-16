@@ -11,7 +11,7 @@ import { withMetadataHistory } from './metadataHistory.js';
 export function removeSeriesMatch(client: KavitaClient, seriesId: number): Promise<{ removed: boolean }> {
   return libraryMutations.run([`series:${seriesId}`], async () => {
     if(!getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId,seriesId)).get())return {removed:false};
-    return withMetadataHistory(client,seriesId,'unmatch',{},async()=>{
+    return withMetadataHistory(client,seriesId,'unmatch',{},async journal=>{
     const series = await client.getSeriesById(seriesId);
     const db = getDb();
     const row = db.select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
@@ -30,9 +30,10 @@ export function removeSeriesMatch(client: KavitaClient, seriesId: number): Promi
         Array.isArray(entry?.pushed) ? entry.pushed.filter((field): field is string => typeof field === 'string') : [],
       ))].filter(field => !protectedPayloadKeys.has(field));
       const metadata = row.metadataJson ? JSON.parse(row.metadataJson) as SeriesMetadata : null;
-      if (metadata && pushed.length > 0) await client.removeSeriesMetadata(seriesId, buildSeriesPayload(metadata), pushed);
       const coverUpdated = !protectedFields.includes('cover') && details.some((entry) => entry?.coverUpdated === true);
-      if (coverUpdated) await client.resetSeriesCover(seriesId);
+      if(coverUpdated)await journal.captureSeriesCover();
+      if (metadata && pushed.length > 0) await client.removeSeriesMetadata(seriesId, buildSeriesPayload(metadata), pushed);
+      if (coverUpdated) {await journal.captureSeriesCover();await client.resetSeriesCover(seriesId);}
       const volumeCoversUpdated = !protectedFields.includes('cover') && details.some((entry) => typeof entry?.volumeCoversUpdated === 'number' && entry.volumeCoversUpdated > 0);
       if (volumeCoversUpdated) {
         const volumes = await client.getVolumes(seriesId);

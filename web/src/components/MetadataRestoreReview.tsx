@@ -125,7 +125,7 @@ export function MetadataRestoreReview({ seriesId, detail }: { seriesId: number; 
         </details>;
       })}
     </fieldset>}
-    <p className="text-xs text-muted">Cover images were not captured. Restores do not download galleries or reverse file moves and merges.</p>
+    <p className="text-xs text-muted">Cover restoration is unavailable. Restores do not download galleries or reverse file moves and merges.</p>
     {!availability.length && <p className="text-xs text-foreground dark:text-warning">No supported restore fields were recorded for this snapshot.</p>}
     {policy.isError && <p role="alert" className="text-sm text-danger">Could not load field protection. <Button className="min-h-11" size="sm" variant="outline" onClick={() => void policy.refetch()}>Retry protection</Button></p>}
     <Button className="min-h-11" variant="outline" disabled={(!fields.length && !archives.length) || !!pending || taskId !== null} onClick={() => void loadPreview()}>{pending === 'preview' && <Spinner />}{pending === 'preview' ? 'Preparing preview…' : preview ? 'Refresh restore preview' : 'Preview restore'}</Button>

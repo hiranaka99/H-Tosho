@@ -320,7 +320,7 @@ test('migration 6 upgrades existing history without rewriting it and fresh table
   migrateSchema(sqlite);
   const migrationVersion = sqlite.prepare('SELECT max(version) AS version FROM schema_migrations').get();
   assert.ok(migrationVersion && typeof migrationVersion === 'object' && 'version' in migrationVersion);
-  assert.equal(migrationVersion.version,7);
+  assert.equal(migrationVersion.version,8);
   sqlite.exec(`DROP TABLE metadata_restore_plans; DROP TABLE metadata_restore_previews;
     ALTER TABLE metadata_operations DROP COLUMN restored_from_operation_id; DELETE FROM schema_migrations WHERE version=6;
     INSERT INTO metadata_operations (id,connection_key,series_id,origin,fields_json,desired_json,policy_revision,before_json,created_at)

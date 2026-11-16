@@ -49,7 +49,7 @@ test('commits actual before values before mutation and retains null, absent, emp
   assert.equal(entry.jobId, 123);
   assert.deepEqual(detail.after!.fields.summary, { present: true, value: '', nativeLocked: true });
   assert.deepEqual(entry.changedFields, ['summary']);
-  assert.equal(detail.availability.covers, 'not captured');
+  assert.match(detail.availability.covers, /No series-cover mutation was captured/);
   assert.match(detail.availability.restore, /preview and approval required/);
   assert.equal(detail.restoredFromOperationId, null);
   assert.equal(detail.restoreAvailability.before.find(field => field.field === 'summary')!.available, false);
