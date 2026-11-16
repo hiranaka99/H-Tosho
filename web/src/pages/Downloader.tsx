@@ -291,7 +291,7 @@ export function Downloader() {
    * Replaces the search bar with just that fragment and commits it immediately,
    * then closes the modal so the new results are visible. The fragment is built
    * for the gallery's own source, so jump to that source's search tab — the
-   * details card also opens from the Recommended tab, where the active source
+   * details card also opens from the For you tab, where the active source
    * may be the other one.
    */
   function searchTagFragment(fragment: string, itemSource?: DoujinSource) {
@@ -353,14 +353,14 @@ export function Downloader() {
 
   return (
     <div ref={galleryMotionRef} className={cn('flex flex-col gap-4', showSelection && 'pb-[calc(var(--selection-tray-height,0px)+1rem)] lg:pb-0')} style={{ '--selection-tray-height': `${selectionHeight}px` } as React.CSSProperties}>
-      <PageHeader icon={<ListVideo className="h-5 w-5" />} title="Doujinshi Downloader" subtitle={tab === 'watched' ? undefined : "Search Hitomi.la and nHentai, then download galleries into your Kavita library."} />
+      <PageHeader icon={<ListVideo className="h-5 w-5" />} title="Discover galleries" subtitle={tab === 'watched' ? undefined : "Search Hitomi.la and nHentai, then download galleries into your Kavita library."} />
       <DownloadDestination setup={setup} compact={tab === 'watched'} />
 
       <SegmentedTabs
-        items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'Recommended' }, { id: 'watched' as const, label: 'Watched' }, { id: 'manager' as const, label: 'Downloads' }]}
+        items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'For you' }, { id: 'watched' as const, label: 'Following' }, { id: 'manager' as const, label: 'Downloads' }]}
         value={tab}
         onChange={setTab}
-        label="Downloader sections"
+        label="Discover sections"
         panelId="downloader-panel"
         className="sticky top-0 z-10 self-start bg-background"
       />
@@ -403,7 +403,7 @@ export function Downloader() {
       {/* Before the first search there is nothing below the bar — give it a purpose. */}
       {searchKey === null && (
         <Card className="flex items-center justify-center">
-          <EmptyState icon={<Search className="h-8 w-8" />} title="Search for galleries" description="Keyword, tag, artist, gallery ID or URL. Use Watch to keep checking a query — new releases land in the Watched tab and ping Discord." />
+          <EmptyState icon={<Search className="h-8 w-8" />} title="Search for galleries" description="Keyword, tag, artist, gallery ID or URL. Use Watch to keep checking a query — new releases land in the Following tab and ping Discord." />
         </Card>
       )}
 

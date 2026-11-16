@@ -260,7 +260,7 @@ export class KavitaClient {
     return this.mapSeries(await this.getSeriesDto(seriesId));
   }
 
-  private async getSeriesDto(seriesId: number): Promise<KavitaSeriesDto> {
+  async getSeriesDto(seriesId: number): Promise<KavitaSeriesDto> {
     return this.getJson<KavitaSeriesDto>(`/Series/${seriesId}`, `Get series ${seriesId}`);
   }
 

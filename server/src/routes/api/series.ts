@@ -1,4 +1,6 @@
 import { removeSeriesMatch, parseHistoryDetails } from '../../services/unmatch.js';
+import { getFieldPolicy, saveFieldPolicy, FieldPolicyConflict } from '../../services/fieldPolicies.js';
+import { listMetadataHistory, metadataHistoryDetail } from '../../services/metadataHistory.js';
 import { parseJobCommand } from '../../contracts/jobs.js';
 import { Hono } from 'hono';
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
@@ -15,6 +17,31 @@ import { rewriteMangaDexCoverUrl } from '../media.js';
 
 import { connectedClient, resolveJobContext, errMsg, intParam, stringsFromMatchMetadata, kavitaCoverUrl } from './helpers.js';
 export const api = new Hono();
+api.get('/series/:id/metadata-history', c=>{
+  const id=intParam(c.req.param('id')), raw=c.req.query('cursor');
+  const cursor=raw===undefined?undefined:intParam(raw);
+  if(id===null||id<=0||cursor===null||(cursor!==undefined&&cursor<=0))return c.json({error:'Invalid history cursor or series id'},400);
+  return c.json(listMetadataHistory(id,cursor));
+});
+api.get('/series/:id/metadata-history/:operationId', c=>{
+  const id=intParam(c.req.param('id'));
+  if(id===null||id<=0)return c.json({error:'Invalid series id'},400);
+  const result=metadataHistoryDetail(id,c.req.param('operationId'));
+  return result?c.json(result):c.json({error:'Metadata operation not found'},404);
+});
+api.get('/series/:id/field-locks', (c) => {
+  const id = intParam(c.req.param('id'));
+  if (id === null || id <= 0) return c.json({ error: 'Invalid series id' }, 400);
+  return c.json(getFieldPolicy(id));
+});
+api.put('/series/:id/field-locks', async (c) => {
+  const id = intParam(c.req.param('id'));
+  if (id === null || id <= 0) return c.json({ error: 'Invalid series id' }, 400);
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object') return c.json({ error: 'Invalid field policy' }, 400);
+  try { return c.json(await saveFieldPolicy(id, body.lockedFields, body.expectedRevision)); }
+  catch (error) { return c.json({ error: errMsg(error) }, error instanceof FieldPolicyConflict ? 409 : 400); }
+});
 const LOW_CONFIDENCE_THRESHOLD = 0.8;
 api.get('/series/low-confidence', (c) => {
   // SQL count instead of loading the table and filtering in JS; a NULL score

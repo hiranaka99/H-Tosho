@@ -13,6 +13,42 @@ export const providerCredentials = sqliteTable('provider_credentials', {
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
 });
 
+export const metadataOperations = sqliteTable('metadata_operations', {
+  sequence: integer('sequence').primaryKey({ autoIncrement: true }),
+  id: text('id').notNull().unique(),
+  connectionKey: text('connection_key').notNull(),
+  seriesId: integer('series_id').notNull(),
+  jobId: integer('job_id'),
+  origin: text('origin').notNull(),
+  status: text('status').notNull().default('running'),
+  version: integer('version').notNull().default(1),
+  fieldsJson: text('fields_json').notNull(),
+  desiredJson: text('desired_json').notNull(),
+  policyRevision: integer('policy_revision').notNull(),
+  beforeJson: text('before_json').notNull(),
+  afterJson: text('after_json'),
+  message: text('message'),
+  createdAt: text('created_at').notNull(),
+  finishedAt: text('finished_at'),
+}, table => [index('idx_metadata_operations_series').on(table.connectionKey, table.seriesId, table.sequence)]);
+
+export const metadataOperationSteps = sqliteTable('metadata_operation_steps', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  operationId: text('operation_id').notNull(),
+  target: text('target').notNull(),
+  beforeJson: text('before_json').notNull(),
+  afterJson: text('after_json'),
+  status: text('status').notNull().default('prepared'),
+}, table => [uniqueIndex('idx_metadata_operation_target').on(table.operationId, table.target)]);
+
+export const seriesFieldPolicies = sqliteTable('series_field_policies', {
+  connectionKey: text('connection_key').notNull(),
+  seriesId: integer('series_id').notNull(),
+  lockedFieldsJson: text('locked_fields_json').notNull().default('[]'),
+  revision: integer('revision').notNull().default(1),
+  updatedAt: text('updated_at').notNull(),
+}, table => [uniqueIndex('idx_series_field_policy').on(table.connectionKey, table.seriesId)]);
+
 export const providerPriorities = sqliteTable('provider_priorities', {
   providerId: text('provider_id').primaryKey(),
   position: integer('position').notNull(),

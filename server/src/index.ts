@@ -7,6 +7,8 @@ import { runJob } from './jobs/executor.js';
 import { getCredentialMap, getKavitaConnection, getPollIntervalHours, getWatchedSearchIntervalMinutes, onSettingChange } from './services/settings.js';
 import { backfillNewGalleries, countWatchedSearches } from './services/watchedSearches.js';
 import { downloadQueue } from './downloader/engine.js';
+import { startRecommendationPreloading } from './services/recommendations.js';
+import { interruptMetadataHistory } from './services/metadataHistory.js';
 
 const PORT = Number(process.env.PORT ?? 8787);
 // Local-only by default. Set HOST=0.0.0.0 deliberately for remote access;
@@ -15,6 +17,7 @@ const HOST = process.env.HOST ?? '127.0.0.1';
 
 function main(): void {
   initDb();
+  interruptMetadataHistory();
   // Replay "new since last check" finds that older builds never persisted to the
   // "recently added" feed (no-op on databases already up to date).
   const backfilled = backfillNewGalleries();
@@ -86,6 +89,7 @@ function main(): void {
   const app = createApp();
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST });
   console.log(`[h-tosho] listening on http://${HOST}:${PORT} (api at /api)`);
+  const stopRecommendationPreloading = startRecommendationPreloading();
 
   const shutdown = (): void => {
     console.log('[h-tosho] shutting down');
@@ -94,6 +98,7 @@ function main(): void {
     clearTimeout(pollTimer);
     clearTimeout(watchedTimer);
     clearInterval(matchableTimer);
+    stopRecommendationPreloading();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 2000).unref();
   };

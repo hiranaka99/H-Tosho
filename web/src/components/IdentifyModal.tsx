@@ -1,4 +1,5 @@
 import { PUBLICATION_STATUS as CANDIDATE_STATUS, mergeTagLists, releaseYear } from '../../../server/src/contracts/metadata';
+import { PROTECTABLE_FIELDS, type FieldPolicy, type ProtectedField } from '../../../server/src/contracts/metadata';
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Search, Sparkles, AlertTriangle, ArrowLeft, ArrowRight, Link2, Unlink, ChevronRight, Users } from 'lucide-react';
@@ -17,6 +18,7 @@ import { PROVIDER_NAMES, cn } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, ProviderBadge, Spinner, ConfirmDialog } from './ui';
 import { ArtistWorksBrowser } from './ArtistWorksBrowser';
+import { MetadataHistory } from './MetadataHistory';
 
 const STATUS_LABELS: Record<number, string> = {
   0: 'Ongoing',
@@ -125,10 +127,10 @@ function ComparisonValue({ label, field, className, title, children }: { label: 
   );
 }
 
-function FieldRow({ row, checked, onToggle }: { row: DiffRow; checked?: boolean; onToggle?: () => void }) {
+function FieldRow({ row, checked, onToggle, protectedField }: { row: DiffRow; checked?: boolean; onToggle?: () => void; protectedField?: boolean }) {
   const labelId = React.useId();
   const merge = row.tagMerge;
-  const differs = !merge && computeDiffers(row);
+  const differs = !protectedField && !merge && computeDiffers(row);
   // Multiline fields (Summary) are never truncated: full text, wrapping, with an internal scroll for very long descriptions.
   const valueCls = row.multiline ? 'min-w-0 max-h-56 overflow-y-auto whitespace-pre-wrap break-words' : 'min-w-0 whitespace-pre-wrap break-words';
   const showCheckbox = !!row.field && (row.candidate.trim() !== '' || row.clearing) && !!onToggle;
@@ -137,7 +139,7 @@ function FieldRow({ row, checked, onToggle }: { row: DiffRow; checked?: boolean;
       <div id={labelId} className="flex min-w-0 items-start gap-1.5">
         {showCheckbox ? (
           <label className="flex min-h-11 cursor-pointer items-center gap-2 py-1 text-xs font-medium uppercase tracking-wider text-muted sm:min-h-9 pointer-coarse:min-h-11">
-            <input type="checkbox" checked={!!checked} onChange={onToggle} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
+            <input type="checkbox" checked={!!checked} onChange={onToggle} disabled={protectedField} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
             {row.label}
           </label>
         ) : (
@@ -236,6 +238,17 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const [tab, setTab] = React.useState('all');
   const [excluded, setExcluded] = React.useState<ReadonlySet<string>>(new Set());
   const [coverEnabled, setCoverEnabled] = React.useState(true);
+  const protection = useQuery({ queryKey: ['field-policy', seriesId], queryFn: () => api.fieldPolicy(seriesId) });
+  const protectedKeys = new Set<string>(protection.data?.lockedFields ?? []);
+  const effectiveExcluded = new Set([...excluded, ...protectedKeys]);
+  const protect = useMutation({
+    mutationFn: (field: ProtectedField) => api.saveFieldPolicy(seriesId, {
+      lockedFields: protectedKeys.has(field) ? (protection.data?.lockedFields ?? []).filter(key => key !== field) : [...(protection.data?.lockedFields ?? []), field],
+      expectedRevision: protection.data!.revision,
+    }),
+    onSuccess: (policy: FieldPolicy) => qc.setQueryData(['field-policy', seriesId], policy),
+    onError: (error: Error) => { toast({ tone: 'danger', title: 'Could not save field protection', description: error.message }); void protection.refetch(); },
+  });
   const [zoomCover, setZoomCover] = React.useState<{ src: string; alt: string } | null>(null);
 
   const [confirmUnmatch, setConfirmUnmatch] = React.useState(false);
@@ -296,7 +309,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
       // SidebarStatus refreshes the series list when the job settles.
       qc.invalidateQueries({ queryKey: ['series', seriesId] });
       qc.invalidateQueries({ queryKey: ['jobs'] });
-      toast({ tone: 'info', title: 'Sync queued', description: 'Cover stays unchanged until sync finishes. Check Jobs for errors.' });
+      toast({ tone: 'info', title: 'Sync queued', description: 'Cover stays unchanged until sync finishes. Check Tasks for errors.' });
       if (onNext) onNext();
       else onClose();
     },
@@ -400,10 +413,10 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
     ];
     return { rows, coverCandidate: m?.coverUrl ?? selected.coverUrl };
   }, [selected, preview.data, resolvedTitle, current, k]);
-  const selectedFieldCount = diff?.rows.filter((row) => row.field && (row.candidate.trim() !== '' || row.clearing) && !excluded.has(row.field)).length ?? 0;
+  const selectedFieldCount = diff?.rows.filter((row) => row.field && (row.candidate.trim() !== '' || row.clearing) && !effectiveExcluded.has(row.field)).length ?? 0;
 
   const doApply = (ids: { providerId: string; providerSeriesId: string }, opts?: { selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) => {
-    apply.mutate({ ...ids, ...opts });
+    apply.mutate({ ...ids, ...opts, excludedFields: [...effectiveExcluded], cover: coverEnabled && !protectedKeys.has('cover') });
   };
 
   return (
@@ -422,6 +435,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
           {(!selected || !browseArtists) && <Button ref={artistTrigger} size="sm" variant="outline" className="shrink-0 self-start" aria-expanded={browseArtists && !selected} aria-controls={artistBrowserId} onClick={() => { if (selected) { setSelected(null); setBrowseArtists(true); } else setBrowseArtists(value => !value); }}>
             {browseArtists && !selected ? <ArrowLeft className="h-4 w-4" /> : <Users className="h-4 w-4" />}{browseArtists && !selected ? 'Back to matches' : 'Browse artist works'}
           </Button>}
+          <MetadataHistory key={seriesId} seriesId={seriesId} />
           {browseArtists && <div ref={artistBrowser} id={artistBrowserId} hidden={!!selected}>
             <ArtistWorksBrowser active={!selected} seriesTitle={current.name} artists={[...new Set([...(current.metadata?.pencillers ?? []), ...(current.metadata?.writers ?? []), ...(current.metadata?.coverArtists ?? [])].map(person => person.name?.trim()).filter((name): name is string => !!name))]} onSelect={candidate => { setManualCandidate(candidate); reviewCandidate(candidate, true); }} />
           </div>}
@@ -574,11 +588,19 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                     </div>
                   )}
                   {currentReady && preview.isSuccess && !preview.isError && (<>
+                  <details className="rounded-md border border-border p-3">
+                    <summary className="cursor-pointer text-sm font-medium">Protected from H-Tosho sync{protectedKeys.size ? ` (${protectedKeys.size})` : ''}</summary>
+                    <p className="mt-2 text-xs text-muted">Selected fields stay protected across candidates and future syncs. Cover protection includes volume covers. Unlock a field here to sync it. Manual ComicInfo edits are still allowed.</p>
+                    {protection.isPending ? <p role="status" className="mt-3 text-sm text-muted">Loading field protection…</p> : protection.isError ? <Button size="sm" variant="outline" onClick={() => void protection.refetch()}>Retry field protection</Button> : <div className="mt-3 grid gap-x-4 sm:grid-cols-2">
+                      {PROTECTABLE_FIELDS.map(field => <label key={field} className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={protectedKeys.has(field)} disabled={protect.isPending || apply.isPending} onChange={() => protect.mutate(field)} className="h-4 w-4 accent-primary" />{({title:'Title',summary:'Description',genres:'Genres',tags:'Tags',writers:'Writers',artists:'Artists',releaseDate:'Release year',language:'Language',status:'Publication status',url:'Source URL',cover:'Series and volume covers'} as const)[field]}</label>)}
+                    </div>}
+                  </details>
                   {(preview.data?.titleOptions?.length ?? 0) > 1 && (
                     <div className="rounded-md border border-border bg-surface-2 p-3">
                       <Label htmlFor="provider-title-choice">Series name written to every chapter's ComicInfo.xml</Label>
                       <select
                         id="provider-title-choice"
+                        disabled={protectedKeys.has('title')}
                         value={resolvedTitle}
                         onChange={(e) => setSelectedTitle(e.target.value)}
                         className="mt-2 flex h-9 w-full rounded-md border border-border-2 bg-surface px-3 text-sm"
@@ -609,7 +631,8 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                           <FieldRow
                             key={row.label}
                             row={row}
-                            checked={!excluded.has(row.field ?? '')}
+                            checked={!effectiveExcluded.has(row.field ?? '')}
+                            protectedField={protectedKeys.has(row.field ?? '')}
                             onToggle={
                               row.field
                                 ? () =>
@@ -629,7 +652,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                       <h3 id={`${comparisonId}-cover`} className="pb-1 pt-4 text-sm font-semibold">Cover</h3>
                     <div className={cn(ROW_GRID, 'py-3')}>
                       <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted sm:min-h-9 pointer-coarse:min-h-11">
-                        <input type="checkbox" checked={coverEnabled} onChange={(e) => setCoverEnabled(e.target.checked)} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
+                        <input type="checkbox" checked={coverEnabled && !protectedKeys.has('cover')} disabled={protectedKeys.has('cover')} onChange={(e) => setCoverEnabled(e.target.checked)} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
                         Apply cover
                       </label>
                       <ComparisonValue label="Current" field="cover">
@@ -659,11 +682,11 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
         </div>
         {(selected || reviewPosition) && <div className="shrink-0 border-t border-border bg-surface px-3 py-3 sm:px-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p role="status" className="text-xs text-muted">{reviewPosition && `Review ${reviewPosition}${selected ? ' · ' : ''}`}{selected && (currentReady && preview.isSuccess ? `${selectedFieldCount} fields selected${coverEnabled && diff?.coverCandidate ? ' · cover selected' : ''}` : 'Load metadata before applying')}</p>
+            <p role="status" className="text-xs text-muted">{reviewPosition && `Review ${reviewPosition}${selected ? ' · ' : ''}`}{selected && (currentReady && preview.isSuccess ? `${selectedFieldCount} fields selected${coverEnabled && !protectedKeys.has('cover') && diff?.coverCandidate ? ' · cover selected' : ''}` : 'Load metadata before applying')}</p>
             <div className="flex w-full flex-wrap gap-2 sm:w-auto">
               <Button variant="ghost" onClick={onClose} disabled={apply.isPending}>Close</Button>
               {onNext && <Button variant="outline" onClick={onNext} disabled={apply.isPending}>Skip to next</Button>}
-              {selected && <Button className="min-h-11 flex-1 sm:flex-none" onClick={() => doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: reviewingExistingMatch ? undefined : selected.score })} disabled={!currentReady || !preview.isSuccess || preview.isError || apply.isPending}>
+              {selected && <Button className="min-h-11 flex-1 sm:flex-none" onClick={() => doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: reviewingExistingMatch ? undefined : selected.score })} disabled={!currentReady || !preview.isSuccess || preview.isError || apply.isPending || !protection.isSuccess || protect.isPending}>
                 {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} {onNext ? 'Apply & next' : 'Apply & Sync'}
               </Button>}
             </div>
@@ -681,7 +704,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
     <ConfirmDialog
       open={confirmUnmatch}
       title="Unmatch series?"
-      description={`This removes the match and removes metadata and covers previously applied by H-Tosho from “${current.name}”.`}
+      description={`This removes the match and removes metadata and covers previously applied by H-Tosho from “${current.name}”. Protected fields and covers are retained.`}
       confirmLabel="Unmatch"
       danger
       pending={unmatch.isPending}

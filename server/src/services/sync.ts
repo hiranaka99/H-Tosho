@@ -1,4 +1,6 @@
 import { upsertMatch, recordHistory } from './matchRecords.js';
+import { getFieldPolicy } from './fieldPolicies.js';
+import { withMetadataHistory, describeMetadataPatch, type MetadataJournal } from './metadataHistory.js';
 import { PUBLICATION_STATUS, releaseYear, mergeTagLists, selectMetadataFields } from '../contracts/metadata.js';
 export { mergeTagLists } from '../contracts/metadata.js';
 import { eq } from 'drizzle-orm';
@@ -91,7 +93,8 @@ export async function applyToKavita(
   let volumeCoversUpdated = 0;
   let volumeCoverIds: number[] = [];
 
-  const payload = selectMetadataFields(buildSeriesPayload(meta), opts.excludedFields ?? []);
+  const protectedFields = getFieldPolicy(seriesId).lockedFields;
+  const payload = selectMetadataFields(buildSeriesPayload(meta), [...(opts.excludedFields ?? []), ...protectedFields]);
   // Merge provider tags with the series' existing Kavita tags instead of
   // replacing them (Kavita's metadata update is a full-field write).
   let currentMetadata: KavitaSeriesMetadataDto | undefined;
@@ -133,7 +136,7 @@ export async function applyToKavita(
     }
   }
 
-  if (opts.coverUrl || (opts.cover && opts.cover.length > 0)) {
+  if (!protectedFields.includes('cover') && (opts.coverUrl || (opts.cover && opts.cover.length > 0))) {
     try {
       if (opts.coverUrl) {
         await applyCover(
@@ -153,7 +156,7 @@ export async function applyToKavita(
     }
   }
 
-  if (opts.volumeCovers?.length) {
+  if (!protectedFields.includes('cover') && opts.volumeCovers?.length) {
     const volResult = await applyVolumeCovers(client, seriesId, opts.volumeCovers);
     volumeCoversUpdated = volResult.updated;
     volumeCoverIds = volResult.volumeIds;
@@ -287,6 +290,7 @@ export async function enqueueMatchForNewSeries(
 
 export interface ApplySeriesOptions {
   seriesId: number;
+  jobId?: number;
   providerId: string;
   providerSeriesId: string;
   /** ComicInfo.Series value chosen in the identify dialog; must be one of meta.titleOptions. */
@@ -345,6 +349,18 @@ export async function applyResolvedSeriesMatch(
   client: KavitaClient, opts: ApplySeriesOptions, meta: SeriesMetadata,
   resolvedSeries?: KavitaSeries,
 ): Promise<ApplySeriesResult> {
+  if(opts.signal?.aborted || opts.isCancelled?.())throw opts.signal?.reason ?? new JobCancelled();
+  if(opts.selectedTitle && !(meta.titleOptions ?? [meta.title]).includes(opts.selectedTitle.trim()))throw new Error('selectedTitle is not provided by this metadata source');
+  const policy=getFieldPolicy(opts.seriesId);
+  const desired=describeMetadataPatch(selectMetadataFields(buildSeriesPayload({...meta,title:opts.selectedTitle?.trim()||meta.title}),[...(opts.excludedFields??[]),...policy.lockedFields]));
+  return withMetadataHistory(client,opts.seriesId,opts.confirm===false?'automatic-sync':'provider-apply',desired,
+    journal=>applyResolvedSeriesMatchRecorded(client,opts,meta,resolvedSeries,journal),opts.jobId);
+}
+
+async function applyResolvedSeriesMatchRecorded(
+  client: KavitaClient, opts: ApplySeriesOptions, meta: SeriesMetadata,
+  resolvedSeries: KavitaSeries | undefined, journal: MetadataJournal,
+): Promise<ApplySeriesResult> {
   const seriesId = opts.seriesId;
   if (opts.signal?.aborted || opts.isCancelled?.()) throw opts.signal?.reason ?? new JobCancelled();
   const series = resolvedSeries ?? await client.getSeriesById(seriesId);
@@ -361,8 +377,9 @@ export async function applyResolvedSeriesMatch(
   // rename the Kavita record. If Kavita's files are not mounted into H-Tosho,
   // skip only the rename rather than failing the entire metadata/cover match;
   // renaming Kavita alone would let its next scan split the series.
-  const excludedFields = [...(opts.excludedFields ?? [])];
-  const preflightWarnings: string[] = [];
+  const protectedFields = getFieldPolicy(seriesId).lockedFields;
+  const excludedFields = [...new Set([...(opts.excludedFields ?? []), ...protectedFields])];
+  const preflightWarnings: string[] = protectedFields.length ? [`Protected from H-Tosho sync: ${protectedFields.join(', ')}`] : [];
   const newTitle = meta.title.trim();
   if (newTitle && !excludedFields.includes('title') && newTitle !== series.name.trim()) {
     const libraries = await client.getLibraries();
@@ -382,6 +399,7 @@ export async function applyResolvedSeriesMatch(
       );
     } else {
       if (opts.signal?.aborted || opts.isCancelled?.()) throw opts.signal?.reason ?? new JobCancelled();
+      await journal.captureArchives(files);
       const rewrite = await setSeriesTitleInCbzFiles(files, newTitle, opts.signal);
       titleFilesUpdated = rewrite.changed;
       titleFilesVerified = rewrite.verified;
@@ -393,7 +411,7 @@ export async function applyResolvedSeriesMatch(
   // the series while still allowing the match and all other fields to apply.
   // Once file titles are committed, finish the paired Kavita update at this checkpoint.
   if (!titleFilesUpdated && (opts.signal?.aborted || opts.isCancelled?.())) throw opts.signal?.reason ?? new JobCancelled();
-  const pushCovers = opts.cover !== false;
+  const pushCovers = opts.cover !== false && !protectedFields.includes('cover');
   const result = await applyToKavita(client, seriesId, meta, {
     coverUrl: pushCovers ? meta.coverUrl : undefined,
     volumeCovers: pushCovers ? meta.volumeCovers : undefined,

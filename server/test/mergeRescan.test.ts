@@ -14,6 +14,7 @@ process.env.HTOSHO_DATA_DIR = dataDir;
 const { initDb } = await import('../src/db/index.js');
 const { buildZip } = await import('../src/downloader/zip.js');
 const { runJob } = await import('../src/jobs/executor.js');
+const { listMetadataHistory, metadataHistoryDetail } = await import('../src/services/metadataHistory.js');
 const { readComicInfo } = await import('../src/lib/cbz.js');
 const { setKavitaConnection, setDownloaderSettings, DEFAULT_DOWNLOADER } = await import('../src/services/settings.js');
 
@@ -357,6 +358,13 @@ test('merge into an existing Kavita series targets that series folder and stamps
   assert.ok(xml?.includes('<Number><![CDATA[5]]></Number>') || xml?.includes('<Number>5</Number>'), `stamped chapter number, got: ${xml}`);
   // The emptied source folder's stale Kavita series is removed.
   assert.ok(requests.some((r) => r.startsWith('DELETE') && r.endsWith('/api/Series/51')), 'stale source series deleted');
+  const operation = listMetadataHistory(50).items[0];
+  assert.equal(operation.origin, 'merge-metadata');
+  assert.equal(operation.status, 'unverified', 'a moved source is not advertised as a verified/restorable archive');
+  const history = metadataHistoryDetail(50, operation.id)!;
+  assert.equal(history.archives.length, 2, 'capture incoming and existing archive metadata');
+  assert.equal(history.archives.find(archive => archive.target === 'Part 5.cbz')!.afterPresent, null);
+  assert.equal(history.archives.find(archive => archive.target === 'Chapter 4.cbz')!.status, 'observed');
 });
 
 test('merge into an existing series still rescans when host and Kavita paths differ (bind mount)', async () => {

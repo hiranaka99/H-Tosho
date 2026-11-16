@@ -157,14 +157,14 @@ With this example, use `/mnt/downloads` as H-Tosho's output folder.
 1. Open **Libraries**, choose a library, and click a series cover or title to
    identify it or review metadata. **Preview pages**, to the right of the artist,
    opens the book separately.
-   In library and Downloader previews, click the right half of the page to go
+   In library and Discover previews, click the right half of the page to go
    forward or the left half to go back. Arrow keys and page controls also work.
 2. Existing matches open directly in the comparison. Use **Back to matches**
    to select another candidate.
 3. Uncheck any fields you want to keep, and choose a title if alternatives are
    offered.
 4. Choose **Apply & Sync**. H-Tosho applies your selection in the background;
-   **Jobs** shows its progress and any warnings.
+   **Tasks** shows its progress and any warnings.
 
 ![Dark-theme metadata preview for Spy x Family, showing current and proposed fields, cover art, and Apply & Sync](docs/screenshots/metadata-preview.png)
 
@@ -174,7 +174,7 @@ This preview uses sample metadata and real cover art.*
 If the suggested match is wrong, paste the series' AniList, MangaDex, or
 MyAnimeList URL under **Use a provider URL** and choose **Load**.
 Provider search diagnostics are expandable below the matches. Sync progress
-and warnings are available in **Jobs**.
+and warnings are available in **Tasks**.
 Use **Back to matches** to compare another candidate; your provider filter and
 list position are preserved. Applying stays disabled until both current and
 proposed metadata are available. Failed requests offer a retry.
@@ -183,6 +183,19 @@ while you scroll. A match records identification, not whether metadata is up to
 date; the retired alignment status is no longer calculated or stored.
 
 Applied series and volume covers are locked in Kavita so later scans keep them.
+In the metadata comparison, expand **Protected from H-Tosho sync** to protect
+individual fields across future provider updates. Changes save immediately.
+Protected titles also skip CBZ title rewrites; cover protection includes volume
+covers. Unmatch retains protected values. Unlock a field before syncing it;
+deliberate edits in the ComicInfo editor remain allowed.
+Expand **Metadata history** in the comparison dialog to browse new updates,
+including before/observed-after values, native Kavita locks, and captured archive
+field changes. History covers provider updates, unmatch, series-associated
+ComicInfo edits, and merges into an existing series. Required before reads must
+succeed before those changes begin; interrupted and unverified results remain
+visible. Snapshots are retained for 180 days plus the latest 20 finished updates
+per series. Earlier activity, path-only edits, and newly created merge targets
+have no snapshots. Restore and historical cover images are not available yet.
 Changing a title also updates the Series field in the series' CBZ files, so
 configure your library folders before renaming.
 
@@ -210,7 +223,7 @@ Kavita metadata; stored match tags are used if that metadata is unavailable.
 
 ### Check for duplicate galleries
 
-Search, Recommended, and Watched cards check the local library before download.
+Search, For you, and Following cards check the local library before download.
 Merged chapters keep their own identity even when their series is renamed:
 ComicInfo source links and gallery IDs in filenames show **In library**, while
 title/artist matches offer **Review duplicate**. Clearing download history does
@@ -261,19 +274,19 @@ and use the merge action. On phones, sorting and selection are under
 
 ## Discover and download
 
-Open **Downloader** to access four tabs:
+Open **Discover** to access four tabs:
 
 | Tab | What to do here |
 | --- | --- |
 | **Search** | Search Hitomi.la or nHentai by keyword, tag, artist, or gallery ID. Preview a result, then download it or select several. |
-| **Recommended** | Browse up to twelve picks, select the Kavita libraries that inform your preferences, and use **Refresh picks** for another set. |
-| **Watched** | Manage saved searches and browse new finds in **Recently added**. |
+| **For you** | Browse up to twelve picks, select the Kavita libraries that inform your preferences, and use **Refresh picks** for another set. |
+| **Following** | Manage saved searches and browse new finds in **Recently added**. |
 | **Downloads** | Track progress, pause or resume downloads, retry failures, and view completed downloads. |
 
 Before downloading, open **Settings → Downloader** and choose your output
 folder and format. **CBZ** puts each gallery in an archive; **Folder** saves its
 images in a directory. You can also set download concurrency, excluded tags,
-and an optional nHentai API key. The Downloader shows the current folder and
+and an optional nHentai API key. Discover shows the current folder and
 format, and offers **Set output folder** before you can queue your first download.
 
 Switching sources translates the current query into the other provider's syntax,
@@ -310,11 +323,14 @@ to restore a dismissed gallery.
 
 ### Tune your recommendations
 
-Recommendations load when you open the app. The first opening on a new day
-creates that day's picks; subsequent openings reuse them. Leaving the app open
-past midnight, switching pages, downloads, and preference changes do not roll
-new picks. Choose **Refresh picks** to generate a new selection yourself.
-Returning to Downloader restores the last tab you used, including Recommended.
+The server prepares and saves daily recommendations in the background, even
+when the app is closed. It checks at startup and every minute, generating picks
+once per day using the server's local date. Opening the app reuses the saved
+picks. If the server was offline, it catches up when started; the first opening
+may wait if preparation is still running. An already open app keeps its displayed
+picks until reopened or you choose **Refresh picks**. Switching pages, downloads,
+and preference changes do not roll a new set.
+Returning to Discover restores the last tab you used, including For you.
 
 Use a card's **Tune recommendations** menu to choose **More like this**, dismiss
 the gallery, or mute an artist. More like this influences the next refresh; a mute immediately hides
@@ -326,7 +342,7 @@ or unmute artists. Use thumbs down to dismiss a single gallery, and
 
 ### Watch for new releases
 
-Run a search, then choose **Watch** to save that query. Under **Watched**, choose
+Run a search, then choose **Watch** to save that query. Under **Following**, choose
 how often to check it or use **Check now** to check manually.
 
 Watch controls stay above the feed. **Manage watches** opens saved searches and
@@ -355,7 +371,7 @@ supports downloading together, merging, and dismissing selected finds.
 Open **Settings → Notifications**, enable Discord, paste your channel's webhook
 URL, save, and send a test message. Notifications include automatic metadata
 matches and updates, plus new watched-search results. Manual **Apply & Sync**
-does not send Discord notifications; results and warnings remain in **Jobs**.
+does not send Discord notifications; results and warnings remain in **Tasks**.
 
 ## Help
 
@@ -363,11 +379,11 @@ does not send Discord notifications; results and warnings remain in **Jobs**.
 | --- | --- |
 | **Kavita will not connect** | Test the connection in Settings. Check the server address and admin Auth Key. In Docker, use an address reachable from the container. |
 | **A title will not change, or a CBZ cannot be edited** | Check write permissions and **Kavita library folders**. The mapped path must point to the same files Kavita uses. Open the job for the specific warning. |
-| **The cover has not updated** | Wait for **Apply & Sync** to finish. Check **Jobs** for cover-upload errors, then refresh the library. |
+| **The cover has not updated** | Wait for **Apply & Sync** to finish. Check **Tasks** for cover-upload errors, then refresh the library. |
 | **A download failed** | Open **Downloads → Needs attention** for the error. Check the output folder and source settings, then retry. An nHentai API key can help with rate limits. |
 | **A watch has no new results** | Its first check is silent. Check the saved query and interval, or use **Check now**. Old uploads are suppressed when their date is known. |
 
-**Jobs** contains the results and logs for scans, matches, merges, edits, and
+**Tasks** contains the results and logs for scans, matches, merges, edits, and
 watched-search checks. Failed jobs offer retry and, where available, a link to
 the relevant setting. Clearing failed-job history removes its logs, not library
 files.

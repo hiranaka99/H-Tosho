@@ -1,4 +1,5 @@
 import { recoverLegacyConfirmations } from './legacyColumns.js';
+import { pruneMetadataHistory } from './metadataRetention.js';
 import { migrateSchema, splitLegacyJobState } from './migrations.js';
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
@@ -82,6 +83,7 @@ function pruneOldData(sqlite: Database.Database): void {
   ).run(cutoff(JOB_RETENTION_DAYS));
   sqlite.prepare(`DELETE FROM jobs WHERE status IN ('completed','failed','cancelled') AND finished_at < ?`).run(cutoff(JOB_RETENTION_DAYS));
   sqlite.prepare(`DELETE FROM sync_history WHERE created_at < ?`).run(cutoff(HISTORY_RETENTION_DAYS));
+  pruneMetadataHistory(sqlite);
 }
 
 /**

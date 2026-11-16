@@ -17,7 +17,8 @@ function history(action: string, details: unknown) {
   getDb().insert(schema.syncHistory).values({ kavitaSeriesId: 7, action, detailsJson: JSON.stringify(details) }).run();
 }
 function client(resets: number[]) {
-  return { getSeriesById: async () => ({id: 7, libraryId: 1, name: 'Fixture'}), removeSeriesMetadata: async () => {},
+  return { getSeriesDto: async () => ({id: 7, libraryId: 1, name: 'Fixture'}), getSeriesMetadata: async () => ({summary: null}),
+    getSeriesById: async () => ({id: 7, libraryId: 1, name: 'Fixture'}), removeSeriesMetadata: async () => {},
     resetSeriesCover: async () => resets.push(7), resetVolumeCover: async (id: number) => resets.push(id),
     getVolumes: async () => [{id: 71, number: 1}, {id: 72, number: 2}], scanSeries: async () => {},
   } as unknown as KavitaClient;

@@ -28,7 +28,7 @@ function SectionHeading({ id, title, count, description, children }: { id: strin
 }
 
 function SectionLink({ to, children }: { to: string; children: React.ReactNode }) {
-  return <Link to={to} className="inline-flex min-h-9 items-center gap-1.5 rounded-md text-sm font-medium text-primary underline-offset-4 hover:underline">{children}<ArrowRight aria-hidden="true" className="h-3.5 w-3.5" /></Link>;
+  return <Link to={to} className="inline-flex min-h-9 items-center gap-1.5 rounded-md text-sm font-medium text-primary underline-offset-4 hover:underline max-lg:min-h-11 pointer-coarse:min-h-11">{children}<ArrowRight aria-hidden="true" className="h-3.5 w-3.5" /></Link>;
 }
 
 function LoadingRows() {
@@ -101,7 +101,7 @@ export function Home() {
       </SectionHeading>
       {recsLoading && !recs ? <div role="status" aria-label="Loading recommendations" className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">{[0, 1, 2, 3, 4, 5].map(i => <Skeleton key={i} className="aspect-[3/5] rounded-xl" />)}</div>
         : recsFailed ? <ErrorState title="Could not load recommendations" description={recsError?.message} onRetry={() => void refetchRecs()} />
-        : !recommendationItems.length ? <div className="rounded-xl border border-border bg-surface"><EmptyState icon={<Sparkles className="h-5 w-5" />} title="No recommendations yet" description="Try Refresh picks, or browse the Downloader to find galleries and build your preferences." /></div>
+        : !recommendationItems.length ? <div className="rounded-xl border border-border bg-surface"><EmptyState icon={<Sparkles className="h-5 w-5" />} title="No recommendations yet" description="Try Refresh picks, or browse Discover to find galleries and build your preferences." /></div>
         : <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">{recommendationItems.map((item, index) => {
           const key = `${item.source}:${item.galleryId}`;
           return <div key={key} className={cn('min-w-0 [&>article]:h-full', index >= 2 && 'hidden md:block')}><GalleryCard item={item} onOpen={setSelected} onDownload={doStartDownload} downloadSetup={setup.status} starting={pendingKeys.has(key)} display="recommendation" ownership={{ type: inLibrary.has(key) ? 'in-library' : owned.has(key) ? 'downloaded' : possible.has(key) ? 'possible-duplicate' : 'available' }} /></div>;
@@ -113,7 +113,7 @@ export function Home() {
         <SectionHeading id="home-matches" title="Galleries that can be matched" count={matches.data ? matchItems.length : undefined} description="New metadata candidates for your unmatched galleries.">
           <Button variant="outline" size="sm" disabled={scanning || scanNow.isPending || !matches.data?.configured} onClick={() => scanNow.mutate()}>{scanning || scanNow.isPending ? <Spinner /> : <Search aria-hidden="true" className="h-3.5 w-3.5" />}{scanning ? 'Scanning…' : 'Scan now'}</Button>
         </SectionHeading>
-        <p className="mt-3 text-xs text-muted">{scanning ? (scan?.progressTotal ? `Checking ${scan.progressCurrent} of ${scan.progressTotal} galleries` : 'Checking your unmatched galleries…') : scan?.status === 'failed' ? 'Last scan failed. Retry with Scan now, or check Jobs for details.' : scan?.status === 'cancelled' ? 'Last scan cancelled. Scan again when you’re ready.' : scan?.finishedAt ? `Checked ${timeAgo(scan.finishedAt)} · Scans daily` : 'Scans daily · Candidates are reviewed before syncing'}</p>
+        <p className="mt-3 text-xs text-muted">{scanning ? (scan?.progressTotal ? `Checking ${scan.progressCurrent} of ${scan.progressTotal} galleries` : 'Checking your unmatched galleries…') : scan?.status === 'failed' ? 'Last scan failed. Retry with Scan now, or check Tasks for details.' : scan?.status === 'cancelled' ? 'Last scan cancelled. Scan again when you’re ready.' : scan?.finishedAt ? `Checked ${timeAgo(scan.finishedAt)} · Scans daily` : 'Scans daily · Candidates are reviewed before syncing'}</p>
         {scanning && <ProgressBar className="mt-3" label="Matching scan progress" value={scan?.progressCurrent ?? 0} max={scan?.progressTotal ?? 0} active />}
         {scan?.status === 'completed' && !!(scan.result as { failed?: number } | null)?.failed && <p className="mt-2 text-xs text-warning">Some providers could not be checked. <Link to="/jobs" className="underline underline-offset-4">View scan details</Link></p>}
         {matches.isPending ? <LoadingRows /> : matches.isError ? <ErrorState title="Could not load matching candidates" description={matches.error.message} onRetry={() => void matches.refetch()} />
@@ -142,12 +142,12 @@ export function Home() {
     </div>
 
     <section aria-labelledby="home-activity" className="min-w-0 border-t border-border pt-6">
-      <SectionHeading id="home-activity" title="Recent activity" description="Your latest matches, downloads, and library updates."><SectionLink to="/jobs">View jobs</SectionLink></SectionHeading>
+      <SectionHeading id="home-activity" title="Recent activity" description="Your latest matches, downloads, and library updates."><SectionLink to="/jobs">View tasks</SectionLink></SectionHeading>
       {activity.isPending ? <LoadingRows /> : activity.isError ? <ErrorState title="Could not load recent activity" description={activity.error.message} onRetry={() => void activity.refetch()} />
         : !activity.data.length ? <EmptyState icon={<History className="h-5 w-5" />} title="Your library’s story starts here" description="Match a gallery or complete a download to see it in your recent activity." />
         : <ul className="mt-4 grid gap-x-8 lg:grid-cols-2">{activity.data.map(item => <li key={item.id} className="flex min-w-0 items-start gap-3 border-b border-border py-3">
           <span className={cn('mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full', item.action === 'failed' ? 'bg-danger/10 text-danger' : 'bg-success/10 text-success')}>{item.action === 'downloaded' ? <Download aria-hidden="true" className="h-3.5 w-3.5" /> : item.action === 'failed' ? <X aria-hidden="true" className="h-3.5 w-3.5" /> : <Link2 aria-hidden="true" className="h-3.5 w-3.5" />}</span>
-          <div className="min-w-0 flex-1"><Link to={item.href} className="break-words text-sm font-medium underline-offset-4 hover:text-primary hover:underline">{item.title}</Link><div className="mt-1 flex flex-wrap gap-x-2 text-xs text-muted"><span>{activityLabels[item.action] ?? item.action}</span><time dateTime={toIsoUtc(item.createdAt)} title={new Date(toIsoUtc(item.createdAt)).toLocaleString()}>{timeAgo(item.createdAt)}</time></div></div>
+          <div className="min-w-0 flex-1"><Link to={item.href} className="break-words text-sm font-medium underline-offset-4 hover:text-primary hover:underline max-lg:flex max-lg:min-h-11 max-lg:items-center pointer-coarse:flex pointer-coarse:min-h-11 pointer-coarse:items-center">{item.title}</Link><div className="mt-1 flex flex-wrap gap-x-2 text-xs text-muted"><span>{activityLabels[item.action] ?? item.action}</span><time dateTime={toIsoUtc(item.createdAt)} title={new Date(toIsoUtc(item.createdAt)).toLocaleString()}>{timeAgo(item.createdAt)}</time></div></div>
         </li>)}</ul>}
     </section>
     {review && <CandidateReview key={review.seriesId} item={review} onClose={() => { setReview(null); void qc.invalidateQueries({ queryKey: ['home-matches'] }); }} />}

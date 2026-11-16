@@ -100,8 +100,8 @@ function ThemeToggle() {
 const NAV = [
   { to: '/', label: 'Home', icon: House },
   { to: '/libraries', label: 'Libraries', icon: Library },
-  { to: '/downloader', label: 'Downloader', icon: Download },
-  { to: '/jobs', label: 'Jobs', icon: ListChecks },
+  { to: '/downloader', label: 'Discover', icon: Download },
+  { to: '/jobs', label: 'Tasks', icon: ListChecks },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ];
 

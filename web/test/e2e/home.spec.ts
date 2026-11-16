@@ -39,7 +39,7 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Home', exact: true })).toBeVisible();
 });
 
-test('Home is first in navigation, shows four live sections, and shares recommendations with Downloader', async ({ page }) => {
+test('Home is first in navigation, shows four live sections, and shares recommendations with Discover', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   if (await page.getByRole('button', { name: 'Open navigation', exact: true }).isVisible()) await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
@@ -48,7 +48,7 @@ test('Home is first in navigation, shows four live sections, and shares recommen
   for (const name of ['Recommended galleries', 'Galleries that can be matched', 'Unreviewed saved search results', 'Recent activity']) await expect(page.getByRole('heading', { name, exact: false })).toBeVisible();
   await expect(page.getByText('After the rain', { exact: true })).toBeVisible();
   await page.getByRole('link', { name: 'View all picks' }).click();
-  await expect(page.getByRole('tab', { name: 'Recommended', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'For you', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByText('After the rain', { exact: true })).toBeVisible();
   await navigate(page, 'Home');
   await page.reload();
@@ -130,7 +130,7 @@ test('Home match search shows a recoverable error after Back to matches and hand
   await expect(dialog.getByText('Searching providers…', { exact: true })).toHaveCount(0);
 });
 
-test('download discovery updates Home automatically and explains its review-only outcome in Jobs and Settings', async ({ page }, testInfo) => {
+test('download discovery updates Home automatically and explains its review-only outcome in Tasks and Settings', async ({ page }, testInfo) => {
   let done = false;
   const job = () => ({ id: 71, type: 'scan-downloaded', payload: { path: '/downloads/Summer anthology/gallery.cbz', connectionKey: 'https://kavita.test', seriesName: match.name }, status: done ? 'completed' : 'running', progressCurrent: done ? 1 : 0, progressTotal: 1, result: done ? { processed: 1, matchable: 1, failed: 0 } : null, createdAt: '2026-11-15T09:00:00Z', startedAt: '2026-11-15T09:00:00Z', finishedAt: done ? '2026-11-15T09:01:00Z' : null, errorMessage: null });
   await page.route('**/api/home/matches', route => route.fulfill({ json: { configured: true, items: done ? [match] : [], scan: job() } }));
@@ -143,11 +143,11 @@ test('download discovery updates Home automatically and explains its review-only
   await expect(page.getByRole('button', { name: 'Review match', exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText('Checking 0 of 1 galleries', { exact: true })).toHaveCount(0);
   await page.locator('section[aria-labelledby="home-matches"]').screenshot({ path: `.impeccable/review/download-discovery-home-${testInfo.project.name}.png` });
-  await navigate(page, 'Jobs');
-  await page.getByRole('button', { name: `View details for job #71: ${match.name}`, exact: true }).click();
+  await navigate(page, 'Tasks');
+  await page.getByRole('button', { name: `View details for task #71: ${match.name}`, exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByText('1 galleries checked · 1 galleries with candidates · 0 galleries with provider errors.', { exact: true })).toBeVisible();
-  await expect(dialog.getByText('Find matches for downloaded gallery · Job #71', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Find matches for downloaded gallery · Task #71', { exact: true })).toBeVisible();
   await dialog.screenshot({ path: `.impeccable/review/download-discovery-job-${testInfo.project.name}.png` });
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
@@ -156,6 +156,98 @@ test('download discovery updates Home automatically and explains its review-only
   await page.getByRole('tab', { name: 'Downloader', exact: true }).click();
   await expect(page.getByText('Completed downloads in a shared Kavita library are imported and checked for matches in the background. Review candidates on Home before applying metadata.', { exact: true })).toBeVisible();
   await expect(page.getByRole('switch', { name: 'Auto-sync Kavita after downloads', exact: true })).toHaveCount(0);
+});
+
+test('field protection persists across candidate review and prevents selecting protected fields', async ({ page }, testInfo) => {
+  let policy = { lockedFields: [] as string[], revision: 0 };
+  await page.route('**/api/series/11/field-locks', async route => {
+    if (route.request().method() === 'PUT') {
+      const body = route.request().postDataJSON();
+      expect(body.expectedRevision).toBe(policy.revision);
+      policy = { lockedFields: body.lockedFields, revision: policy.revision + 1 };
+    }
+    await route.fulfill({ json: policy });
+  });
+  await page.route('**/api/series/11', route => route.fulfill({ json: { series: { id: 11, libraryId: 7, name: match.name }, kavita: { summary: 'Current summary' }, match: null } }));
+  await page.route('**/api/providers/anilist/series/new-candidate', route => route.fulfill({ json: { ...match.candidate, titleOptions: [match.name], summary: 'Proposed summary', tags: [], artists: [], writers: [], genres: [] } }));
+  await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
+  const dialog = page.getByRole('dialog');
+  const panel = dialog.locator('details').filter({ has: page.locator('summary').filter({ hasText: 'Protected from H-Tosho sync' }) });
+  await panel.locator('summary').click();
+  await panel.getByRole('checkbox', { name: 'Description', exact: true }).click();
+  await expect(panel.getByRole('checkbox', { name: 'Description', exact: true })).toBeChecked();
+  await expect(dialog.getByRole('group', { name: 'Summary', exact: true }).getByRole('checkbox')).toBeDisabled();
+  expect(policy.lockedFields).toEqual(['summary']);
+  await dialog.screenshot({ path: `.impeccable/review/field-protection-${testInfo.project.name}.png`, animations: 'disabled' });
+  await page.evaluate(() => document.documentElement.classList.add('dark'));
+  await dialog.screenshot({ path: `.impeccable/review/field-protection-${testInfo.project.name}-dark.png`, animations: 'disabled' });
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
+  await dialog.locator('summary').filter({ hasText: 'Protected from H-Tosho sync' }).click();
+  await expect(dialog.getByRole('checkbox', { name: 'Description', exact: true })).toBeChecked();
+});
+
+test('metadata history browses observed values, archive changes and older pages', async ({ page }, testInfo) => {
+  let historyRequests = 0;
+  const entry = { id: 'recorded-update', sequence: 21, origin: 'provider-apply', status: 'completed', createdAt: '2026-11-16T08:00:00Z', finishedAt: '2026-11-16T08:01:00Z', fields: ['summary', 'tags'], changedFields: ['summary', 'tags'], message: null, jobId: 71 };
+  const before = { series: { id: 11, libraryId: 7, name: match.name }, fields: { summary: { present: true, value: null, nativeLocked: false }, tags: { present: true, value: [] }, language: { present: false } } };
+  const after = { ...before, fields: { summary: { present: true, value: '', nativeLocked: true }, tags: { present: true, value: [{ id: 1, title: 'Slice of life' }] }, language: { present: true, value: 'en' } } };
+  await page.route('**/api/series/11', route => route.fulfill({ json: { series: before.series, kavita: { summary: 'Current summary' }, match: null } }));
+  await page.route('**/api/providers/anilist/series/new-candidate', route => route.fulfill({ json: { ...match.candidate, titleOptions: [match.name], summary: 'Proposed summary', tags: [], artists: [], writers: [], genres: [] } }));
+  await page.route('**/api/series/11/metadata-history?*', route => route.fulfill({ json: { items: [{ ...entry, id: 'earlier-update', sequence: 1, status: 'interrupted' }], nextCursor: null } }));
+  await page.route('**/api/series/11/metadata-history', route => {
+    historyRequests++;
+    return route.fulfill({ json: { items: [entry], nextCursor: 21 } });
+  });
+  await page.route('**/api/series/11/metadata-history/recorded-update', route => route.fulfill({ json: {
+    ...entry, before, after,
+    archives: [{ target: 'chapter.cbz', status: 'observed', beforePresent: true, afterPresent: true, changes: [{ field: 'Number', before: { present: true, value: '1' }, after: { present: true, value: '3' } }] }],
+    availability: { metadata: 'captured', archives: 'captured files only', covers: 'not captured', restore: 'not enabled' },
+  } }));
+  await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('Proposed summary', { exact: true })).toBeVisible();
+  expect(historyRequests).toBe(0);
+  const panel = dialog.locator('details').filter({ has: page.locator('summary').filter({ hasText: /^Metadata history$/ }) });
+  const toggle = panel.locator(':scope > summary');
+  await toggle.click();
+  await panel.getByRole('button', { name: 'View changes', exact: true }).click();
+  await expect(panel.getByText('Null', { exact: true })).toBeVisible();
+  await expect(panel.getByText('Empty text', { exact: true })).toBeVisible();
+  await expect(panel.getByText('Empty list', { exact: true })).toBeVisible();
+  await expect(panel.getByText('Field absent', { exact: true })).toBeVisible();
+  await expect(panel.getByText('Kavita lock: locked', { exact: true })).toBeVisible();
+  await panel.locator('summary').filter({ hasText: 'chapter.cbz' }).click();
+  await expect(panel.getByText('Number', { exact: true })).toBeVisible();
+  await expect(panel.getByText('3', { exact: true })).toBeVisible();
+  expect((await toggle.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  const overflow = await panel.evaluate(element => element.scrollWidth > element.clientWidth + 1);
+  expect(overflow).toBe(false);
+  await toggle.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `.impeccable/review/metadata-history-${testInfo.project.name}.png`, animations: 'disabled' });
+  await page.evaluate(() => document.documentElement.classList.add('dark'));
+  await page.screenshot({ path: `.impeccable/review/metadata-history-${testInfo.project.name}-dark.png`, animations: 'disabled' });
+  await panel.getByText('Number', { exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `.impeccable/review/metadata-history-${testInfo.project.name}-archive-dark.png`, animations: 'disabled' });
+  await panel.getByRole('button', { name: 'Older changes', exact: true }).click();
+  await expect(panel.getByText('Provider update · interrupted', { exact: true })).toBeVisible();
+  await panel.getByRole('button', { name: 'Newer changes', exact: true }).click();
+  await expect(panel.getByText('Provider update · completed', { exact: true })).toBeVisible();
+});
+
+test('metadata history retries failed loading and explains an empty history', async ({ page }) => {
+  let failing = true;
+  await page.route('**/api/series/11', route => route.fulfill({ json: { series: { id: 11, libraryId: 7, name: match.name }, kavita: {}, match: null } }));
+  await page.route('**/api/providers/anilist/series/new-candidate', route => route.fulfill({ json: { ...match.candidate, titleOptions: [match.name], summary: 'Proposed summary', tags: [], artists: [], writers: [], genres: [] } }));
+  await page.route('**/api/series/11/metadata-history', route => route.fulfill(failing ? { status: 503, json: { error: 'Unavailable' } } : { json: { items: [], nextCursor: null } }));
+  await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
+  const dialog = page.getByRole('dialog');
+  await dialog.locator('summary').filter({ hasText: /^Metadata history$/ }).click();
+  await expect(dialog.getByText('Could not load metadata history.', { exact: true })).toBeVisible();
+  failing = false;
+  await dialog.getByRole('button', { name: 'Retry history', exact: true }).click();
+  await expect(dialog.getByText('No recorded metadata changes yet.', { exact: true })).toBeVisible();
+  await expect(dialog.getByText(/Restore is not available yet; cover images are not captured/)).toBeVisible();
 });
 
 test('responsive visual review in light and dark themes', async ({ page }, testInfo) => {

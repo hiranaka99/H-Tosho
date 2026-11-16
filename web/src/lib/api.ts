@@ -411,6 +411,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  metadataHistory: (id: number, cursor?: number) => request<{items: import('../../../server/src/contracts/metadataHistory').MetadataHistoryEntry[];nextCursor:number|null}>(`/series/${id}/metadata-history${cursor?`?cursor=${cursor}`:''}`),
+  metadataHistoryDetail: (id:number, operationId:string) => request<import('../../../server/src/contracts/metadataHistory').MetadataHistoryDetail>(`/series/${id}/metadata-history/${encodeURIComponent(operationId)}`),
+  fieldPolicy: (id: number) => request<import('../../../server/src/contracts/metadata').FieldPolicy>(`/series/${id}/field-locks`),
+  saveFieldPolicy: (id: number, body: { lockedFields: import('../../../server/src/contracts/metadata').ProtectedField[]; expectedRevision: number }) => request<import('../../../server/src/contracts/metadata').FieldPolicy>(`/series/${id}/field-locks`, { method: 'PUT', body: JSON.stringify(body) }),
   homeMatches: () => request<HomeMatches>('/home/matches'),
   scanMatchable: () => request<{ id: number; alreadyRunning: boolean }>('/home/matches/scan', { method: 'POST' }),
   rejectMatchCandidate: (item: MatchSuggestion) => request<{ ok: boolean }>(`/home/matches/${item.seriesId}/reject`, { method: 'POST', body: JSON.stringify({ providerId: item.candidate.providerId, providerSeriesId: item.candidate.providerSeriesId }) }),

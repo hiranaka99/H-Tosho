@@ -365,9 +365,9 @@ export function Libraries({ review = false }: { review?: boolean }) {
       setLastQueuedJob({ id: result.id, ...variables });
       void qc.invalidateQueries({ queryKey: ['jobs'] });
       const libraryName = libs.data?.find((library) => library.id === variables.libraryId)?.name;
-      toast({ tone: 'info', title: variables.type === 'scan-new' ? 'Refresh queued' : 'Matching queued', description: `${libraryName ? `${libraryName}. ` : ''}Follow progress below or in Jobs.` });
+      toast({ tone: 'info', title: variables.type === 'scan-new' ? 'Refresh queued' : 'Matching queued', description: `${libraryName ? `${libraryName}. ` : ''}Follow progress below or in Tasks.` });
     },
-    onError: (error) => toast({ tone: 'danger', title: 'Could not queue job', description: error instanceof Error ? error.message : String(error) }),
+    onError: (error) => toast({ tone: 'danger', title: 'Could not queue task', description: error instanceof Error ? error.message : String(error) }),
   });
   const queueLibraryJob = (type: 'scan-new' | 'match-unmatched') => {
     if (selected !== null && !enqueue.isPending) enqueue.mutate({ type, libraryId: selected });
@@ -411,7 +411,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
     mutationFn: (target: { id: number; name: string }) => api.enqueue('delete-series', { seriesId: target.id }),
     onSuccess: (_res, target) => {
       setDeleteTarget(null);
-      toast({ tone: 'success', title: `Deleting “${target.name}”`, description: 'The folder is being removed in the background — follow progress on the Jobs page.' });
+      toast({ tone: 'success', title: `Deleting “${target.name}”`, description: 'The folder is being removed in the background — follow progress on the Tasks page.' });
     },
     onError: (e) => toast({ tone: 'danger', title: 'Could not queue the deletion', description: e instanceof Error ? e.message : String(e) }),
   });
@@ -477,11 +477,11 @@ export function Libraries({ review = false }: { review?: boolean }) {
                 <span>{jobLabel(libraryActivity.type, libraryActivity.payload)} · {libraryActivity.status === 'running' ? 'In progress' : libraryActivity.status.charAt(0).toUpperCase() + libraryActivity.status.slice(1)}</span>
               </p>
               {libraryActivity.status === 'running' && libraryActivity.progressTotal > 0 && (
-                <div className="mt-2 flex items-center gap-2"><ProgressBar label="Library job progress" value={libraryActivity.progressCurrent} max={libraryActivity.progressTotal} className="max-w-xs" /><span className="shrink-0 text-xs tabular-nums text-muted">{libraryActivity.progressCurrent}/{libraryActivity.progressTotal}</span></div>
+                <div className="mt-2 flex items-center gap-2"><ProgressBar label="Library task progress" value={libraryActivity.progressCurrent} max={libraryActivity.progressTotal} className="max-w-xs" /><span className="shrink-0 text-xs tabular-nums text-muted">{libraryActivity.progressCurrent}/{libraryActivity.progressTotal}</span></div>
               )}
-              {runningLibraryJobs.length > 1 && <p className="mt-1 text-xs text-muted">{runningLibraryJobs.length} active jobs for this library</p>}
+              {runningLibraryJobs.length > 1 && <p className="mt-1 text-xs text-muted">{runningLibraryJobs.length} active tasks for this library</p>}
             </div>
-            <Button asChild size="sm" variant="outline"><Link to={runningLibraryJobs.length > 1 ? '/jobs?filter=active' : `/jobs?job=${libraryActivity.id}`}>{runningLibraryJobs.length > 1 ? 'View jobs' : 'View job'}</Link></Button>
+            <Button asChild size="sm" variant="outline"><Link to={runningLibraryJobs.length > 1 ? '/jobs?filter=active' : `/jobs?job=${libraryActivity.id}`}>{runningLibraryJobs.length > 1 ? 'View tasks' : 'View task'}</Link></Button>
           </div>
         )}
 

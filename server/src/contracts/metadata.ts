@@ -5,6 +5,9 @@ export const EXCLUDABLE_FIELDS = {
   artists: 'artists', releaseDate: 'releaseYear', language: 'language', status: 'publicationStatus', url: 'webLinks',
 } as const;
 export type SyncField = keyof typeof EXCLUDABLE_FIELDS;
+export const PROTECTABLE_FIELDS = [...Object.keys(EXCLUDABLE_FIELDS), 'cover'] as (SyncField | 'cover')[];
+export type ProtectedField = SyncField | 'cover';
+export interface FieldPolicy { lockedFields: ProtectedField[]; revision: number }
 
 export function releaseYear(meta: { year?: number; releaseDate?: string }): number | undefined {
   if (meta.year && meta.year >= 1 && meta.year <= 9999) return meta.year;

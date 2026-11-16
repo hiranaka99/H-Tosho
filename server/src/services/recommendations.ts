@@ -759,6 +759,27 @@ export async function getRecommendations(): Promise<RecommendationResponse> {
   });
 }
 
+/** Prepare each day's persisted picks even when no browser has the app open. */
+export function startRecommendationPreloading(): () => void {
+  let pending = false;
+  const preload = (): void => {
+    if (pending) return;
+    pending = true;
+    void recommendationMutations.run(['displayed-set'], async () => {
+      const date = localDate();
+      if (!readCached(date)) await generateFor(date, 0);
+    }).catch((error: unknown) => {
+      console.warn('[recommendations] daily preload failed; retrying in one minute:', error);
+    }).finally(() => { pending = false; });
+  };
+  // Checking the local date handles midnight, DST and a sleeping server without
+  // re-rolling a valid daily set. Failed attempts retry on the next tick.
+  const timer = setInterval(preload, 60_000);
+  timer.unref();
+  preload();
+  return () => clearInterval(timer);
+}
+
 /** Monotonic nonce so each refresh draws differently (deterministic, unlike Math.random). */
 let refreshNonce = 0;
 

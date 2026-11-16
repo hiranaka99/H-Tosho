@@ -140,6 +140,15 @@ test('selected MangaDex title rewrites every chapter and renames the record via 
   assert.equal((await (await api.request('/series/low-confidence')).json()).count, 0);
   assert.deepEqual(await (await api.request('/series/needs-review')).json(), []);
   assert.equal(getDb().select().from(schema.syncHistory).all().length, historyBefore + 1, 'one apply creates one history entry');
+  const operation = db.select().from(schema.metadataOperations).where(eq(schema.metadataOperations.jobId, 900)).get()!;
+  assert.equal(JSON.parse(operation.beforeJson).fields.title.value, 'Old Name');
+  assert.equal(JSON.parse(operation.afterJson!).fields.title.value, 'Live!: Soto de Koubi Shiyou!');
+  const snapshots = db.select().from(schema.metadataOperationSteps).where(eq(schema.metadataOperationSteps.operationId, operation.id)).all();
+  assert.equal(snapshots.length, 2);
+  for (const step of snapshots) {
+    assert.equal(parseComicInfo(JSON.parse(step.beforeJson).xml).fields.Series, 'Old Name');
+    assert.equal(parseComicInfo(JSON.parse(step.afterJson!).xml).fields.Series, 'Live!: Soto de Koubi Shiyou!');
+  }
 });
 
 test('punctuation-only title change rewrites ComicInfo.Series and renames via API without a scan', async () => {

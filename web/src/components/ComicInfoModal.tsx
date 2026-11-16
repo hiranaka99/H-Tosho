@@ -105,7 +105,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose, onStateChange 
       void qc.invalidateQueries({ queryKey: ['jobs'] });
       setQueuedFiles(previous => ({ ...previous, [path]: result.id }));
       setDrafts(previous => previous[path] ? { ...previous, [path]: { ...previous[path], originalXml: snapshot.xml, originalValues: { ...snapshot.values } } } : previous);
-      toast({ tone: 'success', title: 'ComicInfo save queued', description: `${path.split(/[\\/]/).pop()} — check the Jobs page` });
+      toast({ tone: 'success', title: 'ComicInfo save queued', description: `${path.split(/[\\/]/).pop()} — check the Tasks page` });
     },
     onError: error => toast({ tone: 'danger', title: 'Could not queue save', description: error instanceof Error ? error.message : String(error) }),
   });
@@ -329,7 +329,7 @@ export function ComicInfoModal({ initialPath, seriesId, onClose }: ComicInfoModa
     <Dialog open={confirmDiscard} onOpenChange={setConfirmDiscard}>
       <DialogContent className="max-w-md">
         <div className="space-y-4 p-5 pr-14">
-          <div><DialogTitle>Discard unsaved changes?</DialogTitle><DialogDescription className="mt-2">Unsaved drafts in all opened archives will be discarded. Saves already queued in Jobs are not cancelled.</DialogDescription></div>
+          <div><DialogTitle>Discard unsaved changes?</DialogTitle><DialogDescription className="mt-2">Unsaved drafts in all opened archives will be discarded. Saves already queued in Tasks are not cancelled.</DialogDescription></div>
           <div className="flex flex-wrap justify-end gap-2">
             <Button variant="outline" onClick={() => setConfirmDiscard(false)}>Keep editing</Button>
             <Button variant="danger" onClick={() => { setConfirmDiscard(false); onClose?.(); }}>Discard changes</Button>

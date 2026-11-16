@@ -72,6 +72,14 @@ export function migrateSchema(sqlite: Database.Database): void {
       createSchemaTables(sqlite);
       createIndexes(sqlite);
     },
+    () => {
+      createSchemaTables(sqlite);
+      createIndexes(sqlite);
+    },
+    () => {
+      createSchemaTables(sqlite);
+      createIndexes(sqlite);
+    },
   ];
   for (const [index, migration] of migrations.entries()) {
     const version = index + 1;

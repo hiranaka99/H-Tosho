@@ -53,7 +53,7 @@ test('changing Kavita servers clears cached library series before returning to L
   expect(errors).toEqual([]);
 });
 
-test('login, lazy page navigation, deep links, theme and logout work', async ({ page }) => {
+test('login, lazy page navigation, deep links, theme and logout work', async ({ page }, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await navigate(page, 'Settings');
@@ -63,10 +63,12 @@ test('login, lazy page navigation, deep links, theme and logout work', async ({ 
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
   await expect(page.locator('html')).toHaveClass(/dark/);
-  await navigate(page, 'Jobs');
-  await expect(page.getByRole('heading', { name: 'Jobs', exact: true })).toBeVisible();
-  await navigate(page, 'Downloader');
-  await expect(page.getByRole('heading', { name: 'Doujinshi Downloader', exact: true })).toBeVisible();
+  await navigate(page, 'Tasks');
+  await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible();
+  await page.screenshot({ path: `.impeccable/review/navigation-tasks-${testInfo.project.name}.png` });
+  await navigate(page, 'Discover');
+  await expect(page.getByRole('heading', { name: 'Discover galleries', exact: true })).toBeVisible();
+  await page.screenshot({ path: `.impeccable/review/navigation-discover-${testInfo.project.name}.png` });
   await page.getByRole('tab', { name: 'Downloads', exact: true }).click();
   await page.reload();
   await expect(page.getByRole('tab', { name: 'Downloads', exact: true })).toHaveAttribute('aria-selected', 'true');
@@ -83,20 +85,20 @@ test('unsaved settings can stay, discard, or save before navigating', async ({ p
   const original = await interval.inputValue();
   const changed = original === '13' ? '14' : '13';
   await interval.fill(changed);
-  await navigate(page, 'Jobs', true);
+  await navigate(page, 'Tasks', true);
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: 'Save your settings changes?' })).toBeVisible();
   await dialog.getByRole('button', { name: 'Stay', exact: true }).click();
   await expect(interval).toHaveValue(changed);
-  await navigate(page, 'Jobs', true);
+  await navigate(page, 'Tasks', true);
   await dialog.getByRole('button', { name: 'Discard', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Jobs', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible();
   await navigate(page, 'Settings');
   await expect(interval).toHaveValue(original);
   await interval.fill(changed);
-  await navigate(page, 'Jobs', true);
+  await navigate(page, 'Tasks', true);
   await dialog.getByRole('button', { name: 'Save & leave', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Jobs', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible();
   await navigate(page, 'Settings');
   await expect(interval).toHaveValue(changed);
   await page.getByRole('tab', { name: 'Notifications', exact: true }).click();
@@ -112,8 +114,8 @@ test('watched Dismiss marks reviewed beside Download and retains reversible Hist
   await navigate(page, 'Settings');
   const theme = testInfo.project.name === 'desktop' ? 'Dark' : 'Light';
   await page.getByRole('radio', { name: theme, exact: true }).click();
-  await navigate(page, 'Downloader');
-  await page.getByRole('tab', { name: 'Watched', exact: true }).click();
+  await navigate(page, 'Discover');
+  await page.getByRole('tab', { name: 'Following', exact: true }).click();
   const inbox = page.getByRole('radio', { name: 'Inbox (6)', exact: true });
   await expect(inbox).toHaveAttribute('aria-checked', 'true');
   const card = page.locator('article').filter({ has: page.getByRole('button', { name: 'View details for History gallery 12', exact: true }) });
@@ -187,8 +189,8 @@ test('watched queries use full-height autocomplete shared with Search', async ({
   });
   await navigate(page, 'Settings');
   await page.getByRole('radio', { name: testInfo.project.name === 'desktop' ? 'Dark' : 'Light', exact: true }).click();
-  await navigate(page, 'Downloader');
-  await page.getByRole('tab', { name: 'Watched', exact: true }).click();
+  await navigate(page, 'Discover');
+  await page.getByRole('tab', { name: 'Following', exact: true }).click();
   await page.getByText(/^Manage watches/).click();
   const form = page.getByRole('form', { name: 'Add a watched search' });
   const query = form.getByRole('combobox', { name: 'Watched search query' });
@@ -248,8 +250,8 @@ test('Watched controls fit each viewport and failed removal can be retried', asy
   expect(created.ok()).toBeTruthy();
   await navigate(page, 'Settings');
   await page.getByRole('radio', { name: testInfo.project.name === 'desktop' ? 'Dark' : 'Light', exact: true }).click();
-  await navigate(page, 'Downloader');
-  await page.getByRole('tab', { name: 'Watched', exact: true }).click();
+  await navigate(page, 'Discover');
+  await page.getByRole('tab', { name: 'Following', exact: true }).click();
   for (const control of [
     page.getByLabel('Watched search check interval'),
     page.getByRole('button', { name: 'Check now', exact: true }),
@@ -312,8 +314,8 @@ test('Watched motion preserves drafts, keyboard access and reduced-motion feedba
   await page.route('**/api/doujin/suggestions', route => route.fulfill({ json: [] }));
   await navigate(page, 'Settings');
   await page.getByRole('radio', { name: testInfo.project.name === 'desktop' ? 'Dark' : 'Light', exact: true }).click();
-  await navigate(page, 'Downloader');
-  await page.getByRole('tab', { name: 'Watched', exact: true }).click();
+  await navigate(page, 'Discover');
+  await page.getByRole('tab', { name: 'Following', exact: true }).click();
   const manage = page.getByRole('button', { name: /^Manage watches/ });
   const panel = page.locator(`[id="${await manage.getAttribute('aria-controls')}"]`);
   const query = page.getByRole('combobox', { name: 'Watched search query', exact: true });
@@ -380,7 +382,7 @@ test('Hitomi search preserves exclusions, scoped autocomplete and website sort c
     searches.push(route.request().postDataJSON());
     return route.fulfill({ json: [] });
   });
-  await navigate(page, 'Downloader');
+  await navigate(page, 'Discover');
   const search = page.getByRole('combobox', { name: 'Search galleries', exact: true });
   const draft = 'language:english -artist:mi type:doujinshi';
   await search.fill(draft);
@@ -430,7 +432,7 @@ test('Hitomi pages browse the full result count and preserve selections across p
     }));
     return route.fulfill({ json: { items, total } });
   });
-  await navigate(page, 'Downloader');
+  await navigate(page, 'Discover');
   const search = page.getByRole('combobox', { name: 'Search galleries', exact: true });
   await search.fill('sample');
   await search.press('Enter');
@@ -487,7 +489,7 @@ test('nHentai search keeps quoted exclusions, website sorts and selections acros
       tags: [], artists: ['Mizu Artist'], pageCount: 28, language: body.query.includes('language:japanese') ? 'Japanese' : 'English',
     })) } });
   });
-  await navigate(page, 'Downloader');
+  await navigate(page, 'Discover');
   await page.getByRole('radio', { name: 'nHentai', exact: true }).click();
   const search = page.getByRole('combobox', { name: 'Search galleries', exact: true });
   const draft = '"exact phrase" -artists:"mi" pages:>20';
@@ -537,7 +539,7 @@ test('provider switching translates current queries, reports losses and preserve
   });
   await navigate(page, 'Settings');
   await page.getByRole('radio', { name: testInfo.project.name === 'desktop' ? 'Dark' : 'Light', exact: true }).click();
-  await navigate(page, 'Downloader');
+  await navigate(page, 'Discover');
   const query = page.getByRole('combobox', { name: 'Search galleries', exact: true });
   const hitomi = page.getByRole('radio', { name: 'Hitomi.la', exact: true });
   const nhentai = page.getByRole('radio', { name: 'nHentai', exact: true });
@@ -584,8 +586,8 @@ test('provider switching translates current queries, reports losses and preserve
 
 test('watched provider switching shares translation and retains unsupported filters on return', async ({ page }) => {
   await page.route('**/api/doujin/suggestions', route => route.fulfill({ json: [] }));
-  await navigate(page, 'Downloader');
-  await page.getByRole('tab', { name: 'Watched', exact: true }).click();
+  await navigate(page, 'Discover');
+  await page.getByRole('tab', { name: 'Following', exact: true }).click();
   await page.getByRole('button', { name: /^Manage watches/ }).click();
   const form = page.getByRole('form', { name: 'Add a watched search' });
   const query = form.getByRole('combobox', { name: 'Watched search query' });
@@ -669,7 +671,7 @@ test('Libraries searches saved tags across pages alongside titles and artists', 
   expect(await page.locator('main').evaluate(element => element.scrollWidth <= element.clientWidth)).toBeTruthy();
 });
 
-test('daily recommendations stay fixed and returning from Libraries restores Recommended', async ({ page }) => {
+test('daily recommendations stay fixed and returning from Libraries restores For you', async ({ page }) => {
   await page.clock.install({ time: new Date('2026-10-12T12:00:00Z') });
   let day = '2026-10-12';
   let reads = 0, refreshes = 0;
@@ -692,13 +694,13 @@ test('daily recommendations stay fixed and returning from Libraries restores Rec
   // App startup loads the day's picks while Libraries is still open.
   await page.reload();
   await expect.poll(() => reads).toBe(1);
-  await navigate(page, 'Downloader');
-  const recommended = page.getByRole('tab', { name: 'Recommended', exact: true });
+  await navigate(page, 'Discover');
+  const recommended = page.getByRole('tab', { name: 'For you', exact: true });
   await recommended.click();
   await expect(page.getByText('Daily pick 2026-10-12', { exact: true })).toBeVisible();
   await navigate(page, 'Libraries');
   await page.clock.fastForward('06:00'); // Beyond both stale and garbage-collection defaults.
-  await navigate(page, 'Downloader');
+  await navigate(page, 'Discover');
   await expect(recommended).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByText('Daily pick 2026-10-12', { exact: true })).toBeVisible();
   await page.evaluate(() => { window.dispatchEvent(new Event('offline')); window.dispatchEvent(new Event('online')); window.dispatchEvent(new Event('focus')); });
@@ -729,7 +731,7 @@ test('daily recommendations stay fixed and returning from Libraries restores Rec
   await recommended.click();
   await expect(recommended).toHaveAttribute('aria-selected', 'true');
   await navigate(page, 'Libraries');
-  await navigate(page, 'Downloader');
+  await navigate(page, 'Discover');
   await expect(recommended).toHaveAttribute('aria-selected', 'true');
   expect(reads).toBe(4); // The explicit full-page deep link is an app opening too.
   expect(refreshes).toBe(1);
@@ -744,11 +746,11 @@ test('a failed initial recommendation load retries only on an explicit Retry', a
   });
   await page.reload();
   await expect.poll(() => reads).toBe(1);
-  await navigate(page, 'Downloader');
-  await page.getByRole('tab', { name: 'Recommended', exact: true }).click();
+  await navigate(page, 'Discover');
+  await page.getByRole('tab', { name: 'For you', exact: true }).click();
   await expect(page.getByText('Recommendations failed', { exact: true })).toBeVisible();
   await navigate(page, 'Libraries');
-  await navigate(page, 'Downloader');
+  await navigate(page, 'Discover');
   await expect(page.getByText('Recommendations failed', { exact: true })).toBeVisible();
   expect(reads).toBe(1);
   recover = true;

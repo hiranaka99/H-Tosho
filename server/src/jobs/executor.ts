@@ -1,4 +1,6 @@
 import { archiveMutations, archiveResource } from '../lib/mutations.js';
+import { getFieldPolicy } from '../services/fieldPolicies.js';
+import { withMetadataHistory, type MetadataJournal } from '../services/metadataHistory.js';
 import { parseJobCommand, type JobPayloads, type JobExecutionState, type JobType } from '../contracts/jobs.js';
 import { upsertMatch } from '../services/matchRecords.js';
 import { rememberTargets, rememberLibraries, rememberAvailableLibraries, rememberSeriesLibrary, throwIfJobCancelled, type Target } from './context.js';
@@ -59,6 +61,7 @@ async function matchAndApply(
   force: boolean,
   log?: LogFn,
   signal?: AbortSignal,
+  jobId?: number,
 ): Promise<MatchResult> {
   const base: MatchResult = { seriesId: series.id, title: series.name, matched: false, errors: [] };
   const { credentials, enabledProviders } = getCredentialMap();
@@ -104,6 +107,7 @@ async function matchAndApply(
     const result = await applyResolvedSeriesMatch(client, {
       seriesId: series.id, providerId: best.providerId, providerSeriesId: best.providerSeriesId,
       score: best.score, confirm: false, signal, historyAction: force ? 'updated' : 'matched',
+      jobId,
     }, meta);
     for (const warning of result.warnings) log?.('warn', warning);
     base.errors = result.errors;
@@ -165,6 +169,7 @@ async function runApplySeries(client: KavitaClient, job: JobFor<'apply-series'>,
   try {
     result = await applySeriesMatch(client, {
       seriesId,
+      jobId: job.id,
       providerId: p.providerId,
       providerSeriesId: p.providerSeriesId,
       selectedTitle: p.selectedTitle,
@@ -224,8 +229,14 @@ async function executeJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<J
       log,
     });
     case 'check-watched-searches': return runWatchedSearchJob(typed, log);
-    case 'edit-comicinfo': return runEditComicInfoJob(typed, log, signal);
-    case 'merge-series': return runMergeSeriesJob(typed, log, signal);
+    case 'edit-comicinfo': {
+      const client=connectedClientOrNull();
+      return typed.payload.seriesId && client ? withMetadataHistory(client,typed.payload.seriesId,'comicinfo-edit',typed.payload.fields ?? {},journal=>runEditComicInfoJob(typed,log,signal,journal),typed.id) : runEditComicInfoJob(typed,log,signal);
+    }
+    case 'merge-series': {
+      const client=connectedClientOrNull();
+      return typed.payload.seriesId && client ? withMetadataHistory(client,typed.payload.seriesId,'merge-metadata',typed.payload.seriesName ? {title:typed.payload.seriesName} : {},journal=>runMergeSeriesJob(typed,log,signal,journal),typed.id) : runMergeSeriesJob(typed,log,signal);
+    }
     case 'delete-series': return runDeleteSeriesJob(typed, log, signal);
     case 'apply-series': {
       const client = connectedClientOrNull();
@@ -398,7 +409,7 @@ async function runMatchingJob(job: Job, log: LogFn, signal?: AbortSignal): Promi
   let done = 0;
   await mapLimit(targets, MATCH_CONCURRENCY, async (t) => {
     if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled();
-    const r = await matchAndApply(client, t, t.libraryId, force, log, signal);
+    const r = await matchAndApply(client, t, t.libraryId, force, log, signal, job.id);
     summary.processed++;
     if (r.matched && r.errors.length === 0) summary.matched++;
     if (r.errors.length > 0) summary.failed++;
@@ -418,7 +429,7 @@ async function runWatchedSearchJob(job: JobFor<'check-watched-searches'>, log: L
   return { processed: r.checked, matched: 0, failed: r.failed, notified: r.notified, newGalleries: r.newGalleries };
 }
 
-async function runEditComicInfoJob(job: JobFor<'edit-comicinfo'>, log: LogFn, signal?: AbortSignal): Promise<JobResult> {
+async function runEditComicInfoJob(job: JobFor<'edit-comicinfo'>, log: LogFn, signal?: AbortSignal, journal?: MetadataJournal): Promise<JobResult> {
   throwIfJobCancelled(job.id);
   const p = job.payload.path;
   if (!p) throw new Error('path required');
@@ -432,10 +443,11 @@ async function runEditComicInfoJob(job: JobFor<'edit-comicinfo'>, log: LogFn, si
       originalSeries = await editClient.getSeriesById(job.payload.seriesId);
       await rememberSeriesLibrary(job, editClient, originalSeries);
     } catch {
-      // Editing a local archive remains possible when Kavita is unavailable.
+      // History has already validated the target; this lookup supplies scan context.
     }
   }
   throwIfJobCancelled(job.id);
+  await journal?.captureArchives([file]);
   const { previousSeriesName, xml } = await editComicInfo(file, job.payload, signal);
   invalidateDuplicateLibrary();
   log('info', `Wrote ComicInfo.xml into ${file}`);
@@ -466,7 +478,7 @@ async function runEditComicInfoJob(job: JobFor<'edit-comicinfo'>, log: LogFn, si
   return { processed: 1, matched: 0, failed: 0 };
 }
 
-async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal?: AbortSignal): Promise<JobResult> {
+async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal?: AbortSignal, journal?: MetadataJournal): Promise<JobResult> {
   let sourceFiles = job.payload.sourceFiles ?? [];
   validateMergeDownloads(job.payload.downloads);
   if (!sourceFiles.length && !job.payload.downloads?.length) throw new Error('At least one .cbz file or gallery is required');
@@ -487,6 +499,9 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
       throw new Error(`Kavita series ${job.payload.seriesId} not found`);
     }
     rememberTargets(job, [s]);
+    if (renamedSeries && renamedSeries !== s.name && getFieldPolicy(s.id).lockedFields.includes('title')) {
+      throw new Error('Series title is protected from H-Tosho sync. Unlock it before renaming this merge.');
+    }
     const libraries = await client.getLibraries();
     const lib = libraries.find((l) => l.id === s.libraryId);
     rememberLibraries(job, libraries);
@@ -525,6 +540,7 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
   const downloaded = await prepareMergeDownloads(job, log);
   sourceFiles = [...new Set([...sourceFiles, ...downloaded.files])];
   const chapters = { ...job.payload.chapters, ...downloaded.chapters };
+  await journal?.captureArchives([...new Set([...sourceFiles,...listCbzFiles(targetDir)])]);
   throwIfJobCancelled(job.id);
   const sourceSeriesIds = await sourceSeriesIdsForMerge(sourceFiles, targetDir, log, job);
   throwIfJobCancelled(job.id);

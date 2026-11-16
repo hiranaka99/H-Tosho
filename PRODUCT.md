@@ -36,9 +36,9 @@ this library-management workflow. No competitive superiority claim is establishe
 - Kavita connection setup uses a server address and an admin Auth Key. Container
   installations need an address reachable from inside the container.
 - Desktop and mobile browsers access the same web application. The main areas
-  are Home, Libraries, Downloader, Jobs, and Settings.
+  are Home, Libraries, Discover, Tasks, and Settings.
 - Typical library workflow: choose a library and series, identify a candidate,
-  compare metadata, choose fields to update, and use Apply & Sync. Jobs exposes
+  compare metadata, choose fields to update, and use Apply & Sync. Tasks exposes
   progress and warnings; uncertain automatic matches appear in Needs review.
 - Typical discovery workflow: search or browse recommendations, preview a
   gallery, download selected results, and track progress. Watched searches
@@ -88,7 +88,7 @@ that provider behavior, ports, or dependency versions will never change.
 The existing product name is H-Tosho. The app uses
 `web/public/h-tosho-icon.png` as its brand mark. Existing interface copy is in
 English and uses task-oriented terms such as Libraries, Needs review,
-Apply & Sync, Downloader, Watched, Jobs, and Settings.
+Apply & Sync, Discover, For you, Following, Tasks, and Settings.
 
 No additional binding voice or brand requirements were established during init.
 

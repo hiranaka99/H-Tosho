@@ -571,8 +571,8 @@ test('metadata and recommendation preference changes preserve the daily set unti
   assert.ok(calls > before, 'explicit refresh uses updated inputs');
 });
 
-test('the next day generates new recommendations only when the app requests them again', async t => {
-  t.mock.timers.enable({ apis: ['Date'], now: new Date('2030-01-10T12:00:00Z') });
+test('background preloading persists picks at startup and each local day without app requests', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: new Date(2030, 0, 10, 23, 59, 30) });
   let calls = 0;
   doujinProviders.hitomi = {
     ...stubProvider('hitomi', () => []),
@@ -581,20 +581,112 @@ test('the next day generates new recommendations only when the app requests them
       return Array.from({ length: limit ?? 30 }, (_, index) => ({ source: 'hitomi' as const, galleryId: `${localDate(new Date())}-${slug(query)}-${index}`, title: `Daily ${index}`, artists: [], tags: [] }));
     },
   };
-  const first = await recs.getRecommendations();
+  const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+  const cached = (date: string) => getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, `recommendations-v2:${date}`)).get();
+  const stop = recs.startRecommendationPreloading();
+  t.after(stop);
+  await tick();
+  assert.ok(cached('2030-01-10'), 'startup must persist picks before any app request');
+  assert.ok(calls > 0);
   const before = calls;
+  const first = await recs.getRecommendations();
   assert.equal(first.date, '2030-01-10');
-  assert.deepEqual((await recs.getRecommendations()).items, first.items);
   assert.equal(calls, before);
-  t.mock.timers.tick(86_400_000);
-  assert.equal(calls, before, 'midnight must not start automatic generation');
+
+  t.mock.timers.tick(30_000);
   const edited = await recs.dismissAndReplace('hitomi', first.items[0].galleryId);
   assert.equal(edited.date, first.date, 'feedback after midnight should edit the displayed day');
   assert.equal(calls, before, 'dismissing a card after midnight must not generate a new daily set');
+
+  t.mock.timers.tick(30_000);
+  await tick();
+  assert.ok(cached('2030-01-11'), 'daily picks must be ready without an app request');
+  const afterPreload = calls;
   const next = await recs.getRecommendations();
   assert.equal(next.date, '2030-01-11');
-  assert.ok(calls > before);
+  assert.notEqual(next.generatedAt, first.generatedAt);
+  assert.equal(calls, afterPreload, 'opening the app must reuse preloaded picks');
   assert.equal(overlap(keySet(first.items), keySet(next.items)), 0);
+
+  // Restarts and periodic checks must reuse today's persisted selection.
+  stop();
+  const stopRestarted = recs.startRecommendationPreloading();
+  t.after(stopRestarted);
+  await tick();
+  t.mock.timers.tick(60_000);
+  await tick();
+  assert.equal(calls, afterPreload, 'same-day startup and timer checks must not re-roll');
+  assert.deepEqual((await recs.getRecommendations()).items, next.items);
+
+  stopRestarted();
+  t.mock.timers.tick(86_400_000);
+  await tick();
+  assert.equal(calls, afterPreload, 'shutdown must stop background preloading');
+  assert.equal(cached('2030-01-12'), undefined);
+  const stopCatchUp = recs.startRecommendationPreloading();
+  t.after(stopCatchUp);
+  await tick();
+  assert.ok(cached('2030-01-12'), 'startup after downtime must prepare the current day');
+});
+
+test('slow background preloading shares generation with app requests and skips overlapping ticks', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: new Date(2030, 0, 15, 12) });
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  let calls = 0;
+  doujinProviders.hitomi = {
+    ...stubProvider('hitomi', () => []),
+    async search(query, limit = 30) {
+      calls++;
+      entered.resolve();
+      await release.promise;
+      return Array.from({ length: limit }, (_, index) => ({ source: 'hitomi' as const, galleryId: `preload-${slug(query)}-${index}`, title: `Preloaded ${index}`, artists: [], tags: [] }));
+    },
+  };
+  const stop = recs.startRecommendationPreloading();
+  t.after(stop);
+  try {
+    await entered.promise;
+    const before = calls;
+    t.mock.timers.tick(180_000);
+    const request = recs.getRecommendations();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(calls, before, 'timer ticks and app requests must not start another generation');
+    release.resolve();
+    const result = await request;
+    assert.equal(result.items.length, 12);
+    const afterPreload = calls;
+    assert.deepEqual((await recs.getRecommendations()).items, result.items);
+    assert.equal(calls, afterPreload);
+  } finally { release.resolve(); }
+});
+
+test('background preloading retries a failed attempt on the next tick', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: new Date(2030, 0, 20, 12) });
+  const db = getDb();
+  const select = db.select;
+  let fail = true;
+  const selectMock = t.mock.method(db, 'select', function (...args: Parameters<typeof select>) {
+    if (fail) { fail = false; throw new Error('Temporary database failure'); }
+    return select.apply(db, args);
+  });
+  const warning = t.mock.method(console, 'warn', () => {});
+  let calls = 0;
+  const provider = stubProvider('hitomi', query => Array.from({ length: 30 }, (_, index) => `retry-${slug(query)}-${index}`));
+  doujinProviders.hitomi = { ...provider, async search(...args) { calls++; return provider.search(...args); } };
+  const stop = recs.startRecommendationPreloading();
+  t.after(stop);
+  const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+  await tick();
+  selectMock.mock.restore();
+  assert.equal(calls, 0);
+  assert.equal(warning.mock.callCount(), 1);
+  t.mock.timers.tick(60_000);
+  await tick();
+  assert.ok(calls > 0);
+  assert.ok(db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations-v2:2030-01-20')).get());
+  const afterPreload = calls;
+  await recs.getRecommendations();
+  assert.equal(calls, afterPreload);
 });
 
 

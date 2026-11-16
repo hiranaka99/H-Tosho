@@ -57,7 +57,3 @@ api.post('/watched-searches/check', (c) => {
 });
 
 api.get('/watched-searches/check-status', (c) => c.json(jobQueue.active().find(job => job.type === 'check-watched-searches') ?? jobQueue.latest('check-watched-searches')));
-
-// ---------------- Recommendations ----------------
-
-/** Today's recommendations — cached per local date; generated on first request of the day. */

@@ -5,8 +5,13 @@ import type { SeriesMetadata } from '../providers/types.js';
 import { buildSeriesPayload } from './sync.js';
 import { invalidateSeriesArtists } from './seriesArtists.js';
 import { libraryMutations } from '../lib/mutations.js';
+import { getFieldPolicy } from './fieldPolicies.js';
+import { EXCLUDABLE_FIELDS } from '../contracts/metadata.js';
+import { withMetadataHistory } from './metadataHistory.js';
 export function removeSeriesMatch(client: KavitaClient, seriesId: number): Promise<{ removed: boolean }> {
   return libraryMutations.run([`series:${seriesId}`], async () => {
+    if(!getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId,seriesId)).get())return {removed:false};
+    return withMetadataHistory(client,seriesId,'unmatch',{},async()=>{
     const series = await client.getSeriesById(seriesId);
     const db = getDb();
     const row = db.select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
@@ -19,14 +24,16 @@ export function removeSeriesMatch(client: KavitaClient, seriesId: number): Promi
         .all();
       const boundary = history.findIndex(entry => entry.action === 'unmatched');
       const details = (boundary < 0 ? history : history.slice(0, boundary)).map((entry) => parseHistoryDetails(entry.detailsJson));
+      const protectedFields = getFieldPolicy(seriesId).lockedFields;
+      const protectedPayloadKeys = new Set<string>(protectedFields.map(field => field === 'cover' ? 'cover' : EXCLUDABLE_FIELDS[field]));
       const pushed = [...new Set(details.flatMap((entry) =>
         Array.isArray(entry?.pushed) ? entry.pushed.filter((field): field is string => typeof field === 'string') : [],
-      ))];
+      ))].filter(field => !protectedPayloadKeys.has(field));
       const metadata = row.metadataJson ? JSON.parse(row.metadataJson) as SeriesMetadata : null;
       if (metadata && pushed.length > 0) await client.removeSeriesMetadata(seriesId, buildSeriesPayload(metadata), pushed);
-      const coverUpdated = details.some((entry) => entry?.coverUpdated === true);
+      const coverUpdated = !protectedFields.includes('cover') && details.some((entry) => entry?.coverUpdated === true);
       if (coverUpdated) await client.resetSeriesCover(seriesId);
-      const volumeCoversUpdated = details.some((entry) => typeof entry?.volumeCoversUpdated === 'number' && entry.volumeCoversUpdated > 0);
+      const volumeCoversUpdated = !protectedFields.includes('cover') && details.some((entry) => typeof entry?.volumeCoversUpdated === 'number' && entry.volumeCoversUpdated > 0);
       if (volumeCoversUpdated) {
         const volumes = await client.getVolumes(seriesId);
         const ids = new Set(details.flatMap(entry => Array.isArray(entry?.volumeCoverIds)
@@ -47,13 +54,14 @@ export function removeSeriesMatch(client: KavitaClient, seriesId: number): Promi
             kavitaSeriesId: seriesId,
             seriesTitle: series.name,
             action: 'unmatched',
-            detailsJson: JSON.stringify({ providerId: row.providerId, matchScore: row.matchScore, removedFields: pushed, coverReset: coverUpdated, volumeCoversReset: volumeCoversUpdated }),
+            detailsJson: JSON.stringify({ providerId: row.providerId, matchScore: row.matchScore, removedFields: pushed, preservedFields: protectedFields, coverReset: coverUpdated, volumeCoversReset: volumeCoversUpdated }),
           })
           .run();
       });
       invalidateSeriesArtists(seriesId);
     }
     return { removed: !!row };
+    });
   });
 }
 
