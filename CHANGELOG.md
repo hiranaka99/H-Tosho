@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v4.0.0
+
 - Improve unified-search title grouping by recognizing author/event prefixes
   and language/digital labels. Keep unmarked, censored, and uncensored/decensored
   editions in separate groups, retaining original titles and chapter/color differences.
