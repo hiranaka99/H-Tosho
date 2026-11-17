@@ -4,6 +4,10 @@
 
 ## v4.0.0
 
+- Stabilize release tests by allowing filesystem work to finish before advancing
+  mock clocks, correcting Kavita title/ownership fixtures, and tolerating browser
+  coordinate rounding while retaining the 44px control-height check.
+
 - Improve unified-search title grouping by recognizing author/event prefixes
   and language/digital labels. Keep unmarked, censored, and uncensored/decensored
   editions in separate groups, retaining original titles and chapter/color differences.

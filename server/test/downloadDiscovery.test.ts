@@ -23,6 +23,9 @@ const { api } = await import('../src/routes/api.js');
 initDb();
 const provider = getProvider('anilist')!;
 const originalSearch = provider.search, originalFetch = globalThis.fetch, originalHitomi = doujinProviders.hitomi;
+// Keep a real event-loop turn available while Date and application timers are mocked.
+const realSetTimeout = globalThis.setTimeout;
+const yieldToIo = () => new Promise<void>(resolve => realSetTimeout(resolve, 5));
 let downloadPath: string, remoteRoot: string, reportedFolder: string, grouped = false, mergeScanned=false;
 let statusReads = 0, seriesReads = 0, indexDelay = 0, providerDown = false, noMatch = false;
 let searches: string[], requests: string[], scanBodies: { folderPath: string; abortOnNoSeriesMatch: boolean }[];
@@ -55,7 +58,10 @@ beforeEach(() => {
       // Protection reads current ownership without importing; discovery still
       // sees newly registered series only after its targeted scan request.
       if (!scanBodies.length && !mergeScanned) return Response.json([]);
-      const target = { id: 1, libraryId: 1, name: path.basename(reportedFolder), folderPath: reportedFolder, coverImage: 'cover.jpg' };
+      // Kavita uses ComicInfo.Series, including when its folder has a source
+      // suffix or the download belongs to an earlier volume's folder.
+      const target = { id: 1, libraryId: 1, name: 'Sample title', folderPath: reportedFolder, coverImage: 'cover.jpg' };
+      if (mergeScanned) target.name = path.basename(reportedFolder);
       return Response.json([
         { id: 99, libraryId: 1, name: 'Other unmatched title', folderPath: path.join(output, 'other') },
         ...(++seriesReads > indexDelay ? [target] : []),
@@ -77,18 +83,23 @@ async function clock<T>(t: TestContext, run: () => Promise<T>): Promise<T> {
   const result = run().finally(() => { done = true; });
   void result.catch(() => {});
   for (let step = 0; step < 300; step++) {
-    for (let flush = 0; flush < 12; flush++) await setImmediate();
+    // setImmediate alone can advance twenty simulated minutes before archive
+    // reads/writes finish. Let real filesystem callbacks run before each tick.
+    await yieldToIo();
     if (done) return result;
     t.mock.timers.tick(5_000);
   }
-  assert.fail('Discovery did not settle within its indexing deadline');
+  assert.fail(`Discovery did not settle within its indexing deadline (last request: ${requests.at(-1) ?? 'none'})`);
 }
 const queued = () => jobQueue.get(queueDownloadedMatchDiscovery(downloadPath, 'Sample title')!)!;
 
 async function finishDownloads(queue: InstanceType<typeof DownloadQueue>, ids: number[]) {
-  for (let step = 0; step < 2000; step++) {
+  const deadline = performance.now() + 10_000;
+  while (performance.now() < deadline) {
+    const failed = ids.map(id => queue.get(id)).find(task => task?.status === 'failed');
+    assert.ok(!failed, `Download failed: ${JSON.stringify(failed)}`);
     if (ids.every(id => queue.get(id)?.status === 'completed' && !queue.isRunning(id))) return;
-    await setImmediate();
+    await yieldToIo();
   }
   assert.fail('Downloads did not complete');
 }

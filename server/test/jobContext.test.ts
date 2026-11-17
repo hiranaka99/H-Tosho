@@ -219,19 +219,25 @@ test('merge saves existing target and source names before moving and deleting so
     const url = String(input);
     if (url.endsWith('/api/Library/libraries')) return Response.json([{ id: 7, name: 'Merge library', folders: [root], type: 0 }]);
     if (url.endsWith('/api/Series/70')) return Response.json(target);
-    if (url.includes('/api/Series/all-v2')) return Response.json([target, oldSource]);
+    if (url.includes('/api/Series/all-v2')) return Response.json(sourceDeleted ? [target] : [target, oldSource]);
     if (url.endsWith('/api/Series/71') && init?.method === 'DELETE') {
       sourceDeleted = true;
       assert.equal(storedPayload(id).context?.series.find((series) => series.id === 71)?.name, 'Source title');
       assert.equal(fs.existsSync(source), false);
     }
-    if (url.includes('/api/Search/chapters-by-series')) return Response.json([{ files: [{ filePath: path.join(targetDir, 'chapter.cbz') }] }]);
+    if (url.includes('/api/Search/chapters-by-series')) {
+      // Ownership follows the physical move; the source must stop advertising
+      // its archive before deletion, and the target acquires it afterward.
+      const file = new URL(url).searchParams.get('seriesId') === '71' ? source : path.join(targetDir, 'chapter.cbz');
+      return Response.json(fs.existsSync(file) ? [{ files: [{ filePath: file }] }] : []);
+    }
     return Response.json({});
   }) as typeof fetch;
   const result = await runJob(jobQueue.get(id)!, () => {});
   assert.equal(result.processed, 1);
   assert.equal(sourceDeleted, true);
-  assert.deepEqual(storedPayload(id).context, { series: [{ id: 70, name: 'Target title' }, { id: 71, name: 'Source title' }], libraryId: 7, libraryName: 'Merge library' });
+  const context = storedPayload(id).context!;
+  assert.deepEqual({ ...context, series: [...context.series].sort((a, b) => a.id - b.id) }, { series: [{ id: 70, name: 'Target title' }, { id: 71, name: 'Source title' }], libraryId: 7, libraryName: 'Merge library' });
 });
 
 test('local-history names upgrade once live series resolves, then preserve the original live name', () => {

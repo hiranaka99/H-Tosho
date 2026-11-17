@@ -223,7 +223,10 @@ test('metadata history browses observed values, archive changes and older pages'
   await panel.locator('summary').filter({ hasText: 'chapter.cbz · observed' }).click();
   await expect(panel.getByText('Number', { exact: true })).toBeVisible();
   await expect(panel.getByText('3', { exact: true })).toBeVisible();
-  expect((await toggle.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  // Layout remains 44 CSS pixels; a translated dialog's floating-point
+  // viewport bounds can report 43.999992px in Chromium.
+  expect(await toggle.evaluate(element => (element as HTMLElement).offsetHeight)).toBeGreaterThanOrEqual(44);
+  expect((await toggle.boundingBox())!.height).toBeGreaterThanOrEqual(43.99);
   const overflow = await panel.evaluate(element => element.scrollWidth > element.clientWidth + 1);
   expect(overflow).toBe(false);
   await toggle.scrollIntoViewIfNeeded();
