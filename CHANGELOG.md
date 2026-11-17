@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v4.0.1
+
+- Normalize leading artist/circle credits in unified search, including arbitrary
+  aliases, `[Circle (Artist)]`, nested brackets and stacked credits, independently
+  of artist spelling or search query. Preserve original source titles, meaningful
+  chapter/color/language labels, and artist/page-count/censorship-edition checks.
+
 ## v4.0.0
 
 - Stabilize release tests by allowing filesystem work to finish before advancing

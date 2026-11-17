@@ -106,6 +106,52 @@ test('does not merge uncertain editions (different artist or unknown language)',
 
 // ---------------- pagination & cursors ----------------
 
+test('groups author credits with Hitomi titles while keeping metadata and editions distinct', async () => {
+  const title = 'A Bodyguard Without Protection -- Bodyguard ha Mamorenai';
+  hitomiItems = [item('hitomi', 'mm-hitomi', { title, artists: ['mmchair'] })];
+  nhentaiItems = [
+    item('nhentai', 'mm-nhentai', { title: `[MM] ${title} [English]`, artists: ['mmchair'] }),
+    item('nhentai', 'mm-other-artist', { title: `[MM] ${title}`, artists: ['another artist'] }),
+    item('nhentai', 'mm-other-language', { title: `[MM] ${title}`, artists: ['mmchair'], language: 'japanese' }),
+    item('nhentai', 'mm-other-pages', { title: `[MM] ${title}`, artists: ['mmchair'], pageCount: 43 }),
+    item('nhentai', 'mm-uncensored', { title: `[MM] ${title} [Uncensored]`, artists: ['mmchair'] }),
+    item('nhentai', 'mm-censored', { title: `[MM] ${title} [Censored]`, artists: ['mmchair'] }),
+  ];
+  const page = await fresh('artist:mmchair');
+  const grouped = page.items.find(entry => entry.variants.some(variant => variant.galleryId === 'mm-hitomi'))!;
+  assert.deepEqual(grouped.variants.map(variant => variant.galleryId), ['mm-hitomi', 'mm-nhentai']);
+  assert.deepEqual(grouped.variants.map(variant => variant.title), [title, `[MM] ${title} [English]`]);
+  assert.equal(page.totalUnique, 6);
+});
+
+test('groups arbitrary aliases and circle/artist credits across all three sources without an artist query', async () => {
+  const originalChunk = ehentai.searchChunk;
+  saveEhentaiAccount({ session: { ipb_member_id: '12345', ipb_pass_hash: 'abcdef' }, expectedRevision: getAccountRevision() });
+  const title = 'Saten-san, Iroiro Eizou Soushuuhen | Saten-san; Video Collection';
+  const artist = ['shimanto shisakugata'];
+  hitomiItems = [item('hitomi', 'circle-hitomi', { title: `${title} (decensored)`, artists: artist })];
+  nhentaiItems = [item('nhentai', 'circle-nhentai', { title: `[An Unrelated Longer Alias] ${title} [Uncensored]`, artists: artist })];
+  const ehTitle = `[40010 1-GO (Shimanto Shisakugata)] ${title} [English] [Decensored]`;
+  ehentai.searchChunk = async () => ({
+    items: [
+      item('ehentai', '12345-abcdef012345', { title: ehTitle, artists: artist }),
+      item('ehentai', '12346-abcdef012345', { title: ehTitle.replace(' [Decensored]', ''), artists: artist }),
+      item('ehentai', '12347-abcdef012345', { title: ehTitle.replace('[Decensored]', '[Censored]'), artists: artist }),
+    ],
+    nextCursor: null, exhausted: true,
+  });
+  try {
+    const page = await fresh('Saten-san');
+    const grouped = page.items.find(entry => entry.variants.some(variant => variant.galleryId === 'circle-hitomi'))!;
+    assert.deepEqual(grouped.variants.map(variant => variant.source), ['hitomi', 'nhentai', 'ehentai']);
+    assert.equal(grouped.variants.find(variant => variant.source === 'ehentai')!.title, ehTitle);
+    assert.equal(page.totalUnique, 3, 'unmarked and censored releases stay separate from the uncensored group');
+  } finally {
+    ehentai.searchChunk = originalChunk;
+    removeEhentaiAccount(getAccountRevision());
+  }
+});
+
 test('title cleanup preserves separate unmarked, censored, and uncensored edition groups', async () => {
   hitomiItems = [item('hitomi', 'title-normal', { title: '(C103) [Artist A] A Sample Story [English] [Digital]' })];
   nhentaiItems = [
@@ -239,7 +285,7 @@ test('an E-Hentai account save invalidates the session', async () => {
   nhentaiItems = [];
   const first = await fresh('account-cutover');
   assert.ok(first.nextCursor, 'a continuation must exist to invalidate');
-  saveEhentaiAccount({ session: { ipb_member_id: '12345', ipb_pass_hash: 'abcdef' }, expectedRevision: 0 });
+  saveEhentaiAccount({ session: { ipb_member_id: '12345', ipb_pass_hash: 'abcdef' }, expectedRevision: getAccountRevision() });
   await assert.rejects(
     runUnifiedSearch({ cursor: first.nextCursor!, principal: PRINCIPAL }, new AbortController().signal),
     (e: unknown) => e instanceof UnifiedSessionError && e.kind === 'invalidated',
