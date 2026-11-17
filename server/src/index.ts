@@ -10,7 +10,6 @@ import { downloadQueue } from './downloader/engine.js';
 import { startRecommendationPreloading } from './services/recommendations.js';
 import { interruptMetadataHistory } from './services/metadataHistory.js';
 import { interruptMetadataRestore } from './services/metadataRestore.js';
-import { dispatchFollowingDeliveries, interruptFollowingDeliveries } from './services/followingDelivery.js';
 
 const PORT = Number(process.env.PORT ?? 8787);
 // Local-only by default. Set HOST=0.0.0.0 deliberately for remote access;
@@ -19,7 +18,6 @@ const HOST = process.env.HOST ?? '127.0.0.1';
 
 function main(): void {
   initDb();
-  interruptFollowingDeliveries();
   interruptMetadataHistory();
   // Replay "new since last check" finds that older builds never persisted to the
   // "recently added" feed (no-op on databases already up to date).
@@ -79,11 +77,6 @@ function main(): void {
   }
   const watchedTimer = setInterval(sweepWatchedSearches, 15_000);
   watchedTimer.unref();
-  const sweepDeliveries = () => { void dispatchFollowingDeliveries().catch(() => console.error('[h-tosho] Following delivery sweep failed; inspect application storage and notification settings.')); };
-  const deliveryTimer = setInterval(sweepDeliveries, 5_000);
-  deliveryTimer.unref();
-  sweepDeliveries();
-
   const unsubscribePollInterval = onSettingChange('poll-interval', scheduleScan);
   const unsubscribeWatchedSearchInterval = onSettingChange('watched-search-interval', () => {
     rescheduleWatchedSearches();
@@ -102,7 +95,6 @@ function main(): void {
     unsubscribeWatchedSearchInterval();
     clearTimeout(pollTimer);
     clearInterval(watchedTimer);
-    clearInterval(deliveryTimer);
     clearInterval(matchableTimer);
     stopRecommendationPreloading();
     server.close(() => process.exit(0));

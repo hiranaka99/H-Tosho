@@ -4,14 +4,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { eq, like, inArray } from 'drizzle-orm';
+import { eq, like } from 'drizzle-orm';
 
 // A fresh DB, no download workers or schedulers. Only explicitly targeted F1
 // fixture checks may execute through the real Task handler; all other jobs fail closed.
 process.env.HTOSHO_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-e2e-'));
 const { initDb, schema } = await import('../../server/src/db/index.js');
 const { addWatchedSearch } = await import('../../server/src/services/watchedSearches.js');
-const { dispatchFollowingDeliveries } = await import('../../server/src/services/followingDelivery.js');
 const { createApp } = await import('../../server/src/app.js');
 const db = initDb();
 const historyWatch = addWatchedSearch('hitomi', 'artist:history-test');
@@ -40,11 +39,11 @@ const followingChecks = new Map<string, number>();
 doujinProviders.hitomi = {
   ...originalHitomi,
   async search(query) {
-    if (!/^artist:e2e-(following|delivery)-(desktop|mobile)$/.test(query)) throw new Error('Live provider queries are disabled in browser tests');
+    if (!/^artist:e2e-(following|discord)-(desktop|mobile)$/.test(query)) throw new Error('Live provider queries are disabled in browser tests');
     const attempt = (followingChecks.get(query) ?? 0) + 1;
     followingChecks.set(query, attempt);
     if (query.includes('e2e-following') && attempt === 2) throw new Error('Fixture provider unavailable');
-    const count = query.includes('e2e-delivery') ? Math.max(0, attempt - 1) : attempt === 1 ? 1 : attempt - 1;
+    const count = query.includes('e2e-discord') ? Math.max(0, attempt - 1) : attempt === 1 ? 1 : attempt - 1;
     return Array.from({ length: count }, (_, index) => ({
       source: 'hitomi' as const, galleryId: `${query}-${index}`, title: `Following fixture gallery ${index}`,
       tags: [], artists: ['Following Fixture Artist'], pageCount: 28,
@@ -70,7 +69,7 @@ jobQueue.registerHandler((job, log, signal) => {
   const ids = job.payload.watchIds;
   if (job.type !== 'check-watched-searches' || !Array.isArray(ids) || ids.length !== 1 || !Number.isSafeInteger(ids[0])) throw new Error('Non-fixture Task execution is disabled in browser tests');
   const watch = db.select({ query: schema.watchedSearches.query }).from(schema.watchedSearches).where(eq(schema.watchedSearches.id, ids[0])).get();
-  if (!watch || !/^artist:e2e-(following|delivery)-(desktop|mobile)$/.test(watch.query)) throw new Error('Non-fixture watch execution is disabled in browser tests');
+  if (!watch || !/^artist:e2e-(following|discord)-(desktop|mobile)$/.test(watch.query)) throw new Error('Non-fixture watch execution is disabled in browser tests');
   return runJob(job, log, signal);
 });
 app.delete('/api/__test/following/:project', c => {
@@ -93,7 +92,7 @@ app.delete('/api/__test/following/:project', c => {
   return c.json({ ok: true });
 });
 
-// Isolated real HTTP webhook: production dispatcher/receipts/checkpoints/review APIs are unchanged.
+// Isolated real HTTP webhook for Discord send and Task-history checks.
 const deliveryModes = new Map<string, 'delivered' | 'unknown' | 'failed'>();
 const deliveryPosts = new Map<string, unknown[]>();
 app.post('/__fixture/discord/:project', async c => {
@@ -106,31 +105,17 @@ app.post('/__fixture/discord/:project', async c => {
   if (mode === 'failed') return c.json({ error: 'Fixture rejected' }, 403);
   return c.json({ id: `fixture-${project}-${posts.length}` });
 });
-app.post('/api/__test/delivery/:project/mode', async c => {
+app.post('/api/__test/discord/:project/mode', async c => {
   const project = c.req.param('project'), body = await c.req.json();
   if (!['desktop', 'mobile'].includes(project) || !['delivered', 'unknown', 'failed'].includes(body?.mode)) return c.json({ error: 'Invalid fixture' }, 400);
   deliveryModes.set(project, body.mode); return c.json({ ok: true });
 });
-app.post('/api/__test/delivery/:project/sweep', async c => {
-  if (!['desktop', 'mobile'].includes(c.req.param('project'))) return c.json({ error: 'Invalid fixture' }, 400);
-  return c.json(await dispatchFollowingDeliveries(Date.now() + 3_000));
-});
-app.get('/api/__test/delivery/:project/posts', c => c.json(deliveryPosts.get(c.req.param('project')) ?? []));
-app.delete('/api/__test/delivery/:project', c => {
+app.get('/api/__test/discord/:project/posts', c => c.json(deliveryPosts.get(c.req.param('project')) ?? []));
+app.delete('/api/__test/discord/:project', c => {
   const project = c.req.param('project');
   if (!['desktop', 'mobile'].includes(project)) return c.json({ error: 'Invalid fixture' }, 400);
-  const query = `artist:e2e-delivery-${project}`;
-  const events = db.select().from(schema.followingEvents).where(like(schema.followingEvents.galleryId, `${query}-%`)).all();
+  const query = `artist:e2e-discord-${project}`;
   db.transaction(tx => {
-    const ids = events.map(event => event.id);
-    const deliveries = tx.select({ id: schema.followingDeliveries.id }).from(schema.followingDeliveries).where(like(schema.followingDeliveries.payloadJson, `%${query}-%`)).all().map(delivery => delivery.id);
-    if (ids.length) tx.delete(schema.followingContributions).where(inArray(schema.followingContributions.eventId, ids)).run();
-    for (const delivery of deliveries) {
-      tx.delete(schema.followingDeliveryApprovals).where(eq(schema.followingDeliveryApprovals.deliveryId, delivery)).run();
-      tx.delete(schema.followingDeliveryApprovals).where(eq(schema.followingDeliveryApprovals.originalId, delivery)).run();
-      tx.delete(schema.followingDeliveries).where(eq(schema.followingDeliveries.id, delivery)).run();
-    }
-    if (ids.length) tx.delete(schema.followingEvents).where(inArray(schema.followingEvents.id, ids)).run();
     tx.delete(schema.watchedSearchNew).where(eq(schema.watchedSearchNew.query, query)).run();
     tx.delete(schema.watchedSearchSeen).where(like(schema.watchedSearchSeen.galleryId, `${query}-%`)).run();
     tx.delete(schema.watchedSearches).where(eq(schema.watchedSearches.query, query)).run();

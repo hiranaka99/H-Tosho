@@ -435,15 +435,15 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-border pb-2">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-border pb-2">
             {selected && (
-              <Button ref={backButton} size="sm" variant="ghost" disabled={apply.isPending} onClick={() => { returningToMatches.current = true; setSelected(null); }}><ArrowLeft aria-hidden="true" className="h-4 w-4" />{browseArtists ? 'Back to artist works' : 'Back to matches'}</Button>
+              <Button ref={backButton} size="sm" variant="outline" className="min-h-11" disabled={apply.isPending} onClick={() => { returningToMatches.current = true; setSelected(null); }}><ArrowLeft aria-hidden="true" className="h-4 w-4" />{browseArtists ? 'Back to artist works' : 'Back to matches'}</Button>
             )}
-            <div className="flex flex-wrap items-center gap-1 sm:ml-auto">
-              {(!selected || !browseArtists) && <Button ref={artistTrigger} size="sm" variant="ghost" disabled={apply.isPending} aria-expanded={browseArtists && !selected} aria-controls={artistBrowserId} onClick={() => { if (selected) { setSelected(null); setBrowseArtists(true); } else setBrowseArtists(value => !value); }}>
+            <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+              {(!selected || !browseArtists) && <Button ref={artistTrigger} size="sm" variant="outline" className="min-h-11" disabled={apply.isPending} aria-expanded={browseArtists && !selected} aria-controls={artistBrowserId} onClick={() => { if (selected) { setSelected(null); setBrowseArtists(true); } else setBrowseArtists(value => !value); }}>
                 {browseArtists && !selected ? <ArrowLeft aria-hidden="true" className="h-4 w-4" /> : <Users aria-hidden="true" className="h-4 w-4" />}{browseArtists && !selected ? 'Back to matches' : 'Browse artist works'}
               </Button>}
-              <Button size="sm" variant="ghost" disabled={apply.isPending} aria-expanded={historyOpen} aria-controls={historyId} className={cn('min-h-11', historyOpen && 'bg-surface-2 text-foreground')} onClick={() => setHistoryOpen(value => !value)}>
+              <Button size="sm" variant="outline" disabled={apply.isPending} aria-expanded={historyOpen} aria-controls={historyId} className={cn('min-h-11', historyOpen && 'border-primary/50 bg-primary/10 text-primary')} onClick={() => setHistoryOpen(value => !value)}>
                 <History aria-hidden="true" className="h-4 w-4" />Metadata history
               </Button>
             </div>
@@ -693,9 +693,9 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
         {(selected || reviewPosition) && <div className="shrink-0 border-t border-border bg-surface px-3 py-3 sm:px-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p role="status" className="text-xs text-muted">{historyOpen ? 'Close Metadata history to apply provider changes.' : <>{reviewPosition && `Review ${reviewPosition}${selected ? ' · ' : ''}`}{selected && (currentReady && preview.isSuccess ? `${selectedFieldCount} fields selected${coverEnabled && !protectedKeys.has('cover') && diff?.coverCandidate ? ' · cover selected' : ''}` : 'Load metadata before applying')}</>}</p>
-            <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-              <Button variant="ghost" onClick={onClose} disabled={apply.isPending}>Close</Button>
-              {onNext && <Button variant="outline" onClick={onNext} disabled={apply.isPending}>Skip to next</Button>}
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+              <Button variant="outline" className="min-h-11" onClick={onClose} disabled={apply.isPending}>Close</Button>
+              {onNext && <Button variant="outline" className="min-h-11" onClick={onNext} disabled={apply.isPending}>Skip to next</Button>}
               {selected && <Button className="min-h-11 flex-1 sm:flex-none" onClick={() => doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: reviewingExistingMatch ? undefined : selected.score })} disabled={historyOpen || !currentReady || !preview.isSuccess || preview.isError || apply.isPending || !protection.isSuccess || protect.isPending}>
                 {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} {onNext ? 'Apply & next' : 'Apply & Sync'}
               </Button>}

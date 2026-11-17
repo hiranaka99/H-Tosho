@@ -136,6 +136,7 @@ export function migrateSchema(sqlite: Database.Database): void {
       createSchemaTables(sqlite);
       createIndexes(sqlite, true);
     },
+    () => retireFollowingDelivery(sqlite),
   ];
   for (const [index, migration] of migrations.entries()) {
     const version = index + 1;
@@ -144,6 +145,65 @@ export function migrateSchema(sqlite: Database.Database): void {
       migration();
       sqlite.prepare('INSERT INTO schema_migrations (version) VALUES (?)').run(version);
     })();
+  }
+}
+
+/** Remove the retired delivery queue without deleting discoveries, Tasks, logs or Discord credentials. */
+function retireFollowingDelivery(sqlite: Database.Database): void {
+  const columns = sqlite.prepare('PRAGMA table_info(watched_search_new)').all() as { name: string }[];
+  if (!columns.some(column => column.name === 'notification_attempted_at')) {
+    sqlite.exec('ALTER TABLE watched_search_new ADD COLUMN notification_attempted_at TEXT');
+  }
+  // Historical finds, including unsent digest backlog, must never be replayed.
+  sqlite.exec('UPDATE watched_search_new SET notification_attempted_at = found_at WHERE notification_attempted_at IS NULL');
+  sqlite.exec("UPDATE watched_searches SET notification_mode = 'immediate', revision = revision + 1 WHERE notification_mode = 'digest'");
+  const object = (json: string): Record<string, unknown> | undefined => {
+    try {
+      const value: unknown = JSON.parse(json);
+      if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+    } catch { /* Keep malformed historical JSON verbatim. */ }
+  };
+  const stored = sqlite.prepare("SELECT value_json FROM key_value_store WHERE key = 'notifications'").get() as { value_json: string } | undefined;
+  const settings = stored && object(stored.value_json);
+  if (settings) {
+    delete settings.digest;
+    sqlite.prepare("UPDATE key_value_store SET value_json = ? WHERE key = 'notifications'").run(JSON.stringify(settings));
+  }
+  const exists = (table: string) => Boolean(sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
+  const summaries = new Map<number, Record<string, number>>();
+  const add = (jobId: number, status: string) => {
+    const summary = summaries.get(jobId) ?? { pending: 0, dispatching: 0, delivered: 0, disabled: 0, suppressed: 0, failed: 0, unknown: 0 };
+    if (!Object.hasOwn(summary, status)) return;
+    summary[status]++;
+    summaries.set(jobId, summary);
+  };
+  if (exists('following_deliveries')) {
+    const deliveries = sqlite.prepare('SELECT status, payload_json FROM following_deliveries').all() as { status: string; payload_json: string }[];
+    for (const delivery of deliveries) {
+      try {
+        const members = JSON.parse(delivery.payload_json) as { originJobIds?: number[] }[];
+        if (!Array.isArray(members)) continue;
+        const ids = new Set(members.flatMap(member => Array.isArray(member?.originJobIds) ? member.originJobIds : []));
+        for (const id of ids) if (Number.isSafeInteger(id) && id > 0) add(id, delivery.status);
+      } catch { /* Invalid delivery payloads must not damage readable Task history. */ }
+    }
+  }
+  if (exists('following_events') && exists('following_contributions')) {
+    const waiting = sqlite.prepare(`SELECT DISTINCT e.id, c.origin_job_id FROM following_events e JOIN following_contributions c ON c.event_id = e.id
+      WHERE e.delivery_id IS NULL AND e.status = 'pending' AND c.origin_job_id IS NOT NULL`).all() as { origin_job_id: number }[];
+    for (const row of waiting) add(row.origin_job_id, 'pending');
+  }
+  for (const [id, summary] of summaries) {
+    const job = sqlite.prepare("SELECT result_json FROM jobs WHERE id = ? AND type = 'check-watched-searches'").get(id) as { result_json: string | null } | undefined;
+    if (!job) continue;
+    const result = object(job.result_json ?? '{}');
+    if (result) {
+      result.notificationDeliveryHistory = summary;
+      sqlite.prepare('UPDATE jobs SET result_json = ? WHERE id = ?').run(JSON.stringify(result), id);
+    }
+  }
+  for (const table of ['following_delivery_approvals', 'following_deliveries', 'following_contributions', 'following_events']) {
+    sqlite.exec(`DROP TABLE IF EXISTS ${quote(table)}`);
   }
 }
 

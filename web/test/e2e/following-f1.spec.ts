@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Locator } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import type { WatchedSearch, WatchedSearchFolder } from '../../../server/src/contracts/following';
 
 let originalInterval: number | undefined;
@@ -34,17 +34,15 @@ async function folders(page: Page): Promise<WatchedSearchFolder[]> {
   return response.json();
 }
 
-async function checkOnce(page: Page, row: Locator, label: string) {
-  const response = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/watched-searches/check');
-  await row.getByRole('button', { name: `Check once ${label}`, exact: true }).click();
-  const queued = await response;
-  expect(queued.status()).toBe(202);
-  const { id } = await queued.json();
-  await expect.poll(async () => {
-    const status = await page.request.get(`/api/jobs/${id}`);
-    return (await status.json()).job.status;
-  }, { timeout: 15_000 }).toBe('completed');
-  await expect(row.getByRole('button', { name: `Check once ${label}`, exact: true })).toBeEnabled({ timeout: 10_000 });
+// Seed check results through the API; individual manual checks are absent from Following.
+async function runFixtureCheck(page: Page, query: string) {
+  const watch = await watchByQuery(page, query);
+  const response = await page.request.post('/api/watched-searches/check', { data: { watchIds: [watch.id] } });
+  expect(response.status()).toBe(202);
+  const { id } = await response.json();
+  await expect.poll(async () => (await (await page.request.get(`/api/jobs/${id}`)).json()).job.status, { timeout: 15_000 }).toBe('completed');
+  await page.reload();
+  await page.getByRole('button', { name: /^Manage watches/ }).click();
 }
 
 test('Following organizes watches, recovers revisions, checks paused watches and retains readable provenance', async ({ page }, testInfo) => {
@@ -74,11 +72,51 @@ test('Following organizes watches, recovers revisions, checks paused watches and
     await manage.focus();
     await manage.press('Enter');
     const newFolder = page.getByRole('form', { name: 'Add a watch folder' });
+    const newFolderTrigger = page.getByRole('button', { name: 'New folder', exact: true });
+    const folderHeader = page.getByRole('heading', { name: 'Folders', exact: true }).locator('..');
+    await expect(newFolder).toHaveCount(0);
+    await folderHeader.screenshot({ path: testInfo.outputPath('folder-create-collapsed-light.png'), animations: 'disabled' });
+    await page.evaluate(() => document.documentElement.classList.add('dark'));
+    await folderHeader.screenshot({ path: testInfo.outputPath('folder-create-collapsed-dark.png'), animations: 'disabled' });
+    await page.evaluate(() => document.documentElement.classList.remove('dark'));
+    await newFolderTrigger.focus();
+    await newFolderTrigger.press('Enter');
+    await expect(newFolder.getByLabel('New folder name', { exact: true })).toBeFocused();
+    await expect(newFolder.getByRole('button', { name: 'Create', exact: true })).toBeDisabled();
+    await newFolder.getByLabel('New folder name', { exact: true }).fill('Discard this draft');
+    await newFolder.getByLabel('New folder name', { exact: true }).press('Escape');
+    await expect(newFolder).toHaveCount(0);
+    await expect(newFolderTrigger).toBeFocused();
+    let rejectFirstCreate = true;
+    await page.route('**/api/watched-search-folders', route => {
+      if (route.request().method() === 'POST' && rejectFirstCreate) {
+        rejectFirstCreate = false;
+        return route.fulfill({ status: 503, json: { error: 'Fixture folder save failed' } });
+      }
+      return route.continue();
+    });
     for (const name of [folderA, folderB]) {
-      await newFolder.getByLabel('New folder name', { exact: true }).fill(name);
-      await newFolder.getByRole('button', { name: 'Add folder', exact: true }).click();
+      await newFolderTrigger.click();
       await expect(newFolder.getByLabel('New folder name', { exact: true })).toHaveValue('');
+      await newFolder.getByLabel('New folder name', { exact: true }).fill(name);
+      if (name === folderA) {
+        await folderHeader.screenshot({ path: testInfo.outputPath('folder-create-open-light.png'), animations: 'disabled' });
+        await page.evaluate(() => document.documentElement.classList.add('dark'));
+        await folderHeader.screenshot({ path: testInfo.outputPath('folder-create-open-dark.png'), animations: 'disabled' });
+        await page.evaluate(() => document.documentElement.classList.remove('dark'));
+        await newFolder.getByRole('button', { name: 'Create', exact: true }).click();
+        await expect(page.getByRole('alert')).toContainText('Fixture folder save failed');
+        await expect(newFolder.getByLabel('New folder name', { exact: true })).toHaveValue(name);
+      }
+      await newFolder.getByLabel('New folder name', { exact: true }).press('Enter');
+      await expect(newFolder).toHaveCount(0);
+      await expect(newFolderTrigger).toBeFocused();
     }
+    await page.unroute('**/api/watched-search-folders');
+    await newFolderTrigger.click();
+    await newFolder.getByRole('button', { name: 'Cancel new folder', exact: true }).click();
+    await expect(newFolder).toHaveCount(0);
+    await expect(newFolderTrigger).toBeFocused();
     await page.getByRole('button', { name: `Move folder ${folderB} up`, exact: true }).click();
     await expect.poll(async () => (await folders(page)).filter(folder => folder.name.startsWith(`F1 ${project} `)).map(folder => folder.name)).toEqual([folderB, folderA]);
     await page.getByRole('button', { name: `Rename folder ${folderB}`, exact: true }).click();
@@ -94,7 +132,7 @@ test('Following organizes watches, recovers revisions, checks paused watches and
     const initial = await watchByQuery(page, query);
     const row = page.locator(`[data-watched-search-id="${initial.id}"]`);
     await expect(row).toContainText('Every 15 min · inherited');
-    await expect(row).toContainText('Checks cover up to 50 provider results, not a complete catch-up.');
+    await expect(row.getByRole('button', { name: /^Check once/ })).toHaveCount(0);
     await row.getByRole('button', { name: `Edit watch ${query}`, exact: true }).click();
     let editor = row.getByRole('form');
     await editor.getByLabel('Watch name', { exact: true }).fill(label);
@@ -140,15 +178,15 @@ test('Following organizes watches, recovers revisions, checks paused watches and
       await otherEditor.getByRole('button', { name: 'Cancel edit', exact: true }).click();
     } finally { saveGate.resolve(); await page.unroute(saveUrl); }
 
-    await checkOnce(page, row, label); // Silent seed.
+    await runFixtureCheck(page, query); // Silent seed.
     await expect(row).not.toContainText('Not checked yet');
     expect((await watchByQuery(page, query)).lastNewCount).toBe(0);
-    await checkOnce(page, row, label); // Deterministic provider failure.
+    await runFixtureCheck(page, query); // Deterministic provider failure.
     await expect(row).toContainText('Fixture provider unavailable');
     const failed = await watchByQuery(page, query);
     expect(failed.lastFailedAt).not.toBeNull();
     expect(failed.lastCheckedAt).not.toBeNull();
-    await checkOnce(page, row, label); // Recovery keeps failure provenance.
+    await runFixtureCheck(page, query); // Recovery keeps failure provenance.
     await expect(row).not.toContainText('Fixture provider unavailable');
     expect(await watchByQuery(page, query)).toMatchObject({ lastFailedAt: failed.lastFailedAt, lastError: null, lastNewCount: 1 });
 
@@ -177,8 +215,8 @@ test('Following organizes watches, recovers revisions, checks paused watches and
     await row.getByRole('button', { name: `Pause watch ${label}`, exact: true }).click();
     await expect(row).toContainText('Off · paused');
     await expect(row).toContainText('Not scheduled');
-    await expect(row).toContainText('No Discord notification is sent, and this watch stays paused.');
-    await checkOnce(page, row, label);
+    await expect(row.getByRole('button', { name: /^Check once/ })).toHaveCount(0);
+    await runFixtureCheck(page, query);
     expect(await watchByQuery(page, query)).toMatchObject({ effectiveIntervalMinutes: 0, nextCheckAt: null, lastNewCount: 1 });
     expect((await watchByQuery(page, query)).pausedAt).not.toBeNull();
     await expect(page.getByRole('button', { name: 'View details for Following fixture gallery 2', exact: true })).toBeVisible();
@@ -206,7 +244,7 @@ test('Following organizes watches, recovers revisions, checks paused watches and
       await page.evaluate(value => document.documentElement.classList.toggle('dark', value === 'dark'), theme);
       await row.scrollIntoViewIfNeeded();
       expect(await page.locator('main').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-      for (const control of [row.getByRole('button', { name: `Edit watch ${label}`, exact: true }), row.getByRole('button', { name: `Pause watch ${label}`, exact: true }), row.getByRole('button', { name: `Check once ${label}`, exact: true }), folderFilter]) {
+      for (const control of [row.getByRole('button', { name: `Edit watch ${label}`, exact: true }), row.getByRole('button', { name: `Pause watch ${label}`, exact: true }), folderFilter]) {
         // Chromium's transformed bounds can contain float noise below one thousandth of a CSS pixel.
         const height = (await control.boundingBox())!.height;
         expect(Math.round(height * 1000) / 1000).toBeGreaterThanOrEqual(44);

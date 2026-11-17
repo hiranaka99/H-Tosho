@@ -92,7 +92,7 @@ for (const stamped of [false, true]) {
   });
 }
 
-test('fresh bootstrap creates additive Following storage and unique identities with an empty durable outbox', () => {
+test('fresh bootstrap creates additive Following storage and unique identities without retired delivery storage', () => {
   const sqlite = new Database(':memory:');
   try {
     migrateSchema(sqlite);
@@ -102,9 +102,8 @@ test('fresh bootstrap creates additive Following storage and unique identities w
     });
     const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[];
     assert.ok(tables.some(table => table.name === 'watched_search_folders'));
-    for (const name of ['following_events', 'following_contributions', 'following_deliveries', 'following_delivery_approvals']) assert.ok(tables.some(table => table.name === name));
+    for (const name of ['following_events', 'following_contributions', 'following_deliveries', 'following_delivery_approvals']) assert.equal(tables.some(table => table.name === name), false);
     assert.deepEqual(sqlite.prepare('SELECT notification_mode FROM watched_searches WHERE id = ?').get(id), { notification_mode: 'immediate' });
-    assert.deepEqual(sqlite.prepare('SELECT COUNT(*) AS n FROM following_events').get(), { n: 0 });
     const indexes = sqlite.prepare("PRAGMA index_list('watched_searches')").all() as { name: string; unique: number }[];
     assert.ok(indexes.some(index => index.name === 'idx_watched_searches_source_query' && index.unique === 1));
     assert.ok(indexes.some(index => index.name === 'idx_watched_searches_due'));

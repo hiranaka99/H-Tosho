@@ -72,8 +72,7 @@ describe('notification settings validation', () => {
       .run();
     const s = getNotificationSettings();
     assert.deepEqual(s.discord, { enabled: false, webhookUrl: '' });
-    assert.equal(s.digest.time, '09:00');
-    assert.ok(Number.isFinite(Date.parse(s.digest.nextDueAt)));
+    assert.equal('digest' in s, false);
     assert.equal(s.revision, 0);
   });
 

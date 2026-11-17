@@ -5,7 +5,7 @@ import { WatchedDisclosure, WatchedReveal } from '../../components/WatchedMotion
 import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router';
-import { Loader2, X, ExternalLink, Star, ChevronDown, Plus } from 'lucide-react';
+import { Bell, CheckCircle2, Clock3, GripVertical, Loader2, Pause, Pencil, Play, X, ExternalLink, Star, ChevronDown, Plus } from 'lucide-react';
 import { api, ApiError, type DoujinSource } from '../../lib/api';
 import { cn, timeAgo } from '../../lib/utils';
 import { toast } from '../../lib/toast';
@@ -15,8 +15,7 @@ import { switchProviderSearch, type TranslationLink } from '../../lib/searchTran
 
 import { SOURCE_LABELS } from './state';
 import type { WatchedSearch } from '../../../../server/src/contracts/following';
-import { WatchEditor, FollowingFolders, cadenceLabel } from './FollowingOrganization';
-import { FollowingDeliveries } from './FollowingDeliveries';
+import { WatchEditor, FollowingFolders, cadenceLabel, WATCH_DRAG_TYPE } from './FollowingOrganization';
 const WATCH_INTERVAL_OPTIONS = [
   { minutes: 0, label: 'Off' },
   { minutes: 5, label: '5 min' },
@@ -36,10 +35,22 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
   const foldersQuery = useQuery({ queryKey: ['watched-search-folders'], queryFn: api.watchedSearchFolders, staleTime: 30_000, refetchInterval: 30_000 });
   const folders = foldersQuery.data ?? [];
   const [editingWatch, setEditingWatch] = React.useState<number | null>(null);
+  const editSession = React.useRef(0);
   const editButtons = React.useRef(new Map<number, HTMLButtonElement>());
+  const restoreEditFocus = React.useRef<number | null>(null);
   const [updatingWatch, setUpdatingWatch] = React.useState<number | null>(null);
+  const [draggedWatch, setDraggedWatch] = React.useState<WatchedSearch | null>(null);
+  const [movingWatch, setMovingWatch] = React.useState<number | null>(null);
+  const moveInFlight = React.useRef(false);
   const [watchError, setWatchError] = React.useState<{ id: number; message: string } | null>(null);
-  const closeEditor = () => { if (editingWatch !== null) editButtons.current.get(editingWatch)?.focus(); setEditingWatch(null); };
+  const openEditor = (id: number) => { editSession.current++; setEditingWatch(id); };
+  const closeEditor = () => { restoreEditFocus.current = editingWatch; editSession.current++; setEditingWatch(null); };
+  React.useLayoutEffect(() => {
+    if (editingWatch !== null || restoreEditFocus.current === null) return;
+    // A folder change can remount the row; focus its newly attached edit button.
+    editButtons.current.get(restoreEditFocus.current)?.focus();
+    restoreEditFocus.current = null;
+  }, [editingWatch]);
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const intervalMinutes = settingsQuery.data?.watchedSearchIntervalMinutes ?? 15;
   const [savingInterval, setSavingInterval] = React.useState(false);
@@ -127,7 +138,7 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
     } finally { setRemoving(false); }
   }
   async function togglePause(watch: WatchedSearch) {
-    if (updatingWatch !== null) return;
+    if (updatingWatch !== null || moveInFlight.current) return;
     setUpdatingWatch(watch.id);
     setWatchError(null);
     try {
@@ -138,11 +149,42 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
       if (e instanceof ApiError && (e.status === 409 || e.status === 404)) await watchesQuery.refetch();
     } finally { setUpdatingWatch(null); }
   }
-  async function checkNow(watchIds?: number[]) {
+  async function moveWatch(watch: WatchedSearch, folderId: number | null) {
+    setDraggedWatch(null);
+    if (moveInFlight.current || updatingWatch !== null || watch.folderId === folderId) return;
+    if (folderId !== null && !folders.some(folder => folder.id === folderId)) return;
+    moveInFlight.current = true;
+    setMovingWatch(watch.id);
+    setWatchError(null);
+    try {
+      const saved = await api.updateWatchedSearch(watch.id, { expectedRevision: watch.revision, folderId });
+      qc.setQueryData<WatchedSearch[]>(['watched-searches'], current => current?.map(item => item.id === saved.id ? saved : item));
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['watched-searches'] }),
+        qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] }),
+      ]);
+      toast({ tone: 'success', title: 'Watch moved', description: `“${saved.displayName ?? saved.query}” moved to ${folders.find(folder => folder.id === folderId)?.name ?? 'Unfiled'}.` });
+    } catch (failure) {
+      const message = failure instanceof ApiError && failure.status === 409
+        ? 'This watch changed elsewhere. The latest version has been requested; review it and drag again.'
+        : failure instanceof ApiError && failure.status === 404
+          ? 'The watch or folder no longer exists. The latest lists have been requested; choose another folder.'
+          : failure instanceof Error ? failure.message : String(failure);
+      setWatchError({ id: watch.id, message });
+      toast({ tone: 'danger', title: 'Could not move watch', description: message });
+      if (failure instanceof ApiError && (failure.status === 409 || failure.status === 404)) {
+        await Promise.all([watchesQuery.refetch(), foldersQuery.refetch()]);
+      }
+    } finally {
+      moveInFlight.current = false;
+      setMovingWatch(null);
+    }
+  }
+  async function checkNow() {
     if (checkActive) return;
     setChecking(true);
     try {
-      const queued = await api.checkWatchedSearches(watchIds);
+      const queued = await api.checkWatchedSearches();
       setRequestedJob(queued.id);
       await checkQuery.refetch();
     } catch (e) {
@@ -168,7 +210,70 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
     }
   }
 
-  const watchMotionRef = useDownloaderTransitions(`${manageOpen}:${(watches ?? []).map(watch => watch.id).join(',')}`, '[data-watched-search-id]');
+  function renderWatch(w: WatchedSearch) {
+    const session = editSession.current;
+    return (
+      <div key={w.id} data-watched-search-id={w.id} aria-busy={movingWatch === w.id} className={cn('border-b border-border py-3 text-xs last:border-b-0', draggedWatch?.id === w.id && 'opacity-60')}>
+        <div className="flex items-start gap-2">
+          <Button type="button" size="icon" variant="ghost" className="h-11 w-11 shrink-0 cursor-grab active:cursor-grabbing" aria-label={`Move watch ${w.displayName ?? w.query}`} title="Drag to a folder, or click to choose a folder" disabled={updatingWatch !== null || movingWatch !== null || editingWatch !== null || !foldersQuery.isSuccess || watchesQuery.isError} draggable={updatingWatch === null && movingWatch === null && editingWatch === null && foldersQuery.isSuccess && !watchesQuery.isError}
+            onClick={() => openEditor(w.id)}
+            onDragStart={event => {
+              if (moveInFlight.current || updatingWatch !== null || editingWatch !== null || !foldersQuery.isSuccess || watchesQuery.isError) { event.preventDefault(); return; }
+              event.dataTransfer.setData(WATCH_DRAG_TYPE, String(w.id));
+              event.dataTransfer.effectAllowed = 'move';
+              setDraggedWatch(w);
+            }}
+            onDragEnd={() => setDraggedWatch(null)}
+          ><GripVertical aria-hidden="true" className="pointer-events-none h-4 w-4" /></Button>
+          <button type="button" onClick={() => onOpenSearch(w.source, w.query)} title={`Open in search tab: ${w.query}`} aria-label={`Search “${w.displayName ?? w.query}” on ${SOURCE_LABELS[w.source] ?? w.source}${w.displayName ? ` · Query: ${w.query}` : ''}`} className="flex min-h-11 min-w-0 flex-1 items-center text-left text-sm font-medium text-primary underline-offset-2 hover:underline"><span className="break-words line-clamp-2">{w.displayName ?? w.query}</span></button>
+          <div data-watch-actions role="group" aria-label={`Actions for ${w.displayName ?? w.query}`} className="flex shrink-0 items-center sm:gap-1">
+            <Button ref={button => {
+              if (!button) return;
+              editButtons.current.set(w.id, button);
+              return () => { if (editButtons.current.get(w.id) === button) editButtons.current.delete(w.id); };
+            }} size="icon" variant="ghost" className="h-11 w-11" title="Edit watch" aria-label={`Edit watch ${w.displayName ?? w.query}`} aria-expanded={editingWatch === w.id} aria-controls={`watch-edit-${w.id}`} disabled={movingWatch !== null} onClick={() => editingWatch === w.id ? closeEditor() : openEditor(w.id)}><Pencil aria-hidden="true" className="h-4 w-4" /></Button>
+            <Button size="icon" variant="ghost" className="h-11 w-11" title={w.pausedAt ? 'Resume watch' : 'Pause watch'} aria-label={`${w.pausedAt ? 'Resume' : 'Pause'} watch ${w.displayName ?? w.query}`} aria-pressed={w.pausedAt !== null} disabled={updatingWatch !== null || movingWatch !== null || watchesQuery.isError} onClick={() => void togglePause(w)}>{updatingWatch === w.id ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : w.pausedAt ? <Play aria-hidden="true" className="h-4 w-4" /> : <Pause aria-hidden="true" className="h-4 w-4" />}</Button>
+            <Button size="icon" variant="ghost" className="h-11 w-11" title="Remove watch" aria-label={`Remove watch ${w.displayName ?? w.query}`} disabled={movingWatch !== null} onClick={() => setRemoveTarget(w)}><X className="h-3.5 w-3.5" /></Button>
+          </div>
+        </div>
+        <div className="ml-13 flex min-w-0 flex-col gap-1">
+          {w.displayName && <p className="break-words text-muted">{w.query}</p>}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><Badge tone="muted">{SOURCE_LABELS[w.source] ?? w.source}</Badge><Badge tone={w.pausedAt ? 'warning' : 'muted'}>{w.pausedAt ? 'Paused' : 'Active'}</Badge><span className="text-muted">{folders.find(folder => folder.id === w.folderId)?.name ?? 'Unfiled'}</span>{movingWatch === w.id && <span role="status" className="inline-flex items-center gap-1 text-muted"><Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />Moving…</span>}
+            {w.lastResults.length > 0 && (
+              <Button size="sm" variant="ghost" className="ml-auto h-11" aria-expanded={expanded.has(w.id)} aria-controls={`watched-results-${w.id}`} aria-label={`${expanded.has(w.id) ? 'Hide' : 'Show'} ${w.lastResults.length} latest finds for ${w.query}`} onClick={() => toggleExpanded(w.id)}>
+                {w.lastResults.length} {w.lastResults.length === 1 ? 'find' : 'finds'}
+                <ChevronDown className={cn('h-3.5 w-3.5 transition-transform duration-150', expanded.has(w.id) && 'rotate-180')} />
+              </Button>
+            )}
+          </div>
+          <dl className="mt-1 grid grid-cols-1 gap-x-4 gap-y-1 text-muted sm:grid-cols-2">
+            <div className="flex min-w-0 items-start gap-2"><dt className="shrink-0" title="Last success"><CheckCircle2 aria-hidden="true" className="h-4 w-4" /><span className="sr-only">Last success: </span></dt><dd className="min-w-0 break-words"><time dateTime={w.lastCheckedAt ?? undefined} title={w.lastCheckedAt ? new Date(w.lastCheckedAt).toLocaleString() : undefined}>{w.lastCheckedAt ? timeAgo(w.lastCheckedAt) : 'Not checked yet'}</time></dd></div>
+            {w.lastFailedAt && <div><dt className="inline">Last failed attempt: </dt><dd className="inline"><time dateTime={w.lastFailedAt} title={new Date(w.lastFailedAt).toLocaleString()}>{timeAgo(w.lastFailedAt)}</time></dd></div>}
+            <div className="flex min-w-0 items-start gap-2"><dt className="shrink-0" title="Automatic checks"><Clock3 aria-hidden="true" className="h-4 w-4" /><span className="sr-only">Automatic checks: </span></dt><dd className="min-w-0 break-words">{w.effectiveIntervalMinutes === 0 ? w.pausedAt ? 'Off · paused' : 'Off globally' : `Every ${cadenceLabel(w.effectiveIntervalMinutes)} · ${w.intervalMinutes === null ? 'inherited' : 'custom'}`}</dd></div>
+            <div><dt className="inline">Next due: </dt><dd className="inline">{w.nextCheckAt ? <time dateTime={w.nextCheckAt}>{new Date(w.nextCheckAt).toLocaleString()}</time> : 'Not scheduled'}</dd></div>
+            <div className="flex min-w-0 items-start gap-2"><dt className="shrink-0" title="Notifications"><Bell aria-hidden="true" className="h-4 w-4" /><span className="sr-only">Notifications: </span></dt><dd className="min-w-0 break-words">{w.notificationMode === 'in-app' ? 'In-app only' : 'Immediate Discord'}</dd></div>
+          </dl>
+          {w.lastError ? <p className="break-words text-warning">{w.lastError}</p> : w.lastNewCount !== null && w.lastNewCount !== undefined ? <p className="text-muted">{w.lastNewCount ? `${w.lastNewCount} new ${w.lastNewCount === 1 ? 'find' : 'finds'}` : 'No new finds'}</p> : null}
+        </div>
+        {watchError?.id === w.id && <p role="alert" className="mt-2 break-words text-sm text-danger">{watchError.message}</p>}
+        {editingWatch === w.id && <div id={`watch-edit-${w.id}`}><WatchEditor watch={w} folders={folders} foldersReady={foldersQuery.isSuccess} globalInterval={intervalMinutes} onClose={closeEditor} onSaved={() => { if (editSession.current === session) closeEditor(); }} onRefresh={() => watchesQuery.refetch()} /></div>}
+        {w.lastResults.length > 0 && <WatchedReveal id={`watched-results-${w.id}`} open={expanded.has(w.id)} lazy>{() => (
+          <div className="mt-2 flex flex-col gap-1.5 border-t border-border pt-2">
+            {w.lastFindsAt && <p className="text-muted">Found {timeAgo(w.lastFindsAt)}</p>}
+            {w.lastResults.map(r => {
+              const content = <><Cover url={r.coverUrl} title={r.title} className="h-10 w-8 shrink-0 rounded" /><span className="min-w-0 flex-1 break-words text-left line-clamp-2">{r.title}</span><PageCountPill pageCount={r.pageCount} />{r.url && <ExternalLink aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted" />}</>;
+              const className = 'flex min-h-11 items-center gap-2 rounded px-1 text-foreground hover:bg-surface-2 hover:underline';
+              return r.url
+                ? <a key={r.galleryId} href={r.url} target="_blank" rel="noreferrer" className={className}>{content}</a>
+                : <button key={r.galleryId} type="button" className={className} onClick={() => onOpenSearch(w.source, r.galleryId)} aria-label={`Search for ${r.title} on ${SOURCE_LABELS[w.source]}`}>{content}</button>;
+            })}
+          </div>
+        )}</WatchedReveal>}
+      </div>
+    );
+  }
+
+  const watchMotionRef = useDownloaderTransitions(`${manageOpen}:${(watches ?? []).map(watch => `${watch.id}:${watch.folderId}`).join(',')}`, '[data-watched-search-id]');
 
   return (
     <div ref={watchMotionRef}>
@@ -200,8 +305,6 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
       <CardContent className="flex flex-col gap-3">
         {watchesQuery.isError && <ErrorState title="Could not load watched searches" description={watchesQuery.error instanceof Error ? watchesQuery.error.message : String(watchesQuery.error)} onRetry={() => void watchesQuery.refetch()} />}
         {settingsQuery.isError && <ErrorState title="Could not load the check interval" description={settingsQuery.error instanceof Error ? settingsQuery.error.message : String(settingsQuery.error)} onRetry={() => void settingsQuery.refetch()} />}
-        <p className="text-xs text-muted">Check now checks active watches only. Checks collect discoveries for review; downloads remain your choice.</p>
-        <p className="text-xs text-muted">Provider checks and Discord delivery have separate outcomes. Disabled or uncertain sends are never counted as delivered.</p>
         <WatchedDisclosure label={`Manage watches${watches ? ` (${watches.length})` : ''}`} open={manageOpen || watches?.length === 0} onOpenChange={setManageOpen}>
         {() => (
         <div className="flex flex-col gap-4 pt-3">
@@ -212,63 +315,15 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
         </form>
         {watchTranslationNotice?.query === query && watchTranslationNotice.issues.length > 0 && <p role="status" aria-label="Watch query translation" className="break-words text-sm text-muted">{watchTranslationNotice.issues.join(' ')} Review the query before adding the watch.</p>}
         {foldersQuery.isError && <ErrorState title="Could not load watch folders" description={foldersQuery.error.message} onRetry={() => void foldersQuery.refetch()} />}
-        {foldersQuery.isPending ? <Skeleton className="h-20 w-full" /> : foldersQuery.data && <FollowingFolders folders={folders} onRefresh={() => foldersQuery.refetch()} />}
+        {foldersQuery.isPending ? <Skeleton className="h-20 w-full" /> : foldersQuery.data && <FollowingFolders folders={folders} watches={watches ?? []} watchesReady={watches !== undefined} renderWatch={renderWatch} onRefresh={() => foldersQuery.refetch()} draggedWatch={draggedWatch} movePending={movingWatch !== null || foldersQuery.isError} onMoveWatch={(watch, folderId) => void moveWatch(watch, folderId)} />}
         {watchesQuery.isPending ? (
           <div role="status" aria-label="Loading watched searches" className="flex flex-col gap-2"><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /><span className="sr-only">Loading watched searches…</span></div>
-        ) : watches && watches.length > 0 ? (
+        ) : !foldersQuery.data && watches && watches.length > 0 ? (
           <div className="flex flex-col border-t border-border">
-            {watches.map((w) => (
-              <div key={w.id} data-watched-search-id={w.id} className="border-b border-border py-3 text-xs last:border-b-0">
-                <div className="flex items-start gap-2">
-                  <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    <button type="button" onClick={() => onOpenSearch(w.source, w.query)} title={`Open in search tab: ${w.query}`} aria-label={`Search “${w.displayName ?? w.query}” on ${SOURCE_LABELS[w.source] ?? w.source}${w.displayName ? ` · Query: ${w.query}` : ''}`} className="flex min-h-11 min-w-0 items-center text-left text-sm font-medium text-primary underline-offset-2 hover:underline"><span className="break-words line-clamp-2">{w.displayName ?? w.query}</span></button>
-                    {w.displayName && <p className="break-words text-muted">{w.query}</p>}
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><Badge tone="muted">{SOURCE_LABELS[w.source] ?? w.source}</Badge><Badge tone={w.pausedAt ? 'warning' : 'muted'}>{w.pausedAt ? 'Paused' : 'Active'}</Badge><span className="text-muted">{folders.find(folder => folder.id === w.folderId)?.name ?? 'Unfiled'}</span></div>
-                    <dl className="mt-1 grid grid-cols-1 gap-x-4 gap-y-1 text-muted sm:grid-cols-2">
-                      <div><dt className="inline">Last success: </dt><dd className="inline"><time dateTime={w.lastCheckedAt ?? undefined} title={w.lastCheckedAt ? new Date(w.lastCheckedAt).toLocaleString() : undefined}>{w.lastCheckedAt ? timeAgo(w.lastCheckedAt) : 'Not checked yet'}</time></dd></div>
-                      <div><dt className="inline">Last failed attempt: </dt><dd className="inline"><time dateTime={w.lastFailedAt ?? undefined} title={w.lastFailedAt ? new Date(w.lastFailedAt).toLocaleString() : undefined}>{w.lastFailedAt ? timeAgo(w.lastFailedAt) : 'None recorded'}</time></dd></div>
-                      <div><dt className="inline">Automatic checks: </dt><dd className="inline">{w.effectiveIntervalMinutes === 0 ? w.pausedAt ? 'Off · paused' : 'Off globally' : `Every ${cadenceLabel(w.effectiveIntervalMinutes)} · ${w.intervalMinutes === null ? 'inherited' : 'custom'}`}</dd></div>
-                      <div><dt className="inline">Next due: </dt><dd className="inline">{w.nextCheckAt ? <time dateTime={w.nextCheckAt}>{new Date(w.nextCheckAt).toLocaleString()}</time> : 'Not scheduled'}</dd></div>
-                      <div><dt className="inline">Notifications: </dt><dd className="inline">{w.notificationMode === 'digest' ? 'Daily digest' : w.notificationMode === 'in-app' ? 'In-app only' : 'Immediate Discord'}</dd></div>
-                    </dl>
-                    <p className="text-muted">Checks cover up to {w.coverageLimit} provider results, not a complete catch-up.</p>
-                    {w.pausedAt && <p className="text-warning">Check once updates in-app discoveries only. No Discord notification is sent, and this watch stays paused.</p>}
-                    {w.lastError ? <p className="break-words text-warning">{w.lastError}</p> : w.lastNewCount !== null && w.lastNewCount !== undefined ? <p className="text-muted">{w.lastNewCount ? `${w.lastNewCount} new in last check` : 'No new finds in last check'}</p> : null}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                  {w.lastResults.length > 0 && (
-                    <Button size="sm" variant="ghost" className="h-11" aria-expanded={expanded.has(w.id)} aria-controls={`watched-results-${w.id}`} aria-label={`${expanded.has(w.id) ? 'Hide' : 'Show'} ${w.lastResults.length} latest finds for ${w.query}`} onClick={() => toggleExpanded(w.id)}>
-                      {w.lastResults.length} finds
-                      <ChevronDown className={cn('h-3.5 w-3.5 transition-transform duration-150', expanded.has(w.id) && 'rotate-180')} />
-                    </Button>
-                  )}
-                  <Button size="icon" variant="ghost" className="h-11 w-11" aria-label={`Remove watch ${w.displayName ?? w.query}`} onClick={() => setRemoveTarget(w)}><X className="h-3.5 w-3.5" /></Button>
-                  </div>
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <Button ref={button => { if (button) editButtons.current.set(w.id, button); else editButtons.current.delete(w.id); }} size="sm" variant="outline" className="min-h-11" aria-label={`Edit watch ${w.displayName ?? w.query}`} aria-expanded={editingWatch === w.id} aria-controls={`watch-edit-${w.id}`} onClick={() => editingWatch === w.id ? closeEditor() : setEditingWatch(w.id)}>Edit</Button>
-                  <Button size="sm" variant="outline" className="min-h-11" aria-label={`${w.pausedAt ? 'Resume' : 'Pause'} watch ${w.displayName ?? w.query}`} disabled={updatingWatch !== null || watchesQuery.isError} onClick={() => void togglePause(w)}>{updatingWatch === w.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{w.pausedAt ? 'Resume' : 'Pause'}</Button>
-                  <Button size="sm" variant="ghost" className="min-h-11" aria-label={`Check once ${w.displayName ?? w.query}`} disabled={checkActive || checkQuery.isPending || updatingWatch !== null} onClick={() => void checkNow([w.id])}>Check once</Button>
-                </div>
-                {watchError?.id === w.id && <p role="alert" className="mt-2 break-words text-sm text-danger">{watchError.message}</p>}
-                {editingWatch === w.id && <div id={`watch-edit-${w.id}`}><WatchEditor watch={w} folders={folders} foldersReady={foldersQuery.isSuccess} globalInterval={intervalMinutes} onClose={closeEditor} onRefresh={() => watchesQuery.refetch()} /></div>}
-                {w.lastResults.length > 0 && <WatchedReveal id={`watched-results-${w.id}`} open={expanded.has(w.id)} lazy>{() => (
-                  <div className="mt-2 flex flex-col gap-1.5 border-t border-border pt-2">
-                    {w.lastFindsAt && <p className="text-muted">Found {timeAgo(w.lastFindsAt)}</p>}
-                    {w.lastResults.map(r => {
-                      const content = <><Cover url={r.coverUrl} title={r.title} className="h-10 w-8 shrink-0 rounded" /><span className="min-w-0 flex-1 break-words text-left line-clamp-2">{r.title}</span><PageCountPill pageCount={r.pageCount} />{r.url && <ExternalLink aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted" />}</>;
-                      const className = 'flex min-h-11 items-center gap-2 rounded px-1 text-foreground hover:bg-surface-2 hover:underline';
-                      return r.url
-                        ? <a key={r.galleryId} href={r.url} target="_blank" rel="noreferrer" className={className}>{content}</a>
-                        : <button key={r.galleryId} type="button" className={className} onClick={() => onOpenSearch(w.source, r.galleryId)} aria-label={`Search for ${r.title} on ${SOURCE_LABELS[w.source]}`}>{content}</button>;
-                    })}
-                  </div>
-                )}</WatchedReveal>}
-              </div>
-            ))}
+            {watches.map(renderWatch)}
           </div>
         ) : (
-          watches && <p className="text-sm text-muted">No watched searches yet</p>
+          watches?.length === 0 && <p className="text-sm text-muted">No watched searches yet</p>
         )}
 
         </div>
@@ -285,7 +340,6 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
         />
       </CardContent>
     </Card>
-    <div className="mt-4"><FollowingDeliveries /></div>
     </div>
   );
 }

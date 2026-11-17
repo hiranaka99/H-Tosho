@@ -115,7 +115,7 @@ async function sendDiscord(n: Notification, webhookUrl: string, acknowledged = f
   if (n.coverUrl) embed.thumbnail = { url: n.coverUrl };
   try { return await postDiscord(webhookUrl, embed, acknowledged); }
   catch (error) {
-    // Existing metadata/test callers retain their one bounded 429 retry; durable Following owns its retries.
+    // Unacknowledged metadata/test sends retain their one bounded 429 retry.
     if (!acknowledged && error instanceof NotificationFailure && error.message === 'Discord webhook HTTP 429') {
       await sleep(Math.min(error.retryAfterMs ?? 5_000, 30_000));
       return postDiscord(webhookUrl, embed, false);

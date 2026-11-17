@@ -3,7 +3,7 @@ import type { ArtistProviderId, ArtistSearchPage, ArtistWorksPage } from '../../
 import type { MetadataRestorePreview, RestorePreviewRequest } from '../../../server/src/contracts/metadataRestore';
 import type { FollowingFeedOptions, WatchedSearch, WatchedSearchPatch, WatchedSearchFolder, WatchedSearchFolderPatch, WatchedNewGallery, WatchedGalleryFeed } from '../../../server/src/contracts/following';
 import type { MergeProtectionPreview, MergeProtectionRequest } from '../../../server/src/contracts/mergeProtection';
-import type { NotificationSettings, FollowingDeliverySummary, FollowingDeliveryPage, DeliveryReview, DeliveryRetryRequest, FollowingDelivery } from '../../../server/src/contracts/followingDelivery';
+import type { NotificationSettings } from '../../../server/src/contracts/notifications';
 export type { ArtistProviderId, ProviderArtist, ArtistSearchPage, ArtistWorksPage } from '../../../server/src/contracts/artists';
 // Typed client for the H-Tosho REST API.
 
@@ -137,7 +137,6 @@ export interface Job {
   startedAt?: string | null;
   finishedAt?: string | null;
   recovery?: { explanation: string; actions: { label: string; href: string }[] };
-  followingDelivery?: FollowingDeliverySummary;
 }
 
 export interface JobLog {
@@ -441,7 +440,7 @@ export const api = {
   addWatchedSearchFolder: (name: string) => request<WatchedSearchFolder>('/watched-search-folders', { method: 'POST', body: JSON.stringify({ name }) }),
   updateWatchedSearchFolder: (id: number, patch: WatchedSearchFolderPatch) => request<WatchedSearchFolder>(`/watched-search-folders/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   removeWatchedSearchFolder: (id: number, expectedRevision: number) => request<{ ok: boolean }>(`/watched-search-folders/${id}`, { method: 'DELETE', body: JSON.stringify({ expectedRevision }) }),
-  checkWatchedSearches: (watchIds?: number[]) => request<{ id: number; alreadyRunning?: boolean }>('/watched-searches/check', { method: 'POST', body: JSON.stringify(watchIds ? { watchIds } : {}) }),
+  checkWatchedSearches: () => request<{ id: number; alreadyRunning?: boolean }>('/watched-searches/check', { method: 'POST', body: JSON.stringify({}) }),
   watchedCheckStatus: () => request<Job | null>('/watched-searches/check-status'),
   watchedGalleryFeed: (options: FollowingFeedOptions) => {
     const params = new URLSearchParams();
@@ -457,13 +456,6 @@ export const api = {
   watchedSearchNew: (limit?: number) =>
     request<WatchedNewGallery[]>(`/watched-searches/new${limit ? `?limit=${limit}` : ''}`),
 
-  followingDeliveries: (options: { status?: string; offset?: number; limit?: number; jobId?: number } = {}) => {
-    const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(options)) if (value !== undefined && value !== '') params.set(key, String(value));
-    return request<FollowingDeliveryPage>(`/watched-deliveries?${params}`);
-  },
-  followingDeliveryReview: (id: string) => request<DeliveryReview>(`/watched-deliveries/${id}/review`),
-  retryFollowingDelivery: (id: string, review: DeliveryRetryRequest) => request<FollowingDelivery>(`/watched-deliveries/${id}/retry`, { method: 'POST', body: JSON.stringify(review) }),
   // ---------------- Recommendations ----------------
   /** Today's recommendation set (cached per local date server-side). */
   recommendations: () => request<RecommendationSet>('/recommendations'),

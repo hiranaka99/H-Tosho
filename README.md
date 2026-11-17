@@ -42,7 +42,7 @@ shop; counts, match results, and metadata are example data.
 - **Discover and download doujinshi.** Search Hitomi.la or nHentai, preview
   galleries, and save them as CBZ files or image folders.
 - **Follow artists and searches.** Save a query and see new finds in
-  **Recently added**, with in-app-only, immediate Discord, or daily digest delivery.
+  **Recently added**, with in-app-only or immediate Discord notifications.
 - **Get recommendations you can tune.** Ask for more like a gallery, mute an
   artist, or dismiss a pick you do not want.
 - **Review possible duplicate downloads.** Compare galleries across Hitomi and
@@ -427,9 +427,8 @@ or unmute artists. Use thumbs down to dismiss a single gallery, and
 ### Watch for new releases
 
 Run a search, then choose **Watch** to save that query. Under **Following**,
-**Check now** checks active watches only. Each watch also has **Check once**,
-including paused watches: a paused check updates in-app discoveries only, sends
-no Discord notification, and leaves the watch paused.
+**Check now** checks active watches. Automatic checks follow the **Check every**
+setting; paused watches are excluded.
 
 Watch controls stay above the feed. **Manage watches** opens saved searches and
 the add form. Check progress and outcomes remain visible, with a link to the job.
@@ -443,10 +442,10 @@ even for watches with a custom cadence. Pause/resume and organization changes
 preserve seen galleries and review history. Changing the source or query means
 adding a new watch, not renaming the existing one.
 
-Use **Notification delivery** in each watch's editor to choose **In-app only**,
-**Immediate Discord**, or **Daily digest**. Existing watches retain immediate
-delivery by default, subject to global Discord enablement. No old discoveries
-are queued when upgrading or changing these preferences.
+Use **Notification delivery** in each watch's editor to choose **In-app only**
+or **Immediate Discord**. Discord requires global enablement. Existing digest
+watches switch to immediate notifications for future finds when upgrading; old
+notification backlog is not replayed.
 
 Folders can be renamed, reordered, and deleted. Deleting a folder moves its
 watches to **Unfiled**; it does not remove discoveries. Each watch shows its last
@@ -456,11 +455,11 @@ every 15 seconds. Checks inspect up to 50 provider results, not a complete
 catch-up after a long pause.
 
 The first check records existing results quietly. Later checks save finds to
-**Inbox** and atomically commit eligible notification intents before any send.
-Overlapping watches contribute their labels to one gallery identity per source;
-Discord delivery runs separately from the provider check. Results with a known
-upload date older than fourteen days are skipped to avoid stale announcements.
-Results without a usable upload date remain eligible.
+**Inbox** and send eligible Discord notifications during the check Task.
+Overlapping watches notify once per gallery and source. Confirmed sends and
+notification errors are recorded in **Tasks**, separately from provider failures.
+Results with a known upload date older than fourteen days are skipped to avoid
+stale announcements. Results without a usable upload date remain eligible.
 
 Watches find galleries for you; choose the ones you want to download from the
 feed. Filter discoveries by folder, watch or source. Folder filters use current
@@ -484,28 +483,11 @@ URL, save, and send a test message. Notifications include automatic metadata
 matches and updates, plus new watched-search results. Manual **Apply & Sync**
 does not send Discord notifications; results and warnings remain in **Tasks**.
 
-For **Daily digest** watches, set **Daily time** and an **IANA timezone** under
-**Settings → Notifications**. The default is 09:00 in the resolved server zone,
-with a visible UTC fallback if unavailable. The next cutoff persists in UTC;
-repeated DST hours use the earlier occurrence, nonexistent times shift forward
-by the gap, and restart catches up with one bounded batch rather than missed-day floods.
-Digest membership and labels are frozen before sending; known retries use the
-same batch rather than picking up later finds.
-
-**Following → Notification delivery** shows queued, sending, delivered, disabled,
-suppressed, failed and unknown outcomes, with status filtering, paging and links
-to the provider-check Task. A successful provider check is not proof of Discord
-delivery; only an acknowledged receipt is reported as delivered. Known failures
-retry with bounded backoff. Ambiguous responses and in-flight sends interrupted
-by restart remain **Unknown · review required**, never blindly replayed.
-
-Use **Review backlog / retry** or **Review resend** to inspect the current
-destination and eligible membership. Resending an unknown or delivered message
-requires acknowledgement of possible duplicates; there is no external exactly-once
-guarantee. Changed settings/destinations require fresh review. Pausing, removing or
-replacing preferences permanently invalidate old contributions, so resuming or
-re-enabling Discord does not flood old finds. Already-started sends cannot be recalled.
-Checks, digests and reviewed notification recovery never download galleries.
+Watched-search notifications are immediate. Changing preferences or enabling
+Discord does not replay old finds. Check results and Discord send outcomes remain
+in the normal **Tasks** history and logs. Following does not maintain a separate
+delivery log, daily digest, or notification retry queue. Notifications never
+download galleries.
 
 ## Help
 

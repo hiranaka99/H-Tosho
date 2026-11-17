@@ -11,11 +11,7 @@ import { useTheme, type Theme } from '../lib/theme';
 import { DraftFeedback, useSettingsDraft, useSettingsNavigation } from '../lib/SettingsDrafts';
 
 type Notif = SettingsType['notifications'];
-const DEFAULT_NOTIFICATION_DRAFT: Notif = { discord: { enabled: false, webhookUrl: '' }, revision: 0, destinationIdentity: '', digest: { time: '09:00', timezone: 'UTC', timezoneFallback: true, nextDueAt: '' } };
-function digestDraftValid(value: Notif) {
-  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value.digest.time)) return false;
-  try { new Intl.DateTimeFormat('en', { timeZone: value.digest.timezone }).format(); return Boolean(value.digest.timezone) && !/^[+-]/.test(value.digest.timezone); } catch { return false; }
-}
+const DEFAULT_NOTIFICATION_DRAFT: Notif = { discord: { enabled: false, webhookUrl: '' }, revision: 0, destinationIdentity: '' };
 const SETTINGS_TABS = [
   { id: 'general', label: 'General' },
   { id: 'providers', label: 'Providers' },
@@ -211,14 +207,13 @@ export function Settings() {
 
   const notifications = useSettingsDraft<Notif>({
     id: 'notifications', label: 'Notifications', initial: DEFAULT_NOTIFICATION_DRAFT, source: s?.notifications,
-    valid: (value) => digestDraftValid(value) && (!value.discord.enabled || !httpUrlError(value.discord.webhookUrl, true)),
+    valid: (value) => (!value.discord.enabled || !httpUrlError(value.discord.webhookUrl, true)),
     save: async (value) => {
       if (value.revision !== s?.notifications.revision) throw new Error('Notification settings changed. Review the latest saved destination and use “Use latest revision” before saving your retained draft.');
       let result;
       try { result = await api.saveNotifications(value); }
       catch (error) { if (error instanceof ApiError && error.status === 409) await settings.refetch(); throw error; }
       qc.setQueryData<SettingsType>(['settings'], (current) => current ? { ...current, notifications: result.notifications } : current);
-      await qc.invalidateQueries({ queryKey: ['following-deliveries'] });
       return result.notifications;
     },
   });
@@ -397,17 +392,7 @@ export function Settings() {
             </div>
             <SettingsInput id="discord-webhook" type="url" spellCheck={false} disabled={testNotif.isPending || notifications.pending} value={notif.discord.webhookUrl} onChange={(e) => setNotif((n) => ({ ...n, discord: { ...n.discord, webhookUrl: e.target.value } }))} placeholder="https://discord.com/api/webhooks/…" hint="Enable Discord and enter a webhook URL. Test draft sends a notification using the values shown, without saving them." error={notif.discord.enabled ? httpUrlError(notif.discord.webhookUrl, true) : undefined} />
           </div>
-          {notif.revision !== s.notifications.revision && <div role="alert" className="flex flex-col gap-2 text-sm text-warning"><p>Saved notification settings changed. Latest destination: {s.notifications.destinationIdentity.slice(0, 12) || 'not configured'} · {s.notifications.digest.time} {s.notifications.digest.timezone}. Your draft is retained.</p><Button variant="outline" className="min-h-11 self-start" onClick={() => setNotif(value => ({ ...value, revision: s.notifications.revision }))}>Use latest revision</Button></div>}
-          <section className="flex flex-col gap-3 border-t border-border pt-4" aria-label="Following daily digest">
-            <h3 className="text-sm font-semibold">Following daily digest</h3>
-            <p className="text-sm text-muted">Choose Daily digest in each watch's notification preference. Finds are collected independently of provider checks.</p>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div className="flex flex-col gap-1"><Label htmlFor="digest-time">Daily time</Label><SettingsInput id="digest-time" type="time" required disabled={notifications.pending} value={notif.digest.time} onChange={event => setNotif(value => ({ ...value, digest: { ...value.digest, time: event.target.value } }))} hint="24-hour HH:mm in the chosen timezone." /></div>
-              <div className="flex flex-col gap-1"><Label htmlFor="digest-zone">IANA timezone</Label><SettingsInput id="digest-zone" required spellCheck={false} disabled={notifications.pending} value={notif.digest.timezone} onChange={event => setNotif(value => ({ ...value, digest: { ...value.digest, timezone: event.target.value, timezoneFallback: false } }))} placeholder="America/New_York" hint="For example Europe/London, America/New_York or UTC." error={!digestDraftValid(notif) ? 'Enter a valid HH:mm time and IANA timezone.' : undefined} /></div>
-            </div>
-            <p className="text-sm text-muted">{s.notifications.digest.timezoneFallback ? 'The server could not resolve its timezone; UTC is the visible fallback. ' : ''}Saved next cutoff: {s.notifications.digest.nextDueAt ? new Date(s.notifications.digest.nextDueAt).toLocaleString() : 'Not scheduled'}.</p>
-            <p className="text-sm text-muted">DST: repeated hours use the first occurrence; missing times shift forward by the gap. One bounded batch per local day; missed days do not replay. Saving settings suppresses queued old finds. Send backlog only after reviewing the current destination in Following.</p>
-          </section>
+          {notif.revision !== s.notifications.revision && <div role="alert" className="flex flex-col gap-2 text-sm text-warning"><p>Saved notification settings changed. Latest destination: {s.notifications.destinationIdentity.slice(0, 12) || 'not configured'}. Your draft is retained.</p><Button variant="outline" className="min-h-11 self-start" onClick={() => setNotif(value => ({ ...value, revision: s.notifications.revision }))}>Use latest revision</Button></div>}
           {notifMsg && (
             <div role={notifMsg.discord === 'ok' ? 'status' : 'alert'} className="flex flex-col gap-1 rounded-md border border-border bg-surface-2 p-3 text-sm">
               <span className={notifMsg.discord === 'ok' ? 'text-success' : 'text-danger'}>{notifMsg.discord === 'ok' ? 'Test notification sent to Discord.' : `Discord test failed: ${notifMsg.discord}`}</span>

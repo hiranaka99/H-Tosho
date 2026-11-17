@@ -29,7 +29,6 @@ const { doujinProviders } = await import('../src/downloader/providers.js');
 const { listNewGalleries, removeWatchedSearch, backfillNewGalleries, listGalleryFeed, setGalleriesReviewed } = await import('../src/services/watchedSearches.js');
 const { getDb, schema } = await import('../src/db/index.js');
 const { getNotificationSettings, setNotificationSettings } = await import('../src/services/settings.js');
-const { dispatchFollowingDeliveries, listFollowingDeliveries } = await import('../src/services/followingDelivery.js');
 const originalHitomi = doujinProviders.hitomi;
 
 // Stub the hitomi provider so the full check pipeline runs against fixture data.
@@ -281,16 +280,14 @@ describe('stale upload suppression (provider index hiccup)', () => {
     ];
     const messages: string[] = [];
     const checked = await checkWatchedSearches((_level, message) => messages.push(message));
-    assert.equal(checked.notified, 0, 'provider checks never claim committed intents were sent');
-    await dispatchFollowingDeliveries(Date.now() + 3_000);
+    assert.equal(checked.notified, 1, 'the Task counts confirmed Discord notifications');
     assert.equal(checked.newGalleries, checked.checked, 'each seeded watch finds only one fresh gallery');
     const [embed] = embeds.filter(e => e.description.includes('Fresh'));
     assert.ok(embed, 'expected a separate committed delivery for the fresh find');
     assert.match(embed.description, /^1 new gallery/);
     assert.ok(embed.description.includes('[Fresh](https://hitomi.la/g/fresh)'));
     assert.doesNotMatch(embed.description, /Old One|Old Two/);
-    const delivered = listFollowingDeliveries({ status: 'delivered', limit: 100 }).items.find(item => item.members.some(member => member.galleryId === 's-fresh'));
-    assert.ok(delivered?.members[0].labels.includes(STALE_QUERY));
+    assert.ok(embed.description.includes(STALE_QUERY));
     assert.ok(messages.some((m) => m.includes(STALE_QUERY) && m.includes('suppressed 2')));
 
     // The per-watch "new since last check" list holds only the fresh find.
@@ -346,10 +343,9 @@ describe('stale upload suppression (provider index hiccup)', () => {
       { source: 'hitomi', galleryId: 'u-future', title: 'Future Date', tags: [], artists: [], uploadedAt: daysAgo(-1) },
     ];
     await checkWatchedSearches(log);
-    await dispatchFollowingDeliveries(Date.now() + 3_000);
     const descriptions = embeds.map(embed => embed.description).join('\n');
     for (const r of searchResults) assert.ok(descriptions.includes(r.title));
-    assert.equal(listFollowingDeliveries({ status: 'delivered', limit: 100 }).items.filter(item => item.members.some(member => member.galleryId.startsWith('u-'))).length, 3);
+    assert.equal(embeds.length, 3);
     assert.deepEqual(listWatchedSearches().find((w) => w.id === watch.id)!.lastResults.map((r) => r.galleryId), searchResults.map((r) => r.galleryId));
     assert.deepEqual(listNewGalleries(500).filter((g) => g.query === query).map((g) => g.galleryId).sort(), searchResults.map((r) => r.galleryId).sort());
     removeWatchedSearch(watch.id, watch.revision);

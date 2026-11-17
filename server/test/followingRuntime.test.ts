@@ -22,7 +22,6 @@ const { setWatchedSearchIntervalMinutes, setNotificationSettings } = await impor
 const { doujinProviders } = await import('../src/downloader/providers.js');
 const { JobCancelled, jobQueue } = await import('../src/jobs/queue.js');
 const { api } = await import('../src/routes/api/watched.js');
-const { dispatchFollowingDeliveries } = await import('../src/services/followingDelivery.js');
 const original = doujinProviders.hitomi;
 const NOW = Date.parse('2026-11-16T12:00:00.000Z');
 let now = NOW;
@@ -50,7 +49,7 @@ beforeEach(t => {
   t.mock.method(Date, 'now', () => now);
   t.mock.method(globalThis, 'fetch', async () => { throw new Error('Unexpected network request'); });
   const db = getDb();
-  for (const table of [schema.followingDeliveryApprovals, schema.followingDeliveries, schema.followingContributions, schema.followingEvents, schema.watchedSearchSeen, schema.watchedSearchNew, schema.watchedSearches, schema.watchedSearchFolders, schema.jobLogs, schema.jobs, schema.downloadQueue]) db.delete(table).run();
+  for (const table of [schema.watchedSearchSeen, schema.watchedSearchNew, schema.watchedSearches, schema.watchedSearchFolders, schema.jobLogs, schema.jobs, schema.downloadQueue]) db.delete(table).run();
   setWatchedSearchIntervalMinutes(15);
   setNotificationSettings({ discord: { enabled: false, webhookUrl: '' } });
   searches = [];
@@ -288,7 +287,6 @@ test('discoveries commit before notification and a pause at the dispatch boundar
   }, undefined, undefined, { watchIds: [watch.id] });
   assert.equal(result.checked, 1);
   assert.equal(result.notified, 0);
-  await dispatchFollowingDeliveries(now + 3_000);
   assert.deepEqual(messages, []);
   assert.equal(listGalleryFeed({ searchId: watch.id }).items.length, 1);
 });

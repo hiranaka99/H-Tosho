@@ -6,7 +6,6 @@ import { api, type Job, type JobLog } from '../lib/api';
 import { Badge, Button, Card, CardContent, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle, EmptyState, ErrorState, Input, Label, PageHeader, ProgressBar, Select, Spinner, Disclosure } from '../components/ui';
 import { cn, timeAgo, toIsoUtc, jobLabel } from '../lib/utils';
 import { toast } from '../lib/toast';
-import { FollowingDeliveries } from './downloader/FollowingDeliveries';
 
 type JobFilter = 'active' | 'failed' | 'done' | 'all';
 type JobDetails = { job: Job; logs: JobLog[] };
@@ -27,7 +26,7 @@ function isActive(job: Job): boolean {
 function hasWarnings(result: unknown): boolean {
   if (!result || typeof result !== 'object') return false;
   return Object.entries(result).some(([key, value]) => {
-    if (/^(warnings?|errors?|failed)$/i.test(key)) {
+    if (/^(warnings?|errors?|failed|notificationFailed|notificationUnknown|unknown)$/i.test(key)) {
       if (Array.isArray(value)) return value.length > 0;
       if (typeof value === 'object' && value !== null) return Object.keys(value).length > 0;
       return typeof value === 'number' ? value > 0 : Boolean(value);
@@ -37,7 +36,7 @@ function hasWarnings(result: unknown): boolean {
 }
 
 function needsAttention(job: Job): boolean {
-  return job.status === 'failed' || (job.status === 'completed' && hasWarnings(job.result)) || Boolean(job.followingDelivery && (job.followingDelivery.failed > 0 || job.followingDelivery.unknown > 0));
+  return job.status === 'failed' || (job.status === 'completed' && hasWarnings(job.result));
 }
 
 function fieldLabel(key: string): string {
@@ -157,8 +156,12 @@ function jobOutcome(job: Job): string {
   if (job.type === 'scan-matchable' || job.type === 'scan-downloaded') {
     for (const [key, label] of [['processed', 'galleries checked'], ['matchable', 'galleries with candidates'], ['failed', 'galleries with provider errors']]) if (typeof result[key] === 'number') parts.push(`${result[key]} ${label}`);
   } else if (job.type === 'check-watched-searches') {
-    for (const [key, label] of [['processed', 'saved searches checked'], ['newGalleries', 'new galleries found'], ['failed', 'provider checks failed'], ['notificationIntents', 'notification contributions committed']]) if (typeof result[key] === 'number') parts.push(`${result[key]} ${label}`);
-    if (job.followingDelivery) parts.push(`${job.followingDelivery.delivered} Discord deliveries acknowledged · ${job.followingDelivery.pending} pending · ${job.followingDelivery.failed + job.followingDelivery.unknown} delivery issues`);
+    for (const [key, label] of [['processed', 'saved searches checked'], ['newGalleries', 'new galleries found'], ['failed', 'provider checks failed'], ['notified', 'Discord notifications sent'], ['notificationFailed', 'Discord sends failed'], ['notificationUnknown', 'Discord sends unconfirmed'], ['notificationIntents', 'notification contributions committed']]) if (typeof result[key] === 'number') parts.push(`${result[key]} ${label}`);
+    const archived = result.notificationDeliveryHistory;
+    if (archived && typeof archived === 'object' && !Array.isArray(archived)) {
+      const history = archived as Record<string, number>;
+      parts.push(`Archived notification outcomes: ${history.delivered ?? 0} acknowledged · ${history.pending ?? 0} previously pending · ${(history.failed ?? 0) + (history.unknown ?? 0)} delivery issues`);
+    }
   } else if (job.type === 'delete-series' && typeof result.deleted === 'number') {
     parts.push(`${result.deleted} archives deleted`);
   } else if (job.type === 'edit-comicinfo' && typeof result.processed === 'number') {
@@ -492,7 +495,6 @@ export function Jobs() {
                   {selectedJob.context?.libraryName && <p className="text-sm">Library: {selectedJob.context.libraryName}</p>}
                   {jobSeries(selectedJob).length > 1 && <Disclosure label={`Affected series (${jobSeries(selectedJob).length})`} summaryClassName="px-0"><AffectedSeries job={selectedJob} /></Disclosure>}
                 </section>
-                {selectedJob.type === 'check-watched-searches' && <FollowingDeliveries jobId={selectedJob.id} embedded />}
                 {isActive(selectedJob) && <section className="space-y-2" aria-label="Task progress"><ProgressBar value={selectedJob.progressCurrent} max={selectedJob.progressTotal} active /><p className="text-xs text-muted">{duration(selectedJob)}</p></section>}
                 {(isActive(selectedJob) || selectedJob.status === 'failed') && <div className="flex flex-wrap gap-2">{actions(selectedJob)}</div>}
                 {selectedJob.errorMessage && <section role="alert" className="rounded-lg border border-danger/30 bg-danger/5 p-3"><h3 className="mb-2 text-sm font-semibold text-danger">Failure</h3><p className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{selectedJob.errorMessage}</p></section>}

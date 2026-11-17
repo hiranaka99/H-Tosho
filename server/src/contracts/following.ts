@@ -1,5 +1,6 @@
 import type { DoujinSource } from '../downloader/types.js';
-import type { NotificationMode } from './followingDelivery.js';
+export const NOTIFICATION_MODES = ['in-app', 'immediate'] as const;
+export type NotificationMode = typeof NOTIFICATION_MODES[number];
 
 export const FOLLOWING_INTERVAL_MINUTES = [15, 60, 360, 1440] as const;
 export type FollowingInterval = (typeof FOLLOWING_INTERVAL_MINUTES)[number];

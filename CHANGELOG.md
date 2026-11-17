@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Add Following names/folders, revision-safe editing and reordering, pause/resume,
-  inherited or custom cadence, and targeted Check once. Persist bounded due-work
+  inherited or custom cadence, and compact icon actions. Persist bounded due-work
   scheduling and recheck watch identity/preferences after provider responses.
   Paused checks retain in-app discoveries without Discord or resuming the watch;
   global automatic-off overrides custom intervals. Folder filters precede gallery
@@ -13,12 +13,10 @@
   stale exact-watch filters, and named search controls expose their visible
   names to assistive technology.
 
-- Complete Following's transactional notification outbox, per-watch in-app/immediate/
-  daily-digest modes, overlapping-gallery deduplication and timezone-aware cutoffs.
-  Show acknowledged, disabled, suppressed, failed and unknown delivery outcomes in
-  Following and linked Tasks. Preserve immutable batch retries and hold ambiguous
-  sends across restart for revision-safe, duplicate-aware recovery. Preference and
-  destination changes do not revive old backlog; notifications never enqueue downloads.
+- Simplify Following notifications to direct, deduplicated Discord sends or in-app
+  finds. Remove the delivery log, recovery queue, daily digest, and digest settings.
+  Retain Discord credentials, watch preferences, discoveries, and normal Task history;
+  archive existing delivery outcome totals on their Tasks before retiring storage.
 
 - Enforce title protection across library, path-only and gallery merge publication,
   preserve source/target policy unions through regrouping/restart, and require real

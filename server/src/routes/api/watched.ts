@@ -9,23 +9,14 @@ import {
 } from '../../services/watchedSearches.js';
 import { type DoujinSource } from '../../downloader/types.js';
 import { FOLLOWING_TARGET_LIMIT, type CheckWatchedSearchesCommand, type WatchedSearchPatch, type WatchedSearchFolderPatch } from '../../contracts/following.js';
-import { listFollowingDeliveries, reviewFollowingDelivery, retryFollowingDelivery, FollowingDeliveryError } from '../../services/followingDelivery.js';
-import type { DeliveryRetryRequest } from '../../contracts/followingDelivery.js';
 
 import { intParam } from './helpers.js';
 export const api = new Hono();
 api.onError((error, c) => {
-  if (error instanceof FollowingError || error instanceof FollowingDeliveryError) return c.json({ error: error.message }, error.status);
+  if (error instanceof FollowingError) return c.json({ error: error.message }, error.status);
   throw error;
 });
 api.get('/watched-searches', (c) => c.json(listWatchedSearches()));
-
-api.get('/watched-deliveries', c => c.json(listFollowingDeliveries({ status: c.req.query('status'),
-  offset: c.req.query('offset') === undefined ? undefined : Number(c.req.query('offset')),
-  limit: c.req.query('limit') === undefined ? undefined : Number(c.req.query('limit')),
-  jobId: c.req.query('jobId') === undefined ? undefined : Number(c.req.query('jobId')) })));
-api.get('/watched-deliveries/:id/review', c => c.json(reviewFollowingDelivery(c.req.param('id'))));
-api.post('/watched-deliveries/:id/retry', async c => c.json(retryFollowingDelivery(c.req.param('id'), await c.req.json().catch(() => null) as DeliveryRetryRequest), 202));
 
 api.get('/watched-searches/feed', (c) => {
   const view = c.req.query('view') ?? 'inbox', source = c.req.query('source'), watch = c.req.query('searchId'), folder = c.req.query('folderId');

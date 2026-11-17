@@ -3,14 +3,15 @@ import { getDb, schema, type Db } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinSearchResult, DoujinSource } from '../downloader/types.js';
 import { JobCancelled, type LogFn } from '../jobs/queue.js';
-import { contributeFollowingFind, invalidateWatchContributions } from './followingDelivery.js';
-import { NOTIFICATION_MODES, type NotificationMode } from '../contracts/followingDelivery.js';
-import { getWatchedSearchIntervalMinutes } from './settings.js';
+import { notify, NotificationFailure } from '../notify/dispatcher.js';
+import { getNotificationSettings, getWatchedSearchIntervalMinutes } from './settings.js';
+import type { NotificationSettings } from '../contracts/notifications.js';
 import {
   effectiveFollowingInterval, FOLLOWING_INTERVAL_MINUTES, FOLLOWING_SEARCH_LIMIT, FOLLOWING_TARGET_LIMIT,
   type CheckWatchedSearchesCommand, type FollowingFeedOptions, type FollowingInterval,
   type WatchedGalleryFeed, type WatchedNewGallery, type WatchedSearch, type WatchedSearchFolder,
   type WatchedSearchFolderPatch, type WatchedSearchPatch, type WatchedSearchResultItem,
+  NOTIFICATION_MODES, type NotificationMode,
 } from '../contracts/following.js';
 
 /**
@@ -126,7 +127,6 @@ export function updateWatchedSearch(id: number, patch: WatchedSearchPatch): Watc
     if (!row) throw new FollowingError('Watched search not found.', 404);
     if (row.revision !== patch.expectedRevision) throw new FollowingError('Watch changed. Refresh and try again.', 409);
     if (patch.folderId != null && !tx.select({ id: schema.watchedSearchFolders.id }).from(schema.watchedSearchFolders).where(eq(schema.watchedSearchFolders.id, patch.folderId)).get()) throw new FollowingError('Folder not found.', 404);
-    if (patch.paused === true || (patch.notificationMode !== undefined && patch.notificationMode !== row.notificationMode)) invalidateWatchContributions(tx, id);
     const pausedAt = patch.paused === undefined ? row.pausedAt : patch.paused ? row.pausedAt ?? new Date().toISOString() : null;
     const intervalMinutes = patch.intervalMinutes === undefined ? row.intervalMinutes : patch.intervalMinutes;
     const reschedule = pausedAt !== row.pausedAt || intervalMinutes !== row.intervalMinutes;
@@ -150,7 +150,6 @@ export function removeWatchedSearch(id: number, expectedRevision: number): boole
     if (!row) return false;
     if (row.revision !== expectedRevision) throw new FollowingError('Watch changed. Refresh and try again.', 409);
     tx.update(schema.watchedSearchNew).set({ watchLabel: row.displayName ?? row.query }).where(eq(schema.watchedSearchNew.searchId, id)).run();
-    invalidateWatchContributions(tx, id);
     tx.delete(schema.watchedSearchSeen).where(eq(schema.watchedSearchSeen.searchId, id)).run();
     tx.delete(schema.watchedSearches).where(eq(schema.watchedSearches.id, id)).run();
     return true;
@@ -276,7 +275,8 @@ interface CheckResult {
   notified: number;
   newGalleries: number;
   failed: number;
-  notificationIntents: number;
+  notificationFailed: number;
+  notificationUnknown: number;
 }
 
 /** Manual checks include explicit paused targets; scheduled work must still be due. */
@@ -285,7 +285,6 @@ export async function checkWatchedSearches(
   isCancelled?: () => boolean,
   onProgress?: (current: number, total: number) => void,
   command: CheckWatchedSearchesCommand = {},
-  jobId?: number,
 ): Promise<CheckResult> {
   const db = getDb();
   const mode = command.mode ?? 'manual';
@@ -293,7 +292,8 @@ export async function checkWatchedSearches(
   const table = schema.watchedSearches;
   const targets = explicit ? [...new Set(command.watchIds)] : mode === 'due' ? dueWatchedSearchIds() :
     db.select({ id: table.id }).from(table).where(sql`${table.pausedAt} IS NULL`).orderBy(asc(table.id)).all().map(row => row.id);
-  const result: CheckResult = { checked: 0, notified: 0, newGalleries: 0, failed: 0, notificationIntents: 0 };
+  const result: CheckResult = { checked: 0, notified: 0, newGalleries: 0, failed: 0, notificationFailed: 0, notificationUnknown: 0 };
+  const notifications = new Map<string, { gallery: DoujinSearchResult; source: string; settings: NotificationSettings; watches: { id: number; revision: number }[] }>();
   for (let i = 0; i < targets.length; i++) {
     if (isCancelled?.()) throw new JobCancelled();
     const id = targets[i];
@@ -357,9 +357,6 @@ export async function checkWatchedSearches(
             ...pageCountMetadata(gallery.pageCount), artistsJson: JSON.stringify(gallery.artists ?? []), language: gallery.language ?? null,
             reviewedAt: reviewed?.reviewedAt ?? null, foundAt: checkedAt };
         })).onConflictDoNothing().run();
-        if (latest.pausedAt === null && latest.notificationMode !== 'in-app' && !(mode === 'due' && getWatchedSearchIntervalMinutes() === 0)) {
-          for (const galleryId of freshIds) result.notificationIntents += contributeFollowingFind(tx, latest, byId.get(galleryId)!, checkedAt, jobId);
-        }
         // Only metadata already present in search results is used; never hydrate galleries.
         for (const gallery of byId.values()) {
           if (!gallery.artists?.length && !gallery.language) continue;
@@ -375,11 +372,54 @@ export async function checkWatchedSearches(
       });
       result.checked++;
       result.newGalleries += freshIds.length;
+      if (latest.pausedAt === null && latest.notificationMode === 'immediate' && !(mode === 'due' && getWatchedSearchIntervalMinutes() === 0)) {
+        for (const galleryId of freshIds) {
+          const key = JSON.stringify([latest.source, galleryId]);
+          const candidate = notifications.get(key) ?? { gallery: byId.get(galleryId)!, source: latest.source, settings: getNotificationSettings(), watches: [] };
+          candidate.watches.push({ id: latest.id, revision: latest.revision });
+          notifications.set(key, candidate);
+        }
+      }
       if (newIds.length > freshIds.length) log('warn', `Watch ${id} "${latest.query}": suppressed ${newIds.length - freshIds.length} old upload(s) re-entering the result window (provider index hiccup)`);
       log(firstRun ? 'info' : 'success', `Watch ${id} "${latest.query}": ${ids.length} result(s), ${freshIds.length} new${firstRun ? ' (seeded)' : ''}`);
       if (isCancelled?.()) throw new JobCancelled();
     } finally {
       ownedWatches.delete(id);
+    }
+  }
+  // Discoveries and check results are committed before Discord is contacted.
+  // The normal Task records outcomes; there is no delivery queue or backlog replay.
+  for (const candidate of notifications.values()) {
+    if (isCancelled?.()) throw new JobCancelled();
+    const current = candidate.watches.flatMap(snapshot => {
+      const watch = db.select().from(table).where(eq(table.id, snapshot.id)).get();
+      return watch && watch.revision === snapshot.revision && watch.pausedAt === null && watch.notificationMode === 'immediate' ? [watch] : [];
+    });
+    if (!current.length) continue;
+    const discoveries = schema.watchedSearchNew;
+    const identity = and(eq(discoveries.source, candidate.source), eq(discoveries.galleryId, candidate.gallery.galleryId));
+    const claimed = db.transaction(tx => {
+      if (tx.select({ id: discoveries.id }).from(discoveries).where(and(identity, sql`${discoveries.notificationAttemptedAt} IS NOT NULL`)).get()) return false;
+      return tx.update(discoveries).set({ notificationAttemptedAt: new Date(Date.now()).toISOString() }).where(identity).run().changes > 0;
+    });
+    if (!claimed) continue;
+    const gallery = candidate.gallery;
+    const label = [...new Set(current.map(watch => watch.displayName ?? watch.query))].join(', ');
+    const escape = (value: string, limit: number) => value.slice(0, limit).replace(/[\\`*_~\[\]()<>]/g, '\\$&');
+    const title = escape(gallery.title, 100);
+    const url = gallery.url && /^https?:\/\//i.test(gallery.url) ? gallery.url.replace(/[()\s]/g, encodeURIComponent) : null;
+    try {
+      const outcome = await notify({ title: 'New in Following', success: true,
+        description: `1 new gallery\n${url && url.length < 300 ? `[${title}](${url})` : title}\nVia ${escape(label, 180)}` },
+      { revision: candidate.settings.revision, destinationIdentity: candidate.settings.destinationIdentity });
+      if (outcome.status === 'delivered') {
+        result.notified++;
+        log('success', `Discord notification sent for ${gallery.title} · ${label}`);
+      }
+    } catch (error) {
+      const unknown = !(error instanceof NotificationFailure) || error.outcome === 'unknown';
+      if (unknown) result.notificationUnknown++; else result.notificationFailed++;
+      log('warn', `Discord ${unknown ? 'delivery uncertain' : 'notification failed'} for ${gallery.title}: ${error instanceof NotificationFailure ? error.message : 'No delivery confirmation.'}`);
     }
   }
   onProgress?.(targets.length, targets.length);

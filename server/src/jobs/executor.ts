@@ -444,9 +444,9 @@ async function runWatchedSearchJob(job: JobFor<'check-watched-searches'>, log: L
     () => jobQueue.isCancelRequested(job.id),
     (current, total) => jobQueue.setProgress(job.id, current, total),
     job.payload,
-    job.id,
   );
-  return { processed: r.checked, matched: 0, failed: r.failed, notified: r.notified, newGalleries: r.newGalleries, notificationIntents:r.notificationIntents };
+  return { processed: r.checked, matched: 0, failed: r.failed, notified: r.notified, newGalleries: r.newGalleries,
+    notificationFailed: r.notificationFailed, notificationUnknown: r.notificationUnknown };
 }
 
 async function runEditComicInfoJob(job: JobFor<'edit-comicinfo'>, log: LogFn, signal?: AbortSignal, journal?: MetadataJournal): Promise<JobResult> {
