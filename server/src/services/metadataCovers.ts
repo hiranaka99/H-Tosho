@@ -1,12 +1,14 @@
-import { createHash } from 'node:crypto';
 import { and, eq, or, sql } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import type { KavitaClient } from '../kavita/client.js';
 import type { MetadataSnapshot } from '../contracts/metadataHistory.js';
-import { COVER_RESTORE_UNAVAILABLE, MAX_RETAINED_COVER_BYTES, MAX_RETAINED_COVER_STORE_BYTES,
-  type RecordedCover, type RecordedCoverState, type SeriesCoverHistory } from '../contracts/metadataCovers.js';
+import { MAX_RETAINED_COVER_BYTES, MAX_RETAINED_COVER_STORE_BYTES,
+  type RecordedCover, type CoverHistory, type CoverCheckpoint, type CoverTarget } from '../contracts/metadataCovers.js';
 import { getKavitaConnection } from './settings.js';
 import { kavitaConnectionKey } from './kavitaState.js';
+import { observeCover, retainCoverObservation, sameCoverObservation, coverReadbackReservationFits, coverTargetKey, loadCoverAsset,
+  type CoverObservation } from './coverObservations.js';
+import { PRUNE_UNUSED_COVER_ASSETS_SQL } from '../db/metadataRetention.js';
 
 const connection=()=>kavitaConnectionKey(getKavitaConnection().baseUrl);
 export function coverStorageBudget(value:string|undefined=process.env.HTOSHO_COVER_HISTORY_LIMIT_MIB):number {
@@ -16,10 +18,14 @@ export function coverStorageBudget(value:string|undefined=process.env.HTOSHO_COV
   }
   return Number(value)*1024*1024;
 }
-type CoverRow=typeof schema.metadataSeriesCovers.$inferSelect;
-interface CoverObservation {
-  state:'captured'|'absent'; assetId:string|null; data:Buffer|null; mediaType:string|null;
-  locked:boolean; token:string|null; libraryId:number; folderPath?:string|null; installationId?:string;
+export type CoverCheckpointRow = typeof schema.metadataSeriesCovers.$inferSelect | typeof schema.metadataVolumeCovers.$inferSelect;
+type CoverPatch = Partial<Omit<typeof schema.metadataSeriesCovers.$inferInsert, 'operationId'>>;
+export interface CoverJournalResult { problems: string[]; warnings: string[]; changed: boolean; unverifiedNativeLocks: number }
+export interface CoverJournal {
+  capture(target?: CoverTarget): Promise<void>;
+  beginWrite(target: CoverTarget, lock: boolean, assetId?: string): void;
+  acknowledge(target: CoverTarget): void;
+  finish(): Promise<CoverJournalResult>;
 }
 
 /** Validate raster signatures, never accepting SVG/HTML under an image media type. Bytes remain unmodified. */
@@ -35,132 +41,153 @@ export function coverMediaType(data:Buffer):string {
   throw new Error('Cover response is not a supported complete PNG, JPEG, WebP, GIF or AVIF raster image');
 }
 
-async function observe(client:KavitaClient,seriesId:number,expected:MetadataSnapshot,key:string):Promise<CoverObservation> {
-  if(connection()!==key)throw new Error('Kavita connection changed during cover capture');
-  const series=await client.getSeriesDto(seriesId);
-  if(series.id!==seriesId || series.libraryId!==expected.series.libraryId
-    || (Object.hasOwn(expected.series,'folderPath') && series.folderPath!==expected.series.folderPath))throw new Error('Series identity changed during cover capture');
-  if(typeof series.coverImageLocked!=='boolean')throw new Error('Kavita did not return the original series-cover lock; cover write was not started');
-  if(typeof client.getSeriesCoverForHistory!=='function')throw new Error('Kavita series-cover image reads are unavailable; cover write was not started');
-  const info=typeof client.getServerInfo==='function'?await client.getServerInfo():undefined;
-  if(expected.installationId!==undefined && info?.installId!==expected.installationId)throw new Error('Kavita installation changed during cover capture');
-  const image=await client.getSeriesCoverForHistory(seriesId);
-  const token=typeof series.coverImage==='string'?series.coverImage:series.coverImage===null?null:undefined;
-  if(!image && token!==null && token!=='')throw new Error('Current series cover is unreadable; a failed image read cannot be recorded as an absent cover');
-  const mediaType=image?coverMediaType(image.data):null;
-  const after=await client.getSeriesDto(seriesId);
-  if(connection()!==key || after.id!==seriesId || after.libraryId!==series.libraryId || after.folderPath!==series.folderPath
-    || after.coverImage!==series.coverImage || after.coverImageLocked!==series.coverImageLocked)throw new Error('Series cover or identity changed while it was being captured');
-  return {state:image?'captured':'absent',assetId:image?createHash('sha256').update(image.data).digest('hex'):null,
-    data:image?.data??null,mediaType,locked:series.coverImageLocked,token:token??null,libraryId:series.libraryId,
-    ...(Object.hasOwn(series,'folderPath')?{folderPath:series.folderPath}:{}),...(info?.installId?{installationId:info.installId}:{})};
+export function getCoverCheckpoint(operationId: string, target: CoverTarget): CoverCheckpointRow | undefined {
+  const db = getDb();
+  return target.kind === 'series'
+    ? db.select().from(schema.metadataSeriesCovers).where(eq(schema.metadataSeriesCovers.operationId, operationId)).get()
+    : db.select().from(schema.metadataVolumeCovers).where(and(eq(schema.metadataVolumeCovers.operationId, operationId), eq(schema.metadataVolumeCovers.volumeId, target.volumeId))).get();
 }
 
-function persistAsset(value:CoverObservation):void {
-  if(!value.assetId || !value.data || !value.mediaType)return;
-  const db=getDb();
-  if(db.select({id:schema.metadataAssets.id}).from(schema.metadataAssets).where(eq(schema.metadataAssets.id,value.assetId)).get())return;
-  const used=db.select({bytes:sql<number>`coalesce(sum(${schema.metadataAssets.byteSize}),0)`}).from(schema.metadataAssets).get()!.bytes;
-  const reserved=db.select({bytes:sql<number>`coalesce(sum(${schema.metadataSeriesCovers.reservedBytes}),0)`}).from(schema.metadataSeriesCovers).get()!.bytes;
-  if(used+reserved+value.data.length>coverStorageBudget())throw new Error('Retained cover storage reached its configured budget; no retained history was evicted. Increase the cover-history storage budget before retrying the affected cover write');
-  db.insert(schema.metadataAssets).values({id:value.assetId,mediaType:value.mediaType,byteSize:value.data.length,data:value.data}).run();
+function updateCheckpoint(operationId: string, target: CoverTarget, values: CoverPatch): void {
+  const db = getDb();
+  if (target.kind === 'series') db.update(schema.metadataSeriesCovers).set(values).where(eq(schema.metadataSeriesCovers.operationId, operationId)).run();
+  else db.update(schema.metadataVolumeCovers).set(values).where(and(eq(schema.metadataVolumeCovers.operationId, operationId), eq(schema.metadataVolumeCovers.volumeId, target.volumeId))).run();
 }
 
-/** All writes use the caller's existing parent series ownership and journal. */
-export function seriesCoverJournal(client:KavitaClient,operationId:string,seriesId:number,expected:MetadataSnapshot,key:string) {
-  let saved:CoverObservation|undefined;
-  const db=getDb();
+function ensureCheckpoint(operationId: string, target: CoverTarget): void {
+  const db = getDb();
+  if (target.kind === 'series') db.insert(schema.metadataSeriesCovers).values({ operationId }).onConflictDoNothing().run();
+  else db.insert(schema.metadataVolumeCovers).values({ operationId, volumeId: target.volumeId, name: `Volume #${target.volumeId}` }).onConflictDoNothing().run();
+}
+
+/** The caller owns the parent series mutation boundary; original bytes remain unmodified. */
+export function coverJournal(client: KavitaClient, operationId: string, seriesId: number, expected: MetadataSnapshot, key: string): CoverJournal {
+  const saved = new Map<string, { target: CoverTarget; observation: Omit<CoverObservation, 'data'> }>();
+  const requested = new Map<string, { lock: boolean; assetId?: string }>();
+  const db = getDb();
   return {
-    async capture():Promise<void> {
-      // The plan gates capture on an explicitly chosen storage budget. A fresh
-      // install keeps its existing cover workflow until the operator opts in.
-      if(process.env.HTOSHO_COVER_HISTORY_LIMIT_MIB===undefined && !saved) {
-        db.insert(schema.metadataSeriesCovers).values({operationId,status:'not-captured',
-          beforeReason:'Series-cover capture was disabled for this operation; configure its storage budget to retain images',
-          afterReason:'Series-cover capture was disabled for this operation; no after image was retained'}).onConflictDoNothing().run();
+    async capture(target: CoverTarget = { kind: 'series' }): Promise<void> {
+      if (target.kind === 'volume' && (!Number.isSafeInteger(target.volumeId) || target.volumeId <= 0)) throw new Error('Invalid volume-cover target');
+      const targetKey = coverTargetKey(target), previous = saved.get(targetKey);
+      ensureCheckpoint(operationId, target);
+      if (process.env.HTOSHO_COVER_HISTORY_LIMIT_MIB === undefined && !previous) {
+        updateCheckpoint(operationId, target, { status: 'not-captured', beforeReason: 'Cover capture was disabled; configure its storage budget to retain images', afterReason: 'No after image was retained because cover capture was disabled' });
         return;
       }
-      if(saved) {
-        const current=await observe(client,seriesId,expected,key);
-        if(current.assetId!==saved.assetId || current.state!==saved.state || current.locked!==saved.locked || current.token!==saved.token
-          || current.installationId!==saved.installationId)throw new Error('Series cover or native lock changed after history preparation; review required before applying the cover');
-        db.update(schema.metadataSeriesCovers).set({status:'applying'}).where(eq(schema.metadataSeriesCovers.operationId,operationId)).run();
+      if (previous) {
+        const current = await observeCover(client, seriesId, target, expected, key);
+        if (!sameCoverObservation(previous.observation, current)) throw new Error('Cover, native lock or indexed identity changed after preparation; review required');
+        updateCheckpoint(operationId, target, { status: 'applying' });
         return;
       }
-      db.insert(schema.metadataSeriesCovers).values({operationId,beforeReason:'Series cover capture did not finish',afterReason:'No observed cover readback yet'}).onConflictDoNothing().run();
       try {
-        const value=await observe(client,seriesId,expected,key);
-        db.transaction(()=>{
-          // Reserve the maximum readback size first, so concurrent operations cannot consume its capacity.
-          db.update(schema.metadataSeriesCovers).set({reservedBytes:MAX_RETAINED_COVER_BYTES}).where(eq(schema.metadataSeriesCovers.operationId,operationId)).run();
-          persistAsset(value);
-          const used=db.select({bytes:sql<number>`coalesce(sum(${schema.metadataAssets.byteSize}),0)`}).from(schema.metadataAssets).get()!.bytes;
-          const reserved=db.select({bytes:sql<number>`coalesce(sum(${schema.metadataSeriesCovers.reservedBytes}),0)`}).from(schema.metadataSeriesCovers).get()!.bytes;
-          if(used+reserved>coverStorageBudget())throw new Error('Insufficient retained cover storage for guaranteed readback; increase the cover-history storage budget before retrying the affected cover write');
-          db.update(schema.metadataSeriesCovers).set({status:'prepared',beforeState:value.state,beforeAssetId:value.assetId,
-            beforeLocked:value.locked,beforeEvidenceJson:JSON.stringify({token:value.token,libraryId:value.libraryId,folderPath:value.folderPath,installationId:value.installationId}),beforeReason:null})
-            .where(eq(schema.metadataSeriesCovers.operationId,operationId)).run();
+        const value = await observeCover(client, seriesId, target, expected, key);
+        db.transaction(() => {
+          updateCheckpoint(operationId, target, { reservedBytes: MAX_RETAINED_COVER_BYTES });
+          retainCoverObservation(value);
+          if (!coverReadbackReservationFits()) throw new Error('Insufficient cover-history storage for guaranteed readback; increase its budget before writing');
+          updateCheckpoint(operationId, target, { status: 'prepared', beforeState: value.state, beforeAssetId: value.assetId, beforeLocked: value.locked, beforeEvidenceJson: JSON.stringify(value.evidence), beforeReason: null });
+          if (target.kind === 'volume') db.update(schema.metadataVolumeCovers).set({ name: value.name }).where(and(eq(schema.metadataVolumeCovers.operationId, operationId), eq(schema.metadataVolumeCovers.volumeId, target.volumeId))).run();
         });
-        saved=value;
-      }catch(error){
-        db.update(schema.metadataSeriesCovers).set({status:'not-captured',beforeReason:error instanceof Error?error.message:'Could not capture current cover',
-          afterReason:'Series cover write was skipped because required before capture failed',reservedBytes:0}).where(eq(schema.metadataSeriesCovers.operationId,operationId)).run();
+        const { data: _data, ...observation } = value;
+        saved.set(targetKey, { target, observation });
+      } catch (error) {
+        updateCheckpoint(operationId, target, { status: 'not-captured', beforeReason: error instanceof Error ? error.message : 'Could not capture the current cover', afterReason: 'Cover write was skipped because required before capture failed', reservedBytes: 0 });
         throw error;
       }
     },
-    async finish():Promise<string|null> {
-      if(!saved)return null;
-      try {
-        const value=await observe(client,seriesId,{...expected,...(saved.installationId?{installationId:saved.installationId}:{})},key);
-        db.transaction(()=>{
-          db.update(schema.metadataSeriesCovers).set({reservedBytes:0}).where(eq(schema.metadataSeriesCovers.operationId,operationId)).run();
-          persistAsset(value);
-          db.update(schema.metadataSeriesCovers).set({status:'observed',afterState:value.state,afterAssetId:value.assetId,afterLocked:value.locked,afterReason:null})
-            .where(eq(schema.metadataSeriesCovers.operationId,operationId)).run();
-        });
-        return null;
-      }catch{
-        const message='Could not retain verified series-cover readback; inspect the current cover before any further action';
-        db.update(schema.metadataSeriesCovers).set({status:'unverified',afterReason:message,reservedBytes:0}).where(eq(schema.metadataSeriesCovers.operationId,operationId)).run();
-        return message;
+    beginWrite(target: CoverTarget, lock: boolean, assetId?: string): void {
+      ensureCheckpoint(operationId, target);
+      requested.set(coverTargetKey(target), { lock, assetId });
+      updateCheckpoint(operationId, target, { requestedLock: lock, writeAcknowledged: false });
+    },
+    acknowledge(target: CoverTarget): void {
+      updateCheckpoint(operationId, target, { writeAcknowledged: true });
+    },
+    async finish(): Promise<CoverJournalResult> {
+      const result: CoverJournalResult = { problems: [], warnings: [], changed: false, unverifiedNativeLocks: 0 };
+      for (const [targetKey, previous] of saved) {
+        try {
+          const value = await observeCover(client, seriesId, previous.target, { ...expected, ...(previous.observation.evidence.installationId ? { installationId: previous.observation.evidence.installationId } : {}) }, key);
+          const intent = requested.get(targetKey), checkpoint = getCoverCheckpoint(operationId, previous.target)!;
+          const problems: string[] = [];
+          if (JSON.stringify(value.evidence.volume) !== JSON.stringify(previous.observation.evidence.volume)) problems.push('Indexed volume identity changed during the cover operation');
+          if (intent && value.locked !== null && value.locked !== intent.lock) problems.push('Requested native cover lock was not confirmed');
+          if (intent?.assetId && intent.assetId !== previous.observation.assetId && value.assetId === previous.observation.assetId && value.evidence.token === previous.observation.evidence.token) problems.push('The requested image upload produced no observed cover change');
+          if (intent && value.locked === null) {
+            result.unverifiedNativeLocks++;
+            result.warnings.push(`${value.name}: image observed; requested native lock ${intent.lock ? 'locked' : 'unlocked'} ${checkpoint.writeAcknowledged ? 'was acknowledged by the API' : 'was not acknowledged'}, but this server does not expose lock readback`);
+          }
+          db.transaction(() => {
+            updateCheckpoint(operationId, previous.target, { reservedBytes: 0 });
+            retainCoverObservation(value);
+            updateCheckpoint(operationId, previous.target, { status: problems.length ? 'unverified' : 'observed', afterState: value.state, afterAssetId: value.assetId, afterLocked: value.locked, afterEvidenceJson: JSON.stringify(value.evidence), afterReason: problems.join('; ') || null });
+          });
+          result.changed ||= value.state !== previous.observation.state || value.assetId !== previous.observation.assetId || (value.locked !== null && previous.observation.locked !== null && value.locked !== previous.observation.locked);
+          result.problems.push(...problems.map(problem => `${value.name}: ${problem}`));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Could not retain verified cover readback';
+          updateCheckpoint(operationId, previous.target, { status: 'unverified', afterReason: message, reservedBytes: 0 });
+          result.problems.push(`${previous.observation.name}: ${message}`);
+        }
       }
+      return result;
     },
   };
 }
 
-function recorded(row:CoverRow,side:'before'|'after'):RecordedCover {
-  const state=row[`${side}State`] as RecordedCoverState,id=row[`${side}AssetId`];
-  const asset=id?getDb().select({id:schema.metadataAssets.id,mediaType:schema.metadataAssets.mediaType,byteSize:schema.metadataAssets.byteSize})
-    .from(schema.metadataAssets).where(eq(schema.metadataAssets.id,id)).get():undefined;
-  const missing=state==='captured'&&!asset;
-  return {state:missing?'unavailable':state,assetId:asset?.id??null,mediaType:asset?.mediaType??null,byteSize:asset?.byteSize??null,
-    nativeLocked:row[`${side}Locked`],reason:missing?'Retained cover asset is no longer available':row[`${side}Reason`]};
-}
-export function seriesCoverHistory(operationId:string):SeriesCoverHistory|undefined {
-  const row=getDb().select().from(schema.metadataSeriesCovers).where(eq(schema.metadataSeriesCovers.operationId,operationId)).get();
-  if(!row)return undefined;
-  const before=recorded(row,'before'),after=recorded(row,'after');
-  return {status:row.status,before,after,changed:before.state==='unavailable'||after.state==='unavailable'?null
-    :before.state!==after.state||before.assetId!==after.assetId||before.nativeLocked!==after.nativeLocked,
-    restoreAvailable:false,restoreReason:COVER_RESTORE_UNAVAILABLE,volumeCovers:'not captured'};
+export function recordedCover(row: CoverCheckpointRow, side: 'before' | 'after'): RecordedCover {
+  const rawState = side === 'before' ? row.beforeState : row.afterState;
+  const state = rawState === 'captured' || rawState === 'absent' ? rawState : 'unavailable';
+  const id = side === 'before' ? row.beforeAssetId : row.afterAssetId;
+  const asset = id ? getDb().select({ id: schema.metadataAssets.id, mediaType: schema.metadataAssets.mediaType, byteSize: schema.metadataAssets.byteSize }).from(schema.metadataAssets).where(eq(schema.metadataAssets.id, id)).get() : undefined;
+  const nativeLocked = side === 'before' ? row.beforeLocked : row.afterLocked;
+  return { state: state === 'captured' && !asset ? 'unavailable' : state, assetId: asset?.id ?? null, mediaType: asset?.mediaType ?? null, byteSize: asset?.byteSize ?? null, nativeLocked,
+    nativeLockReason: nativeLocked === null && state !== 'unavailable' ? 'This server did not expose the native cover lock; its value was not inferred.' : null,
+    reason: state === 'captured' && !asset ? 'Retained cover asset is no longer available' : side === 'before' ? row.beforeReason : row.afterReason };
 }
 
-/** Possessing a content hash never authorizes another connection/series/operation's image. */
-export function retainedCoverAsset(seriesId:number,operationId:string,assetId:string):{data:Buffer;mediaType:string}|null {
-  if(!Number.isSafeInteger(seriesId)||seriesId<=0||!(/^[A-Za-z0-9._:-]{1,128}$/).test(operationId)||!(/^[a-f0-9]{64}$/).test(assetId))return null;
-  const db=getDb();
-  const reference=db.select({operationId:schema.metadataSeriesCovers.operationId}).from(schema.metadataSeriesCovers)
-    .innerJoin(schema.metadataOperations,eq(schema.metadataOperations.id,schema.metadataSeriesCovers.operationId))
-    .where(and(eq(schema.metadataOperations.connectionKey,connection()),eq(schema.metadataOperations.seriesId,seriesId),eq(schema.metadataOperations.id,operationId),
-      or(eq(schema.metadataSeriesCovers.beforeAssetId,assetId),eq(schema.metadataSeriesCovers.afterAssetId,assetId)))).get();
-  if(!reference)return null;
-  const asset=db.select().from(schema.metadataAssets).where(eq(schema.metadataAssets.id,assetId)).get();
-  if(!asset || asset.data.length!==asset.byteSize || createHash('sha256').update(asset.data).digest('hex')!==assetId)return null;
-  try {if(coverMediaType(asset.data)!==asset.mediaType)return null;}catch{return null;}
-  return {data:asset.data,mediaType:asset.mediaType};
+function checkpointHistory(row: CoverCheckpointRow, target: CoverTarget, running: boolean): CoverCheckpoint {
+  const before = recordedCover(row, 'before'), after = recordedCover(row, 'after');
+  let budgetReason: string | null = process.env.HTOSHO_COVER_HISTORY_LIMIT_MIB === undefined ? 'Configure a cover-history budget before restoring images' : null;
+  try { coverStorageBudget(); } catch (error) { budgetReason = error instanceof Error ? error.message : 'Cover-history budget is invalid'; }
+  const availability = (cover: RecordedCover, side: 'before' | 'after') => {
+    const reason = running ? 'Source operation is still running' : budgetReason ?? (cover.state !== 'captured' ? cover.state === 'absent' ? 'Kavita resets/regenerates covers rather than preserving an absent image' : cover.reason ?? 'This image was not captured' : side === 'after' && row.status !== 'observed' ? 'After cover readback was not verified' : null);
+    return { available: reason === null, reason };
+  };
+  const imageChanged = before.state !== after.state || before.assetId !== after.assetId;
+  const changed = before.state === 'unavailable' || after.state === 'unavailable' ? null : imageChanged ? true : before.nativeLocked === null || after.nativeLocked === null ? null : before.nativeLocked !== after.nativeLocked;
+  return { ...target, name: 'name' in row ? row.name : 'Series cover', status: row.status, before, after, changed, requestedLock: row.requestedLock, writeAcknowledged: row.writeAcknowledged,
+    restoreAvailability: { before: availability(before, 'before'), after: availability(after, 'after') } };
 }
 
-export function interruptSeriesCoverHistory():void {
-  getDb().update(schema.metadataSeriesCovers).set({status:'interrupted',reservedBytes:0,afterReason:'Server stopped before series-cover readback; only retained observations are available'})
-    .where(or(eq(schema.metadataSeriesCovers.status,'preparing'),eq(schema.metadataSeriesCovers.status,'prepared'),eq(schema.metadataSeriesCovers.status,'applying'))).run();
+export function coverHistory(operationId: string): CoverHistory | undefined {
+  const db = getDb();
+  const operation = db.select({ status: schema.metadataOperations.status }).from(schema.metadataOperations).where(eq(schema.metadataOperations.id, operationId)).get();
+  if (!operation) return undefined;
+  const series = getCoverCheckpoint(operationId, { kind: 'series' });
+  const volumes = db.select().from(schema.metadataVolumeCovers).where(eq(schema.metadataVolumeCovers.operationId, operationId)).all();
+  if (!series && !volumes.length) return undefined;
+  return { ...(series ? { series: checkpointHistory(series, { kind: 'series' }, operation.status === 'running') } : {}), volumes: volumes.map(row => checkpointHistory(row, { kind: 'volume', volumeId: row.volumeId }, operation.status === 'running')) };
+}
+
+/** A content hash is not authority: the active operation must reference the image. */
+export function retainedCoverAsset(seriesId: number, operationId: string, assetId: string): { data: Buffer; mediaType: string } | null {
+  if (!Number.isSafeInteger(seriesId) || seriesId <= 0 || !/^[A-Za-z0-9._:-]{1,128}$/.test(operationId)) return null;
+  const db = getDb();
+  if (!db.select({ id: schema.metadataOperations.id }).from(schema.metadataOperations).where(and(eq(schema.metadataOperations.connectionKey, connection()), eq(schema.metadataOperations.seriesId, seriesId), eq(schema.metadataOperations.id, operationId))).get()) return null;
+  const series = getCoverCheckpoint(operationId, { kind: 'series' });
+  const volume = db.select({ id: schema.metadataVolumeCovers.id }).from(schema.metadataVolumeCovers).where(and(eq(schema.metadataVolumeCovers.operationId, operationId), or(eq(schema.metadataVolumeCovers.beforeAssetId, assetId), eq(schema.metadataVolumeCovers.afterAssetId, assetId)))).get();
+  if (!(series && (series.beforeAssetId === assetId || series.afterAssetId === assetId)) && !volume) return null;
+  return loadCoverAsset(assetId);
+}
+
+export function interruptCoverHistory(): void {
+  const db = getDb(), message = 'Server stopped before cover readback; only retained observations are available';
+  db.update(schema.metadataSeriesCovers).set({ status: 'interrupted', reservedBytes: 0, afterReason: message }).where(or(eq(schema.metadataSeriesCovers.status, 'preparing'), eq(schema.metadataSeriesCovers.status, 'prepared'), eq(schema.metadataSeriesCovers.status, 'applying'))).run();
+  db.update(schema.metadataVolumeCovers).set({ status: 'interrupted', reservedBytes: 0, afterReason: message }).where(or(eq(schema.metadataVolumeCovers.status, 'preparing'), eq(schema.metadataVolumeCovers.status, 'prepared'), eq(schema.metadataVolumeCovers.status, 'applying'))).run();
+}
+
+export function pruneUnusedCoverAssets(): void {
+  getDb().run(sql.raw(PRUNE_UNUSED_COVER_ASSETS_SQL));
 }

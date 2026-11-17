@@ -1,5 +1,7 @@
 import type { DoujinSource } from '../downloader/types.js';
 import type { RestoreMetadataCommand } from './metadataRestore.js';
+import { FOLLOWING_TARGET_LIMIT, type CheckWatchedSearchesCommand } from './following.js';
+import type { MergeProtectionState } from './mergeProtection.js';
 /** Types of background jobs the queue can run. */
 export const JOB_TYPES = [
   'scan-new',
@@ -39,6 +41,7 @@ export interface ApplySeriesCommand {
 export interface EditComicInfoCommand { path: string; seriesId?: number; xml?: string; fields?: Record<string, string> }
 export interface MergeSeriesCommand {
   seriesId?: number; targetDir?: string; sourceFiles?: string[]; chapters?: Record<string, string>;
+  sourceSeriesIds?: number[];
   existingChapters?: Record<string, string>;
   /** Optional Series metadata and Kavita display name; the target folder is retained. */
   seriesName?: string;
@@ -50,9 +53,10 @@ export interface JobExecutionState {
   mergeDownloadIds?: Record<string, number>;
   sourceFiles?: string[];
   chapters?: Record<string, string>;
+  mergeProtection?: MergeProtectionState;
 }
 /** Read-only transport projection for legacy history and shared target resolution. */
-export type JobPayload = Partial<SeriesTargets & ApplySeriesCommand & EditComicInfoCommand & MergeSeriesCommand & DownloadDiscoveryCommand & RestoreMetadataCommand> & JobExecutionState;
+export type JobPayload = Partial<SeriesTargets & ApplySeriesCommand & EditComicInfoCommand & MergeSeriesCommand & DownloadDiscoveryCommand & RestoreMetadataCommand & CheckWatchedSearchesCommand> & JobExecutionState;
 export interface JobPayloads {
   'scan-matchable': Record<string, never>;
   'scan-downloaded': DownloadDiscoveryCommand;
@@ -64,7 +68,7 @@ export interface JobPayloads {
   'apply-series': ApplySeriesCommand;
   'restore-metadata': RestoreMetadataCommand;
   'clear-overrides': Pick<SeriesTargets, 'libraryId'>;
-  'check-watched-searches': Record<string, never>;
+  'check-watched-searches': CheckWatchedSearchesCommand;
   'edit-comicinfo': EditComicInfoCommand;
   'merge-series': MergeSeriesCommand;
   'delete-series': { seriesId: number };
@@ -78,9 +82,9 @@ const fieldsByType: Record<JobType, readonly string[]> = {
   'match-series': ['seriesId', 'seriesIds', 'libraryId'], 'sync-series': ['seriesIds', 'libraryId'],
   'apply-series': ['seriesId', 'providerId', 'providerSeriesId', 'selectedTitle', 'excludedFields', 'cover', 'score'],
   'restore-metadata': ['seriesId', 'connectionKey', 'planId'],
-  'clear-overrides': ['libraryId'], 'check-watched-searches': [],
+  'clear-overrides': ['libraryId'], 'check-watched-searches': ['mode', 'watchIds'],
   'edit-comicinfo': ['seriesId', 'path', 'xml', 'fields'],
-  'merge-series': ['seriesId', 'sourceFiles', 'targetDir', 'chapters', 'existingChapters', 'downloads', 'seriesName'],
+  'merge-series': ['seriesId', 'sourceSeriesIds', 'sourceFiles', 'targetDir', 'chapters', 'existingChapters', 'downloads', 'seriesName'],
   'delete-series': ['seriesId'],
 };
 const id = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
@@ -112,11 +116,19 @@ export function parseJobCommand(type: unknown, value: unknown): JobCommand {
   if (!isJobType(type)) throw new Error('Unsupported job type');
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Job payload must be an object');
   const raw = value as Record<string, unknown>;
+  if (type === 'check-watched-searches' && Object.keys(raw).some(key => !['type', 'context', 'contextPendingSeriesIds'].includes(key) && !fieldsByType[type].includes(key))) throw new Error('Unknown Following check field');
   const payload: Record<string, unknown> = {};
   for (const field of fieldsByType[type]) if (raw[field] !== undefined) payload[field] = raw[field];
   for (const key of ['libraryId', 'seriesId']) if (payload[key] !== undefined && !id(payload[key])) throw new Error(`${key} must be a positive integer`);
   if (payload.seriesIds !== undefined && (!Array.isArray(payload.seriesIds) || !payload.seriesIds.every(id))) throw new Error('seriesIds must contain positive integers');
   if (Array.isArray(payload.seriesIds)) payload.seriesIds = [...new Set(payload.seriesIds)];
+  if (payload.sourceSeriesIds !== undefined && (!Array.isArray(payload.sourceSeriesIds) || payload.sourceSeriesIds.length > 500 || !payload.sourceSeriesIds.every(id) || new Set(payload.sourceSeriesIds).size !== payload.sourceSeriesIds.length)) throw new Error('sourceSeriesIds must contain up to 500 unique positive integers');
+  if (type === 'check-watched-searches') {
+    if (payload.mode !== undefined && payload.mode !== 'manual' && payload.mode !== 'due') throw new Error('Following check mode must be manual or due');
+    if (payload.watchIds !== undefined && (!Array.isArray(payload.watchIds) || !payload.watchIds.length || payload.watchIds.length > FOLLOWING_TARGET_LIMIT || !payload.watchIds.every(id))) throw new Error(`Choose 1–${FOLLOWING_TARGET_LIMIT} positive watch IDs`);
+    if (Array.isArray(payload.watchIds)) payload.watchIds = [...new Set(payload.watchIds)];
+    if (payload.mode === 'due' && !payload.watchIds) throw new Error('Scheduled Following checks require explicit due watch IDs');
+  }
   if (payload.sourceFiles !== undefined && !strings(payload.sourceFiles)) throw new Error('sourceFiles must be a list of paths');
   for (const key of ['path', 'targetDir', 'providerId', 'providerSeriesId', 'selectedTitle', 'xml']) if (payload[key] !== undefined && typeof payload[key] !== 'string') throw new Error(`${key} must be a string`);
   for (const key of ['fields', 'chapters', 'existingChapters']) if (payload[key] !== undefined && !stringMap(payload[key])) throw new Error(`${key} must contain string values`);

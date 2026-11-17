@@ -32,7 +32,8 @@ async function finishWithScanClock<T>(t: TestContext, run: () => Promise<T>): Pr
   const result = run().finally(() => { done = true; });
   // The caller asserts rejections after the virtual polling loop finishes.
   void result.catch(() => {});
-  for (let step = 0; step < 1000; step++) {
+  const deadline = performance.now() + 5000;
+  while (!done && performance.now() < deadline) {
     for (let flush = 0; flush < 20; flush++) await setImmediate();
     if (done) return result;
     t.mock.timers.tick(5_000);
@@ -125,6 +126,7 @@ for (const preExistingSeries of [false, true]) test(`library merge uses the chos
   const updates: { id: number; name: string }[] = [];
   globalThis.fetch = (async (input, init) => {
     if (String(input).endsWith('/api/Series/update')) updates.push(JSON.parse(String(init?.body)));
+    if (String(input).includes('/api/Search/chapters-by-series?seriesId=49')) return Response.json([]);
     const response = await fixtureFetch(input, init);
     if (String(input).includes('/api/Series/all-v2')) {
       const series = await response.json() as { id: number; libraryId: number; name: string; folderPath: string }[];
@@ -170,10 +172,17 @@ interface FakeKavita {
  */
 function fakeKavita(state: FakeKavita, targetDir: string, allMoved: string[]) {
   let libraryScans = 0;
-  const series = () => [{ id: 50, libraryId: 7, name: 'Promeia', folderPath: targetDir }];
-  return (async (input: unknown) => {
+  let seriesName='Promeia';
+  const series = () => [{ id: 50, libraryId: 7, name: seriesName, folderPath: targetDir }];
+  const moved = allMoved.map(file=>path.join(targetDir,path.basename(file)));
+  return (async (input: unknown,init?:RequestInit) => {
     const url = String(input);
     state.requests.push(url);
+    if (url.endsWith('/api/Series/update')) {
+      const update:unknown=JSON.parse(String(init?.body));
+      if (!update || typeof update!=='object' || !('name' in update) || typeof update.name!=='string') throw Error('Invalid fixture series title');
+      seriesName=update.name;return Response.json({ok:true});
+    }
     if (url.includes('/api/Library/libraries')) {
       return Response.json([{ id: 7, name: 'Downloads', folders: [dataDir], type: 0, lastScanned: state.lastScanned }]);
     }
@@ -186,6 +195,7 @@ function fakeKavita(state: FakeKavita, targetDir: string, allMoved: string[]) {
       }
       return Response.json(false);
     }
+    if (url.endsWith('/api/Series/50')) return Response.json(series()[0]);
     if (url.includes('/api/Series/all-v2')) {
       const registered = state.preExistingSeries || state.indexed.length > 0;
       return Response.json(registered ? series() : []);
@@ -196,18 +206,18 @@ function fakeKavita(state: FakeKavita, targetDir: string, allMoved: string[]) {
       // dropped, and that in-flight pass finishes having indexed only part of the move.
       if (state.dropFirstLibraryScan && libraryScans === 1) {
         state.lastScanned = 't1';
-        state.indexed = [...state.preExistingFiles, ...allMoved.slice(0, 2)];
+        state.indexed = [...state.preExistingFiles, ...moved.slice(0, 2)];
         return Response.json({ ok: true });
       }
       state.taskPending = true;
       state.lastScanned = `t${libraryScans + 1}`;
-      state.indexed = [...state.preExistingFiles, ...allMoved];
+      state.indexed = [...state.preExistingFiles, ...moved];
       return Response.json({ ok: true });
     }
     if (url.endsWith('/api/Series/scan')) {
       // Targeted rescan picks up whatever the in-flight pass missed.
       state.taskPending = true;
-      state.indexed = [...state.preExistingFiles, ...allMoved];
+      state.indexed = [...state.preExistingFiles, ...moved];
       return Response.json({ ok: true });
     }
     if (url.includes('/api/Search/chapters-by-series')) {
@@ -340,7 +350,8 @@ test('merge into an existing Kavita series targets that series folder and stamps
       return Response.json({ ok: true });
     }
     if (url.includes('/api/Search/chapters-by-series')) {
-      const files = [existing, path.join(targetDir, 'Part 5.cbz')];
+      const id=Number(new URL(url).searchParams.get('seriesId'));
+      const files = id===51 ? [src] : [existing,...(scanned?[path.join(targetDir,'Part 5.cbz')]:[])];
       return Response.json(files.map((f, i) => ({ id: i + 1, files: [{ id: i + 1, filePath: f }] })));
     }
     return Response.json({ ok: true });
@@ -390,6 +401,7 @@ test('merge into an existing series still rescans when host and Kavita paths dif
 
   const requests: string[] = [];
   let taskPending = false;
+  let indexedAfterScan = false;
   globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     requests.push(`${init?.method ?? 'GET'} ${url}`);
@@ -407,19 +419,23 @@ test('merge into an existing series still rescans when host and Kavita paths dif
       // Kavita's view of the library root — a different mount point than hostRoot.
       return Response.json([{ id: 7, name: 'Doujins', folders: ['/media/Doujins'], type: 0, lastScanned: 't0' }]);
     }
+    if (url.includes('/api/Series/all-v2')) {
+      return Response.json([{ id:213,libraryId:7,name:'Drop-in Gyaru Lets Me Use Her Pussy',folderPath:'/media/Doujins/Drop-in Gyaru Let\'s Me Use Her Pussy' }]);
+    }
     if (url.endsWith('/api/Series/scan')) {
       taskPending = true;
+      indexedAfterScan = true;
       return Response.json({ ok: true });
     }
     if (url.includes('/api/Search/chapters-by-series?seriesId=213')) {
-      const files = [existing, path.join(targetDir, 'Iribitari 4.5 [hitomi-3969289].cbz')];
-      return Response.json(files.map((f, i) => ({ id: i + 1, number: String(i === 0 ? 3 : 2), files: [{ id: i + 1, filePath: f }] })));
+      const files = indexedAfterScan ? [existing, path.join(targetDir, 'Iribitari 4.5 [hitomi-3969289].cbz')] : [existing];
+      return Response.json(files.map((f, i) => ({ id: i + 1, number: String(i === 0 ? 3 : 2), files: [{ id: i + 1, filePath: `/media/Doujins/${path.relative(hostRoot,f).replace(/\\/g,'/')}` }] })));
     }
     return Response.json({ ok: true });
   }) as typeof fetch;
 
-  // The download directory is the only bridge between the two mount points.
-  setDownloaderSettings({ ...DEFAULT_DOWNLOADER, downloadDirectory: hostRoot });
+  // Protection authority requires an explicit mapping, not folder-name guessing.
+  setDownloaderSettings({ ...DEFAULT_DOWNLOADER, downloadDirectory: hostRoot,libraryPathMappings:[{kavitaPath:'/media/Doujins',localPath:hostRoot}] });
   const job: Job = { ...makeJob([src], targetDir), payload: { sourceFiles: [src], seriesId: 213, chapters: { [src]: '2' } } };
   const result = await runJob(job, () => {});
 

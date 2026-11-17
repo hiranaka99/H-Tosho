@@ -29,6 +29,9 @@ shop; counts, match results, and metadata are example data.
 - **Clean up your library.** Find a series through AniList, MangaDex, or
   MyAnimeList, compare it with your current Kavita metadata, and choose what to
   update.
+- **Protect and restore metadata.** Keep selected fields out of provider sync,
+  inspect recorded updates, and explicitly review selected metadata, archive fields
+  or retained cover images before restoring them.
 - **Find matches through the artist.** In a matching dialog, choose **Browse artist
   works** to search AniList, MangaDex, or MyAnimeList by artist name or artist-page
   URL. Saved artists are filled in when available. Browse each provider’s works
@@ -39,7 +42,7 @@ shop; counts, match results, and metadata are example data.
 - **Discover and download doujinshi.** Search Hitomi.la or nHentai, preview
   galleries, and save them as CBZ files or image folders.
 - **Follow artists and searches.** Save a query and see new finds in
-  **Recently added**, with optional Discord notifications.
+  **Recently added**, with in-app-only, immediate Discord, or daily digest delivery.
 - **Get recommendations you can tune.** Ask for more like a gallery, mute an
   artist, or dismiss a pick you do not want.
 - **Review possible duplicate downloads.** Compare galleries across Hitomi and
@@ -188,6 +191,16 @@ individual fields across future provider updates. Changes save immediately.
 Protected titles also skip CBZ title rewrites; cover protection includes volume
 covers. Unmatch retains protected values. Unlock a field before syncing it;
 deliberate edits in the ComicInfo editor remain allowed.
+
+Merge dialogs load **Current protection** for indexed source and target series.
+Review affected title changes and inherited locks before queueing; a protected
+title change requires explicit unlock and a refreshed review. Source/target
+protection is retained on the verified merged series, including a new numeric ID
+or an interrupted merge recovered after restart. Paths and client IDs alone are
+not authority to bypass protection. This preserves policies, not whole-merge undo.
+The ComicInfo editor shows protection scope but still permits deliberate authoring;
+series-associated edits retain protection and enter metadata history.
+
 Expand **Metadata history** in the comparison dialog to browse saved updates,
 including before/observed-after values, native Kavita locks, and captured archive
 field changes. History covers provider updates, unmatch, series-associated
@@ -209,9 +222,9 @@ Interrupted or partially applied restores remain inspectable and cannot be
 retried blindly; review current values and create a fresh preview instead.
 Snapshots are retained for 180 days plus the latest 20 finished updates per
 series, independently of Task/activity cleanup. Earlier activity, path-only edits,
-and newly created merge targets have no snapshots. Cover restoration remains
-unavailable. Null/absent Kavita fields and values Kavita normalizes
-or ignores are shown as unsupported rather than coerced into empty values.
+and newly created merge targets have no snapshots. Null/absent Kavita fields and
+values Kavita normalizes or ignores are shown as unsupported rather than coerced
+into empty values. Retained cover images use the separately reviewed API workflow below.
 
 Title restoration updates **ComicInfo.Series in every indexed CBZ** before the
 Kavita title. It requires complete agreement between Kavita's file index and the
@@ -229,21 +242,23 @@ captured by this version: older snapshots remain browseable but cannot authorize
 an XML restore. Moves and whole merges are not reversed. XML-only changes reach
 Kavita on its next library scan; restoration does not start a scan or a download.
 
-**Series-cover history** can retain the original bytes served by Kavita before
-and after provider cover updates and unmatch. To enable capture, choose a storage
-budget with the server/container environment variable
+### Cover history and restoration
+
+**Cover history** retains original series and volume image bytes served by Kavita
+before and after provider cover updates and unmatch. To enable capture, choose a
+storage budget with the server/container environment variable
 `HTOSHO_COVER_HISTORY_LIMIT_MIB` (an integer from 10 through 16384), then restart
 H-Tosho. For example, add `HTOSHO_COVER_HISTORY_LIMIT_MIB=256` to your Compose
 service's `environment` list for a 256 MiB image budget. Capture is off until an
 explicit budget is configured; existing cover updates continue to work.
 
-With capture enabled, a failed required image read, unknown cover lock, stale
-image, or full budget prevents the affected series-cover write. Provider updates
-can still apply other eligible metadata; unmatch stops before its cleanup writes
-if the required cover backup fails. History distinguishes a genuinely absent
-image, failed capture, and unavailable readback, and preserves observed images
-after partial failure or cancellation. Protected covers are neither read nor
-changed.
+With capture enabled, a failed required image read, stale image/identity, or full
+budget prevents the affected cover write. Missing native series locks also block
+capture; unavailable volume-lock flags are recorded as unknown, never inferred.
+Provider updates can still apply other eligible metadata; unmatch prepares its
+required cover backups before cleanup writes. History distinguishes absent images,
+failed capture, and unavailable readback, and retains observations after partial
+failure or cancellation. Protected series and volume covers are neither read nor changed.
 
 Images are deduplicated in the persistent database and follow the history
 retention policy. Each image is limited to 5 MiB; capacity for a 5 MiB readback is
@@ -253,10 +268,20 @@ blocked by capacity. The limit counts image payloads and reservations, with
 additional disk space needed for SQLite bookkeeping and its write-ahead log.
 Review capacity against your library before enabling capture widely.
 
-**Cover restoration is still unavailable.** Kavita's upload path resizes and
-re-encodes images, so re-uploading retained bytes cannot promise an exact
-round-trip. Earlier operations and volume covers have no saved image backup.
-Browsing retained images does not start downloads, scans, or restore Tasks.
+Select retained series or volume images under **Retained cover images to restore**,
+then use **Preview restore** to compare **Current** with **Saved image to upload**.
+Explicitly accept Kavita's image conversion and the reviewed native-lock choices
+before **Queue restore**. Kavita may resize/re-encode the original backup using
+its current cover settings: this is **not byte-exact restoration**. The original
+backup remains retained; the actual output and available native flags are journaled.
+
+Native locks are preserved by default when readable, or can be restored from the
+snapshot or explicitly set. If Kavita does not expose a volume's native lock,
+choose **Apply Locked explicitly** or **Apply Unlocked explicitly** and refresh.
+The API acknowledgement is recorded separately from independent lock readback.
+Absent, missing or unverified image snapshots cannot authorize an upload. Earlier
+operations have no invented backups. Browsing and restoring covers never start
+downloads or scans; changed images, membership, protection or identity require fresh review.
 
 ### Match new additions automatically
 
@@ -401,25 +426,52 @@ or unmute artists. Use thumbs down to dismiss a single gallery, and
 
 ### Watch for new releases
 
-Run a search, then choose **Watch** to save that query. Under **Following**, choose
-how often to check it or use **Check now** to check manually.
+Run a search, then choose **Watch** to save that query. Under **Following**,
+**Check now** checks active watches only. Each watch also has **Check once**,
+including paused watches: a paused check updates in-app discoveries only, sends
+no Discord notification, and leaves the watch paused.
 
 Watch controls stay above the feed. **Manage watches** opens saved searches and
 the add form. Check progress and outcomes remain visible, with a link to the job.
 The query field offers the same tag and artist autocomplete as Search; choose
 a suggestion with the pointer or arrow keys and Enter, then select Add watch.
 
-The first check records the existing results quietly. Later checks add new
-finds to **Inbox** and send Discord messages if notifications are
-enabled. Results with a known upload date older than fourteen days are skipped
-to keep old galleries from being announced as new. Results without a usable
-upload date are still eligible.
+Use **Edit** to give a watch a readable name, move it into a folder, or choose a
+cadence: inherit **Check every**, or select 15 minutes, 1 hour, 6 hours, or daily.
+Setting the global **Check every** control to **Off** disables automatic checks
+even for watches with a custom cadence. Pause/resume and organization changes
+preserve seen galleries and review history. Changing the source or query means
+adding a new watch, not renaming the existing one.
+
+Use **Notification delivery** in each watch's editor to choose **In-app only**,
+**Immediate Discord**, or **Daily digest**. Existing watches retain immediate
+delivery by default, subject to global Discord enablement. No old discoveries
+are queued when upgrading or changing these preferences.
+
+Folders can be renamed, reordered, and deleted. Deleting a folder moves its
+watches to **Unfiled**; it does not remove discoveries. Each watch shows its last
+successful check, last failed attempt, effective cadence and next due time.
+Due times persist through restart, and bounded sweeps select at most 20 watches
+every 15 seconds. Checks inspect up to 50 provider results, not a complete
+catch-up after a long pause.
+
+The first check records existing results quietly. Later checks save finds to
+**Inbox** and atomically commit eligible notification intents before any send.
+Overlapping watches contribute their labels to one gallery identity per source;
+Discord delivery runs separately from the provider check. Results with a known
+upload date older than fourteen days are skipped to avoid stale announcements.
+Results without a usable upload date remain eligible.
 
 Watches find galleries for you; choose the ones you want to download from the
-feed. Filter discoveries by watch or source. **Dismiss**, next to Download,
-removes a find from Inbox while keeping it in **History**; **Return to inbox** reverses that
-choice. Review state is saved across sessions and shared by watches that found
-the same gallery. Stopping a watch keeps its discoveries in History.
+feed. Filter discoveries by folder, watch or source. Folder filters use current
+membership before gallery deduplication; removed watches remain under **Unfiled /
+removed watches**, with their readable name and original query retained.
+If a watch no longer belongs to the selected folder, its exact-watch filter
+clears to **All watches** and restarts at the first page.
+**Dismiss**, next to Download, removes a find from Inbox while keeping it in
+**History**; **Return to inbox** reverses that choice. Review state is saved
+across sessions and shared by watches that found the same gallery. Stopping a
+watch keeps its discoveries in Inbox and History.
 
 Artist and language are saved from search results when available. Older finds
 gain that context when later checks return metadata for them. **Select galleries**
@@ -431,6 +483,29 @@ Open **Settings → Notifications**, enable Discord, paste your channel's webhoo
 URL, save, and send a test message. Notifications include automatic metadata
 matches and updates, plus new watched-search results. Manual **Apply & Sync**
 does not send Discord notifications; results and warnings remain in **Tasks**.
+
+For **Daily digest** watches, set **Daily time** and an **IANA timezone** under
+**Settings → Notifications**. The default is 09:00 in the resolved server zone,
+with a visible UTC fallback if unavailable. The next cutoff persists in UTC;
+repeated DST hours use the earlier occurrence, nonexistent times shift forward
+by the gap, and restart catches up with one bounded batch rather than missed-day floods.
+Digest membership and labels are frozen before sending; known retries use the
+same batch rather than picking up later finds.
+
+**Following → Notification delivery** shows queued, sending, delivered, disabled,
+suppressed, failed and unknown outcomes, with status filtering, paging and links
+to the provider-check Task. A successful provider check is not proof of Discord
+delivery; only an acknowledged receipt is reported as delivered. Known failures
+retry with bounded backoff. Ambiguous responses and in-flight sends interrupted
+by restart remain **Unknown · review required**, never blindly replayed.
+
+Use **Review backlog / retry** or **Review resend** to inspect the current
+destination and eligible membership. Resending an unknown or delivered message
+requires acknowledgement of possible duplicates; there is no external exactly-once
+guarantee. Changed settings/destinations require fresh review. Pausing, removing or
+replacing preferences permanently invalidate old contributions, so resuming or
+re-enabling Discord does not flood old finds. Already-started sends cannot be recalled.
+Checks, digests and reviewed notification recovery never download galleries.
 
 ## Help
 
@@ -480,6 +555,11 @@ passwords, Auth Keys, and webhook URLs from anything you share.
 Use `npm ci` to install the versions in the lockfile. Run `npm run typecheck`
 and `npm test` to check both workspaces. `npm run build` produces the frontend,
 backend, and precompressed Brotli/gzip assets used by the production server.
+
+Keep `npm run dev` running while editing. Vite hot-replaces frontend modules and
+styles; the backend automatically reloads changed source files and applies
+pending migrations at startup. Source changes do not require a build or a manual
+dev-server restart.
 
 For desktop and mobile browser checks, install Chromium once with
 `npm exec --workspace @h-tosho/web -- playwright install chromium`, then run

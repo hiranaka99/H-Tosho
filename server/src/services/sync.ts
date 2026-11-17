@@ -1,5 +1,6 @@
 import { upsertMatch, recordHistory } from './matchRecords.js';
 import { getFieldPolicy } from './fieldPolicies.js';
+import { recoverMergeProtectionForSeriesOwned } from './mergeProtection.js';
 import { withMetadataHistory, describeMetadataPatch, type MetadataJournal } from './metadataHistory.js';
 import { PUBLICATION_STATUS, releaseYear, mergeTagLists, selectMetadataFields } from '../contracts/metadata.js';
 export { mergeTagLists } from '../contracts/metadata.js';
@@ -144,13 +145,15 @@ export async function applyToKavita(
         await applyCover(
           client,
           opts.coverUrl,
-          (url) => client.updateSeriesCoverFromUrl(seriesId, url, true),
-          (image) => client.updateSeriesCover(seriesId, image, true),
+          (url) => client.updateSeriesCoverFromUrl(seriesId, url, true, async () => { await opts.journal?.captureSeriesCover(); opts.journal?.beginCoverWrite({ kind: 'series' }, true); }),
+          async image => { await opts.journal?.captureSeriesCover(); opts.journal?.beginCoverWrite({ kind: 'series' }, true); await client.updateSeriesCover(seriesId, image, true); },
           opts.cover,
         );
       } else {
+        opts.journal?.beginCoverWrite({ kind: 'series' }, true);
         await client.updateSeriesCover(seriesId, opts.cover!, true);
       }
+      opts.journal?.acknowledgeCoverWrite({ kind: 'series' });
       coverUpdated = true;
       pushed.push('cover');
     } catch (err) {
@@ -159,7 +162,7 @@ export async function applyToKavita(
   }
 
   if (!protectedFields.includes('cover') && opts.volumeCovers?.length) {
-    const volResult = await applyVolumeCovers(client, seriesId, opts.volumeCovers);
+    const volResult = await applyVolumeCovers(client, seriesId, opts.volumeCovers, opts.journal);
     volumeCoversUpdated = volResult.updated;
     volumeCoverIds = volResult.volumeIds;
     errors.push(...volResult.errors);
@@ -219,6 +222,7 @@ export async function applyVolumeCovers(
   client: KavitaClient,
   seriesId: number,
   covers: VolumeCover[],
+  journal?: MetadataJournal,
 ): Promise<{ updated: number; errors: string[]; volumeIds: number[] }> {
   let volumes: KavitaVolume[];
   try {
@@ -231,12 +235,14 @@ export async function applyVolumeCovers(
   // keeps the final error list in volume order.
   const results = await mapLimit(matchVolumeCovers(volumes, covers), 3, async (assignment) => {
     try {
+      await journal?.captureVolumeCover(assignment.volumeId);
       await applyCover(
         client,
         assignment.url,
-        (url) => client.updateVolumeCoverFromUrl(assignment.volumeId, url, true),
-        (image) => client.updateVolumeCover(assignment.volumeId, image, true),
+        (url) => client.updateVolumeCoverFromUrl(assignment.volumeId, url, true, async () => { await journal?.captureVolumeCover(assignment.volumeId); journal?.beginCoverWrite({ kind: 'volume', volumeId: assignment.volumeId }, true); }),
+        async image => { await journal?.captureVolumeCover(assignment.volumeId); journal?.beginCoverWrite({ kind: 'volume', volumeId: assignment.volumeId }, true); await client.updateVolumeCover(assignment.volumeId, image, true); },
       );
+      journal?.acknowledgeCoverWrite({ kind: 'volume', volumeId: assignment.volumeId });
       return assignment.volumeId;
     } catch (err) {
       return `vol ${assignment.number}: ${err instanceof Error ? err.message : String(err)}`;
@@ -352,6 +358,7 @@ export async function applyResolvedSeriesMatch(
   resolvedSeries?: KavitaSeries,
 ): Promise<ApplySeriesResult> {
   if(opts.signal?.aborted || opts.isCancelled?.())throw opts.signal?.reason ?? new JobCancelled();
+  await recoverMergeProtectionForSeriesOwned(client, opts.seriesId);
   if(opts.selectedTitle && !(meta.titleOptions ?? [meta.title]).includes(opts.selectedTitle.trim()))throw new Error('selectedTitle is not provided by this metadata source');
   const policy=getFieldPolicy(opts.seriesId);
   const desired=describeMetadataPatch(selectMetadataFields(buildSeriesPayload({...meta,title:opts.selectedTitle?.trim()||meta.title}),[...(opts.excludedFields??[]),...policy.lockedFields]));

@@ -2,13 +2,38 @@
 
 ## Unreleased
 
-- Add opt-in series-cover history capture for provider updates and unmatch,
-  including retained original bytes, native locks, authenticated before/after
-  viewing, missing-image retry and truthful absent/unverified states. Configure
-  `HTOSHO_COVER_HISTORY_LIMIT_MIB` to enable bounded capture. Deduplicate assets,
-  reserve readback capacity, and retain images through restart and pinned history.
-  Exact cover restoration stays unavailable because Kavita re-encodes uploads;
-  volume-cover capture and restoration remain gated.
+- Add Following names/folders, revision-safe editing and reordering, pause/resume,
+  inherited or custom cadence, and targeted Check once. Persist bounded due-work
+  scheduling and recheck watch identity/preferences after provider responses.
+  Paused checks retain in-app discoveries without Discord or resuming the watch;
+  global automatic-off overrides custom intervals. Folder filters precede gallery
+  deduplication; removed-watch provenance and shared review history remain readable.
+  Migration 10 reconciles legacy duplicate watches without discarding discoveries.
+  Save completion preserves another watch's open draft, folder changes clear
+  stale exact-watch filters, and named search controls expose their visible
+  names to assistive technology.
+
+- Complete Following's transactional notification outbox, per-watch in-app/immediate/
+  daily-digest modes, overlapping-gallery deduplication and timezone-aware cutoffs.
+  Show acknowledged, disabled, suppressed, failed and unknown delivery outcomes in
+  Following and linked Tasks. Preserve immutable batch retries and hold ambiguous
+  sends across restart for revision-safe, duplicate-aware recovery. Preference and
+  destination changes do not revive old backlog; notifications never enqueue downloads.
+
+- Enforce title protection across library, path-only and gallery merge publication,
+  preserve source/target policy unions through regrouping/restart, and require real
+  preflight/unlock review in merge dialogs. Direct ComicInfo authoring remains allowed,
+  shows protection status and preserves policies. Retain durable move/identity evidence
+  for interrupted merges without claiming whole-merge undo. Verify the observed renamed
+  title and prepare every required unmatch cover backup before any cleanup write.
+
+- Add opt-in series/volume-cover history and supported-API restoration, retaining
+  original bytes, available native locks, indexed volume identity and authenticated
+  Current / Saved image comparisons. Require explicit resize/re-encoding consent:
+  Kavita's output is journaled, not advertised as byte-exact. Unreadable volume locks
+  require explicit Locked/Unlocked choice; API acknowledgement stays separate from
+  independent flag verification. Configure `HTOSHO_COVER_HISTORY_LIMIT_MIB` for bounded
+  capture, reserved readback, deduplication and retention of preview/approved assets.
 
 - Add exact selective scalar/list restoration from Metadata history, with
   Current → Restore to previews, explicit review, protection-aware field selection,
@@ -18,7 +43,7 @@
 - Persist idempotent approved restore plans and pin their source snapshots through
   queue delays. Recheck selected values, policy, connection and target identity at
   execution; retain partial/interrupted outcomes and require fresh review instead
-  of blind retry. Covers and unsupported exact values stay gated.
+  of blind retry. Unsupported exact values and absent/unverified images stay unavailable.
 - Add paired title restoration and selected ComicInfo.xml field restoration,
   with explicit full-document replacement/removal, allowed-root/index checks,
   complete-file/content fingerprints, durable file checkpoints and verified

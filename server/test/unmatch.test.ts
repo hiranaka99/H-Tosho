@@ -21,8 +21,8 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-function stubKavita(requests: Array<{ url: string; init?: RequestInit }> = []): void {
-  let coverLocked=true,coverImage:string|null='series.png';
+function stubKavita(requests: Array<{ url: string; init?: RequestInit }> = [], failVolumeRead = false): void {
+  let coverLocked=true,coverImage:string|null='series.png',volumeLocked=true,volumeImage:string|null='volume.png';
   globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     requests.push({ url, init });
@@ -31,6 +31,9 @@ function stubKavita(requests: Array<{ url: string; init?: RequestInit }> = []): 
     if (m) return Response.json({ id: Number(m[1]), libraryId: 1, name: `Series ${m[1]}`, sortName: `Series ${m[1]}`,coverImageLocked:coverLocked,coverImage });
     if(url.includes('/api/Image/series-cover'))return coverImage?new Response(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6XxkAAAAASUVORK5CYII=','base64'),{headers:{'content-type':'image/png'}}):new Response(null,{status:404});
     if(url.endsWith('/api/Upload/series')){coverLocked=false;coverImage=null;return Response.json({ok:true});}
+    if (url.endsWith('/api/Upload/volume')) { volumeLocked=false;volumeImage=null;return Response.json({ok:true}); }
+    if (url.includes('/api/Series/volume?')) return failVolumeRead ? Response.json({error:'Volume identity unavailable'},{status:403}) : Response.json({id:71,seriesId:7,name:'1',createdUtc:'2020-01-01T00:00:00Z',coverImage:volumeImage,coverImageLocked:volumeLocked,chapters:[{id:701,files:[{id:7001,filePath:'/fixture/Series7/Volume1.cbz'}]}]});
+    if (url.includes('/api/Image/volume-cover')) return volumeImage ? new Response(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6XxkAAAAASUVORK5CYII=','base64'),{headers:{'content-type':'image/png'}}) : new Response(null,{status:404});
     if (url.includes('/api/Series/metadata?')) return Response.json({
       id: 1, seriesId: 7, summary: 'Provider summary', genres: [{ id: 1, title: 'Action' }], tags: [{ id: 2, title: 'Provider tag' }, { id: 3, title: 'User tag' }],
       writers: [{ id: 4, name: 'Provider Writer' }], coverArtists: [], publishers: [], characters: [], pencillers: [{ id: 5, name: 'Provider Artist' }], inkers: [], imprints: [], colorists: [], letterers: [], editors: [], translators: [], teams: [], locations: [],
@@ -102,6 +105,19 @@ describe('DELETE /series/:id/match (manual unmatch)', () => {
 
     const history = getDb().select().from(schema.syncHistory).where(eq(schema.syncHistory.kavitaSeriesId, 7)).all();
     assert.equal(history.at(-1)?.action, 'unmatched');
+  });
+
+  it('a missing required volume backup blocks metadata and series-cover cleanup before any write', async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    stubKavita(requests, true);
+    getDb().insert(schema.seriesMatches).values({ kavitaSeriesId: 7, status: 'matched', providerId: 'mangadex', providerSeriesId: 'md-volume-failure', metadataJson: JSON.stringify({ providerId: 'mangadex', providerSeriesId: 'md-volume-failure', title: 'Provider title', summary: 'Provider summary' }) }).run();
+    getDb().insert(schema.syncHistory).values({ kavitaSeriesId: 7, seriesTitle: 'Series 7', action: 'matched', detailsJson: JSON.stringify({ pushed: ['summary'], coverUpdated: true, volumeCoversUpdated: 1, volumeCoverIds: [71] }) }).run();
+    try {
+      const response = await api.request('/series/7/match', { method: 'DELETE' });
+      assert.equal(response.status, 502);
+      assert.deepEqual(requests.filter(request => request.init?.method === 'POST'), []);
+      assert.equal(getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, 7)).get()!.providerSeriesId, 'md-volume-failure');
+    } finally { getDb().delete(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, 7)).run(); }
   });
 
   it('is a no-op when the series has no match row', async () => {

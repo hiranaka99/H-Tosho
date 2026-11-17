@@ -5,6 +5,7 @@ import { api, type SeriesRow } from '../lib/api';
 import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, EmptyState } from './ui';
 import { toast } from '../lib/toast';
 import { folderNameFrom, mergeSeriesNameError } from '../lib/mergeNames';
+import { useMergeProtectionReview } from './MergeProtectionReview';
 
 interface MergeSeriesModalProps {
   /** The selected Kavita series (two or more) whose files will be merged. */
@@ -98,13 +99,16 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
 
   const nameError = mergeSeriesNameError(seriesName);
   const canSave = !nameError && !!targetDir && (files?.length ?? 0) > 0;
+  const protection = useMergeProtectionReview({sourceSeriesIds:selected.map(series=>series.id),sourceFiles:(files ?? []).map(file=>file.path),targetDir,seriesName:seriesName.trim()},canSave,JSON.stringify(files));
 
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
+      await protection.ensureCurrent();
       const chapters: Record<string, string> = {};
       for (const f of files ?? []) if (f.chapter.trim()) chapters[f.path] = f.chapter.trim();
       return api.enqueue('merge-series', {
         sourceFiles: (files ?? []).map((f) => f.path),
+        sourceSeriesIds: selected.map(series=>series.id),
         targetDir,
         seriesName: seriesName.trim(),
         chapters,
@@ -174,6 +178,7 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
               <p key={e.series.id} className="text-xs text-warning">{e.series.name}: {e.reason}</p>
             ))}
           </div>
+          {protection.review}
 
           <div className="flex flex-col gap-3 border-t border-border pt-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="min-w-0 flex-1 text-sm text-muted">
@@ -181,7 +186,7 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
             </p>
             <div className="flex shrink-0 justify-end gap-2">
               <Button variant="outline" size="sm" onClick={onClose} disabled={save.isPending}>Cancel</Button>
-              <Button size="sm" onClick={() => save.mutate()} disabled={!canSave || save.isPending || perSeries.isLoading}>
+              <Button size="sm" onClick={() => save.mutate()} disabled={!canSave || !protection.ready || save.isPending || perSeries.isLoading}>
                 {save.isPending ? <Spinner /> : <Combine className="h-3.5 w-3.5" />} Queue merge
               </Button>
             </div>

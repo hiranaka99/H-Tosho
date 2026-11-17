@@ -60,6 +60,8 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose, onStateChange 
     queryFn: () => api.cbzSeriesFiles(seriesId!),
     enabled: !!seriesId,
   });
+  const associatedSeriesId = seriesId !== undefined && !!file && seriesFiles.data?.files.includes(file) ? seriesId : undefined;
+  const protection = useQuery({queryKey:['field-policy',associatedSeriesId],queryFn:()=>api.fieldPolicy(associatedSeriesId!),enabled:associatedSeriesId!==undefined,retry:false});
   // Natural reading order: numeric ComicInfo Number first, then plain filename order.
   const sortedFiles = React.useMemo(() => {
     const files = seriesFiles.data?.files ?? [];
@@ -99,7 +101,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose, onStateChange 
     mutationFn: ({ path, snapshot }: { path: string; snapshot: ComicInfoDraft }) => api.enqueue('edit-comicinfo', {
       path,
       ...(snapshot.rawEdited ? { xml: snapshot.xml } : { fields: Object.fromEntries(changedComicInfoFields(snapshot).map(key => [key, snapshot.values[key] ?? ''])) }),
-      ...(seriesId !== undefined ? { seriesId } : {}),
+      ...(associatedSeriesId !== undefined ? { seriesId: associatedSeriesId } : {}),
     }),
     onSuccess: (result, { path, snapshot }) => {
       void qc.invalidateQueries({ queryKey: ['jobs'] });
@@ -117,7 +119,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose, onStateChange 
     window.addEventListener('beforeunload', guard);
     return () => window.removeEventListener('beforeunload', guard);
   }, [dirty, save.isPending]);
-  const canSave = !!file && !!draft && !doc.isLoading && !draft.error && comicInfoHasChanges(draft);
+  const canSave = !!file && !!draft && !doc.isLoading && (seriesId === undefined || !seriesFiles.isPending && !seriesFiles.isFetching) && !draft.error && comicInfoHasChanges(draft);
   const extraTags = draft?.scalarFields.filter(tag => !EDITOR_FIELDS.includes(tag)) ?? [];
 
   const fieldId = (field: string): string => `comicinfo-${field.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
@@ -138,6 +140,14 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose, onStateChange 
         <Button size="sm" variant="outline" aria-expanded={pickerOpen} onClick={() => setPickerOpen(open => !open)}>Change archive</Button>
       </div>
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5" data-comicinfo-scroll>
+          <section className="space-y-2 text-xs" aria-label="ComicInfo protection scope">
+            <h3 className="text-sm font-semibold">Protection scope</h3>
+            {associatedSeriesId === undefined ? <p className="text-muted">Series protection is unavailable for this path. No series association or series metadata history is claimed.</p>
+              : protection.isPending ? <p role="status" className="text-muted">Loading series protection…</p>
+              : protection.isError ? <div role="alert" className="space-y-2"><p className="text-danger">Could not load protection. Manual editing remains available.</p><Button variant="outline" size="sm" className="min-h-11" onClick={()=>void protection.refetch()}>Retry protection</Button></div>
+              : <p className="break-words text-muted">Protected from H-Tosho sync and automated merge changes: {protection.data.lockedFields.length ? protection.data.lockedFields.join(', ') : 'none'}.</p>}
+            <p className="text-muted">Deliberate manual ComicInfo editing is allowed and does not clear protection. Series-associated metadata edits are journaled; path-only edits are not.</p>
+          </section>
           {pickerOpen && <div className="flex flex-col gap-3 border-b border-border pb-4">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <Input

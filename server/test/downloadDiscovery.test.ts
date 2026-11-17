@@ -23,7 +23,7 @@ const { api } = await import('../src/routes/api.js');
 initDb();
 const provider = getProvider('anilist')!;
 const originalSearch = provider.search, originalFetch = globalThis.fetch, originalHitomi = doujinProviders.hitomi;
-let downloadPath: string, remoteRoot: string, reportedFolder: string, grouped = false;
+let downloadPath: string, remoteRoot: string, reportedFolder: string, grouped = false, mergeScanned=false;
 let statusReads = 0, seriesReads = 0, indexDelay = 0, providerDown = false, noMatch = false;
 let searches: string[], requests: string[], scanBodies: { folderPath: string; abortOnNoSeriesMatch: boolean }[];
 
@@ -35,7 +35,7 @@ beforeEach(() => {
   setLibraryOverride({ libraryId: 1, priority: ['anilist'], autoMatch: false });
   for (const id of ['anilist', 'mangadex', 'myanimelist']) setProviderSetting(id, { enabled: id === 'anilist' });
   downloadPath = path.join(output, 'Sample title', 'Sample.cbz');
-  remoteRoot = output; reportedFolder = path.dirname(downloadPath); grouped = false;
+  remoteRoot = output; reportedFolder = path.dirname(downloadPath); grouped = false;mergeScanned=false;
   statusReads = 0; seriesReads = 0; indexDelay = 0; providerDown = false; noMatch = false;
   searches = []; requests = []; scanBodies = [];
   provider.search = async query => {
@@ -49,17 +49,23 @@ beforeEach(() => {
     if (url.startsWith('https://images.test/')) return new Response(Buffer.from('image'));
     if (url.endsWith('/api/Library/libraries')) return Response.json([{ id: 1, name: 'Downloads', type: 0, folders: [remoteRoot] }]);
     if (url.endsWith('/api/Library/scan-folder')) { scanBodies.push(JSON.parse(String(init?.body))); return Response.json({}); }
+    if (url.includes('/api/Library/scan') && !url.includes('scan-folder') || url.endsWith('/api/Series/scan')) {mergeScanned=true;return Response.json({});}
     if (url.includes('/api/Server/is-task-running')) return Response.json(++statusReads <= 6);
     if (url.includes('/api/Series/all-v2')) {
-      assert.ok(scanBodies.length > 0, 'Kavita must import the output before discovery');
-      const target = { id: 1, libraryId: 1, name: 'Sample title', folderPath: reportedFolder, coverImage: 'cover.jpg' };
+      // Protection reads current ownership without importing; discovery still
+      // sees newly registered series only after its targeted scan request.
+      if (!scanBodies.length && !mergeScanned) return Response.json([]);
+      const target = { id: 1, libraryId: 1, name: path.basename(reportedFolder), folderPath: reportedFolder, coverImage: 'cover.jpg' };
       return Response.json([
         { id: 99, libraryId: 1, name: 'Other unmatched title', folderPath: path.join(output, 'other') },
         ...(++seriesReads > indexDelay ? [target] : []),
         ...(grouped ? [{ ...target, id: 5, folderPath: '/other/same-name' }] : []),
       ]);
     }
-    if (url.includes('/api/Search/chapters-by-series')) return Response.json([{ id: 1, files: [{ id: 1, filePath: url.endsWith('=1') ? downloadPath : path.join(output, 'not-this-download.cbz') }] }]);
+    if (url.includes('/api/Search/chapters-by-series')) {
+      const files=mergeScanned && url.endsWith('=1') ? fs.readdirSync(reportedFolder).filter(file=>file.endsWith('.cbz')).map(file=>path.join(reportedFolder,file)) : [url.endsWith('=1') ? downloadPath : path.join(output,'not-this-download.cbz')];
+      return Response.json(files.map((file,i)=>({id:i+1,files:[{id:i+1,filePath:file}]})));
+    }
     throw new Error(`Discovery must not apply metadata or fetch full provider metadata: ${url}`);
   }) as typeof fetch;
 });
@@ -118,7 +124,8 @@ for (const concurrency of [1, 3]) {
   });
 }
 
-test('merged API registers the entire selection after slow preflights and before any worker finishes', async () => {
+test('merged API registers the entire selection and discovers only after its protected merge job publishes', async t => {
+  reportedFolder=path.join(output,'Batch series');
   const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
   doujinProviders.hitomi = { ...originalHitomi, getGallery: async id => {
     if (id === 'batch-3') { started.resolve(); await release.promise; }
@@ -139,6 +146,11 @@ test('merged API registers the entire selection after slow preflights and before
   const ids = result.items.map((item: { id: number }) => { assert.ok(item.id); return item.id; });
   await finishDownloads(downloadQueue, ids);
   assert.deepEqual(ids.map((id: number) => downloadQueue.get(id)!.chapterNumber), [1, 2, 3]);
+  assert.equal(jobQueue.list().filter(job=>job.type==='scan-downloaded').length,0,'staged downloads do not import the protected target');
+  const merge=jobQueue.list().find(job=>job.type==='merge-series')!;
+  assert.ok(merge.payload.mergeProtection);
+  const merged=await clock(t,()=>runJob(merge,()=>{}));
+  assert.equal(merged.processed,3);
   const discoveries = jobQueue.list().filter(job => job.type === 'scan-downloaded');
   assert.equal(discoveries.length, 1);
   assert.equal(discoveries[0].payload.path, path.join(output, 'Batch series'));

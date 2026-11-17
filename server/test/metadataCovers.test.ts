@@ -9,7 +9,7 @@ import { eq } from 'drizzle-orm';
 import Database from 'better-sqlite3';
 import type { KavitaClient as ClientType } from '../src/kavita/client.js';
 import { coverImage } from './fixtures/coverImage.js';
-import { MAX_RETAINED_COVER_BYTES, MAX_RETAINED_COVER_STORE_BYTES, COVER_RESTORE_UNAVAILABLE } from '../src/contracts/metadataCovers.js';
+import { MAX_RETAINED_COVER_BYTES, MAX_RETAINED_COVER_STORE_BYTES } from '../src/contracts/metadataCovers.js';
 import { migrateSchema } from '../src/db/migrations.js';
 import { pruneMetadataHistory } from '../src/db/metadataRetention.js';
 
@@ -37,7 +37,7 @@ function fixture() {
   const client={getSeriesDto:async()=>structuredClone(series),getSeriesMetadata:async()=>structuredClone(metadata),
     getSeriesById:async()=>({...series,name:series.name}),getServerInfo:async()=>({version:'0.9.1',installId:state.installId}),
     getSeriesCoverForHistory:async()=>{state.reads++;if(state.failRead)throw new Error('Unavailable');return state.image?{data:state.image,contentType:'image/png'}:null;},
-    updateSeriesMetadata:async()=>{},updateSeriesCoverFromUrl:async()=>{state.writes++;state.image=afterImage;},updateSeriesCover:async()=>{state.writes++;state.image=afterImage;},
+    updateSeriesMetadata:async()=>{},updateSeriesCoverFromUrl:async(_id:number,_url:string,_lock:boolean,beforeUpload?:()=>Promise<void>)=>{await beforeUpload?.();state.writes++;state.image=afterImage;},updateSeriesCover:async()=>{state.writes++;state.image=afterImage;},
   } as unknown as ClientType;
   return {id,series,metadata,state,client};
 }
@@ -55,26 +55,26 @@ test('required original bytes and lock are committed before a cover write, and a
   });
   const history=detail(f.id);
   assert.equal(history.status,'completed');assert.deepEqual(history.changedFields,['cover']);
-  assert.equal(history.covers!.before.assetId,hash(beforeImage));assert.equal(history.covers!.after.assetId,hash(afterImage));
-  assert.equal(history.covers!.after.nativeLocked,false);assert.equal(history.covers!.changed,true);
-  assert.equal(history.covers!.restoreAvailable,false);assert.equal(history.covers!.restoreReason,COVER_RESTORE_UNAVAILABLE);
+  assert.equal(history.covers!.series!.before.assetId,hash(beforeImage));assert.equal(history.covers!.series!.after.assetId,hash(afterImage));
+  assert.equal(history.covers!.series!.after.nativeLocked,false);assert.equal(history.covers!.series!.changed,true);
+  assert.equal(history.covers!.series!.restoreAvailability.before.available,true);
   assert.equal(JSON.stringify(history).includes('/private'),false);assert.equal(JSON.stringify(history).includes('private-cover-file'),false);assert.equal(JSON.stringify(history).includes('secret-not-in-history'),false);
   assert.equal(getDb().select().from(schema.metadataSeriesCovers).where(eq(schema.metadataSeriesCovers.operationId,history.id)).get()!.reservedBytes,0);
   const duplicate=fixture();
   await withMetadataHistory(duplicate.client,duplicate.id,'provider-apply',{},async journal=>{await journal.captureSeriesCover();});
   assert.equal(getDb().select().from(schema.metadataAssets).where(eq(schema.metadataAssets.id,hash(beforeImage))).all().length,1);
-  assert.equal(detail(duplicate.id).covers!.changed,false);
+  assert.equal(detail(duplicate.id).covers!.series!.changed,false);
 });
 
 test('genuine cover absence is distinct from missing assets and failed or unsupported image reads',async()=>{
   const f=fixture();f.state.image=null;f.series.coverImage=null;f.series.coverImageLocked=false;
   await withMetadataHistory(f.client,f.id,'provider-apply',{},async journal=>{await journal.captureSeriesCover();f.state.image=afterImage;f.series.coverImage='new.png';});
   const history=detail(f.id);
-  assert.equal(history.covers!.before.state,'absent');assert.equal(history.covers!.before.assetId,null);assert.equal(history.covers!.before.nativeLocked,false);
-  assert.equal(history.covers!.after.state,'captured');
+  assert.equal(history.covers!.series!.before.state,'absent');assert.equal(history.covers!.series!.before.assetId,null);assert.equal(history.covers!.series!.before.nativeLocked,false);
+  assert.equal(history.covers!.series!.after.state,'captured');
   const missing=fixture();missing.state.image=null;
   await assert.rejects(withMetadataHistory(missing.client,missing.id,'provider-apply',{},async journal=>{await journal.captureSeriesCover();missing.state.writes++;}),/unreadable/);
-  assert.equal(missing.state.writes,0);assert.equal(detail(missing.id).covers!.before.state,'unavailable');
+  assert.equal(missing.state.writes,0);assert.equal(detail(missing.id).covers!.series!.before.state,'unavailable');
 });
 
 for(const cause of ['read','lock','oversized','non-raster','identity'] as const)test(`a ${cause} before-capture failure prevents the cover mutation`,async()=>{
@@ -85,7 +85,7 @@ for(const cause of ['read','lock','oversized','non-raster','identity'] as const)
   if(cause==='non-raster')f.state.image=Buffer.from('<svg><script>bad</script></svg>');
   if(cause==='identity')f.client.getSeriesCoverForHistory=async()=>{f.series.libraryId=9;return {data:beforeImage,contentType:'image/png'};};
   await assert.rejects(withMetadataHistory(f.client,f.id,'provider-apply',{},async journal=>{await journal.captureSeriesCover();f.state.writes++;}));
-  assert.equal(f.state.writes,0);assert.equal(detail(f.id).covers!.before.state,'unavailable');
+  assert.equal(f.state.writes,0);assert.equal(detail(f.id).covers!.series!.before.state,'unavailable');
 });
 
 for(const changed of ['bytes','native-lock','installation'] as const)test(`fresh ${changed} changes after preparation stop the pending cover write`,async()=>{
@@ -97,7 +97,7 @@ for(const changed of ['bytes','native-lock','installation'] as const)test(`fresh
     if(changed==='installation')f.state.installId='installation-b';
     await journal.captureSeriesCover();f.state.writes++;
   }),/changed/);
-  assert.equal(f.state.writes,0);assert.equal(detail(f.id).covers!.before.assetId,hash(beforeImage));
+  assert.equal(f.state.writes,0);assert.equal(detail(f.id).covers!.series!.before.assetId,hash(beforeImage));
 });
 
 test('partial mutations, cancellation and unavailable readback keep honest inspectable cover observations',async()=>{
@@ -110,17 +110,17 @@ test('partial mutations, cancellation and unavailable readback keep honest inspe
     });
     if(mode==='unverified')await promise;else await assert.rejects(promise);
     const history=detail(f.id);assert.equal(history.status,mode);
-    assert.equal(history.covers!.before.state,'captured');assert.equal(history.covers!.after.state,mode==='unverified'?'unavailable':'captured');
+    assert.equal(history.covers!.series!.before.state,'captured');assert.equal(history.covers!.series!.after.state,mode==='unverified'?'unavailable':'captured');
     assert.equal(getDb().select().from(schema.metadataSeriesCovers).where(eq(schema.metadataSeriesCovers.operationId,history.id)).get()!.reservedBytes,0);
   }
 });
 
 test('provider updates capture before metadata writes and retain cover-only failures without blocking eligible scalar changes',async()=>{
   const good=fixture();
-  good.client.updateSeriesMetadata=async()=>{assert.equal(detail(good.id).covers!.before.state,'captured');good.metadata.summary='New summary';};
+  good.client.updateSeriesMetadata=async()=>{assert.equal(detail(good.id).covers!.series!.before.state,'captured');good.metadata.summary='New summary';};
   const meta={providerId:'fixture',providerSeriesId:'one',title:'Same title',summary:'New summary',coverUrl:'https://provider.test/cover.png',tags:[],genres:[],writers:[],artists:[]};
   const result=await applyResolvedSeriesMatch(good.client,{seriesId:good.id,providerId:'fixture',providerSeriesId:'one'},meta);
-  assert.equal(result.coverUpdated,true);assert.equal(good.state.writes,1);assert.equal(detail(good.id).covers!.after.assetId,hash(afterImage));
+  assert.equal(result.coverUpdated,true);assert.equal(good.state.writes,1);assert.equal(detail(good.id).covers!.series!.after.assetId,hash(afterImage));
   const bad=fixture();bad.state.failRead=true;
   bad.client.updateSeriesMetadata=async()=>{bad.metadata.summary='New summary';};
   const skipped=await applyResolvedSeriesMatch(bad.client,{seriesId:bad.id,providerId:'fixture',providerSeriesId:'one'},meta);
@@ -147,14 +147,12 @@ test('retained image handlers require an authenticated, active-connection operat
   await app.request('/api/auth/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'cover-test',password:'cover-test-password'})});
   assert.equal((await app.request(`/api${url}`)).status,401);
   getDb().delete(schema.metadataAssets).where(eq(schema.metadataAssets.id,assetId)).run();
-  assert.equal((await api.request(url)).status,404);assert.equal(detail(f.id).covers!.before.state,'unavailable');
+  assert.equal((await api.request(url)).status,404);assert.equal(detail(f.id).covers!.series!.before.state,'unavailable');
 });
 
-test('cover restore payloads remain rejected even when image bytes and native flags were retained',async()=>{
+test('scalar restore selections cannot smuggle retained covers',async()=>{
   const f=fixture();await withMetadataHistory(f.client,f.id,'provider-apply',{},async journal=>{await journal.captureSeriesCover();});
   await assert.rejects(createMetadataRestorePreview(f.client,f.id,entry(f.id).id,{snapshot:'before',fields:['cover']} as never),/Invalid restore/);
-  assert.equal(detail(f.id).restoreAvailability.before.find(field=>field.field==='cover')!.available,false);
-  assert.match(detail(f.id).restoreAvailability.before.find(field=>field.field==='cover')!.reason!,/re-encodes/);
 });
 
 test('admission reserves bounded readback capacity and never evicts retained assets to admit a new cover write',async()=>{
@@ -175,7 +173,7 @@ test('restart preserves retained cover bytes, marks unfinished observations inte
   getDb().update(schema.metadataSeriesCovers).set({status:'applying',afterState:'unavailable',afterAssetId:null,reservedBytes:MAX_RETAINED_COVER_BYTES}).where(eq(schema.metadataSeriesCovers.operationId,operationId)).run();
   const dbUrl=new URL('../src/db/index.ts',import.meta.url).href,historyUrl=new URL('../src/services/metadataHistory.ts',import.meta.url).href;
   const result=spawnSync(process.execPath,['--import','tsx','--input-type','module','--eval',`const {initDb}=await import(${JSON.stringify(dbUrl)});initDb();const {interruptMetadataHistory}=await import(${JSON.stringify(historyUrl)});interruptMetadataHistory();`],{env:{...process.env,HTOSHO_DATA_DIR:directory},encoding:'utf8',windowsHide:true});
-  assert.equal(result.status,0,result.stderr);assert.equal(detail(f.id).status,'interrupted');assert.equal(detail(f.id).covers!.status,'interrupted');
+  assert.equal(result.status,0,result.stderr);assert.equal(detail(f.id).status,'interrupted');assert.equal(detail(f.id).covers!.series!.status,'interrupted');
   assert.deepEqual(retainedCoverAsset(f.id,operationId,hash(beforeImage))!.data,beforeImage);
   assert.equal(getDb().select().from(schema.metadataSeriesCovers).where(eq(schema.metadataSeriesCovers.operationId,operationId)).get()!.reservedBytes,0);
 });
@@ -229,6 +227,6 @@ test('cover capture waits for an explicitly configured storage budget while keep
     const result=await applyResolvedSeriesMatch(f.client,{seriesId:f.id,providerId:'fixture',providerSeriesId:'one'},
       {providerId:'fixture',providerSeriesId:'one',title:'Same title',coverUrl:'https://provider.test/cover.png',tags:[],genres:[],writers:[],artists:[]});
     assert.equal(result.coverUpdated,true);assert.equal(f.state.writes,1);assert.equal(f.state.reads,0);
-    assert.equal(detail(f.id).covers!.status,'not-captured');assert.match(detail(f.id).covers!.before.reason!,/disabled/);
+    assert.equal(detail(f.id).covers!.series!.status,'not-captured');assert.match(detail(f.id).covers!.series!.before.reason!,/disabled/);
   }finally{process.env.HTOSHO_COVER_HISTORY_LIMIT_MIB=configured;}
 });

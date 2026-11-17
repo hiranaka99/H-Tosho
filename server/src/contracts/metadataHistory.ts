@@ -1,5 +1,5 @@
 import type { RestoreFieldAvailability } from './metadataRestore.js';
-import type { SeriesCoverHistory } from './metadataCovers.js';
+import type { CoverHistory } from './metadataCovers.js';
 
 export interface RecordedValue { present: boolean; value?: unknown; nativeLocked?: boolean }
 export interface MetadataSnapshot {
@@ -21,7 +21,7 @@ export interface ArchiveHistory {
   changes: { field: string; before: RecordedValue; after?: RecordedValue }[];
 }
 export interface MetadataHistoryDetail extends MetadataHistoryEntry {
-  covers?: SeriesCoverHistory;
+  covers?: CoverHistory;
   before: MetadataSnapshot; after: MetadataSnapshot | null;
   archives: ArchiveHistory[];
   restoreAvailability: { before: RestoreFieldAvailability[]; after: RestoreFieldAvailability[] };

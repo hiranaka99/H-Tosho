@@ -21,6 +21,7 @@ import {
   type MediaFormat,
   type SeriesMetadataPayload,
 } from './types.js';
+import { parseVolumeCoverDto, type KavitaVolumeCoverDto, type KavitaCoverImage } from './types.js';
 import type { MetadataSnapshot, RecordedValue } from '../contracts/metadataHistory.js';
 import { MAX_RETAINED_COVER_BYTES } from '../contracts/metadataCovers.js';
 import {
@@ -128,17 +129,18 @@ export class KavitaClient {
     );
   }
 
-  private async getJson<T>(path: string, action: string): Promise<T> {
-    const res = await fetchJsonRetry<T>(this.url(path), { headers: this.headers }, 15_000, { raw: true });
+  private async getJson<T>(path: string, action: string, signal?: AbortSignal): Promise<T> {
+    const res = await fetchJsonRetry<T>(this.url(path), { headers: this.headers, signal }, 15_000, { raw: true });
     if (res.status !== 200) throw this.requestError(action, path, res.status, res.data);
     return res.data;
   }
 
-  private async postJson<T = unknown>(path: string, body: unknown, action: string): Promise<T> {
+  private async postJson<T = unknown>(path: string, body: unknown, action: string, signal?: AbortSignal): Promise<T> {
     const res = await fetchJsonRetry<T>(this.url(path), {
       method: 'POST',
       headers: { ...this.headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal,
     }, 15_000, { raw: true });
     if (res.status < 200 || res.status >= 300) {
       throw this.requestError(action, path, res.status, res.data);
@@ -154,9 +156,9 @@ export class KavitaClient {
   }
 
   /** GET /api/Server/server-info-slim */
-  async getServerInfo(): Promise<KavitaServerInfo> {
+  async getServerInfo(signal?: AbortSignal): Promise<KavitaServerInfo> {
     const path = '/Server/server-info-slim';
-    const data = await this.getJson<KavitaServerInfoDto>(path, 'Kavita server info');
+    const data = await this.getJson<KavitaServerInfoDto>(path, 'Kavita server info', signal);
     if (!data?.kavitaVersion) {
       throw new Error(`Kavita server info at ${this.url(path)} did not include kavitaVersion.`);
     }
@@ -235,7 +237,7 @@ export class KavitaClient {
   }
 
   /** POST /api/Series/all-v2, filtered to one library. */
-  async getSeries(libraryId: number): Promise<KavitaSeries[]> {
+  async getSeries(libraryId: number, signal?: AbortSignal): Promise<KavitaSeries[]> {
     const path = '/Series/all-v2?PageNumber=1&PageSize=0';
     const series = await this.postJson<KavitaSeriesDto[]>(
       path,
@@ -245,7 +247,7 @@ export class KavitaClient {
         entityType: 0,
         limitTo: 0,
       },
-      'Get series',
+      'Get series', signal,
     );
     return series.map((item) => this.mapSeries(item));
   }
@@ -272,8 +274,8 @@ export class KavitaClient {
     return this.mapSeries(await this.getSeriesDto(seriesId));
   }
 
-  async getSeriesDto(seriesId: number): Promise<KavitaSeriesDto> {
-    return this.getJson<KavitaSeriesDto>(`/Series/${seriesId}`, `Get series ${seriesId}`);
+  async getSeriesDto(seriesId: number, signal?: AbortSignal): Promise<KavitaSeriesDto> {
+    return this.getJson<KavitaSeriesDto>(`/Series/${seriesId}`, `Get series ${seriesId}`, signal);
   }
 
   /** GET /api/Series/metadata?seriesId={seriesId} */
@@ -842,7 +844,6 @@ export class KavitaClient {
     await this.postJson('/Upload/series', body, `Update series ${seriesId} cover`);
   }
 
-  /** GET /api/Series/volumes?seriesId={seriesId} */
   async getVolumes(seriesId: number): Promise<KavitaVolume[]> {
     const path = `/Series/volumes?seriesId=${encodeURIComponent(seriesId)}`;
     const volumes = await this.getJson<KavitaVolumeDto[]>(path, `Get series ${seriesId} volumes`);
@@ -854,6 +855,13 @@ export class KavitaClient {
       number: Number.isFinite(volume.minNumber) ? volume.minNumber : volume.number,
     }));
   }
+  async getVolumeForCoverHistory(volumeId: number): Promise<KavitaVolumeCoverDto> {
+    const value = await this.getJson<unknown>(`/Series/volume?volumeId=${encodeURIComponent(volumeId)}`, `Read volume ${volumeId} cover identity`);
+    const volume = parseVolumeCoverDto(value);
+    if (volume.id !== volumeId) throw new Error('Kavita returned another volume for the cover-history target');
+    return volume;
+  }
+
 
   /** POST /api/Upload/volume — same base64 payload shape as the series cover endpoint. */
   async updateVolumeCover(volumeId: number, image: Buffer, lockCover: boolean): Promise<void> {
@@ -894,13 +902,17 @@ export class KavitaClient {
    * Throws when either leg fails so the caller can fall back to the base64
    * path with a locally downloaded image.
    */
-  async updateSeriesCoverFromUrl(seriesId: number, url: string, lockCover: boolean): Promise<void> {
-    await this.updateSeriesCover(seriesId, await this.fetchCoverViaServer(url), lockCover);
+  async updateSeriesCoverFromUrl(seriesId: number, url: string, lockCover: boolean, beforeUpload?: () => Promise<void>): Promise<void> {
+    const image = await this.fetchCoverViaServer(url);
+    await beforeUpload?.();
+    await this.updateSeriesCover(seriesId, image, lockCover);
   }
 
   /** Server-side cover fetch for a volume; see updateSeriesCoverFromUrl. */
-  async updateVolumeCoverFromUrl(volumeId: number, url: string, lockCover: boolean): Promise<void> {
-    await this.updateVolumeCover(volumeId, await this.fetchCoverViaServer(url), lockCover);
+  async updateVolumeCoverFromUrl(volumeId: number, url: string, lockCover: boolean, beforeUpload?: () => Promise<void>): Promise<void> {
+    const image = await this.fetchCoverViaServer(url);
+    await beforeUpload?.();
+    await this.updateVolumeCover(volumeId, image, lockCover);
   }
 
   /**
@@ -924,22 +936,35 @@ export class KavitaClient {
   }
 
   /** Bounded, uncached original response bytes for history; 404 is interpreted using the series DTO by the caller. */
-  async getSeriesCoverForHistory(seriesId:number):Promise<{data:Buffer;contentType:string}|null> {
-    const target=`/Image/series-cover?seriesId=${encodeURIComponent(seriesId)}&apiKey=${encodeURIComponent(this.apiKey)}`;
-    const response=await fetch(this.url(target),{headers:this.headers,cache:'no-store',redirect:'error',signal:AbortSignal.timeout(30_000)});
-    if(response.status===404){await response.body?.cancel();return null;}
-    if(!response.ok){await response.body?.cancel();throw this.requestError(`Read series ${seriesId} cover for history`,target,response.status);}
-    const length=response.headers.get('content-length');
-    if(length!==null && Number(length)>MAX_RETAINED_COVER_BYTES){await response.body?.cancel();throw new Error('Cover exceeds the 5 MiB history asset limit');}
-    if(!response.body)throw new Error('Cover history response has no image body');
-    const reader=response.body.getReader(),chunks:Uint8Array[]=[];
-    let size=0;
+  async getSeriesCoverForHistory(seriesId: number): Promise<KavitaCoverImage | null> {
+    return this.readCoverForHistory('series', seriesId);
+  }
+
+  async getVolumeCoverForHistory(volumeId: number): Promise<KavitaCoverImage | null> {
+    return this.readCoverForHistory('volume', volumeId);
+  }
+
+  private async readCoverForHistory(kind: 'series' | 'volume', id: number): Promise<KavitaCoverImage | null> {
+    const target = `/Image/${kind}-cover?${kind}Id=${encodeURIComponent(id)}&apiKey=${encodeURIComponent(this.apiKey)}`;
+    const response = await fetch(this.url(target), { headers: this.headers, cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(30_000) });
+    if (response.status === 404) { await response.body?.cancel(); return null; }
+    if (!response.ok) { await response.body?.cancel(); throw this.requestError(`Read ${kind} ${id} cover for history`, target, response.status); }
+    const length = response.headers.get('content-length');
+    if (length !== null && Number(length) > MAX_RETAINED_COVER_BYTES) { await response.body?.cancel(); throw new Error('Cover exceeds the 5 MiB history asset limit'); }
+    if (!response.body) throw new Error('Cover history response has no image body');
+    const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+    let size = 0;
     try {
-      for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;
-        if(size>MAX_RETAINED_COVER_BYTES)throw new Error('Cover exceeds the 5 MiB history asset limit');chunks.push(value);}
-    } catch(error){await reader.cancel().catch(()=>{});throw error;} finally{reader.releaseLock();}
-    if(!size)throw new Error('Cover history response was empty');
-    return {data:Buffer.concat(chunks,size),contentType:response.headers.get('content-type')??'application/octet-stream'};
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > MAX_RETAINED_COVER_BYTES) throw new Error('Cover exceeds the 5 MiB history asset limit');
+        chunks.push(value);
+      }
+    } catch (error) { await reader.cancel().catch(() => {}); throw error; } finally { reader.releaseLock(); }
+    if (!size) throw new Error('Cover history response was empty');
+    return { data: Buffer.concat(chunks, size), contentType: response.headers.get('content-type') ?? 'application/octet-stream' };
   }
 
   async downloadImage(url: string): Promise<Buffer> {

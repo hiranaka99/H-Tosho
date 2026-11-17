@@ -71,7 +71,10 @@ describe('notification settings validation', () => {
       .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: '{"discord":{"enabled":true}}' } })
       .run();
     const s = getNotificationSettings();
-    assert.deepEqual(s, { discord: { enabled: false, webhookUrl: '' } });
+    assert.deepEqual(s.discord, { enabled: false, webhookUrl: '' });
+    assert.equal(s.digest.time, '09:00');
+    assert.ok(Number.isFinite(Date.parse(s.digest.nextDueAt)));
+    assert.equal(s.revision, 0);
   });
 
   it('rejects wrong shapes in parseNotificationSettings', () => {

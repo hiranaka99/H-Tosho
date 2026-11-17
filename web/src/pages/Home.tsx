@@ -54,7 +54,7 @@ export function Home() {
   const [rejectedIds, setRejectedIds] = React.useState(new Set<number>());
   const matches = useQuery({ queryKey: ['home-matches'], queryFn: api.homeMatches,
     refetchInterval: query => ['queued', 'running'].includes(query.state.data?.scan?.status ?? '') ? 3000 : 60_000 });
-  const feed = useQuery({ queryKey: ['watched-gallery-feed', 'home'], queryFn: () => api.watchedGalleryFeed({ view: 'inbox', source: '', searchId: '', offset: 0, limit: 4 }), refetchInterval: 60_000 });
+  const feed = useQuery({ queryKey: ['watched-gallery-feed', 'home'], queryFn: () => api.watchedGalleryFeed({ view: 'inbox', offset: 0, limit: 4 }), refetchInterval: 60_000 });
   const activity = useQuery({ queryKey: ['home-activity'], queryFn: api.homeActivity, refetchInterval: 30_000 });
   const completed = useQuery({ queryKey: ['downloads-completed'], queryFn: api.downloadsCompleted });
   const recommendationItems = visibleRecs.slice(0, 6);

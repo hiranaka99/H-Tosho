@@ -31,7 +31,8 @@ async function clock<T>(t: TestContext, run: () => Promise<T>): Promise<T> {
   let done = false;
   const result = run().finally(() => { done = true; });
   void result.catch(() => {});
-  for (let step = 0; step < 1000; step++) {
+  const deadline = performance.now() + 5000;
+  while (!done && performance.now() < deadline) {
     for (let flush = 0; flush < 20; flush++) await setImmediate();
     if (done) return result;
     t.mock.timers.tick(5_000);
@@ -55,6 +56,7 @@ function fixture(name: string) {
   const scans: string[][] = [];
   let failId = '';
   let waitForId = '';
+  let seriesName = 'Target';
   doujinProviders.hitomi = {
     ...originalProvider,
     async getGallery(id) {
@@ -64,7 +66,7 @@ function fixture(name: string) {
       return { source: 'hitomi', galleryId: id, title: `Gallery ${id}`, tags: [], artists: [], pages: [`https://images.example/${id}.jpg`] };
     },
   };
-  globalThis.fetch = (async input => {
+  globalThis.fetch = (async (input,init) => {
     const url = String(input);
     requests.push(url);
     if (url.startsWith('https://images.example/')) {
@@ -76,10 +78,16 @@ function fixture(name: string) {
       }
       return new Response(Buffer.from('image bytes'));
     }
-    if (url.endsWith('/api/Series/50')) return Response.json({ id: 50, libraryId: 7, name: 'Target', folderPath: target });
+    if (url.endsWith('/api/Series/50')) return Response.json({ id: 50, libraryId: 7, name: seriesName, folderPath: target });
     if (url.includes('/api/Library/libraries')) return Response.json([{ id: 7, name: 'Collection', folders: [dataDir], type: 0 }]);
-    if (url.includes('/api/Series/all-v2')) return Response.json([{ id: 50, libraryId: 7, name: 'Target', folderPath: target }]);
+    if (url.includes('/api/Series/all-v2')) return Response.json([{ id: 50, libraryId: 7, name: seriesName, folderPath: target }]);
     if (url.includes('/api/Server/is-task-running')) return Response.json(false);
+    if (url.endsWith('/api/Series/update')) {
+      const update: unknown = JSON.parse(String(init?.body));
+      if (!update || typeof update !== 'object' || !('name' in update) || typeof update.name !== 'string') throw new Error('Invalid fixture title update');
+      seriesName=update.name;
+      return Response.json({ok:true});
+    }
     if (url.endsWith('/api/Series/scan') || url.includes('/api/Library/scan')) { scans.push(fs.readdirSync(target)); return Response.json({ ok: true }); }
     if (url.includes('/api/Search/chapters-by-series')) return Response.json(fs.readdirSync(target).filter(file => file.endsWith('.cbz')).map((file, i) => ({ id: i + 1, files: [{ id: i + 1, filePath: path.join(target, file) }] })));
     return Response.json({ ok: true });
@@ -151,7 +159,7 @@ test('download failure preserves existing chapters; job retry reuses successful 
   assert.equal((await fields(f.existing)).Series, 'Renamed after retry');
 });
 
-test('optional rename stamps every existing and incoming chapter and updates Kavita before scanning', async t => {
+test('optional rename stamps every existing and incoming chapter and updates Kavita before scanning', {timeout:20000}, async () => {
   const f = fixture('rename');
   const extra = path.join(f.target, 'Extra.cbz');
   archive(extra, '5');
@@ -168,7 +176,7 @@ test('optional rename stamps every existing and incoming chapter and updates Kav
     }
     return fixtureFetch(input, init);
   }) as typeof fetch;
-  const result = await clock(t, () => runJob(job, () => {}));
+  const result = await runJob(job, () => {});
   assert.equal(result.failed, 0);
   assert.equal(updates.length, 1);
   assert.equal((updates[0] as { name: string; nameLocked: boolean }).name, 'Collection & Stories');

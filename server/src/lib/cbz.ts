@@ -640,6 +640,7 @@ export async function mergeCbzFiles(
   seriesName?: string,
   onMoved?: (source: string, destination: string) => void,
   signal?: AbortSignal,
+  beforePublish?: (source: string, destination: string) => Promise<void>,
 ): Promise<MergeCbzOutcome> {
   if (!path.isAbsolute(targetDir)) throw new Error('targetDir must be an absolute path');
   const out: MergeCbzOutcome = { moved: [], skipped: [], chaptered: [], failed: [] };
@@ -669,6 +670,9 @@ export async function mergeCbzFiles(
             }
           }
         }
+        // The caller's authoritative guard runs inside this archive ownership,
+        // immediately before either moving or stamping the archive.
+        await beforePublish?.(file, dest);
         if (!alreadyThere) {
           await moveFileAcross(file, dest);
           removeEmptiedSourceDir(file, targetDir);
@@ -719,14 +723,23 @@ async function moveFileAcross(src: string, dest: string): Promise<void> {
     fs.renameSync(src, dest);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
-    fs.copyFileSync(src, dest);
-    fs.unlinkSync(src);
+    const staging = path.join(path.dirname(dest),`.cbzmerge-${randomUUID()}.tmp`);
+    try {
+      fs.copyFileSync(src, staging);
+      fs.renameSync(staging, dest);
+      fs.unlinkSync(src);
+    } finally {
+      try { fs.unlinkSync(staging); } catch(error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
   }
 }
 
 /** Write the given ComicInfo fields into a CBZ, preserving the other fields of any existing entry. */
-export function setComicInfoFields(file: string, fields: Record<string, string>): Promise<void> {
-  return archiveMutations.run([archiveResource(file)], () => setComicInfoFieldsUnlocked(file, fields));
+export function setComicInfoFields(file: string, fields: Record<string, string>, beforeWrite?: () => Promise<void>): Promise<void> {
+  return archiveMutations.run([archiveResource(file)], async () => {
+    await beforeWrite?.();
+    return setComicInfoFieldsUnlocked(file, fields);
+  });
 }
 
 async function setComicInfoFieldsUnlocked(file: string, fields: Record<string, string>): Promise<void> {
@@ -800,4 +813,11 @@ export function editComicInfo(file: string, edit: { xml?: string; fields?: Recor
     await rewriteZipEntryUnlocked(file, 'ComicInfo.xml', Buffer.from(xml, 'utf8'));
     return { previousSeriesName: doc.fields.Series?.trim(), xml };
   }, signal);
+}
+
+/** Stream exact archive identity without buffering the whole CBZ in memory. */
+export async function hashArchiveFile(file:string,signal?:AbortSignal):Promise<string> {
+  const hash=createHash('sha256');
+  for await (const chunk of fs.createReadStream(file,{signal})) hash.update(chunk);
+  return hash.digest('hex');
 }

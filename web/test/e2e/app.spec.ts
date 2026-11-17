@@ -308,7 +308,7 @@ test('Watched motion preserves drafts, keyboard access and reduced-motion feedba
   await page.route('**/api/watched-searches', async route => {
     const response = await route.fetch();
     const watches = await response.json();
-    watches[0].lastResults = [{ galleryId: 'motion-preview', title: 'Latest watched find', pageCount: 28, url: 'https://example.com/gallery', coverUrl: null }];
+    watches[0].lastResults = [{ galleryId: 'motion-preview', title: 'Latest watched find', pageCount: 28, url: 'https://example.com/gallery' }];
     await route.fulfill({ response, json: watches });
   });
   await page.route('**/api/doujin/suggestions', route => route.fulfill({ json: [] }));

@@ -35,6 +35,7 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/downloads/library-matches', route => route.fulfill({ json: { items: [], incomplete: false, errors: [] } }));
   await page.route('**/api/downloads/gallery-files?**', route => route.fulfill({ json: { files: [] } }));
   await page.route('**/api/downloads/duplicates', route => route.fulfill({ json: { reports: [], warnings: [] } }));
+  await page.route('**/api/merge-protection/preview',route=>route.fulfill({json:{series:[],inheritedFields:[],unassociatedArchives:0,canQueue:true,warnings:[]}}));
   await page.route('**/api/recommendations', route => route.fulfill({ json: {
     date: '2026-10-29', generatedAt: '2026-10-29T10:00:00Z', mode: 'popular',
     profile: { artists: [], tags: [], series: [], language: null }, items: [{ ...gallery, reasons: [] }],
@@ -63,6 +64,7 @@ test('library merges apply the chosen name independently of a custom folder', as
   await name.fill('Garden: Collected / Stories');
   await expect(dialog.getByLabel('Target folder', { exact: true })).toHaveAttribute('placeholder', '/library/downloads/Garden Collected Stories');
   await dialog.getByLabel('Target folder', { exact: true }).fill('/library/Custom folder');
+  await dialog.getByRole('checkbox',{name:'I reviewed current protection and lock inheritance.'}).check();
   await expect(queue).toBeEnabled();
   await capture(page, testInfo, 'library-merge-name');
   expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -107,6 +109,7 @@ for (const tab of ['search', 'recommend']) {
       submission = route.request().postDataJSON();
       return route.fulfill({ json: { id: 9101 } });
     });
+    await dialog.getByRole('checkbox',{name:'I reviewed current protection and lock inheritance.'}).check();
     await dialog.getByRole('button', { name: 'Queue merge (1 gallery)', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     expect(submission).toMatchObject({ type: 'merge-series', seriesId: 50, seriesName: 'Garden Collection', downloads: [{ galleryId: gallery.galleryId, chapter: '2' }] });
@@ -126,6 +129,7 @@ for (const tab of ['search', 'recommend']) {
       submission = route.request().postDataJSON();
       return route.fulfill({ json: { items: [{ source: gallery.source, galleryId: gallery.galleryId, id: 9102, status: 'queued' }] } });
     });
+    await dialog.getByRole('checkbox',{name:'I reviewed current protection and lock inheritance.'}).check();
     await dialog.getByRole('button', { name: 'Download 1 gallery', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     expect(submission).toMatchObject({ mergeFolder: 'Garden Collection', items: [{ galleryId: gallery.galleryId, chapter: 1 }] });
@@ -146,6 +150,7 @@ test('three selected galleries are submitted as one merged batch with their chap
     submissions.push(route.request().postDataJSON());
     return route.fulfill({ json: { items: galleries.map((item, i) => ({ source: item.source, galleryId: item.galleryId, id: 9200 + i })) } });
   });
+  await dialog.getByRole('checkbox',{name:'I reviewed current protection and lock inheritance.'}).check();
   await dialog.getByRole('button', { name: 'Download 3 galleries', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   expect(submissions).toEqual([{ mergeFolder: 'Garden Collection', items: galleries.map((item, i) => ({ source: item.source, galleryId: item.galleryId, chapter: i + 1, allowDuplicate: false })) }]);
@@ -192,6 +197,7 @@ test('a merged batch retry keeps successful entries and the remaining chapter nu
       : [{ ...galleries[2], id: 9303 }];
     return route.fulfill({ json: { items } });
   });
+  await dialog.getByRole('checkbox',{name:'I reviewed current protection and lock inheritance.'}).check();
   await dialog.getByRole('button', { name: 'Download 3 galleries', exact: true }).click();
   await expect(dialog.getByRole('alert')).toContainText('1 queued · 1 already owned or queued · 1 needs retry');
   await dialog.getByRole('button', { name: 'Retry remaining (1)', exact: true }).click();

@@ -50,7 +50,7 @@ export const metadataAssets = sqliteTable('metadata_assets', {
   data: blob('data', {mode:'buffer'}).notNull(),
 });
 
-/** One series-cover checkpoint per operation; volume covers remain outside capture/restore coverage. */
+/** One series-cover checkpoint per operation; volume checkpoints share the same retained assets. */
 export const metadataSeriesCovers = sqliteTable('metadata_series_covers', {
   operationId: text('operation_id').primaryKey(),
   status: text('status').notNull().default('preparing'),
@@ -63,8 +63,32 @@ export const metadataSeriesCovers = sqliteTable('metadata_series_covers', {
   afterAssetId: text('after_asset_id'),
   afterLocked: integer('after_locked', {mode:'boolean'}),
   afterReason: text('after_reason'),
+  afterEvidenceJson: text('after_evidence_json'),
+  requestedLock: integer('requested_lock', { mode: 'boolean' }),
+  writeAcknowledged: integer('write_acknowledged', { mode: 'boolean' }).notNull().default(false),
   reservedBytes: integer('reserved_bytes').notNull().default(0),
 });
+
+export const metadataVolumeCovers = sqliteTable('metadata_volume_covers', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  operationId: text('operation_id').notNull(),
+  volumeId: integer('volume_id').notNull(),
+  name: text('name').notNull(),
+  status: text('status').notNull().default('preparing'),
+  beforeState: text('before_state').notNull().default('unavailable'),
+  beforeAssetId: text('before_asset_id'),
+  beforeLocked: integer('before_locked', { mode: 'boolean' }),
+  beforeEvidenceJson: text('before_evidence_json'),
+  beforeReason: text('before_reason'),
+  afterState: text('after_state').notNull().default('unavailable'),
+  afterAssetId: text('after_asset_id'),
+  afterLocked: integer('after_locked', { mode: 'boolean' }),
+  afterEvidenceJson: text('after_evidence_json'),
+  afterReason: text('after_reason'),
+  requestedLock: integer('requested_lock', { mode: 'boolean' }),
+  writeAcknowledged: integer('write_acknowledged', { mode: 'boolean' }).notNull().default(false),
+  reservedBytes: integer('reserved_bytes').notNull().default(0),
+}, table => [uniqueIndex('idx_metadata_volume_cover_operation').on(table.operationId, table.volumeId)]);
 
 /** Unconsumed previews expire; approved plans copy all write authority durably. */
 export const metadataRestorePreviews = sqliteTable('metadata_restore_previews', {
@@ -76,6 +100,7 @@ export const metadataRestorePreviews = sqliteTable('metadata_restore_previews', 
   expectedJson: text('expected_json').notNull(),
   desiredJson: text('desired_json').notNull(),
   archivesJson: text('archives_json').notNull().default('[]'),
+  coversJson: text('covers_json').notNull().default('[]'),
   createdAt: text('created_at').notNull(),
   expiresAt: text('expires_at').notNull(),
   consumedAt: text('consumed_at'),
@@ -94,6 +119,7 @@ export const metadataRestorePlans = sqliteTable('metadata_restore_plans', {
   expectedJson: text('expected_json').notNull(),
   desiredJson: text('desired_json').notNull(),
   archivesJson: text('archives_json').notNull().default('[]'),
+  coversJson: text('covers_json').notNull().default('[]'),
   nativeLockFieldsJson: text('native_lock_fields_json').notNull(),
   policyRevision: integer('policy_revision').notNull(),
   createdAt: text('created_at').notNull(),
@@ -261,6 +287,15 @@ export const downloadQueue = sqliteTable('download_queue', {
   index('idx_download_queue_claim').on(table.status, table.priority),
 ]);
 
+export const watchedSearchFolders = sqliteTable('watched_search_folders', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  name: text('name').notNull(),
+  position: integer('position').notNull(),
+  revision: integer('revision').notNull().default(0),
+  createdAt: text('created_at').notNull().default(sql`(current_timestamp)`),
+  updatedAt: text('updated_at').notNull().default(sql`(current_timestamp)`),
+});
+
 /**
  * Saved doujin searches that are re-run periodically; new results trigger a
  * Discord notification. `source` + `query` mirror the Downloader's search box
@@ -271,6 +306,13 @@ export const watchedSearches = sqliteTable('watched_searches', {
   /** hitomi | nhentai */
   source: text('source').notNull(),
   query: text('query').notNull(),
+  displayName: text('display_name'),
+  folderId: integer('folder_id'),
+  pausedAt: text('paused_at'),
+  intervalMinutes: integer('interval_minutes'),
+  notificationMode: text('notification_mode').notNull().default('immediate'),
+  revision: integer('revision').notNull().default(0),
+  nextCheckAt: text('next_check_at'),
   lastCheckedAt: text('last_checked_at'),
   lastResultCount: integer('last_result_count'),
   /** New galleries from the last check that found something (JSON array; null = no check yet). */
@@ -278,11 +320,15 @@ export const watchedSearches = sqliteTable('watched_searches', {
   lastNewCount: integer('last_new_count'),
   lastFindsAt: text('last_finds_at'),
   lastAttemptedAt: text('last_attempted_at'),
+  lastFailedAt: text('last_failed_at'),
   lastError: text('last_error'),
   createdAt: text('created_at')
     .notNull()
     .default(sql`(current_timestamp)`),
-});
+}, (table) => [
+  uniqueIndex('idx_watched_searches_source_query').on(table.source, table.query),
+  index('idx_watched_searches_due').on(table.nextCheckAt, table.id),
+]);
 
 /** Galleries already reported for a watched search (dedupe across checks). */
 export const watchedSearchSeen = sqliteTable('watched_search_seen', {
@@ -308,6 +354,8 @@ export const watchedSearchNew = sqliteTable('watched_search_new', {
   source: text('source').notNull(),
   /** The watch query that found the gallery (shown as "via …" in the feed). */
   query: text('query').notNull(),
+  /** Readable provenance retained after the watch is removed. */
+  watchLabel: text('watch_label').notNull().default(''),
   galleryId: text('gallery_id').notNull(),
   title: text('title').notNull(),
   url: text('url'),
@@ -323,6 +371,37 @@ export const watchedSearchNew = sqliteTable('watched_search_new', {
   index('idx_watched_search_new_found').on(table.foundAt, table.id),
   index('idx_watched_search_new_gallery').on(table.source, table.galleryId),
 ]);
+
+/** Local notification identities are never backfilled from historical discoveries. */
+export const followingEvents = sqliteTable('following_events', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  source: text('source').notNull(), galleryId: text('gallery_id').notNull(),
+  title: text('title').notNull(), url: text('url'),
+  status: text('status').notNull().default('pending'), deliveryId: text('delivery_id'),
+  settingsRevision: integer('settings_revision').notNull(), destinationIdentity: text('destination_identity').notNull(),
+  createdAt: text('created_at').notNull(), readyAt: text('ready_at').notNull(),
+}, table => [uniqueIndex('idx_following_events_gallery').on(table.source, table.galleryId), index('idx_following_events_pending').on(table.status, table.readyAt), index('idx_following_events_unassigned').on(table.deliveryId, table.status, table.readyAt)]);
+
+export const followingContributions = sqliteTable('following_contributions', {
+  id: integer('id').primaryKey({ autoIncrement: true }), eventId: integer('event_id').notNull(),
+  watchId: integer('watch_id').notNull(), source: text('source').notNull(), query: text('query').notNull(),
+  mode: text('mode').notNull(), originJobId: integer('origin_job_id'), invalidatedAt: text('invalidated_at'),
+}, table => [uniqueIndex('idx_following_contribution_watch').on(table.eventId, table.watchId), index('idx_following_contribution_job').on(table.originJobId, table.eventId)]);
+
+/** Payload membership and labels are immutable once a delivery has been created. */
+export const followingDeliveries = sqliteTable('following_deliveries', {
+  id: text('id').primaryKey(), kind: text('kind').notNull(), status: text('status').notNull(),
+  revision: integer('revision').notNull().default(0), attempts: integer('attempts').notNull().default(0),
+  settingsRevision: integer('settings_revision').notNull(), destinationIdentity: text('destination_identity').notNull(),
+  batchKey: text('batch_key'), payloadJson: text('payload_json').notNull(),
+  createdAt: text('created_at').notNull(), startedAt: text('started_at'), finishedAt: text('finished_at'),
+  nextRetryAt: text('next_retry_at'), error: text('error'), receiptId: text('receipt_id'),
+}, table => [uniqueIndex('idx_following_digest_batch').on(table.batchKey), index('idx_following_delivery_due').on(table.status, table.nextRetryAt)]);
+
+export const followingDeliveryApprovals = sqliteTable('following_delivery_approvals', {
+  id: text('id').primaryKey(), originalId: text('original_id').notNull(), deliveryId: text('delivery_id').notNull(),
+  createdAt: text('created_at').notNull(),
+});
 /**
  * Tag/artist profile data for downloaded galleries, powering the daily
  * recommendations. Written when a download resolves its gallery metadata and

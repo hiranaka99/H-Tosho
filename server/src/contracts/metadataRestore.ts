@@ -1,7 +1,7 @@
 import type { MetadataSnapshot, RecordedValue } from './metadataHistory.js';
-import { COVER_RESTORE_UNAVAILABLE } from './metadataCovers.js';
+import type { CoverRestoreSelection, CoverRestorePreview } from './metadataCovers.js';
 
-/** Title is additionally gated on complete, accessible archive inventory. Covers remain unavailable. */
+/** Title requires complete accessible archive inventory; retained images have separately reviewed API restore plans. */
 export const RESTORABLE_METADATA_FIELDS = ['title', 'summary', 'genres', 'tags', 'writers', 'artists', 'releaseDate', 'language', 'status', 'url'] as const;
 export type RestorableMetadataField = (typeof RESTORABLE_METADATA_FIELDS)[number];
 export type RestoreSnapshotSide = 'before' | 'after';
@@ -36,7 +36,7 @@ export function getMetadataRestoreFieldAvailability(field: string, cell: Recorde
   const mapping = isRestorableMetadataField(field) ? RESTORE_FIELD_MAPPINGS[field] : undefined;
   const nativeLockAvailable = !!mapping && 'lock' in mapping && typeof cell?.nativeLocked === 'boolean';
   const unavailable = (reason: string): RestoreFieldAvailability => ({ field, available: false, reason, nativeLockAvailable });
-  if(field==='cover')return unavailable(COVER_RESTORE_UNAVAILABLE);
+  if(field==='cover')return unavailable('Cover images use the retained-image restore controls, not scalar metadata fields.');
   if (!mapping) return unavailable('This field is not supported by selective metadata restoration.');
   if (!cell) return unavailable('The field was not captured in this snapshot.');
   if (typeof cell.present !== 'boolean') return unavailable('The snapshot does not record whether this field was present.');
@@ -78,6 +78,7 @@ export interface RestorePreviewRequest {
   fields: RestorableMetadataField[];
   nativeLockFields?: RestorableMetadataField[];
   archives?: ArchiveRestoreSelection[];
+  covers?: CoverRestoreSelection[];
 }
 export interface ArchiveRestoreSelection { id: number; mode: 'fields' | 'document'; fields?: string[] }
 export interface ArchiveRestorePreview {
@@ -117,13 +118,14 @@ export interface MetadataRestorePreview {
   conflicts: string[];
   canRestore: boolean;
   archives?: ArchiveRestorePreview[];
+  covers?: CoverRestorePreview[];
 }
 export interface RestoreMetadataCommand {
   seriesId: number;
   connectionKey: string;
   planId: string;
 }
-export type MetadataRestoreResult = { restored: RestorableMetadataField[]; restoredArchives?:number; operationId:string };
+export type MetadataRestoreResult = { restored: RestorableMetadataField[]; restoredArchives?:number; restoredCovers?:number; unverifiedCoverLocks?:number; operationId:string };
 export interface ExactMetadataRestoreOptions {
   expected: MetadataSnapshot;
   nativeLockFields: RestorableMetadataField[];

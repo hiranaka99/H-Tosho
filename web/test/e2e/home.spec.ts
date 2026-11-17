@@ -2,13 +2,14 @@ import { expect, test, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { coverImage } from '../../../server/test/fixtures/coverImage';
-import { COVER_RESTORE_UNAVAILABLE } from '../../../server/src/contracts/metadataCovers';
+import type { CoverHistory, RecordedCover, CoverRestorePreview } from '../../../server/src/contracts/metadataCovers';
+import type { RestorePreviewRequest } from '../../../server/src/contracts/metadataRestore';
 
 const titles = ['After the rain', 'An evening in June', 'The long way home', 'Summer sketches', 'A quiet afternoon', 'Letters from the coast'];
 const items = titles.map((title, index) => ({ source: 'hitomi', galleryId: String(100 + index), title, artists: ['Sample Artist'], tags: [], language: 'English', pageCount: 24 + index * 4, reasons: ['Artist in your library'], coverUrl: `/test-cover/${index}` }));
 const recommendationSet = { date: '2026-11-15', generatedAt: '2026-11-15T09:00:00Z', mode: 'library', profile: { artists: [], tags: [], series: [], language: 'English' }, items, repeatedCount: 0, degradedReason: null, ownedKeys: [], dismissedKeys: [] };
 const match = { seriesId: 11, name: 'Summer anthology', libraryId: 7, libraryName: 'Doujinshi', cover: '/test-cover/2', checkedAt: '2026-11-15T09:00:00Z', candidate: { providerId: 'anilist', providerSeriesId: 'new-candidate', title: 'Summer anthology', type: 'MANGA', score: 0.98 } };
-const discoveries = ['A new chapter', 'Collected sketches', 'Weekend stories', 'Late summer'].map((title, index) => ({ source: 'hitomi', galleryId: String(200 + index), title, artists: ['Another Artist'], language: 'English', pageCount: 32, coverUrl: `/test-cover/${index + 1}`, query: 'artist:another_artist', foundAt: '2026-11-15T09:00:00Z', searchId: 1, reviewedAt: null }));
+const discoveries = ['A new chapter', 'Collected sketches', 'Weekend stories', 'Late summer'].map((title, index) => ({ source: 'hitomi', galleryId: String(200 + index), title, artists: ['Another Artist'], language: 'English', pageCount: 32, coverUrl: `/test-cover/${index + 1}`, query: 'artist:another_artist', watchLabel: 'Another Artist', watchRemoved: false, foundAt: '2026-11-15T09:00:00Z', searchId: 1, reviewedAt: null }));
 
 async function navigate(page: Page, name: string) {
   const toggle = page.getByRole('button', { name: 'Open navigation', exact: true });
@@ -244,16 +245,16 @@ test('series-cover history shows retained images and locks, retries image loadin
   const assetBefore='a'.repeat(64),assetAfter='b'.repeat(64);
   const before={state:'captured',assetId:assetBefore,mediaType:'image/png',byteSize:coverImage(170,56,106,90,128).length,nativeLocked:true,reason:null};
   const after={...before,assetId:assetAfter,byteSize:coverImage(11,125,102,90,128).length,nativeLocked:false};
-  const availability=[{field:'summary',available:true,reason:null,nativeLockAvailable:true},{field:'cover',available:false,reason:COVER_RESTORE_UNAVAILABLE,nativeLockAvailable:false}];
+  const availability=[{field:'summary',available:true,reason:null,nativeLockAvailable:true}];
   let beforeFailed=true,approvals=0;
   await page.route('**/api/series/11/field-locks',route=>route.fulfill({json:{lockedFields:[],revision:0}}));
   await page.route('**/api/series/11',route=>route.fulfill({json:{series:snapshot.series,kavita:{summary:'Current summary'},match:null}}));
   await page.route('**/api/providers/anilist/series/new-candidate',route=>route.fulfill({json:{...match.candidate,titleOptions:[match.name],summary:'Proposed',tags:[],artists:[],writers:[],genres:[]}}));
   await page.route('**/api/series/11/metadata-history',route=>route.fulfill({json:{items:entries,nextCursor:null}}));
   for(const entry of entries)await page.route(`**/api/series/11/metadata-history/${entry.id}`,route=>route.fulfill({json:{...entry,before:snapshot,after:snapshot,archives:[],
-    covers:entry.id==='cover-legacy'?undefined:{status:entry.status==='unverified'?'unverified':'observed',before:entry.id==='cover-absent'?{state:'absent',assetId:null,mediaType:null,byteSize:null,nativeLocked:false,reason:null}:before,after:entry.status==='unverified'?{state:'unavailable',assetId:null,mediaType:null,byteSize:null,nativeLocked:null,reason:'Could not retain verified series-cover readback; inspect the current cover before any further action'}:after,
-      changed:entry.status==='unverified'?null:true,restoreAvailable:false,restoreReason:COVER_RESTORE_UNAVAILABLE,volumeCovers:'not captured'},
-    restoreAvailability:{before:availability,after:availability},availability:{metadata:'captured',archives:'none',covers:'retained series only',restore:'metadata only'}}}));
+    covers:entry.id==='cover-legacy'?undefined:{series:{kind:'series',name:'Series cover',status:entry.status==='unverified'?'unverified':'observed',before:entry.id==='cover-absent'?{state:'absent',assetId:null,mediaType:null,byteSize:null,nativeLocked:false,reason:null}:before,after:entry.status==='unverified'?{state:'unavailable',assetId:null,mediaType:null,byteSize:null,nativeLocked:null,reason:'Could not retain verified series-cover readback; inspect the current cover before any further action'}:after,
+      changed:entry.status==='unverified'?null:true,requestedLock:null,writeAcknowledged:false,restoreAvailability:{before:{available:entry.id!=='cover-absent',reason:entry.id==='cover-absent'?'An absent image cannot be restored through upload':null},after:{available:entry.status!=='unverified',reason:entry.status==='unverified'?'After image was not verified':null}}},volumes:[]},
+    restoreAvailability:{before:availability,after:availability},availability:{metadata:'captured',archives:'none',covers:'retained',restore:'selective'}}}));
   await page.route('**/api/series/11/metadata-history/*/assets/*',route=>{
     const isBefore=route.request().url().includes(assetBefore);
     return isBefore&&beforeFailed?route.fulfill({status:503,body:'temporarily unavailable'}):route.fulfill({contentType:'image/png',body:isBefore?coverImage(170,56,106,90,128):coverImage(11,125,102,90,128)});
@@ -262,7 +263,7 @@ test('series-cover history shows retained images and locks, retries image loadin
   await page.getByRole('button',{name:'Review match',exact:false}).first().click();
   const dialog=page.getByRole('dialog');await dialog.locator('summary').filter({hasText:/^Metadata history$/}).click();
   await dialog.getByRole('button',{name:'View changes',exact:true}).first().click();
-  let covers=dialog.getByRole('region',{name:'Series cover history'});
+  let covers=dialog.getByRole('region',{name:'Cover history'});
   await covers.scrollIntoViewIfNeeded();
   await expect(covers.getByRole('button',{name:'Retry before cover',exact:true})).toBeVisible();
   await covers.evaluate(element=>element.scrollIntoView({block:'center'}));
@@ -270,18 +271,18 @@ test('series-cover history shows retained images and locks, retries image loadin
   await page.evaluate(()=>document.documentElement.classList.add('dark'));
   await page.screenshot({path:`.impeccable/review/metadata-h4-image-error-${testInfo.project.name}-dark.png`,animations:'disabled'});
   beforeFailed=false;await covers.getByRole('button',{name:'Retry before cover',exact:true}).click();
-  await expect(covers.getByRole('img',{name:'Before recorded series cover',exact:true})).toBeVisible();
-  await expect.poll(()=>covers.getByRole('img',{name:'Before recorded series cover',exact:true}).evaluate(image=>(image as HTMLImageElement).naturalWidth)).toBe(90);
+  await expect(covers.getByRole('img',{name:'Before recorded cover',exact:true})).toBeVisible();
+  await expect.poll(()=>covers.getByRole('img',{name:'Before recorded cover',exact:true}).evaluate(image=>(image as HTMLImageElement).naturalWidth)).toBe(90);
   await expect(covers.getByText('Kavita cover lock: locked',{exact:true})).toBeVisible();
   await expect(covers.getByText('Kavita cover lock: unlocked',{exact:true})).toBeVisible();
-  await expect(dialog.getByRole('region',{name:'Restore metadata'}).getByRole('checkbox',{name:'Cover',exact:true})).toBeDisabled();
+  await expect(dialog.getByRole('region',{name:'Restore metadata'}).getByRole('checkbox',{name:'Restore Series cover',exact:true})).toBeEnabled();
   expect(await covers.evaluate(element=>element.scrollWidth>element.clientWidth+1)).toBe(false);
   await covers.evaluate(element=>element.scrollIntoView({block:'center'}));
   await page.screenshot({path:`.impeccable/review/metadata-h4-images-${testInfo.project.name}-dark.png`,animations:'disabled'});
   await page.evaluate(()=>document.documentElement.classList.remove('dark'));
   await page.screenshot({path:`.impeccable/review/metadata-h4-images-${testInfo.project.name}-light.png`,animations:'disabled'});
   await dialog.getByRole('button',{name:'View changes',exact:true}).nth(1).click();
-  covers=dialog.getByRole('region',{name:'Series cover history'});
+  covers=dialog.getByRole('region',{name:'Cover history'});
   await expect(covers.getByText(/Could not retain verified series-cover readback/)).toBeVisible();
   await expect(covers.getByText('Kavita cover lock: Not recorded',{exact:true})).toBeVisible();
   await covers.evaluate(element=>element.scrollIntoView({block:'center'}));
@@ -289,18 +290,102 @@ test('series-cover history shows retained images and locks, retries image loadin
   await page.evaluate(()=>document.documentElement.classList.add('dark'));
   await page.screenshot({path:`.impeccable/review/metadata-h4-unverified-${testInfo.project.name}-dark.png`,animations:'disabled'});
   await dialog.getByRole('button',{name:'View changes',exact:true}).nth(2).click();
-  covers=dialog.getByRole('region',{name:'Series cover history'});
+  covers=dialog.getByRole('region',{name:'Cover history'});
   await expect(covers.getByText('No cover image was present.',{exact:true})).toBeVisible();
-  await expect(covers.getByRole('img',{name:'Before recorded series cover',exact:true})).toHaveCount(0);
+  await expect(covers.getByRole('img',{name:'Before recorded cover',exact:true})).toHaveCount(0);
   await covers.evaluate(element=>element.scrollIntoView({block:'center'}));
   await page.screenshot({path:`.impeccable/review/metadata-h4-absence-${testInfo.project.name}-dark.png`,animations:'disabled'});
   await page.evaluate(()=>document.documentElement.classList.remove('dark'));
   await page.screenshot({path:`.impeccable/review/metadata-h4-absence-${testInfo.project.name}-light.png`,animations:'disabled'});
   await dialog.getByRole('button',{name:'View changes',exact:true}).nth(3).click();
-  covers=dialog.getByRole('region',{name:'Series cover history'});
-  await expect(covers.getByText(/No series-cover snapshot was recorded for this operation/)).toBeVisible();
+  covers=dialog.getByRole('region',{name:'Cover history'});
   await expect(covers.getByRole('img')).toHaveCount(0);
   expect(approvals).toBe(0);
+});
+
+test('cover restore requires refreshed protection, explicit unreadable native locks and renewed conversion consent', async ({ page }, testInfo) => {
+  const entry = { id: 'cover-restore-source', sequence: 1, origin: 'provider-apply', status: 'completed', createdAt: '2026-11-16T08:00:00Z', fields: ['cover'], changedFields: ['cover'] };
+  const snapshot = { series: { id: 11, libraryId: 7, name: match.name }, fields: {} };
+  const saved: RecordedCover = { state: 'captured', assetId: 'a'.repeat(64), mediaType: 'image/png', byteSize: 512, nativeLocked: true, reason: null };
+  const current: RecordedCover = { ...saved, assetId: 'b'.repeat(64), nativeLocked: false };
+  const history: CoverHistory = {
+    series: { kind: 'series', name: 'Series cover', status: 'observed', before: saved, after: current, changed: true, requestedLock: null, writeAcknowledged: false, restoreAvailability: { before: { available: true, reason: null }, after: { available: true, reason: null } } },
+    volumes: [{ kind: 'volume', volumeId: 101, name: 'Volume 1', status: 'observed', before: { ...saved, nativeLocked: null }, after: { ...current, nativeLocked: null }, changed: true, requestedLock: true, writeAcknowledged: true, restoreAvailability: { before: { available: true, reason: null }, after: { available: true, reason: null } } }],
+  };
+  let policy = { lockedFields: ['cover'], revision: 0 }, previews = 0, approvals = 0;
+  let requested: RestorePreviewRequest;
+  await page.route('**/api/series/11/field-locks', route => {
+    if (route.request().method() === 'PUT') { const body = route.request().postDataJSON(); expect(body.expectedRevision).toBe(policy.revision); policy = { lockedFields: body.lockedFields, revision: policy.revision + 1 }; }
+    return route.fulfill({ json: policy });
+  });
+  await page.route('**/api/series/11', route => route.fulfill({ json: { series: snapshot.series, kavita: {}, match: null } }));
+  await page.route('**/api/providers/anilist/series/new-candidate', route => route.fulfill({ json: { ...match.candidate, titleOptions: [match.name], tags: [], genres: [], writers: [], artists: [] } }));
+  await page.route('**/api/series/11/metadata-history', route => route.fulfill({ json: { items: [entry], nextCursor: null } }));
+  await page.route('**/api/series/11/metadata-history/cover-restore-source', route => route.fulfill({ json: { ...entry, before: snapshot, after: snapshot, archives: [], covers: history, restoreAvailability: { before: [], after: [] } } }));
+  await page.route('**/api/series/11/metadata-history/*/assets/*', route => route.fulfill({ contentType: 'image/png', body: coverImage(170, 56, 106, 90, 128) }));
+  await page.route('**/api/series/11/metadata-restore-previews/*/assets/*', route => route.fulfill({ contentType: 'image/png', body: coverImage(11, 125, 102, 90, 128) }));
+  await page.route('**/api/series/11/metadata-history/cover-restore-source/restore-preview', route => {
+    requested = route.request().postDataJSON(); previews++;
+    const covers: CoverRestorePreview[] = (requested.covers ?? []).map(selection => {
+      const checkpoint = selection.kind === 'series' ? history.series! : history.volumes[0];
+      const nativeLock = selection.nativeLock ?? 'preserve';
+      const requestedLock = nativeLock === 'locked' ? true : nativeLock === 'unlocked' ? false : nativeLock === 'saved' ? checkpoint.before.nativeLocked : checkpoint.after.nativeLocked;
+      return { target: selection.kind === 'series' ? { kind: 'series' } : { kind: 'volume', volumeId: selection.volumeId! }, name: checkpoint.name, current: checkpoint.after, restoreTo: checkpoint.before, available: requestedLock !== null, reason: requestedLock === null ? 'Choose Locked or Unlocked explicitly, then refresh the preview' : null, nativeLock, requestedLock, nativeLockReadbackAvailable: checkpoint.after.nativeLocked !== null, laterEdit: false };
+    });
+    return route.fulfill({ json: { id: `cover-preview-${previews}`, operationId: entry.id, seriesId: 11, snapshot: requested.snapshot, expiresAt: new Date(Date.now() + 600000).toISOString(), policyRevision: policy.revision, requestedFields: [], effectiveFields: [], nativeLockFields: [], fields: [], archives: [], covers, conflicts: covers.filter(cover => !cover.available).map(cover => cover.reason), canRestore: covers.every(cover => cover.available) } });
+  });
+  await page.route('**/api/series/11/metadata-restore', route => {
+    const body = route.request().postDataJSON(); expect(body.acceptCoverConversion).toBe(true); expect(body.previewId).toBe('cover-preview-3'); approvals++;
+    return route.fulfill({ json: { id: 98 } });
+  });
+  await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
+  const dialog = page.getByRole('dialog'); await dialog.locator('summary').filter({ hasText: /^Metadata history$/ }).click();
+  await dialog.getByRole('button', { name: 'View changes', exact: true }).click();
+  await dialog.locator('summary').filter({ hasText: 'Volume 1 · Volume #101' }).click();
+  await expect(dialog.getByRole('region', { name: 'Cover history' }).getByText('Kavita cover lock: Not recorded', { exact: true }).first()).toBeVisible();
+  const restore = dialog.getByRole('region', { name: 'Restore metadata' });
+  await expect(restore.getByRole('checkbox', { name: 'Restore Series cover', exact: true })).toBeDisabled();
+  await restore.getByRole('button', { name: 'Unlock cover protection', exact: true }).click();
+  await restore.getByRole('checkbox', { name: 'Restore Series cover', exact: true }).check();
+  await restore.getByRole('combobox', { name: 'Kavita cover lock for Series cover', exact: true }).selectOption('saved');
+  await restore.getByRole('checkbox', { name: 'Restore Volume 1 (volume #101)', exact: true }).check();
+  await restore.getByRole('button', { name: 'Preview restore', exact: true }).click();
+  await expect(restore.getByRole('button', { name: 'Queue restore', exact: true })).toBeDisabled();
+  await expect(restore.getByText(/Choose Locked or Unlocked explicitly/).first()).toBeVisible();
+  await restore.getByRole('combobox', { name: 'Kavita cover lock for Volume 1 (volume #101)', exact: true }).selectOption('locked');
+  await restore.getByRole('button', { name: 'Preview restore', exact: true }).click();
+  await restore.getByRole('checkbox', { name: 'I reviewed these current and restore values.' }).check();
+  const consent = restore.getByRole('checkbox', { name: "I accept Kavita's image conversion and the explicitly reviewed native-lock choices/readback limits." });
+  await consent.check();
+  await restore.getByRole('combobox', { name: 'Kavita cover lock for Series cover', exact: true }).selectOption('unlocked');
+  await expect(restore.getByRole('button', { name: 'Queue restore', exact: true })).toHaveCount(0);
+  await restore.getByRole('button', { name: 'Preview restore', exact: true }).click();
+  await restore.getByRole('checkbox', { name: 'I reviewed these current and restore values.' }).check();
+  await expect(consent).not.toBeChecked();
+  await expect(restore.getByRole('button', { name: 'Queue restore', exact: true })).toBeDisabled();
+  for (const image of await restore.getByRole('img').all()) {
+    await image.scrollIntoViewIfNeeded();
+    await expect.poll(() => image.evaluate(element => (element as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  }
+  await expect(restore.getByText('Loading retained cover…', { exact: true })).toHaveCount(0);
+  await restore.getByRole('heading', { name: 'Cover image changes', exact: true }).evaluate(element => element.scrollIntoView({ block: 'start' }));
+  await expect(restore.getByRole('img', { name: 'Current recorded cover', exact: true }).first()).toBeVisible();
+  expect(await restore.evaluate(element => element.scrollWidth > element.clientWidth + 1)).toBe(false);
+  await page.screenshot({ path: `.impeccable/review/metadata-cover-restore-${testInfo.project.name}-light.png`, animations: 'disabled' });
+  await page.evaluate(() => document.documentElement.classList.add('dark'));
+  await page.screenshot({ path: `.impeccable/review/metadata-cover-restore-${testInfo.project.name}-dark.png`, animations: 'disabled' });
+  await consent.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `.impeccable/review/metadata-cover-consent-${testInfo.project.name}-dark.png`, animations: 'disabled' });
+  await page.evaluate(() => document.documentElement.classList.remove('dark'));
+  await page.screenshot({ path: `.impeccable/review/metadata-cover-consent-${testInfo.project.name}-light.png`, animations: 'disabled' });
+  await consent.check();
+  expect(requested!.fields).toEqual([]);
+  expect(requested!.covers?.find(cover => cover.kind === 'series')?.nativeLock).toBe('unlocked');
+  expect(requested!.covers?.find(cover => cover.kind === 'volume')?.volumeId).toBe(101);
+  expect(requested!.covers?.find(cover => cover.kind === 'volume')?.nativeLock).toBe('locked');
+  await restore.getByRole('button', { name: 'Queue restore', exact: true }).click();
+  await expect(restore.getByRole('link', { name: 'View Task #98' })).toBeVisible();
+  expect(approvals).toBe(1);
 });
 
 test('metadata history retries failed loading and explains an empty history', async ({ page }) => {
@@ -315,7 +400,6 @@ test('metadata history retries failed loading and explains an empty history', as
   failing = false;
   await dialog.getByRole('button', { name: 'Retry history', exact: true }).click();
   await expect(dialog.getByText('No recorded metadata changes yet.', { exact: true })).toBeVisible();
-  await expect(dialog.getByText(/Review selected metadata and archive values before restoring/)).toBeVisible();
 });
 
 test('metadata restore requires preview review, preserves locks by default and queues only selected fields', async ({ page }, testInfo) => {
@@ -450,7 +534,7 @@ test('title and archive restoration reviews paired files, explicit XML replaceme
 });
 
 test('metadata restore conflicts require explicit protection unlock and a fresh preview; queue errors stay reviewable', async ({ page }, testInfo) => {
-  let policy = { lockedFields: ['summary'], revision: 0 };
+  let policy = { lockedFields: [] as string[], revision: 0 };
   let previews = 0;
   let approvals = 0;
   const entry = { id: 'protected-source', sequence: 1, origin: 'provider-apply', status: 'completed', createdAt: '2026-11-16T08:00:00Z', fields: ['summary'], changedFields: ['summary'], message: null, jobId: null, restoredFromOperationId: null };
@@ -475,6 +559,11 @@ test('metadata restore conflicts require explicit protection unlock and a fresh 
   await dialog.getByRole('button', { name: 'View changes', exact: true }).click();
   const restore = dialog.getByRole('region', { name: 'Restore metadata' });
   await restore.getByRole('checkbox', { name: 'Description', exact: false }).first().check();
+  const protection = dialog.locator('details').filter({ has: page.locator('summary').filter({ hasText: 'Protected from H-Tosho sync' }) });
+  await protection.locator('summary').click();
+  await protection.getByRole('checkbox', { name: 'Description', exact: true }).click();
+  await expect(protection.getByRole('checkbox', { name: 'Description', exact: true })).toBeChecked();
+  await expect(restore.getByRole('checkbox', { name: 'Description', exact: false }).first()).toBeDisabled();
   await restore.getByRole('button', { name: 'Preview restore', exact: true }).click();
   await expect(restore.getByText('Description is protected; review required')).toBeVisible();
   await expect(restore.getByRole('button', { name: 'Queue restore', exact: true })).toBeDisabled();
@@ -483,7 +572,7 @@ test('metadata restore conflicts require explicit protection unlock and a fresh 
   await page.evaluate(() => document.documentElement.classList.add('dark'));
   await page.screenshot({ path: `.impeccable/review/metadata-restore-conflict-${testInfo.project.name}-dark.png`, animations: 'disabled' });
   await page.evaluate(() => document.documentElement.classList.remove('dark'));
-  await restore.getByRole('button', { name: 'Unlock Description', exact: true }).click();
+  await restore.getByRole('button', { name: 'Unlock Description', exact: true }).first().click();
   await expect(restore.getByRole('heading', { name: 'Review restore preview' })).toHaveCount(0);
   expect(policy.lockedFields).toEqual([]);
   await restore.getByRole('button', { name: 'Preview restore', exact: true }).click();

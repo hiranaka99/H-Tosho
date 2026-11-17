@@ -4,12 +4,13 @@ import { getDb, initDb, schema } from './db/index.js';
 import { createApp } from './app.js';
 import { jobQueue } from './jobs/queue.js';
 import { runJob } from './jobs/executor.js';
-import { getCredentialMap, getKavitaConnection, getPollIntervalHours, getWatchedSearchIntervalMinutes, onSettingChange } from './services/settings.js';
-import { backfillNewGalleries, countWatchedSearches } from './services/watchedSearches.js';
+import { getCredentialMap, getKavitaConnection, getPollIntervalHours, onSettingChange } from './services/settings.js';
+import { backfillNewGalleries, initializeWatchedSchedule, rescheduleWatchedSearches, dueWatchedSearchIds } from './services/watchedSearches.js';
 import { downloadQueue } from './downloader/engine.js';
 import { startRecommendationPreloading } from './services/recommendations.js';
 import { interruptMetadataHistory } from './services/metadataHistory.js';
 import { interruptMetadataRestore } from './services/metadataRestore.js';
+import { dispatchFollowingDeliveries, interruptFollowingDeliveries } from './services/followingDelivery.js';
 
 const PORT = Number(process.env.PORT ?? 8787);
 // Local-only by default. Set HOST=0.0.0.0 deliberately for remote access;
@@ -18,6 +19,7 @@ const HOST = process.env.HOST ?? '127.0.0.1';
 
 function main(): void {
   initDb();
+  interruptFollowingDeliveries();
   interruptMetadataHistory();
   // Replay "new since last check" finds that older builds never persisted to the
   // "recently added" feed (no-op on databases already up to date).
@@ -69,25 +71,26 @@ function main(): void {
     }
   }
 
-  let watchedTimer: NodeJS.Timeout | undefined;
-  function scheduleWatchedSearches(): void {
-    clearTimeout(watchedTimer);
-    const intervalMinutes = getWatchedSearchIntervalMinutes();
-    if (intervalMinutes > 0) {
-      watchedTimer = setTimeout(async () => {
-        if (countWatchedSearches() > 0 && !jobQueue.active().some((j) => j.type === 'check-watched-searches')) {
-          jobQueue.enqueue('check-watched-searches', {});
-        }
-        scheduleWatchedSearches();
-      }, intervalMinutes * 60_000);
-      watchedTimer.unref?.();
-    }
+  initializeWatchedSchedule();
+  function sweepWatchedSearches(): void {
+    if (jobQueue.active().some(job => job.type === 'check-watched-searches')) return;
+    const watchIds = dueWatchedSearchIds();
+    if (watchIds.length) jobQueue.enqueue('check-watched-searches', { mode: 'due', watchIds });
   }
+  const watchedTimer = setInterval(sweepWatchedSearches, 15_000);
+  watchedTimer.unref();
+  const sweepDeliveries = () => { void dispatchFollowingDeliveries().catch(() => console.error('[h-tosho] Following delivery sweep failed; inspect application storage and notification settings.')); };
+  const deliveryTimer = setInterval(sweepDeliveries, 5_000);
+  deliveryTimer.unref();
+  sweepDeliveries();
 
   const unsubscribePollInterval = onSettingChange('poll-interval', scheduleScan);
-  const unsubscribeWatchedSearchInterval = onSettingChange('watched-search-interval', scheduleWatchedSearches);
+  const unsubscribeWatchedSearchInterval = onSettingChange('watched-search-interval', () => {
+    rescheduleWatchedSearches();
+    sweepWatchedSearches();
+  });
   scheduleScan();
-  scheduleWatchedSearches();
+  sweepWatchedSearches();
   const app = createApp();
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST });
   console.log(`[h-tosho] listening on http://${HOST}:${PORT} (api at /api)`);
@@ -98,7 +101,8 @@ function main(): void {
     unsubscribePollInterval();
     unsubscribeWatchedSearchInterval();
     clearTimeout(pollTimer);
-    clearTimeout(watchedTimer);
+    clearInterval(watchedTimer);
+    clearInterval(deliveryTimer);
     clearInterval(matchableTimer);
     stopRecommendationPreloading();
     server.close(() => process.exit(0));

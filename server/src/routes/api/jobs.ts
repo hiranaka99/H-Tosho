@@ -5,6 +5,7 @@ import { desc } from 'drizzle-orm';
 import { getDb, schema } from '../../db/index.js';
 import { jobQueue, type JobPayload } from '../../jobs/queue.js';
 import { validateMergeDownloads } from '../../jobs/mergeDownloads.js';
+import { followingDeliverySummary } from '../../services/followingDelivery.js';
 
 import { resolveJobContext, errMsg, intParam } from './helpers.js';
 export const api = new Hono();
@@ -14,6 +15,7 @@ api.post('/jobs', async (c) => {
   try { command = parseJobCommand(body?.type, body); validateMergeDownloads('downloads' in command.payload ? command.payload.downloads : undefined); }
   catch (error) { return c.json({ error: errMsg(error) }, 400); }
   if (command.type === 'restore-metadata') return c.json({ error: 'Restore requires a reviewed metadata preview; use the series restore action' }, 409);
+  if (command.type === 'check-watched-searches') return c.json({ error: 'Use the Following check action; scheduled checks are selected by the server' }, 409);
   const payload: JobPayload = command.payload;
   if (body.type === 'merge-series' && payload.downloads?.length) {
     try {
@@ -27,7 +29,7 @@ api.post('/jobs', async (c) => {
   return c.json({ id }, 202);
 });
 
-api.get('/jobs', (c) => c.json(jobQueue.list(100)));
+api.get('/jobs', (c) => c.json(jobQueue.list(100).map(job => job.type === 'check-watched-searches' ? { ...job, followingDelivery: followingDeliverySummary(job.id) } : job)));
 
 api.delete('/jobs/failed', (c) => c.json({ removed: jobQueue.clearFailed() }));
 
@@ -45,7 +47,7 @@ api.get('/jobs/:id', (c) => {
   if (id === null) return c.json({ error: 'Invalid job id' }, 400);
   const job = jobQueue.get(id);
   if (!job) return c.json({ error: 'Job not found' }, 404);
-  return c.json({ job, logs: jobQueue.logs(job.id) });
+  return c.json({ job: job.type === 'check-watched-searches' ? { ...job, followingDelivery: followingDeliverySummary(job.id) } : job, logs: jobQueue.logs(job.id) });
 });
 
 api.post('/jobs/:id/cancel', (c) => {

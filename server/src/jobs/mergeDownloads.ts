@@ -4,17 +4,19 @@ import { downloadQueue } from '../downloader/engine.js';
 import { getDownloaderSettings } from '../services/settings.js';
 import { sleep } from '../lib/http.js';
 import { JobCancelled, jobQueue, type Job, type LogFn } from './queue.js';
+import { getDb,schema } from '../db/index.js';
+import { and,eq } from 'drizzle-orm';
 
 export { validMergeChapter, validateMergeDownloads } from '../contracts/jobs.js';
 
 /** All galleries must finish before any archives move or existing chapter drafts commit. */
-export async function prepareMergeDownloads(job: Job, log: LogFn): Promise<{ files: string[]; chapters: Record<string, string> }> {
+export async function prepareMergeDownloads(job: Job, log: LogFn, signal?:AbortSignal): Promise<{ files: string[]; chapters: Record<string, string> }> {
   const plans = job.payload.downloads ?? [];
   if (!plans.length) return { files: [], chapters: {} };
   if (!getDownloaderSettings().downloadDirectory.trim()) throw new Error('Set an output folder in Downloader settings before starting merge downloads.');
   const queue = downloadQueue;
   const tracked: { plan: typeof plans[number]; id: number; owned: boolean }[] = [];
-  const checkCancelled = () => { if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled(); };
+  const checkCancelled = () => { if (signal?.aborted || jobQueue.isCancelRequested(job.id)) throw new JobCancelled(); };
   const archiveExists = (task: ReturnType<typeof queue.get>) => !!task?.outputPath?.toLowerCase().endsWith('.cbz') && fs.existsSync(task.outputPath);
   const remember = (key: string, id: number) => {
     job.payload.mergeDownloadIds = { ...job.payload.mergeDownloadIds, [key]: id };
@@ -35,6 +37,12 @@ export async function prepareMergeDownloads(job: Job, log: LogFn): Promise<{ fil
       if (task?.mergeJobId != null && task.mergeJobId !== job.id) {
         const owner = jobQueue.get(task.mergeJobId);
         if (owner?.status === 'queued' || owner?.status === 'running') throw new Error(`${plan.title} is already assigned to merge job #${owner.id}. Finish or cancel that merge in Jobs first.`);
+      }
+      if (saved!==undefined && task?.mergeJobId!=null && task.mergeJobId!==job.id) {
+        // A verified retry assumes its inactive predecessor's reservation, never
+        // an independent task. The owner conflict above remains authoritative.
+        getDb().update(schema.downloadQueue).set({mergeJobId:job.id}).where(and(eq(schema.downloadQueue.id,task.id),eq(schema.downloadQueue.mergeJobId,task.mergeJobId))).run();
+        task=queue.get(task.id);
       }
       if (task?.status === 'failed' && task.mergeJobId != null && !queue.hasPendingRetry(task.id) && !queue.isRunning(task.id)) {
         queue.retry(task.id);

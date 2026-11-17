@@ -1,5 +1,5 @@
 import { pathContains } from '../lib/paths.js';
-import { archiveMutations, archiveResource } from '../lib/mutations.js';
+import { archiveMutations, archiveResource, libraryMutations } from '../lib/mutations.js';
 import { downloadPages } from './transfer.js';
 import { wakePaused, type RunContext, type LiveFields } from './runtime.js';
 import { isTransientError, retryTransient, classifyDownloadError } from './requests.js';
@@ -21,6 +21,10 @@ import { getDoujinProvider } from './providers.js';
 import type { DoujinGallery, DoujinSource } from './types.js';
 import { getDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
 import { recordGalleryTags } from '../services/recommendations.js';
+import { jobQueue } from '../jobs/queue.js';
+import { KavitaClient } from '../kavita/client.js';
+import { getKavitaConnection } from '../services/settings.js';
+import { resolveMergeProtection, requireMergeProtection } from '../services/mergeProtection.js';
 
 /**
  * Doujinshi download queue engine.
@@ -673,7 +677,7 @@ export class DownloadQueue {
         const old = row.outputPath ? archiveResource(row.outputPath) : null;
         const next = archiveResource(destination);
         // Existing folder reservations already conflict with overlapping folder operations.
-        if (old && (pathContains(old, next) || pathContains(next, old))) await publish();
+        if (row.mergeFolder || old && (pathContains(old, next) || pathContains(next, old))) await publish();
         else await archiveMutations.run([next], publish, ctx.controller.signal);
 
       } catch (e) {
@@ -702,7 +706,7 @@ export class DownloadQueue {
     };
     const previous = row.outputPath ? archiveResource(row.outputPath) : null;
     try {
-      if (previous) await archiveMutations.run([previous], perform, ctx.controller.signal);
+      if (previous && !row.mergeFolder) await archiveMutations.run([previous], perform, ctx.controller.signal);
       else await perform();
     } catch (error) {
       // Cancellation can reject a reservation before perform() enters its cleanup block.
@@ -767,10 +771,31 @@ export class DownloadQueue {
       const stagedFile = path.join(stagingDir, 'archive.cbz');
       await buildZipFromFiles(images, stagedFile, [{ name: 'ComicInfo.xml', data: Buffer.from(comicInfo, 'utf8') }]);
       if (ctx.cancelled) throw new Error('Cancelled by user');
-      ctx.committing = true;
-      fs.mkdirSync(dir, { recursive: true });
-      await replacePublishedFile(stagedFile, file);
-      return file;
+      const publish = async () => {
+        const current = this.readRow(row.id);
+        const mergeJob = current?.mergeJobId != null ? jobQueue.get(current.mergeJobId) : null;
+        if (mergeJob && (mergeJob.validationError || mergeJob.status==='failed' || mergeJob.status==='cancelled')) throw new Error(mergeJob.status==='cancelled' ? 'Cancelled by user' : 'Merge job cannot authorize this download publication; retry the merge after reviewing its failure');
+        if (row.mergeFolder || mergeJob) {
+          const conn = getKavitaConnection();
+          if (!conn.baseUrl || !conn.apiKey) throw new Error('Kavita is required to verify merged download protection');
+          const client = new KavitaClient(conn.baseUrl,conn.apiKey);
+          const request = mergeJob ? {seriesId:mergeJob.payload.seriesId,targetDir:mergeJob.payload.targetDir,sourceFiles:mergeJob.payload.sourceFiles,sourceSeriesIds:mergeJob.payload.sourceSeriesIds,seriesName:mergeJob.payload.seriesName}
+            : {targetDir:dir,seriesName:row.mergeFolder!};
+          const checked = await resolveMergeProtection(client,request,mergeJob?.payload.mergeProtection);
+          requireMergeProtection(checked.preview);
+          if (mergeJob) jobQueue.updateMergeState(mergeJob.id,{mergeProtection:checked.state});
+        }
+        if (ctx.cancelled) throw new Error('Cancelled by user');
+        ctx.committing = true;
+        fs.mkdirSync(dir, { recursive: true });
+        await replacePublishedFile(stagedFile, file);
+        return file;
+      };
+      // Legacy direct-merge tasks acquire library BEFORE archive ownership and
+      // only after pages/packing finish. New jobs publish protected targets in
+      // the executor; their downloads only publish independent staging files.
+      if (row.mergeFolder) return await libraryMutations.run(['*'],()=>archiveMutations.run([archiveResource(dir),...(row.outputPath ? [archiveResource(row.outputPath)] : [])],publish,ctx.controller.signal),ctx.controller.signal);
+      return await publish();
     } finally {
       await fs.promises.rm(stagingDir, { recursive: true, force: true });
     }
@@ -803,3 +828,7 @@ function pickLiveFields(t: DownloadTask): LiveFields {
 
 /** Shared singleton wired to live settings at construction time. */
 export const downloadQueue = new DownloadQueue(() => getDownloaderSettings());
+
+jobQueue.registerMergeDownloadCanceller(jobId=>{
+  for (const task of getDb().select({id:schema.downloadQueue.id}).from(schema.downloadQueue).where(eq(schema.downloadQueue.mergeJobId,jobId)).all()) downloadQueue.cancel(task.id);
+});

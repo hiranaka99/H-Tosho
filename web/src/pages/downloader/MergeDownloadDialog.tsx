@@ -9,6 +9,7 @@ export { folderNameFrom } from '../../lib/mergeNames';
 
 import { DOWNLOADER_SETTINGS_URL, type DownloadSetup } from './state';
 import { DownloadDestination } from './DownloadSetup';
+import { useMergeProtectionReview } from '../../components/MergeProtectionReview';
 
 /**
  * Confirm dialog for queued merged downloads: all selected galleries land in one
@@ -39,6 +40,9 @@ export function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm, 
   };
   const numberErrors = chapterErrors(numbers.map((value, index) => ({ key: String(index), value, changed: true })));
   const folderError = /[\\/]/.test(folder) ? 'Use a series name without slashes.' : mergeSeriesNameError(folder);
+  const directory = setup.directory;
+  const targetDir = setup.status === 'ready' && directory ? `${directory}${directory.includes('\\') ? '\\' : '/'}${folder.trim()}` : undefined;
+  const protection = useMergeProtectionReview({targetDir,seriesName:folder.trim()},setup.status === 'ready' && !!targetDir && !folderError,JSON.stringify(numbers));
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !pending) onClose(); }}>
       <DialogContent className="sm:max-w-lg" onEscapeKeyDown={event => { if (pending) event.preventDefault(); }} onPointerDownOutside={event => { if (pending) event.preventDefault(); }}>
@@ -82,10 +86,11 @@ export function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm, 
               </div>
             ))}
           </div>
+          {protection.review}
         </div>
         <div className="flex justify-end gap-2 border-t border-border p-4">
           <Button variant="ghost" disabled={pending} onClick={onClose}>Cancel</Button>
-          <Button disabled={pending || !folder.trim() || !!folderError || Object.keys(numberErrors).length > 0 || setup.status !== 'ready' || setup.format !== 'cbz'} onClick={() => onConfirm(folder.trim(), numbers.map((n) => (n.trim() === '' ? null : Number(n))))}>
+          <Button disabled={pending || !protection.ready || !folder.trim() || !!folderError || Object.keys(numberErrors).length > 0 || setup.status !== 'ready' || setup.format !== 'cbz'} onClick={() => { void protection.ensureCurrent().then(()=>onConfirm(folder.trim(), numbers.map((n) => (n.trim() === '' ? null : Number(n))))).catch(()=>{}); }}>
             {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : result?.failures.length ? <RotateCcw className="h-4 w-4" /> : <Combine className="h-4 w-4" />} {pending ? 'Queuing…' : result?.failures.length ? `Retry remaining (${result.failures.length})` : `Download ${items.length} ${items.length === 1 ? 'gallery' : 'galleries'}`}
           </Button>
         </div>
@@ -94,11 +99,3 @@ export function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm, 
   );
 }
 
-// ---------------- Watched searches tab ----------------
-
-/**
- * Saved searches that ping Discord when they find new galleries. Owns its own
- * query observer (30s poll — auto-scan results land while the tab is open) so
- * refetches never re-render the rest of the page; the search tab's Watch
- * button shares the same cache key.
- */

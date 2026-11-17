@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import fs from 'node:fs';
 import path from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { getDb, schema } from '../../db/index.js';
 import { getDownloaderSettings } from '../../services/settings.js';
 import { downloadQueue } from '../../downloader/engine.js';
@@ -12,8 +12,11 @@ import { type DoujinSource } from '../../downloader/types.js';
 import { listCbzFiles, readCoverImage } from '../../lib/cbz.js';
 import { galleryFilesystemName, sanitizeFilename } from '../../downloader/util.js';
 import { mapLimit } from '../../lib/http.js';
+import { jobQueue } from '../../jobs/queue.js';
+import type { MergeProtectionState } from '../../contracts/mergeProtection.js';
+import { resolveMergeProtection, requireMergeProtection, MergeProtectionError } from '../../services/mergeProtection.js';
 
-import { errMsg, intParam } from './helpers.js';
+import { connectedClient, errMsg, intParam } from './helpers.js';
 export const api = new Hono();
 api.post('/downloads/library-matches', async (c) => {
   const body = await c.req.json() as { items?: unknown[] };
@@ -36,9 +39,34 @@ api.post('/downloads/duplicates', async (c) => {
 });
 
 type DownloadInput = { source: string; galleryId: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number; priority?: number; allowDuplicate?: boolean };
+interface MergeDownloadGroup {
+  protection: MergeProtectionState;
+  plans: {source:DoujinSource;galleryId:string;title:string;chapter:string;allowDuplicate:boolean}[];
+  ids: Record<string,number>;
+}
+
+async function prepareMergeGroup(folder: string): Promise<MergeDownloadGroup> {
+  const client = connectedClient();
+  if (!folder.trim() || /[\\/\u0000-\u001f\u007f]/.test(folder)) throw new MergeProtectionError('mergeFolder must be a plain series name without control characters',400);
+  if (!client) throw new MergeProtectionError('Kavita is required to review merged download protection');
+  const dl = getDownloaderSettings();
+  if (!dl.downloadDirectory.trim()) throw new MergeProtectionError('Set an output folder in Downloader settings before starting merged downloads',400);
+  const targetDir = path.join(path.resolve(dl.downloadDirectory),sanitizeFilename(folder,'merged'));
+  const reviewed = await resolveMergeProtection(client,{targetDir,seriesName:folder});
+  requireMergeProtection(reviewed.preview);
+  return {protection:reviewed.state,plans:[],ids:{}};
+}
+
+/** Siblings are registered before one protected merge commitment can start. */
+function commitMergeGroup(group: MergeDownloadGroup): void {
+  if (!group.plans.length) return;
+  const id = jobQueue.enqueue('merge-series',{targetDir:group.protection.targetDir,seriesName:group.protection.seriesName,downloads:group.plans});
+  jobQueue.updateMergeState(id,{mergeProtection:group.protection,mergeDownloadIds:group.ids});
+  getDb().update(schema.downloadQueue).set({mergeJobId:id}).where(inArray(schema.downloadQueue.id,Object.values(group.ids))).run();
+}
 
 /** Resolve and validate before starting workers, so a batch is registered together. */
-async function prepareDownload(body: DownloadInput): Promise<Response | (() => Response)> {
+async function prepareDownload(body: DownloadInput, group?: MergeDownloadGroup): Promise<Response | (() => Response)> {
   const respond = (value: unknown, status: number) => Response.json(value, { status });
   if (!body || typeof body !== 'object' || typeof body.source !== 'string' || typeof body.galleryId !== 'string' || !body.source || !body.galleryId.trim()) return respond({ error: 'source and galleryId are required' }, 400);
   if (getDoujinProvider(body.source)?.id !== body.source) return respond({ error: `Unknown source: ${body.source}` }, 400);
@@ -52,6 +80,7 @@ async function prepareDownload(body: DownloadInput): Promise<Response | (() => R
   if (outputFormat !== 'cbz' && outputFormat !== 'folder') return respond({ error: 'format must be cbz or folder' }, 400);
   if (mergeFolder && outputFormat === 'folder') return respond({ error: 'Merged downloads require CBZ output' }, 400);
   const chapter = typeof body.chapter === 'number' && Number.isFinite(body.chapter) ? body.chapter : undefined;
+  if (mergeFolder && body.chapter !== undefined && (typeof body.chapter !== 'number' || !Number.isFinite(body.chapter) || body.chapter <= 0)) return respond({error:'Merged chapter numbers must be positive numbers or blank'},400);
   // Duplicate guard: a completed task for this gallery already exists. Re-downloading
   // is possible via the queue's Retry action, which re-runs the stored task.
   const done = downloadQueue.findCompleted(body.source as DoujinSource, body.galleryId);
@@ -74,7 +103,11 @@ async function prepareDownload(body: DownloadInput): Promise<Response | (() => R
       if (downloadQueue.findActive(body.source as DoujinSource, body.galleryId)) return respond({ error: 'already-queued' }, 409);
       const check = findDuplicateReports(identities);
       if (body.allowDuplicate !== true && check.reports.some(report => report.matches.length)) return respond({ error: 'possible-duplicate', ...check }, 409);
-      const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, identities[0].title, outputFormat, mergeFolder, chapter, priority);
+      const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, identities[0].title, outputFormat, group ? undefined : mergeFolder, chapter, priority);
+      if (group) {
+        group.plans.push({source:body.source as DoujinSource,galleryId:body.galleryId,title:identities[0].title,chapter:chapter === undefined ? '' : String(chapter),allowDuplicate:body.allowDuplicate === true});
+        group.ids[`${body.source}:${body.galleryId}`] = id;
+      }
       return respond({ id, status: 'queued' }, 202);
     };
   } catch (error) { return respond({ error: 'Could not check for duplicates', message: errMsg(error) }, 502); }
@@ -82,8 +115,20 @@ async function prepareDownload(body: DownloadInput): Promise<Response | (() => R
 
 /** Enqueue a gallery download. */
 api.post('/downloads', async (c) => {
-  const prepared = await prepareDownload(await c.req.json());
-  return typeof prepared === 'function' ? prepared() : prepared;
+  const body: DownloadInput = await c.req.json();
+  if (body?.mergeFolder && (body.format ?? getDownloaderSettings().format) === 'folder') return c.json({error:'Merged downloads require CBZ output'},400);
+  try {
+    const group = typeof body?.mergeFolder === 'string' && body.mergeFolder.trim() ? await prepareMergeGroup(body.mergeFolder.trim()) : undefined;
+    const prepared = await prepareDownload(body,group);
+    if (group) {
+      const checked = await resolveMergeProtection(connectedClient()!,{targetDir:group.protection.targetDir,seriesName:group.protection.seriesName},group.protection);
+      requireMergeProtection(checked.preview);
+      group.protection = checked.state;
+    }
+    const response = typeof prepared === 'function' ? prepared() : prepared;
+    if (group) commitMergeGroup(group);
+    return response;
+  } catch(error) { return c.json({error:errMsg(error)},error instanceof MergeProtectionError ? error.status : 502); }
 });
 
 /** Prepare the entire merged selection before any chapter can complete. */
@@ -93,9 +138,18 @@ api.post('/downloads/merged', async (c) => {
   if (!Array.isArray(body.items) || !body.items.length || body.items.length > 100
     || body.items.some((item: DownloadInput) => !item || typeof item.source !== 'string' || typeof item.galleryId !== 'string')
     || new Set(body.items.map((item: DownloadInput) => `${item.source}:${item.galleryId}`)).size !== body.items.length) return c.json({ error: 'Provide 1–100 distinct galleries.' }, 400);
-  const prepared = await mapLimit(body.items as DownloadInput[], 3, item => prepareDownload({ ...item, format: 'cbz', mergeFolder: body.mergeFolder }));
-  // No await between inserts: every sibling exists before a worker can finish.
+  let group: MergeDownloadGroup;
+  try { group = await prepareMergeGroup(body.mergeFolder.trim()); }
+  catch(error) { return c.json({error:errMsg(error)},error instanceof MergeProtectionError ? error.status : 502); }
+  const prepared = await mapLimit(body.items as DownloadInput[], 3, item => prepareDownload({ ...item, format: 'cbz', mergeFolder: body.mergeFolder },group));
+  try {
+    const checked = await resolveMergeProtection(connectedClient()!,{targetDir:group.protection.targetDir,seriesName:group.protection.seriesName},group.protection);
+    requireMergeProtection(checked.preview);
+    group.protection = checked.state;
+  } catch(error) { return c.json({error:errMsg(error)},error instanceof MergeProtectionError ? error.status : 502); }
+  // No await between inserts and durable merge linkage.
   const responses = prepared.map(item => typeof item === 'function' ? item() : item);
+  commitMergeGroup(group);
   const items = await Promise.all(responses.map(async (response, index) => ({
     source: body.items[index].source, galleryId: body.items[index].galleryId, ...(await response.json() as Record<string, unknown>),
   })));

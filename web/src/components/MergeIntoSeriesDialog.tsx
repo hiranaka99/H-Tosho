@@ -8,6 +8,7 @@ import { chapterErrors, chapterNumber } from '../lib/chapterNumbers';
 import { useDownloads } from '../lib/DownloadsContext';
 import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, Switch } from './ui';
 import { toast } from '../lib/toast';
+import { useMergeProtectionReview } from './MergeProtectionReview';
 
 interface TargetOption {
   id: number;
@@ -152,13 +153,16 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
   const resolving = entries.some(entry => entry.resolving);
   const downloadReady = !downloadEntries.length || (setup.status === 'ready' && !!setup.directory);
   const canQueue = targetReady && items.length > 0 && !resolving && !entries.some(entry => entry.lookupError) && downloadReady && !hasErrors && !nameError;
+  const protection = useMergeProtectionReview({seriesId:targetId ?? undefined,sourceFiles,...(rename && seriesName.trim() ? {seriesName:seriesName.trim()} : {})},canQueue,JSON.stringify(drafts));
 
   const { checkDuplicates, reviewCheck, dialog: duplicateDialog } = useDuplicateReview();
   const save = useMutation({
     mutationFn: async (submission: MergeSubmission) => {
       const approved = await checkDuplicates(submission.downloads);
       if (approved === null) return null;
-      const enqueue = (keys: Set<string>) => api.enqueue('merge-series', {
+      const enqueue = async (keys: Set<string>) => {
+        await protection.ensureCurrent();
+        return api.enqueue('merge-series', {
         seriesId: submission.seriesId,
         sourceFiles: submission.sourceFiles,
         chapters: submission.chapters,
@@ -166,6 +170,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
         ...(submission.seriesName ? { seriesName: submission.seriesName } : {}),
         downloads: submission.downloads.map(plan => ({ ...plan, allowDuplicate: keys.has(`${plan.source}:${plan.galleryId}`) })),
       });
+      };
       try { return await enqueue(approved); }
       catch (error) {
         if (!(error instanceof ApiError) || error.message !== 'possible-duplicate') throw error;
@@ -325,6 +330,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
               </div>)}
             </div>
           </section>
+          {protection.review}
         </div>
 
         <div className="shrink-0 space-y-3 border-t border-border p-4">
@@ -336,7 +342,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
           </div>}
           <div className="flex flex-wrap justify-end gap-2">
             <Button variant="outline" size="sm" disabled={busy} onClick={dismiss}>Cancel</Button>
-            <Button size="sm" onClick={submit} disabled={!canQueue || busy}>
+            <Button size="sm" onClick={submit} disabled={!canQueue || !protection.ready || busy}>
               {busy ? <Spinner /> : <Merge className="h-3.5 w-3.5" />} {busy ? 'Queuing…' : `Queue merge (${items.length} ${items.length === 1 ? 'gallery' : 'galleries'})`}
             </Button>
           </div>

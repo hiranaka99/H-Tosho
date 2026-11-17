@@ -1,15 +1,15 @@
 import { waitForScan, type ScanOutcome } from './scans.js';
 import path from 'node:path';
+import fs from 'node:fs';
+import { archiveResource } from '../lib/mutations.js';
 import { KavitaClient } from './client.js';
 import type { KavitaChapterDto } from './types.js';
 import { getDownloaderSettings, getKavitaConnection } from '../services/settings.js';
-import { listCbzFiles, readComicInfo } from '../lib/cbz.js';
 import { lastSegment, pathContains, safeRealpath } from '../lib/paths.js';
-import { mapKavitaPathToLocalPath, resolveSeriesHostDir } from './libraryPaths.js';
+import { mapKavitaPathToLocalPath } from './libraryPaths.js';
 import { getDb, schema } from '../db/index.js';
 import { inArray } from 'drizzle-orm';
 import { sleep } from '../lib/http.js';
-import { parseComicInfo } from '../downloader/comicinfo.js';
 import { JobCancelled, type Job, type LogFn } from '../jobs/queue.js';
 import { rememberTargets, rememberLibraries, throwIfJobCancelled } from '../jobs/context.js';
 /** Best-effort Kavita refresh after a local ComicInfo edit. */
@@ -212,67 +212,39 @@ export async function runKavitaLibraryScan(client: KavitaClient, libs: { id: num
   await waitForKavitaTasksToDrain(client, log, 'library scan', Date.now() + SCAN_WAIT_TIMEOUT_MS, jobId);
 }
 
-/** Resolve the exact Kavita series records owning source folders before a merge moves them away. */
-export async function sourceSeriesIdsForMerge(sourceFiles: string[], targetDir: string, log: LogFn, job: Job): Promise<number[]> {
-  try {
-    const conn = getKavitaConnection();
-    if (!conn.baseUrl || !conn.apiKey) return [];
-    const client = new KavitaClient(conn.baseUrl, conn.apiKey);
-    const norm = (p: string): string => path.normalize(p).replace(/\\/g, '/').toLowerCase();
-    const target = norm(targetDir);
-    const sourceDirs = new Set(sourceFiles.map((file) => norm(path.dirname(file))).filter((dir) => dir !== target && !target.startsWith(`${dir}/`)));
-    const dl = getDownloaderSettings();
-    const downloadDirectory = dl.downloadDirectory;
-    const anchors = [...sourceDirs].map((dir) => path.dirname(dir));
-    if (downloadDirectory) anchors.push(path.resolve(downloadDirectory));
-    const ids: number[] = [];
-    for (const lib of await client.getLibraries()) {
-      let series;
-      try {
-        series = await client.getSeries(lib.id);
-      } catch {
-        continue;
-      }
-      for (const item of series) {
-        const hostDir = resolveSeriesHostDir({ libraryPath: lib.path, folderPath: item.folderPath, anchors, mappings: dl.libraryPathMappings });
-        if (hostDir && sourceDirs.has(norm(hostDir))) {
-          rememberTargets(job, [{ id: item.id, name: item.name, libraryId: lib.id }]);
-          ids.push(item.id);
-        }
-        if (hostDir && norm(hostDir) === target) {
-          rememberTargets(job, [{ id: item.id, name: item.name, libraryId: lib.id }]);
-          rememberLibraries(job, [lib]);
-        }
-      }
-    }
-    return ids;
-  } catch (error) {
-    log('warn', `Kavita source-series lookup failed: ${error instanceof Error ? error.message : String(error)}`);
-    return [];
-  }
-}
 
 /** Delete only the source series records resolved before their folders were moved. */
-export async function removeSourceSeriesFromKavita(seriesIds: number[], log: LogFn): Promise<void> {
+export async function removeSourceSeriesFromKavita(seriesIds: number[], log: LogFn, targetDir: string, beforeDelete: (seriesId:number) => Promise<boolean>): Promise<void> {
   if (seriesIds.length === 0) return;
-  try {
-    const conn = getKavitaConnection();
-    if (!conn.baseUrl || !conn.apiKey) return;
-    const client = new KavitaClient(conn.baseUrl, conn.apiKey);
-    const deleted: number[] = [];
-    for (const id of seriesIds) {
-      try {
-        await client.deleteSeries(id);
-        deleted.push(id);
-        log('info', `Removed stale Kavita series ${id} — its files now live in the merged folder`);
-      } catch (error) {
-        log('warn', `Could not delete Kavita series ${id}: ${error instanceof Error ? error.message : String(error)}`);
-      }
+  const conn = getKavitaConnection();
+  if (!conn.baseUrl || !conn.apiKey) throw new Error('Kavita is required to finish merge source cleanup');
+  const client = new KavitaClient(conn.baseUrl, conn.apiKey);
+  const deleted: number[] = [];
+  for (const id of seriesIds) {
+    if (!await beforeDelete(id)) continue;
+    try {
+      const mappings = getDownloaderSettings().libraryPathMappings ?? [];
+      const chapters = await client.getChaptersBySeries(id);
+      const remaining = chapters.some(chapter => (chapter.files ?? []).some(file => file.filePath && fs.existsSync(mapKavitaPathToLocalPath(file.filePath,mappings) ?? file.filePath) && !pathContains(archiveResource(targetDir),archiveResource(mapKavitaPathToLocalPath(file.filePath,mappings) ?? file.filePath))));
+      if (remaining) continue;
+    } catch(error) {
+      if (error instanceof JobCancelled) throw error;
+      log('warn',`Could not verify vacant source series ${id}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
     }
-    if (deleted.length > 0) getDb().delete(schema.seriesMatches).where(inArray(schema.seriesMatches.kavitaSeriesId, deleted)).run();
-  } catch (error) {
-    log('warn', `Kavita series cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    // An asynchronous scan can regroup a source ID into the target while the
+    // chapter lookup is in flight. Recheck that exact ID outside catch blocks.
+    if (!await beforeDelete(id)) continue;
+    try {
+      await client.deleteSeries(id);
+      deleted.push(id);
+      log('info',`Removed stale Kavita series ${id} — its files now live in the merged folder`);
+    } catch(error) {
+      if (error instanceof JobCancelled) throw error;
+      log('warn',`Could not delete Kavita series ${id}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
+  if (deleted.length > 0) getDb().delete(schema.seriesMatches).where(inArray(schema.seriesMatches.kavitaSeriesId, deleted)).run();
 }
 /** Budget for merge verification. Kavita defers a series scan arriving while another scan is in flight by 10 minutes, so this must outlive that deferral plus a typical library scan — a shorter budget times out before the deferred scan can ever run. */
 const MERGE_VERIFY_TIMEOUT_MS = 25 * 60_000;
@@ -287,7 +259,7 @@ const MERGE_VERIFY_TIMEOUT_MS = 25 * 60_000;
  * later files behind: the in-flight pass has already enumerated the target folder,
  * and removeSourceSeriesFromKavita deletes the stale source series records. So fire
  * the scan, wait for Kavita's task queue to drain, check which of the moved files
- * are indexed by name, and repeat until every file is present (or the budget runs
+ * are indexed by exact mapped path, and repeat until every file is present (or the budget runs
  * out).
  *
  * `opts` carries the target series known from the job payload. When merging into an
@@ -299,8 +271,8 @@ export async function rescanAndVerifyMerge(
   targetDir: string,
   movedFiles: string[],
   log: LogFn,
-  opts: { job: Job; seriesId?: number | null; libraryId?: number | null; seriesName?: string },
-): Promise<void> {
+  opts: { job: Job; seriesId?: number | null; libraryId?: number | null; seriesName?: string; beforeRename?: (seriesId:number) => Promise<void> },
+): Promise<{id:number;libraryId:number;name:string} | undefined> {
   try {
     const conn = getKavitaConnection();
     if (!conn.baseUrl || !conn.apiKey) return;
@@ -315,23 +287,7 @@ export async function rescanAndVerifyMerge(
         pathContains(safeRealpath(mapKavitaPathToLocalPath(root, mappings) ?? root), realTarget)));
     }
     if (!lib) {
-      // Fall back to folder-name matching, like rescanLibraryContainingDir.
-      const candidates = new Set<string>();
-      for (const start of [targetDir, safeRealpath(targetDir)]) {
-        let d = start;
-        for (let i = 0; i < 3; i++) {
-          const seg = lastSegment(d);
-          if (!seg) break;
-          candidates.add(seg.toLowerCase());
-          const parent = path.dirname(d);
-          if (parent === d) break;
-          d = parent;
-        }
-      }
-      lib = libraries.find((l) => l.path && candidates.has(lastSegment(l.path).toLowerCase()));
-    }
-    if (!lib) {
-      log('warn', 'No Kavita library contains this folder — verification skipped, the periodic scan will pick it up');
+      log('warn', 'No mapped Kavita library contains this output folder — archives remain outside indexed series policy coverage');
       return;
     }
     const library = lib;
@@ -340,13 +296,17 @@ export async function rescanAndVerifyMerge(
     const renameSeries = async (series: { id: number; name: string } | undefined) => {
       if (!series || !opts.seriesName || renamedIds.has(series.id)) return;
       throwIfJobCancelled(opts.job.id);
+      if (series.name === opts.seriesName) return;
+      await opts.beforeRename?.(series.id);
       await client.updateSeriesMetadata(series.id, { name: opts.seriesName });
+      const observed = await client.getSeriesById(series.id);
+      if (observed.id !== series.id || observed.libraryId !== library.id) throw new Error('Kavita returned a changed series identity after merge rename');
+      series.name = observed.name;
       renamedIds.add(series.id);
-      rememberTargets(opts.job, [{ id: series.id, name: opts.seriesName, libraryId: library.id }]);
-      log('success', `Set Kavita series name to "${opts.seriesName}"`);
+      rememberTargets(opts.job, [{ id: series.id, name: series.name, libraryId: library.id }]);
+      log(series.name === opts.seriesName ? 'success' : 'warn', series.name === opts.seriesName ? `Set Kavita series name to "${series.name}"` : 'Kavita did not confirm the requested merge title');
     };
 
-    const targetName = lastSegment(targetDir).toLowerCase();
     const findSeries = async (): Promise<{ id: number; name: string } | undefined> => {
       if (opts?.seriesId != null) {
         try {
@@ -354,32 +314,33 @@ export async function rescanAndVerifyMerge(
           rememberTargets(opts.job, [{ id: s.id, name: s.name, libraryId: library.id }]);
           return { id: s.id, name: s.name };
         } catch {
-          return undefined;
+          // A verified regroup may replace the numeric target ID. Resolve the
+          // destination by indexed file ownership rather than trusting the old ID.
         }
       }
       const series = await client.getSeries(library.id);
-      const candidates = series.filter((s) => s.folderPath && lastSegment(s.folderPath).toLowerCase() === targetName);
-      const normalize = (value: string) => {
-        const resolved = safeRealpath(value).replace(/\\/g, '/').replace(/\/+$/, '');
-        return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-      };
       const mappings = getDownloaderSettings().libraryPathMappings ?? [];
-      // Two artist folders may contain a series with the same folder name.
-      // Prefer the exact mapped destination before changing its Kavita name.
-      const found = candidates.find(s => normalize(mapKavitaPathToLocalPath(s.folderPath!, mappings) ?? s.folderPath!) === normalize(targetDir))
-        ?? (candidates.length === 1 ? candidates[0] : undefined);
-      if (found) rememberTargets(opts.job, [{ id: found.id, name: found.name, libraryId: library.id }]);
+      const expected = new Set(movedFiles.map(archiveResource));
+      const candidates: {id:number;name:string}[] = [];
+      for (const item of series) {
+        const chapters = await client.getChaptersBySeries(item.id);
+        if (chapters.some(chapter => (chapter.files ?? []).some(file => file.filePath && expected.has(archiveResource(mapKavitaPathToLocalPath(file.filePath,mappings) ?? file.filePath))))) candidates.push(item);
+      }
+      if (candidates.length > 1) throw new Error('Moved archives are indexed under multiple series');
+      const found = candidates[0];
+      if (found) rememberTargets(opts.job, [{id:found.id,name:found.name,libraryId:library.id}]);
       return found;
     };
-    // Verify by file name rather than book count: pre-existing books in the target
-    // folder, or partial indexing by a concurrent scan, must not skew the check.
-    const expectedNames = new Set(movedFiles.map((f) => path.basename(f).toLowerCase()));
+    // Exact mapped paths prevent same-basename archives elsewhere from falsely
+    // satisfying regroup verification and receiving inherited policies.
+    const mappings = getDownloaderSettings().libraryPathMappings ?? [];
+    const expectedNames = new Set(movedFiles.map(archiveResource));
     const indexedNames = async (seriesId: number): Promise<Set<string>> => {
       const chapters = await client.getChaptersBySeries(seriesId);
       const found = new Set<string>();
       for (const chapter of chapters) {
         for (const file of chapter.files ?? []) {
-          if (file.filePath) found.add(path.basename(file.filePath).toLowerCase());
+          if (file.filePath) found.add(archiveResource(mapKavitaPathToLocalPath(file.filePath,mappings) ?? file.filePath));
         }
       }
       return found;
@@ -414,7 +375,7 @@ export async function rescanAndVerifyMerge(
       }
       if (missing !== null && missing.length === 0) {
         log('success', `Kavita has indexed all ${movedFiles.length} moved file(s) into the merged series`);
-        return;
+        return {id:after!.id,libraryId:library.id,name:after!.name};
       }
       log('info', !after
         ? 'Merged series not registered in Kavita yet — waiting for the scan'
@@ -431,35 +392,7 @@ export async function rescanAndVerifyMerge(
     }
   } catch (e) {
     if (e instanceof JobCancelled) throw e;
-    if (opts.seriesName) throw new Error(`Archives were merged, but Kavita could not confirm the series name. Retry the merge: ${e instanceof Error ? e.message : String(e)}`);
-    log('warn', `Kavita merge verification failed: ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(`Archives were merged, but Kavita could not verify their target identity. Retry the merge: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
-/**
- * The ComicInfo.Series value Kavita uses to group a series' files. When the
- * series' existing archives all agree on one value, new files must carry the
- * same value or Kavita splits the folder into separate series; otherwise fall
- * back to null so the caller can use the series name. Files being merged are
- * excluded — their current values are what we are about to overwrite.
- */
-export async function pickSeriesStampName(dir: string, exclude: Set<string>): Promise<string | null> {
-  let files: string[];
-  try {
-    files = listCbzFiles(dir);
-  } catch {
-    return null;
-  }
-  const values = new Set<string>();
-  for (const f of files) {
-    if (exclude.has(path.resolve(f))) continue;
-    try {
-      const xml = await readComicInfo(f);
-      const v = xml ? parseComicInfo(xml).fields.Series?.trim() : '';
-      if (v) values.add(v);
-    } catch {
-      /* unreadable archive — ignore */
-    }
-  }
-  return values.size === 1 ? [...values][0] : null;
-}

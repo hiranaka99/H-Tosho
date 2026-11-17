@@ -36,3 +36,18 @@ export function saveFieldPolicy(seriesId: number, fields: unknown, expectedRevis
     return { lockedFields, revision };
   });
 }
+
+/** Caller already owns the library/series boundary; never reacquire it here. */
+export function inheritFieldPoliciesOwned(seriesId: number, inherited: FieldPolicy['lockedFields'], expectedConnectionKey: string, evidence?:{seriesId:number;lockedFields:FieldPolicy['lockedFields']}[]): FieldPolicy {
+  if (connection() !== expectedConnectionKey) throw new FieldPolicyConflict('Kavita connection changed before protection could be transferred');
+  return getDb().transaction(() => {
+    const current = getFieldPolicy(seriesId);
+    const sourceFields=evidence ? evidence.flatMap(policy=>{const latest=getFieldPolicy(policy.seriesId);return latest.revision===0 ? policy.lockedFields : latest.lockedFields;}) : inherited;
+    const lockedFields = PROTECTABLE_FIELDS.filter(field => current.lockedFields.includes(field) || sourceFields.includes(field));
+    if (lockedFields.length === current.lockedFields.length) return current;
+    const revision = current.revision + 1;
+    const values = {connectionKey:expectedConnectionKey,seriesId,lockedFieldsJson:JSON.stringify(lockedFields),revision,updatedAt:new Date().toISOString()};
+    getDb().insert(schema.seriesFieldPolicies).values(values).onConflictDoUpdate({target:[schema.seriesFieldPolicies.connectionKey,schema.seriesFieldPolicies.seriesId],set:values}).run();
+    return {lockedFields,revision};
+  });
+}

@@ -6,6 +6,7 @@ import { api, type Job, type JobLog } from '../lib/api';
 import { Badge, Button, Card, CardContent, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle, EmptyState, ErrorState, Input, Label, PageHeader, ProgressBar, Select, Spinner, Disclosure } from '../components/ui';
 import { cn, timeAgo, toIsoUtc, jobLabel } from '../lib/utils';
 import { toast } from '../lib/toast';
+import { FollowingDeliveries } from './downloader/FollowingDeliveries';
 
 type JobFilter = 'active' | 'failed' | 'done' | 'all';
 type JobDetails = { job: Job; logs: JobLog[] };
@@ -36,7 +37,7 @@ function hasWarnings(result: unknown): boolean {
 }
 
 function needsAttention(job: Job): boolean {
-  return job.status === 'failed' || (job.status === 'completed' && hasWarnings(job.result));
+  return job.status === 'failed' || (job.status === 'completed' && hasWarnings(job.result)) || Boolean(job.followingDelivery && (job.followingDelivery.failed > 0 || job.followingDelivery.unknown > 0));
 }
 
 function fieldLabel(key: string): string {
@@ -149,12 +150,15 @@ function jobOutcome(job: Job): string {
   if (job.type === 'restore-metadata') {
     if (Array.isArray(result.restored) && result.restored.length) parts.push(`Verified restored fields: ${result.restored.map(field => fieldLabel(String(field))).join(', ')}`);
     if (typeof result.restoredArchives === 'number' && result.restoredArchives > 0) parts.push(`ComicInfo.xml verified in ${result.restoredArchives} ${result.restoredArchives === 1 ? 'archive' : 'archives'}`);
+    if (typeof result.restoredCovers === 'number' && result.restoredCovers > 0) parts.push(`${result.restoredCovers} ${result.restoredCovers === 1 ? 'cover restored' : 'covers restored'} through Kavita's supported API with reviewed resize/re-encoding`);
+    if (typeof result.unverifiedCoverLocks === 'number' && result.unverifiedCoverLocks > 0) parts.push(`Native lock readback unavailable for ${result.unverifiedCoverLocks} ${result.unverifiedCoverLocks === 1 ? 'cover' : 'covers'}; the explicitly reviewed lock choice was submitted, not verified`);
     return `${parts.length ? parts.join('. ') : 'Restore completed'}. Inspect linked history for metadata and archive results.`;
   }
   if (job.type === 'scan-matchable' || job.type === 'scan-downloaded') {
     for (const [key, label] of [['processed', 'galleries checked'], ['matchable', 'galleries with candidates'], ['failed', 'galleries with provider errors']]) if (typeof result[key] === 'number') parts.push(`${result[key]} ${label}`);
   } else if (job.type === 'check-watched-searches') {
-    for (const [key, label] of [['processed', 'saved searches checked'], ['newGalleries', 'new galleries found'], ['notified', 'notifications sent']]) if (typeof result[key] === 'number') parts.push(`${result[key]} ${label}`);
+    for (const [key, label] of [['processed', 'saved searches checked'], ['newGalleries', 'new galleries found'], ['failed', 'provider checks failed'], ['notificationIntents', 'notification contributions committed']]) if (typeof result[key] === 'number') parts.push(`${result[key]} ${label}`);
+    if (job.followingDelivery) parts.push(`${job.followingDelivery.delivered} Discord deliveries acknowledged · ${job.followingDelivery.pending} pending · ${job.followingDelivery.failed + job.followingDelivery.unknown} delivery issues`);
   } else if (job.type === 'delete-series' && typeof result.deleted === 'number') {
     parts.push(`${result.deleted} archives deleted`);
   } else if (job.type === 'edit-comicinfo' && typeof result.processed === 'number') {
@@ -183,6 +187,8 @@ function jobSummary(job: Job): string | null {
   if (job.type === 'restore-metadata') {
     const restored=Array.isArray(result.restored)?result.restored.map(field=>fieldLabel(String(field))):[];
     if(typeof result.restoredArchives==='number' && result.restoredArchives>0)restored.push(`${result.restoredArchives} ${result.restoredArchives===1?'archive':'archives'}`);
+    if (typeof result.restoredCovers === 'number' && result.restoredCovers > 0) restored.push(`${result.restoredCovers} ${result.restoredCovers === 1 ? 'cover' : 'covers'} (API resize/re-encoding)`);
+    if (typeof result.unverifiedCoverLocks === 'number' && result.unverifiedCoverLocks > 0) restored.push(`native lock readback unavailable for ${result.unverifiedCoverLocks}`);
     return restored.length?`Restored: ${restored.join(', ')}`:'Restore completed; inspect history';
   }
   if (job.type === 'check-watched-searches' && typeof result.newGalleries === 'number') {
@@ -349,7 +355,7 @@ export function Jobs() {
     enabled: selectedId !== null,
     refetchInterval: (query) => {
       const job = query.state.data?.job ?? selectedListJob;
-      return job ? isActive(job) ? 1500 : false : query.state.status === 'error' ? false : 1500;
+      return job ? isActive(job) || job.type === 'check-watched-searches' ? 1500 : false : query.state.status === 'error' ? false : 1500;
     },
   });
   const selectedJob = detailQuery.data?.job ?? selectedListJob;
@@ -486,6 +492,7 @@ export function Jobs() {
                   {selectedJob.context?.libraryName && <p className="text-sm">Library: {selectedJob.context.libraryName}</p>}
                   {jobSeries(selectedJob).length > 1 && <Disclosure label={`Affected series (${jobSeries(selectedJob).length})`} summaryClassName="px-0"><AffectedSeries job={selectedJob} /></Disclosure>}
                 </section>
+                {selectedJob.type === 'check-watched-searches' && <FollowingDeliveries jobId={selectedJob.id} embedded />}
                 {isActive(selectedJob) && <section className="space-y-2" aria-label="Task progress"><ProgressBar value={selectedJob.progressCurrent} max={selectedJob.progressTotal} active /><p className="text-xs text-muted">{duration(selectedJob)}</p></section>}
                 {(isActive(selectedJob) || selectedJob.status === 'failed') && <div className="flex flex-wrap gap-2">{actions(selectedJob)}</div>}
                 {selectedJob.errorMessage && <section role="alert" className="rounded-lg border border-danger/30 bg-danger/5 p-3"><h3 className="mb-2 text-sm font-semibold text-danger">Failure</h3><p className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{selectedJob.errorMessage}</p></section>}

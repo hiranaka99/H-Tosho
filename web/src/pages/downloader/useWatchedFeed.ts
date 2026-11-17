@@ -7,13 +7,35 @@ export function useWatchedFeed(tab: DownloaderTab, onReviewed: (keys: Set<string
   const [feedView, setFeedView] = React.useState<'inbox' | 'history'>('inbox');
   const [feedSource, setFeedSource] = React.useState('');
   const [feedWatch, setFeedWatch] = React.useState('');
+  const [feedFolder, setFeedFolder] = React.useState('');
+  const foldersQuery = useQuery({ queryKey: ['watched-search-folders'], queryFn: api.watchedSearchFolders, enabled: tab === 'watched', staleTime: 30_000 });
+  React.useEffect(() => {
+    if (foldersQuery.isSuccess && feedFolder && feedFolder !== 'unfiled' && !foldersQuery.data.some(folder => String(folder.id) === feedFolder)) {
+      setFeedFolder(''); setFeedWatch(''); setFeedPage(1);
+    }
+  }, [foldersQuery.data, foldersQuery.isSuccess, feedFolder]);
   const [feedPage, setFeedPage] = React.useState(1);
   const WATCH_PAGE_SIZE = 12;
-  const { data: galleryFeed, isFetching: feedLoading, isError: feedFailed, error: feedError, refetch: retryFeed } = useQuery({
-    queryKey: ['watched-gallery-feed', feedView, feedSource, feedWatch, feedPage],
-    queryFn: () => api.watchedGalleryFeed({ view: feedView, source: feedSource, searchId: feedWatch, offset: (feedPage - 1) * WATCH_PAGE_SIZE, limit: WATCH_PAGE_SIZE }),
+  const { data: galleryFeed, isFetching: feedLoading, isSuccess: feedSucceeded, isError: feedFailed, error: feedError, refetch: retryFeed } = useQuery({
+    queryKey: ['watched-gallery-feed', feedView, feedSource, feedWatch, feedFolder, feedPage],
+    queryFn: () => api.watchedGalleryFeed({ view: feedView, source: feedSource, searchId: feedWatch ? Number(feedWatch) : undefined, folderId: feedFolder === 'unfiled' ? 'unfiled' : feedFolder ? Number(feedFolder) : undefined, offset: (feedPage - 1) * WATCH_PAGE_SIZE, limit: WATCH_PAGE_SIZE }),
     enabled: tab === 'watched',
     refetchInterval: 60_000 });
+  const feedWatches = React.useMemo(() => {
+    if (!galleryFeed) return undefined;
+    if (!feedFolder) return galleryFeed.watches;
+    if (feedFolder === 'unfiled') return galleryFeed.watches.filter(watch => watch.folderId === null || watch.removed);
+    const folderId = Number(feedFolder);
+    return galleryFeed.watches.filter(watch => watch.folderId === folderId && !watch.removed);
+  }, [galleryFeed, feedFolder]);
+  React.useEffect(() => {
+    if (!feedSucceeded || feedLoading || !feedWatch || !feedWatches) return;
+    const watchId = Number(feedWatch);
+    if (!feedWatches.some(watch => watch.id === watchId)) {
+      setFeedWatch('');
+      setFeedPage(1);
+    }
+  }, [feedSucceeded, feedLoading, feedWatch, feedWatches]);
   const feedItems = React.useMemo<DoujinSearchResult[]>(() => (galleryFeed?.items ?? []).map(g => ({ source: g.source, galleryId: g.galleryId, title: g.title, coverUrl: g.coverUrl ?? undefined, pageCount: g.pageCount, tags: [], artists: g.artists ?? [], language: g.language })), [galleryFeed]);
   const knownDiscoveries = React.useRef(new Set<string>());
   React.useEffect(() => { for (const item of feedItems) knownDiscoveries.current.add(`${item.source}:${item.galleryId}`); }, [feedItems]);
@@ -43,5 +65,5 @@ export function useWatchedFeed(tab: DownloaderTab, onReviewed: (keys: Set<string
     }
   }, [qc, reviewingKeys, onReviewed]);
   const reviewGallery = React.useCallback((item: DoujinSearchResult, reviewed: boolean) => { void reviewDiscoveries([item], reviewed); }, [reviewDiscoveries]);
-  return { feedView, setFeedView, feedSource, setFeedSource, feedWatch, setFeedWatch, feedPage, setFeedPage, galleryFeed, feedLoading, feedFailed, feedError, retryFeed, feedItems, knownDiscoveries, feedMetaByKey, feedPageCount, feedCurPage, feedPageItems, reviewingKeys, reviewDiscoveries, reviewGallery };
+  return { feedView, setFeedView, feedSource, setFeedSource, feedWatch, setFeedWatch, feedFolder, setFeedFolder, foldersQuery, feedPage, setFeedPage, galleryFeed, feedWatches, feedLoading, feedFailed, feedError, retryFeed, feedItems, knownDiscoveries, feedMetaByKey, feedPageCount, feedCurPage, feedPageItems, reviewingKeys, reviewDiscoveries, reviewGallery };
 }

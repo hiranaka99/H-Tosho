@@ -118,12 +118,13 @@ export async function fetchJsonRetry<T = unknown>(
       // raw:true so 429/5xx statuses reach the retry check instead of throwing.
       res = await fetchJson<T>(url, init, timeoutMs, { ...opts, raw: true });
     } catch (e) {
+      init.signal?.throwIfAborted();
       if (attempt >= attempts) throw e;
-      await sleep(Math.min(500 * 2 ** (attempt - 1), 4000));
+      await sleep(Math.min(500 * 2 ** (attempt - 1), 4000), init.signal ?? undefined);
       continue;
     }
     if (RETRYABLE_STATUS[res.status] && attempt < attempts) {
-      await sleep(retryAfterMs(res.headers) ?? Math.min(500 * 2 ** (attempt - 1), 4000));
+      await sleep(retryAfterMs(res.headers) ?? Math.min(500 * 2 ** (attempt - 1), 4000), init.signal ?? undefined);
       continue;
     }
     if (!(res.status >= 200 && res.status < 300) && !opts.raw) {

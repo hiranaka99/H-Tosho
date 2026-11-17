@@ -1,10 +1,13 @@
 import { classifyJobError, type JobErrorCode } from './errors.js';
 import { onSettingChange } from '../services/settings.js';
 import { settleMetadataRestoreJob } from '../services/metadataRestore.js';
-import { readJobPayload } from './storage.js';
+import { readJobPayload, persistMergeState } from './storage.js';
 import { and, asc, desc, eq, gt, inArray } from 'drizzle-orm';
 import { getDb, schema, type Db } from '../db/index.js';
 import { jobRecovery, type JobRecovery } from './recovery.js';
+import fs from 'node:fs';
+import { archiveResource } from '../lib/mutations.js';
+import { pathContains } from '../lib/paths.js';
 
 export { JOB_TYPES, isJobType } from '../contracts/jobs.js';
 export type { JobType, JobContext, JobPayload, JobCommand } from '../contracts/jobs.js';
@@ -49,7 +52,7 @@ export class JobCancelled extends Error {
 }
 
 export class JobConflict extends Error {
-  constructor() { super('A sync is already running for this series'); }
+  constructor(message = 'A sync is already running for this series') { super(message); }
 }
 
 const CONCURRENCY = 2;
@@ -111,6 +114,7 @@ class JobQueue {
     this.historyId = 0;
   }
   private handler: JobHandler | null = null;
+  private mergeDownloadCanceller:((jobId:number)=>void)|null=null;
   private running = 0;
   private pumping = false;
   private cancelRequested = new Set<number>();
@@ -210,18 +214,19 @@ class JobQueue {
   }
 
   /** Persist merge progress without overwriting independently resolved context. */
-  updateMergeState(jobId: number, state: Pick<JobPayload, 'mergeDownloadIds' | 'sourceFiles' | 'chapters'>): void {
-    const db = getDb();
-    const row = db.select().from(schema.jobs).where(eq(schema.jobs.id, jobId)).get();
-    if (!row || row.type !== 'merge-series') return;
+  updateMergeState(jobId: number, state: Pick<JobPayload, 'mergeDownloadIds' | 'sourceFiles' | 'chapters' | 'mergeProtection'>): void {
     this.legacyContexts.delete(jobId);
-    db.update(schema.jobs).set({ stateJson: JSON.stringify({ ...safeParse<JobPayload>(row.stateJson ?? '{}', {}), ...state }) }).where(eq(schema.jobs.id, jobId)).run();
+    persistMergeState(jobId,state);
   }
 
   /** Register the function that actually performs each job. */
   registerHandler(h: JobHandler): void {
     this.handler = h;
     void this.pump();
+  }
+
+  registerMergeDownloadCanceller(cancel:(jobId:number)=>void):void {
+    this.mergeDownloadCanceller=cancel;
   }
 
   /** Insert a new job and return its id. */
@@ -289,6 +294,7 @@ class JobQueue {
       if (Number(res.changes ?? 0) > 0) {
         this.log(id, 'info', 'Job cancelled before start');
         if (job.type === 'restore-metadata') settleMetadataRestoreJob(id, 'cancelled', 'Cancelled before restore started');
+        if (job.type==='merge-series') this.mergeDownloadCanceller?.(id);
         return true;
       }
     }
@@ -297,6 +303,7 @@ class JobQueue {
       this.cancelRequested.add(id);
       this.controllers.get(id)?.abort(new JobCancelled());
       this.log(id, 'info', 'Cancellation requested; stopping at next checkpoint');
+      if (current.type==='merge-series') this.mergeDownloadCanceller?.(id);
       return true;
     }
     return false;
@@ -311,6 +318,7 @@ class JobQueue {
     const job = this.get(id);
     if (!job || job.status !== 'failed' || job.type === 'restore-metadata') return null;
     const newId = this.enqueue(job.type, job.payload);
+    if (job.type === 'merge-series') this.updateMergeState(newId, {mergeProtection:job.payload.mergeProtection,sourceFiles:job.payload.sourceFiles,chapters:job.payload.chapters,mergeDownloadIds:job.payload.mergeDownloadIds});
     this.log(id, 'info', `Retried as job #${newId}`);
     return newId;
   }
@@ -321,9 +329,17 @@ class JobQueue {
       ? eq(schema.jobs.status, 'failed')
       : and(eq(schema.jobs.id, id), eq(schema.jobs.status, 'failed'));
     return getDb().transaction((tx) => {
-      const failedIds = tx.select({ id: schema.jobs.id }).from(schema.jobs).where(failed);
+      const failedIds=tx.select().from(schema.jobs).where(failed).all().filter(row=>{
+        const decoded=readJobPayload(row.type,row.payloadJson,row.stateJson);
+        if (row.type==='merge-series' && decoded.validationError && /"mergeProtection"\s*:/.test(row.stateJson)) return false;
+        const protection=decoded.payload.mergeProtection;
+        if (!protection || protection.completedTargetSeriesId!==undefined) return true;
+        const published=protection.archives.some(archive=>pathContains(archiveResource(protection.targetDir),archiveResource(archive.path)) && fs.existsSync(archive.path)) || protection.moves?.some(move=>fs.existsSync(move.destination));
+        return !published;
+      }).map(row=>row.id);
+      if (!failedIds.length) return 0;
       tx.delete(schema.jobLogs).where(inArray(schema.jobLogs.jobId, failedIds)).run();
-      return tx.delete(schema.jobs).where(failed).run().changes;
+      return tx.delete(schema.jobs).where(inArray(schema.jobs.id,failedIds)).run().changes;
     });
   }
 
@@ -407,6 +423,10 @@ class JobQueue {
       if (job.type === 'restore-metadata') {
         const terminal = this.get(job.id);
         if (terminal) settleMetadataRestoreJob(job.id, terminal.status, terminal.errorMessage ?? undefined);
+      }
+      if (job.type==='merge-series') {
+        const terminal=this.get(job.id);
+        if (terminal?.status==='failed' || terminal?.status==='cancelled') this.mergeDownloadCanceller?.(job.id);
       }
       this.cancelRequested.delete(job.id);
       this.controllers.delete(job.id);

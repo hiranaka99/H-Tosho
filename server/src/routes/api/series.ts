@@ -4,6 +4,9 @@ import { listMetadataHistory, metadataHistoryDetail } from '../../services/metad
 import { createMetadataRestorePreview, enqueueMetadataRestore, MetadataRestoreError } from '../../services/metadataRestore.js';
 import type { RestorePreviewRequest } from '../../contracts/metadataRestore.js';
 import { retainedCoverAsset } from '../../services/metadataCovers.js';
+import { retainedPreviewCoverAsset } from '../../services/metadataCoverRestore.js';
+import { recoverMergeProtectionForSeriesOwned } from '../../services/mergeProtection.js';
+import { libraryMutations } from '../../lib/mutations.js';
 import { parseJobCommand } from '../../contracts/jobs.js';
 import { Hono } from 'hono';
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
@@ -27,7 +30,20 @@ api.get('/series/:id/metadata-history/:operationId/assets/:assetId',c=>{
   if(!asset)return c.json({error:'Retained cover image not found for this operation'},404);
   c.header('Cache-Control','private, no-store');c.header('X-Content-Type-Options','nosniff');
   c.header('Content-Security-Policy',"default-src 'none'; sandbox");c.header('Content-Type',asset.mediaType);
-  return c.body(new Uint8Array(asset.data));
+  const buffer = asset.data.buffer;
+  const bytes = buffer instanceof ArrayBuffer ? new Uint8Array(buffer, asset.data.byteOffset, asset.data.byteLength) : Uint8Array.from(asset.data);
+  return c.body(bytes);
+});
+api.get('/series/:id/metadata-restore-previews/:previewId/assets/:assetId', c => {
+  const id = intParam(c.req.param('id'));
+  if (id === null || id <= 0) return c.json({ error: 'Invalid series id' }, 400);
+  const asset = retainedPreviewCoverAsset(id, c.req.param('previewId'), c.req.param('assetId'));
+  if (!asset) return c.json({ error: 'Current preview image not found for this series' }, 404);
+  c.header('Cache-Control', 'private, no-store'); c.header('X-Content-Type-Options', 'nosniff');
+  c.header('Content-Security-Policy', "default-src 'none'; sandbox"); c.header('Content-Type', asset.mediaType);
+  const buffer = asset.data.buffer;
+  const bytes = buffer instanceof ArrayBuffer ? new Uint8Array(buffer, asset.data.byteOffset, asset.data.byteLength) : Uint8Array.from(asset.data);
+  return c.body(bytes);
 });
 api.get('/series/:id/metadata-history', c=>{
   const id=intParam(c.req.param('id')), raw=c.req.query('cursor');
@@ -59,21 +75,24 @@ api.post('/series/:id/metadata-restore', async c => {
   if (!connectedClient()) return c.json({error:'Kavita not configured'},503);
   const body: unknown = await c.req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)
-    || Object.keys(body).some(key => !['previewId','idempotencyKey'].includes(key))
+    || Object.keys(body).some(key => !['previewId','idempotencyKey','acceptCoverConversion'].includes(key))
     || !('previewId' in body) || typeof body.previewId !== 'string'
-    || !('idempotencyKey' in body) || typeof body.idempotencyKey !== 'string') {
+    || !('idempotencyKey' in body) || typeof body.idempotencyKey !== 'string'
+    || ('acceptCoverConversion' in body && typeof body.acceptCoverConversion !== 'boolean')) {
     return c.json({error:'Invalid restore approval request'},400);
   }
   try {
     return c.json(enqueueMetadataRestore(id,body.previewId,body.idempotencyKey,
-      command => jobQueue.enqueue('restore-metadata',command)),202);
+      command => jobQueue.enqueue('restore-metadata',command), 'acceptCoverConversion' in body && body.acceptCoverConversion === true),202);
   } catch (error) {
     return c.json({error:errMsg(error)},error instanceof MetadataRestoreError ? error.status : 502);
   }
 });
-api.get('/series/:id/field-locks', (c) => {
+api.get('/series/:id/field-locks', async (c) => {
   const id = intParam(c.req.param('id'));
   if (id === null || id <= 0) return c.json({ error: 'Invalid series id' }, 400);
+  const client = connectedClient();
+  if (client) await libraryMutations.run([`series:${id}`], () => recoverMergeProtectionForSeriesOwned(client, id));
   return c.json(getFieldPolicy(id));
 });
 api.put('/series/:id/field-locks', async (c) => {
@@ -81,7 +100,11 @@ api.put('/series/:id/field-locks', async (c) => {
   if (id === null || id <= 0) return c.json({ error: 'Invalid series id' }, 400);
   const body = await c.req.json().catch(() => null);
   if (!body || typeof body !== 'object') return c.json({ error: 'Invalid field policy' }, 400);
-  try { return c.json(await saveFieldPolicy(id, body.lockedFields, body.expectedRevision)); }
+  try {
+    const client = connectedClient();
+    if (client) await libraryMutations.run([`series:${id}`], () => recoverMergeProtectionForSeriesOwned(client, id));
+    return c.json(await saveFieldPolicy(id, body.lockedFields, body.expectedRevision));
+  }
   catch (error) { return c.json({ error: errMsg(error) }, error instanceof FieldPolicyConflict ? 409 : 400); }
 });
 const LOW_CONFIDENCE_THRESHOLD = 0.8;

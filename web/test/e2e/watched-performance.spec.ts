@@ -5,8 +5,10 @@ test('Watched keeps large saved lists cheap and follows checks promptly', async 
   const baseline = process.env.HTOSHO_WATCHED_BASELINE === '1';
   const watches = Array.from({ length: 52 }, (_, index) => ({
     id: index + 1000, source: 'hitomi', query: `artist:performance_${index}`,
+    displayName: null, folderId: null, pausedAt: null, intervalMinutes: null,
+    effectiveIntervalMinutes: 15, nextCheckAt: '2026-11-16T12:15:00Z', revision: 0, coverageLimit: 50,
     lastCheckedAt: null, lastResultCount: 20, seenCount: 20, lastNewCount: 20,
-    lastFindsAt: null, lastAttemptedAt: null, lastError: null,
+    lastFindsAt: null, lastAttemptedAt: null, lastFailedAt: null, lastError: null,
     lastResults: Array.from({ length: 20 }, (_, find) => ({
       galleryId: `sample-${index}-${find}`, title: `Saved find ${index}-${find}`,
       pageCount: 28, url: 'https://example.com/gallery',
@@ -22,7 +24,7 @@ test('Watched keeps large saved lists cheap and follows checks promptly', async 
     activeRequests++;
     const completed = activeRequests >= 3;
     return route.fulfill({ json: {
-      id: 9000, type: 'watched_search_check', status: completed ? 'completed' : 'running',
+      id: 9000, type: 'check-watched-searches', status: completed ? 'completed' : 'running',
       progressCurrent: completed ? 52 : activeRequests, progressTotal: 52,
       result: completed ? { newGalleries: 3, failed: 0, processed: 52 } : null,
       finishedAt: completed ? new Date().toISOString() : null,

@@ -55,6 +55,7 @@ test('job command validation rejects malformed targets and strips internal check
   for (const payload of [{ seriesId: '1' }, { seriesId: 0 }, { seriesIds: [1, '2'] }, {}]) assert.throws(() => parseJobCommand('match-series', payload));
   assert.throws(() => parseJobCommand('apply-series', { seriesId: 1, providerId: 'anilist' }));
   assert.throws(() => parseJobCommand('edit-comicinfo', { path: '/book.cbz', fields: { Number: 3 } }));
+  for (const payload of [{ mode: 'automatic' }, { mode: 'due' }, { watchIds: [] }, { watchIds: [0] }, { watchIds: ['1'] }, { watchIds: Array.from({ length: 101 }, (_, i) => i + 1) }, { download: true }]) assert.throws(() => parseJobCommand('check-watched-searches', payload));
   assert.deepEqual(parseJobCommand('match-series', { seriesIds: [1], context: { series: [] }, mergeDownloadIds: { fake: 99 } }), { type: 'match-series', payload: { seriesIds: [1] } });
 });
 

@@ -8,8 +8,10 @@ import { libraryMutations } from '../lib/mutations.js';
 import { getFieldPolicy } from './fieldPolicies.js';
 import { EXCLUDABLE_FIELDS } from '../contracts/metadata.js';
 import { withMetadataHistory } from './metadataHistory.js';
+import { recoverMergeProtectionForSeriesOwned } from './mergeProtection.js';
 export function removeSeriesMatch(client: KavitaClient, seriesId: number): Promise<{ removed: boolean }> {
   return libraryMutations.run([`series:${seriesId}`], async () => {
+    await recoverMergeProtectionForSeriesOwned(client, seriesId);
     if(!getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId,seriesId)).get())return {removed:false};
     return withMetadataHistory(client,seriesId,'unmatch',{},async journal=>{
     const series = await client.getSeriesById(seriesId);
@@ -31,20 +33,26 @@ export function removeSeriesMatch(client: KavitaClient, seriesId: number): Promi
       ))].filter(field => !protectedPayloadKeys.has(field));
       const metadata = row.metadataJson ? JSON.parse(row.metadataJson) as SeriesMetadata : null;
       const coverUpdated = !protectedFields.includes('cover') && details.some((entry) => entry?.coverUpdated === true);
-      if(coverUpdated)await journal.captureSeriesCover();
-      if (metadata && pushed.length > 0) await client.removeSeriesMetadata(seriesId, buildSeriesPayload(metadata), pushed);
-      if (coverUpdated) {await journal.captureSeriesCover();await client.resetSeriesCover(seriesId);}
       const volumeCoversUpdated = !protectedFields.includes('cover') && details.some((entry) => typeof entry?.volumeCoversUpdated === 'number' && entry.volumeCoversUpdated > 0);
+      const volumeCoverIds: number[] = [];
       if (volumeCoversUpdated) {
         const volumes = await client.getVolumes(seriesId);
         const ids = new Set(details.flatMap(entry => Array.isArray(entry?.volumeCoverIds)
           ? entry.volumeCoverIds.filter((id): id is number => typeof id === 'number' && Number.isSafeInteger(id)) : []));
-        // Older history stored only a count. Limit its fallback to volumes
-        // present in the saved provider metadata, never every Kavita volume.
+        // Legacy count-only history limits resets to saved provider volume numbers.
         const legacy = details.some(entry => Number(entry?.volumeCoversUpdated) > 0 && !Array.isArray(entry?.volumeCoverIds));
-        for (const volume of volumes) if (ids.has(volume.id) || (legacy && metadata?.volumeCovers?.some(cover => cover.number === volume.number))) {
-          await client.resetVolumeCover(volume.id);
-        }
+        for (const volume of volumes) if (ids.has(volume.id) || (legacy && metadata?.volumeCovers?.some(cover => cover.number === volume.number))) volumeCoverIds.push(volume.id);
+      }
+      // Every original cover must be durable before any metadata or cover cleanup.
+      if (coverUpdated) await journal.captureSeriesCover();
+      for (const volumeId of volumeCoverIds) await journal.captureVolumeCover(volumeId);
+      if (metadata && pushed.length > 0) await client.removeSeriesMetadata(seriesId, buildSeriesPayload(metadata), pushed);
+      if (coverUpdated) {await journal.captureSeriesCover();journal.beginCoverWrite({kind:'series'},false);await client.resetSeriesCover(seriesId);journal.acknowledgeCoverWrite({kind:'series'});}
+      for (const volumeId of volumeCoverIds) {
+        await journal.captureVolumeCover(volumeId);
+        journal.beginCoverWrite({ kind: 'volume', volumeId }, false);
+        await client.resetVolumeCover(volumeId);
+        journal.acknowledgeCoverWrite({ kind: 'volume', volumeId });
       }
       await client.scanSeries(series.libraryId, seriesId);
 

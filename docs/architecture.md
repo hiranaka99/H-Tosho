@@ -11,6 +11,15 @@
 - `jobs/executor.ts` dispatches validated commands to focused handlers. `lib/mutations.ts` coordinates overlapping series work; broad scans, merges, deletion and path-only edits require exclusive library ownership. Independent explicit series can run concurrently.
 - `lib/cbz.ts` coordinates complete archive edits and publishes through unique staging files. Downloads reserve their output paths; folder merges and deletion use the same coordinator with ancestor/descendant conflicts. Waiting for ownership is cancellable.
 - `services/sync.ts` owns the common automatic/manual application flow and atomic match/history persistence. `contracts/metadata.ts` supplies shared preview and application rules. `services/unmatch.ts` uses the same mutation boundary.
+- `services/mergeProtection.ts` resolves indexed source/target policy and XML title
+  effects for library, path-only and gallery merges before publication. Server-derived
+  identity, policy union and move intents persist in separate job execution state;
+  archive hashes reconcile unfinished move checkpoints after restart. Publication
+  guards run under existing archive ownership, without nested coordinator deadlocks.
+  Verified regrouping transfers current source/target protection before later sync;
+  late-index recovery is idempotent and does not resurrect a deliberate later unlock.
+  Merge name confirmation uses actual post-write readback, not the pre-rename object.
+  ComicInfo authoring remains explicit, protection-preserving and series-journaled.
 - `services/metadataHistory.ts` captures connection-scoped before/observed-after
   snapshots before local or remote mutations. `services/metadataRestore.ts` owns
   short-lived reviewed previews, atomic idempotent approval/Task creation,
@@ -52,8 +61,8 @@
   Sort/localized names and flags are also recorded for inspecting interrupted
   checkpoints. Archive-only restores do not trigger a Kavita scan; the next
   ordinary scan reads their XML. Completed Tasks report verified archive counts.
-- `services/metadataCovers.ts` and migration 8 add series-cover checkpoints and
-  content-addressed raster BLOBs in SQLite. Capture is opt-in: a validated
+- `services/metadataCovers.ts`, `coverObservations.ts` and migrations 8/13 retain
+  series/volume checkpoints and content-addressed raster BLOBs. Capture is opt-in: a validated
   `HTOSHO_COVER_HISTORY_LIMIT_MIB` (10–16384 MiB) confirms the operator's payload
   budget; unset leaves the existing cover workflow available with explicit
   not-captured history. Each image is capped at 5 MiB, and each active capture
@@ -62,10 +71,10 @@
   retained references without evicting any live/pinned history. The 256 MiB
   reference budget is provisional; actual library capacity remains an operator
   decision, and SQLite/WAL overhead is additional.
-  Provider series-cover capture precedes title/archive/metadata writes, then
-  rechecks image hash, native cover lock and target identity before upload.
-  Failed cover preparation skips that cover while eligible scalar work can
-  finish; unmatch prepares required cover backup before any cleanup writes.
+  Provider series-cover capture precedes title/archive/metadata writes; each cover
+  target rechecks image hash, available native lock and indexed identity before upload.
+  Failed preparation skips that cover while eligible scalar work can finish;
+  unmatch prepares required series/volume backups before any cleanup writes.
   After observations survive cancellation/partial failure; unavailable readback
   is unverified. Startup interruption releases reservations and retains original
   observations. Retention deletes cover checkpoints with expired operations and
@@ -75,15 +84,22 @@
   reads are bounded and uncached, served as validated raster types with nosniff
   and private/no-store headers. Cover filenames, identity paths, credentials and
   credential-bearing provider URLs are not exposed as asset authority.
-  The current [image controller](https://github.com/Kareadita/Kavita/blob/develop/Kavita.Server/Controllers/ImageController.cs)
-  supports series and volume image reads, and its
+  The [image controller](https://github.com/Kareadita/Kavita/blob/develop/Kavita.Server/Controllers/ImageController.cs)
+  supports series/volume reads. The
   [volume DTO](https://github.com/Kareadita/Kavita/blob/develop/Kavita.Models/DTOs/VolumeDto.cs)
-  exposes the native cover lock. However,
-  [cover uploads](https://github.com/Kareadita/Kavita/blob/develop/Kavita.Server/Controllers/UploadController.cs)
-  pass through [thumbnail re-encoding](https://github.com/Kareadita/Kavita/blob/develop/Kavita.Services/ImageService.cs).
-  No byte-preserving write path or safe conversion preview was verified. Series
-  cover restore is rejected by existing strict restore contracts; volume capture
-  and restore remain gated pending representative supported-version fixtures.
+  declares a native cover lock, but releases that omit it are recorded as unknown.
+  `services/metadataCoverRestore.ts` validates historical volume creation identity,
+  current chapter/file membership, native-lock choices and authorized assets.
+  Preview and approved-plan references pin current and source images, including
+  unavailable previews and ordinary queue delays. Migration 13 preserves existing
+  series backups and adds volume checkpoints/cover plans without manufacturing history.
+  Supported [cover uploads](https://github.com/Kareadita/Kavita/blob/develop/Kavita.Server/Controllers/UploadController.cs)
+  use retained input bytes and explicit conversion consent because
+  [thumbnail processing](https://github.com/Kareadita/Kavita/blob/develop/Kavita.Services/ImageService.cs)
+  can resize/re-encode them. This is not byte-exact image restoration: originals
+  remain retained and the actual output is journaled. Missing native volume-lock
+  readback requires an explicit Locked/Unlocked choice; API acknowledgement and
+  observed flags stay separate. Silent no-ops and unavailable readback are unverified.
 - `providers/anilistClient.ts` serializes AniList calls across all workflows,
   paces requests below its documented degraded limit, and respects response quota
   and cooldown headers. Bounded retries and abort signals cover both queued and
@@ -103,6 +119,21 @@
   combines existing sync history and completed download records.
 - `db/schema.ts` is the schema authoring source, including defaults and indexes. `db/migrations.ts` bootstraps from those declarations and runs numbered upgrades transactionally. Add an explicit new migration for changes to existing installations; never rely on bootstrap to alter an existing table. Legacy filename imports retain ownership, approvals and job checkpoints.
 - `web/src/pages/downloader/` owns search transitions, selection, recommendation and watched-feed models, and focused presentation. Gallery components observe only their own download task through a query selector.
+- `services/watchedSearches.ts` atomically commits seen/find/check bookkeeping with
+  notification events/contributions. Migration 12 adds per-watch in-app/immediate/digest
+  modes without replaying historical discoveries. Events deduplicate by source/gallery
+  while retaining overlapping labels and origin Task IDs.
+  `services/followingDelivery.ts` prepares immutable immediate/digest deliveries,
+  commits a dispatch checkpoint before webhook HTTP, verifies receipts, and records
+  disabled/suppressed/failed/unknown outcomes separately from provider success.
+  Bounded known retries reuse frozen membership; startup holds unfinished sends as
+  unknown. Revision-bound, idempotent manual recovery reviews current destination,
+  eligible membership and duplicate risk. Invalidated watch contributions never revive
+  automatically after pause/resume, deletion, mode changes or settings cutovers.
+  `services/followingClock.ts` uses the server-only Temporal polyfill for IANA-zone
+  daily cutoffs: earlier DST fold occurrence, gap-length forward shift, persistent UTC
+  deadline and one bounded catch-up batch per local day. No discovery/delivery path
+  enqueues downloads. Credentials remain only in existing notification settings.
 
 Run `npm run typecheck`, `npm test`, and `npm run test:e2e` for changes across these boundaries. Tests use isolated databases and provider fixtures. The regression suite includes concurrent archive edits, recommendation interleaving, malformed persisted commands, upgrade rollback, durable retry recovery, and stale download snapshots.
 

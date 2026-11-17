@@ -3,6 +3,7 @@ import { getProvider } from '../../providers/registry.js';
 import { getNotificationSettings, getPollIntervalHours, getProviderPriorities, getWatchedSearchIntervalMinutes, parseNotificationSettings, getProviderSettings, setNotificationSettings, setPollIntervalHours, setProviderPriorities, setWatchedSearchIntervalMinutes, setProviderSetting } from '../../services/settings.js';
 import { testNotification } from '../../notify/dispatcher.js';
 import { getDownloaderSettings, parseDownloaderSettings, setDownloaderSettings } from '../../services/settings.js';
+import { NotificationSettingsConflict } from '../../services/settings.js';
 
 import { CREDENTIAL_FIELDS, errMsg } from './helpers.js';
 export const api = new Hono();
@@ -67,13 +68,11 @@ api.put('/settings/priorities', async (c) => {
 });
 
 api.put('/settings/notifications', async (c) => {
-  const body = (await c.req.json().catch(() => null)) as { notifications?: unknown } | null;
+  const body = await c.req.json().catch(() => null) as { notifications?: unknown; expectedRevision?: unknown } | null;
   const parsed = parseNotificationSettings(body?.notifications);
-  if (!parsed) {
-    return c.json({ error: 'Invalid notification settings: expected { discord: { enabled, webhookUrl } }' }, 400);
-  }
-  setNotificationSettings(parsed);
-  return c.json({ ok: true });
+  if (!parsed || !Number.isSafeInteger(body?.expectedRevision) || Number(body?.expectedRevision) < 0 || Object.keys(body ?? {}).some(key => !['notifications', 'expectedRevision'].includes(key))) return c.json({ error: 'Provide notification settings and expectedRevision.' }, 400);
+  try { return c.json({ ok: true, notifications: setNotificationSettings(parsed, Number(body!.expectedRevision)) }); }
+  catch (error) { if (error instanceof NotificationSettingsConflict) return c.json({ error: error.message }, 409); throw error; }
 });
 
 api.put('/settings/notifications/test', async (c) => {

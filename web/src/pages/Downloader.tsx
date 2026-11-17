@@ -8,7 +8,7 @@ import * as React from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import { Search, Loader2, RotateCcw, CheckCircle2, Check, ListVideo, Star, Sparkles, CheckSquare } from 'lucide-react';
-import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult } from '../lib/api';
+import { api, ApiError, type DoujinSource, type DoujinSort, type DoujinSearchResult } from '../lib/api';
 import { cn, timeAgo } from '../lib/utils';
 import { downloadErrorHelp } from '../lib/downloadErrors';
 import { toast } from '../lib/toast';
@@ -171,20 +171,22 @@ export function Downloader() {
     if (!q) return;
     try {
       if (currentWatch) {
-        await api.removeWatchedSearch(currentWatch.id);
+        await api.removeWatchedSearch(currentWatch.id, currentWatch.revision);
         toast({ tone: 'info', title: 'Unwatched', description: `“${q}” on ${SOURCE_LABELS[source]} will no longer be checked.` });
       } else {
         await api.addWatchedSearch(source, q);
-        toast({ tone: 'success', title: 'Watching search', description: `You'll get a Discord ping when “${q}” finds new results on ${SOURCE_LABELS[source]}.` });
+        toast({ tone: 'success', title: 'Watching search', description: `New finds for “${q}” appear in Following. Discord notifications depend on your settings.` });
       }
       await refetchWatches();
+      void qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
     } catch (e) {
+      if (e instanceof ApiError && (e.status === 409 || e.status === 404)) await refetchWatches();
       toast({ tone: 'danger', title: 'Could not update watches', description: e instanceof Error ? e.message : String(e) });
     }
   }
 
   const selection = useGallerySelection();
-  const { feedView, setFeedView, feedSource, setFeedSource, feedWatch, setFeedWatch, setFeedPage, galleryFeed, feedLoading, feedFailed, feedError, retryFeed, feedItems, knownDiscoveries, feedMetaByKey, feedPageCount, feedCurPage, feedPageItems, reviewingKeys, reviewDiscoveries, reviewGallery } = useWatchedFeed(tab, selection.remove);
+  const { feedView, setFeedView, feedSource, setFeedSource, feedWatch, setFeedWatch, feedFolder, setFeedFolder, foldersQuery, setFeedPage, galleryFeed, feedWatches, feedLoading, feedFailed, feedError, retryFeed, feedItems, knownDiscoveries, feedMetaByKey, feedPageCount, feedCurPage, feedPageItems, reviewingKeys, reviewDiscoveries, reviewGallery } = useWatchedFeed(tab, selection.remove);
   const selectionView = React.useMemo(() => resolveGallerySelection(selection.chosen, results ?? EMPTY_GALLERIES, feedItems, knownDiscoveries.current), [selection.chosen, results, feedItems, knownDiscoveries]);
   const selectedGalleries = selection.keys, selectedItems = selectionView.items, reviewableSelectedItems = selectionView.reviewable;
   const toggleGallerySelect = selection.toggle;
@@ -403,7 +405,7 @@ export function Downloader() {
       {/* Before the first search there is nothing below the bar — give it a purpose. */}
       {searchKey === null && (
         <Card className="flex items-center justify-center">
-          <EmptyState icon={<Search className="h-8 w-8" />} title="Search for galleries" description="Keyword, tag, artist, gallery ID or URL. Use Watch to keep checking a query — new releases land in the Following tab and ping Discord." />
+          <EmptyState icon={<Search className="h-8 w-8" />} title="Search for galleries" description="Keyword, tag, artist, gallery ID or URL. Use Watch to keep checking a query — new releases land in Following for you to review." />
         </Card>
       )}
 
@@ -604,17 +606,24 @@ export function Downloader() {
               <SegmentedControl items={[{ id: 'inbox' as const, label: `Inbox${galleryFeed ? ` (${galleryFeed.inboxCount})` : ''}` }, { id: 'history' as const, label: `History${galleryFeed ? ` (${galleryFeed.historyCount})` : ''}` }]} value={feedView} onChange={view => { setFeedView(view); setFeedPage(1); }} label="Discovery view" itemClassName="min-h-11" />
               <Button size="sm" className="h-11" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode(current => !current)} disabled={!feedItems.length && !selectedGalleries.size}><CheckSquare className="h-3.5 w-3.5" />{selectMode ? 'Done selecting' : 'Select galleries'}</Button>
             </div>
-            <div className="grid min-w-0 grid-cols-1 gap-3 min-[420px]:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_12rem]">
+            <div className="grid min-w-0 grid-cols-1 gap-3 min-[420px]:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_12rem]">
+              <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">Folder
+                <Select className="h-11" aria-label="Filter discoveries by folder" value={feedFolder} onChange={event => { setFeedFolder(event.target.value); setFeedWatch(''); setFeedPage(1); }} disabled={!foldersQuery.isSuccess}>
+                  <option value="">All folders</option><option value="unfiled">Unfiled</option>
+                  {(foldersQuery.data ?? []).map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+                </Select>
+              </label>
               <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">Watch
                 <Select className="h-11" aria-label="Filter discoveries by watch" value={feedWatch} onChange={event => { setFeedWatch(event.target.value); setFeedPage(1); }}>
                   <option value="">All watches</option>
-                  {(galleryFeed?.watches ?? []).map(watch => <option key={watch.id} value={watch.id}>{SOURCE_LABELS[watch.source]} · {watch.query}</option>)}
+                  {feedWatches?.map(watch => <option key={watch.id} value={watch.id}>{SOURCE_LABELS[watch.source]} · {watch.watchLabel}{watch.removed ? ' (removed watch)' : ''}</option>)}
                 </Select>
               </label>
               <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">Source
                 <Select className="h-11" aria-label="Filter discoveries by source" value={feedSource} onChange={event => { setFeedSource(event.target.value); setFeedPage(1); }}><option value="">All sources</option><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select>
               </label>
             </div>
+            {foldersQuery.isError && <ErrorState title="Could not load folder filters" description={foldersQuery.error.message} onRetry={() => void foldersQuery.refetch()} />}
             {reviewableSelectedItems.length > 0 && <div className="flex justify-end">
               <Button size="sm" variant="outline" disabled={reviewingKeys.size > 0} onClick={() => void reviewDiscoveries(reviewableSelectedItems, true)}><Check className="h-3.5 w-3.5" />{reviewableSelectedItems.length === selectedItems.length ? 'Dismiss selected' : `Dismiss ${reviewableSelectedItems.length} finds`}</Button>
             </div>}
@@ -629,7 +638,7 @@ export function Downloader() {
                     return <div key={key} data-review-pending={reviewingKeys.has(key)} className="watched-discovery flex min-w-0 flex-col gap-1 [&>article]:flex-1">
                       <GalleryCard item={item} onOpen={setSelected} starting={pendingKeys.has(key)} onDownload={doStartDownload} downloadSetup={downloadStatus}   ownership={{ type: libraryMatches.get(`${item.source}:${item.galleryId}`) === 'owned' ? 'in-library' : downloadedAt.has(`${item.source}:${item.galleryId}`) || ownedKeys.has(`${item.source}:${item.galleryId}`) ? 'downloaded' : libraryMatches.get(`${item.source}:${item.galleryId}`) === 'possible' ? 'possible-duplicate' : 'available', downloadedAt: downloadedAt.get(`${item.source}:${item.galleryId}`), preferenceOwned: ownedKeys.has(`${item.source}:${item.galleryId}`) }} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(`${item.source}:${item.galleryId}`), onToggle: toggleGallerySelect }} display="discovery" review={{ state: reviewingKeys.has(key) ? 'pending' : meta?.reviewedAt ? 'reviewed' : 'unreviewed', onChange: reviewGallery }} />
                       {meta && <div className="flex min-w-0 flex-col gap-1 px-1 text-xs">
-                        <button className="min-h-11 break-words text-left text-muted underline-offset-4 hover:text-primary hover:underline line-clamp-2" onClick={() => { setFeedWatch(String(meta.searchId)); setFeedPage(1); }} title={`Filter by ${meta.query}`}>via {meta.query} · {timeAgo(meta.foundAt)}</button>
+                        <button className="min-h-11 break-words text-left text-muted underline-offset-4 hover:text-primary hover:underline line-clamp-2" onClick={() => { setFeedWatch(String(meta.searchId)); setFeedPage(1); }} title={`Filter by ${meta.watchLabel} · ${meta.query}`}>via {meta.watchLabel}{meta.watchRemoved ? ' · removed watch' : ''} · {timeAgo(meta.foundAt)}</button>
                         {meta.reviewedAt && <Button size="sm" variant="ghost" className="min-h-11 justify-start px-1" disabled={reviewingKeys.has(key)} onClick={() => reviewGallery(item, false)}><RotateCcw className="h-3.5 w-3.5" />Return to inbox</Button>}
                       </div>}
                     </div>;
@@ -637,7 +646,7 @@ export function Downloader() {
                 </div>
                 <Pager page={feedCurPage} count={feedPageCount} onPageChange={page => { setFeedPage(page); document.querySelector('main')?.scrollTo({ top: 0 }); }} />
               </>
-            ) : <EmptyState icon={<Star className="h-8 w-8" />} title={feedWatch || feedSource ? 'No matching discoveries' : feedView === 'inbox' ? 'Inbox is clear' : 'No discoveries yet'} />}
+            ) : <EmptyState icon={<Star className="h-8 w-8" />} title={feedWatch || feedSource || feedFolder ? 'No matching discoveries' : feedView === 'inbox' ? 'Inbox is clear' : 'No discoveries yet'} />}
           </section>
         </div>
       )}

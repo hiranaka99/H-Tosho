@@ -29,6 +29,7 @@ const { doujinProviders } = await import('../src/downloader/providers.js');
 const { listNewGalleries, removeWatchedSearch, backfillNewGalleries, listGalleryFeed, setGalleriesReviewed } = await import('../src/services/watchedSearches.js');
 const { getDb, schema } = await import('../src/db/index.js');
 const { getNotificationSettings, setNotificationSettings } = await import('../src/services/settings.js');
+const { dispatchFollowingDeliveries, listFollowingDeliveries } = await import('../src/services/followingDelivery.js');
 const originalHitomi = doujinProviders.hitomi;
 
 // Stub the hitomi provider so the full check pipeline runs against fixture data.
@@ -118,7 +119,7 @@ describe('lastResults persistence', () => {
       .where(eq(schema.watchedSearches.id, watch.id)).run();
     const results = listWatchedSearches().find((w) => w.id === watch.id)!.lastResults;
     assert.deepEqual(results.map((r) => r.pageCount), [undefined, undefined, undefined, undefined, undefined, undefined, 24]);
-    removeWatchedSearch(watch.id);
+    removeWatchedSearch(watch.id, watch.revision);
   });
 });
 
@@ -192,7 +193,7 @@ describe('recently added feed', () => {
     assert.deepEqual(listNewGalleries(1).map((g) => g.galleryId), ['f-4'], 'limit caps the feed');
 
     // Removing a watch stops monitoring but retains its discoveries in history.
-    assert.equal(removeWatchedSearch(watchB.id), true);
+    assert.equal(removeWatchedSearch(watchB.id, watchB.revision), true);
     const rowsForB = getDb()
       .select({ n: sql<number>`count(*)` })
       .from(schema.watchedSearchNew)
@@ -243,7 +244,7 @@ describe('stale upload suppression (provider index hiccup)', () => {
     const embeds: { description: string; thumbnail?: { url: string } }[] = [];
     t.mock.method(globalThis, 'fetch', async (_input: unknown, init?: RequestInit) => {
       embeds.push(...JSON.parse(String(init?.body)).embeds);
-      return new Response(null, { status: 204 });
+      return Response.json({ id: 'fixture-receipt' });
     });
     return embeds;
   }
@@ -280,13 +281,16 @@ describe('stale upload suppression (provider index hiccup)', () => {
     ];
     const messages: string[] = [];
     const checked = await checkWatchedSearches((_level, message) => messages.push(message));
+    assert.equal(checked.notified, 0, 'provider checks never claim committed intents were sent');
+    await dispatchFollowingDeliveries(Date.now() + 3_000);
     assert.equal(checked.newGalleries, checked.checked, 'each seeded watch finds only one fresh gallery');
-    const [embed] = embeds.filter((e) => e.description.includes(STALE_QUERY));
-    assert.ok(embed, 'expected a Discord notification for the fresh find');
-    assert.match(embed.description, /^1 new result\(s\)/);
-    assert.ok(embed.description.includes('**[Fresh](https://hitomi.la/g/fresh)**'));
-    assert.doesNotMatch(embed.description, /Old One|Old Two|more/);
-    assert.equal(embed.thumbnail?.url, 'https://img.test/fresh.jpg');
+    const [embed] = embeds.filter(e => e.description.includes('Fresh'));
+    assert.ok(embed, 'expected a separate committed delivery for the fresh find');
+    assert.match(embed.description, /^1 new gallery/);
+    assert.ok(embed.description.includes('[Fresh](https://hitomi.la/g/fresh)'));
+    assert.doesNotMatch(embed.description, /Old One|Old Two/);
+    const delivered = listFollowingDeliveries({ status: 'delivered', limit: 100 }).items.find(item => item.members.some(member => member.galleryId === 's-fresh'));
+    assert.ok(delivered?.members[0].labels.includes(STALE_QUERY));
     assert.ok(messages.some((m) => m.includes(STALE_QUERY) && m.includes('suppressed 2')));
 
     // The per-watch "new since last check" list holds only the fresh find.
@@ -326,7 +330,7 @@ describe('stale upload suppression (provider index hiccup)', () => {
     assert.deepEqual(listNewGalleries(500).filter((g) => g.query === STALE_QUERY).map((g) => g.galleryId), ['s-fresh']);
     assert.ok(getDb().select().from(schema.watchedSearchSeen)
       .where(eq(schema.watchedSearchSeen.searchId, watch.id)).all().some((r) => r.galleryId === 's-old-3'));
-    removeWatchedSearch(watch.id);
+    removeWatchedSearch(watch.id, watch.revision);
   });
 
   it('reports missing, invalid, and future upload dates through notifications and feeds', async (t) => {
@@ -342,13 +346,13 @@ describe('stale upload suppression (provider index hiccup)', () => {
       { source: 'hitomi', galleryId: 'u-future', title: 'Future Date', tags: [], artists: [], uploadedAt: daysAgo(-1) },
     ];
     await checkWatchedSearches(log);
-    const [embed] = embeds.filter((e) => e.description.includes(query));
-    assert.ok(embed);
-    assert.match(embed.description, /^3 new result\(s\)/);
-    for (const r of searchResults) assert.ok(embed.description.includes(r.title));
+    await dispatchFollowingDeliveries(Date.now() + 3_000);
+    const descriptions = embeds.map(embed => embed.description).join('\n');
+    for (const r of searchResults) assert.ok(descriptions.includes(r.title));
+    assert.equal(listFollowingDeliveries({ status: 'delivered', limit: 100 }).items.filter(item => item.members.some(member => member.galleryId.startsWith('u-'))).length, 3);
     assert.deepEqual(listWatchedSearches().find((w) => w.id === watch.id)!.lastResults.map((r) => r.galleryId), searchResults.map((r) => r.galleryId));
     assert.deepEqual(listNewGalleries(500).filter((g) => g.query === query).map((g) => g.galleryId).sort(), searchResults.map((r) => r.galleryId).sort());
-    removeWatchedSearch(watch.id);
+    removeWatchedSearch(watch.id, watch.revision);
   });
 });
 
@@ -413,7 +417,7 @@ describe('watched inbox and history', () => {
     await checkWatchedSearches(log);
     assert.equal(listGalleryFeed({ searchId: second.id, view: 'inbox' }).total, 0);
     assert.ok(listGalleryFeed({ searchId: second.id, view: 'history' }).items[0].reviewedAt);
-    removeWatchedSearch(first.id);
+    removeWatchedSearch(first.id, first.revision);
     assert.ok(listGalleryFeed({ searchId: first.id, view: 'history' }).items[0].reviewedAt);
   });
 

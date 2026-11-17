@@ -1,6 +1,9 @@
 import type { JobType, JobPayloads } from '../../../server/src/contracts/jobs';
 import type { ArtistProviderId, ArtistSearchPage, ArtistWorksPage } from '../../../server/src/contracts/artists';
 import type { MetadataRestorePreview, RestorePreviewRequest } from '../../../server/src/contracts/metadataRestore';
+import type { FollowingFeedOptions, WatchedSearch, WatchedSearchPatch, WatchedSearchFolder, WatchedSearchFolderPatch, WatchedNewGallery, WatchedGalleryFeed } from '../../../server/src/contracts/following';
+import type { MergeProtectionPreview, MergeProtectionRequest } from '../../../server/src/contracts/mergeProtection';
+import type { NotificationSettings, FollowingDeliverySummary, FollowingDeliveryPage, DeliveryReview, DeliveryRetryRequest, FollowingDelivery } from '../../../server/src/contracts/followingDelivery';
 export type { ArtistProviderId, ProviderArtist, ArtistSearchPage, ArtistWorksPage } from '../../../server/src/contracts/artists';
 // Typed client for the H-Tosho REST API.
 
@@ -114,9 +117,7 @@ export interface ProviderInfo {
 
 export interface Settings {
   priorities: string[];
-  notifications: {
-    discord: { enabled: boolean; webhookUrl: string };
-  };
+  notifications: NotificationSettings;
   pollIntervalHours: number;
   watchedSearchIntervalMinutes: number;
 }
@@ -136,6 +137,7 @@ export interface Job {
   startedAt?: string | null;
   finishedAt?: string | null;
   recovery?: { explanation: string; actions: { label: string; href: string }[] };
+  followingDelivery?: FollowingDeliverySummary;
 }
 
 export interface JobLog {
@@ -295,50 +297,6 @@ export interface DownloadedGallery {
   finishedAt: string | null;
 }
 
-/** A saved doujin search that pings Discord when it finds new results. */
-export interface WatchedSearch {
-  id: number;
-  source: DoujinSource;
-  query: string;
-  lastCheckedAt: string | null;
-  lastResultCount: number | null;
-  seenCount: number;
-  lastNewCount: number | null;
-  lastFindsAt: string | null;
-  lastAttemptedAt: string | null;
-  lastError: string | null;
-  /** New galleries from the last check that found something (empty otherwise). */
-  lastResults: WatchedSearchResultItem[];
-}
-
-/** One gallery in a watch's "new since last check" list. */
-export interface WatchedSearchResultItem {
-  galleryId: string;
-  title: string;
-  url?: string;
-  coverUrl?: string;
-  pageCount?: number;
-}
-
-/** One gallery in the "recently added" feed (reported new by a watched search). */
-export interface WatchedNewGallery {
-  source: DoujinSource;
-  galleryId: string;
-  title: string;
-  url?: string | null;
-  coverUrl?: string | null;
-  pageCount?: number;
-  /** The watch query that found the gallery. */
-  query: string;
-  /** ISO 8601 timestamp of the check that first reported it. */
-  foundAt: string;
-  searchId: number;
-  artists: string[];
-  language?: string;
-  reviewedAt: string | null;
-}
-
-export interface WatchedGalleryFeed { items: WatchedNewGallery[]; total: number; inboxCount: number; historyCount: number; watches: { id: number; query: string; source: DoujinSource }[] }
 
 /** One pick in a daily recommendation set (a search result plus why it matched). */
 export interface RecommendationItem extends DoujinSearchResult {
@@ -415,9 +373,10 @@ export const api = {
   metadataHistory: (id: number, cursor?: number) => request<{items: import('../../../server/src/contracts/metadataHistory').MetadataHistoryEntry[];nextCursor:number|null}>(`/series/${id}/metadata-history${cursor?`?cursor=${cursor}`:''}`),
   metadataHistoryDetail: (id:number, operationId:string) => request<import('../../../server/src/contracts/metadataHistory').MetadataHistoryDetail>(`/series/${id}/metadata-history/${encodeURIComponent(operationId)}`),
   metadataRestorePreview: (id: number, operationId: string, body: RestorePreviewRequest) => request<MetadataRestorePreview>(`/series/${id}/metadata-history/${encodeURIComponent(operationId)}/restore-preview`, { method: 'POST', body: JSON.stringify(body) }),
-  restoreMetadata: (id: number, body: { previewId: string; idempotencyKey: string }) => request<{ id: number }>(`/series/${id}/metadata-restore`, { method: 'POST', body: JSON.stringify(body) }),
+  restoreMetadata: (id: number, body: { previewId: string; idempotencyKey: string; acceptCoverConversion?: boolean }) => request<{ id: number }>(`/series/${id}/metadata-restore`, { method: 'POST', body: JSON.stringify(body) }),
   fieldPolicy: (id: number) => request<import('../../../server/src/contracts/metadata').FieldPolicy>(`/series/${id}/field-locks`),
   saveFieldPolicy: (id: number, body: { lockedFields: import('../../../server/src/contracts/metadata').ProtectedField[]; expectedRevision: number }) => request<import('../../../server/src/contracts/metadata').FieldPolicy>(`/series/${id}/field-locks`, { method: 'PUT', body: JSON.stringify(body) }),
+  mergeProtectionPreview: (body: MergeProtectionRequest) => request<MergeProtectionPreview>('/merge-protection/preview', { method: 'POST', body: JSON.stringify(body) }),
   homeMatches: () => request<HomeMatches>('/home/matches'),
   scanMatchable: () => request<{ id: number; alreadyRunning: boolean }>('/home/matches/scan', { method: 'POST' }),
   rejectMatchCandidate: (item: MatchSuggestion) => request<{ ok: boolean }>(`/home/matches/${item.seriesId}/reject`, { method: 'POST', body: JSON.stringify({ providerId: item.candidate.providerId, providerSeriesId: item.candidate.providerSeriesId }) }),
@@ -476,19 +435,35 @@ export const api = {
   watchedSearches: () => request<WatchedSearch[]>('/watched-searches'),
   addWatchedSearch: (source: DoujinSource, query: string) =>
     request<WatchedSearch>('/watched-searches', { method: 'POST', body: JSON.stringify({ source, query }) }),
-  removeWatchedSearch: (id: number) => request<{ ok: boolean }>(`/watched-searches/${id}`, { method: 'DELETE' }),
-  checkWatchedSearches: () => request<{ id: number }>('/watched-searches/check', { method: 'POST' }),
+  updateWatchedSearch: (id: number, patch: WatchedSearchPatch) => request<WatchedSearch>(`/watched-searches/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  removeWatchedSearch: (id: number, expectedRevision: number) => request<{ ok: boolean }>(`/watched-searches/${id}`, { method: 'DELETE', body: JSON.stringify({ expectedRevision }) }),
+  watchedSearchFolders: () => request<WatchedSearchFolder[]>('/watched-search-folders'),
+  addWatchedSearchFolder: (name: string) => request<WatchedSearchFolder>('/watched-search-folders', { method: 'POST', body: JSON.stringify({ name }) }),
+  updateWatchedSearchFolder: (id: number, patch: WatchedSearchFolderPatch) => request<WatchedSearchFolder>(`/watched-search-folders/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  removeWatchedSearchFolder: (id: number, expectedRevision: number) => request<{ ok: boolean }>(`/watched-search-folders/${id}`, { method: 'DELETE', body: JSON.stringify({ expectedRevision }) }),
+  checkWatchedSearches: (watchIds?: number[]) => request<{ id: number; alreadyRunning?: boolean }>('/watched-searches/check', { method: 'POST', body: JSON.stringify(watchIds ? { watchIds } : {}) }),
   watchedCheckStatus: () => request<Job | null>('/watched-searches/check-status'),
-  watchedGalleryFeed: (options: { view: 'inbox' | 'history'; source: string; searchId: string; offset: number; limit: number }) => {
-    const params = new URLSearchParams({ view: options.view, offset: String(options.offset), limit: String(options.limit) });
+  watchedGalleryFeed: (options: FollowingFeedOptions) => {
+    const params = new URLSearchParams();
+    if (options.view) params.set('view', options.view);
+    if (options.offset !== undefined) params.set('offset', String(options.offset));
+    if (options.limit !== undefined) params.set('limit', String(options.limit));
     if (options.source) params.set('source', options.source);
-    if (options.searchId) params.set('searchId', options.searchId);
+    if (options.searchId !== undefined) params.set('searchId', String(options.searchId));
+    if (options.folderId !== undefined) params.set('folderId', String(options.folderId));
     return request<WatchedGalleryFeed>(`/watched-searches/feed?${params}`);
   },
   reviewWatchedGalleries: (items: { source: DoujinSource; galleryId: string }[], reviewed: boolean) => request<{ ok: boolean }>('/watched-searches/review', { method: 'POST', body: JSON.stringify({ items, reviewed }) }),
   watchedSearchNew: (limit?: number) =>
     request<WatchedNewGallery[]>(`/watched-searches/new${limit ? `?limit=${limit}` : ''}`),
 
+  followingDeliveries: (options: { status?: string; offset?: number; limit?: number; jobId?: number } = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(options)) if (value !== undefined && value !== '') params.set(key, String(value));
+    return request<FollowingDeliveryPage>(`/watched-deliveries?${params}`);
+  },
+  followingDeliveryReview: (id: string) => request<DeliveryReview>(`/watched-deliveries/${id}/review`),
+  retryFollowingDelivery: (id: string, review: DeliveryRetryRequest) => request<FollowingDelivery>(`/watched-deliveries/${id}/retry`, { method: 'POST', body: JSON.stringify(review) }),
   // ---------------- Recommendations ----------------
   /** Today's recommendation set (cached per local date server-side). */
   recommendations: () => request<RecommendationSet>('/recommendations'),
@@ -520,9 +495,9 @@ export const api = {
   savePriorities: (priorities: string[]) =>
     request<{ ok: boolean }>('/settings/priorities', { method: 'PUT', body: JSON.stringify({ priorities }) }),
   saveNotifications: (notifications: Settings['notifications']) =>
-    request<{ ok: boolean }>('/settings/notifications', {
+    request<{ ok: boolean; notifications: NotificationSettings }>('/settings/notifications', {
       method: 'PUT',
-      body: JSON.stringify({ notifications }),
+      body: JSON.stringify({ notifications, expectedRevision: notifications.revision }),
     }),
   testNotifications: (notifications: Settings['notifications']) => request<{ discord: string }>('/settings/notifications/test', {
     method: 'PUT',

@@ -21,6 +21,7 @@ export interface ApprovedArchiveRestore {
   mode: 'fields' | 'document' | 'title';
   fields: string[];
 }
+export interface PreparedArchiveRestores { approved: ApprovedArchiveRestore[]; previews: ArchiveRestorePreview[] }
 const protection: Record<string,string> = {Series:'title',Summary:'summary',Genre:'genres',Tags:'tags',Writer:'writers',Artist:'artists',Year:'releaseDate',Language:'language',LanguageISO:'language',Web:'url'};
 export function archiveProtectedFields(archives: ApprovedArchiveRestore[]): string[] {
   return [...new Set(archives.flatMap(archive => archive.mode === 'document' ? PROTECTABLE_FIELDS : archive.fields.map(field => protection[field]).filter(Boolean)))];
@@ -72,8 +73,8 @@ const cell = (xml:string|null, field:string):RecordedValue => {
   return {present:value!==null,...(value!==null?{value}:{})};
 };
 export async function prepareArchiveRestores(client: KavitaClient, current: MetadataSnapshot, operationId: string,
-  side:'before'|'after', selections:ArchiveRestoreSelection[], title:string|undefined, lockedFields:readonly string[]) {
-  if (!selections.length && title === undefined) return {approved:[] as ApprovedArchiveRestore[],previews:[] as ArchiveRestorePreview[]};
+  side:'before'|'after', selections:ArchiveRestoreSelection[], title:string|undefined, lockedFields:readonly string[]): Promise<PreparedArchiveRestores> {
+  if (!selections.length && title === undefined) return {approved:[],previews:[]};
   const targets = await resolveRestoreArchiveTargets(client,current);
   const byTarget = new Map<string,ApprovedArchiveRestore>();
   const previews: ArchiveRestorePreview[] = [];

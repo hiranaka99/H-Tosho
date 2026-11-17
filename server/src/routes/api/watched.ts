@@ -2,18 +2,40 @@ import { Hono } from 'hono';
 import { jobQueue } from '../../jobs/queue.js';
 import { getDoujinProvider } from '../../downloader/providers.js';
 import { rewriteDoujinCover } from '../media.js';
-import { addWatchedSearch, listNewGalleries, listWatchedSearches, removeWatchedSearch, listGalleryFeed, setGalleriesReviewed } from '../../services/watchedSearches.js';
+import {
+  addWatchedSearch, listNewGalleries, listWatchedSearches, getWatchedSearch, updateWatchedSearch,
+  removeWatchedSearch, listGalleryFeed, setGalleriesReviewed, FollowingError,
+  listWatchedSearchFolders, addWatchedSearchFolder, patchWatchedSearchFolder, removeWatchedSearchFolder,
+} from '../../services/watchedSearches.js';
 import { type DoujinSource } from '../../downloader/types.js';
+import { FOLLOWING_TARGET_LIMIT, type CheckWatchedSearchesCommand, type WatchedSearchPatch, type WatchedSearchFolderPatch } from '../../contracts/following.js';
+import { listFollowingDeliveries, reviewFollowingDelivery, retryFollowingDelivery, FollowingDeliveryError } from '../../services/followingDelivery.js';
+import type { DeliveryRetryRequest } from '../../contracts/followingDelivery.js';
 
 import { intParam } from './helpers.js';
 export const api = new Hono();
+api.onError((error, c) => {
+  if (error instanceof FollowingError || error instanceof FollowingDeliveryError) return c.json({ error: error.message }, error.status);
+  throw error;
+});
 api.get('/watched-searches', (c) => c.json(listWatchedSearches()));
 
+api.get('/watched-deliveries', c => c.json(listFollowingDeliveries({ status: c.req.query('status'),
+  offset: c.req.query('offset') === undefined ? undefined : Number(c.req.query('offset')),
+  limit: c.req.query('limit') === undefined ? undefined : Number(c.req.query('limit')),
+  jobId: c.req.query('jobId') === undefined ? undefined : Number(c.req.query('jobId')) })));
+api.get('/watched-deliveries/:id/review', c => c.json(reviewFollowingDelivery(c.req.param('id'))));
+api.post('/watched-deliveries/:id/retry', async c => c.json(retryFollowingDelivery(c.req.param('id'), await c.req.json().catch(() => null) as DeliveryRetryRequest), 202));
+
 api.get('/watched-searches/feed', (c) => {
-  const view = c.req.query('view') ?? 'inbox', source = c.req.query('source'), watch = c.req.query('searchId');
+  const view = c.req.query('view') ?? 'inbox', source = c.req.query('source'), watch = c.req.query('searchId'), folder = c.req.query('folderId');
   const offset = Number(c.req.query('offset') ?? 0), limit = Number(c.req.query('limit') ?? 25);
-  if (!['inbox', 'history'].includes(view) || (source && source !== 'hitomi' && source !== 'nhentai') || (watch !== undefined && (!Number.isSafeInteger(Number(watch)) || Number(watch) < 1)) || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) return c.json({ error: 'Invalid feed filters or page.' }, 400);
-  const feed = listGalleryFeed({ view: view as 'inbox' | 'history', source, searchId: watch ? Number(watch) : undefined, offset, limit });
+  if (!['inbox', 'history'].includes(view) || (source && source !== 'hitomi' && source !== 'nhentai')
+    || (watch !== undefined && (!Number.isSafeInteger(Number(watch)) || Number(watch) < 1))
+    || (folder !== undefined && folder !== 'unfiled' && (!Number.isSafeInteger(Number(folder)) || Number(folder) < 1))
+    || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) return c.json({ error: 'Invalid feed filters or page.' }, 400);
+  const feed = listGalleryFeed({ view: view as 'inbox' | 'history', source, searchId: watch ? Number(watch) : undefined,
+    folderId: folder === 'unfiled' ? 'unfiled' : folder !== undefined ? Number(folder) : undefined, offset, limit });
   return c.json({ ...feed, items: feed.items.map(rewriteDoujinCover) });
 });
 
@@ -33,27 +55,86 @@ api.get('/watched-searches/new', (c) => {
 });
 
 api.post('/watched-searches', async (c) => {
-  const body = (await c.req.json()) as { source?: string; query?: string };
-  if (!body.source || !getDoujinProvider(body.source)) return c.json({ error: `Unknown source: ${body.source ?? ''}` }, 400);
-  const query = body.query?.trim();
+  const body = await c.req.json().catch(() => null) as { source?: unknown; query?: unknown } | null;
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['source', 'query'].includes(key))) return c.json({ error: 'Provide source and query.' }, 400);
+  if (typeof body.source !== 'string' || !getDoujinProvider(body.source)) return c.json({ error: `Unknown source: ${body.source ?? ''}` }, 400);
+  const query = typeof body.query === 'string' ? body.query.trim() : '';
   if (!query) return c.json({ error: 'query is required' }, 400);
   const added = addWatchedSearch(body.source as DoujinSource, query);
   return c.json(added, 201);
 });
 
-api.delete('/watched-searches/:id', (c) => {
+api.delete('/watched-searches/:id', async (c) => {
   const id = intParam(c.req.param('id'));
   if (id === null) return c.json({ error: 'Invalid watched search id' }, 400);
-  const removed = removeWatchedSearch(id);
-  if (!removed) return c.json({ error: 'Watched search not found' }, 404);
+  const body = await c.req.json().catch(() => null) as { expectedRevision?: number } | null;
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'expectedRevision')
+    || !Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0) return c.json({ error: 'Provide expectedRevision.' }, 400);
+  if (!removeWatchedSearch(id, body.expectedRevision!)) return c.json({ error: 'Watched search not found' }, 404);
   return c.json({ ok: true });
 });
 
-api.post('/watched-searches/check', (c) => {
-  const active = jobQueue.active().find((job) => job.type === 'check-watched-searches');
-  if (active) return c.json({ id: active.id, alreadyRunning: true }, 202);
-  const id = jobQueue.enqueue('check-watched-searches', {});
+api.post('/watched-searches/check', async (c) => {
+  const text = await c.req.text();
+  let body: unknown = {};
+  try { if (text.trim()) body = JSON.parse(text); } catch { return c.json({ error: 'Invalid check request.' }, 400); }
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'watchIds')) return c.json({ error: 'Provide {} or watchIds only.' }, 400);
+  const ids = 'watchIds' in body ? body.watchIds : undefined;
+  if (ids !== undefined && (!Array.isArray(ids) || ids.length < 1 || ids.length > FOLLOWING_TARGET_LIMIT
+    || ids.some(id => !Number.isSafeInteger(id) || id < 1))) return c.json({ error: `Provide 1–${FOLLOWING_TARGET_LIMIT} positive watch IDs.` }, 400);
+  const watchIds = ids === undefined ? undefined : [...new Set(ids as number[])].sort((a, b) => a - b);
+  if (watchIds?.some(id => !getWatchedSearch(id))) return c.json({ error: 'Watched search not found. Refresh and try again.' }, 404);
+  const active = jobQueue.active();
+  const same = active.find(job => {
+    if (job.type !== 'check-watched-searches') return false;
+    const command = job.payload as CheckWatchedSearchesCommand;
+    if (command.mode === 'due') return false;
+    const runningIds = command.watchIds === undefined ? undefined : [...new Set(command.watchIds)].sort((a, b) => a - b);
+    return watchIds === undefined ? runningIds === undefined : runningIds !== undefined
+      && watchIds.length === runningIds.length && watchIds.every((id, index) => id === runningIds[index]);
+  });
+  if (same) return c.json({ id: same.id, alreadyRunning: true }, 202);
+  if (active.length) return c.json({ error: 'An unrelated Task is active. Wait for it to finish before checking these watches.' }, 409);
+  const id = jobQueue.enqueue('check-watched-searches', { mode: 'manual', ...(watchIds !== undefined ? { watchIds } : {}) });
   return c.json({ id, alreadyRunning: false }, 202);
 });
 
 api.get('/watched-searches/check-status', (c) => c.json(jobQueue.active().find(job => job.type === 'check-watched-searches') ?? jobQueue.latest('check-watched-searches')));
+
+api.get('/watched-searches/:id', (c) => {
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid watched search id' }, 400);
+  const watch = getWatchedSearch(id);
+  return watch ? c.json(watch) : c.json({ error: 'Watched search not found.' }, 404);
+});
+
+api.patch('/watched-searches/:id', async (c) => {
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid watched search id' }, 400);
+  const patch = await c.req.json().catch(() => null) as WatchedSearchPatch;
+  return c.json(updateWatchedSearch(id, patch));
+});
+
+api.get('/watched-search-folders', (c) => c.json(listWatchedSearchFolders()));
+api.post('/watched-search-folders', async (c) => {
+  const body = await c.req.json().catch(() => null) as { name?: string } | null;
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'name') || typeof body.name !== 'string') return c.json({ error: 'Provide a folder name.' }, 400);
+  return c.json(addWatchedSearchFolder(body.name), 201);
+});
+
+api.patch('/watched-search-folders/:id', async (c) => {
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid folder id.' }, 400);
+  const patch = await c.req.json().catch(() => null) as WatchedSearchFolderPatch;
+  return c.json(patchWatchedSearchFolder(id, patch));
+});
+
+api.delete('/watched-search-folders/:id', async (c) => {
+  const id = intParam(c.req.param('id'));
+  if (id === null) return c.json({ error: 'Invalid folder id.' }, 400);
+  const body = await c.req.json().catch(() => null) as { expectedRevision?: number } | null;
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'expectedRevision')
+    || !Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0) return c.json({ error: 'Provide expectedRevision.' }, 400);
+  if (!removeWatchedSearchFolder(id, body.expectedRevision!)) return c.json({ error: 'Folder not found.' }, 404);
+  return c.json({ ok: true });
+});

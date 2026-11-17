@@ -1,10 +1,13 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { switchKavitaState } from './kavitaState.js';
 import { getDb, schema } from '../db/index.js';
 import { allProviderIds, getProvider } from '../providers/registry.js';
 import type { ProviderCredentials } from '../providers/types.js';
 import path from 'node:path';
 import type { LibraryPathMapping } from '../lib/cbz.js';
+import { createHash } from 'node:crypto';
+import type { NotificationSettings } from '../contracts/followingDelivery.js';
+import { nextDigestOccurrence, resolvedTimezone, validDigestTime, validTimezone } from './followingClock.js';
 
 export interface KavitaConnection {
   baseUrl: string;
@@ -298,51 +301,72 @@ function notifySettingChange(key: string): void {
   for (const listener of settingListeners.get(key) ?? []) listener();
 }
 
-/** Notification delivery configuration. */
-export interface NotificationSettings {
-  discord: { enabled: boolean; webhookUrl: string };
-}
+export type { NotificationSettings } from '../contracts/followingDelivery.js';
 
+const defaultZone = resolvedTimezone();
 export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
-  discord: { enabled: false, webhookUrl: '' },
+  discord: { enabled: false, webhookUrl: '' }, revision: 0, destinationIdentity: '',
+  digest: { time: '09:00', ...defaultZone, nextDueAt: nextDigestOccurrence('09:00', defaultZone.timezone) },
 };
+const destinationIdentity = (url: string) => url ? createHash('sha256').update(url).digest('hex') : '';
 
-/**
- * Validate and normalize a stored or submitted notification config. Returns
- * null when the shape is wrong so callers can reject (400) or fall back to
- * defaults instead of crashing on missing fields.
- */
+/** Legacy stored Discord-only settings remain valid; HTTP writes require revision review. */
 export function parseNotificationSettings(v: unknown): NotificationSettings | null {
-  if (!v || typeof v !== 'object') return null;
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
+  if (Object.keys(o).some(key => !['discord', 'digest', 'revision', 'destinationIdentity'].includes(key))) return null;
   const discord = o.discord as Record<string, unknown> | undefined;
-  if (!discord || typeof discord.enabled !== 'boolean' || typeof discord.webhookUrl !== 'string') return null;
-  return {
-    discord: { enabled: discord.enabled, webhookUrl: discord.webhookUrl },
-  };
+  if (!discord || Object.keys(discord).some(key => !['enabled', 'webhookUrl'].includes(key)) || typeof discord.enabled !== 'boolean' || typeof discord.webhookUrl !== 'string') return null;
+  const digest = o.digest as Record<string, unknown> | undefined;
+  if (digest && (Object.keys(digest).some(key => !['time', 'timezone', 'timezoneFallback', 'nextDueAt'].includes(key)) || !validDigestTime(digest.time) || !validTimezone(digest.timezone))) return null;
+  if (o.revision !== undefined && (!Number.isSafeInteger(o.revision) || Number(o.revision) < 0)) return null;
+  const time = digest?.time as string ?? '09:00', timezone = digest?.timezone as string ?? defaultZone.timezone;
+  return { discord: { enabled: discord.enabled, webhookUrl: discord.webhookUrl.trim() },
+    revision: Number(o.revision ?? 0), destinationIdentity: destinationIdentity(discord.webhookUrl.trim()),
+    digest: { time, timezone, timezoneFallback: digest ? digest.timezoneFallback === true : defaultZone.timezoneFallback,
+      nextDueAt: typeof digest?.nextDueAt === 'string' && Number.isFinite(Date.parse(digest.nextDueAt)) ? digest.nextDueAt : nextDigestOccurrence(time, timezone) } };
 }
 
+export class NotificationSettingsConflict extends Error {}
 export function getNotificationSettings(): NotificationSettings {
-  return cachedSetting('notifications', (v) => structuredClone(v), () => {
+  return cachedSetting('notifications', v => structuredClone(v), () => {
     const db = getDb();
     const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'notifications')).get();
-    if (!row) return structuredClone(DEFAULT_NOTIFICATIONS);
-    try {
-      const parsed = parseNotificationSettings(JSON.parse(row.valueJson));
-      if (parsed) return parsed;
-    } catch {
-      // malformed row — fall through to defaults
-    }
-    return structuredClone(DEFAULT_NOTIFICATIONS);
+    const parsed = row ? parseNotificationSettings(safeParseJson(row.valueJson)) : null;
+    const settings = parsed ?? { ...structuredClone(DEFAULT_NOTIFICATIONS), digest: { ...DEFAULT_NOTIFICATIONS.digest, nextDueAt: nextDigestOccurrence('09:00', defaultZone.timezone) } };
+    // Persist the first due instant, including on existing installations.
+    db.insert(schema.keyValueStore).values({ key: 'notifications', valueJson: JSON.stringify(settings) })
+      .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(settings) } }).run();
+    return settings;
   });
 }
 
-export function setNotificationSettings(s: NotificationSettings): void {
+export function setNotificationSettings(s: NotificationSettings | { discord: NotificationSettings['discord'] }, expectedRevision?: number): NotificationSettings {
+  const previous = getNotificationSettings();
+  if (expectedRevision !== undefined && expectedRevision !== previous.revision) throw new NotificationSettingsConflict('Notification settings changed. Refresh and review the destination again.');
+  const settings = parseNotificationSettings({ ...previous, ...s });
+  if (!settings) throw new Error('Invalid notification settings');
+  settings.revision = previous.revision + 1;
+  settings.digest.nextDueAt = nextDigestOccurrence(settings.digest.time, settings.digest.timezone);
   const db = getDb();
-  db.insert(schema.keyValueStore)
-    .values({ key: 'notifications', valueJson: JSON.stringify(s) })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(s) } })
-    .run();
+  db.transaction(tx => {
+    tx.insert(schema.keyValueStore).values({ key: 'notifications', valueJson: JSON.stringify(settings) })
+      .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(settings) } }).run();
+    // A new setting revision never inherits queued work, even when later re-enabled.
+    tx.update(schema.followingEvents).set({ status: 'suppressed' }).where(eq(schema.followingEvents.status, 'pending')).run();
+    for (const status of ['pending', 'failed']) tx.update(schema.followingDeliveries).set({ status: 'suppressed', error: 'Notification settings changed; review backlog before sending.', revision: sql`${schema.followingDeliveries.revision} + 1`, nextRetryAt: null })
+      .where(eq(schema.followingDeliveries.status, status)).run();
+  });
+  settingsCache.delete('notifications');
+  notifySettingChange('notifications');
+  return settings;
+}
+
+export function advanceDigestSchedule(now = Date.now()): void {
+  const settings = getNotificationSettings();
+  settings.digest.nextDueAt = nextDigestOccurrence(settings.digest.time, settings.digest.timezone, now);
+  getDb().insert(schema.keyValueStore).values({ key: 'notifications', valueJson: JSON.stringify(settings) })
+    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(settings) } }).run();
   settingsCache.delete('notifications');
 }
 

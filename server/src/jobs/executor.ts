@@ -1,16 +1,18 @@
 import { archiveMutations, archiveResource } from '../lib/mutations.js';
-import { getFieldPolicy } from '../services/fieldPolicies.js';
+import { inheritFieldPoliciesOwned } from '../services/fieldPolicies.js';
+import { resolveMergeProtection, requireMergeProtection } from '../services/mergeProtection.js';
 import { withMetadataHistory, type MetadataJournal } from '../services/metadataHistory.js';
 import { executeMetadataRestore } from '../services/metadataRestore.js';
 import { parseJobCommand, type JobPayloads, type JobExecutionState, type JobType } from '../contracts/jobs.js';
 import { upsertMatch } from '../services/matchRecords.js';
 import { rememberTargets, rememberLibraries, rememberAvailableLibraries, rememberSeriesLibrary, throwIfJobCancelled, type Target } from './context.js';
-import { rescanLibraryContainingDir, rescanAndVerifyChapter, runKavitaLibraryScan, sourceSeriesIdsForMerge, removeSourceSeriesFromKavita, rescanAndVerifyMerge, pickSeriesStampName } from '../kavita/libraryOperations.js';
+import { rescanLibraryContainingDir, rescanAndVerifyChapter, runKavitaLibraryScan, removeSourceSeriesFromKavita, rescanAndVerifyMerge } from '../kavita/libraryOperations.js';
 import { lastSegment, safeRealpath } from '../lib/paths.js';
 import { libraryMutations } from '../lib/mutations.js';
 import { invalidateDuplicateLibrary } from '../services/galleryDuplicates.js';
 import { eq, inArray } from 'drizzle-orm';
 import path from 'node:path';
+import { kavitaConnectionKey } from '../services/kavitaState.js';
 import fs from 'node:fs';
 import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
@@ -29,7 +31,7 @@ import { scanMatchSuggestions } from '../services/matchSuggestions.js';
 import { queueDownloadedMatchDiscovery, runDownloadedMatchDiscovery } from '../services/downloadDiscovery.js';
 import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
-import { listCbzFiles, mapKavitaPathToLocalPath, mergeCbzFiles, pathContains, editComicInfo, readComicInfo, resolveExistingFile, resolveSeriesHostDir, setComicInfoFields } from '../lib/cbz.js';
+import { listCbzFiles, mapKavitaPathToLocalPath, mergeCbzFiles, pathContains, editComicInfo, readComicInfo, resolveExistingFile, resolveSeriesHostDir, setComicInfoFields, hashArchiveFile } from '../lib/cbz.js';
 import { mapLimit } from '../lib/http.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
 import type { KavitaSeries } from '../kavita/types.js';
@@ -208,6 +210,7 @@ const MATCH_CONCURRENCY = 3;
 /** Run a queued job. Returns a small summary stored on the job row. */
 export function runJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<JobResult> {
   if (job.type === 'check-watched-searches' || job.type === 'scan-matchable' || job.type === 'clear-overrides') return executeJob(job, log, signal);
+  if (job.type === 'merge-series') return prepareMergeForPublication(job,log,signal).then(()=>libraryMutations.run(['*'],()=>executeJob(job,log,signal),signal));
   // Broad scans, merges, deletes and path-only edits conflict with every series.
   const scoped = ['apply-series', 'restore-metadata', 'sync-series', 'match-series', 'edit-comicinfo'].includes(job.type);
   const ids = [...(job.payload.seriesId === undefined ? [] : [job.payload.seriesId]), ...(job.payload.seriesIds ?? [])];
@@ -236,7 +239,13 @@ async function executeJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<J
     }
     case 'merge-series': {
       const client=connectedClientOrNull();
-      return typed.payload.seriesId && client ? withMetadataHistory(client,typed.payload.seriesId,'merge-metadata',typed.payload.seriesName ? {title:typed.payload.seriesName} : {},journal=>runMergeSeriesJob(typed,log,signal,journal),typed.id) : runMergeSeriesJob(typed,log,signal);
+      if (!client) throw new Error('Kavita is not configured; protection cannot be verified');
+      const current=await resolveMergeProtection(client,{seriesId:typed.payload.seriesId,sourceSeriesIds:typed.payload.sourceSeriesIds,sourceFiles:typed.payload.sourceFiles,targetDir:typed.payload.targetDir,seriesName:typed.payload.seriesName},typed.payload.mergeProtection);
+      requireMergeProtection(current.preview);
+      typed.payload.mergeProtection=current.state;
+      jobQueue.updateMergeState(typed.id,{mergeProtection:current.state});
+      const targetId=current.state.targetSeriesId;
+      return targetId && client ? withMetadataHistory(client,targetId,'merge-metadata',typed.payload.seriesName ? {title:typed.payload.seriesName} : {},journal=>runMergeSeriesJob(typed,log,signal,journal),typed.id) : runMergeSeriesJob(typed,log,signal);
     }
     case 'delete-series': return runDeleteSeriesJob(typed, log, signal);
     case 'restore-metadata': {
@@ -434,8 +443,10 @@ async function runWatchedSearchJob(job: JobFor<'check-watched-searches'>, log: L
     log,
     () => jobQueue.isCancelRequested(job.id),
     (current, total) => jobQueue.setProgress(job.id, current, total),
+    job.payload,
+    job.id,
   );
-  return { processed: r.checked, matched: 0, failed: r.failed, notified: r.notified, newGalleries: r.newGalleries };
+  return { processed: r.checked, matched: 0, failed: r.failed, notified: r.notified, newGalleries: r.newGalleries, notificationIntents:r.notificationIntents };
 }
 
 async function runEditComicInfoJob(job: JobFor<'edit-comicinfo'>, log: LogFn, signal?: AbortSignal, journal?: MetadataJournal): Promise<JobResult> {
@@ -487,6 +498,81 @@ async function runEditComicInfoJob(job: JobFor<'edit-comicinfo'>, log: LogFn, si
   return { processed: 1, matched: 0, failed: 0 };
 }
 
+
+/** Only durable, verified move intents can repair the move/checkpoint crash window. */
+async function recoverPendingMergeMoves(job:Job,signal?:AbortSignal):Promise<void> {
+  const state=job.payload.mergeProtection;
+  if (!state) return;
+  const client=connectedClientOrNull();
+  if (!client || state.connectionKey!==kavitaConnectionKey(getKavitaConnection().baseUrl)) throw new Error('Kavita connection changed before merge recovery');
+  for (const move of state.moves ?? []) {
+    if (move.status!=='pending') continue;
+    await archiveMutations.run([archiveResource(state.targetDir),archiveResource(move.source),archiveResource(move.destination)],async()=>{
+      throwIfJobCancelled(job.id);
+      if (move.source===move.destination || !pathContains(archiveResource(state.targetDir),archiveResource(move.destination))) throw new Error('Invalid pending merge destination');
+      const source=resolveExistingFile(move.source),destination=resolveExistingFile(move.destination);
+      if (!source && !destination) throw new Error('Neither archive in the pending merge publication exists; restore the archive before retrying');
+      if (source && (await hashArchiveFile(source,signal))!==move.sha256 || destination && (await hashArchiveFile(destination,signal))!==move.sha256) throw new Error('Pending merge archive content changed; review the source and destination before retrying');
+      if (destination) {
+        const proposedFiles=(job.payload.sourceFiles ?? []).map(file=>file===move.source && !source ? move.destination : file);
+        const proposedArchives=state.archives.map(archive=>archive.path===move.source && !source ? {...archive,path:move.destination} : archive);
+        await resolveMergeProtection(client,{targetDir:state.targetDir,sourceFiles:[...new Set([...proposedFiles,move.destination])],seriesName:state.seriesName},{...state,archives:proposedArchives});
+        if (source) {
+          // Cross-volume copy finished but source removal did not. The original
+          // survives; discard only the exact duplicate owned by this intent.
+          await fs.promises.unlink(destination);
+        } else {
+          job.payload.sourceFiles=proposedFiles;
+          state.archives=proposedArchives;
+          if (job.payload.chapters?.[move.source]!==undefined) {
+            job.payload.chapters={...job.payload.chapters,[move.destination]:job.payload.chapters[move.source]};
+            delete job.payload.chapters[move.source];
+          }
+          getDb().update(schema.downloadQueue).set({outputPath:move.destination,mergeJobId:null}).where(eq(schema.downloadQueue.outputPath,move.source)).run();
+          move.status='published';
+        }
+      }
+      jobQueue.updateMergeState(job.id,{mergeProtection:state,sourceFiles:job.payload.sourceFiles,chapters:job.payload.chapters});
+    },signal);
+  }
+}
+
+/** Downloads publish independent staging archives; final merge ownership begins only afterward. */
+async function prepareMergeForPublication(job:Job,log:LogFn,signal?:AbortSignal):Promise<void> {
+  if (signal?.aborted) throw signal.reason;
+  const command=parseJobCommand(job.type,job.payload);
+  if (command.type!=='merge-series') throw new Error('Invalid merge command');
+  job.payload={...job.payload,...command.payload};
+  if (job.payload.mergeProtection?.moves?.some(move=>move.status==='pending')) await libraryMutations.run(['*'],()=>recoverPendingMergeMoves(job,signal),signal);
+  if (job.payload.targetDir) validateExistingMergeChapters(job.payload.existingChapters,job.payload.targetDir);
+  throwIfJobCancelled(job.id);
+  const client=connectedClientOrNull();
+  if (!client) throw new Error('Kavita is not configured; protection cannot be verified');
+  const checked=await resolveMergeProtection(client,{seriesId:job.payload.seriesId,sourceSeriesIds:job.payload.sourceSeriesIds,sourceFiles:job.payload.sourceFiles,targetDir:job.payload.targetDir,seriesName:job.payload.seriesName},job.payload.mergeProtection);
+  requireMergeProtection(checked.preview);
+  validateExistingMergeChapters(job.payload.existingChapters,checked.targetDir);
+  checked.state.rootJobId ??=job.id;
+  job.payload.mergeProtection=checked.state;
+  job.payload.sourceFiles=checked.state.archives.map(archive=>archive.path);
+  jobQueue.updateMergeState(job.id,{mergeProtection:checked.state,sourceFiles:job.payload.sourceFiles});
+  const downloaded=await prepareMergeDownloads(job,log,signal);
+  throwIfJobCancelled(job.id);
+  job.payload.sourceFiles=[...new Set([...job.payload.sourceFiles,...downloaded.files])];
+  job.payload.chapters={...job.payload.chapters,...downloaded.chapters};
+  jobQueue.updateMergeState(job.id,{sourceFiles:job.payload.sourceFiles,chapters:job.payload.chapters});
+}
+
+function validateExistingMergeChapters(edits:Record<string,string>|undefined,targetDir:string):[string,string][] {
+  const entries=Object.entries(edits ?? {});
+  if (!entries.length) return entries;
+  const targetArchives=new Set(listCbzFiles(targetDir).map(archiveResource));
+  for (const [file,number] of entries) {
+    if (!targetArchives.has(archiveResource(file))) throw new Error(`Chapter edit is not an existing target archive: ${file}`);
+    if (!validMergeChapter(number)) throw new Error('Existing chapter edits must be positive numbers or blank');
+  }
+  return entries;
+}
+
 async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal?: AbortSignal, journal?: MetadataJournal): Promise<JobResult> {
   let sourceFiles = job.payload.sourceFiles ?? [];
   validateMergeDownloads(job.payload.downloads);
@@ -494,64 +580,39 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
   throwIfJobCancelled(job.id);
   for (const file of sourceFiles) if (!resolveExistingFile(file) || !file.toLowerCase().endsWith('.cbz')) throw new Error(`Source archive not found: ${file}`);
   for (const number of Object.values(job.payload.chapters ?? {})) if (!validMergeChapter(number)) throw new Error('Incoming chapter numbers must be positive numbers or blank');
-  let targetDir = job.payload.targetDir;
+  const client = connectedClientOrNull();
+  if (!client) throw new Error('Kavita is not configured; protection cannot be verified');
   const renamedSeries = job.payload.seriesName?.trim();
-  let stampName: string | undefined = renamedSeries;
-  let targetLibraryId: number | null = null;
-  if (job.payload.seriesId != null) {
-    const client = connectedClientOrNull();
-    if (!client) throw new Error('Kavita is not configured');
-    let s: { id: number; name: string; libraryId: number; folderPath?: string };
-    try {
-      s = await client.getSeriesById(job.payload.seriesId);
-    } catch {
-      throw new Error(`Kavita series ${job.payload.seriesId} not found`);
-    }
-    rememberTargets(job, [s]);
-    if (renamedSeries && renamedSeries !== s.name && getFieldPolicy(s.id).lockedFields.includes('title')) {
-      throw new Error('Series title is protected from H-Tosho sync. Unlock it before renaming this merge.');
-    }
-    const libraries = await client.getLibraries();
-    const lib = libraries.find((l) => l.id === s.libraryId);
-    rememberLibraries(job, libraries);
-    const dl = getDownloaderSettings();
-    const dir = resolveSeriesHostDir({
-      libraryPath: lib?.path ?? null,
-      folderPath: s.folderPath ?? null,
-      anchors: dl.downloadDirectory ? [path.resolve(dl.downloadDirectory)] : [],
-      mappings: dl.libraryPathMappings,
-    });
-    if (!dir || !fs.existsSync(dir)) {
-      throw new Error(`Could not locate the series folder for "${s.name}" on this machine`);
-    }
-    targetDir = dir;
-    targetLibraryId = s.libraryId;
-    // Match the Series value the existing files carry so Kavita groups the
-    // merged files with them; fall back to the series name when unknown.
-    stampName ??= (await pickSeriesStampName(dir, new Set(sourceFiles.map((f) => path.resolve(f))))) ?? s.name;
-  }
+  const reviewRequest = () => ({seriesId:job.payload.seriesId,sourceSeriesIds:job.payload.sourceSeriesIds,sourceFiles:job.payload.sourceFiles ?? sourceFiles,targetDir:job.payload.targetDir,seriesName:renamedSeries});
+  const checked = await resolveMergeProtection(client, reviewRequest(), job.payload.mergeProtection);
+  requireMergeProtection(checked.preview);
+  const targetDir = checked.targetDir;
+  const stampName = checked.state.seriesName;
+  job.payload.mergeProtection = checked.state;
+  sourceFiles = checked.state.archives.map(archive=>archive.path);
+  job.payload.sourceFiles = sourceFiles;
+  jobQueue.updateMergeState(job.id, {mergeProtection:checked.state,sourceFiles});
+  rememberTargets(job, checked.preview.series.map(series => ({id:series.seriesId,name:series.name,libraryId:series.libraryId})));
+  const recheck = async () => {
+    throwIfJobCancelled(job.id);
+    const current = await resolveMergeProtection(client, reviewRequest(), job.payload.mergeProtection);
+    requireMergeProtection(current.preview);
+    if (current.state.seriesName !== stampName) throw new Error('Effective series name changed; refresh merge review');
+    job.payload.mergeProtection = current.state;
+    jobQueue.updateMergeState(job.id, {mergeProtection:current.state});
+  };
   if (!targetDir) throw new Error('targetDir required');
   // The merge and existing chapter edits share one queue commitment. Check
   // every target edit before moving anything; incoming paths cannot expand
   // the set of archives eligible for in-place metadata edits.
-  const existingEdits = Object.entries(job.payload.existingChapters ?? {});
-  if (existingEdits.length > 0) {
-    const targetArchives = new Set(listCbzFiles(targetDir).map(file => path.resolve(file)));
-    for (const [file, number] of existingEdits) {
-      if (!targetArchives.has(path.resolve(file))) throw new Error(`Chapter edit is not an existing target archive: ${file}`);
-      if (!validMergeChapter(number)) {
-        throw new Error('Existing chapter edits must be positive numbers or blank');
-      }
-    }
-  }
+  const existingEdits = validateExistingMergeChapters(job.payload.existingChapters,targetDir);
   fs.mkdirSync(targetDir, { recursive: true });
   fs.accessSync(targetDir, fs.constants.W_OK);
-  const downloaded = await prepareMergeDownloads(job, log);
-  sourceFiles = [...new Set([...sourceFiles, ...downloaded.files])];
-  const chapters = { ...job.payload.chapters, ...downloaded.chapters };
+  await recheck();
+  const chapters = job.payload.chapters;
   await journal?.captureArchives([...new Set([...sourceFiles,...listCbzFiles(targetDir)])]);
   throwIfJobCancelled(job.id);
-  const sourceSeriesIds = await sourceSeriesIdsForMerge(sourceFiles, targetDir, log, job);
+  const sourceSeriesIds = job.payload.mergeProtection!.sourceSeriesIds.filter(id => id !== job.payload.mergeProtection!.targetSeriesId);
   throwIfJobCancelled(job.id);
   log('info', `Merging ${sourceFiles.length} file(s) into ${targetDir}`);
   const r = await mergeCbzFiles(sourceFiles, targetDir, chapters, stampName ?? lastSegment(targetDir), (source, destination) => {
@@ -559,12 +620,22 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
     // including collision-renamed files. Completed galleries are reused.
     getDb().update(schema.downloadQueue).set({ outputPath: destination, mergeJobId: null }).where(eq(schema.downloadQueue.outputPath, source)).run();
     job.payload.sourceFiles = (job.payload.sourceFiles ?? []).map(file => file === source ? destination : file);
+    job.payload.mergeProtection!.archives = job.payload.mergeProtection!.archives.map(archive => archive.path === source ? {...archive,path:destination} : archive);
+    const pending=job.payload.mergeProtection!.moves?.find(move=>move.source===source && move.destination===destination);
+    if (pending) pending.status='published';
     if (job.payload.chapters?.[source] !== undefined) {
       job.payload.chapters = { ...job.payload.chapters, [destination]: job.payload.chapters[source] };
       if (source !== destination) delete job.payload.chapters[source];
     }
-    jobQueue.updateMergeState(job.id, { sourceFiles: job.payload.sourceFiles, chapters: job.payload.chapters });
-  }, signal);
+    jobQueue.updateMergeState(job.id, { sourceFiles: job.payload.sourceFiles, chapters: job.payload.chapters, mergeProtection:job.payload.mergeProtection });
+  }, signal, async (source,destination)=>{
+    await recheck();
+    if (source===destination) return;
+    const sha256=await hashArchiveFile(source,signal);
+    if (job.payload.mergeProtection!.connectionKey!==kavitaConnectionKey(getKavitaConnection().baseUrl)) throw new Error('Kavita connection changed before archive publication');
+    job.payload.mergeProtection!.moves=[...(job.payload.mergeProtection!.moves ?? []).filter(move=>move.source!==source),{source,destination,sha256,status:'pending'}];
+    jobQueue.updateMergeState(job.id,{mergeProtection:job.payload.mergeProtection});
+  });
   throwIfJobCancelled(job.id);
   for (const f of r.failed) log('warn', `Skipped ${f.file}: ${f.error}`);
   if (r.moved.length === 0) throw new Error('No files could be moved — check the source paths');
@@ -572,7 +643,7 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
   for (const [file, number] of existingEdits) {
     throwIfJobCancelled(job.id);
     try {
-      await setComicInfoFields(path.resolve(file), { Number: number.trim() });
+      await setComicInfoFields(path.resolve(file), { Number: number.trim() }, recheck);
       log('success', `Updated existing chapter number: ${path.basename(file)}`);
     } catch (error) {
       chapterEditFailures += 1;
@@ -586,26 +657,43 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
     for (const file of listCbzFiles(targetDir)) {
       throwIfJobCancelled(job.id);
       const xml = await readComicInfo(file);
-      if (!xml || parseComicInfo(xml).fields.Series !== renamedSeries) await setComicInfoFields(file, { Series: renamedSeries });
+      if (!xml || parseComicInfo(xml).fields.Series !== renamedSeries) await setComicInfoFields(file, { Series: renamedSeries }, recheck);
     }
     throwIfJobCancelled(job.id);
-    if (job.payload.seriesId != null) {
-      const client = connectedClientOrNull();
-      if (!client) throw new Error('Kavita is required to finish the series rename. Retry the merge after reconnecting.');
-      await client.updateSeriesMetadata(job.payload.seriesId, { name: renamedSeries });
-      rememberTargets(job, [{ id: job.payload.seriesId, name: renamedSeries, libraryId: targetLibraryId! }]);
-    }
+    await recheck();
     log('success', `Set merged series name to "${renamedSeries}" in all target archives`);
   }
   log('success', `Moved ${r.moved.length} file(s) into one folder as "${stampName ?? lastSegment(targetDir)}"; stamped chapter numbers on ${r.chaptered.length}`);
-  await removeSourceSeriesFromKavita(sourceSeriesIds, log);
-  await rescanAndVerifyMerge(targetDir, r.moved, log, { job, seriesId: job.payload.seriesId ?? null, libraryId: targetLibraryId, seriesName: job.payload.seriesId == null ? renamedSeries : undefined });
-  if (job.payload.downloads?.length) {
+  await recheck();
+  await removeSourceSeriesFromKavita(sourceSeriesIds, log, targetDir, async id=>{
+    await recheck();
+    return job.payload.mergeProtection!.targetSeriesId!==id;
+  });
+  const verified = await rescanAndVerifyMerge(targetDir, r.moved, log, { job, seriesId: job.payload.mergeProtection!.targetSeriesId ?? null, libraryId: job.payload.mergeProtection!.libraryId ?? null, seriesName: renamedSeries, beforeRename:async id=>{
+    await recheck();
+    if (job.payload.mergeProtection!.targetSeriesId !== id) throw new Error('Indexed merge target identity changed before its Kavita title could be updated');
+  } });
+  if (!verified && job.payload.mergeProtection!.libraryId !== undefined) throw new Error('Merged archives were not verified in Kavita; retry to finish protection inheritance before syncing');
+  if (verified) {
+    await recheck();
+    if (job.payload.mergeProtection!.targetSeriesId!==verified.id || job.payload.mergeProtection!.libraryId!==verified.libraryId) throw new Error('Verified merge target ownership changed before protection inheritance');
+    const protection=job.payload.mergeProtection!;
+    const policy=inheritFieldPoliciesOwned(verified.id,protection.inheritedFields,protection.connectionKey,protection.policies);
+    protection.inheritedFields=policy.lockedFields;
+    protection.policies=[...protection.policies.filter(saved=>saved.seriesId!==verified.id),{seriesId:verified.id,revision:policy.revision,lockedFields:policy.lockedFields}];
+    protection.identities=[...protection.identities.filter(identity=>identity.seriesId!==verified.id),{seriesId:verified.id,libraryId:verified.libraryId,folderPath:targetDir}];
+    protection.targetSeriesId=verified.id;
+    protection.completedTargetSeriesId=verified.id;
+    jobQueue.updateMergeState(job.id,{mergeProtection:job.payload.mergeProtection});
+    if (renamedSeries && verified.name!==renamedSeries) throw new Error('Archives were merged and protection retained, but Kavita did not confirm the renamed title. Retry to finish the rename.');
+  }
+  if (r.failed.length || chapterEditFailures) throw new Error('Merge metadata was only partially committed. Protection was retained; retry this job to finish remaining archive edits.');
+  if (job.payload.downloads?.length && verified) {
     try { queueDownloadedMatchDiscovery(targetDir, renamedSeries ?? undefined); }
     catch (error) { log('warn', `Could not queue match discovery: ${error instanceof Error ? error.message : error}`); }
   }
   invalidateDuplicateLibrary();
-  return { processed: r.moved.length, matched: 0, failed: r.failed.length + chapterEditFailures };
+  return { processed: r.moved.length, matched: 0, failed: r.failed.length + chapterEditFailures,...(verified ? {} : {verificationSkipped:true}) };
 }
 
 async function runDeleteSeriesJob(job: JobFor<'delete-series'>, log: LogFn, signal?: AbortSignal): Promise<JobResult> {

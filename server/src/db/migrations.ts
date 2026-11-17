@@ -31,8 +31,10 @@ export function createSchemaTables(sqlite: Database.Database): void {
   }
 }
 
-function createIndexes(sqlite: Database.Database): void {
+function createIndexes(sqlite: Database.Database, following = false): void {
   for (const table of tables) for (const index of table.indexes) {
+    // Legacy watch rows must be reconciled and extended before F1 indexes exist.
+    if (!following && (index.config.name === 'idx_watched_searches_source_query' || index.config.name === 'idx_watched_searches_due')) continue;
     const columns = index.config.columns.map(column => {
       if (column instanceof SQL) throw new Error('Expression indexes require an explicit migration');
       return quote(column.name);
@@ -96,6 +98,44 @@ export function migrateSchema(sqlite: Database.Database): void {
       createSchemaTables(sqlite);
       createIndexes(sqlite);
     },
+    () => {
+      createSchemaTables(sqlite);
+      createIndexes(sqlite);
+    },
+    () => {
+      createSchemaTables(sqlite);
+      migrateFollowing(sqlite);
+      createIndexes(sqlite, true);
+    },
+    () => {
+      sqlite.exec(`
+        DELETE FROM job_logs WHERE job_id IN (SELECT id FROM jobs WHERE type = 'scan-library-gaps');
+        DELETE FROM jobs WHERE type = 'scan-library-gaps';
+        DROP TABLE IF EXISTS series_gap_reports;
+        DROP TABLE IF EXISTS series_gap_preferences;
+        DROP TABLE IF EXISTS series_gap_ignores;
+        DROP TABLE IF EXISTS gap_inventory_state;
+      `);
+    },
+    () => {
+      const columns = sqlite.prepare('PRAGMA table_info(watched_searches)').all() as { name: string }[];
+      if (!columns.some(column => column.name === 'notification_mode')) sqlite.exec("ALTER TABLE watched_searches ADD COLUMN notification_mode TEXT NOT NULL DEFAULT 'immediate'");
+      createSchemaTables(sqlite);
+      createIndexes(sqlite, true);
+      // Intentionally no historic discovery -> outbox replay.
+    },
+    () => {
+      const add = (table: string, column: string, definition: string) => {
+        const columns = sqlite.prepare(`PRAGMA table_info(${quote(table)})`).all() as { name: string }[];
+        if (!columns.some(entry => entry.name === column)) sqlite.exec(`ALTER TABLE ${quote(table)} ADD COLUMN ${quote(column)} ${definition}`);
+      };
+      for (const table of ['metadata_restore_previews', 'metadata_restore_plans']) add(table, 'covers_json', "TEXT NOT NULL DEFAULT '[]'");
+      add('metadata_series_covers', 'after_evidence_json', 'TEXT');
+      add('metadata_series_covers', 'requested_lock', 'INTEGER');
+      add('metadata_series_covers', 'write_acknowledged', 'INTEGER NOT NULL DEFAULT 0');
+      createSchemaTables(sqlite);
+      createIndexes(sqlite, true);
+    },
   ];
   for (const [index, migration] of migrations.entries()) {
     const version = index + 1;
@@ -105,6 +145,123 @@ export function migrateSchema(sqlite: Database.Database): void {
       sqlite.prepare('INSERT INTO schema_migrations (version) VALUES (?)').run(version);
     })();
   }
+}
+
+/** Migration 10: retain history while consolidating old non-unique watch identities. */
+function migrateFollowing(sqlite: Database.Database): void {
+  const add = (table: string, column: string, definition: string) => {
+    const columns = sqlite.prepare(`PRAGMA table_info(${quote(table)})`).all() as { name: string }[];
+    if (!columns.some(entry => entry.name === column)) sqlite.exec(`ALTER TABLE ${quote(table)} ADD COLUMN ${quote(column)} ${definition}`);
+  };
+  for (const [column, definition] of [
+    ['display_name', 'TEXT'], ['folder_id', 'INTEGER'], ['paused_at', 'TEXT'],
+    ['interval_minutes', 'INTEGER'], ['revision', 'INTEGER NOT NULL DEFAULT 0'],
+    ['next_check_at', 'TEXT'], ['last_failed_at', 'TEXT'],
+  ]) add('watched_searches', column, definition);
+  add('watched_search_new', 'watch_label', "TEXT NOT NULL DEFAULT ''");
+  sqlite.exec(`UPDATE watched_searches SET last_failed_at = last_attempted_at WHERE last_error IS NOT NULL AND last_failed_at IS NULL;
+    UPDATE watched_search_new SET watch_label = COALESCE(
+      (SELECT COALESCE(NULLIF(display_name, ''), query) FROM watched_searches WHERE id = search_id), query)
+      WHERE watch_label = ''`);
+
+  type Watch = {
+    id: number; source: string; query: string; display_name: string | null;
+    last_checked_at: string | null; last_result_count: number | null; last_results_json: string | null;
+    last_new_count: number | null; last_finds_at: string | null; last_attempted_at: string | null;
+    last_failed_at: string | null; last_error: string | null;
+  };
+  const watches = sqlite.prepare('SELECT * FROM watched_searches ORDER BY id').all() as Watch[];
+  const groups = new Map<string, Watch[]>();
+  for (const watch of watches) {
+    const key = JSON.stringify([watch.source, watch.query]);
+    const group = groups.get(key);
+    if (group) group.push(watch); else groups.set(key, [watch]);
+  }
+  const replay = sqlite.prepare(`INSERT INTO watched_search_new
+    (search_id, source, query, watch_label, gallery_id, title, url, cover_url, page_count, found_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(search_id, source, gallery_id) DO UPDATE SET
+      url = COALESCE(watched_search_new.url, excluded.url),
+      cover_url = COALESCE(watched_search_new.cover_url, excluded.cover_url),
+      page_count = COALESCE(watched_search_new.page_count, excluded.page_count)`);
+  const unionSeen = sqlite.prepare(`INSERT INTO watched_search_seen (search_id, source, gallery_id, first_seen_at)
+    SELECT ?, source, gallery_id, first_seen_at FROM watched_search_seen WHERE search_id = ?
+    ON CONFLICT(search_id, source, gallery_id) DO UPDATE SET first_seen_at = MIN(watched_search_seen.first_seen_at, excluded.first_seen_at)`);
+  type Find = {
+    id: number; search_id: number; source: string; gallery_id: string; title: string;
+    url: string | null; cover_url: string | null; page_count: number | null; artists_json: string;
+    language: string | null; reviewed_at: string | null; found_at: string;
+  };
+  const mergeFind = sqlite.prepare(`UPDATE watched_search_new SET search_id = ?, watch_label = ?, title = ?,
+    url = ?, cover_url = ?, page_count = ?, artists_json = ?, language = ?, reviewed_at = ?, found_at = ? WHERE id = ?`);
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const canonical = group[0];
+    const label = canonical.display_name || group.find(watch => watch.display_name)?.display_name || canonical.query;
+    // Older builds may only have the retained last-results JSON. Replay every
+    // duplicate before deleting it, not merely the canonical row's latest finds.
+    for (const watch of group) {
+      try {
+        const items: unknown = JSON.parse(watch.last_results_json ?? '[]');
+        if (Array.isArray(items)) for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          const r = item as Record<string, unknown>;
+          if (typeof r.galleryId !== 'string' || typeof r.title !== 'string') continue;
+          replay.run(watch.id, watch.source, watch.query, label, r.galleryId, r.title,
+            typeof r.url === 'string' ? r.url : null, typeof r.coverUrl === 'string' ? r.coverUrl : null,
+            typeof r.pageCount === 'number' && Number.isSafeInteger(r.pageCount) && r.pageCount > 0 ? r.pageCount : null,
+            watch.last_finds_at ?? watch.last_checked_at ?? '1970-01-01T00:00:00.000Z');
+        }
+      } catch { /* Malformed legacy JSON remains on the surviving watch when available. */ }
+      if (watch.id !== canonical.id) unionSeen.run(canonical.id, watch.id);
+    }
+    const ids = group.map(watch => watch.id);
+    const finds = sqlite.prepare(`SELECT * FROM watched_search_new WHERE search_id IN (${ids.map(() => '?').join(',')}) ORDER BY id`).all(...ids) as Find[];
+    const galleries = new Map<string, Find[]>();
+    for (const find of finds) {
+      const key = JSON.stringify([find.source, find.gallery_id]);
+      const rows = galleries.get(key);
+      if (rows) rows.push(find); else galleries.set(key, [find]);
+    }
+    for (const rows of galleries.values()) {
+      const survivor = rows[0];
+      const newest = [...rows].sort((a, b) => b.found_at.localeCompare(a.found_at) || b.id - a.id);
+      const known = <K extends keyof Find>(key: K, usable: (value: Find[K]) => boolean): Find[K] | null => newest.find(row => usable(row[key]))?.[key] ?? null;
+      const artists = new Set<string>();
+      for (const row of rows) {
+        try {
+          const values: unknown = JSON.parse(row.artists_json);
+          if (Array.isArray(values)) for (const artist of values) if (typeof artist === 'string') artists.add(artist);
+        } catch { /* Other collision rows can still supply valid metadata. */ }
+      }
+      for (const row of rows.slice(1)) sqlite.prepare('DELETE FROM watched_search_new WHERE id = ?').run(row.id);
+      mergeFind.run(canonical.id, label,
+        known('title', value => !!value && value !== survivor.gallery_id) ?? survivor.title,
+        known('url', value => !!value), known('cover_url', value => !!value),
+        known('page_count', value => value !== null && value > 0),
+        JSON.stringify([...artists]),
+        known('language', value => !!value), known('reviewed_at', value => !!value),
+        newest[0].found_at, survivor.id);
+    }
+    const latest = (key: 'last_checked_at' | 'last_finds_at' | 'last_attempted_at' | 'last_failed_at') =>
+      [...group].sort((a, b) => (b[key] ?? '').localeCompare(a[key] ?? '') || a.id - b.id)[0];
+    const checked = latest('last_checked_at'), findsWatch = latest('last_finds_at'), attempted = latest('last_attempted_at'), failed = latest('last_failed_at');
+    sqlite.prepare(`UPDATE watched_searches SET display_name = ?, last_checked_at = ?, last_result_count = ?,
+      last_results_json = ?, last_new_count = ?, last_finds_at = ?, last_attempted_at = ?, last_failed_at = ?, last_error = ? WHERE id = ?`)
+      .run(label === canonical.query ? null : label, checked.last_checked_at, checked.last_result_count,
+        findsWatch.last_results_json ?? checked.last_results_json, checked.last_new_count, findsWatch.last_finds_at,
+        attempted.last_attempted_at, failed.last_failed_at, attempted.last_error, canonical.id);
+    for (const watch of group.slice(1)) {
+      sqlite.prepare('DELETE FROM watched_search_seen WHERE search_id = ?').run(watch.id);
+      sqlite.prepare('DELETE FROM watched_searches WHERE id = ?').run(watch.id);
+    }
+  }
+  // Review is gallery-wide, including retained rows from already removed watches.
+  sqlite.exec(`UPDATE watched_search_new AS discovery SET reviewed_at =
+    (SELECT MAX(reviewed_at) FROM watched_search_new AS other
+      WHERE other.source = discovery.source AND other.gallery_id = discovery.gallery_id)
+    WHERE EXISTS (SELECT 1 FROM watched_search_new AS other
+      WHERE other.source = discovery.source AND other.gallery_id = discovery.gallery_id AND other.reviewed_at IS NOT NULL)`);
 }
 
 export function splitLegacyJobState(sqlite: Database.Database): void {

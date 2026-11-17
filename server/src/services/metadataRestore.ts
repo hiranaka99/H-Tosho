@@ -13,9 +13,13 @@ import { getFieldPolicy } from './fieldPolicies.js';
 import { getKavitaConnection } from './settings.js';
 import { kavitaConnectionKey } from './kavitaState.js';
 import { RESTORABLE_COMICINFO_FIELDS } from '../lib/comicInfoRestore.js';
-import { archiveMutations, archiveResource } from '../lib/mutations.js';
+import { libraryMutations, archiveMutations, archiveResource } from '../lib/mutations.js';
 import { captureArchiveSnapshot, restoreComicInfoArchive } from '../lib/cbz.js';
-import { prepareArchiveRestores, recheckArchiveRestores, archiveProtectedFields, type ApprovedArchiveRestore } from './metadataArchiveRestore.js';
+import { prepareArchiveRestores, recheckArchiveRestores, archiveProtectedFields, type ApprovedArchiveRestore, type PreparedArchiveRestores } from './metadataArchiveRestore.js';
+import { prepareCoverRestores, recheckCoverRestores, parseApprovedCoverRestores, type PreparedCoverRestores } from './metadataCoverRestore.js';
+import { coverJournal, retainedCoverAsset, pruneUnusedCoverAssets, type CoverJournal, type CoverJournalResult } from './metadataCovers.js';
+import { recoverMergeProtectionForSeriesOwned } from './mergeProtection.js';
+import { retainCoverObservation } from './coverObservations.js';
 
 const PREVIEW_LIFETIME_MS = 15 * 60_000;
 const connection = () => kavitaConnectionKey(getKavitaConnection().baseUrl);
@@ -34,9 +38,9 @@ function validKey(value: unknown, label: string): asserts value is string {
 }
 function validateRequest(request: RestorePreviewRequest): void {
   if (!request || typeof request !== 'object' || Array.isArray(request)
-    || Object.keys(request).some(key => !['snapshot', 'fields', 'nativeLockFields', 'archives'].includes(key))
+    || Object.keys(request).some(key => !['snapshot', 'fields', 'nativeLockFields', 'archives', 'covers'].includes(key))
     || !['before', 'after'].includes(request.snapshot)
-    || !Array.isArray(request.fields) || (request.fields.length < 1 && !request.archives?.length) || request.fields.length > RESTORABLE_METADATA_FIELDS.length
+    || !Array.isArray(request.fields) || (request.fields.length < 1 && !request.archives?.length && !request.covers?.length) || request.fields.length > RESTORABLE_METADATA_FIELDS.length
     || request.fields.some(field => !isRestorableMetadataField(field)) || new Set(request.fields).size !== request.fields.length
     || (request.nativeLockFields !== undefined && (!Array.isArray(request.nativeLockFields)
       || request.nativeLockFields.length > request.fields.length
@@ -52,6 +56,13 @@ function validateRequest(request: RestorePreviewRequest): void {
           || item.fields.some(field => !RESTORABLE_COMICINFO_FIELDS.includes(field as typeof RESTORABLE_COMICINFO_FIELDS[number]))))))) {
     throw new MetadataRestoreError('Invalid restore preview request', 400);
   }
+  if (request.covers !== undefined && (!Array.isArray(request.covers) || request.covers.length > 2000
+    || new Set(request.covers.map(item => `${item?.kind}:${item?.volumeId ?? ''}`)).size !== request.covers.length
+    || request.covers.some(item => !item || typeof item !== 'object' || Array.isArray(item)
+      || Object.keys(item).some(key => !['kind', 'volumeId', 'nativeLock'].includes(key))
+      || (item.kind !== 'series' && item.kind !== 'volume')
+      || (item.kind === 'series' ? item.volumeId !== undefined : !Number.isSafeInteger(item.volumeId) || Number(item.volumeId) <= 0)
+      || (item.nativeLock !== undefined && !['preserve', 'saved', 'locked', 'unlocked'].includes(item.nativeLock))))) throw new MetadataRestoreError('Invalid cover restore selection', 400);
 }
 async function capture(client: KavitaClient, seriesId: number): Promise<MetadataSnapshot> {
   const snapshot = await captureMetadataSnapshot(client, seriesId, true);
@@ -71,6 +82,7 @@ function sameIdentity(expected: MetadataSnapshot, current: MetadataSnapshot, com
 function expirePreviews(): void {
   // Approval copies all authority into its pinned plan; consumed previews may expire too.
   getDb().delete(schema.metadataRestorePreviews).where(lte(schema.metadataRestorePreviews.expiresAt, now())).run();
+  pruneUnusedCoverAssets();
 }
 
 export async function createMetadataRestorePreview(client: KavitaClient, seriesId: number, operationId: string,
@@ -84,16 +96,17 @@ export async function createMetadataRestorePreview(client: KavitaClient, seriesI
     eq(schema.metadataOperations.connectionKey, key),
   )).get();
   if (!source) throw new MetadataRestoreError('Metadata operation not found', 404);
-  const archiveOnly = request.fields.length===0 && !!request.archives?.length;
-  const selectedJson = request.snapshot === 'before' ? source.beforeJson : source.afterJson ?? (archiveOnly?source.beforeJson:null);
+  const nonMetadataOnly = request.fields.length === 0 && (!!request.archives?.length || !!request.covers?.length);
+  const selectedJson = request.snapshot === 'before' ? source.beforeJson : source.afterJson ?? (nonMetadataOnly?source.beforeJson:null);
   if (!selectedJson) throw new MetadataRestoreError('Requested snapshot was not captured', 409);
   if (source.status === 'running') conflict('Source operation is still running');
-  if (request.snapshot === 'after' && source.status === 'unverified' && !archiveOnly) {
+  if (request.snapshot === 'after' && source.status === 'unverified' && !nonMetadataOnly) {
     throw new MetadataRestoreError('After metadata verification is unavailable; select verified archive steps separately or use Before',409);
   }
   const selected = JSON.parse(selectedJson) as MetadataSnapshot;
   const historicalAfter = source.afterJson && source.status !== 'unverified' ? JSON.parse(source.afterJson) as MetadataSnapshot : null;
   let current: MetadataSnapshot;
+  await libraryMutations.run([`series:${seriesId}`], () => recoverMergeProtectionForSeriesOwned(client, seriesId));
   try { current = await capture(client, seriesId); }
   catch { throw new MetadataRestoreError('Could not read current Kavita metadata and identity', 502); }
   if (connection() !== key) conflict('Kavita connection changed during preview');
@@ -124,30 +137,45 @@ export async function createMetadataRestorePreview(client: KavitaClient, seriesI
   });
   const effectiveFields = request.fields.filter(field => Object.hasOwn(desired, field));
   const nativeLockFields = (request.nativeLockFields ?? []).filter(field => effectiveFields.includes(field));
-  let archives: Awaited<ReturnType<typeof prepareArchiveRestores>> = {approved:[],previews:[]};
+  let archives: PreparedArchiveRestores = {approved:[],previews:[]};
   try {
     archives = await prepareArchiveRestores(client,current,operationId,request.snapshot,request.archives ?? [],
       effectiveFields.includes('title') ? desired.title!.value as string : undefined,policy.lockedFields);
     for (const archive of archives.previews) if (!archive.available) conflicts.push(`${archive.target}: ${archive.reason}`);
   } catch (error) { conflicts.push(error instanceof Error ? error.message : 'Could not verify current archive identity'); }
-  if (connection() !== key) conflict('Kavita connection changed during preview');
   const createdAt = now();
   const preview: MetadataRestorePreview = {
-    id:randomUUID(), operationId, seriesId, snapshot:request.snapshot,
-    expiresAt:new Date(Date.now() + PREVIEW_LIFETIME_MS).toISOString(), policyRevision:policy.revision,
-    requestedFields:[...request.fields], effectiveFields, nativeLockFields, fields, conflicts,
-    archives:archives.previews,
-    canRestore:(effectiveFields.length > 0 || archives.approved.length > 0) && conflicts.length === 0,
+    id: randomUUID(), operationId, seriesId, snapshot: request.snapshot,
+    expiresAt: new Date(Date.now() + PREVIEW_LIFETIME_MS).toISOString(), policyRevision: policy.revision,
+    requestedFields: [...request.fields], effectiveFields, nativeLockFields, fields, conflicts,
+    archives: archives.previews, covers: [], canRestore: false,
   };
-  getDb().insert(schema.metadataRestorePreviews).values({id:preview.id,connectionKey:key,seriesId,
-    sourceOperationId:operationId, previewJson:JSON.stringify(preview), expectedJson:JSON.stringify(current),
-    desiredJson:JSON.stringify(desired),archivesJson:JSON.stringify(archives.approved),createdAt,expiresAt:preview.expiresAt}).run();
+  // A preparing preview cannot be approved; it atomically pins each inspected current image.
+  const db = getDb();
+  db.insert(schema.metadataRestorePreviews).values({ id: preview.id, connectionKey: key, seriesId, sourceOperationId: operationId,
+    previewJson: JSON.stringify(preview), expectedJson: JSON.stringify(current), desiredJson: JSON.stringify(desired),
+    archivesJson: JSON.stringify(archives.approved), coversJson: '[]', createdAt, expiresAt: preview.expiresAt }).run();
+  let covers: PreparedCoverRestores = { approved: [], previews: [] };
+  try {
+    covers = await prepareCoverRestores(client, current, selected, operationId, request.snapshot, request.covers ?? [], policy.lockedFields, (cover, observed) => {
+      preview.covers!.push(cover);
+      db.transaction(() => {
+        db.update(schema.metadataRestorePreviews).set({ previewJson: JSON.stringify(preview) }).where(eq(schema.metadataRestorePreviews.id, preview.id)).run();
+        retainCoverObservation(observed);
+      });
+    });
+    for (const cover of covers.previews) if (!cover.available) conflicts.push(`${cover.name}: ${cover.reason}`);
+  } catch (error) { conflicts.push(error instanceof Error ? error.message : 'Could not verify current cover identity'); }
+  if (connection() !== key) conflict('Kavita connection changed during preview');
+  preview.covers = covers.previews;
+  preview.canRestore = (effectiveFields.length > 0 || archives.approved.length > 0 || covers.approved.length > 0) && conflicts.length === 0;
+  db.update(schema.metadataRestorePreviews).set({ previewJson: JSON.stringify(preview), coversJson: JSON.stringify(covers.approved) }).where(eq(schema.metadataRestorePreviews.id, preview.id)).run();
   return preview;
 }
 
 /** The callback inserts the queue job on the same connection, and must not start execution synchronously. */
 export function enqueueMetadataRestore(seriesId: number, previewId: string, idempotencyKey: string,
-  enqueue: (command: RestoreMetadataCommand) => number): {id: number} {
+  enqueue: (command: RestoreMetadataCommand) => number, acceptCoverConversion = false): {id: number} {
   validSeriesId(seriesId); validKey(previewId, 'preview id'); validKey(idempotencyKey, 'idempotency key');
   const key = connection();
   if (!key) throw new MetadataRestoreError('Kavita not configured', 409);
@@ -167,15 +195,17 @@ export function enqueueMetadataRestore(seriesId: number, previewId: string, idem
     if (Date.parse(row.expiresAt) <= Date.now()) conflict('Restore preview expired; create a new preview');
     const preview = JSON.parse(row.previewJson) as MetadataRestorePreview;
     const archives = JSON.parse(row.archivesJson) as ApprovedArchiveRestore[];
-    if (!preview.canRestore || (!preview.effectiveFields.length && !archives.length)) conflict('Restore preview has unavailable fields or conflicts');
+    const covers = parseApprovedCoverRestores(row.coversJson);
+    if (covers.length && !acceptCoverConversion) throw new MetadataRestoreError('Explicit review of cover resize/re-encoding is required before approval', 400);
+    if (!preview.canRestore || (!preview.effectiveFields.length && !archives.length && !covers.length)) conflict('Restore preview has unavailable fields or conflicts');
     const policy = getFieldPolicy(seriesId);
-    if (policy.revision !== preview.policyRevision || [...preview.effectiveFields,...archiveProtectedFields(archives)].some(field => policy.lockedFields.some(locked => locked === field))) {
+    if (policy.revision !== preview.policyRevision || [...preview.effectiveFields,...archiveProtectedFields(archives),...(covers.length?['cover']:[])].some(field => policy.lockedFields.some(locked => locked === field))) {
       conflict('Protection settings changed after preview');
     }
     const planId = randomUUID(), createdAt = now();
     tx.insert(schema.metadataRestorePlans).values({id:planId,previewId,connectionKey:key,seriesId,
       sourceOperationId:row.sourceOperationId,idempotencyKey,expectedJson:row.expectedJson,desiredJson:row.desiredJson,
-      archivesJson:row.archivesJson,
+      archivesJson:row.archivesJson,coversJson:row.coversJson,
       nativeLockFieldsJson:JSON.stringify(preview.nativeLockFields),policyRevision:preview.policyRevision,createdAt}).run();
     const id = enqueue({seriesId,connectionKey:key,planId});
     if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Restore queue returned an invalid job id');
@@ -211,27 +241,32 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
   const fields = Object.keys(desired) as RestorableMetadataField[];
   const nativeLockFields = JSON.parse(plan.nativeLockFieldsJson) as RestorableMetadataField[];
   const archives = JSON.parse(plan.archivesJson) as ApprovedArchiveRestore[];
+  const covers = parseApprovedCoverRestores(plan.coversJson);
   const operationId = randomUUID();
   let before: MetadataSnapshot | null = null, after: MetadataSnapshot | null = null;
   let failure: unknown, failed = false, startedWrite = false, journaled = false;
   const problems: string[] = [];
+  const warnings: string[] = [];
+  let coverCapture: CoverJournal | undefined;
+  let coverResult: CoverJournalResult = { problems: [], warnings: [], changed: false, unverifiedNativeLocks: 0 };
   try {
     checkCancelled();
     if (connection() !== plan.connectionKey) conflict('Kavita connection changed after preview');
+    await recoverMergeProtectionForSeriesOwned(client, command.seriesId);
     before = await capture(client,command.seriesId);
     if (connection() !== plan.connectionKey) conflict('Kavita connection changed after preview');
     db.transaction(tx => {
       tx.insert(schema.metadataOperations).values({id:operationId,connectionKey:plan.connectionKey,seriesId:plan.seriesId,
         jobId,origin:'metadata-restore',restoredFromOperationId:plan.sourceOperationId,
-        fieldsJson:JSON.stringify([...fields,...(archives.length?['archives']:[])]),desiredJson:plan.desiredJson,policyRevision:plan.policyRevision,
-        beforeJson:JSON.stringify(before),createdAt:now(),version:3}).run();
+        fieldsJson:JSON.stringify([...fields,...(archives.length?['archives']:[]),...(covers.length?['cover']:[])]),desiredJson:plan.desiredJson,policyRevision:plan.policyRevision,
+        beforeJson:JSON.stringify(before),createdAt:now(),version:4}).run();
       tx.update(schema.metadataRestorePlans).set({operationId}).where(eq(schema.metadataRestorePlans.id,plan.id)).run();
     });
     journaled = true;
     if (!sameIdentity(expected,before)) conflict('Series or installation identity changed after preview');
     const policy = getFieldPolicy(plan.seriesId);
-    if (policy.revision !== plan.policyRevision || [...fields,...archiveProtectedFields(archives)].some(field => policy.lockedFields.some(locked => locked===field))) conflict('Protection settings changed after preview');
-    if ((!fields.length && !archives.length) || fields.some(field => !isRestorableMetadataField(field)
+    if (policy.revision !== plan.policyRevision || [...fields,...archiveProtectedFields(archives),...(covers.length?['cover']:[])].some(field => policy.lockedFields.some(locked => locked===field))) conflict('Protection settings changed after preview');
+    if ((!fields.length && !archives.length && !covers.length) || fields.some(field => !isRestorableMetadataField(field)
       || !getMetadataRestoreFieldAvailability(field,desired[field]).available)
       || nativeLockFields.some(field => !fields.includes(field) || !getMetadataRestoreFieldAvailability(field,desired[field]).nativeLockAvailable)) {
       conflict('Approved restore values are unavailable');
@@ -240,6 +275,11 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
     if (changed.length) conflict(`Selected metadata or native locks changed after preview: ${changed.join(', ')}`);
     if(fields.includes('title') && titleRestoreCapability(before.titleContext)) conflict(titleRestoreCapability(before.titleContext)!);
     await recheckArchiveRestores(client,before,archives,fields.includes('title'));
+    await recheckCoverRestores(client, before, covers, plan.sourceOperationId);
+    if (covers.length) {
+      coverCapture = coverJournal(client, operationId, plan.seriesId, before, plan.connectionKey);
+      for (const cover of covers) { checkCancelled(); await coverCapture.capture(cover.target); }
+    }
     db.transaction(tx => {
       for (const archive of archives) tx.insert(schema.metadataOperationSteps).values({operationId,target:archive.target,beforeJson:JSON.stringify(archive.expected)}).run();
     });
@@ -254,8 +294,23 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
     }
     if (fields.length) await client.restoreSeriesMetadataExact(plan.seriesId,desired,{expected,nativeLockFields,
       checkCancelled:fields.includes('title')?undefined:checkCancelled});
+    for (const cover of covers) {
+      checkCancelled();
+      await coverCapture!.capture(cover.target);
+      const asset = retainedCoverAsset(plan.seriesId, cover.sourceOperationId, cover.sourceAssetId);
+      if (!asset) conflict('Retained image became unavailable before upload');
+      coverCapture!.beginWrite(cover.target, cover.requestedLock, cover.sourceAssetId);
+      if (cover.target.kind === 'series') await client.updateSeriesCover(plan.seriesId, asset.data, cover.requestedLock);
+      else await client.updateVolumeCover(cover.target.volumeId, asset.data, cover.requestedLock);
+      coverCapture!.acknowledge(cover.target);
+    }
     checkCancelled();
   } catch (error) { failure = error; failed = true; }
+  if (coverCapture) {
+    coverResult = await coverCapture.finish();
+    problems.push(...coverResult.problems);
+    warnings.push(...coverResult.warnings);
+  }
   if (journaled) {
     try {
       if (connection() !== plan.connectionKey) throw new Error('Connection changed');
@@ -294,10 +349,10 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
     }
   }
   const cancelled = failed && failure instanceof Error && failure.name === 'JobCancelled';
-  const changed = archiveChanged || (before && after && Object.keys(before.fields).some(field => metadataValueKey(before!.fields[field]) !== metadataValueKey(after!.fields[field])));
+  const changed = coverResult.changed || archiveChanged || (before && after && Object.keys(before.fields).some(field => metadataValueKey(before!.fields[field]) !== metadataValueKey(after!.fields[field])));
   const status = cancelled ? 'cancelled' : failed ? (!after && startedWrite ? 'unverified' : changed ? 'partial' : 'failed')
     : problems.length ? 'unverified' : 'completed';
-  const message = [failed ? failure instanceof Error ? failure.message : String(failure) : '',...problems].filter(Boolean).join('; ') || null;
+  const message = [failed ? failure instanceof Error ? failure.message : String(failure) : '',...problems,...warnings].filter(Boolean).join('; ') || null;
   const finishedAt = now();
   db.transaction(tx => {
     if (journaled) tx.update(schema.metadataOperations).set({afterJson:after?JSON.stringify(after):null,status,message,finishedAt})
@@ -307,7 +362,7 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
   });
   if (failed) throw failure;
   if (problems.length) throw new MetadataRestoreError(`Restore verification failed: ${problems.join('; ')}`,502);
-  return {restored:fields,restoredArchives:archives.length,operationId};
+  return {restored:fields,restoredArchives:archives.length,restoredCovers:covers.length,unverifiedCoverLocks:coverResult.unverifiedNativeLocks,operationId};
 }
 
 /** Terminal hooks release pins, including queued cancellations and pre-execution validation failures. */

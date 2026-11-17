@@ -1,5 +1,11 @@
 import type Database from 'better-sqlite3';
 
+/** Both history checkpoints and durable preview/approval evidence own image assets. */
+export const PRUNE_UNUSED_COVER_ASSETS_SQL = `DELETE FROM metadata_assets AS asset
+  WHERE NOT EXISTS (SELECT 1 FROM metadata_series_covers cover WHERE cover.before_asset_id = asset.id OR cover.after_asset_id = asset.id)
+    AND NOT EXISTS (SELECT 1 FROM metadata_volume_covers cover WHERE cover.before_asset_id = asset.id OR cover.after_asset_id = asset.id)
+    AND NOT EXISTS (SELECT 1 FROM metadata_restore_previews preview, json_each(preview.preview_json, '$.covers') cover WHERE json_extract(cover.value, '$.current.assetId') = asset.id)
+    AND NOT EXISTS (SELECT 1 FROM metadata_restore_plans plan, json_each(plan.covers_json) cover WHERE json_extract(cover.value, '$.expected.assetId') = asset.id OR json_extract(cover.value, '$.sourceAssetId') = asset.id)`;
 /** Independent of activity/job retention. Keep active work and the latest 20 revisions. */
 export function pruneMetadataHistory(sqlite: Database.Database, now = Date.now()): void {
   const cutoff = new Date(now - 180 * 86_400_000).toISOString();
@@ -16,15 +22,15 @@ export function pruneMetadataHistory(sqlite: Database.Database, now = Date.now()
     sqlite.prepare('DELETE FROM metadata_restore_previews WHERE julianday(expires_at) <= julianday(?)').run(new Date(now).toISOString());
     sqlite.prepare(`DELETE FROM metadata_operation_steps WHERE operation_id IN (${expired})`).run(cutoff, new Date(now).toISOString());
     sqlite.prepare(`DELETE FROM metadata_series_covers WHERE operation_id IN (${expired})`).run(cutoff, new Date(now).toISOString());
+    sqlite.prepare(`DELETE FROM metadata_volume_covers WHERE operation_id IN (${expired})`).run(cutoff, new Date(now).toISOString());
     sqlite.prepare(`DELETE FROM metadata_operations WHERE id IN (${expired})`).run(cutoff, new Date(now).toISOString());
     // Retain the idempotency receipt, not duplicate XML after both journal sides
     // have aged out. Active plans remain fully pinned through queue/restart delays.
     sqlite.prepare(`UPDATE metadata_restore_plans AS plan
-      SET expected_json = '{}', desired_json = '{}', archives_json = '[]'
+      SET expected_json = '{}', desired_json = '{}', archives_json = '[]', covers_json = '[]'
       WHERE plan.status NOT IN ('approved', 'running') AND julianday(plan.finished_at) < julianday(?)
       AND NOT EXISTS (SELECT 1 FROM metadata_operations operation
         WHERE operation.id = plan.source_operation_id OR operation.id = plan.operation_id)`).run(cutoff);
-    sqlite.prepare(`DELETE FROM metadata_assets AS asset WHERE NOT EXISTS (SELECT 1 FROM metadata_series_covers cover
-      WHERE cover.before_asset_id = asset.id OR cover.after_asset_id = asset.id)`).run();
+    sqlite.exec(PRUNE_UNUSED_COVER_ASSETS_SQL);
   })();
 }
