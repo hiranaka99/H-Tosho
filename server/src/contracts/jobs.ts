@@ -1,4 +1,4 @@
-import type { DoujinSource } from '../downloader/types.js';
+import { isDoujinSource, type DoujinSource } from './doujin.js';
 import type { RestoreMetadataCommand } from './metadataRestore.js';
 import { FOLLOWING_TARGET_LIMIT, type CheckWatchedSearchesCommand } from './following.js';
 import type { MergeProtectionState } from './mergeProtection.js';
@@ -45,7 +45,7 @@ export interface MergeSeriesCommand {
   existingChapters?: Record<string, string>;
   /** Optional Series metadata and Kavita display name; the target folder is retained. */
   seriesName?: string;
-  downloads?: { source: DoujinSource; galleryId: string; title: string; chapter: string; allowDuplicate?: boolean }[];
+  downloads?: { source: DoujinSource; galleryId: string; title: string; chapter: string; allowDuplicate?: boolean; url?: string }[];
 }
 export interface JobExecutionState {
   context?: JobContext;
@@ -102,7 +102,16 @@ export function validateMergeDownloads(value: unknown): asserts value is MergeSe
   if (!Array.isArray(value)) throw new Error('downloads must be a list of galleries');
   const keys = new Set<string>();
   for (const entry of value) {
-    if (!entry || (entry.source !== 'hitomi' && entry.source !== 'nhentai') || typeof entry.galleryId !== 'string' || !entry.galleryId.trim() || typeof entry.title !== 'string') throw new Error('Each merge download needs a supported source, galleryId, and title');
+    if (!entry || !isDoujinSource(entry.source) || typeof entry.galleryId !== 'string' || !entry.galleryId.trim() || typeof entry.title !== 'string') throw new Error('Each merge download needs a supported source, galleryId, and title');
+    if (entry.url !== undefined) {
+      if (typeof entry.url !== 'string') throw new Error('Merge download urls must be strings');
+      try {
+        const parsed = new URL(entry.url);
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('bad');
+      } catch {
+        throw new Error('Merge download urls must be absolute http(s) URLs');
+      }
+    }
     if (entry.allowDuplicate !== undefined && typeof entry.allowDuplicate !== 'boolean') throw new Error('allowDuplicate must be a boolean');
     if (!validMergeChapter(entry.chapter)) throw new Error('Download chapters must be positive numbers or blank');
     const key = `${entry.source}:${entry.galleryId}`;

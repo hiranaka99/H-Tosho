@@ -5,6 +5,19 @@ import type { FollowingFeedOptions, WatchedSearch, WatchedSearchPatch, WatchedSe
 import type { MergeProtectionPreview, MergeProtectionRequest } from '../../../server/src/contracts/mergeProtection';
 import type { NotificationSettings } from '../../../server/src/contracts/notifications';
 export type { ArtistProviderId, ProviderArtist, ArtistSearchPage, ArtistWorksPage } from '../../../server/src/contracts/artists';
+export type { DoujinSource, EhentaiSite } from '../../../server/src/contracts/doujin';
+export type {
+  PublicDoujinSearchResult,
+  GalleryVariant,
+  ProviderSearchStatus,
+  ProviderLaneStatus,
+  UnifiedSearchEntry,
+  UnifiedSearchPage,
+} from '../../../server/src/contracts/doujin';
+import type { DoujinSource, EhentaiSite } from '../../../server/src/contracts/doujin';
+import type { UnifiedSearchPage } from '../../../server/src/contracts/doujin';
+import type { EhentaiAccountView, EhentaiSessionInput, EhentaiSiteAccess } from '../../../server/src/contracts/ehentai';
+export type { EhentaiAccountView, EhentaiSessionInput, EhentaiSiteAccess };
 // Typed client for the H-Tosho REST API.
 
 export interface KavitaConnection {
@@ -188,8 +201,8 @@ export interface HomeMatches { items: MatchSuggestion[]; configured: boolean; sc
 export interface HomeActivity { id: string; title: string; action: string; createdAt: string; href: string }
 
 // ---------------- Doujinshi downloader types ----------------
-
-export type DoujinSource = 'hitomi' | 'nhentai';
+// DoujinSource (the registered gallery sources) is imported from the shared
+// server contract so the web can never drift from the provider registry.
 
 /** Result ordering for a source search (nHentai and Hitomi support popularity sorts). */
 export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today' | 'popular-month' | 'popular-year' | 'date-published' | 'random';
@@ -198,6 +211,14 @@ export interface DoujinProvider {
   id: DoujinSource;
   name: string;
   color: string;
+  /** Sort values this source accepts (the UI lists per-source sort options). */
+  sorts?: string[];
+  /** Paging model: offset (hitomi/nhentai) or opaque cursor (E-Hentai). */
+  paging?: 'offset' | 'cursor';
+  /** E-Hentai only: the family site of the saved account. */
+  site?: 'e-hentai' | 'exhentai';
+  /** E-Hentai only: site-specific display name (E-Hentai vs ExHentai). */
+  displayName?: string;
 }
 
 export interface DoujinSearchResult {
@@ -211,6 +232,8 @@ export interface DoujinSearchResult {
   pageCount?: number | null;
   /** When the gallery was uploaded/published (ISO 8601 date string). */
   uploadedAt?: string | null;
+  /** Canonical gallery URL; frozen as the download origin at enqueue time. */
+  url?: string;
 }
 
 export interface DoujinSuggestion {
@@ -266,6 +289,8 @@ export interface DownloaderSettings {
   nhentaiBannedTags: string[];
   /** Tag names to exclude from all Hitomi searches (e.g. "loli", "artist:foo"). */
   hitomiBannedTags: string[];
+  /** Tag names to exclude from all E-Hentai/ExHentai searches. */
+  ehentaiBannedTags: string[];
 }
 
 export interface LibraryPathMapping {
@@ -522,6 +547,21 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ libraryPathMappings }),
     }),
+  // ---------------- E-Hentai account (Settings) ----------------
+  /** Public account view — never contains cookie values. */
+  ehentaiAccount: () => request<EhentaiAccountView>('/settings/ehentai'),
+  /** Save/replace the stored session. `expectedRevision` guards against concurrent saves.
+   *  Omit `session` (with a saved account) to change only the site. */
+  saveEhentaiAccount: (body: { site?: EhentaiSite; session?: EhentaiSessionInput; expectedRevision: number }) =>
+    request<EhentaiAccountView>('/settings/ehentai', { method: 'PUT', body: JSON.stringify(body) }),
+  /** Test access with the saved account, or a draft session (which is never stored). */
+  testEhentaiAccount: (mode: 'saved' | 'draft', session?: EhentaiSessionInput) =>
+    request<{ eHentai: EhentaiSiteAccess; exHentai: EhentaiSiteAccess; testedAt: string; saved: boolean }>('/settings/ehentai/test', {
+      method: 'POST',
+      body: JSON.stringify({ mode, ...(session ? { session } : {}) }),
+    }),
+  removeEhentaiAccount: (expectedRevision: number) =>
+    request<EhentaiAccountView>('/settings/ehentai', { method: 'DELETE', body: JSON.stringify({ expectedRevision }) }),
   doujinProviders: () => request<DoujinProvider[]>('/doujin/providers'),
   doujinSearch: (source: DoujinSource, query: string, sort?: DoujinSort) =>
     request<DoujinSearchResult[]>('/doujin/search', {
@@ -537,14 +577,22 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ source, query, ...(context !== undefined ? { context } : {}) }),
     }),
+  /** Unified search across all sources: start with { query }, continue with
+   *  { cursor, retry? }. The server replays the last served cursor. */
+  unifiedSearch: (body: { query?: string; cursor?: string; retry?: string }, signal?: AbortSignal) =>
+    request<UnifiedSearchPage>('/doujin/search/unified', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal,
+    }),
   doujinGallery: (source: DoujinSource, idOrUrl: string) =>
     request<DoujinGallery>('/doujin/gallery', {
       method: 'POST',
       body: JSON.stringify({ source, idOrUrl }),
     }),
-  startDownload: (body: { source: DoujinSource; galleryId: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number; allowDuplicate?: boolean }) =>
+  startDownload: (body: { source: DoujinSource; galleryId: string; url?: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number; allowDuplicate?: boolean }) =>
     request<{ id: number; status: string }>('/downloads', { method: 'POST', body: JSON.stringify(body) }),
-  startMergedDownloads: (body: { mergeFolder: string; items: { source: DoujinSource; galleryId: string; chapter?: number; allowDuplicate?: boolean }[] }) =>
+  startMergedDownloads: (body: { mergeFolder: string; items: { source: DoujinSource; galleryId: string; url?: string; chapter?: number; allowDuplicate?: boolean }[] }) =>
     request<{ items: { source: DoujinSource; galleryId: string; id?: number; error?: string }[] }>('/downloads/merged', { method: 'POST', body: JSON.stringify(body) }),
   checkDuplicates: (items: { source: DoujinSource; galleryId: string }[], refreshLibrary = false) => request<DuplicateCheck>('/downloads/duplicates', { method: 'POST', body: JSON.stringify({ items, refreshLibrary }) }),
   libraryMatches: (items: DoujinSearchResult[]) => request<DuplicateCheck>('/downloads/library-matches', { method: 'POST', body: JSON.stringify({ items: items.map(({ source, galleryId, title, artists, language, pageCount }) => ({ source, galleryId, title, artists, language, pageCount })) }) }),

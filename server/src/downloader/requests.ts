@@ -83,7 +83,14 @@ export async function resolvePageCandidates(
       if (r && typeof r.url === 'string' && r.url.length > 0) {
         return [r.url, ...(typeof r.fallback === 'string' && r.fallback ? [r.fallback] : [])];
       }
-    } catch {
+      // The index is known to the resolver but it returned nothing. For strict
+      // providers the static URL is not downloadable (it is HTML), so a null
+      // must fail the page rather than publish a non-image.
+      if (gallery.strictPageResolver && typeof gallery.pages[i] === 'string') {
+        throw new Error(`Page ${i + 1} could not be resolved to a downloadable URL.`);
+      }
+    } catch (error) {
+      if (gallery.strictPageResolver) throw error;
       /* fall through to the static URLs */
     }
   }

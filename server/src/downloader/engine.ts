@@ -18,7 +18,8 @@ import { generateComicInfoXml } from './comicinfo.js';
 import { buildZipFromFiles } from './zip.js';
 import { galleryFilesystemName, sanitizeFilename } from './util.js';
 import { getDoujinProvider } from './providers.js';
-import type { DoujinGallery, DoujinSource } from './types.js';
+import type { DoujinGallery } from './types.js';
+import type { DoujinSource } from '../contracts/doujin.js';
 import { getDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
 import { recordGalleryTags } from '../services/recommendations.js';
 import { jobQueue } from '../jobs/queue.js';
@@ -77,6 +78,7 @@ interface DownloadRow {
   id: number;
   source: string;
   galleryId: string;
+  sourceUrl: string | null;
   title: string | null;
   status: string;
   progressCurrent: number;
@@ -108,6 +110,7 @@ function rowToTask(row: DownloadRow): DownloadTask {
     id: row.id,
     source: row.source as DoujinSource,
     galleryId: row.galleryId,
+    sourceUrl: row.sourceUrl ?? null,
     title: row.title,
     status: row.status as DownloadStatus,
     progressCurrent: row.progressCurrent,
@@ -225,6 +228,7 @@ export class DownloadQueue {
     chapterNumber?: number,
     priority?: number,
     mergeJobId?: number,
+    sourceUrl?: string,
   ): number {
     const db = getDb();
     const res = db
@@ -241,6 +245,7 @@ export class DownloadQueue {
         chapterNumber: chapterNumber ?? null,
         priority: priority ?? 0,
         mergeJobId: mergeJobId ?? null,
+        sourceUrl: sourceUrl ?? null,
       })
       .run();
     const id = Number(res.lastInsertRowid);
@@ -643,7 +648,11 @@ export class DownloadQueue {
 
         // Resolve the full gallery (metadata + image list).
         this.updateProgress(row.id, { phase: 'resolving', progressCurrent: 0, progressTotal: 0, speed: 0, currentFile: 'Resolving gallery…', bytesCurrent: 0, bytesTotal: 0 }, { force: true });
-        const gallery = await retryTransient(() => resolveDuplicateGallery(row.source as DoujinSource, row.galleryId, true), 4, [2000, 10000, 30000]);
+        // The frozen canonical URL (sourceUrl) wins over re-derivation from
+        // the current account/site settings: a site cutover must not rewrite
+        // queued work.
+        const idOrUrl = row.sourceUrl ?? row.galleryId;
+        const gallery = await retryTransient(() => resolveDuplicateGallery(row.source as DoujinSource, idOrUrl, true), 4, [2000, 10000, 30000]);
         discoverySeriesName = gallery.series ?? gallery.title;
         if (ctx.cancelled) throw new Error('Cancelled by user');
         recordGalleryIdentity(gallery);

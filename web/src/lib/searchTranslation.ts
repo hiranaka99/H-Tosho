@@ -64,10 +64,10 @@ export function translateSearch(query: string, from: DoujinSource, to: DoujinSou
   if (from === to) return { query, sort, issues: [] };
   const issues: string[] = [];
   const addIssue = (issue: string) => { if (!issues.includes(issue)) issues.push(issue); };
-  const sourceName = to === 'hitomi' ? 'Hitomi.la' : 'nHentai';
+  const sourceName = to === 'hitomi' ? 'Hitomi.la' : to === 'ehentai' ? 'E-Hentai / ExHentai' : 'nHentai';
   const trimmed = query.trim();
   // Catalog IDs are unrelated: copying one can open a different gallery.
-  if (/^(?:#\s*)?\d+$/.test(trimmed) || /^(?:https?:\/\/)?(?:www\.)?(?:nhentai\.net|hitomi\.la)\//i.test(trimmed)
+  if (/^(?:#\s*)?\d+$/.test(trimmed) || /^(?:https?:\/\/)?(?:www\.)?(?:nhentai\.net|hitomi\.la|e-hentai\.(?:org|com)|exhentai\.(?:org|com))\//i.test(trimmed)
     || /^\/(?:g|gallery|galleries|doujinshi|manga|cg)\//i.test(trimmed)) {
     return { query: '', sort: sharedSorts.has(sort) ? sort : 'default', issues: [`Gallery IDs and URLs cannot be transferred between providers. Search by title or artist instead.`] };
   }
@@ -90,6 +90,14 @@ export function translateSearch(query: string, from: DoujinSource, to: DoujinSou
   for (const raw of terms) {
     if (from === 'hitomi' && raw.toLowerCase() === 'or') {
       addIssue('nHentai has no equivalent for OR. The translated terms require all matches.');
+      continue;
+    }
+    if (from === 'ehentai' && raw.toLowerCase() === 'or') {
+      if (to === 'nhentai') {
+        addIssue('nHentai has no equivalent for OR. The translated terms require all matches.');
+        continue;
+      }
+      out.push('or');
       continue;
     }
     const excluded = raw.startsWith('-');
@@ -115,18 +123,27 @@ export function translateSearch(query: string, from: DoujinSource, to: DoujinSou
       continue;
     }
     if (namespace && sharedFields.has(namespace)) {
-      if (namespace === 'language' && from === 'hitomi' && value.toLowerCase() === 'all') {
+      if (namespace === 'language' && value.toLowerCase() === 'all' && to === 'nhentai') {
         addIssue('The all-languages filter cannot be transferred to nHentai with the app’s English default and was left out.');
+      } else if (namespace === 'language' && value.toLowerCase() === 'all' && to === 'ehentai') {
+        addIssue(`The all-languages filter cannot be represented in ${sourceName} and was left out.`);
       } else if (to === 'hitomi' && /["\\]/.test(value)) {
         addIssue(`${raw} contains characters Hitomi.la cannot represent and was left out.`);
-      } else out.push(`${prefix}${namespace}:${to === 'hitomi' ? value.toLowerCase().replace(/\s+/g, '_') : quote(value)}`);
+      } else out.push(`${prefix}${namespace}:${to === 'hitomi' ? value.toLowerCase().replace(/\s+/g, '_') : to === 'ehentai' ? value : quote(value)}`);
     } else if ((from === 'hitomi' && namespace === 'type') || (from === 'nhentai' && namespace === 'category')) {
-      if (categories.has(value.toLowerCase())) out.push(`${prefix}${to === 'hitomi' ? 'type' : 'category'}:${to === 'hitomi' ? value.toLowerCase() : quote(value)}`);
+      if (to === 'ehentai') {
+        addIssue(`${raw} has no matching category in ${sourceName} and was left out.`);
+      } else if (categories.has(value.toLowerCase())) out.push(`${prefix}${to === 'hitomi' ? 'type' : 'category'}:${to === 'hitomi' ? value.toLowerCase() : quote(value)}`);
       else addIssue(`${raw} has no matching category in ${sourceName} and was left out.`);
-    } else if (to === 'nhentai' && ['female', 'male', 'tag'].includes(namespace ?? '')) {
+    } else if (to === 'nhentai' && ['female', 'male', 'mixed', 'other', 'tag'].includes(namespace ?? '')) {
       out.push(`${prefix}tag:${quote(value)}`);
       if (namespace !== 'tag') addIssue(`nHentai does not distinguish ${namespace} tags. Their tag names are preserved without gender scope.`);
-    } else if (to === 'hitomi' && (namespace === 'tag' || ['title', 'jtitle', 'japanese_title'].includes(namespace ?? ''))) {
+    } else if (to === 'ehentai' && ['tag', 'male', 'female', 'mixed', 'other'].includes(namespace ?? '')) {
+      if (namespace === 'tag') {
+        out.push(prefix + value);
+        addIssue(`Tag filters become keywords in ${sourceName}; their scope cannot be preserved.`);
+      } else out.push(`${prefix}${namespace}:${value}`);
+    } else if (to === 'hitomi' && (namespace === 'tag' || ['male', 'female', 'mixed', 'other', 'title', 'jtitle', 'japanese_title'].includes(namespace ?? ''))) {
       addKeywords(value, prefix);
       addIssue(`${namespace} filters become keywords in Hitomi.la; their scope and exact phrase matching cannot be preserved.`);
     } else if (namespace) {

@@ -117,6 +117,12 @@ export const requireAuth: MiddlewareHandler = async (c, next) => {
   await next();
 };
 
+/** The authenticated principal for the current request (null when unauthenticated).
+ *  Search sessions bind to this so cursors are never transferable. */
+export function currentPrincipal(c: Context): string | null {
+  return authenticatedUsername(c);
+}
+
 export function authStatus(c: Context) {
   const stored = credentials();
   const username = authenticatedUsername(c);

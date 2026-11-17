@@ -23,9 +23,12 @@ import { DownloadDestination } from './downloader/DownloadSetup';
 import { GalleryCard } from './downloader/GalleryCard';
 import { GalleryDetailModal } from './downloader/GalleryDetailModal';
 import { ManagerTab } from './downloader/DownloadManager';
+import { UnifiedSearchTab, type UnifiedSelectionActions } from './downloader/UnifiedSearchTab';
+import { useUnifiedSearch, toWebResult } from './downloader/useUnifiedSearch';
 import { WatchedTab } from './downloader/WatchedSearchControls';
 import { MergeDownloadDialog, folderNameFrom, type MergeDownloadResult } from './downloader/MergeDownloadDialog';
 import { useDownloaderTransitions } from './downloader/motion';
+import type { UnifiedSearchEntry } from '../lib/api';
 const RESULTS_PAGE_SIZE = 25;
 const EMPTY_GALLERIES: DoujinSearchResult[] = [];
 export function Downloader() {
@@ -82,7 +85,7 @@ export function Downloader() {
     if (deepLink === previousDeepLink.current) return;
     previousDeepLink.current = deepLink;
     const linkedSource = searchParams.get('source');
-    const nextSource = linkedSource === 'nhentai' || linkedSource === 'hitomi' ? linkedSource : source;
+    const nextSource = linkedSource && SOURCE_COLORS[linkedSource as DoujinSource] ? linkedSource as DoujinSource : source;
     const nextQuery = searchParams.get('q');
     if (nextQuery === null) return;
     const trimmed = nextQuery.trim();
@@ -93,6 +96,12 @@ export function Downloader() {
     setSelected(null);
   }, [deepLink, searchParams, source]);
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
+
+  // Unified search (all sources at once). State is isolated from native
+  // per-source searches and only runs while its tab is visible.
+  const [unifiedSelectedEntry, setUnifiedSelectedEntry] = React.useState<UnifiedSearchEntry | null>(null);
+  const [unifiedVariantKey, setUnifiedVariantKey] = React.useState<string | null>(null);
+  const [unifiedSelected, setUnifiedSelected] = React.useState<{ entryId: string; source: DoujinSource; galleryId: string }[]>([]);
 
   // Multi-select mode for merged downloads (mirrors the Libraries page). Selection
   // is keyed `${source}:${galleryId}` and persists across result pages; a fresh
@@ -110,11 +119,15 @@ export function Downloader() {
   const downloadStatus = setup.status;
   // Top-of-page view tabs: search results vs. the download manager queue.
   const [rememberedTab, setRememberedTab] = React.useState<DownloaderTab>(() =>
-    ['search', 'recommend', 'watched', 'manager'].includes(initialState.tab ?? '') ? initialState.tab! : 'search');
+    ['search', 'unified', 'recommend', 'watched', 'manager'].includes(initialState.tab ?? '') ? initialState.tab! : 'search');
   const requestedTab = searchParams.get('tab');
-  const tab: DownloaderTab = requestedTab === 'downloads' ? 'manager'
+  // An explicit unified-tab selection wins over the q/source deep-link that
+  // would otherwise force native Search.
+  const tab: DownloaderTab = requestedTab === 'unified' ? 'unified'
+    : requestedTab === 'downloads' ? 'manager'
     : requestedTab === 'recommend' || requestedTab === 'watched' ? requestedTab
     : requestedTab !== null || linkedQuery !== null ? 'search' : rememberedTab;
+  const unified = useUnifiedSearch(tab === 'unified');
   React.useEffect(() => {
     setRememberedTab(tab);
     writeDownloaderState({ tab });
@@ -165,10 +178,17 @@ export function Downloader() {
   });
   const watchedQuery = searchKey?.trim() ?? '';
   const currentWatch = (watches ?? []).find((w) => w.source === source && w.query === watchedQuery);
+  // The account view (never secrets) gates the E-Hentai empty state: an
+  // unconfigured account gets a settings pointer instead of a dead search.
+  const ehAccount = useQuery({ queryKey: ['ehentai-account'], queryFn: api.ehentaiAccount, staleTime: 30_000, enabled: tab === 'search' && source === 'ehentai' });
 
   async function toggleWatch() {
     const q = watchedQuery;
     if (!q) return;
+    if (source === 'ehentai') {
+      toast({ tone: 'info', title: 'Watching is not available for E-Hentai', description: 'Following checks Hitomi.la and nHentai; E-Hentai/ExHentai is a search and download source.' });
+      return;
+    }
     try {
       if (currentWatch) {
         await api.removeWatchedSearch(currentWatch.id, currentWatch.revision);
@@ -212,22 +232,97 @@ export function Downloader() {
   }, [source, query, searchKey, sort, page]);
 
 
-  const openMergedDownload = React.useCallback(() => {
-    if (!selectedItems.length) return;
+  const openMergedDownload = React.useCallback((items: DoujinSearchResult[]) => {
+    if (!items.length) return;
     // Snapshot click order so successful requests never shift remaining chapters.
-    setMergeItems(selectedItems);
+    setMergeItems(items);
     setMergeResult(null);
     setMergeOpen(true);
-  }, [selectedItems]);
-  const openMergeInto = React.useCallback(() => setMergeIntoOpen(true), []);
+  }, []);
+  const [mergeIntoItems, setMergeIntoItems] = React.useState<DoujinSearchResult[] | null>(null);
+  const openMergeInto = React.useCallback((items: DoujinSearchResult[]) => {
+    if (!items.length) return;
+    setMergeIntoItems(items);
+    setMergeIntoOpen(true);
+  }, []);
   const clearSelection = selection.clear;
   const cancelSelection = React.useCallback(() => { selection.clear(); setSelectMode(false); }, [selection.clear]);
 
-  const showSelection = (tab === 'search' || tab === 'recommend' || tab === 'watched') && (selectMode || selectedGalleries.size > 0);
+  // ---------------- unified search selection ----------------
+  // Group selection is keyed by entryId; each selected group snapshots ONE
+  // explicit variant (the stable primary by default). Click order is the
+  // merge chapter order. A late group update never changes a made choice;
+  // picking a variant in the detail modal re-points that group only.
+  function webVariant(entry: UnifiedSearchEntry, key: string | null): DoujinSearchResult {
+    const variant = (key ? entry.variants.find((v) => `${v.source}:${v.galleryId}` === key) : undefined) ?? entry.variants[0];
+    if (!variant) return toWebResult(entry.primary);
+    return {
+      source: variant.source,
+      galleryId: variant.galleryId,
+      title: variant.title,
+      coverUrl: variant.coverUrl,
+      tags: [],
+      artists: variant.artists,
+      language: variant.language,
+      pageCount: variant.pageCount,
+      uploadedAt: variant.uploadedAt,
+      url: variant.url ?? undefined,
+    };
+  }
+  const unifiedEntriesById = React.useMemo(() => new Map(unified.entries.map((e) => [e.entryId, e])), [unified.entries]);
+  const unifiedSelectedItems = React.useMemo(
+    () => unifiedSelected
+      .map((slot) => {
+        const entry = unifiedEntriesById.get(slot.entryId);
+        return entry ? webVariant(entry, `${slot.source}:${slot.galleryId}`) : null;
+      })
+      .filter((x): x is DoujinSearchResult => x !== null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [unifiedSelected, unifiedEntriesById],
+  );
+  const toggleUnifiedGroup = React.useCallback((entry: UnifiedSearchEntry) => {
+    setUnifiedSelected((prev) => {
+      if (prev.some((s) => s.entryId === entry.entryId)) return prev.filter((s) => s.entryId !== entry.entryId);
+      return [...prev, { entryId: entry.entryId, source: entry.primary.source, galleryId: entry.primary.galleryId }];
+    });
+  }, []);
+  const unifiedSelectionActions: UnifiedSelectionActions = {
+    items: unifiedSelectedItems,
+    onMerge: () => openMergedDownload(unifiedSelectedItems),
+    onMergeInto: () => openMergeInto(unifiedSelectedItems),
+    onRemove: (item) => setUnifiedSelected((prev) => prev.filter((s) => `${s.source}:${s.galleryId}` !== `${item.source}:${item.galleryId}`)),
+    onClear: () => setUnifiedSelected([]),
+    onCancel: () => { setUnifiedSelected([]); setSelectMode(false); },
+  };
+  const unifiedCommittedRef = React.useRef(unified.committed);
+  React.useEffect(() => {
+    if (unifiedCommittedRef.current === unified.committed) return;
+    unifiedCommittedRef.current = unified.committed;
+    setUnifiedSelected([]);
+    setUnifiedSelectedEntry(null);
+    setUnifiedVariantKey(null);
+    setSelectMode(false);
+  }, [unified.committed]);
+  function unifiedOwnership(entry: UnifiedSearchEntry): { type: 'available' | 'downloaded' | 'in-library' | 'possible-duplicate'; downloadedAt: string | null; preferenceOwned: boolean } {
+    // Task/ownership is inspected across every variant, but only authoritative
+    // source matches (exact source+galleryId in library/downloads) claim it.
+    const keys = entry.variants.map((v) => `${v.source}:${v.galleryId}`);
+    const primaryKey = `${entry.primary.source}:${entry.primary.galleryId}`;
+    const anyInLibrary = keys.some((k) => libraryMatches.get(k) === 'owned');
+    const anyPossible = keys.some((k) => libraryMatches.get(k) === 'possible');
+    const anyDownloaded = keys.some((k) => downloadedAt.has(k) || ownedKeys.has(k));
+    return {
+      type: anyInLibrary ? 'in-library' : anyDownloaded ? 'downloaded' : anyPossible ? 'possible-duplicate' : 'available',
+      downloadedAt: downloadedAt.get(primaryKey) ?? null,
+      preferenceOwned: keys.some((k) => ownedKeys.has(k)),
+    };
+  }
+
+  const showSelection = (tab === 'search' || tab === 'unified' || tab === 'recommend' || tab === 'watched') && (selectMode || selectedGalleries.size > 0 || unifiedSelected.length > 0);
   const selectionActions = {
     items: selectedItems,
-    onMerge: openMergedDownload,
-    onMergeInto: openMergeInto,
+    onMerge: () => openMergedDownload(selectedItems),
+    onMergeInto: () => openMergeInto(selectedItems),
     onRemove: toggleGallerySelect,
     onClear: clearSelection,
     onCancel: cancelSelection,
@@ -248,7 +343,7 @@ export function Downloader() {
       if (approved === null) return;
       const items = mergeItems.flatMap((item, i) => {
         const key = `${item.source}:${item.galleryId}`;
-        return settled.has(key) ? [] : [{ source: item.source, galleryId: item.galleryId, chapter: numbers[i] ?? undefined, allowDuplicate: approved.has(key) }];
+        return settled.has(key) ? [] : [{ source: item.source, galleryId: item.galleryId, url: item.url, chapter: numbers[i] ?? undefined, allowDuplicate: approved.has(key) }];
       });
       const result = await api.startMergedDownloads({ mergeFolder: folder, items });
       void qc.invalidateQueries({ queryKey: ['downloads'] });
@@ -339,7 +434,9 @@ export function Downloader() {
     document.querySelector('main')?.scrollTo({ top: 0 });
   }
   const pageItems = results ?? EMPTY_GALLERIES;
-  const matchItems = tab === 'search' ? pageItems : tab === 'recommend' ? visibleRecs : tab === 'watched' ? feedPageItems : [];
+  const matchItems = tab === 'search' ? pageItems : tab === 'recommend' ? visibleRecs : tab === 'watched' ? feedPageItems
+    : tab === 'unified' ? unified.entries.flatMap((e) => e.variants.map((v) => webVariant(e, `${v.source}:${v.galleryId}`)))
+    : [];
   const matchQuery = useQuery({
     queryKey: ['gallery-library-matches', matchItems.map(({ source, galleryId, title, artists, language, pageCount }) => ({ source, galleryId, title, artists, language, pageCount }))],
     queryFn: () => api.libraryMatches(matchItems),
@@ -351,15 +448,15 @@ export function Downloader() {
     `${report.source}:${report.galleryId}`,
     report.matches.some(match => match.confirmed && ['In library', 'Owned', 'completed'].includes(match.status)) ? 'owned' as const : report.matches.length ? 'possible' as const : undefined,
   ]));
-  const galleryMotionRef = useDownloaderTransitions(`${tab}:${pageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${visibleRecs.map(item => `${item.source}:${item.galleryId}`).join(',')}:${feedPageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${selectMode}:${[...selectedGalleries].join(',')}`);
+  const galleryMotionRef = useDownloaderTransitions(`${tab}:${pageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${visibleRecs.map(item => `${item.source}:${item.galleryId}`).join(',')}:${feedPageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${unified.entries.map(entry => entry.entryId).join(',')}:${selectMode}:${[...selectedGalleries].join(',')}`);
 
   return (
     <div ref={galleryMotionRef} className={cn('flex flex-col gap-4', showSelection && 'pb-[calc(var(--selection-tray-height,0px)+1rem)] lg:pb-0')} style={{ '--selection-tray-height': `${selectionHeight}px` } as React.CSSProperties}>
-      <PageHeader icon={<ListVideo className="h-5 w-5" />} title="Discover galleries" subtitle={tab === 'watched' ? undefined : "Search Hitomi.la and nHentai, then download galleries into your Kavita library."} />
+      <PageHeader icon={<ListVideo className="h-5 w-5" />} title="Discover galleries" subtitle={tab === 'watched' ? undefined : "Search Hitomi.la, nHentai and E-Hentai/ExHentai, then download galleries into your Kavita library."} />
       <DownloadDestination setup={setup} compact={tab === 'watched'} />
 
       <SegmentedTabs
-        items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'For you' }, { id: 'watched' as const, label: 'Following' }, { id: 'manager' as const, label: 'Downloads' }]}
+        items={[{ id: 'search' as const, label: 'Search' }, { id: 'unified' as const, label: 'Unified search' }, { id: 'recommend' as const, label: 'For you' }, { id: 'watched' as const, label: 'Following' }, { id: 'manager' as const, label: 'Downloads' }]}
         value={tab}
         onChange={setTab}
         label="Discover sections"
@@ -405,7 +502,7 @@ export function Downloader() {
       {/* Before the first search there is nothing below the bar — give it a purpose. */}
       {searchKey === null && (
         <Card className="flex items-center justify-center">
-          <EmptyState icon={<Search className="h-8 w-8" />} title="Search for galleries" description="Keyword, tag, artist, gallery ID or URL. Use Watch to keep checking a query — new releases land in Following for you to review." />
+          <EmptyState icon={<Search className="h-8 w-8" />} title="Search for galleries" description={source === 'ehentai' && ehAccount.data && !ehAccount.data.configured ? 'This source needs your own E-Hentai or ExHentai account. Save it under Settings → Downloader → E-Hentai account, then search here.' : 'Keyword, tag, artist, gallery ID or URL. Use Watch to keep checking a query — new releases land in Following for you to review.'} />
         </Card>
       )}
 
@@ -424,8 +521,8 @@ export function Downloader() {
                 aria-pressed={!!currentWatch}
                 variant={currentWatch ? 'secondary' : 'outline'}
                 onClick={() => void toggleWatch()}
-                disabled={!watchedQuery}
-                title={currentWatch ? `Stop watching “${watchedQuery}”` : watchedQuery ? `Watch the displayed results for “${watchedQuery}”` : 'Search first to watch these results'}
+                disabled={!watchedQuery || source === 'ehentai'}
+                title={source === 'ehentai' ? 'Watching is not available for E-Hentai searches' : currentWatch ? `Stop watching “${watchedQuery}”` : watchedQuery ? `Watch the displayed results for “${watchedQuery}”` : 'Search first to watch these results'}
               >
                 <Star className={cn('h-4 w-4', currentWatch && 'fill-current')} /> {currentWatch ? 'Watching' : 'Watch'}
               </Button>
@@ -485,6 +582,28 @@ export function Downloader() {
 
       </>)
       }
+
+      {/* Unified search — one query across all three sources */}
+      {tab === 'unified' && (
+        <UnifiedSearchTab
+          unified={unified}
+          onOpenEntry={(entry) => {
+            setUnifiedSelectedEntry(entry);
+            setUnifiedVariantKey(`${entry.primary.source}:${entry.primary.galleryId}`);
+            setSelected(null);
+          }}
+          onDownload={(item) => doStartDownload(item)}
+          downloadStatus={downloadStatus}
+          startingKeys={pendingKeys}
+          ownershipFor={unifiedOwnership}
+          selectedEntryIds={new Set(unifiedSelected.map((s) => s.entryId))}
+          onToggleGroup={toggleUnifiedGroup}
+          selectMode={selectMode}
+          onToggleSelectMode={() => setSelectMode((m) => !m)}
+          selectionActions={unifiedSelectionActions}
+          showSelection={showSelection}
+        />
+      )}
 
       {/* Daily recommendations */}
       {tab === 'recommend' && (
@@ -664,13 +783,14 @@ export function Downloader() {
       )}
 
       {/* Merge selected galleries into an existing Kavita series */}
-      {mergeIntoOpen && selectedItems.length > 0 && (
+      {mergeIntoOpen && mergeIntoItems && mergeIntoItems.length > 0 && (
         <MergeIntoSeriesDialog
-          items={selectedItems}
+          items={mergeIntoItems}
           onClose={() => setMergeIntoOpen(false)}
           onQueued={(keys) => {
             const queued = new Set(keys);
             selection.remove(queued);
+            setUnifiedSelected((prev) => prev.filter((s) => !queued.has(`${s.source}:${s.galleryId}`)));
             setSelectMode(false);
           }}
           setup={setup}
@@ -693,11 +813,39 @@ export function Downloader() {
         />
       )}
 
+      {/* Unified search detail: one entry, a selectable real source per variant */}
+      {unifiedSelectedEntry && (() => {
+        const key = unifiedVariantKey ?? `${unifiedSelectedEntry.primary.source}:${unifiedSelectedEntry.primary.galleryId}`;
+        const item = webVariant(unifiedSelectedEntry, key);
+        const variants = unifiedSelectedEntry.variants.length > 1
+          ? unifiedSelectedEntry.variants.map((v) => ({ item: webVariant(unifiedSelectedEntry, `${v.source}:${v.galleryId}`), position: v.providerPosition }))
+          : undefined;
+        return (
+          <GalleryDetailModal
+            item={item}
+            variants={variants}
+            selectedVariantKey={key}
+            onSelectVariant={(v) => {
+              setUnifiedVariantKey(`${v.source}:${v.galleryId}`);
+              // Re-point the group's download target; never queues both copies.
+              setUnifiedSelected((prev) => prev.map((s) => (s.entryId === unifiedSelectedEntry.entryId ? { ...s, source: v.source, galleryId: v.galleryId } : s)));
+            }}
+            onClose={() => setUnifiedSelectedEntry(null)}
+            checking={pendingKeys.has(key)}
+            downloaded={downloadedAt.has(key) || libraryMatches.get(key) === 'owned' || ownedKeys.has(key)}
+            inLibrary={libraryMatches.get(key) === 'owned'}
+            setup={setup}
+            onDownload={() => doStartDownload(item)}
+            onSearchTag={searchTagFragment}
+          />
+        );
+      })()}
+
       {/* Download manager — own component so live task ticks never re-render the page */}
       {tab === 'manager' && <ManagerTab />}
 
       </TabPanel>
-      {showSelection && <GallerySelectionBar {...selectionActions} mobile onHeightChange={setSelectionHeight} />}
+      {showSelection && <GallerySelectionBar {...(tab === 'unified' ? unifiedSelectionActions : selectionActions)} mobile onHeightChange={setSelectionHeight} />}
       {duplicateDialog}
     </div>
   );

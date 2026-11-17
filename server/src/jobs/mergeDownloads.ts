@@ -66,7 +66,7 @@ export async function prepareMergeDownloads(job: Job, log: LogFn, signal?:AbortS
           const check = findDuplicateReports(identities, job.payload.sourceFiles);
           if (check.reports.some(report => report.matches.length)) throw new Error(`Possible duplicate for ${plan.title}. Review this gallery in Downloader before queueing the merge again.`);
         }
-        const id = queue.enqueue(plan.source, plan.galleryId, plan.title, 'cbz', undefined, plan.chapter.trim() ? Number(plan.chapter) : undefined, 0, job.id);
+        const id = queue.enqueue(plan.source, plan.galleryId, plan.title, 'cbz', undefined, plan.chapter.trim() ? Number(plan.chapter) : undefined, 0, job.id, plan.url);
         tracked.push({ plan, id, owned: true });
         remember(key, id);
         log('info', `Download queued: ${plan.title} (task #${id})`);
@@ -90,7 +90,7 @@ export async function prepareMergeDownloads(job: Job, log: LogFn, signal?:AbortS
           // An existing folder-format task is allowed to finish, then this plan
           // downloads a CBZ copy. No concurrent duplicate writer is introduced.
           if (task.outputFormat === 'folder') {
-            entry.id = queue.enqueue(entry.plan.source, entry.plan.galleryId, entry.plan.title, 'cbz', undefined, entry.plan.chapter.trim() ? Number(entry.plan.chapter) : undefined, 0, job.id);
+            entry.id = queue.enqueue(entry.plan.source, entry.plan.galleryId, entry.plan.title, 'cbz', undefined, entry.plan.chapter.trim() ? Number(entry.plan.chapter) : undefined, 0, job.id, entry.plan.url);
             entry.owned = true;
             remember(`${entry.plan.source}:${entry.plan.galleryId}`, entry.id);
             log('info', `Downloading CBZ copy: ${entry.plan.title} (task #${entry.id})`);

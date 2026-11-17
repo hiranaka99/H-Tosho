@@ -4,8 +4,27 @@ import { getNotificationSettings, getPollIntervalHours, getProviderPriorities, g
 import { testNotification } from '../../notify/dispatcher.js';
 import { getDownloaderSettings, parseDownloaderSettings, setDownloaderSettings } from '../../services/settings.js';
 import { NotificationSettingsConflict } from '../../services/settings.js';
+import {
+  getEhentaiAccountView, getStoredSession, removeEhentaiAccount, recordAccess, saveEhentaiAccount,
+  EhentaiAccountConflict, EhentaiAccountCryptoError, EhentaiAccountError,
+} from '../../services/ehentaiAccount.js';
+import { parseEhentaiSession, parseEhentaiSite, type EhentaiSessionInput } from '../../contracts/ehentai.js';
+import { testEhentaiAccess, EhentaiUpstreamError } from '../../downloader/ehentaiClient.js';
+import { RequestAbortedError } from '../../downloader/ehentaiGate.js';
 
 import { CREDENTIAL_FIELDS, errMsg } from './helpers.js';
+
+/** Map account-service errors to a status + sanitized message. Conflict is
+ *  409, input errors 400, and a corrupt key/ciphertext 409 (the client must
+ *  reload; silently resetting would destroy the only stored envelope). */
+function accountErrorStatus(error: unknown): 400 | 409 {
+  return error instanceof EhentaiAccountError && !(error instanceof EhentaiAccountConflict) ? 400 : 409;
+}
+function accountErrorMessage(error: unknown): string {
+  if (error instanceof EhentaiAccountError) return error.message;
+  if (error instanceof EhentaiAccountCryptoError) return error.message;
+  return 'The E-Hentai account could not be updated. Try again.';
+}
 export const api = new Hono();
 api.get('/providers', (c) => {
   const settings = getProviderSettings();
@@ -123,4 +142,88 @@ api.put('/settings/library-path-mappings', async (c) => {
   return c.json({ libraryPathMappings: settings.libraryPathMappings });
 });
 
-/** List the available doujinshi sources for the UI source selector. */
+// ---------------- E-Hentai / ExHentai account ----------------
+//
+// The account session is stored encrypted in its own record (never in the
+// downloader settings JSON) and is write-only: GETs expose flags, access
+// evidence, and timestamps, never cookie values. All account responses are
+// no-store so credentials and access evidence are not cached.
+
+const EHENTAI_RESPONSE_HEADERS = { 'Cache-Control': 'private, no-store' };
+
+api.get('/settings/ehentai', (c) => {
+  try {
+    return c.json(getEhentaiAccountView(), 200, EHENTAI_RESPONSE_HEADERS);
+  } catch (error) {
+    return c.json({ error: accountErrorMessage(error) }, 409, EHENTAI_RESPONSE_HEADERS);
+  }
+});
+
+api.put('/settings/ehentai', async (c) => {
+  const body = await c.req.json().catch(() => null) as { site?: unknown; session?: unknown; expectedRevision?: unknown } | null;
+  if (!body || typeof body !== 'object') return c.json({ error: 'Invalid request body' }, 400, EHENTAI_RESPONSE_HEADERS);
+  const unknownKeys = Object.keys(body).some((key) => !['site', 'session', 'expectedRevision'].includes(key));
+  if (unknownKeys) return c.json({ error: 'Unsupported E-Hentai account fields' }, 400, EHENTAI_RESPONSE_HEADERS);
+  const parsedSession = parseEhentaiSession(body.session);
+  if (parsedSession.error) return c.json({ error: parsedSession.error }, 400, EHENTAI_RESPONSE_HEADERS);
+  const parsedSite = parseEhentaiSite(body.site, getEhentaiAccountView().site);
+  if (parsedSite.error) return c.json({ error: parsedSite.error }, 400, EHENTAI_RESPONSE_HEADERS);
+  try {
+    const view = saveEhentaiAccount({
+      site: parsedSite.site,
+      session: parsedSession.session,
+      expectedRevision: body.expectedRevision as number,
+    });
+    return c.json(view, 200, EHENTAI_RESPONSE_HEADERS);
+  } catch (error) {
+    return c.json({ error: accountErrorMessage(error) }, accountErrorStatus(error), EHENTAI_RESPONSE_HEADERS);
+  }
+});
+
+api.post('/settings/ehentai/test', async (c) => {
+  const body = await c.req.json().catch(() => null) as { mode?: unknown; session?: unknown } | null;
+  if (!body || typeof body !== 'object' || (body.mode !== 'saved' && body.mode !== 'draft')) {
+    return c.json({ error: 'mode must be "saved" or "draft"' }, 400, EHENTAI_RESPONSE_HEADERS);
+  }
+  let session: EhentaiSessionInput | null;
+  if (body.mode === 'draft') {
+    const parsed = parseEhentaiSession(body.session);
+    if (parsed.error || !parsed.session) return c.json({ error: parsed.error ?? 'A complete session is required to test a draft' }, 400, EHENTAI_RESPONSE_HEADERS);
+    session = parsed.session;
+  } else {
+    try {
+      session = getStoredSession();
+    } catch (error) {
+      return c.json({ error: accountErrorMessage(error) }, 409, EHENTAI_RESPONSE_HEADERS);
+    }
+    if (!session) return c.json({ error: 'No saved E-Hentai account. Save one first, or test a draft.' }, 400, EHENTAI_RESPONSE_HEADERS);
+  }
+  const controller = new AbortController();
+  c.req.raw.signal.addEventListener('abort', () => controller.abort(), { once: true });
+  try {
+    const result = await testEhentaiAccess(session, { signal: controller.signal });
+    // Record timestamped evidence only for the SAVED account; a draft test
+    // must not alter the saved account's state (nor save the draft).
+    if (body.mode === 'saved') {
+      recordAccess({
+        eHentai: { state: result.eHentai.state, testedAt: result.testedAt, message: result.eHentai.message },
+        exHentai: { state: result.exHentai.state, testedAt: result.testedAt, message: result.exHentai.message },
+      });
+    }
+    return c.json({ eHentai: result.eHentai, exHentai: result.exHentai, testedAt: result.testedAt, saved: body.mode === 'saved' }, 200, EHENTAI_RESPONSE_HEADERS);
+  } catch (error) {
+    if (error instanceof RequestAbortedError) return c.json({ error: 'Request cancelled' }, 400, EHENTAI_RESPONSE_HEADERS);
+    if (error instanceof EhentaiUpstreamError) return c.json({ error: error.message, kind: error.kind }, 502, EHENTAI_RESPONSE_HEADERS);
+    return c.json({ error: errMsg(error) }, 502, EHENTAI_RESPONSE_HEADERS);
+  }
+});
+
+api.delete('/settings/ehentai', async (c) => {
+  const body = await c.req.json().catch(() => null) as { expectedRevision?: unknown } | null;
+  try {
+    const view = removeEhentaiAccount((body?.expectedRevision ?? 0) as number);
+    return c.json(view, 200, EHENTAI_RESPONSE_HEADERS);
+  } catch (error) {
+    return c.json({ error: accountErrorMessage(error) }, accountErrorStatus(error), EHENTAI_RESPONSE_HEADERS);
+  }
+});

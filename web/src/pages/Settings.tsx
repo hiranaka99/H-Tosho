@@ -1,10 +1,10 @@
 import * as React from 'react';
 import { useLocation, useSearchParams } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, ArrowUp, ArrowDown, LockKeyhole, Monitor, Moon, Sun, Palette } from 'lucide-react';
-import { api, ApiError, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type LibraryPathMapping } from '../lib/api';
-import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader, ErrorState, SegmentedTabs, SegmentedControl, TabPanel, Disclosure } from '../components/ui';
-import { cn } from '../lib/utils';
+import { GripVertical, Server, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, Loader2, Save, Download, X, Plus, ArrowUp, ArrowDown, LockKeyhole, Monitor, Moon, Sun, Palette, KeyRound } from 'lucide-react';
+import { api, ApiError, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type LibraryPathMapping, type EhentaiSite, type EhentaiSessionInput, type EhentaiSiteAccess } from '../lib/api';
+import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader, ErrorState, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, ConfirmDialog } from '../components/ui';
+import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { useAuth } from '../lib/AuthContext';
 import { useTheme, type Theme } from '../lib/theme';
@@ -404,6 +404,7 @@ export function Settings() {
 
       <div hidden={tab !== 'downloader'} className="flex flex-col gap-4">
         <DownloaderSettingsCard />
+        <EhentaiAccountCard />
       </div>
       </TabPanel>
     </div>
@@ -518,23 +519,23 @@ function BannedTagsEditor({ id, label, hint, value, onChange, draft, setDraft }:
 function DownloaderSettingsCard() {
   const qc = useQueryClient();
   const dl = useQuery({ queryKey: ['downloader-settings'], queryFn: api.downloaderSettings });
-  type DownloadDraft = Omit<DownloaderSettings, 'libraryPathMappings' | 'maxConcurrentDownloads' | 'maxImageConcurrency' | 'requestDelayMs'> & { maxConcurrentDownloads: number | ''; maxImageConcurrency: number | ''; requestDelayMs: number | ''; nhentaiTagInput: string; hitomiTagInput: string };
+  type DownloadDraft = Omit<DownloaderSettings, 'libraryPathMappings' | 'maxConcurrentDownloads' | 'maxImageConcurrency' | 'requestDelayMs'> & { maxConcurrentDownloads: number | ''; maxImageConcurrency: number | ''; requestDelayMs: number | ''; nhentaiTagInput: string; hitomiTagInput: string; ehentaiTagInput: string };
   const source = React.useMemo(() => {
     if (!dl.data) return undefined;
     const { libraryPathMappings: _mappings, ...settings } = dl.data;
-    return { ...settings, nhentaiTagInput: '', hitomiTagInput: '' };
+    return { ...settings, nhentaiTagInput: '', hitomiTagInput: '', ehentaiTagInput: '' };
   }, [dl.data]);
   const downloader = useSettingsDraft<DownloadDraft | null>({
     id: 'downloader', label: 'Downloader settings', initial: null, source,
     valid: (value) => Boolean(value && !folderError(value.downloadDirectory) && !numberError(value.maxConcurrentDownloads, 1, 10, true) && !numberError(value.maxImageConcurrency, 1, 20, true) && !numberError(value.requestDelayMs, 0, 60000)),
     save: async (value) => {
       if (!value) throw new Error('Downloader settings have not loaded.');
-      const { nhentaiTagInput, hitomiTagInput, ...settings } = value;
+      const { nhentaiTagInput, hitomiTagInput, ehentaiTagInput, ...settings } = value;
       const appendTags = (tags: string[], input: string) => [...new Set([...tags, ...input.split(',').map((tag) => tag.trim().replace(/^"+|"+$/g, '')).filter(Boolean)])];
-      const result = await api.saveDownloaderSettings({ ...settings, maxConcurrentDownloads: Number(settings.maxConcurrentDownloads), maxImageConcurrency: Number(settings.maxImageConcurrency), requestDelayMs: Number(settings.requestDelayMs), libraryPathMappings: [], nhentaiBannedTags: appendTags(settings.nhentaiBannedTags ?? [], nhentaiTagInput), hitomiBannedTags: appendTags(settings.hitomiBannedTags ?? [], hitomiTagInput) });
+      const result = await api.saveDownloaderSettings({ ...settings, maxConcurrentDownloads: Number(settings.maxConcurrentDownloads), maxImageConcurrency: Number(settings.maxImageConcurrency), requestDelayMs: Number(settings.requestDelayMs), libraryPathMappings: [], nhentaiBannedTags: appendTags(settings.nhentaiBannedTags ?? [], nhentaiTagInput), hitomiBannedTags: appendTags(settings.hitomiBannedTags ?? [], hitomiTagInput), ehentaiBannedTags: appendTags(settings.ehentaiBannedTags ?? [], ehentaiTagInput) });
       qc.setQueryData<DownloaderSettings>(['downloader-settings'], (current) => ({ ...result.settings, libraryPathMappings: current?.libraryPathMappings ?? result.settings.libraryPathMappings }));
       const { libraryPathMappings: _mappings, ...persisted } = result.settings;
-      return { ...persisted, nhentaiTagInput: '', hitomiTagInput: '' };
+      return { ...persisted, nhentaiTagInput: '', hitomiTagInput: '', ehentaiTagInput: '' };
     },
   });
   const dlSettings = downloader.value;
@@ -557,6 +558,7 @@ function DownloaderSettingsCard() {
         <div className="flex flex-col gap-1"><Label htmlFor="download-format">Output format</Label><Select id="download-format" value={dlSettings.format} onChange={(e) => setDlSettings({ ...dlSettings, format: e.target.value as 'cbz' | 'folder' })}><option value="cbz">CBZ archive (recommended)</option><option value="folder">Image folder</option></Select></div>
         <BannedTagsEditor id="nhentai-banned-tags" label="nHentai banned tags" hint="Galleries carrying any of these tags never appear in nHentai searches. Separate multiple tags with commas." value={dlSettings.nhentaiBannedTags ?? []} onChange={(tags) => setDlSettings((current) => current ? { ...current, nhentaiBannedTags: tags } : current)} draft={dlSettings.nhentaiTagInput} setDraft={(nhentaiTagInput) => setDlSettings((current) => current ? { ...current, nhentaiTagInput } : current)} />
         <BannedTagsEditor id="hitomi-banned-tags" label="Hitomi banned tags" hint="Galleries carrying any of these tags never appear in Hitomi searches or recommendations. A plain name matches anywhere; a namespace prefix (e.g. artist:foo) scopes the ban to that area. Separate multiple tags with commas." value={dlSettings.hitomiBannedTags ?? []} onChange={(tags) => setDlSettings((current) => current ? { ...current, hitomiBannedTags: tags } : current)} draft={dlSettings.hitomiTagInput} setDraft={(hitomiTagInput) => setDlSettings((current) => current ? { ...current, hitomiTagInput } : current)} />
+        <BannedTagsEditor id="ehentai-banned-tags" label="E-Hentai / ExHentai banned tags" hint="Galleries carrying any of these tags never appear in E-Hentai/ExHentai searches or downloads. Separate multiple tags with commas." value={dlSettings.ehentaiBannedTags ?? []} onChange={(tags) => setDlSettings((current) => current ? { ...current, ehentaiBannedTags: tags } : current)} draft={dlSettings.ehentaiTagInput} setDraft={(ehentaiTagInput) => setDlSettings((current) => current ? { ...current, ehentaiTagInput } : current)} />
         <p className="break-words text-sm text-muted">Completed downloads in a shared Kavita library are imported and checked for matches in the background. Review candidates on Home before applying metadata.</p>
         <Disclosure label={`Advanced: download performance and API key${advancedInvalid ? ' — needs attention' : ''}`} open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)} className="border-t border-border pt-2" summaryClassName="px-0">
           <div className="flex flex-col gap-4 pt-3">
@@ -573,6 +575,175 @@ function DownloaderSettingsCard() {
           <SaveButton label={downloader.pending ? 'Saving…' : downloader.status === 'saved' ? 'Saved' : 'Save downloader settings'} onClick={downloader.submit} disabled={!downloader.canSave} className="ml-auto" />
         </div>
       </CardContent>
+    </Card>
+  );
+}
+
+function EhentaiAccountCard() {
+  const qc = useQueryClient();
+  const account = useQuery({ queryKey: ['ehentai-account'], queryFn: api.ehentaiAccount, staleTime: 30_000 });
+  const view = account.data;
+  // Cookies are write-only: the draft never pre-fills saved values, so a
+  // blank field means "keep the stored session" once an account exists.
+  type EhDraft = { site: EhentaiSite; memberId: string; passHash: string; igneous: string; revision: number };
+  const source = React.useMemo<EhDraft | undefined>(
+    () => (view ? { site: view.site, memberId: '', passHash: '', igneous: '', revision: view.revision } : undefined),
+    [view],
+  );
+  const [conflict, setConflict] = React.useState(false);
+  const draft = useSettingsDraft<EhDraft>({
+    id: 'ehentai-account',
+    label: 'E-Hentai account',
+    initial: { site: 'e-hentai', memberId: '', passHash: '', igneous: '', revision: 0 },
+    source,
+    valid: (value) => {
+      const member = value.memberId.trim();
+      const hash = value.passHash.trim();
+      return (member === '' && hash === '') || (member !== '' && hash !== '');
+    },
+    save: async (value) => {
+      const member = value.memberId.trim();
+      const hash = value.passHash.trim();
+      const igneous = value.igneous.trim();
+      const body: { site: EhentaiSite; expectedRevision: number; session?: EhentaiSessionInput } = { site: value.site, expectedRevision: value.revision };
+      if (member || hash) {
+        body.session = { ipb_member_id: member, ipb_pass_hash: hash, ...(igneous ? { igneous } : {}) };
+      }
+      try {
+        const next = await api.saveEhentaiAccount(body);
+        qc.setQueryData(['ehentai-account'], next);
+        setConflict(false);
+        return { site: next.site, memberId: '', passHash: '', igneous: '', revision: next.revision };
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409) {
+          setConflict(true);
+          throw new Error('The account changed since you started editing. Your draft is kept — reload the saved account and retry.');
+        }
+        throw error;
+      }
+    },
+  });
+  const [removeOpen, setRemoveOpen] = React.useState(false);
+  const draftMember = draft.value.memberId.trim();
+  const draftHash = draft.value.passHash.trim();
+  const hasDraftSession = Boolean(draftMember || draftHash);
+  const partialCookies = (draftMember === '') !== (draftHash === '');
+  const test = useMutation({
+    mutationFn: () => hasDraftSession
+      ? api.testEhentaiAccount('draft', { ipb_member_id: draft.value.memberId.trim(), ipb_pass_hash: draft.value.passHash.trim(), ...(draft.value.igneous.trim() ? { igneous: draft.value.igneous.trim() } : {}) })
+      : api.testEhentaiAccount('saved'),
+    onSuccess: (result) => {
+      setTestResult(result);
+      if (result.saved) void account.refetch();
+    },
+    onError: (error) => setTestResult({ eHentai: { state: 'unavailable', testedAt: new Date().toISOString(), message: error instanceof Error ? error.message : String(error) }, exHentai: { state: 'unavailable', testedAt: new Date().toISOString(), message: error instanceof Error ? error.message : String(error) }, testedAt: new Date().toISOString(), saved: false }),
+  });
+  const [testResult, setTestResult] = React.useState<Awaited<ReturnType<typeof api.testEhentaiAccount>> | null>(null);
+  const remove = useMutation({
+    mutationFn: () => api.removeEhentaiAccount(draft.value.revision),
+    onSuccess: (next) => {
+      qc.setQueryData(['ehentai-account'], next);
+      setRemoveOpen(false);
+      setTestResult(null);
+      toast({ tone: 'info', title: 'E-Hentai account removed', description: 'E-Hentai/ExHentai is no longer a download source until you save an account again.' });
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) { setConflict(true); void account.refetch(); }
+      setRemoveOpen(false);
+    },
+  });
+
+  if (account.isError) return <Card><ErrorState title="Could not load the E-Hentai account" description={account.error instanceof Error ? account.error.message : String(account.error)} onRetry={() => void account.refetch()} /></Card>;
+  if (!view) return <Card><SectionHeader icon={<KeyRound className="h-4 w-4" />} title="E-Hentai account" /><CardContent className="flex items-center gap-2 text-muted"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</CardContent></Card>;
+
+  const setDraft = draft.setValue;
+  const accessRows: { label: string; access: EhentaiSiteAccess }[] = [
+    { label: 'e-hentai.org (public site)', access: testResult ? testResult.eHentai : view.eHentai },
+    { label: 'exhentai.org (ExHentai)', access: testResult ? testResult.exHentai : view.exHentai },
+  ];
+  return (
+    <Card className="animate-fade-up">
+      <SectionHeader icon={<KeyRound className="h-4 w-4" />} title="E-Hentai account">
+        <Badge tone={view.configured ? 'success' : 'muted'}>{view.configured ? 'configured' : 'not configured'}</Badge>
+        <SaveButton label={draft.status === 'saved' ? 'Saved' : 'Save'} onClick={draft.submit} disabled={!draft.canSave} />
+      </SectionHeader>
+      <CardContent className="flex flex-col gap-4">
+        <p className="break-words text-sm text-muted">Connect your own E-Hentai or ExHentai account to search and download from the account’s site. Cookies stay encrypted on this server and are never sent to the web client. The search box and provider list follow the site you save.</p>
+        {view.sessionError && (
+          <div role="alert" className="flex flex-col gap-1 rounded-md border border-danger/40 bg-danger/10 p-3 text-sm">
+            <span className="font-medium text-danger">The saved account cannot be read on this server.</span>
+            <span className="break-words text-muted">{view.sessionError} Save the cookies again to restore the account.</span>
+          </div>
+        )}
+        {conflict && (
+          <div role="alert" className="flex flex-col gap-2 text-sm text-warning">
+            <p>The saved account changed (another session saved or removed it). Your draft is retained.</p>
+            <Button variant="outline" size="sm" className="min-h-11 self-start" onClick={() => { setConflict(false); void account.refetch(); }}>Reload saved account</Button>
+          </div>
+        )}
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="ehentai-site">Site</Label>
+          <Select id="ehentai-site" aria-describedby="ehentai-site-hint" value={draft.value.site} onChange={(e) => setDraft((current) => ({ ...current, site: e.target.value as EhentaiSite }))} disabled={draft.pending}>
+            <option value="e-hentai">E-Hentai (e-hentai.org)</option>
+            <option value="exhentai">ExHentai (exhentai.org — requires ExHentai access)</option>
+          </Select>
+          <p id="ehentai-site-hint" className="text-sm text-muted">Searches, previews and downloads use this site. Changing it does not rewrite downloads already in the queue.</p>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="ehentai-member-id">ipb_member_id</Label>
+            <SettingsInput id="ehentai-member-id" type="password" autoComplete="off" spellCheck={false} disabled={draft.pending} value={draft.value.memberId} onChange={(e) => setDraft((current) => ({ ...current, memberId: e.target.value }))} placeholder={view.configured ? 'Saved — enter to replace' : 'Member ID cookie'} error={draft.dirty && partialCookies ? 'Enter both cookie values, or leave both blank to keep the saved session.' : undefined} hint="Copy the ipb_member_id cookie from your logged-in browser." />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="ehentai-pass-hash">ipb_pass_hash</Label>
+            <SettingsInput id="ehentai-pass-hash" type="password" autoComplete="off" spellCheck={false} disabled={draft.pending} value={draft.value.passHash} onChange={(e) => setDraft((current) => ({ ...current, passHash: e.target.value }))} placeholder={view.configured ? 'Saved — enter to replace' : 'Pass hash cookie'} hint="Copy the ipb_pass_hash cookie from the same browser session." />
+          </div>
+          <div className="flex flex-col gap-1 sm:col-span-2">
+            <Label htmlFor="ehentai-igneous">igneous (optional)</Label>
+            <SettingsInput id="ehentai-igneous" type="password" autoComplete="off" spellCheck={false} disabled={draft.pending} value={draft.value.igneous} onChange={(e) => setDraft((current) => ({ ...current, igneous: e.target.value }))} placeholder={view.hasIgneous ? 'Saved — enter to replace' : 'Optional'} hint="Only some ExHentai sessions need the igneous cookie. Leave blank if yours does not have it." />
+          </div>
+        </div>
+        <div className="flex flex-col gap-2 rounded-md border border-border bg-surface-2/50 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium">Access check</span>
+            <span className="flex-1" />
+            <Button size="sm" variant="secondary" onClick={() => { setTestResult(null); test.mutate(); }} disabled={test.isPending || draft.pending || (!view.configured && !hasDraftSession)}>
+              {test.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} {hasDraftSession ? 'Test entered cookies' : 'Test saved account'}
+            </Button>
+          </div>
+          {hasDraftSession && <p className="text-sm text-muted">Testing entered cookies never saves or alters the saved account.</p>}
+          <ul className="flex flex-col gap-1.5">
+            {accessRows.map(({ label, access }) => (
+              <li key={label} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                <span className="min-w-0 flex-1 break-words">{label}</span>
+                <Badge tone={access.state === 'verified' ? 'success' : access.state === 'untested' ? 'muted' : access.state === 'denied' || access.state === 'unavailable' ? 'danger' : 'warning'}>{access.state.replace(/-/g, ' ')}</Badge>
+                {access.testedAt && <span className="text-xs text-muted">checked {timeAgo(access.testedAt)}</span>}
+              </li>
+            ))}
+          </ul>
+          {accessRows.some(({ access }) => access.message) && (
+            <p role={testResult?.eHentai.state === 'verified' && testResult.exHentai.state === 'verified' ? 'status' : 'alert'} className="break-words text-sm text-muted">{accessRows.filter(({ access }) => access.message).map(({ label, access }) => `${label}: ${access.message}`).join(' · ')}</p>
+          )}
+        </div>
+        {view.configured && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+            <p className="break-words text-sm text-muted">Removing the account keeps downloaded galleries in the library and queue.</p>
+            <Button size="sm" variant="outline" className="text-danger" onClick={() => setRemoveOpen(true)} disabled={remove.isPending || draft.pending}>
+              {remove.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Remove account
+            </Button>
+          </div>
+        )}
+      </CardContent>
+      <ConfirmDialog
+        open={removeOpen}
+        title="Remove E-Hentai account?"
+        description="The stored cookies are deleted from this server. Searches and new downloads from E-Hentai/ExHentai stop until you save an account again; queued downloads keep their saved origin."
+        confirmLabel="Remove account"
+        danger
+        pending={remove.isPending}
+        onConfirm={() => remove.mutate()}
+        onOpenChange={setRemoveOpen}
+      />
     </Card>
   );
 }

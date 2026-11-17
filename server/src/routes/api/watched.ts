@@ -7,7 +7,7 @@ import {
   removeWatchedSearch, listGalleryFeed, setGalleriesReviewed, FollowingError,
   listWatchedSearchFolders, addWatchedSearchFolder, patchWatchedSearchFolder, removeWatchedSearchFolder,
 } from '../../services/watchedSearches.js';
-import { type DoujinSource } from '../../downloader/types.js';
+import { type DoujinSource } from '../../contracts/doujin.js';
 import { FOLLOWING_TARGET_LIMIT, type CheckWatchedSearchesCommand, type WatchedSearchPatch, type WatchedSearchFolderPatch } from '../../contracts/following.js';
 
 import { intParam } from './helpers.js';

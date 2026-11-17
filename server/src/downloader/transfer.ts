@@ -23,6 +23,42 @@ export async function downloadPages(
   fs.mkdirSync(tmpDir, { recursive: true });
   const out: { name: string; path: string }[] = new Array(total);
 
+  // Real page names (with the extension of the *downloaded* image) persist in
+  // a sidecar so a resumed run never re-derives names from the static page
+  // reference — E-Hentai viewer URLs end in .jpg even when the H@H image they
+  // resolve to is a different format.
+  const namesPath = path.join(tmpDir, 'page-names.json');
+  const readNames = (): Record<string, string> => {
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(namesPath, 'utf8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const names: Record<string, string> = {};
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof value === 'string' && value.length > 0) names[key] = value;
+        }
+        return names;
+      }
+    } catch {
+      /* no sidecar yet (or corrupt) — URL-derived names below */
+    }
+    return {};
+  };
+  let namesWriteChain: Promise<void> = Promise.resolve();
+  const recordPageName = (index: number, name: string): void => {
+    namesWriteChain = namesWriteChain.then(() => {
+      try {
+        const names = readNames();
+        names[String(index)] = name;
+        const tmp = `${namesPath}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(names));
+        fs.renameSync(tmp, namesPath);
+      } catch {
+        /* best-effort: resume falls back to URL-derived names */
+      }
+    });
+  };
+  const savedNames = readNames();
+
   // Resume-from-partial: page files from an earlier attempt live in tmpDir as
   // bare index names ("0", "1", …). Trust only a consecutive prefix starting
   // at index 0 — parallel workers can leave interior holes, so anything past
@@ -42,7 +78,7 @@ export async function downloadPages(
     }
   }
   for (const [i] of resumedSizes) {
-    out[i] = { name: `${padPage(i + 1, total)}.${extFromUrl(pages[i])}`, path: path.join(tmpDir, String(i)) };
+    out[i] = { name: savedNames[String(i)] ?? `${padPage(i + 1, total)}.${extFromUrl(pages[i])}`, path: path.join(tmpDir, String(i)) };
   }
 
   // Per-run byte-level accounting used to derive a live bytes-current/total.
@@ -200,6 +236,7 @@ export async function downloadPages(
       if (size == null) throw lastErr instanceof Error ? lastErr : new Error(`Failed to download page ${i + 1}`);
       const name = `${padPage(i + 1, total)}.${extFromUrl(usedUrl ?? pages[i])}`;
       out[i] = { name, path: filePath };
+      recordPageName(i, name);
       onPageDone(i, size);
       if (delay > 0) await sleep(delay, ctx.controller.signal);
     }

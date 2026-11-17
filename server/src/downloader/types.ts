@@ -1,10 +1,11 @@
 /**
- * Unified doujinshi model for the downloader module. Both providers normalize
+ * Unified doujinshi model for the downloader module. All providers normalize
  * their raw API/HTML responses into `DoujinGallery` and `DoujinPage` objects;
- * the queue engine only ever consumes these shapes.
+ * the queue engine only ever consumes these shapes. The registered source set
+ * lives in `../contracts/doujin.js`.
  */
 
-export type DoujinSource = 'hitomi' | 'nhentai';
+import type { DoujinSource, EhentaiSite, SearchChunk, SearchCursor } from '../contracts/doujin.js';
 
 /**
  * Optional result ordering for a source search. nHentai mirrors nhentai.net's
@@ -16,6 +17,17 @@ export type DoujinSource = 'hitomi' | 'nhentai';
 export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today' | 'popular-month' | 'popular-year' | 'date-published' | 'random';
 
 export const DOUJIN_SORTS: DoujinSort[] = ['default', 'popular', 'popular-week', 'popular-today', 'popular-month', 'popular-year', 'date-published', 'random'];
+
+/**
+ * Verified provider capabilities advertised to the UI. `sorts` lists only the
+ * ordering options the provider actually honors (never a superset borrowed
+ * from another catalog); `paging` says which HTTP paging shape the source's
+ * search route supports.
+ */
+export interface DoujinProviderMeta {
+  sorts: DoujinSort[];
+  paging: 'offset' | 'cursor';
+}
 
 /** A tag/artist/group autocomplete suggestion (as shown by the source's own search box). */
 export interface DoujinSuggestion {
@@ -33,6 +45,9 @@ export interface DoujinSuggestion {
 export interface DoujinSearchResult {
   source: DoujinSource;
   galleryId: string;
+  /** E-Hentai family only: the actual site this result was found on.
+   *  Frozen into the queue row at enqueue time. */
+  site?: EhentaiSite;
   title: string;
   coverUrl?: string;
   language?: string;
@@ -88,6 +103,14 @@ export interface DoujinGallery extends DoujinSearchResult {
    * otherwise 404 stale pre-built URLs. Returns null if the index is unknown.
    */
   resolvePageUrl?: (index: number, opts?: { forceRefresh?: boolean }) => Promise<{ url: string; fallback?: string | null } | null>;
+  /**
+   * When true, a resolver failure (thrown error, or a null for a known index)
+   * is a hard page failure instead of falling back to the static URL. Required
+   * for providers whose static `pages` entries are not directly downloadable
+   * (E-Hentai `/s/` viewer pages are HTML, not images) — a fallback there would
+   * publish an HTML document as an image.
+   */
+  strictPageResolver?: boolean;
 }
 
 export interface DownloadEnqueueResult {
@@ -100,6 +123,13 @@ export interface DownloadEnqueueResult {
  * support.
  */
 export interface DoujinSearchOptions {
+  /**
+   * Language name in the provider's own vocabulary (e.g. hitomi `japanese`,
+   * E-Hentai `Japanese` — case-insensitive). Providers without a language
+   * filter ignore it; the unified aggregator checks provider capability
+   * before relying on it.
+   */
+  language?: string;
   /** Gallery types to omit from the results (provider-specific type names, e.g. hitomi's `artistcg`). */
   excludeTypes?: string[];
   /**
@@ -121,10 +151,27 @@ export interface DoujinProvider {
   id: DoujinSource;
   name: string;
   color: string;
+  /** Verified capabilities advertised to the UI and the unified aggregator. */
+  meta: DoujinProviderMeta;
   /** Lookup by gallery id or URL string. */
   getGallery(idOrUrl: string): Promise<DoujinGallery>;
   /** Keyword/tag/artist search. `sort` is only honored by providers that support it. */
   search(query: string, limit?: number, sort?: DoujinSort, opts?: DoujinSearchOptions): Promise<DoujinSearchResult[]>;
+  /**
+   * Bounded cursor search: up to `limit` items plus an opaque continuation
+   * cursor the server issued. The cursor is bound server-side to the query,
+   * options, sort, and (for E-Hentai) account/site revisions; `cursor: null`
+   * starts a new sequence. Implementations must never treat a missing cursor
+   * as "fetch everything".
+   */
+  searchChunk?(
+    query: string,
+    cursor: SearchCursor | null,
+    limit: number,
+    sort?: DoujinSort,
+    opts?: DoujinSearchOptions,
+    signal?: AbortSignal,
+  ): Promise<SearchChunk<DoujinSearchResult>>;
   /** Optional full-count paging without hydrating the entire catalog match. */
   searchPage?(query: string, offset: number, limit: number, sort?: DoujinSort): Promise<{ items: DoujinSearchResult[]; total: number }>;
   /** Optional tag/artist autocomplete suggestions for a query prefix. */

@@ -536,6 +536,7 @@ export const nhentaiProvider: DoujinProvider = {
   id: 'nhentai',
   name: 'nHentai',
   color: '#e91e63',
+  meta: { sorts: ['default', 'popular', 'popular-week', 'popular-today', 'popular-month'], paging: 'offset' },
 
   async search(query: string, limit = 24, sort?: DoujinSort): Promise<DoujinSearchResult[]> {
     const q = query.trim();

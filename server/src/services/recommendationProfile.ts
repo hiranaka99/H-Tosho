@@ -1,7 +1,8 @@
 import { desc, eq } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
-import type { DoujinSource, DoujinGallery } from '../downloader/types.js';
+import type { DoujinGallery } from '../downloader/types.js';
+import type { DoujinSource } from '../contracts/doujin.js';
 import type { GalleryTagEntry } from './recommendations.js';
 import type { KavitaSeriesSignal } from './recommendationSignals.js';
 import { getRecommendationFeedback, normalizeArtist } from './recommendationFeedback.js';

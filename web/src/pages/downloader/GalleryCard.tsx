@@ -75,9 +75,12 @@ interface GalleryCardProps {
   review?: { state: 'pending' | 'reviewed' | 'unreviewed'; onChange: (item: DoujinSearchResult, reviewed: boolean) => void };
   feedback?: { pending: boolean; onOpen: (item: DoujinSearchResult) => void };
   display?: 'full' | 'recommendation' | 'discovery';
+  /** Extra sources this gallery was also found on (unified search grouping).
+   *  Text labels — never color-only. */
+  provenance?: { extraSources: DoujinSource[] };
 }
 
-export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full' }: GalleryCardProps) {
+export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', provenance }: GalleryCardProps) {
   const selectMode = selection?.mode === 'select', selected = selection?.selected ?? false;
   const onToggleSelect = selection?.onToggle, onReview = review?.onChange;
   const reviewed = review?.state === 'reviewed', reviewPending = review?.state === 'pending';
@@ -130,9 +133,15 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
         </div>
       </button>
       <div className="mt-auto flex min-w-0 flex-col gap-2 p-3">
-        {(showSource || owned) && (
+        {(showSource || owned || provenance) && (
           <div className="flex min-h-6 flex-wrap items-center gap-2">
             {showSource && <SourceBadge source={item.source} />}
+            {provenance && provenance.extraSources.length > 0 && (
+              <span className="flex min-w-0 flex-wrap items-center gap-1" aria-label={`Also found on ${provenance.extraSources.map((s) => SOURCE_LABELS[s]).join(', ')}`}>
+                <span className="text-xs text-muted">Also on:</span>
+                {provenance.extraSources.map((s) => <SourceBadge key={s} source={s} />)}
+              </span>
+            )}
             {owned && <Badge tone="muted"><Bookmark className="h-3 w-3" /> Owned</Badge>}
           </div>
         )}

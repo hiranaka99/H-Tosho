@@ -1,4 +1,4 @@
-import type { DoujinSource } from '../downloader/types.js';
+import type { DoujinSource } from './doujin.js';
 export const NOTIFICATION_MODES = ['in-app', 'immediate'] as const;
 export type NotificationMode = typeof NOTIFICATION_MODES[number];
 

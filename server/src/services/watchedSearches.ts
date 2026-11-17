@@ -1,7 +1,8 @@
 import { and, asc, desc, eq, inArray, lte, notInArray, sql } from 'drizzle-orm';
 import { getDb, schema, type Db } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
-import type { DoujinSearchResult, DoujinSource } from '../downloader/types.js';
+import type { DoujinSearchResult } from '../downloader/types.js';
+import type { DoujinSource } from '../contracts/doujin.js';
 import { JobCancelled, type LogFn } from '../jobs/queue.js';
 import { notify, NotificationFailure } from '../notify/dispatcher.js';
 import { getNotificationSettings, getWatchedSearchIntervalMinutes } from './settings.js';

@@ -9,6 +9,8 @@ import { mergeDownloadPoll } from './downloadPoll';
 export interface StartDownloadInput {
   source: DoujinSource;
   galleryId: string;
+  /** Canonical gallery URL; frozen as the queued task's origin. */
+  url?: string;
   title?: string;
   format?: 'cbz' | 'folder';
   /** Merged download: shared folder name so all chapters land in one Kavita series. */

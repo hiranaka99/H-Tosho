@@ -137,6 +137,15 @@ export function migrateSchema(sqlite: Database.Database): void {
       createIndexes(sqlite, true);
     },
     () => retireFollowingDelivery(sqlite),
+    () => {
+      // Freeze a queued gallery's canonical origin so a Settings/site change
+      // never rewrites where an in-flight or resumed task resolves from.
+      const columns = sqlite.prepare('PRAGMA table_info(download_queue)').all() as { name: string }[];
+      if (!columns.some(column => column.name === 'source_url')) {
+        sqlite.exec('ALTER TABLE download_queue ADD COLUMN source_url TEXT');
+      }
+      createSchemaTables(sqlite);
+    },
   ];
   for (const [index, migration] of migrations.entries()) {
     const version = index + 1;

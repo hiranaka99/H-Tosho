@@ -36,6 +36,14 @@ db.insert(schema.watchedSearchNew).values(Array.from({ length: 13 }, (_, index) 
 const { doujinProviders } = await import('../../server/src/downloader/providers.js');
 const originalHitomi = doujinProviders.hitomi;
 const followingChecks = new Map<string, number>();
+// Deterministic unified-search fixtures. The unified aggregator calls
+// `searchChunk` (not `search`), so both lanes are stubbed there; every other
+// query still fails closed, keeping all Following/real-provider behavior live.
+const UNIFIED_OK = 'artist:e2e-unified';
+const UNIFIED_PARTIAL = 'artist:e2e-unified-partial';
+const unifiedChunk = (items: { source: 'hitomi' | 'nhentai'; galleryId: string; title: string; language: string; artists: string[]; pageCount: number; url: string }[]) => ({
+  items, nextCursor: null, exhausted: true, total: items.length,
+});
 doujinProviders.hitomi = {
   ...originalHitomi,
   async search(query) {
@@ -49,12 +57,57 @@ doujinProviders.hitomi = {
       tags: [], artists: ['Following Fixture Artist'], pageCount: 28,
     }));
   },
-  async getGallery() { throw new Error('Live gallery requests are disabled in browser tests'); },
+  async searchChunk(query, cursor, limit, sort, opts, signal) {
+    if (query === UNIFIED_OK || query === UNIFIED_PARTIAL) {
+      const items = query === UNIFIED_OK
+        ? [
+            { source: 'hitomi' as const, galleryId: 'e2e-unified-1', title: 'Unified Fixture Work', language: 'English', tags: [], artists: ['Unified Fixture Artist'], pageCount: 42, url: 'https://hitomi.la/doujinshi/e2e-unified-1.html' },
+            { source: 'hitomi' as const, galleryId: 'e2e-unified-2', title: 'Unified Fixture Second', language: 'English', tags: [], artists: ['Unified Fixture Artist'], pageCount: 17, url: 'https://hitomi.la/doujinshi/e2e-unified-2.html' },
+          ]
+        : [
+            { source: 'hitomi' as const, galleryId: 'e2e-unified-p-1', title: 'Unified Fixture Partial', language: 'English', tags: [], artists: ['Unified Fixture Artist'], pageCount: 9, url: 'https://hitomi.la/doujinshi/e2e-unified-p-1.html' },
+          ];
+      return unifiedChunk(items.slice(0, limit));
+    }
+    throw new Error('Live provider queries are disabled in browser tests');
+  },
+  async getGallery(idOrUrl) {
+    const fixture: Record<string, { title: string; language: string; pageCount: number }> = {
+      'e2e-unified-1': { title: 'Unified Fixture Work', language: 'English', pageCount: 42 },
+      'e2e-unified-2': { title: 'Unified Fixture Second', language: 'English', pageCount: 17 },
+      'e2e-unified-p-1': { title: 'Unified Fixture Partial', language: 'English', pageCount: 9 },
+    };
+    const hit = Object.entries(fixture).find(([id]) => idOrUrl.includes(id));
+    if (hit) {
+      const [galleryId, meta] = hit;
+      return { source: 'hitomi' as const, galleryId, url: `https://hitomi.la/doujinshi/${galleryId}.html`, pages: [], ...meta, tags: [], artists: ['Unified Fixture Artist'] };
+    }
+    throw new Error('Live gallery requests are disabled in browser tests');
+  },
 };
 doujinProviders.nhentai = {
   ...doujinProviders.nhentai,
   async search() { throw new Error('Live provider queries are disabled in browser tests'); },
-  async getGallery() { throw new Error('Live gallery requests are disabled in browser tests'); },
+  async searchChunk(query, cursor, limit, sort, opts, signal) {
+    if (query === `artist:"e2e-unified"`) {
+      // Same fingerprint as hitomi's e2e-unified-1: groups into one entry.
+      return unifiedChunk([
+        { source: 'nhentai' as const, galleryId: 'e2e-unified-nh-1', title: 'Unified Fixture Work', language: 'english', tags: [], artists: ['Unified Fixture Artist'], pageCount: 42, url: 'https://nhentai.net/g/100001/' },
+      ]);
+    }
+    if (query === UNIFIED_PARTIAL) throw new Error('Fixture provider unavailable');
+    throw new Error('Live provider queries are disabled in browser tests');
+  },
+  async getGallery(idOrUrl) {
+    if (idOrUrl.includes('e2e-unified-nh-1')) {
+      return {
+        source: 'nhentai' as const, galleryId: 'e2e-unified-nh-1', title: 'Unified Fixture Work',
+        language: 'english', tags: [], artists: ['Unified Fixture Artist'], pageCount: 42,
+        url: 'https://nhentai.net/g/100001/', pages: [],
+      };
+    }
+    throw new Error('Live gallery requests are disabled in browser tests');
+  },
 };
 const webDist = fileURLToPath(new URL('../dist/', import.meta.url));
 if (!fs.existsSync(path.join(webDist, 'index.html'))) throw new Error('Run npm run build before the browser tests.');

@@ -103,7 +103,7 @@ function MetaItem({ label, value }: { label: string; value?: string | number | n
   );
 }
 
-export function GalleryDetailModal({ item, onClose, onDownload, checking, downloaded, inLibrary, setup, onSearchTag }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; checking: boolean; downloaded: boolean; inLibrary: boolean; setup: DownloadSetup; onSearchTag: (fragment: string, source?: DoujinSource) => void }) {
+export function GalleryDetailModal({ item, onClose, onDownload, checking, downloaded, inLibrary, setup, onSearchTag, variants, selectedVariantKey, onSelectVariant }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; checking: boolean; downloaded: boolean; inLibrary: boolean; setup: DownloadSetup; onSearchTag: (fragment: string, source?: DoujinSource) => void; variants?: { item: DoujinSearchResult; position?: number }[]; selectedVariantKey?: string; onSelectVariant?: (item: DoujinSearchResult) => void }) {
   const downloading = !!useGalleryDownloadTask(item.source, item.galleryId);
   const { data: gallery, isPending, isFetching, isError, error, refetch } = useQuery({
     queryKey: ['doujin-gallery', item.source, item.galleryId],
@@ -172,6 +172,44 @@ export function GalleryDetailModal({ item, onClose, onDownload, checking, downlo
                   <MetaItem label="Uploaded" value={formatDate(g.uploadedAt ?? item.uploadedAt)} />
                   <MetaItem label="Gallery ID" value={g.galleryId} />
                 </div>
+
+                {/* Unified search: the same work found on several sources.
+                    Choosing a variant re-targets metadata, preview, link and
+                    download at that concrete gallery. */}
+                {variants && variants.length > 1 && (
+                  <div className="flex flex-col gap-1.5" role="radiogroup" aria-label="Available from">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+                      <ExternalLink className="h-3 w-3" /> Available from
+                    </p>
+                    <ul className="flex flex-col gap-1">
+                      {variants.map(({ item: v, position }) => {
+                        const key = `${v.source}:${v.galleryId}`;
+                        const active = key === selectedVariantKey;
+                        return (
+                          <li key={key}>
+                            <button
+                              type="button"
+                              role="radio"
+                              aria-checked={active}
+                              onClick={() => (key === selectedVariantKey ? undefined : onSelectVariant?.(v))}
+                              className={cn(
+                                'flex min-h-11 w-full items-center gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors',
+                                active ? 'border-primary/40 bg-primary/10' : 'border-border bg-surface-2/50 hover:border-border-2',
+                              )}
+                            >
+                              <SourceBadge source={v.source} />
+                              <span className="min-w-0 flex-1 truncate text-xs text-muted">
+                                {position ? `Position #${position} on ${SOURCE_LABELS[v.source]}` : `Found on ${SOURCE_LABELS[v.source]}`}
+                                {v.language ? ` · ${v.language}` : ''}{typeof v.pageCount === 'number' ? ` · ${v.pageCount} pages` : ''}
+                              </span>
+                              {active && <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
 
                 <TagList label="Artists" items={g.artists ?? item.artists} icon={<Users className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'artist')} titleFor={(v) => searchTitle(v, 'artist')} />
                 <TagList label="Groups / circles" items={g.groups} icon={<Layers className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'group')} titleFor={(v) => searchTitle(v, 'group')} />

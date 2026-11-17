@@ -758,6 +758,7 @@ export const hitomiProvider: DoujinProvider = {
   id: 'hitomi',
   name: 'Hitomi.la',
   color: '#ff5722',
+  meta: { sorts: ['default', 'popular', 'popular-today', 'popular-week', 'popular-year', 'date-published', 'random'], paging: 'offset' },
 
   async search(query: string, limit = 24, sort?: DoujinSort, opts?: DoujinSearchOptions): Promise<DoujinSearchResult[]> {
     const q = query.trim();

@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import type { DoujinSource } from './api';
 
 /** Merge Tailwind classes. */
 export function cn(...inputs: ClassValue[]): string {
@@ -9,17 +10,33 @@ export function cn(...inputs: ClassValue[]): string {
 /**
  * Build a single-tag/artist search fragment from a details card, formatted for
  * the target source's query syntax. Hitomi uses bare underscored multi-word values
- * (e.g. `artist:charu_lee`); nHentai wraps values in quotes (e.g. `artist:"Charu Lee"`).
+ * (e.g. `artist:charu_lee`); nHentai wraps values in quotes (e.g. `artist:"Charu Lee"`);
+ * E-Hentai/ExHentai uses plain `namespace:value` pairs (e.g. `artist:charu lee`).
  * An empty namespace yields a plain keyword search on the raw value.
  */
-export function buildTagSearchFragment(value: string, ns: string | null | undefined, source: 'hitomi' | 'nhentai'): string {
+export function buildTagSearchFragment(value: string, ns: string | null | undefined, source: DoujinSource): string {
   const v = value.trim();
   if (!v) return '';
   if (source === 'nhentai') {
     return ns ? `${ns}:"${v}"` : `"${v}"`;
   }
+  if (source === 'ehentai') {
+    return ns ? `${ns}:${v}` : v;
+  }
   const underscored = v.replace(/\s+/g, '_');
   return ns ? `${ns}:${underscored}` : underscored;
+}
+
+/** Human-facing name for a source identifier, including non-doujin rows
+ *  (e.g. `library` in duplicate matches). Unknown values pass through. */
+export function sourceDisplayName(source: string): string {
+  switch (source) {
+    case 'hitomi': return 'Hitomi.la';
+    case 'nhentai': return 'nHentai';
+    case 'ehentai': return 'E-Hentai / ExHentai';
+    case 'library': return 'Library';
+    default: return source;
+  }
 }
 
 export type MatchStatus = 'matched' | 'unmatched' | 'syncing' | 'failed';

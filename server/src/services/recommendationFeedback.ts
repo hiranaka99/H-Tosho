@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
-import type { DoujinSearchResult, DoujinSource } from '../downloader/types.js';
+import type { DoujinSearchResult } from '../downloader/types.js';
+import type { DoujinSource } from '../contracts/doujin.js';
 
 export interface RecommendationFeedback {
   liked: DoujinSearchResult[];

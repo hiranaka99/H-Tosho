@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { CheckSquare, Combine, ImageOff, Merge, X } from 'lucide-react';
 import type { DoujinSearchResult } from '../lib/api';
-import { cn } from '../lib/utils';
+import { cn, sourceDisplayName } from '../lib/utils';
 import { Button } from './ui';
 
 interface GallerySelectionBarProps {
@@ -59,7 +59,7 @@ export const GallerySelectionBar = React.memo(function GallerySelectionBar({ ite
               <ImageOff className="h-4 w-4" />
               {item.coverUrl && <img src={item.coverUrl} alt="" loading="lazy" referrerPolicy="no-referrer" onError={event => { event.currentTarget.hidden = true; }} className="absolute inset-0 h-full w-full object-cover" />}
             </span>
-            <span className="min-w-0 flex-1 break-words text-xs font-medium leading-4">{item.title}<span className="mt-1 block font-normal text-muted">{item.source === 'nhentai' ? 'nHentai' : 'Hitomi.la'} · #{item.galleryId}</span></span>
+            <span className="min-w-0 flex-1 break-words text-xs font-medium leading-4">{item.title}<span className="mt-1 block font-normal text-muted">{sourceDisplayName(item.source)} · #{item.galleryId}</span></span>
             <Button size="icon" variant="ghost" className="shrink-0" onClick={() => onRemove(item)} aria-label={`Remove ${item.title} from selection`}><X className="h-4 w-4" /></Button>
           </li>)}
         </ol>

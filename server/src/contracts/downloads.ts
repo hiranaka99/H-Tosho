@@ -1,10 +1,15 @@
-import type { DoujinSource } from '../downloader/types.js';
+import type { DoujinSource } from './doujin.js';
 export type DownloadStatus = 'queued' | 'downloading' | 'completed' | 'failed' | 'paused';
 
 export interface DownloadTask {
   id: number;
   source: DoujinSource;
   galleryId: string;
+  /**
+   * Provider-resolved canonical gallery URL, frozen at enqueue time.
+   * Null for sources without a canonical URL and all pre-existing rows.
+   */
+  sourceUrl: string | null;
   title: string | null;
   status: DownloadStatus;
   progressCurrent: number;

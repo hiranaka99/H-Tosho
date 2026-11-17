@@ -5,14 +5,20 @@ import { getDownloaderSettings, getKavitaConnection } from './settings.js';
 import { eq } from 'drizzle-orm';
 import type { KavitaLibrary } from '../kavita/types.js';
 import { getDoujinProvider } from '../downloader/providers.js';
-import type { DoujinGallery, DoujinSource } from '../downloader/types.js';
+import type { DoujinGallery } from '../downloader/types.js';
+import type { DoujinSource } from '../contracts/doujin.js';
 import { readComicInfo, listCbzImages, mapKavitaPathToLocalPath } from '../lib/cbz.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
 import { mapLimit } from '../lib/http.js';
+import { onEhentaiAccountChange } from './ehentaiAccount.js';
 
 // A preflight resolves metadata, never image bytes. Reuse that result at enqueue
 // and consume it in the worker so duplicate checking does not double provider traffic.
 const prepared = new Map<string, { provider: unknown; at: number; gallery: Promise<DoujinGallery> }>();
+
+// An account/site cutover changes which galleries are even visible (ExHentai
+// vs public E-Hentai): stale preflights must not survive the change.
+onEhentaiAccountChange(() => { prepared.clear(); });
 export async function resolveDuplicateGallery(source: DoujinSource, galleryId: string, consume = false): Promise<DoujinGallery> {
   const provider = getDoujinProvider(source);
   if (!provider) throw new Error(`Unknown source: ${source}`);

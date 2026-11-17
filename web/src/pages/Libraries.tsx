@@ -62,9 +62,10 @@ function Cover({ src, name, className }: { src?: string | null; name: string; cl
     </div>
   );
 }
-const ARTIST_SOURCE_META: Record<DoujinSource, { label: string; color: string }> = {
-  hitomi: { label: 'Hitomi.la', color: '#ff5722' },
-  nhentai: { label: 'nHentai', color: '#e91e63' },
+const ARTIST_SOURCE_META: Record<DoujinSource, { label: string; color: string; icon: string }> = {
+  hitomi: { label: 'Hitomi.la', color: '#ff5722', icon: 'hitomi.png' },
+  nhentai: { label: 'nHentai', color: '#e91e63', icon: 'nhentai.png' },
+  ehentai: { label: 'E-Hentai / ExHentai', color: '#00a1d6', icon: 'ehentai.svg' },
 };
 
 function CardActionMenu({ row, onEdit, onUnmatch, onDelete }: { row: SeriesRow; onEdit: () => void; onUnmatch: () => void; onDelete: () => void }) {
@@ -136,9 +137,9 @@ function CardActionMenu({ row, onEdit, onUnmatch, onDelete }: { row: SeriesRow; 
           {row.artists?.length ? (
             <>
               <p className="px-3 pb-1 pt-1.5 text-xs font-medium text-muted">More by this artist</p>
-              {(['hitomi', 'nhentai'] as const).map((source) => (
+              {(Object.keys(ARTIST_SOURCE_META) as DoujinSource[]).map((source) => (
                 <button key={source} type="button" role="menuitem" tabIndex={-1} onClick={() => searchArtist(source)} className="flex max-lg:min-h-11 pointer-coarse:min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2">
-                  <img src={`/${source}.png`} alt="" className="h-5 w-5 rounded object-contain" aria-hidden="true" />
+                  <img src={`/${ARTIST_SOURCE_META[source].icon}`} alt="" className="h-5 w-5 rounded object-contain" aria-hidden="true" />
                   {ARTIST_SOURCE_META[source].label}
                 </button>
               ))}

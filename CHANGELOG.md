@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Add E-Hentai/ExHentai as a third doujinshi source, backed by an account saved
+  in Settings → Downloader. The account's cookies are encrypted at rest
+  (AES-256-GCM) and never sent to the browser; search, previews, and downloads
+  use the saved site (E-Hentai or ExHentai) behind a bounded request gate.
+  Download origin is frozen at enqueue time in the queue, so queue, resume,
+  merge, and duplicate identity stay correct across account and site switches.
+
+- Add a **Unified search** tab to Discover, immediately after **Search**, that
+  runs one query across Hitomi.la, nHentai, and E-Hentai/ExHentai concurrently.
+  A shared syntax (artist/group/parody/character/language filters, quoted
+  phrases, `-` exclusions, keywords) compiles per provider; filters a source
+  does not support are reported on its status chip without failing the search.
+  Repeated editions — same title, first artist, language, and page count —
+  group into one entry listing every real source, with provenance on the card
+  and an **Available from** choice in the details view that re-targets preview,
+  source link, and download. Pages deliver 25 unique entries with replayable
+  cursors, an exact unique total when every applicable source is exhausted,
+  and per-source partial failure with a one-time scoped retry that re-fetches
+  only the failed lane. Saving a different E-Hentai account or changing
+  downloader settings invalidates in-flight sessions.
+
 - Add Following names/folders, revision-safe editing and reordering, pause/resume,
   inherited or custom cadence, and compact icon actions. Persist bounded due-work
   scheduling and recheck watch identity/preferences after provider responses.

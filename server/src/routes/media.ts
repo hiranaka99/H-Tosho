@@ -4,6 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DATA_DIR } from '../db/index.js';
 import { refreshHitomiImageUrl } from '../downloader/hitomi.js';
+import { detectImageFormat } from '../downloader/ehentaiClient.js';
+import { ehentaiPreviewBytes, isEhentaiViewerUrl } from '../downloader/ehentai.js';
 
 /**
  * Media proxy for CDN cover images that browsers cannot load directly.
@@ -53,10 +55,20 @@ const DISK_MAX_FILES = 400;
  */
 const ALLOWED_HOSTS = ['uploads.mangadex.org', 'gold-usergeneratedcontent.net'];
 const NHENTAI_CDN_HOST = /^[it]\d+\.nhentai\.net$/i;
+/** E-Hentai cover CDN hosts (hotlink-protected: they need a family Referer). */
+const EH_COVER_HOSTS = new Set(['t1.e-hentai.org', 't2.e-hentai.org', 't3.e-hentai.org', 'ehgt.e-hentai.org']);
+
+function isEhentaiCoverHost(hostname: string): boolean {
+  return EH_COVER_HOSTS.has(hostname.toLowerCase());
+}
 
 function isAllowedHost(hostname: string): boolean {
   const h = hostname.toLowerCase();
   if (!h || h.includes(':')) return false; // reject empty and IPv6-literal hosts
+  if (EH_COVER_HOSTS.has(h)) return true;
+  // Family hosts are only admitted for well-formed viewer references; the
+  // route resolves those server-side and never fetches them generically.
+  if (h === 'e-hentai.org' || h === 'exhentai.org') return true;
   return ALLOWED_HOSTS.some((a) => h === a || h.endsWith('.' + a)) || NHENTAI_CDN_HOST.test(h);
 }
 
@@ -156,6 +168,7 @@ function decodeUrlParam(value: string | undefined): string | null {
 function refererForHost(hostname: string): string | undefined {
   if (hostname === 'uploads.mangadex.org') return undefined;
   if (NHENTAI_CDN_HOST.test(hostname)) return 'https://nhentai.net/';
+  if (isEhentaiCoverHost(hostname)) return 'https://e-hentai.org/';
   return 'https://hitomi.la/';
 }
 
@@ -187,6 +200,7 @@ async function fetchWithValidatedRedirects(start: URL): Promise<Response> {
       if (!loc || hop >= MAX_REDIRECTS) throw new Error('Too many redirects');
       const next = new URL(loc, current);
       if (!isHttpUrl(next) || !isAllowedHost(next.hostname)) throw new Error('Redirect to disallowed host');
+      if ((next.hostname === 'e-hentai.org' || next.hostname === 'exhentai.org') && !isEhentaiViewerUrl(next)) throw new Error('Redirect to disallowed host');
       current = next;
       continue;
     }
@@ -234,6 +248,11 @@ export function mediaRouter(): Hono {
     if (!parsed || !isHttpUrl(parsed) || !isAllowedHost(parsed.hostname)) {
       return c.json({ error: 'Invalid media URL' }, 400);
     }
+    // Family hosts are only ever served as viewer references (resolved
+    // server-side below); any other family path is rejected, not proxied.
+    if ((parsed.hostname === 'e-hentai.org' || parsed.hostname === 'exhentai.org') && !isEhentaiViewerUrl(parsed)) {
+      return c.json({ error: 'Invalid media URL' }, 400);
+    }
 
     const cached = getCached(target as string);
     if (cached) {
@@ -248,6 +267,26 @@ export function mediaRouter(): Hono {
       setCached(target as string, onDisk.type, onDisk.buf); // promote to L1
       return c.body(new Uint8Array(onDisk.buf), 200, {
         'Content-Type': onDisk.type,
+        'Cache-Control': 'private, max-age=3600',
+      });
+    }
+
+    // E-Hentai viewer refs never go through the generic fetch: they are
+    // resolved server-side (session + gate + pinned IP) and the image bytes
+    // come only from the URL the viewer page itself exposed, so a quota or
+    // denial page can never be published as an image.
+    if (isEhentaiViewerUrl(parsed)) {
+      let out: { buf: Buffer; type: string };
+      try {
+        out = await ehentaiPreviewBytes(target as string);
+      } catch (error) {
+        return c.json({ error: error instanceof Error ? error.message : 'E-Hentai preview unavailable' }, 502);
+      }
+      if (out.buf.length > MAX_DOWNLOAD_BYTES) return c.json({ error: 'Response too large' }, 502);
+      setCached(target as string, out.type, out.buf);
+      void setDisk(target as string, out.type, out.buf);
+      return c.body(new Uint8Array(out.buf), 200, {
+        'Content-Type': out.type,
         'Cache-Control': 'private, max-age=3600',
       });
     }
@@ -280,7 +319,14 @@ export function mediaRouter(): Hono {
       return c.json({ error: 'Response too large' }, 502);
     }
 
-    const type = res.headers.get('content-type') || 'image/jpeg';
+    let type = res.headers.get('content-type') || 'image/jpeg';
+    if (isEhentaiCoverHost(parsed.hostname)) {
+      // E-Hentai serves quota/denial HTML with image content types under
+      // load: trust only the bytes, never the header.
+      const format = detectImageFormat(buf);
+      if (!format) return c.json({ error: 'Upstream did not return an image' }, 502);
+      type = format === 'jpg' ? 'image/jpeg' : format === 'png' ? 'image/png' : format === 'gif' ? 'image/gif' : 'image/webp';
+    }
     setCached(target as string, type, buf);
     void setDisk(target as string, type, buf);
     return c.body(new Uint8Array(buf), 200, {
@@ -298,10 +344,18 @@ export function mediaProxyUrl(url: string): string {
   return `/media?u=${b64}`;
 }
 
-/** Rewrite hitomi cover URLs to route through the proxy (other sources are untouched). */
+/** Rewrite hitomi/E-Hentai cover URLs to route through the proxy (other
+ *  sources are untouched). */
 export function rewriteDoujinCover<T extends { source?: string; coverUrl?: string | null }>(r: T): T {
   if (r.source === 'hitomi' && typeof r.coverUrl === 'string' && r.coverUrl.startsWith('http')) {
     return { ...r, coverUrl: mediaProxyUrl(r.coverUrl) };
+  }
+  if (r.source === 'ehentai' && typeof r.coverUrl === 'string' && r.coverUrl.startsWith('http')) {
+    try {
+      if (isEhentaiCoverHost(new URL(r.coverUrl).hostname)) return { ...r, coverUrl: mediaProxyUrl(r.coverUrl) };
+    } catch {
+      /* unparseable cover: leave as-is */
+    }
   }
   return r;
 }

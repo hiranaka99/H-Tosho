@@ -37,7 +37,7 @@ export function useGalleryDownload() {
     try {
       const approved = await checkDuplicates([item]);
       if (approved === null) return;
-      const input = { source: item.source, galleryId: item.galleryId, title: item.title, allowDuplicate: approved.has(key) };
+      const input = { source: item.source, galleryId: item.galleryId, url: item.url, title: item.title, allowDuplicate: approved.has(key) };
       try { await startDownload(input); }
       catch (error) {
         if (!(error instanceof ApiError) || error.message !== 'possible-duplicate') throw error;

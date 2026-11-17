@@ -39,7 +39,9 @@ shop; counts, match results, and metadata are example data.
   browsing reads public MAL pages; metadata review uses MAL’s API and needs a Client ID.
 - **Keep new series organized.** Enable automatic matching and review uncertain
   results in **Needs review**.
-- **Discover and download doujinshi.** Search Hitomi.la or nHentai, preview
+- **Discover and download doujinshi.** Search Hitomi.la, nHentai, or your
+  own E-Hentai/ExHentai account — one at a time or together in **Unified
+  search**, which groups the same work found on several sources — preview
   galleries, and save them as CBZ files or image folders.
 - **Follow artists and searches.** Save a query and see new finds in
   **Recently added**, with in-app-only or immediate Discord notifications.
@@ -358,11 +360,12 @@ and use the merge action. On phones, sorting and selection are under
 
 ## Discover and download
 
-Open **Discover** to access four tabs:
+Open **Discover** to access five tabs:
 
 | Tab | What to do here |
 | --- | --- |
 | **Search** | Search Hitomi.la or nHentai by keyword, tag, artist, or gallery ID. Preview a result, then download it or select several. |
+| **Unified search** | Run one query across Hitomi.la, nHentai, and E-Hentai/ExHentai at once. Repeated editions appear once with every real source listed; a failed source leaves the others visible and offers a one-time retry. |
 | **For you** | Browse up to twelve picks, select the Kavita libraries that inform your preferences, and use **Refresh picks** for another set. |
 | **Following** | Manage saved searches and browse new finds in **Recently added**. |
 | **Downloads** | Track progress, pause or resume downloads, retry failures, and view completed downloads. |
@@ -370,8 +373,12 @@ Open **Discover** to access four tabs:
 Before downloading, open **Settings → Downloader** and choose your output
 folder and format. **CBZ** puts each gallery in an archive; **Folder** saves its
 images in a directory. You can also set download concurrency, excluded tags,
-and an optional nHentai API key. Discover shows the current folder and
-format, and offers **Set output folder** before you can queue your first download.
+an optional nHentai API key, and your own E-Hentai/ExHentai account: paste the
+`ipb_member_id` and `ipb_pass_hash` cookies from a logged-in browser session
+and choose the site to use (E-Hentai or ExHentai). Those cookies stay
+encrypted on the server and are never sent to the browser. Discover shows the
+current folder and format, and offers **Set output folder** before you can
+queue your first download.
 
 Switching sources translates the current query into the other provider's syntax,
 preserving shared artist/group/parody/character/language filters and exclusions.
@@ -399,6 +406,21 @@ quoted phrases, `-tag:"full color"`, `artist:"sample name"`, `pages:>20`,
 retains exclusions. The website's newest and popular all-time/week/today sorts
 are available. nHentai results use native pages with the full matching count,
 replacing the old 250-result browsing limit.
+
+**Unified search** runs one query on all three sources at once. The shared
+syntax — `artist:`, `group:`, `parody:`, `character:`, `language:` filters,
+quoted phrases, `-` exclusions, and plain keywords — is compiled into each
+provider's native syntax; a filter a source does not support is reported on
+that source's status chip while the search still runs on the other sources.
+Results load 25 unique entries at a time with **Load more**. When the same
+work (same title, first artist, language, and page count) appears on several
+sources it shows once, with an **Also on** badge on the card and an
+**Available from** list in the details view; choosing a variant re-targets
+the preview, source link, and download at that concrete gallery. If a source
+fails, the others' results stay visible and a one-time **Retry** re-runs only
+the failed source. E-Hentai/ExHentai is searched only when an account is
+saved, and saving a different account or changing downloader settings
+invalidates an in-flight unified search, which then asks you to start again.
 
 H-Tosho prevents duplicate queued downloads and remembers galleries downloaded
 through the app. To remove unwanted recommendations, open a card's **Tune
@@ -497,6 +519,7 @@ download galleries.
 | **A title will not change, or a CBZ cannot be edited** | Check write permissions and **Kavita library folders**. The mapped path must point to the same files Kavita uses. Open the job for the specific warning. |
 | **The cover has not updated** | Wait for **Apply & Sync** to finish. Check **Tasks** for cover-upload errors, then refresh the library. |
 | **A download failed** | Open **Downloads → Needs attention** for the error. Check the output folder and source settings, then retry. An nHentai API key can help with rate limits. |
+| **A unified search shows a source as failed** | The other sources' results stay usable. Use that source's one-time **Retry**; for E-Hentai/ExHentai, re-test or re-save the account in Settings → Downloader. Saving a different account restarts in-flight unified searches. |
 | **A watch has no new results** | Its first check is silent. Check the saved query and interval, or use **Check now**. Old uploads are suppressed when their date is known. |
 
 **Tasks** contains the results and logs for scans, matches, merges, edits, and

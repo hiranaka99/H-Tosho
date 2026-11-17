@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Copy } from 'lucide-react';
 import { api, type DuplicateCheck, type DoujinSource } from '../lib/api';
 import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Badge } from './ui';
+import { sourceDisplayName } from '../lib/utils';
 
 export function useDuplicateReview() {
   const [review, setReview] = React.useState<DuplicateCheck | null>(null);
@@ -36,7 +37,7 @@ export function useDuplicateReview() {
             <h3 className="break-words text-sm font-semibold">{report.title}</h3>
             <ul className="divide-y divide-border rounded-lg border border-border">
               {report.matches.map(match => <li key={`${match.source}:${match.galleryId}`} className="space-y-1.5 p-3 text-sm">
-                <div className="flex flex-wrap items-center gap-2"><span className="min-w-0 flex-1 break-words font-medium">{match.title}</span><Badge tone="muted">{match.source === 'library' ? 'Library' : match.source === 'hitomi' ? 'Hitomi.la' : 'nHentai'} · {match.status}</Badge></div>
+                <div className="flex flex-wrap items-center gap-2"><span className="min-w-0 flex-1 break-words font-medium">{match.title}</span><Badge tone="muted">{sourceDisplayName(match.source)} · {match.status}</Badge></div>
                 <p className="break-words text-xs text-muted">{match.artists.join(', ')}{match.language ? ` · ${match.language}` : ''}{match.pageCount ? ` · ${match.pageCount} pages` : ''}</p>
                 <p className="text-xs text-muted">{match.reasons.join(' · ')}</p>
                 {match.path && <p className="break-all text-xs text-muted">{match.path}</p>}

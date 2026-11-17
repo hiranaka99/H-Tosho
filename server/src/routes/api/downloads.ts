@@ -8,7 +8,7 @@ import { getDb, schema } from '../../db/index.js';
 import { getDownloaderSettings } from '../../services/settings.js';
 import { downloadQueue } from '../../downloader/engine.js';
 import { getDoujinProvider } from '../../downloader/providers.js';
-import { type DoujinSource } from '../../downloader/types.js';
+import { type DoujinSource } from '../../contracts/doujin.js';
 import { listCbzFiles, readCoverImage } from '../../lib/cbz.js';
 import { galleryFilesystemName, sanitizeFilename } from '../../downloader/util.js';
 import { mapLimit } from '../../lib/http.js';
@@ -38,10 +38,10 @@ api.post('/downloads/duplicates', async (c) => {
   catch (error) { return c.json({ error: 'Could not check for duplicates', message: errMsg(error) }, 502); }
 });
 
-type DownloadInput = { source: string; galleryId: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number; priority?: number; allowDuplicate?: boolean };
+type DownloadInput = { source: string; galleryId: string; url?: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number; priority?: number; allowDuplicate?: boolean };
 interface MergeDownloadGroup {
   protection: MergeProtectionState;
-  plans: {source:DoujinSource;galleryId:string;title:string;chapter:string;allowDuplicate:boolean}[];
+  plans: {source:DoujinSource;galleryId:string;title:string;chapter:string;allowDuplicate:boolean;url?:string}[];
   ids: Record<string,number>;
 }
 
@@ -70,6 +70,19 @@ async function prepareDownload(body: DownloadInput, group?: MergeDownloadGroup):
   const respond = (value: unknown, status: number) => Response.json(value, { status });
   if (!body || typeof body !== 'object' || typeof body.source !== 'string' || typeof body.galleryId !== 'string' || !body.source || !body.galleryId.trim()) return respond({ error: 'source and galleryId are required' }, 400);
   if (getDoujinProvider(body.source)?.id !== body.source) return respond({ error: `Unknown source: ${body.source}` }, 400);
+  // The canonical gallery URL is frozen at enqueue time: the queued task keeps
+  // resolving this origin even if the account/site changes later.
+  let sourceUrl: string | undefined;
+  if (body.url !== undefined) {
+    if (typeof body.url !== 'string') return respond({ error: 'url must be an absolute http(s) URL' }, 400);
+    try {
+      const parsed = new URL(body.url);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('bad protocol');
+      sourceUrl = parsed.toString();
+    } catch {
+      return respond({ error: 'url must be an absolute http(s) URL' }, 400);
+    }
+  }
   // Merge options: all chapters of one series land in a shared folder so Kavita
   // groups them together. mergeFolder is a plain folder name, never a path.
   if (body.mergeFolder !== undefined && typeof body.mergeFolder !== 'string') return respond({ error: 'mergeFolder must be a plain folder name' }, 400);
@@ -103,9 +116,9 @@ async function prepareDownload(body: DownloadInput, group?: MergeDownloadGroup):
       if (downloadQueue.findActive(body.source as DoujinSource, body.galleryId)) return respond({ error: 'already-queued' }, 409);
       const check = findDuplicateReports(identities);
       if (body.allowDuplicate !== true && check.reports.some(report => report.matches.length)) return respond({ error: 'possible-duplicate', ...check }, 409);
-      const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, identities[0].title, outputFormat, group ? undefined : mergeFolder, chapter, priority);
+      const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, identities[0].title, outputFormat, group ? undefined : mergeFolder, chapter, priority, undefined, sourceUrl);
       if (group) {
-        group.plans.push({source:body.source as DoujinSource,galleryId:body.galleryId,title:identities[0].title,chapter:chapter === undefined ? '' : String(chapter),allowDuplicate:body.allowDuplicate === true});
+        group.plans.push({source:body.source as DoujinSource,galleryId:body.galleryId,title:identities[0].title,chapter:chapter === undefined ? '' : String(chapter),allowDuplicate:body.allowDuplicate === true,url:sourceUrl});
         group.ids[`${body.source}:${body.galleryId}`] = id;
       }
       return respond({ id, status: 'queued' }, 202);

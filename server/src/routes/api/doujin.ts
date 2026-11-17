@@ -1,12 +1,24 @@
 import { recordGalleryIdentity, resolveDuplicateGallery } from '../../services/galleryDuplicates.js';
 import { Hono } from 'hono';
 import { getDoujinProvider, listDoujinProviders } from '../../downloader/providers.js';
+import { getEhentaiAccountView } from '../../services/ehentaiAccount.js';
+import { currentPrincipal } from '../../services/auth.js';
+import { runUnifiedSearch, UnifiedQueryError, UnifiedSessionError } from '../../services/unifiedSearch.js';
 import { rewriteDoujinCover, rewriteDoujinPages } from '../media.js';
-import { DOUJIN_SORTS, type DoujinSource, type DoujinSort } from '../../downloader/types.js';
+import { DOUJIN_SORTS, type DoujinSort } from '../../downloader/types.js';
+import type { DoujinSource } from '../../contracts/doujin.js';
 
 import { errMsg } from './helpers.js';
 export const api = new Hono();
-api.get('/doujin/providers', (c) => c.json(listDoujinProviders()));
+api.get('/doujin/providers', (c) => {
+  // The E-Hentai entry reflects the saved account's family site (E-Hentai vs
+  // ExHentai) so the UI labels and origin follow the user's configuration.
+  try {
+    return c.json(listDoujinProviders(getEhentaiAccountView().site));
+  } catch {
+    return c.json(listDoujinProviders());
+  }
+});
 
 /** Search a doujinshi source by keyword/tag/artist/id-or-url. */
 api.post('/doujin/search', async (c) => {
@@ -34,6 +46,44 @@ api.post('/doujin/search', async (c) => {
     // their CDN requires (browsers can't send it cross-origin).
     return c.json(results.map(rewriteDoujinCover));
   } catch (e) {
+    return c.json({ error: errMsg(e) }, 502);
+  }
+});
+
+/** Unified search across all doujinshi sources with bounded per-source lanes.
+ *  Body: { query } to start, or { cursor, retry? } to continue a session.
+ *  Responses are cached per cursor server-side; repeat the last cursor to
+ *  replay its page. */
+api.post('/doujin/search/unified', async (c) => {
+  const body = (await c.req.json().catch(() => null)) as
+    | { query?: string; cursor?: string; retry?: string; limit?: number }
+    | null;
+  if (!body || typeof body !== 'object') return c.json({ error: 'Invalid request body' }, 400);
+  const limit = body.limit === undefined ? undefined : body.limit;
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 50)) {
+    return c.json({ error: 'limit must be between 1 and 50' }, 400);
+  }
+  if (body.cursor && body.query) return c.json({ error: 'Send either a new query or a continuation cursor, not both' }, 400);
+  if (!body.cursor && !body.query?.trim()) return c.json({ error: 'query is required' }, 400);
+  const controller = new AbortController();
+  c.req.raw.signal.addEventListener('abort', () => controller.abort(), { once: true });
+  try {
+    const page = await runUnifiedSearch(
+      {
+        query: body.query,
+        cursor: body.cursor,
+        retry: typeof body.retry === 'string' ? body.retry : undefined,
+        limit,
+        principal: currentPrincipal(c),
+      },
+      controller.signal,
+    );
+    return c.json(page, 200, { 'Cache-Control': 'private, no-store' });
+  } catch (e) {
+    if (e instanceof UnifiedQueryError) return c.json({ error: e.message }, 400);
+    if (e instanceof UnifiedSessionError) {
+      return c.json({ error: e.message, kind: e.kind }, e.kind === 'expired' || e.kind === 'stale' ? 410 : 409);
+    }
     return c.json({ error: errMsg(e) }, 502);
   }
 });

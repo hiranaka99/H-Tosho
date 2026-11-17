@@ -245,9 +245,16 @@ export const syncHistory = sqliteTable('sync_history', {
 
 export const downloadQueue = sqliteTable('download_queue', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  /** hitomi | nhentai */
+  /** hitomi | nhentai | ehentai */
   source: text('source').notNull(),
   galleryId: text('gallery_id').notNull(),
+  /**
+   * Provider-resolved canonical gallery URL, frozen at enqueue time (e.g.
+   * `https://exhentai.org/g/<gid>/<token>/`). Nullable for sources without a
+   * canonical URL. Never carries credentials; the worker re-resolves with
+   * current server-side credentials.
+   */
+  sourceUrl: text('source_url'),
   title: text('title'),
   /** queued | downloading | completed | failed | paused */
   status: text('status').notNull().default('queued'),

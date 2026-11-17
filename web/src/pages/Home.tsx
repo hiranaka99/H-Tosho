@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router';
 import { ArrowRight, Check, Download, History, House, Inbox, Link2, RefreshCw, Search, Sparkles, X } from 'lucide-react';
 import { api, type DoujinSearchResult, type MatchSuggestion } from '../lib/api';
-import { cn, PROVIDER_NAMES, timeAgo, toIsoUtc } from '../lib/utils';
+import { cn, PROVIDER_NAMES, sourceDisplayName, timeAgo, toIsoUtc } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { Badge, Button, EmptyState, ErrorState, PageHeader, Pager, ProgressBar, Skeleton, Spinner } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
@@ -134,7 +134,7 @@ export function Home() {
           : <ul className="mt-4 divide-y divide-border">{discoveryItems.map((item, index) => {
             const key = `${item.source}:${item.galleryId}`, meta = feed.data?.items[index];
             return <li key={key} className="flex min-w-0 gap-3 py-4"><button type="button" onClick={() => setSelected(item)} className="h-20 w-14 shrink-0 overflow-hidden rounded-md" aria-label={`View details for ${item.title}`}><Cover url={item.coverUrl} title={item.title} className="h-full w-full" /></button>
-              <div className="min-w-0 flex-1"><button type="button" onClick={() => setSelected(item)} className="break-words text-left text-sm font-medium hover:text-primary">{item.title}</button><p className="mt-1 break-words text-xs text-muted">{item.artists.join(', ') || (item.source === 'hitomi' ? 'Hitomi.la' : 'nHentai')}{item.pageCount ? ` · ${item.pageCount} pages` : ''}</p><p className="mt-2 break-words text-xs text-muted">Via {meta?.query}</p>
+              <div className="min-w-0 flex-1"><button type="button" onClick={() => setSelected(item)} className="break-words text-left text-sm font-medium hover:text-primary">{item.title}</button><p className="mt-1 break-words text-xs text-muted">{item.artists.join(', ') || sourceDisplayName(item.source)}{item.pageCount ? ` · ${item.pageCount} pages` : ''}</p><p className="mt-2 break-words text-xs text-muted">Via {meta?.query}</p>
                 <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setSelected(item)}>View gallery<ArrowRight aria-hidden="true" className="h-3.5 w-3.5" /></Button><Button size="sm" variant="ghost" disabled={reviewingKeys.has(key)} onClick={() => void markReviewed(item)}>{reviewingKeys.has(key) ? <Spinner /> : <Check aria-hidden="true" className="h-3.5 w-3.5" />}Mark reviewed</Button></div>
               </div></li>;
           })}</ul>}
