@@ -2,7 +2,7 @@ import { PUBLICATION_STATUS as CANDIDATE_STATUS, mergeTagLists, releaseYear } fr
 import { PROTECTABLE_FIELDS, type FieldPolicy, type ProtectedField } from '../../../server/src/contracts/metadata';
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, Sparkles, AlertTriangle, ArrowLeft, ArrowRight, Link2, Unlink, ChevronRight, Users } from 'lucide-react';
+import { Search, Sparkles, AlertTriangle, ArrowLeft, ArrowRight, Link2, Unlink, ChevronRight, Users, History } from 'lucide-react';
 import { Link } from 'react-router';
 import {
   api,
@@ -98,7 +98,7 @@ function computeDiffers(row: DiffRow): boolean {
 }
 
 /** URL values render as clickable links (Kavita webLinks may hold several, newline/comma separated). */
-function UrlValue({ text, className }: { text: string; className?: string }) {
+function UrlValue({ text }: { text: string }) {
   const urls = text.split(/[\n,]+/).map((s) => s.trim()).filter((s) => /^https?:\/\//i.test(s));
   if (urls.length === 0) return <span>{text || '—'}</span>;
   return (
@@ -106,7 +106,7 @@ function UrlValue({ text, className }: { text: string; className?: string }) {
       {urls.map((u, i) => (
         <React.Fragment key={i}>
           {i > 0 ? ', ' : null}
-          <a href={u} target="_blank" rel="noopener noreferrer" className={cn('underline decoration-dotted underline-offset-2 hover:decoration-solid', className)}>
+          <a href={u} target="_blank" rel="noopener noreferrer" className="underline decoration-dotted underline-offset-2 hover:decoration-solid">
             {u}
           </a>
         </React.Fragment>
@@ -158,7 +158,7 @@ function FieldRow({ row, checked, onToggle, protectedField }: { row: DiffRow; ch
             <span className="text-muted"> — the provider's summary contains only the tag list.</span>
           </>
         ) : (
-          row.link ? <UrlValue text={row.candidate} className="text-primary" /> : row.candidate || '—'
+          row.link ? <UrlValue text={row.candidate} /> : row.candidate || '—'
         )}
       </ComparisonValue>
     </div>
@@ -213,6 +213,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const qc = useQueryClient();
   const [browseArtists, setBrowseArtists] = React.useState(false);
   const [historyOpen, setHistoryOpen] = React.useState(false);
+  const historyId = React.useId();
   const artistBrowser = React.useRef<HTMLDivElement>(null);
   const artistTrigger = React.useRef<HTMLButtonElement>(null);
   const artistBrowserId = React.useId();
@@ -434,10 +435,20 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
             </div>
           </div>
 
-          {(!selected || !browseArtists) && <Button ref={artistTrigger} size="sm" variant="outline" className="shrink-0 self-start" aria-expanded={browseArtists && !selected} aria-controls={artistBrowserId} onClick={() => { if (selected) { setSelected(null); setBrowseArtists(true); } else setBrowseArtists(value => !value); }}>
-            {browseArtists && !selected ? <ArrowLeft className="h-4 w-4" /> : <Users className="h-4 w-4" />}{browseArtists && !selected ? 'Back to matches' : 'Browse artist works'}
-          </Button>}
-          <MetadataHistory key={seriesId} seriesId={seriesId} onOpenChange={setHistoryOpen} />
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-border pb-2">
+            {selected && (
+              <Button ref={backButton} size="sm" variant="ghost" disabled={apply.isPending} onClick={() => { returningToMatches.current = true; setSelected(null); }}><ArrowLeft aria-hidden="true" className="h-4 w-4" />{browseArtists ? 'Back to artist works' : 'Back to matches'}</Button>
+            )}
+            <div className="flex flex-wrap items-center gap-1 sm:ml-auto">
+              {(!selected || !browseArtists) && <Button ref={artistTrigger} size="sm" variant="ghost" disabled={apply.isPending} aria-expanded={browseArtists && !selected} aria-controls={artistBrowserId} onClick={() => { if (selected) { setSelected(null); setBrowseArtists(true); } else setBrowseArtists(value => !value); }}>
+                {browseArtists && !selected ? <ArrowLeft aria-hidden="true" className="h-4 w-4" /> : <Users aria-hidden="true" className="h-4 w-4" />}{browseArtists && !selected ? 'Back to matches' : 'Browse artist works'}
+              </Button>}
+              <Button size="sm" variant="ghost" disabled={apply.isPending} aria-expanded={historyOpen} aria-controls={historyId} className={cn('min-h-11', historyOpen && 'bg-surface-2 text-foreground')} onClick={() => setHistoryOpen(value => !value)}>
+                <History aria-hidden="true" className="h-4 w-4" />Metadata history
+              </Button>
+            </div>
+          </div>
+          <MetadataHistory key={seriesId} id={historyId} seriesId={seriesId} open={historyOpen} />
           {browseArtists && <div ref={artistBrowser} id={artistBrowserId} hidden={!!selected}>
             <ArtistWorksBrowser active={!selected} seriesTitle={current.name} artists={[...new Set([...(current.metadata?.pencillers ?? []), ...(current.metadata?.writers ?? []), ...(current.metadata?.coverArtists ?? [])].map(person => person.name?.trim()).filter((name): name is string => !!name))]} onSelect={candidate => { setManualCandidate(candidate); reviewCandidate(candidate, true); }} />
           </div>}
@@ -450,10 +461,6 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
               <Button variant="outline" size="sm" onClick={onRetryCurrent}>Retry current metadata</Button>
             </div>
           ) : null)}
-
-          {selected && (
-            <Button ref={backButton} size="sm" variant="ghost" className="self-start" disabled={apply.isPending} onClick={() => { returningToMatches.current = true; setSelected(null); }}><ArrowLeft className="h-4 w-4" />{browseArtists ? 'Back to artist works' : 'Back to matches'}</Button>
-          )}
 
           {!selected && !browseArtists && match?.providerId && (
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
@@ -576,10 +583,10 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
               )}
 
               {selected && diff && (
-                <div className="flex flex-col gap-2">
+                <div className="flex min-w-0 flex-col gap-2">
                   <div className="flex flex-wrap items-center gap-2 text-sm">
                     <ProviderBadge id={selected.providerId} />
-                    <span className="font-medium">{preview.data?.title ?? selected.title}</span>
+                    <span className="min-w-0 break-words font-medium">{preview.data?.title ?? selected.title}</span>
                     {(!reviewingExistingMatch || match?.matchScore != null) && <span className="text-xs text-muted">{Math.round(selected.score * 100)}% match</span>}
                   </div>
                   {preview.isPending && <p role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner /> Loading proposed metadata…</p>}
@@ -590,26 +597,27 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                     </div>
                   )}
                   {currentReady && preview.isSuccess && !preview.isError && (<>
-                  <details className="rounded-md border border-border p-3">
-                    <summary className="cursor-pointer text-sm font-medium">Protected from H-Tosho sync{protectedKeys.size ? ` (${protectedKeys.size})` : ''}</summary>
+                  <details className="group/protection min-w-0">
+                    <summary className="flex min-h-9 w-fit max-w-full cursor-pointer list-none items-center gap-2 rounded-md px-2 py-2 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground [&::-webkit-details-marker]:hidden"><ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 group-open/protection:rotate-90" />Protected from H-Tosho sync{protectedKeys.size ? ` (${protectedKeys.size})` : ''}</summary>
                     <p className="mt-2 text-xs text-muted">Selected fields stay protected across candidates and future syncs. Cover protection includes volume covers. Unlock a field here to sync it. Manual ComicInfo edits are still allowed.</p>
                     {protection.isPending ? <p role="status" className="mt-3 text-sm text-muted">Loading field protection…</p> : protection.isError ? <Button size="sm" variant="outline" onClick={() => void protection.refetch()}>Retry field protection</Button> : <div className="mt-3 grid gap-x-4 sm:grid-cols-2">
                       {PROTECTABLE_FIELDS.map(field => <label key={field} className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={protectedKeys.has(field)} disabled={protect.isPending || apply.isPending} onChange={() => protect.mutate(field)} className="h-4 w-4 accent-primary" />{({title:'Title',summary:'Description',genres:'Genres',tags:'Tags',writers:'Writers',artists:'Artists',releaseDate:'Release year',language:'Language',status:'Publication status',url:'Source URL',cover:'Series and volume covers'} as const)[field]}</label>)}
                     </div>}
                   </details>
                   {(preview.data?.titleOptions?.length ?? 0) > 1 && (
-                    <div className="rounded-md border border-border bg-surface-2 p-3">
-                      <Label htmlFor="provider-title-choice">Series name written to every chapter's ComicInfo.xml</Label>
+                    <div className="mb-2 grid min-w-0 items-center gap-x-3 gap-y-2 sm:grid-cols-[7rem_minmax(0,1fr)] sm:px-3">
+                      <Label htmlFor="provider-title-choice">Series title</Label>
                       <select
                         id="provider-title-choice"
+                        aria-describedby="provider-title-help"
                         disabled={protectedKeys.has('title')}
                         value={resolvedTitle}
                         onChange={(e) => setSelectedTitle(e.target.value)}
-                        className="mt-2 flex h-9 w-full rounded-md border border-border-2 bg-surface px-3 text-sm"
+                        className="h-9 w-full min-w-0 rounded-md border border-border-2 bg-surface px-3 text-sm"
                       >
                         {preview.data!.titleOptions!.map((title) => <option key={title} value={title}>{title}</option>)}
                       </select>
-                      <p className="mt-1 text-xs text-muted">Applying the title updates Kavita and the Series field in every CBZ. H-Tosho needs access to the series’ CBZ files to change its title.</p>
+                      <p id="provider-title-help" className="text-xs text-muted sm:col-start-2">Updates Kavita and every chapter’s ComicInfo.xml. Requires access to the series’ CBZ files.</p>
                     </div>
                   )}
                   <div className="rounded-md border border-border">

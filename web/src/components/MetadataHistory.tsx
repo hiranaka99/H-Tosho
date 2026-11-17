@@ -18,15 +18,13 @@ function value(cell:RecordedValue|undefined):string {
   if(Array.isArray(cell.value))return cell.value.length?cell.value.map(item=>typeof item==='object'&&item!==null?String(item.name??item.title??JSON.stringify(item)):String(item)).join(', '):'Empty list';
   return String(cell.value);
 }
-export function MetadataHistory({seriesId,onOpenChange}:{seriesId:number;onOpenChange?:(open:boolean)=>void}) {
-  const [open,setOpen]=React.useState(false),[cursors,setCursors]=React.useState<(number|undefined)[]>([undefined]),[selected,setSelected]=React.useState<string|null>(null);
-  React.useEffect(()=>{onOpenChange?.(open);return()=>onOpenChange?.(false);},[open,onOpenChange]);
+export function MetadataHistory({seriesId,id,open}:{seriesId:number;id:string;open:boolean}) {
+  const [cursors,setCursors]=React.useState<(number|undefined)[]>([undefined]),[selected,setSelected]=React.useState<string|null>(null);
   const cursor=cursors[cursors.length-1];
   const list=useQuery({queryKey:['metadata-history',seriesId,cursor],queryFn:()=>api.metadataHistory(seriesId,cursor),enabled:open,staleTime:0});
   const detail=useQuery({queryKey:['metadata-history-detail',seriesId,selected],queryFn:()=>api.metadataHistoryDetail(seriesId,selected!),enabled:open&&!!selected});
-  return <details className="group/history min-w-0 rounded-md border border-border p-3" onToggle={event=>setOpen(event.currentTarget.open)}>
-    <summary className="flex min-h-[44px] cursor-pointer list-none items-center gap-2 py-3 text-sm font-medium [&::-webkit-details-marker]:hidden"><ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 group-open/history:rotate-90"/>Metadata history</summary>
-    {open&&<div className="mt-3 min-w-0 space-y-3">
+  return <section id={id} aria-label="Metadata history" hidden={!open} className="min-w-0 border-b border-border pb-4">
+    {open&&<div className="min-w-0 space-y-3">
       <p className="max-w-prose text-xs text-muted">Saved before-and-after metadata from new updates. Earlier activity and archive edits without a connected series have no snapshots. Review selected metadata, archive values and retained series/volume covers before restoring. Cover uploads may be resized/re-encoded by Kavita; original backups remain retained.</p>
       {list.isPending?<p role="status" className="flex items-center gap-2 text-sm"><Spinner/>Loading metadata history…</p>:list.isError?<div role="alert"><p className="text-sm text-danger">Could not load metadata history.</p><Button size="sm" variant="outline" onClick={()=>void list.refetch()}>Retry history</Button></div>:!list.data.items.length?<p className="py-3 text-sm text-muted">No recorded metadata changes yet.</p>:<ul className="divide-y divide-border">{list.data.items.map(entry=><li key={entry.id} className="min-w-0 py-3">
         <div className="flex flex-wrap items-start justify-between gap-2">
@@ -57,5 +55,5 @@ export function MetadataHistory({seriesId,onOpenChange}:{seriesId:number;onOpenC
       {selected&&!list.data?.items.some(entry=>entry.id===selected)&&<div className="min-w-0 border-t border-border pt-3">{detail.isPending?<p role="status" className="text-sm">Loading source operation…</p>:detail.isError?<div role="alert"><p className="text-sm text-danger">Could not load the source operation.</p><Button className="min-h-11" variant="outline" onClick={()=>void detail.refetch()}>Retry source operation</Button></div>:detail.data?<><h3 className="break-all text-sm font-semibold">Source operation {detail.data.id}</h3><MetadataCoverHistory seriesId={seriesId} operationId={detail.data.id} history={detail.data.covers}/><MetadataRestoreReview key={`${seriesId}:${detail.data.id}`} seriesId={seriesId} detail={detail.data}/></>:null}</div>}
       <div className="flex flex-wrap gap-2">{cursors.length>1&&<Button size="sm" variant="outline" onClick={()=>{setCursors(cursors.slice(0,-1));setSelected(null);}}>Newer changes</Button>}{list.data?.nextCursor&&<Button size="sm" variant="outline" onClick={()=>{setCursors([...cursors,list.data!.nextCursor!]);setSelected(null);}}>Older changes</Button>}</div>
     </div>}
-  </details>;
+  </section>;
 }

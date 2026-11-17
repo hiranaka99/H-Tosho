@@ -211,8 +211,8 @@ test('metadata history browses observed values, archive changes and older pages'
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByText('Proposed summary', { exact: true })).toBeVisible();
   expect(historyRequests).toBe(0);
-  const panel = dialog.locator('details').filter({ has: page.locator('summary').filter({ hasText: /^Metadata history$/ }) });
-  const toggle = panel.locator(':scope > summary');
+  const panel = dialog.getByRole('region', { name: 'Metadata history', exact: true });
+  const toggle = dialog.getByRole('button', { name: 'Metadata history', exact: true });
   await toggle.click();
   await panel.getByRole('button', { name: 'View changes', exact: true }).click();
   await expect(panel.getByText('Null', { exact: true })).toBeVisible();
@@ -261,7 +261,7 @@ test('series-cover history shows retained images and locks, retries image loadin
   });
   await page.route('**/api/series/11/metadata-restore',route=>{approvals++;return route.fulfill({json:{id:99}});});
   await page.getByRole('button',{name:'Review match',exact:false}).first().click();
-  const dialog=page.getByRole('dialog');await dialog.locator('summary').filter({hasText:/^Metadata history$/}).click();
+  const dialog=page.getByRole('dialog');await dialog.getByRole('button', { name: 'Metadata history', exact: true }).click();
   await dialog.getByRole('button',{name:'View changes',exact:true}).first().click();
   let covers=dialog.getByRole('region',{name:'Cover history'});
   await covers.scrollIntoViewIfNeeded();
@@ -339,7 +339,7 @@ test('cover restore requires refreshed protection, explicit unreadable native lo
     return route.fulfill({ json: { id: 98 } });
   });
   await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
-  const dialog = page.getByRole('dialog'); await dialog.locator('summary').filter({ hasText: /^Metadata history$/ }).click();
+  const dialog = page.getByRole('dialog'); await dialog.getByRole('button', { name: 'Metadata history', exact: true }).click();
   await dialog.getByRole('button', { name: 'View changes', exact: true }).click();
   await dialog.locator('summary').filter({ hasText: 'Volume 1 · Volume #101' }).click();
   await expect(dialog.getByRole('region', { name: 'Cover history' }).getByText('Kavita cover lock: Not recorded', { exact: true }).first()).toBeVisible();
@@ -395,7 +395,7 @@ test('metadata history retries failed loading and explains an empty history', as
   await page.route('**/api/series/11/metadata-history', route => route.fulfill(failing ? { status: 503, json: { error: 'Unavailable' } } : { json: { items: [], nextCursor: null } }));
   await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
   const dialog = page.getByRole('dialog');
-  await dialog.locator('summary').filter({ hasText: /^Metadata history$/ }).click();
+  await dialog.getByRole('button', { name: 'Metadata history', exact: true }).click();
   await expect(dialog.getByText('Could not load metadata history.', { exact: true })).toBeVisible();
   failing = false;
   await dialog.getByRole('button', { name: 'Retry history', exact: true }).click();
@@ -429,11 +429,11 @@ test('metadata restore requires preview review, preserves locks by default and q
   });
   await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
   const dialog = page.getByRole('dialog');
-  await dialog.locator('summary').filter({ hasText: /^Metadata history$/ }).click();
+  await dialog.getByRole('button', { name: 'Metadata history', exact: true }).click();
   await expect(dialog.getByRole('button', { name: 'Apply & Sync', exact: true })).toBeDisabled();
-  await dialog.locator('summary').filter({ hasText: /^Metadata history$/ }).click();
+  await dialog.getByRole('button', { name: 'Metadata history', exact: true }).click();
   await expect(dialog.getByRole('button', { name: 'Apply & Sync', exact: true })).toBeEnabled();
-  await dialog.locator('summary').filter({ hasText: /^Metadata history$/ }).click();
+  await dialog.getByRole('button', { name: 'Metadata history', exact: true }).click();
   await dialog.getByRole('button', { name: 'View changes', exact: true }).click();
   const restore = dialog.getByRole('region', { name: 'Restore metadata' });
   await expect(restore.getByRole('radio', { name: 'After (observed)' })).toBeDisabled();
@@ -495,7 +495,7 @@ test('title and archive restoration reviews paired files, explicit XML replaceme
   });
   await page.route('**/api/series/11/metadata-restore',route=>{approvals++;return route.fulfill({json:{id:92}});});
   await page.getByRole('button',{name:'Review match',exact:false}).first().click();
-  const dialog=page.getByRole('dialog');await dialog.locator('summary').filter({hasText:/^Metadata history$/}).click();
+  const dialog=page.getByRole('dialog');await dialog.getByRole('button', { name: 'Metadata history', exact: true }).click();
   await dialog.getByRole('button',{name:'View changes',exact:true}).click();
   const restore=dialog.getByRole('region',{name:'Restore metadata'});
   await restore.getByRole('checkbox',{name:'Title',exact:true}).check();
@@ -555,7 +555,7 @@ test('metadata restore conflicts require explicit protection unlock and a fresh 
   await page.route('**/api/series/11/metadata-restore', route => { approvals++; return route.fulfill({ status: 409, json: { error: 'Metadata changed after preview; review required' } }); });
   await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
   const dialog = page.getByRole('dialog');
-  await dialog.locator('summary').filter({ hasText: /^Metadata history$/ }).click();
+  await dialog.getByRole('button', { name: 'Metadata history', exact: true }).click();
   await dialog.getByRole('button', { name: 'View changes', exact: true }).click();
   const restore = dialog.getByRole('region', { name: 'Restore metadata' });
   await restore.getByRole('checkbox', { name: 'Description', exact: false }).first().check();
