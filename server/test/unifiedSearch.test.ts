@@ -106,6 +106,30 @@ test('does not merge uncertain editions (different artist or unknown language)',
 
 // ---------------- pagination & cursors ----------------
 
+test('title cleanup preserves separate unmarked, censored, and uncensored edition groups', async () => {
+  hitomiItems = [item('hitomi', 'title-normal', { title: '(C103) [Artist A] A Sample Story [English] [Digital]' })];
+  nhentaiItems = [
+    item('nhentai', 'title-unmarked', { title: 'A Sample Story' }),
+    item('nhentai', 'title-uncensored', { title: 'A Sample Story [Uncensored]' }),
+    item('nhentai', 'title-decensored', { title: 'A Sample Story (Decensored)' }),
+    item('nhentai', 'title-censored', { title: 'A Sample Story [Censored]' }),
+    item('nhentai', 'title-color', { title: 'A Sample Story [Full Color]' }),
+    item('nhentai', 'title-chapter', { title: 'A Sample Story [Chapter 2]' }),
+    item('nhentai', 'title-pages', { title: 'A Sample Story [Uncensored]', pageCount: 43 }),
+    item('nhentai', 'title-language', { title: 'A Sample Story [Uncensored]', language: 'japanese' }),
+  ];
+  const page = await fresh('sample story');
+  const group = page.items.find((entry) => entry.variants.some((variant) => variant.galleryId === 'title-uncensored'))!;
+  assert.ok(group);
+  assert.deepEqual(group.variants.map((variant) => variant.title), ['A Sample Story [Uncensored]', 'A Sample Story (Decensored)']);
+  const unmarked = page.items.find((entry) => entry.variants.some((variant) => variant.galleryId === 'title-normal'))!;
+  assert.deepEqual(unmarked.variants.map((variant) => variant.galleryId), ['title-normal', 'title-unmarked']);
+  const censored = page.items.find((entry) => entry.variants.some((variant) => variant.galleryId === 'title-censored'))!;
+  assert.equal(censored.variants.length, 1);
+  assert.equal(page.items.length, 7);
+  assert.equal(page.totalUnique, 7);
+});
+
 test('pages through results without duplicates and reports the exact total', async () => {
   hitomiItems = Array.from({ length: 30 }, (_, i) => item('hitomi', String(100 + i)));
   nhentaiItems = [item('nhentai', '700')];

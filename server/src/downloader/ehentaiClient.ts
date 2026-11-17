@@ -31,7 +31,7 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho
 
 /** Static (non-viewer) image hosts owned by the E-Hentai family. Viewer
  *  (H@H) hosts are approved per gallery from the authorized viewer page. */
-const STATIC_IMAGE_HOSTS = new Set(['t1.e-hentai.org', 't2.e-hentai.org', 't3.e-hentai.org', 'ehgt.e-hentai.org', 'i0.hathost.com', 'i1.hathost.com', 'i2.hathost.com', 'i3.hathost.com', 'i4.hathost.com', 'i5.hathost.com', 'i6.hathost.com', 'i7.hathost.com']);
+const STATIC_IMAGE_HOSTS = new Set(['ehgt.org', 't1.e-hentai.org', 't2.e-hentai.org', 't3.e-hentai.org', 'ehgt.e-hentai.org', 'i0.hathost.com', 'i1.hathost.com', 'i2.hathost.com', 'i3.hathost.com', 'i4.hathost.com', 'i5.hathost.com', 'i6.hathost.com', 'i7.hathost.com']);
 const API_HOST = 'api.e-hentai.org';
 const MAX_REDIRECTS = 5;
 const HTML_BODY_CAP = 2 * 1024 * 1024;
@@ -146,6 +146,9 @@ interface PinnedRequestOptions {
   signal?: AbortSignal;
   timeoutMs: number;
   maxBytes: number;
+  /** H@H images can use a port explicitly exposed by the viewer page.
+   * The complete target origin must still pass validation on every hop. */
+  allowNonStandardPort?: boolean;
   /** When set, the body streams straight to this file (.part + rename). */
   destPath?: string;
   onBytes?: (receivedBytes: number, totalBytes: number | null) => void;
@@ -164,7 +167,7 @@ interface PinnedResponse {
  *  policy checks happen per hop via `validateHost`. */
 function pinnedGet(
   startUrl: string,
-  validateHost: (hostname: string) => boolean,
+  validateHost: (hostname: string, target: URL) => boolean,
   options: PinnedRequestOptions,
 ): Promise<PinnedResponse> {
   const doRequest = (url: string, redirectCount: number): Promise<PinnedResponse> => {
@@ -172,13 +175,13 @@ function pinnedGet(
     if (parsed.protocol !== 'https:') {
       return Promise.reject(new EhentaiUpstreamError('Blocked: non-HTTPS redirect target.', 'blocked'));
     }
-    if (parsed.port && parsed.port !== '443') {
+    if (parsed.port && parsed.port !== '443' && !options.allowNonStandardPort) {
       return Promise.reject(new EhentaiUpstreamError('Blocked: redirect target uses a non-standard port.', 'blocked'));
     }
     if (parsed.username || parsed.password) {
       return Promise.reject(new EhentaiUpstreamError('Blocked: redirect target carries userinfo.', 'blocked'));
     }
-    if (!validateHost(parsed.hostname)) {
+    if (!validateHost(parsed.hostname, parsed)) {
       return Promise.reject(new EhentaiUpstreamError('Blocked: redirect target is not an authorized E-Hentai host.', 'blocked'));
     }
     return resolvePinnedAddress(parsed.hostname).then((pinnedIp) => new Promise<PinnedResponse>((resolve, reject) => {
@@ -212,10 +215,10 @@ function pinnedGet(
         {
           host: pinnedIp,
           servername: parsed.hostname,
-          port: 443,
+          port: Number(parsed.port || 443),
           method: 'GET',
           path: `${parsed.pathname}${parsed.search}`,
-          headers: { ...options.headers, Host: parsed.hostname },
+          headers: { ...options.headers, Host: parsed.host },
         },
         (res) => {
           const status = res.statusCode ?? 0;
@@ -368,21 +371,16 @@ export async function ehentaiFetchText(
   }
 }
 
-/** POST form data to the E-Hentai metadata API (no session cookies). */
+/** POST JSON to the E-Hentai metadata API (no session cookies). */
 export async function ehentaiApiPost(
-  form: Record<string, string | string[]>,
+  payload: { method: 'gdata'; gidlist: Array<[number, string]>; namespace: 1 },
   options: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<EhentaiTextResponse> {
   const gate = getEhentaiGate();
   const release = await gate.api.acquire(options.signal);
   try {
-    const body = new URLSearchParams();
-    for (const [key, value] of Object.entries(form)) {
-      if (Array.isArray(value)) for (const v of value) body.append(key, v);
-      else body.append(key, value);
-    }
     const url = `https://${API_HOST}/api.php`;
-    const res = await pinnedGetPost(url, body.toString(), {
+    const res = await pinnedGetPost(url, JSON.stringify(payload), {
       signal: options.signal,
       timeoutMs: options.timeoutMs ?? 30_000,
       maxBytes: API_BODY_CAP,
@@ -393,8 +391,21 @@ export async function ehentaiApiPost(
   }
 }
 
-/** POST variant of the pinned request (form-encoded, no redirects expected). */
-function pinnedGetPost(url: string, formBody: string, options: PinnedRequestOptions): Promise<PinnedResponse> {
+/** Native tag completion stays on the selected family host, with scoped cookies. */
+export async function ehentaiTagSuggestions(text: string, options: EhentaiFetchOptions): Promise<EhentaiTextResponse> {
+  const release = await getEhentaiGate().api.acquire(options.signal);
+  try {
+    const cookie = buildEhentaiCookies(options.session, options.site);
+    const res = await pinnedGetPost(`https://${ehentaiHost(options.site)}/api.php`, JSON.stringify({ method: 'tagsuggest', text }), {
+      headers: { ...(cookie ? { Cookie: cookie } : {}), Referer: `https://${ehentaiHost(options.site)}/` },
+      signal: options.signal, timeoutMs: options.timeoutMs ?? 15_000, maxBytes: API_BODY_CAP,
+    });
+    return { status: res.status, finalUrl: res.finalUrl, contentType: res.contentType, body: res.body?.toString('utf8') ?? '' };
+  } finally { release(); }
+}
+
+/** POST variant of the pinned request (JSON, no redirects expected). */
+function pinnedGetPost(url: string, jsonBody: string, options: PinnedRequestOptions): Promise<PinnedResponse> {
   const parsed = new URL(url);
   return resolvePinnedAddress(parsed.hostname).then((pinnedIp) => new Promise<PinnedResponse>((resolve, reject) => {
     let settled = false;
@@ -424,9 +435,11 @@ function pinnedGetPost(url: string, formBody: string, options: PinnedRequestOpti
         method: 'POST',
         path: parsed.pathname,
         headers: {
+          ...options.headers,
+          Host: parsed.hostname,
           'User-Agent': UA,
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Content-Length': Buffer.byteLength(formBody),
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(jsonBody),
         },
       },
       (res) => {
@@ -463,32 +476,30 @@ function pinnedGetPost(url: string, formBody: string, options: PinnedRequestOpti
       }
       fail(new EhentaiUpstreamError('E-Hentai API connection failed.', 'unavailable'));
     });
-    req.end(formBody);
+    req.end(jsonBody);
   }));
 }
 
 // ---------------- image approvals (per gallery, from authorized pages) ----------------
 
 interface ImageApproval {
-  hosts: Set<string>;
-  urls: Set<string>;
+  origins: Set<string>;
   at: number;
   accountRevision: number;
 }
 const APPROVAL_TTL_MS = 10 * 60_000;
 const approvals = new Map<string, ImageApproval>();
 
-/** Register the image URLs/hosts seen on an authorized viewer page for one
+/** Register the image origins seen on an authorized viewer page for one
  *  gallery. Only these targets (plus static family image hosts) may be
  *  fetched for image bytes. */
 export function approveGalleryImageRefs(galleryKey: string, refs: string[]): void {
-  const approval: ImageApproval = { hosts: new Set(), urls: new Set(), at: Date.now(), accountRevision: getAccountRevision() };
+  const approval: ImageApproval = { origins: new Set(), at: Date.now(), accountRevision: getAccountRevision() };
   for (const ref of refs) {
     try {
       const parsed = new URL(ref);
       if (parsed.protocol !== 'https:') continue;
-      approval.urls.add(parsed.toString());
-      approval.hosts.add(parsed.hostname.toLowerCase());
+      if (!parsed.username && !parsed.password) approval.origins.add(parsed.origin);
     } catch {
       /* unparseable refs are simply not approved */
     }
@@ -501,22 +512,21 @@ export function approveGalleryImageRefs(galleryKey: string, refs: string[]): voi
   }
 }
 
-/** True when an image URL is approved for this gallery (exact URL or an
- *  approved/static host) and the approval matches the current account
+/** True when an image URL is approved for this gallery (an approved origin
+ *  or a static host) and the approval matches the current account
  *  revision window. */
 export function isApprovedImageUrl(galleryKey: string, url: string): boolean {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:') return false;
-    if (parsed.port && parsed.port !== '443') return false;
     if (parsed.username || parsed.password) return false;
     const host = parsed.hostname.toLowerCase();
-    if (STATIC_IMAGE_HOSTS.has(host)) return true;
+    if (!parsed.port && STATIC_IMAGE_HOSTS.has(host)) return true;
     const approval = approvals.get(galleryKey);
     if (!approval) return false;
     if (Date.now() - approval.at > APPROVAL_TTL_MS) return false;
-    if (approval.accountRevision !== getAccountRevision() && approval.urls.has(parsed.toString()) === false) return false;
-    return approval.hosts.has(host) || approval.urls.has(parsed.toString());
+    if (approval.accountRevision !== getAccountRevision()) return false;
+    return approval.origins.has(parsed.origin);
   } catch {
     return false;
   }
@@ -598,17 +608,13 @@ export async function fetchEhentaiImage(
     // No cookies for image hosts; the Referer identifies the gallery page.
     const res = await pinnedGet(
       url,
-      (hostname) => {
-        const host = hostname.toLowerCase();
-        if (STATIC_IMAGE_HOSTS.has(host)) return true;
-        const approval = approvals.get(options.galleryKey);
-        return !!approval && approval.hosts.has(host);
-      },
+      (_hostname, target) => isApprovedImageUrl(options.galleryKey, target.toString()),
       {
         headers: { 'User-Agent': UA, Referer: options.referer, Accept: 'image/avif,image/webp,image/*;q=0.8' },
         signal: options.signal,
         timeoutMs: 60_000,
         maxBytes: 64 * 1024 * 1024,
+        allowNonStandardPort: true,
         destPath: options.destPath,
         onBytes: options.onBytes,
       },
@@ -622,12 +628,12 @@ export async function fetchEhentaiImage(
 
 // ---------------- access classification ----------------
 
-/** Positive marker of an actual gallery-list response (the gallery data
- *  table) — required to claim verified access, per the access rules: a blank
- *  or denial page is never verified. */
-const GALLERY_LIST_MARKER = 'id="gdt"';
-/** Markers of an authenticated account on the family sites. */
-const AUTHENTICATED_MARKERS = ['account.php', 'logout'];
+/** Positive marker of a genuine member-only page (the favorites-management
+ *  UI) — required to claim verified access. The public front page is
+ *  identical for guests and members, so an HTTP 200 or a public gallery
+ *  list must never count as verified; on member pages guests are
+ *  redirected to /login.php instead. */
+const FAVORITES_PAGE_MARKER = 'update_fav_action';
 /** ExHentai denial markers (access refused despite a 200). */
 const EXHENTAI_DENIED_MARKERS = ['not authorized', 'do not have access', 'no access to', 'exhentai is only available', 'you are not allowed'];
 /** Age/content gate markers. */
@@ -640,17 +646,19 @@ export interface EhentaiAccessEvidence {
   detail?: string;
 }
 
-/** Classify a fetched family page as access evidence. Positive markers are
+/** Classify a fetched family page as access evidence. A positive marker is
  *  required for 'verified'; HTTP success alone never verifies. */
 export function classifyAccessEvidence(site: EhentaiSite, response: { status: number; finalUrl: string; body: string }): EhentaiAccessEvidence {
-  const finalHost = (() => {
+  const final = (() => {
     try {
-      return new URL(response.finalUrl).hostname.toLowerCase();
+      return new URL(response.finalUrl);
     } catch {
       return null;
     }
   })();
+  const finalHost = final?.hostname.toLowerCase() ?? null;
   const bodyLower = response.body.toLowerCase();
+  const memberPage = bodyLower.includes(FAVORITES_PAGE_MARKER);
 
   if (response.status === 429) {
     return { state: 'rate-limited', message: 'The E-Hentai host is rate-limiting requests. Try again in a few minutes.', detail: 'http-429' };
@@ -664,29 +672,26 @@ export function classifyAccessEvidence(site: EhentaiSite, response: { status: nu
   if (response.status >= 500) {
     return { state: 'unavailable', message: 'The E-Hentai host is temporarily unavailable.', detail: `http-${response.status}` };
   }
-  if (finalHost && finalHost !== ehentaiHost(site)) {
-    // A login redirect lands on a different host/path (e.g. /login.php).
-    return { state: 'denied', message: 'The session did not authenticate. Re-copy the cookies from a logged-in browser.', detail: `redirected-to-${finalHost}` };
+  if ((finalHost !== null && finalHost !== ehentaiHost(site)) || final?.pathname === '/login.php') {
+    // Guests hitting a member page land on the login form; a different host
+    // means the session did not stick.
+    return { state: 'denied', message: 'The session did not authenticate. Re-copy the cookies from a logged-in browser.', detail: `redirected-to-${final ? final.pathname : finalHost}` };
   }
-  if (bodyLower.includes('login.php') && !bodyLower.includes(GALLERY_LIST_MARKER)) {
-    return { state: 'denied', message: 'The session was rejected by the site. Re-copy the cookies from a logged-in browser.', detail: 'login-redirect' };
-  }
-  if (CONTENT_WARNING_MARKERS.some((m) => bodyLower.includes(m)) && !bodyLower.includes(GALLERY_LIST_MARKER)) {
+  if (CONTENT_WARNING_MARKERS.some((m) => bodyLower.includes(m)) && !memberPage) {
     return { state: 'content-warning', message: 'The site returned a content/age gate. Confirm the gate in your browser with this account, then test again.', detail: 'content-warning' };
   }
-  // A genuine gallery table means the site actually served a list — that
-  // outranks incidental denial wording elsewhere on the page.
-  if (bodyLower.includes(GALLERY_LIST_MARKER)) {
-    const authenticated = AUTHENTICATED_MARKERS.some((m) => bodyLower.includes(m));
-    if (site === 'exhentai' && !authenticated) {
-      // A guest can never see the ExHentai list; if we got the list without
-      // auth markers the page is not a genuine authenticated ExHentai list.
-      return { state: 'denied', message: 'The ExHentai response did not show an authenticated session.', detail: 'missing-auth-markers' };
-    }
-    return { state: 'verified', detail: authenticated ? 'gallery-list+auth' : 'gallery-list' };
+  // A real member page means the site authenticated this session; nothing
+  // weaker counts (the public front page is indistinguishable for guests).
+  if (memberPage) {
+    return { state: 'verified', detail: 'member-page' };
   }
   if (EXHENTAI_DENIED_MARKERS.some((m) => bodyLower.includes(m))) {
     return { state: 'denied', message: site === 'exhentai' ? 'The account is authenticated but does not have ExHentai access.' : 'Access was denied by the site.', detail: 'denial-marker' };
+  }
+  // ExHentai answers 200 with an empty body when the session lacks ExHentai
+  // access (observed live against the site).
+  if (site === 'exhentai' && response.body.length === 0) {
+    return { state: 'denied', message: 'ExHentai did not serve a member page for this session. Accounts without ExHentai access are expected to see this; if your account has access, re-copy the cookies.', detail: 'empty-body' };
   }
   return { state: 'unavailable', message: 'The site returned an unexpected response. Try again later or verify the account manually in a browser.', detail: 'unexpected-body' };
 }
@@ -699,14 +704,17 @@ export interface EhentaiAccessTestResult {
 
 /**
  * Verify a session against both family sites without downloading gallery
- * images: one gallery-list request per site. Testing a draft does not save
- * it. Results are evidence with a timestamp, not permanent authorization.
+ * images: one member-page request per site (favorites.php — guests are
+ * redirected to the login form there, so only an authenticated session
+ * receives a member page; the public front page would look identical for
+ * guests and members). Testing a draft does not save it. Results are
+ * evidence with a timestamp, not permanent authorization.
  */
 export async function testEhentaiAccess(session: EhentaiSessionInput, options: { signal?: AbortSignal } = {}): Promise<EhentaiAccessTestResult> {
   const testedAt = new Date().toISOString();
   const checkSite = async (site: EhentaiSite): Promise<EhentaiAccessEvidence> => {
     try {
-      const response = await ehentaiFetchText(`https://${ehentaiHost(site)}/`, 'html', { site, session, signal: options.signal });
+      const response = await ehentaiFetchText(`https://${ehentaiHost(site)}/favorites.php`, 'html', { site, session, signal: options.signal });
       return classifyAccessEvidence(site, response);
     } catch (error) {
       if (error instanceof RequestAbortedError) throw error;

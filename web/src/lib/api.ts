@@ -572,10 +572,11 @@ export const api = {
     request<{ items: DoujinSearchResult[]; total: number } | DoujinSearchResult[]>('/doujin/search', {
       method: 'POST', body: JSON.stringify({ source, query, offset, limit, ...(sort && sort !== 'default' ? { sort } : {}) }),
     }).then(result => Array.isArray(result) ? { items: result, total: result.length } : result),
-  doujinSuggestions: (source: DoujinSource, query: string, context?: string) =>
+  doujinSuggestions: (source: DoujinSource | 'unified', query: string, context?: string, signal?: AbortSignal) =>
     request<DoujinSuggestion[]>('/doujin/suggestions', {
       method: 'POST',
       body: JSON.stringify({ source, query, ...(context !== undefined ? { context } : {}) }),
+      signal,
     }),
   /** Unified search across all sources: start with { query }, continue with
    *  { cursor, retry? }. The server replays the last served cursor. */

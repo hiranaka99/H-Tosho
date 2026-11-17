@@ -36,16 +36,17 @@ interface GallerySearchInputProps {
   id?: string;
   value: string;
   onChange: (value: string) => void;
-  source: DoujinSource;
+  source: DoujinSource | 'unified';
   label: string;
   placeholder: string;
   clearLabel: string;
   disabled?: boolean;
   className?: string;
+  describedBy?: string;
 }
 
 /** Shared by gallery search and watched queries; Enter selects or submits the form. */
-export function GallerySearchInput({ id, value, onChange, source, label, placeholder, clearLabel, disabled = false, className }: GallerySearchInputProps) {
+export function GallerySearchInput({ id, value, onChange, source, label, placeholder, clearLabel, disabled = false, className, describedBy }: GallerySearchInputProps) {
   const generatedId = React.useId();
   const listId = `${generatedId}-suggestions`;
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -78,10 +79,11 @@ export function GallerySearchInput({ id, value, onChange, source, label, placeho
       return;
     }
     let cancelled = false;
+    const controller = new AbortController();
     setLoading(true);
     const timer = window.setTimeout(async () => {
       try {
-        const result = await api.doujinSuggestions(source, lookup, context);
+        const result = await api.doujinSuggestions(source, lookup, context, controller.signal);
         if (!cancelled) setSuggestions(Array.isArray(result) ? result : []);
       } catch {
         if (!cancelled) setSuggestions([]);
@@ -89,7 +91,7 @@ export function GallerySearchInput({ id, value, onChange, source, label, placeho
         if (!cancelled) setLoading(false);
       }
     }, 200);
-    return () => { cancelled = true; window.clearTimeout(timer); };
+    return () => { cancelled = true; controller.abort(); window.clearTimeout(timer); };
   }, [source, seed, lookup, context, focused, closed, disabled]);
 
   const showDropdown = focused && !closed && (loading || suggestions.length > 0);
@@ -130,6 +132,7 @@ export function GallerySearchInput({ id, value, onChange, source, label, placeho
     <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
     <Input
       ref={inputRef} id={id ?? generatedId} role="combobox" aria-label={label}
+      aria-describedby={describedBy}
       aria-autocomplete="list" aria-expanded={showDropdown} aria-controls={listId}
       aria-activedescendant={showDropdown && highlight >= 0 ? `${listId}-${highlight}` : undefined}
       autoComplete="off" spellCheck={false} disabled={disabled} value={value} placeholder={placeholder}

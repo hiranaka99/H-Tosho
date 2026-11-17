@@ -81,36 +81,32 @@ test('identity is host-agnostic and distinct per gallery', () => {
 
 const page = (status: number, finalUrl: string, body = ''): { status: number; finalUrl: string; body: string } => ({ status, finalUrl, body });
 
-test('classifyAccessEvidence requires positive markers for verified', () => {
-  const authBody = '<table id="gdt">gallery list</table><a href="/account.php">user</a>';
-  assert.equal(classifyAccessEvidence('exhentai', page(200, 'https://exhentai.org/', authBody)).state, 'verified');
-  assert.equal(classifyAccessEvidence('e-hentai', page(200, 'https://e-hentai.org/', authBody)).state, 'verified');
-  // A verified list (with auth markers) wins over incidental denial wording in
-  // the same page.
+test('classifyAccessEvidence requires a member page for verified', () => {
+  const memberBody = '<form name="favform"></form>function update_fav_action(selbox) {}';
+  assert.equal(classifyAccessEvidence('exhentai', page(200, 'https://exhentai.org/favorites.php', memberBody)).state, 'verified');
+  assert.equal(classifyAccessEvidence('e-hentai', page(200, 'https://e-hentai.org/favorites.php', memberBody)).state, 'verified');
+  // The public front page is identical for guests and members, so a plain
+  // gallery list must never verify a session.
   assert.equal(
-    classifyAccessEvidence('exhentai', page(200, 'https://exhentai.org/', 'not authorized <table id="gdt"><a href="logout.php">out</a>')).state,
-    'verified',
+    classifyAccessEvidence('e-hentai', page(200, 'https://e-hentai.org/', '<table class="itg gltc">gallery list</table>')).state,
+    'unavailable',
   );
-  // …but a bare ExHentai list without any auth marker is not verified.
-  assert.equal(
-    classifyAccessEvidence('exhentai', page(200, 'https://exhentai.org/', 'not authorized <table id="gdt">')).state,
-    'denied',
-  );
-  // HTTP 200 without the gallery table is never verified.
-  assert.equal(classifyAccessEvidence('exhentai', page(200, 'https://exhentai.org/', '<html>hello</html>')).state, 'unavailable');
+  // HTTP 200 without a member page is never verified.
+  assert.equal(classifyAccessEvidence('exhentai', page(200, 'https://exhentai.org/favorites.php', '<html>hello</html>')).state, 'unavailable');
 });
 
-test('classifyAccessEvidence detects denials, including 200-status denial pages', () => {
-  assert.equal(classifyAccessEvidence('exhentai', page(200, 'https://exhentai.org/', 'ExHentai is only available to registered E-Hentai users.')).state, 'denied');
-  assert.equal(classifyAccessEvidence('exhentai', page(403, 'https://exhentai.org/', '')).state, 'denied');
-  // Login redirect: the body points at login.php without a gallery table.
-  assert.equal(classifyAccessEvidence('e-hentai', page(200, 'https://e-hentai.org/', 'please <a href="login.php">login</a>')).state, 'denied');
-  // A host change (login redirect to another host) is denied even with markers.
-  assert.equal(classifyAccessEvidence('exhentai', page(200, 'https://exhentai.org/login.php', '<table id="gdt">')).state, 'denied');
-  // ExHentai list without any authenticated-session markers is not verified.
-  assert.equal(classifyAccessEvidence('exhentai', page(200, 'https://exhentai.org/', '<table id="gdt">')).state, 'denied');
-  // E-Hentai guest lists are normal; the list marker alone verifies.
-  assert.equal(classifyAccessEvidence('e-hentai', page(200, 'https://e-hentai.org/', '<table id="gdt">')).state, 'verified');
+test('classifyAccessEvidence detects denials, including login redirects and empty ExHentai responses', () => {
+  assert.equal(classifyAccessEvidence('exhentai', page(200, 'https://exhentai.org/favorites.php', 'ExHentai is only available to registered E-Hentai users.')).state, 'denied');
+  assert.equal(classifyAccessEvidence('exhentai', page(403, 'https://exhentai.org/favorites.php', '')).state, 'denied');
+  // Guests hitting a member page are redirected to the login form.
+  assert.equal(classifyAccessEvidence('e-hentai', page(200, 'https://e-hentai.org/login.php', 'login form')).state, 'denied');
+  assert.equal(classifyAccessEvidence('exhentai', page(200, 'https://exhentai.org/login.php', '<table class="itg gltc">')).state, 'denied');
+  // ExHentai answers 200 with an empty body for sessions without ExHentai
+  // access (observed live).
+  assert.equal(classifyAccessEvidence('exhentai', page(200, 'https://exhentai.org/favorites.php', '')).state, 'denied');
+  // A 200 on the member page that is neither a member page nor a known
+  // denial is an unknown response, not a denial.
+  assert.equal(classifyAccessEvidence('e-hentai', page(200, 'https://e-hentai.org/favorites.php', '<html>hello</html>')).state, 'unavailable');
 });
 
 test('classifyAccessEvidence keeps quota, rate-limit, content gates, and outages distinct', () => {

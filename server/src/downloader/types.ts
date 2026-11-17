@@ -175,7 +175,7 @@ export interface DoujinProvider {
   /** Optional full-count paging without hydrating the entire catalog match. */
   searchPage?(query: string, offset: number, limit: number, sort?: DoujinSort): Promise<{ items: DoujinSearchResult[]; total: number }>;
   /** Optional tag/artist autocomplete suggestions for a query prefix. */
-  suggest?(query: string, limit?: number, context?: string): Promise<DoujinSuggestion[]>;
+  suggest?(query: string, limit?: number, context?: string, signal?: AbortSignal): Promise<DoujinSuggestion[]>;
   /** Recheck cached/history candidates against current provider exclusions. */
   filterRecommendations?(items: DoujinSearchResult[]): Promise<DoujinSearchResult[]>;
 }

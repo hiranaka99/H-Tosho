@@ -11,6 +11,39 @@ function queryTerms(query: string): string[] {
   return query.match(/(?:[^\s"\\]|\\.|"(?:[^"\\]|\\.)*")+/g) ?? [];
 }
 
+/** Artist-only searches use the exact tag listing. Leave compound queries to
+ * the search engine so their operators and exclusions keep their meaning. */
+export function nhentaiArtistSearch(query: string): { slug: string; language: string } | null {
+  let artist: string | undefined;
+  let language = 'english';
+  let languageSpecified = false;
+  try {
+    const url = new URL(query.trim());
+    const match = /^\/artist\/([^/]+)\/?$/.exec(url.pathname);
+    if (url.protocol === 'https:' && url.hostname === 'nhentai.net' && !url.port && !url.username && !url.password && !url.search && !url.hash && match) {
+      return { slug: decodeURIComponent(match[1]), language };
+    }
+  } catch { /* ordinary query */ }
+  for (const term of queryTerms(query.trim())) {
+    const field = /^(artists?|languages?):(.+)$/i.exec(term);
+    if (!field) return null;
+    let value = field[2];
+    if (value.startsWith('"')) {
+      try { value = JSON.parse(value); } catch { return null; }
+    }
+    if (typeof value !== 'string' || !value.trim() || /[*?]/.test(value)) return null;
+    if (/^artist/i.test(field[1])) {
+      if (artist) return null;
+      artist = value.trim();
+    } else {
+      if (languageSpecified) return null;
+      languageSpecified = true;
+      language = value.trim().toLowerCase();
+    }
+  }
+  return artist ? { slug: artist.toLowerCase().replace(/\s+/g, '-'), language } : null;
+}
+
 export function nhentaiSearchQuery(query: string, banned = ''): string {
   const q = query.trim();
   const explicitLanguage = queryTerms(q).some(term => /^languages?:\S/i.test(term));

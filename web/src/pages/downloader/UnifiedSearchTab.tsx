@@ -14,6 +14,7 @@ import { type DoujinSearchResult, type DoujinSource, type ProviderSearchStatus, 
 import { cn } from '../../lib/utils';
 import { Button, Card, CardContent, EmptyState, Skeleton } from '../../components/ui';
 import { GallerySelectionBar } from '../../components/GallerySelectionBar';
+import { GallerySearchInput } from '../../components/GallerySearchInput';
 
 import { DOWNLOADER_SETTINGS_URL, SOURCE_LABELS, type DownloadSetup } from './state';
 import { GalleryCard } from './GalleryCard';
@@ -135,18 +136,13 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
       <Card>
         <CardContent className="flex flex-col gap-2">
           <form onSubmit={submit} className="flex flex-col gap-2 sm:flex-row">
-            <label className="min-w-0 flex-1 text-sm">
-              <span className="sr-only">Unified search query</span>
-              <input
-                type="text"
-                value={formDraft}
-                onChange={(e) => { setFormDraft(e.target.value); unified.setDraft(e.target.value); }}
-                placeholder='Search all three sources at once — e.g. “sister” or artist:foo -bar'
-                aria-label="Unified search query"
-                aria-describedby="unified-search-hint"
-                className="h-11 w-full rounded-lg border border-border bg-surface px-3 text-sm outline-none transition-colors focus:border-primary"
-              />
-            </label>
+            <GallerySearchInput
+              value={formDraft} source="unified"
+              onChange={(value) => { setFormDraft(value); unified.setDraft(value); }}
+              label="Unified search query" describedBy="unified-search-hint"
+              placeholder='Search all three sources at once — e.g. “sister” or artist:foo -bar'
+              clearLabel="Clear unified search query" className="h-11"
+            />
             <Button className="shrink-0 sm:h-11" type="submit" disabled={busy || !formDraft.trim()}>
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
             </Button>

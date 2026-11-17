@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Search, Loader2, Download as DownloadIcon, Pause, XCircle, CheckCircle2, RotateCcw, Check, Circle, ImageOff, Languages, Bookmark, CheckSquare, EllipsisVertical } from 'lucide-react';
+import { Search, Loader2, Download as DownloadIcon, Pause, XCircle, CheckCircle2, RotateCcw, Check, Circle, ImageOff, Bookmark, CheckSquare, EllipsisVertical } from 'lucide-react';
 import { type DoujinSource, type DoujinSearchResult } from '../../lib/api';
 import { useGalleryDownloadTask } from '../../lib/DownloadsContext';
 import { cn, toIsoUtc } from '../../lib/utils';
@@ -104,11 +104,6 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
       <button type="button" onClick={() => (selectMode ? onToggleSelect?.(item) : onOpen(item))} className="grid min-w-0 grid-cols-[5rem_minmax(0,1fr)] text-left min-[420px]:block" aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
         <div className="relative overflow-hidden">
           <Cover url={item.coverUrl} title={item.title} className="downloader-cover aspect-[3/4] w-full" />
-          {item.language && (
-            <span className={cn('absolute left-2 hidden items-center gap-1 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white min-[420px]:inline-flex', selectMode || selected ? 'bottom-2' : 'top-2')}>
-              <Languages className="h-3 w-3" /> {item.language}
-            </span>
-          )}
           <PageCountPill pageCount={item.pageCount} className={cn('absolute right-2', selectMode || selected ? 'bottom-2' : 'top-2')} />
           {(selectMode || selected) && (
             <span className={cn('pointer-events-none absolute left-2 top-2 z-20 inline-flex h-8 w-8 items-center justify-center rounded-md border', selected ? 'border-primary-button bg-primary-button text-white' : 'border-border-2 bg-surface text-muted')} aria-hidden="true">
@@ -123,7 +118,6 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
         </div>
         <div className="flex min-w-0 flex-col gap-2 p-3 pb-0">
           <p className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]" title={item.title}>{item.title}</p>
-          {item.language && <p className="text-xs text-muted min-[420px]:hidden">{item.language}</p>}
           {item.artists.length > 0 && (
             <p className="truncate text-xs font-medium text-foreground" title={`Artists: ${item.artists.join(', ')}`}>
               <span className="text-muted">Artist{item.artists.length > 1 ? 's' : ''} · </span>{item.artists.join(', ')}

@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Improve unified-search title grouping by recognizing author/event prefixes
+  and language/digital labels. Keep unmarked, censored, and uncensored/decensored
+  editions in separate groups, retaining original titles and chapter/color differences.
+
+- Add native E-Hentai/ExHentai tag autocomplete and shared-filter suggestions
+  in unified search, with keyboard selection and caret-aware term replacement.
+
+- Route nHentai artist-only searches and artist-page URLs through exact artist
+  tag listings, preserving language, banned tags, sorting, and filtered pagination.
+
+- Default E-Hentai/ExHentai searches to English, prefer English on multilingual
+  results, and exclude known language mismatches. Explicit language filters still apply.
+
+- Limit E-Hentai/ExHentai search results to Doujinshi, Manga, and Artist CG,
+  including unified searches and subsequent result pages.
+
+- Fix E-Hentai/ExHentai gallery details, sprite thumbnail links, and paginated
+  image lists. Resolve the primary viewer image and its approved H@H port for
+  previews. Quote artist queries and generated tag links so artist searches work.
+
+- Fix E-Hentai/ExHentai searches against the current compact list markup,
+  gallery tokens, continuation links, and JSON metadata API. Apply language
+  filters with native tags and allow covers from the current ehgt.org CDN.
+
 - Add E-Hentai/ExHentai as a third doujinshi source, backed by an account saved
   in Settings → Downloader. The account's cookies are encrypted at rest
   (AES-256-GCM) and never sent to the browser; search, previews, and downloads

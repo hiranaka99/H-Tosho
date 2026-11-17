@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { getDownloaderSettings } from '../services/settings.js';
 import { fetchJson, sleep } from '../lib/http.js';
 import { extractGalleryId, toIsoDate } from './util.js';
-import { nhentaiAutocompleteQuery, nhentaiBannedTerm, nhentaiSearchQuery } from './nhentaiSearch.js';
+import { nhentaiArtistSearch, nhentaiAutocompleteQuery, nhentaiBannedTerm, nhentaiSearchQuery } from './nhentaiSearch.js';
 import { type DoujinGallery, type DoujinProvider, type DoujinSearchResult, type DoujinSort, type DoujinSuggestion } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -14,6 +14,8 @@ const execFileAsync = promisify(execFile);
  *
  * Endpoints (see https://nhentai.net/api/v2/docs, spec: /api/v2/openapi.json):
  *   - `GET /api/v2/search?query=<q>&page=<n>`   -> PaginatedResponse<GalleryListItem>
+ *   - `GET /api/v2/tags/artist/{slug}`          -> exact artist tag
+ *   - `GET /api/v2/galleries/tagged?tag_id=...` -> exact artist's galleries
  *   - `GET /api/v2/galleries/{id}`              -> GalleryDetailResponse
  *   - `GET /api/v2/cdn`                         -> { image_servers, thumb_servers }
  *   - `GET /api/v2/tags/ids?ids=<csv>`          -> TagResponse[] (max 100 ids)
@@ -48,22 +50,24 @@ const execFileAsync = promisify(execFile);
 export const nhentaiRateLimits = {
   /**
    * Key-tier minimum interval (ms): /api/v2/search (documented 20/min),
-   * gallery detail + CDN config (45/min), /api/v2/tags/ids batch lookups
+   * artist listings (30/min), gallery detail + CDN config (45/min), /api/v2/tags/ids batch lookups
    * (15/min, public), tag autocomplete (30/min, public).
    */
   intervalMs: {
     search: 3_200,
+    listing: 2_200,
     gallery: 2_200,
     tags: 4_200,
     suggest: 2_200,
   } as Record<RateClass, number>,
   /**
    * Anonymous-tier minimum interval (ms): search 10/min, gallery detail
-   * 20/min. Tags/autocomplete endpoints are public (no key tiers), so the
+   * 20/min, artist listings 15/min. Tags/autocomplete endpoints are public (no key tiers), so the
    * key-tier intervals already satisfy them.
    */
   anonIntervalMs: {
     search: 6_200,
+    listing: 4_200,
     gallery: 3_100,
     tags: 0,
     suggest: 0,
@@ -74,7 +78,7 @@ export const nhentaiRateLimits = {
   maxRetries: 3,
 };
 
-type RateClass = 'search' | 'gallery' | 'tags' | 'suggest';
+type RateClass = 'search' | 'listing' | 'gallery' | 'tags' | 'suggest';
 
 // Shared throttle state: one serialization queue across every call the
 // provider makes, so a burst of watched-search/recommendation lookups cannot
@@ -512,6 +516,78 @@ async function fetchSearchPage(query: string, page: number, sort?: DoujinSort): 
   return res.data;
 }
 
+const slugTags = new Map<string, ApiTag>();
+async function tagBySlug(type: string, slug: string): Promise<ApiTag | null> {
+  const key = `${type}/${slug}`;
+  if (slugTags.has(key)) return slugTags.get(key)!;
+  const res = await throttledFetchJson<ApiTag>('tags', `${BASE}/api/v2/tags/${type}/${encodeURIComponent(slug)}`, { headers: headers() });
+  if (res.status === 404) return null;
+  if (res.status !== 200 || !Number.isSafeInteger(res.data?.id) || res.data!.id! < 1 || mapTagType(res.data!.type) !== type || res.data!.slug !== slug) {
+    throw new Error(`nHentai ${type} lookup failed (HTTP ${res.status})`);
+  }
+  if (slugTags.size >= 2048) slugTags.clear();
+  slugTags.set(key, res.data!);
+  tagCache.set(res.data!.id!, res.data!);
+  return res.data!;
+}
+
+// Artist pages have no language/exclusion parameters. Cache their native rows
+// briefly, then filter before slicing so page offsets and totals stay exact.
+const artistListings = new Map<string, { until: number; rows: Promise<ApiGalleryListItem[]> }>();
+async function artistRows(artist: ApiTag, sort?: DoujinSort): Promise<ApiGalleryListItem[]> {
+  const order = sort && ['popular', 'popular-week', 'popular-today', 'popular-month'].includes(sort) ? sort : 'date';
+  const key = JSON.stringify([artist.id, order, getApiKey()]);
+  const cached = artistListings.get(key);
+  if (cached && cached.until > Date.now()) return cached.rows;
+  const entry = { until: Infinity, rows: Promise.resolve([] as ApiGalleryListItem[]) };
+  entry.rows = (async () => {
+    const rows: ApiGalleryListItem[] = [];
+    const seen = new Set<number>();
+    for (let page = 1; ; page++) {
+      const params = new URLSearchParams({ tag_id: String(artist.id), sort: order, page: String(page), per_page: '100' });
+      const res = await throttledFetchJson<ApiSearchResponse>('listing', `${BASE}/api/v2/galleries/tagged?${params}`, { headers: headers() });
+      if (res.status !== 200 || !Array.isArray(res.data?.result) || !Number.isSafeInteger(res.data.num_pages) || res.data.num_pages! < 0) {
+        throw new Error(`nHentai artist listing failed (HTTP ${res.status})`);
+      }
+      for (const row of res.data.result) {
+        if (!Number.isSafeInteger(row.id) || !Array.isArray(row.tag_ids)) throw new Error('nHentai artist listing contained invalid metadata.');
+        if (row.tag_ids.includes(artist.id!) && !seen.has(row.id)) { rows.push(row); seen.add(row.id); }
+      }
+      if (page >= res.data.num_pages!) break;
+      if (!res.data.result.length) throw new Error('nHentai artist listing was incomplete. Please retry.');
+    }
+    entry.until = Date.now() + 60_000;
+    return rows;
+  })();
+  artistListings.set(key, entry);
+  while (artistListings.size > 8) artistListings.delete(artistListings.keys().next().value!);
+  try { return await entry.rows; }
+  catch (error) { if (artistListings.get(key) === entry) artistListings.delete(key); throw error; }
+}
+
+async function exactArtistRows(lookup: NonNullable<ReturnType<typeof nhentaiArtistSearch>>, sort?: DoujinSort): Promise<ApiGalleryListItem[]> {
+  const artist = await tagBySlug('artist', lookup.slug);
+  if (!artist) return [];
+  const language = lookup.language === 'all' ? null : await tagBySlug('language', lookup.language);
+  if (lookup.language !== 'all' && !language) return [];
+  let rows = (await artistRows(artist, sort)).filter((row) => !language || row.tag_ids!.includes(language.id!));
+  const exclusions = buildBannedExclusions().match(/-([a-z]+:)?"[^"]*"/g) ?? [];
+  if (exclusions.length && rows.length) {
+    const tags = await resolveTags(rows.flatMap((row) => row.tag_ids!));
+    if (rows.some((row) => row.tag_ids!.some((id) => !tags.has(id)))) throw new Error('nHentai tag metadata could not be loaded to apply banned tags. Please retry.');
+    rows = rows.filter((row) => !exclusions.some((exclusion) => {
+      const match = /^-(?:([a-z]+):)?"([^"]*)"$/.exec(exclusion)!;
+      const name = match[2].toLowerCase();
+      return (!match[1] && [row.english_title, row.japanese_title].some((title) => title?.toLowerCase().includes(name)))
+        || row.tag_ids!.some((id) => {
+          const tag = tags.get(id)!;
+          return (!match[1] || mapTagType(tag.type) === match[1]) && tag.name.toLowerCase().includes(name);
+        });
+    }));
+  }
+  return rows;
+}
+
 async function mapSearchRows(items: ApiGalleryListItem[]): Promise<NhentaiSearchRow[]> {
   if (!items.length) return [];
   const tagIds = items.flatMap(item => Array.isArray(item?.tag_ids) ? item.tag_ids : []);
@@ -546,6 +622,8 @@ export const nhentaiProvider: DoujinProvider = {
     // DoujinGallery doubles as a search row (it extends DoujinSearchResult).
     const id = directGalleryId(q);
     if (id) return [await this.getGallery(id)];
+    const artist = nhentaiArtistSearch(q);
+    if (artist) return mapSearchRows((await exactArtistRows(artist, sort)).slice(0, Math.min(Math.max(1, limit), 250)));
 
     // Append configured banned-tag exclusions so galleries carrying any of them
     // never show up in keyword/tag searches. (A bare gallery-ID lookup above is
@@ -595,6 +673,11 @@ export const nhentaiProvider: DoujinProvider = {
     if (id) {
       const gallery = await this.getGallery(id);
       return { items: offset ? [] : [gallery], total: 1 };
+    }
+    const artist = nhentaiArtistSearch(q);
+    if (artist) {
+      const rows = await exactArtistRows(artist, sort);
+      return { items: await mapSearchRows(rows.slice(offset, offset + limit)), total: rows.length };
     }
     const searchQuery = nhentaiSearchQuery(q, buildBannedExclusions());
     const fetched = new Map<number, ApiSearchResponse>();

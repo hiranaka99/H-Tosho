@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { getDoujinProvider, listDoujinProviders } from '../../downloader/providers.js';
 import { getEhentaiAccountView } from '../../services/ehentaiAccount.js';
 import { currentPrincipal } from '../../services/auth.js';
+import { unifiedSuggestions } from '../../services/unifiedSuggestions.js';
 import { runUnifiedSearch, UnifiedQueryError, UnifiedSessionError } from '../../services/unifiedSearch.js';
 import { rewriteDoujinCover, rewriteDoujinPages } from '../media.js';
 import { DOUJIN_SORTS, type DoujinSort } from '../../downloader/types.js';
@@ -92,11 +93,12 @@ api.post('/doujin/search/unified', async (c) => {
 api.post('/doujin/suggestions', async (c) => {
   const body = (await c.req.json()) as { source: string; query: string; context?: string };
   if (!body.source || !body.query?.trim()) return c.json({ error: 'source and query are required' }, 400);
+  if (body.source === 'unified') return c.json(await unifiedSuggestions(body.query, 10, c.req.raw.signal));
   const provider = getDoujinProvider(body.source);
   if (!provider) return c.json({ error: `Unknown source: ${body.source}` }, 400);
   if (typeof provider.suggest !== 'function') return c.json([]);
   try {
-    return c.json(await provider.suggest(body.query, 10, typeof body.context === 'string' ? body.context : undefined));
+    return c.json(await provider.suggest(body.query, 10, typeof body.context === 'string' ? body.context : undefined, c.req.raw.signal));
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

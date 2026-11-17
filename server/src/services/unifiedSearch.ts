@@ -22,7 +22,7 @@ import { randomBytes } from 'node:crypto';
 import { doujinProviders, getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinSearchResult } from '../downloader/types.js';
 import { EhentaiUpstreamError } from '../downloader/ehentaiClient.js';
-import { EHENTAI_LANGUAGE_IDS } from '../downloader/ehentai.js';
+import { EHENTAI_LANGUAGES } from '../downloader/ehentai.js';
 import { parseEhentaiGalleryUrl } from '../contracts/doujin.js';
 import {
   toPublicSearchResult,
@@ -41,6 +41,7 @@ import { getAccountRevision, getEhentaiAccountSite, isAccountConfigured, onEhent
 import { getDownloaderSettings, onSettingChange } from './settings.js';
 import { rewriteDoujinCover } from '../routes/media.js';
 import { compileEhentai, compileHitomi, compileNhentai, parseCommonQuery, type CompiledLaneQuery } from './unifiedQuery.js';
+import { unifiedTitleKey } from './unifiedTitle.js';
 
 // ---------------- limits ----------------
 
@@ -235,11 +236,12 @@ function normalizeLanguage(value: string | null | undefined): string | null {
  * in its own entry (P2.3.6).
  */
 function fingerprint(pub: PublicDoujinSearchResult): string | null {
-  const title = normalizeText(pub.title);
   const artists = pub.artists.map(normalizeText).filter(Boolean);
-  if (!title || artists.length === 0) return null;
+  if (artists.length === 0) return null;
   const language = normalizeLanguage(pub.language);
   if (!language) return null;
+  const title = unifiedTitleKey(pub.title, pub.artists, language);
+  if (!title) return null;
   if (pub.pageCount === null || pub.pageCount <= 0) return null;
   return `t=${title}|a=${artists[0]}|l=${language}|p=${pub.pageCount}`;
 }
@@ -379,7 +381,7 @@ async function fetchLane(session: UnifiedSession, lane: LaneState, signal: Abort
     lane.retryable = false;
     return;
   }
-  if (lane.source === 'ehentai' && compiled.language && EHENTAI_LANGUAGE_IDS[compiled.language] === undefined) {
+  if (lane.source === 'ehentai' && compiled.language && !EHENTAI_LANGUAGES.has(compiled.language)) {
     lane.phase = 'unsupported-query';
     lane.message = `E-Hentai/ExHentai does not support the language “${compiled.language}”.`;
     lane.retryable = false;

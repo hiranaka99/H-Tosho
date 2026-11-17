@@ -57,7 +57,9 @@ export function ehentaiSiteForHost(host: string): EhentaiSite | null {
 }
 
 const GID_RE = /^[1-9]\d{0,9}$/;
-const TOKEN_RE = /^[0-9a-f]{12}$/;
+// The site uses 10-character tokens. Keep accepting the 12-character IDs
+// previously accepted by H-Tosho so persisted queue/history entries still load.
+const TOKEN_RE = /^(?:[0-9a-f]{10}|[0-9a-f]{12})$/;
 
 /**
  * Canonical E-Hentai gallery identity. The `(gid, token)` pair is validated
@@ -73,7 +75,7 @@ export interface EhentaiGalleryIdentity {
 /** Validate and canonicalize a bare `<gid>-<token>` gallery ID. */
 export function parseEhentaiGalleryId(input: unknown): EhentaiGalleryIdentity | null {
   if (typeof input !== 'string' || input.length > 64) return null;
-  const m = /^(\d+)-([0-9a-fA-F]{12})$/.exec(input.trim());
+  const m = /^(\d+)-([0-9a-fA-F]{10}|[0-9a-fA-F]{12})$/.exec(input.trim());
   if (!m) return null;
   const gid = m[1];
   const token = m[2].toLowerCase();
@@ -107,7 +109,7 @@ export function parseEhentaiGalleryUrl(raw: unknown): EhentaiGalleryUrl | null {
   const site = ehentaiSiteForHost(url.hostname);
   if (!site) return null;
   if (url.port !== '' || url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') return null;
-  const m = /^\/g\/(\d+)\/([0-9a-fA-F]{12})\/?$/.exec(url.pathname);
+  const m = /^\/g\/(\d+)\/([0-9a-fA-F]{10}|[0-9a-fA-F]{12})\/?$/.exec(url.pathname);
   if (!m) return null;
   const gid = m[1];
   const token = m[2].toLowerCase();

@@ -75,6 +75,7 @@ export function parseCommonQuery(raw: string): ParsedCommonQuery {
   const terms: ParsedTerm[] = [];
   let i = 0;
   let quoted = false;
+  let quotedFilter = false;
   let buffer = '';
   let pendingExclusion = false;
 
@@ -114,14 +115,20 @@ export function parseCommonQuery(raw: string): ParsedCommonQuery {
     const ch = input[i];
     if (ch === '"') {
       if (quoted) {
-        // Closing quote: a phrase is always a keyword-position term.
         const value = buffer.trim();
-        buffer = '';
-        if (value) terms.push({ excluded: pendingExclusion, kind: 'phrase', value });
+        if (quotedFilter) {
+          // Keep artist:"two words" as a filter, including its exclusion.
+          pushBuffer();
+        } else {
+          buffer = '';
+          if (value) terms.push({ excluded: pendingExclusion, kind: 'phrase', value });
+        }
         quoted = false;
+        quotedFilter = false;
         pendingExclusion = false;
       } else {
-        pushBuffer();
+        quotedFilter = /^[a-z_]+:$/i.test(buffer);
+        if (!quotedFilter) pushBuffer();
         quoted = true;
       }
       continue;
@@ -167,7 +174,7 @@ export function parseCommonQuery(raw: string): ParsedCommonQuery {
 export interface CompiledLaneQuery {
   /** The provider query text, ready for the provider's search seam. */
   query: string;
-  /** Lane-level option (e.g. E-Hentai language via its own f_lang parameter). */
+  /** Lane-level language option, compiled by the provider into its native syntax. */
   language?: string;
   /** Set when a shared element cannot be represented without widening. */
   unsupported?: string;
@@ -238,7 +245,7 @@ export function compileNhentai(q: CommonSearchQuery): CompiledLaneQuery {
 }
 
 /** E-Hentai: plain namespace:value pairs, quoted phrases, `-` exclusions.
- *  The language filter travels as a lane option (f_lang), not query text. */
+ *  The language filter travels as a lane option, compiled by the provider. */
 export function compileEhentai(q: CommonSearchQuery): CompiledLaneQuery {
   const out: string[] = [];
   let language: string | undefined;
@@ -248,7 +255,7 @@ export function compileEhentai(q: CommonSearchQuery): CompiledLaneQuery {
       language = f.value.toLowerCase().replace(/\s+/g, '');
       continue;
     }
-    out.push(`${f.namespace}:${f.value}`);
+    out.push(`${f.namespace}:"${f.value.replace(/"/g, '')}"`);
   }
   for (const ex of q.exclusions) {
     if (ex.namespace === 'language') continue; // language exclusions are not expressible; see unsupported note

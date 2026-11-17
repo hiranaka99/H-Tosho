@@ -11,7 +11,7 @@ export function cn(...inputs: ClassValue[]): string {
  * Build a single-tag/artist search fragment from a details card, formatted for
  * the target source's query syntax. Hitomi uses bare underscored multi-word values
  * (e.g. `artist:charu_lee`); nHentai wraps values in quotes (e.g. `artist:"Charu Lee"`);
- * E-Hentai/ExHentai uses plain `namespace:value` pairs (e.g. `artist:charu lee`).
+ * E-Hentai/ExHentai quotes namespace values (e.g. `artist:"charu lee"`).
  * An empty namespace yields a plain keyword search on the raw value.
  */
 export function buildTagSearchFragment(value: string, ns: string | null | undefined, source: DoujinSource): string {
@@ -21,7 +21,7 @@ export function buildTagSearchFragment(value: string, ns: string | null | undefi
     return ns ? `${ns}:"${v}"` : `"${v}"`;
   }
   if (source === 'ehentai') {
-    return ns ? `${ns}:${v}` : v;
+    return ns ? `${ns}:"${v.replace(/"/g, '')}"` : v;
   }
   const underscored = v.replace(/\s+/g, '_');
   return ns ? `${ns}:${underscored}` : underscored;

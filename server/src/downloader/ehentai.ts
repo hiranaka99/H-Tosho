@@ -1,20 +1,19 @@
 /**
  * E-Hentai / ExHentai provider.
  *
- * - Search: the site's own tagged search form (f_search/f_lang), parsed from
- *   the HTML list pages; one bounded gdata batch per chunk hydrates language,
+ * - Search: the site's own tagged search form (f_search), parsed from
+ *   compact HTML list pages; bounded gdata batches hydrate language,
  *   dates, page counts, and namespaced tags.
  * - Metadata: the gallery's own info page (authenticated for ExHentai), with
  *   ordered lazy /s/ page references resolved just before transfer.
- * - The whole provider shares the family pacing gate and the stored account;
- *   a missing account simply means the public E-Hentai subset.
+ * - The whole provider shares the family pacing gate and the stored account.
  */
 
 import {
-  ehentaiFetchText, ehentaiApiPost, approveGalleryImageRefs, fetchEhentaiImage, EhentaiUpstreamError,
+  ehentaiFetchText, ehentaiApiPost, ehentaiTagSuggestions, approveGalleryImageRefs, fetchEhentaiImage, EhentaiUpstreamError,
   type EhentaiTextResponse, type ImageFormat,
 } from './ehentaiClient.js';
-import { parseEhentaiGdata, gdataNumber } from './ehentaiXml.js';
+import { parseEhentaiGdata, gdataNumber } from './ehentaiGdata.js';
 import {
   parseEhentaiGalleryId, parseEhentaiGalleryUrl, ehentaiGalleryUrl, ehentaiHost,
   type EhentaiSite, type SearchCursor,
@@ -28,10 +27,13 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type {
   DoujinProvider, DoujinSearchResult, DoujinGallery, DoujinSort, DoujinSearchOptions,
+  DoujinSuggestion,
 } from './types.js';
-import type { EhentaiGdataEntry } from './ehentaiXml.js';
+import type { EhentaiGdataEntry } from './ehentaiGdata.js';
 
 const LIST_PAGE_LIMIT = 50; // the site's max per-list-page rendering
+// f_cats excludes categories: enable only Doujinshi (2), Manga (4), Artist CG (8).
+const SEARCH_CATEGORY_MASK = '1009'; // 1023 & ~(2 | 4 | 8)
 
 // ---------------- account/session ----------------
 
@@ -73,38 +75,13 @@ function currentSession(): ResolvedSession {
 
 // ---------------- query construction ----------------
 
-/** E-Hentai language filter ids, matching the site's own search form
- *  (f_lang) exactly. The aggregator validates against this map; unknown
- *  names are never guessed. 1 means "All" and is only used when the user
- *  explicitly clears the language filter. */
-export const EHENTAI_LANGUAGE_IDS: Record<string, number> = {
-  all: 1,
-  japanese: 2,
-  english: 3,
-  chinese: 4,
-  korean: 5,
-  french: 6,
-  german: 7,
-  italian: 8,
-  spanish: 9,
-  indonesian: 10,
-  polish: 11,
-  russian: 12,
-  thai: 13,
-  ukrainian: 14,
-  vietnamese: 15,
-  danish: 16,
-  dutch: 17,
-  portuguese: 18,
-  catalan: 19,
-  finnish: 20,
-  hungarian: 21,
-  norwegian: 22,
-  swedish: 23,
-};
-
-/** The plan's default-language convention: a normal search is English. */
-export const EHENTAI_DEFAULT_LANGUAGE_ID = EHENTAI_LANGUAGE_IDS.english;
+/** Supported language names; the site filters through language tags. */
+export const EHENTAI_LANGUAGES = new Set([
+  'all', 'japanese', 'english', 'chinese', 'korean', 'french', 'german',
+  'italian', 'spanish', 'indonesian', 'polish', 'russian', 'thai', 'ukrainian',
+  'vietnamese', 'danish', 'dutch', 'portuguese', 'catalan', 'finnish',
+  'hungarian', 'norwegian', 'swedish',
+]);
 
 function ehentaiBannedTerms(): string[] {
   let raw: unknown;
@@ -132,20 +109,37 @@ function ehentaiBannedTerms(): string[] {
 interface CompiledSearch {
   /** The site's own query text (f_search). */
   queryText: string;
-  languageId: number | null;
+  /** Requested language, including the English default; null means unrestricted. */
+  language: string | null;
   sort: DoujinSort;
   /** Stable identity of the search inputs; cursors are bound to this. */
   fingerprint: string;
 }
 
 function compileSearch(query: string, sort: DoujinSort | undefined, opts: DoujinSearchOptions | undefined): CompiledSearch {
-  const base = (query ?? '').trim();
+  // E-Hentai's long artist namespace needs a quoted value (artist:mana
+  // returns no matches where artist:"mana" and a:mana both match).
+  const quoteArtists = (text: string): string => text.replace(
+    /"[^"]*"|(^|\s)((?:[-~])?(?:weak:)?(?:artist|a)):([^\s"]+)/gi,
+    (whole, space: string, namespace: string, value: string) => namespace ? `${space}${namespace}:"${value}"` : whole,
+  );
+  const base = quoteArtists((query ?? '').trim());
   const terms = ehentaiBannedTerms();
-  const queryText = terms.length ? `${base}${base ? ' ' : ''}${terms.join(' ')}`.trim() : base;
   const languageName = typeof opts?.language === 'string' ? opts.language.trim().toLowerCase() : '';
-  const languageId = languageName ? (EHENTAI_LANGUAGE_IDS[languageName] ?? null) : EHENTAI_DEFAULT_LANGUAGE_ID;
-  const fingerprint = JSON.stringify({ q: queryText, lang: languageId, sort: sort ?? 'default', skip: opts?.skip ?? null });
-  return { queryText, languageId, sort: sort ?? 'default', fingerprint };
+  // Preserve explicit native language searches; normal searches default to
+  // English. E-Hentai has no f_lang parameter.
+  const languageTerms = (base.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [])
+    .filter((term) => /^(?:~)?(?:weak:)?(?:language|lang|l):/i.test(term));
+  const language = languageName || (languageTerms.length ? 'all' : 'english');
+  if (!EHENTAI_LANGUAGES.has(language)) throw new EhentaiUpstreamError('This E-Hentai search language is not supported.', 'parse');
+  const nativeLanguage = languageTerms.length === 1 && !languageTerms[0].startsWith('~')
+    ? languageTerms[0].replace(/^(?:weak:)?(?:language|lang|l):/i, '').replace(/["$]/g, '').toLowerCase()
+    : null;
+  const preferredLanguage = language !== 'all' ? language
+    : nativeLanguage && nativeLanguage !== 'all' && EHENTAI_LANGUAGES.has(nativeLanguage) ? nativeLanguage : null;
+  const queryText = [base, ...terms.map(quoteArtists), ...(language === 'all' ? [] : [`language:${language}$`])].filter(Boolean).join(' ');
+  const fingerprint = JSON.stringify({ q: queryText, language: preferredLanguage, categories: SEARCH_CATEGORY_MASK, sort: sort ?? 'default', skip: opts?.skip ?? null });
+  return { queryText, language: preferredLanguage, sort: sort ?? 'default', fingerprint };
 }
 
 function buildListUrl(site: EhentaiSite, compiled: CompiledSearch): URL {
@@ -153,7 +147,10 @@ function buildListUrl(site: EhentaiSite, compiled: CompiledSearch): URL {
   url.hostname = ehentaiHost(site);
   const params = url.searchParams;
   params.set('f_search', compiled.queryText);
-  if (compiled.languageId) params.set('f_lang', String(compiled.languageId));
+  params.set('f_cats', SEARCH_CATEGORY_MASK);
+  // A saved account may prefer a different display mode. Request a known
+  // table layout so the response is independent of that preference.
+  params.set('inline_set', 'dm_l');
   return url;
 }
 
@@ -176,6 +173,10 @@ export interface EhentaiListPage {
 }
 
 const decodeEntities = (text: string): string => text
+  .replace(/&#(x[0-9a-f]+|\d+);/gi, (whole, code: string) => {
+    const value = code[0].toLowerCase() === 'x' ? parseInt(code.slice(1), 16) : Number(code);
+    return value > 0 && value <= 0x10ffff ? String.fromCodePoint(value) : whole;
+  })
   .replace(/&lt;/g, '<')
   .replace(/&gt;/g, '>')
   .replace(/&quot;/g, '"')
@@ -184,6 +185,11 @@ const decodeEntities = (text: string): string => text
   .replace(/&amp;/g, '&');
 
 const stripTags = (html: string): string => decodeEntities(html.replace(/<[^>]*>/g, ''));
+
+function htmlAttribute(tag: string, name: string): string | null {
+  const match = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i').exec(tag);
+  return match ? decodeEntities(match[1] ?? match[2]) : null;
+}
 
 function parseUploadedAt(raw: string | null): string | null {
   if (!raw) return null;
@@ -196,52 +202,68 @@ function parseUploadedAt(raw: string | null): string | null {
   return date.toISOString();
 }
 
-/** Parse one search/list HTML page. A search page with no gallery rows is a
- *  valid empty result (the site's search form is still present); any other
- *  page without the row tables is a parse error — an empty result and a
- *  broken parser are different outcomes (P1.3.9). */
-export function parseEhentaiListPage(html: string, baseUrl: string): EhentaiListPage {
-  const nextLink = (source: string): string | null => {
-    const nextMatch = /<a class="pn" href="([^"]+)"/.exec(source);
-    return nextMatch ? new URL(decodeEntities(nextMatch[1]), baseUrl).toString() : null;
-  };
-  const pageStart = html.indexOf('<table class="glt"');
-  if (pageStart < 0) {
-    if (/<form[^>]*name="s1"/.test(html)) {
-      return { galleries: [], nextUrl: nextLink(html) };
+/** Parse the site's compact table (.itg), explicitly requested by buildListUrl.
+ * A known empty-search message is required when there is no table: a search
+ * form alone must not hide upstream errors or future markup changes. */
+export function parseEhentaiListPage(html: string, baseUrl: string, preferredLanguage: string | null = null): EhentaiListPage {
+  let nextUrl: string | null = null;
+  for (const anchor of html.matchAll(/<a\b[^>]*>/gi)) {
+    if (!['unext', 'dnext'].includes(htmlAttribute(anchor[0], 'id') ?? '')) continue;
+    const href = htmlAttribute(anchor[0], 'href');
+    if (href) {
+      nextUrl = new URL(href, baseUrl).toString();
+      break;
     }
+  }
+  const table = /<table\b[^>]*\bclass\s*=\s*(["'])[^"']*\bitg\b[^"']*\1[^>]*>([\s\S]*?)<\/table>/i.exec(html);
+  if (!table) {
+    const hasSearch = /<input\b[^>]*\bname\s*=\s*["']f_search["']/i.test(html);
+    if (hasSearch && /No hits found|No unfiltered results|No matches were found/i.test(stripTags(html))) return { galleries: [], nextUrl: null };
     throw new EhentaiUpstreamError('The E-Hentai list response did not contain a gallery table.', 'parse');
   }
-  const pageEnd = html.indexOf('<div class="pc">', pageStart);
-  const section = pageEnd > 0 ? html.slice(pageStart, pageEnd) : html.slice(pageStart);
 
   const galleries: EhentaiListGallery[] = [];
-  const rowRe = /<table class="glt">([\s\S]*?)<\/table>/g;
-  let row: RegExpExecArray | null;
-  while ((row = rowRe.exec(section)) !== null) {
+  const seen = new Set<string>();
+  for (const row of table[2].matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
     const cells = row[1];
-    const link = /href="(https:\/\/(?:e-hentai|exhentai)\.org\/g\/(\d+)\/([0-9a-fA-F]{12})\/)"/.exec(cells);
-    if (!link) continue;
-    const titleMatch = /<span class="gdt_title"><a[^>]*>([\s\S]*?)<\/a><\/span>/.exec(cells);
-    if (!titleMatch) continue;
-    // gl2 cells in order: rating, category, pages, language, date.
-    const tdMatches: string[] = [];
-    let td: RegExpExecArray | null;
-    const tdRe = /<td class="gl2">([\s\S]*?)<\/td>/g;
-    while ((td = tdRe.exec(cells)) !== null) tdMatches.push(td[1]);
-    const cover = /class="glth"[^>]*>[\s\S]*?<img[^>]*src="([^"]+)"/.exec(cells);
+    if (!/<td\b/i.test(cells)) continue; // header row
+    const titleMatch = /<(?:div|span)\b[^>]*\bclass\s*=\s*(["'])[^"']*\bglink\b[^"']*\1[^>]*>([\s\S]*?)<\/(?:div|span)>/i.exec(cells);
+    // Public list pages insert advertising rows between gallery rows.
+    if (!titleMatch && /<td\b[^>]*\bclass\s*=\s*(["'])[^"']*\bitd\b[^"']*\1/i.test(cells)) continue;
+    let identity: ReturnType<typeof parseEhentaiGalleryUrl> = null;
+    for (const anchor of cells.matchAll(/<a\b[^>]*>/gi)) {
+      const href = htmlAttribute(anchor[0], 'href');
+      if (href) identity = parseEhentaiGalleryUrl(new URL(href, baseUrl).toString());
+      if (identity) break;
+    }
+    if (!identity || !titleMatch || !stripTags(titleMatch[2]).trim()) {
+      throw new EhentaiUpstreamError('The E-Hentai gallery table contained an unrecognized result.', 'parse');
+    }
+    if (seen.has(identity.canonicalId)) continue;
+    seen.add(identity.canonicalId);
+    let coverUrl: string | null = null;
+    for (const image of cells.matchAll(/<img\b[^>]*>/gi)) {
+      const src = htmlAttribute(image[0], 'data-src') ?? htmlAttribute(image[0], 'src');
+      if (src && /^https:\/\//i.test(src)) { coverUrl = src; break; }
+    }
+    const languages = [...cells.matchAll(/\btitle\s*=\s*["']language:([^"']+)["']/gi)]
+      .map((m) => m[1].trim()).filter((value) => EHENTAI_LANGUAGES.has(value.toLowerCase()));
+    const language = languages.find((value) => value.toLowerCase() === preferredLanguage) ?? languages[0] ?? null;
+    const pages = />\s*(\d+) pages\s*</i.exec(cells)?.[1];
+    const posted = /\bid\s*=\s*["']posted_\d+["'][^>]*>([^<]+)/i.exec(cells)?.[1];
     galleries.push({
-      gid: link[2],
-      token: link[3].toLowerCase(),
-      title: stripTags(titleMatch[1]).trim(),
-      coverUrl: cover ? decodeEntities(cover[1]) : null,
-      language: tdMatches.length >= 4 ? (stripTags(tdMatches[3]).trim() || null) : null,
-      pageCount: tdMatches.length >= 3 ? (Number.parseInt(stripTags(tdMatches[2]), 10) || null) : null,
-      uploadedAt: tdMatches.length >= 5 ? parseUploadedAt(stripTags(tdMatches[4]).trim() || null) : null,
+      gid: identity.gid,
+      token: identity.token,
+      title: stripTags(titleMatch[2]).trim(),
+      coverUrl,
+      language: language ? decodeEntities(language).trim() : null,
+      pageCount: pages ? Number(pages) : null,
+      // List timestamps are UTC and omit the explicit offset.
+      uploadedAt: posted ? parseUploadedAt(`${posted.trim()} +0000`) : null,
     });
   }
 
-  return { galleries, nextUrl: nextLink(html) };
+  return { galleries, nextUrl };
 }
 
 // ---------------- gdata hydration ----------------
@@ -258,9 +280,9 @@ interface GdataHydration {
   characters: string[];
 }
 
-function hydrateFromGdata(entries: EhentaiGdataEntry[] | null, token: string): GdataHydration | null {
+function hydrateFromGdata(entries: EhentaiGdataEntry[] | null, gid: string, token: string, preferredLanguage: string | null): GdataHydration | null {
   if (!entries) return null;
-  const entry = entries.find((e) => e.token !== null && e.token.toLowerCase() === token.toLowerCase());
+  const entry = entries.find((e) => e.gid === gid && e.token === token.toLowerCase());
   if (!entry || entry.error) return null;
   const tags: string[] = [];
   const tagNamespaces: (string | undefined)[] = [];
@@ -278,13 +300,13 @@ function hydrateFromGdata(entries: EhentaiGdataEntry[] | null, token: string): G
     else if (namespace === 'parody') parodies.push(name);
     else if (namespace === 'character') characters.push(name);
   }
-  const uploadedTs = entry.fields.get('uploaded_ts');
-  let uploadedAt: string | null = null;
-  if (uploadedTs && /^\d+$/.test(uploadedTs)) uploadedAt = new Date(+uploadedTs * 1000).toISOString();
-  if (!uploadedAt) uploadedAt = parseUploadedAt(entry.fields.get('uploaded') ?? null);
+  const uploadedTs = gdataNumber(entry, 'posted');
+  const uploadedDate = uploadedTs === null ? null : new Date(uploadedTs * 1000);
+  const uploadedAt = uploadedDate && Number.isFinite(uploadedDate.getTime()) ? uploadedDate.toISOString() : null;
+  const languages = entry.tags.filter((t) => t.namespace === 'language' && EHENTAI_LANGUAGES.has(t.value.trim().toLowerCase()));
   return {
-    language: entry.fields.get('language')?.trim() || null,
-    pageCount: gdataNumber(entry, 'pages'),
+    language: languages.find((t) => t.value.trim().toLowerCase() === preferredLanguage)?.value ?? languages[0]?.value ?? null,
+    pageCount: gdataNumber(entry, 'filecount'),
     uploadedAt,
     tags,
     tagNamespaces,
@@ -295,32 +317,27 @@ function hydrateFromGdata(entries: EhentaiGdataEntry[] | null, token: string): G
   };
 }
 
-/** One bounded gdata batch (namespace=1 = tags included). Returns null on any
- *  failure: callers fall back to list-page metadata and never drop galleries. */
+/** Bounded gdata batches (namespace=1 = namespaced tags). Missing or failed
+ *  entries fall back to list-page metadata without dropping galleries. */
 async function fetchGdataBatch(
   items: Array<{ gid: string; token: string }>,
   signal?: AbortSignal,
 ): Promise<EhentaiGdataEntry[] | null> {
   if (!items.length) return null;
-  let response: EhentaiTextResponse;
-  try {
-    response = await ehentaiApiPost(
-      {
-        t: 'gdata',
-        'gid[]': items.map((i) => i.gid),
-        'tok[]': items.map((i) => i.token),
-        namespace: '1',
-      },
-      { signal },
-    );
-  } catch (error) {
-    if (error instanceof EhentaiUpstreamError && (error.kind === 'timeout' || error.kind === 'unavailable' || error.kind === 'rate-limited')) {
-      return null; // hydration is best-effort; the list page already answered
+  const entries: EhentaiGdataEntry[] = [];
+  for (let start = 0; start < items.length; start += 25) {
+    try {
+      const response = await ehentaiApiPost({
+        method: 'gdata',
+        gidlist: items.slice(start, start + 25).map((i) => [Number(i.gid), i.token]),
+        namespace: 1,
+      }, { signal });
+      if (response.status === 200) entries.push(...(parseEhentaiGdata(response.body) ?? []));
+    } catch (error) {
+      if (error instanceof EhentaiUpstreamError && ['timeout', 'unavailable', 'rate-limited'].includes(error.kind)) continue;
+      throw error;
     }
-    throw error;
   }
-  if (response.status !== 200) return null;
-  const entries = parseEhentaiGdata(response.body);
   return entries;
 }
 
@@ -362,13 +379,14 @@ async function buildSearchResults(
   page: EhentaiListPage,
   site: EhentaiSite,
   limit: number,
+  language: string | null,
   signal?: AbortSignal,
 ): Promise<DoujinSearchResult[]> {
   const chunk = page.galleries.slice(0, limit);
   if (!chunk.length) return [];
   const hydration = await fetchGdataBatch(chunk.map((g) => ({ gid: g.gid, token: g.token })), signal);
   const results: DoujinSearchResult[] = chunk.map((g) => {
-    const hyd = hydrateFromGdata(hydration, g.token);
+    const hyd = hydrateFromGdata(hydration, g.gid, g.token, language);
     const tags = hyd?.tags?.length ? hyd.tags : [];
     const artists = hyd?.artists?.length ? hyd.artists : [];
     return {
@@ -386,7 +404,9 @@ async function buildSearchResults(
       uploadedAt: hyd?.uploadedAt ?? g.uploadedAt ?? undefined,
     };
   });
-  return applyBans(results);
+  // The upstream query applies the language restriction. Also reject known
+  // mismatches in the response, while retaining results with unavailable metadata.
+  return applyBans(results.filter((result) => !language || !result.language || result.language.trim().toLowerCase() === language));
 }
 
 // ---------------- cursor state ----------------
@@ -427,8 +447,10 @@ function validateContinuationUrl(nextUrl: string, site: EhentaiSite, compiled: C
   try {
     const url = new URL(nextUrl);
     if (url.protocol !== 'https:' || url.hostname !== ehentaiHost(site)) return false;
+    if (url.port || url.username || url.password || url.pathname !== '/' || url.hash) return false;
     if (url.searchParams.get('f_search') !== compiled.queryText) return false;
-    if (compiled.languageId && url.searchParams.get('f_lang') !== String(compiled.languageId)) return false;
+    // The site omits inline_set in its Next link; restore the display mode on
+    // fetch instead of requiring a parameter it does not return.
     return true;
   } catch {
     return false;
@@ -442,9 +464,16 @@ async function fetchListPage(
   compiled: CompiledSearch,
   signal?: AbortSignal,
 ): Promise<EhentaiListPage> {
+  if (!validateContinuationUrl(url, site, compiled)) {
+    throw new EhentaiUpstreamError('The E-Hentai continuation link no longer matches this search.', 'parse');
+  }
   let response: EhentaiTextResponse;
   try {
-    response = await ehentaiFetchText(url, 'html', { site, session, signal, headers: { Referer: `https://${ehentaiHost(site)}/` } });
+    const requestUrl = new URL(url);
+    // Keep the restriction even if an upstream continuation omits the mask.
+    requestUrl.searchParams.set('f_cats', SEARCH_CATEGORY_MASK);
+    requestUrl.searchParams.set('inline_set', 'dm_l');
+    response = await ehentaiFetchText(requestUrl.toString(), 'html', { site, session, signal, headers: { Referer: `https://${ehentaiHost(site)}/` } });
   } catch (error) {
     if (error instanceof EhentaiUpstreamError) {
       if (error.kind === 'denied') throw error;
@@ -458,11 +487,7 @@ async function fetchListPage(
     throw new EhentaiUpstreamError('The E-Hentai session was rejected. Re-test or re-save the account in Settings.', 'denied', response.status);
   }
   if (response.status !== 200) throw new EhentaiUpstreamError('The E-Hentai search host returned an unexpected response.', 'unavailable', response.status);
-  // A continued page must still answer the same query.
-  if (url !== buildListUrl(site, compiled).toString() && !validateContinuationUrl(url, site, compiled)) {
-    throw new EhentaiUpstreamError('The E-Hentai continuation link no longer matches this search.', 'parse');
-  }
-  return parseEhentaiListPage(response.body, url);
+  return parseEhentaiListPage(response.body, url, compiled.language);
 }
 
 // ---------------- getGallery: info page + lazy page refs ----------------
@@ -480,31 +505,51 @@ interface ParsedGalleryInfo {
   groups: string[];
   parodies: string[];
   characters: string[];
-  /** Ordered viewer-page references (https://.../s/<token>/<gid>-<token>/N.ext). */
+  /** Total image count reported by the gallery, across thumbnail pages. */
+  pageCount: number;
+  /** Ordered viewer-page references (/s/<page-token>/<gid>-<page-number>). */
   pageRefs: string[];
+  nextUrl: string | null;
   /** Ordered preview thumbnail URLs (public static hosts). */
   coverUrl: string | null;
 }
 
-const TAG_NAMESPACE_PARAMS: Record<string, string> = {
-  f_doujin: 'doujin',
-  f_manga: 'manga',
-  f_artist: 'artist',
-  f_group: 'group',
-  f_parody: 'parody',
-  f_character: 'character',
-  f_male: 'male',
-  f_female: 'female',
-  f_other: 'other',
-  f_language: 'language',
-  f_cats: 'category',
-};
+/** Extract a known element while retaining nested elements with the same tag. */
+function htmlElementById(html: string, id: string): { inner: string; tag: string } | null {
+  for (const open of html.matchAll(/<([a-z][a-z0-9]*)\b[^>]*>/gi)) {
+    if (htmlAttribute(open[0], 'id') !== id) continue;
+    const tags = new RegExp(`<\\/?${open[1]}\\b[^>]*>`, 'gi');
+    tags.lastIndex = open.index + open[0].length;
+    let depth = 1;
+    let tag: RegExpExecArray | null;
+    while ((tag = tags.exec(html))) {
+      if (tag[0].startsWith('</')) depth--;
+      else if (!tag[0].endsWith('/>')) depth++;
+      if (depth === 0) return { inner: html.slice(open.index + open[0].length, tag.index), tag: open[0] };
+    }
+    return null;
+  }
+  return null;
+}
 
-export function parseEhentaiGalleryPage(html: string): ParsedGalleryInfo {
-  const titleMatch = /<span class="gcname">([\s\S]*?)<\/span>/.exec(html);
-  if (!titleMatch) throw new EhentaiUpstreamError('The E-Hentai gallery page did not contain gallery metadata (unavailable or expunged?).', 'parse');
+const VIEWER_PATH_RE = /^\/s\/([0-9a-f]{10})\/([1-9]\d{0,9})-([1-9]\d{0,5})$/i;
+
+function viewerReference(raw: string, baseUrl: string): { url: string; gid: string; page: number; token: string } | null {
+  try {
+    const url = new URL(raw, baseUrl);
+    if (!isEhentaiViewerUrl(url)) return null;
+    const [, token, gid, page] = VIEWER_PATH_RE.exec(url.pathname)!;
+    return { url: url.toString(), gid, page: Number(page), token };
+  } catch {
+    return null;
+  }
+}
+
+export function parseEhentaiGalleryPage(html: string, baseUrl: string): ParsedGalleryInfo {
+  const title = htmlElementById(html, 'gn');
+  if (!title || !stripTags(title.inner).trim()) throw new EhentaiUpstreamError('The E-Hentai gallery page did not contain gallery metadata (unavailable or expunged?).', 'parse');
   const info: ParsedGalleryInfo = {
-    title: stripTags(titleMatch[1]).trim(),
+    title: stripTags(title.inner).trim(),
     titleAlt: null,
     series: null,
     language: null,
@@ -516,46 +561,44 @@ export function parseEhentaiGalleryPage(html: string): ParsedGalleryInfo {
     groups: [],
     parodies: [],
     characters: [],
+    pageCount: 0,
     pageRefs: [],
+    nextUrl: null,
     coverUrl: null,
   };
 
-  const alt = /<span class="gdt_namealt">\s*\(?([\s\S]*?)\)?\s*<\/span>/.exec(html);
-  if (alt) info.titleAlt = stripTags(alt[1]).trim() || null;
-  const series = /<span class="gcpar"><a[^>]*>([\s\S]*?)<\/a><\/span>/.exec(html)
-    ?? /<span class="gcpar">([\s\S]*?)<\/span>/.exec(html);
-  if (series) info.series = stripTags(series[1]).trim() || null;
+  const alt = htmlElementById(html, 'gj');
+  if (alt) info.titleAlt = stripTags(alt.inner).trim() || null;
+  const category = htmlElementById(html, 'gdc');
+  if (category) info.category = stripTags(category.inner).trim() || null;
+  const details = htmlElementById(html, 'gdd');
+  const fields = new Map<string, string>();
+  for (const row of (details?.inner ?? '').matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = [...row[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)];
+    if (cells.length === 2) fields.set(stripTags(cells[0][1]).trim().replace(/:$/, ''), stripTags(cells[1][1]).trim());
+  }
+  info.language = fields.get('Language')?.replace(/\s+(?:TR|RW)\b.*$/, '').trim() || null;
+  const posted = fields.get('Posted');
+  info.uploadedAt = posted ? parseUploadedAt(`${posted} +0000`) : null;
+  info.pageCount = Number(/^(\d+) pages?$/.exec(fields.get('Length') ?? '')?.[1] ?? 0);
+  if (!Number.isSafeInteger(info.pageCount) || info.pageCount < 1) throw new EhentaiUpstreamError('The E-Hentai gallery did not report a valid page count.', 'parse');
 
-  const infoRow = (label: string): string | null => {
-    const m = new RegExp(`<th>${label}:</th><td[^>]*>([\\s\\S]*?)<\\/td>`).exec(html);
-    return m ? stripTags(m[1]).trim() || null : null;
-  };
-  info.language = infoRow('Language');
-  info.category = infoRow('Category');
-  info.uploadedAt = parseUploadedAt(infoRow('Uploaded'));
-
-  // Tags: <table class="itgns"> rows; the namespace is the f_* param in the link.
-  const tagBlock = /<table class="itgns">([\s\S]*?)<\/table>/.exec(html);
+  const tagBlock = htmlElementById(html, 'taglist');
   if (tagBlock) {
-    const tagRe = /<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-    let tag: RegExpExecArray | null;
-    while ((tag = tagRe.exec(tagBlock[1])) !== null) {
-      const name = stripTags(tag[2]).trim();
+    for (const anchor of tagBlock.inner.matchAll(/<a\b([^>]*)>[\s\S]*?<\/a>/gi)) {
+      const href = htmlAttribute(anchor[0].slice(0, anchor[0].indexOf('>') + 1), 'href');
+      if (!href || !htmlAttribute(anchor[1], 'id')?.startsWith('ta_')) continue;
+      let value: string;
+      try {
+        const url = new URL(href, baseUrl);
+        if (!url.pathname.startsWith('/tag/')) continue;
+        value = decodeURIComponent(url.pathname.slice(5).replace(/\+/g, ' '));
+      } catch { continue; }
+      const colon = value.indexOf(':');
+      if (colon < 1) continue;
+      const namespace = value.slice(0, colon);
+      const name = value.slice(colon + 1).trim();
       if (!name) continue;
-      // href attributes arrive entity-escaped (&amp;) - decode before matching.
-      // The site prefixes every tag link with an empty f_search=; the
-      // namespace is the first non-empty f_* param with a known mapping.
-      const href = decodeEntities(tag[1]);
-      const paramRe = /(?:^|[&?])(f_[a-z]+)=([^&]*)/g;
-      let namespace: string | undefined;
-      let paramMatch: RegExpExecArray | null;
-      while ((paramMatch = paramRe.exec(href)) !== null) {
-        const value = decodeEntities(paramMatch[2]);
-        if (value) {
-          namespace = TAG_NAMESPACE_PARAMS[paramMatch[1]];
-          if (namespace) break;
-        }
-      }
       info.tags.push(name);
       info.tagNamespaces.push(namespace);
       if (namespace === 'artist') info.artists.push(name);
@@ -564,29 +607,35 @@ export function parseEhentaiGalleryPage(html: string): ParsedGalleryInfo {
       else if (namespace === 'character') info.characters.push(name);
     }
   }
+  info.series = info.parodies[0] ?? null;
+  const cover = htmlElementById(html, 'gd1');
+  const coverUrl = cover ? /url\(\s*['"]?(https:\/\/[^\s)'"<>]+)/i.exec(cover.inner)?.[1] : null;
+  if (coverUrl) info.coverUrl = decodeEntities(coverUrl);
 
-  // Thumbnail table: one row per image, ordered. The <a href="/s/..."> target
-  // is the viewer page; the <img src> is the public preview thumbnail.
-  const thumbBlock = /<table id="gdthumb">([\s\S]*?)<\/table>/.exec(html);
+  // Thumbnails can be CSS sprites: the viewer href identifies each page;
+  // the sprite itself must never become a full-page preview image.
+  const thumbBlock = htmlElementById(html, 'gdt');
   if (!thumbBlock) throw new EhentaiUpstreamError('The E-Hentai gallery page did not contain the image list.', 'parse');
-  const linkRe = /<a href="(https:\/\/[^"]+?\/s\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-  let link: RegExpExecArray | null;
   let lastNumber = 0;
-  while ((link = linkRe.exec(thumbBlock[1])) !== null) {
-    const ref = decodeEntities(link[1]);
-    const img = /<img[^>]*src="([^"]+)"/.exec(link[2]);
-    const num = /\/(\d+)\.\w+$/.exec(ref);
-    const n = num ? Number.parseInt(num[1], 10) : null;
-    if (n === null || n <= lastNumber) {
-      // Repeated or out-of-order references mean truncated/unknown pagination:
-      // refuse to package a partial gallery as complete.
+  for (const anchor of thumbBlock.inner.matchAll(/<a\b[^>]*>/gi)) {
+    const href = htmlAttribute(anchor[0], 'href');
+    const ref = href ? viewerReference(href, baseUrl) : null;
+    if (!ref || (lastNumber > 0 && ref.page !== lastNumber + 1) || ref.page > info.pageCount) {
       throw new EhentaiUpstreamError('The E-Hentai image list is incomplete or out of order; the gallery cannot be resolved safely.', 'parse');
     }
-    lastNumber = n;
-    info.pageRefs.push(ref);
-    if (info.coverUrl === null && img) info.coverUrl = decodeEntities(img[1]);
+    lastNumber = ref.page;
+    info.pageRefs.push(ref.url);
   }
   if (!info.pageRefs.length) throw new EhentaiUpstreamError('The E-Hentai gallery has no resolvable image pages.', 'parse');
+  for (const table of html.matchAll(/<table\b([^>]*)>([\s\S]*?)<\/table>/gi)) {
+    if (!htmlAttribute(table[1], 'class')?.split(/\s+/).some((c) => c === 'ptt' || c === 'ptb')) continue;
+    for (const anchor of table[2].matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+      if (stripTags(anchor[2]).trim() !== '>') continue;
+      const href = htmlAttribute(anchor[1], 'href');
+      if (href) info.nextUrl = new URL(href, baseUrl).toString();
+    }
+    if (info.nextUrl) break;
+  }
   return info;
 }
 
@@ -601,12 +650,36 @@ export const ehentaiProvider: DoujinProvider = {
     paging: 'cursor',
   },
 
+  async suggest(query, limit = 10, _context, signal) {
+    const aliases: Record<string, string> = { artists: 'artist', a: 'artist', groups: 'group', g: 'group', parodies: 'parody', p: 'parody', characters: 'character', c: 'character', languages: 'language', l: 'language', lang: 'language', f: 'female', m: 'male', x: 'mixed', o: 'other' };
+    const namespaces = new Set(['artist', 'group', 'parody', 'character', 'language', 'female', 'male', 'mixed', 'other', 'cosplayer', 'reclass', 'tag']);
+    const raw = query.trim().replace(/^[-~]/, '');
+    const field = /^([a-z]+):(.*)$/is.exec(raw);
+    const namespace = field ? aliases[field[1].toLowerCase()] ?? field[1].toLowerCase() : null;
+    if (namespace && !namespaces.has(namespace)) return [];
+    const prefix = (field ? field[2] : raw).replace(/^"|"$/g, '').trim();
+    if (!namespace && prefix.length < 2) return [];
+    const { site, session } = currentSession();
+    const response = await ehentaiTagSuggestions(namespace ? `${namespace}:${prefix}` : prefix, { site, session, signal });
+    let data: { tags?: Record<string, { ns?: string; tn?: string }> };
+    try { data = JSON.parse(response.body); } catch { throw new EhentaiUpstreamError('E-Hentai tag suggestions could not be read.', 'parse'); }
+    if (!data || !data.tags || typeof data.tags !== 'object') return [];
+    const out: DoujinSuggestion[] = [];
+    for (const tag of Object.values(data.tags)) {
+      if (!tag || typeof tag.ns !== 'string' || typeof tag.tn !== 'string' || !tag.tn.trim() || tag.tn.includes('"')) continue;
+      if (namespace && namespace !== 'tag' && tag.ns !== namespace) continue;
+      out.push({ source: 'ehentai', type: tag.ns, name: tag.tn, filter: `${tag.ns}:"${tag.tn}$"` });
+      if (out.length >= Math.min(25, Math.max(1, limit))) break;
+    }
+    return out;
+  },
+
   async search(query, limit = 25, sort, opts) {
     const { site, session } = currentSession();
     const compiled = compileSearch(query, sort, opts);
     const url = buildListUrl(site, compiled).toString();
     const page = await fetchListPage(site, url, session, compiled);
-    return buildSearchResults(page, site, Math.min(Math.max(1, limit), LIST_PAGE_LIMIT));
+    return buildSearchResults(page, site, Math.min(Math.max(1, limit), LIST_PAGE_LIMIT), compiled.language);
   },
 
   async searchChunk(query, cursor, limit, sort, opts, signal) {
@@ -630,7 +703,7 @@ export const ehentaiProvider: DoujinProvider = {
     const chunk = galleries.slice(0, wanted);
     const remaining = galleries.slice(wanted);
     const exhausted = remaining.length === 0 && (nextUrl === null || !validateContinuationUrl(nextUrl, site, compiled));
-    const items = await buildSearchResults({ galleries: chunk, nextUrl }, site, chunk.length, signal);
+    const items = await buildSearchResults({ galleries: chunk, nextUrl }, site, chunk.length, compiled.language, signal);
     return {
       items: applyBans(items),
       nextCursor: exhausted ? null : encodeCursor({ v: 1, fp: compiled.fingerprint, site, acctRev, nextUrl, buffer: remaining }),
@@ -647,29 +720,53 @@ export const ehentaiProvider: DoujinProvider = {
     const site: EhentaiSite = fromUrl?.site ?? accountSite;
     const url = `https://${ehentaiHost(site)}/g/${identity.gid}/${identity.token}/`;
 
-    let response: EhentaiTextResponse;
-    try {
-      response = await ehentaiFetchText(url, 'html', { site, session, headers: { Referer: `https://${ehentaiHost(site)}/` } });
-    } catch (error) {
-      if (error instanceof EhentaiUpstreamError) {
-        if (error.status === 404) {
-          throw new EhentaiUpstreamError('The E-Hentai gallery is unavailable or was removed.', 'unavailable', 404);
+    const fetchPage = async (pageUrl: string): Promise<ParsedGalleryInfo> => {
+      let response: EhentaiTextResponse;
+      try {
+        response = await ehentaiFetchText(pageUrl, 'html', { site, session, headers: { Referer: url } });
+      } catch (error) {
+        if (error instanceof EhentaiUpstreamError) {
+          if (error.status === 404) {
+            throw new EhentaiUpstreamError('The E-Hentai gallery is unavailable or was removed.', 'unavailable', 404);
+          }
+          if (error.kind === 'denied') {
+            throw new EhentaiUpstreamError('The E-Hentai session could not open this gallery. Re-test the account in Settings.', 'denied', error.status);
+          }
         }
-        if (error.kind === 'denied') {
-          throw new EhentaiUpstreamError('The E-Hentai session could not open this gallery. Re-test the account in Settings.', 'denied', error.status);
-        }
+        throw error;
       }
-      throw error;
-    }
-    if (response.status === 401 || response.status === 403 || /login\.php/.test(response.finalUrl)) {
-      throw new EhentaiUpstreamError('The E-Hentai session could not open this gallery. Re-test the account in Settings.', 'denied', response.status);
-    }
-    if (response.status !== 200) throw new EhentaiUpstreamError('The E-Hentai gallery host returned an unexpected response.', 'unavailable', response.status);
+      if (response.status === 401 || response.status === 403 || /login\.php/.test(response.finalUrl)) {
+        throw new EhentaiUpstreamError('The E-Hentai session could not open this gallery. Re-test the account in Settings.', 'denied', response.status);
+      }
+      if (response.status !== 200) throw new EhentaiUpstreamError('The E-Hentai gallery host returned an unexpected response.', 'unavailable', response.status);
+      return parseEhentaiGalleryPage(response.body, pageUrl);
+    };
 
-    const info = parseEhentaiGalleryPage(response.body);
-    // Approve the viewer-page hosts/URLs this gallery exposed, so the image
-    // lane can fetch them without cookies (approval is per gallery identity).
-    approveGalleryImageRefs(identity.canonicalId, info.pageRefs);
+    const info = await fetchPage(url);
+    let page = info;
+    let thumbnailPage = 0;
+    const refs: string[] = [];
+    for (;;) {
+      if (page.pageCount !== info.pageCount) throw new EhentaiUpstreamError('The E-Hentai gallery changed while its image list was loading. Try again.', 'parse');
+      for (const raw of page.pageRefs) {
+        const ref = viewerReference(raw, url)!;
+        if (ref.gid !== identity.gid || new URL(ref.url).hostname !== ehentaiHost(site) || ref.page !== refs.length + 1) {
+          throw new EhentaiUpstreamError('The E-Hentai image list is incomplete or out of order; the gallery cannot be resolved safely.', 'parse');
+        }
+        refs.push(ref.url);
+      }
+      if (refs.length === info.pageCount) break;
+      if (!page.nextUrl) throw new EhentaiUpstreamError('The E-Hentai image list is incomplete; the gallery cannot be resolved safely.', 'parse');
+      const next = new URL(page.nextUrl);
+      const canonical = new URL(url);
+      thumbnailPage++;
+      if (next.origin !== canonical.origin || next.pathname !== canonical.pathname || next.username || next.password || next.hash
+        || next.searchParams.get('p') !== String(thumbnailPage) || [...next.searchParams.keys()].some((key) => key !== 'p')) {
+        throw new EhentaiUpstreamError('The E-Hentai thumbnail continuation does not match this gallery.', 'parse');
+      }
+      page = await fetchPage(next.toString());
+    }
+    info.pageRefs = refs;
 
     const gallery: DoujinGallery = {
       source: 'ehentai',
@@ -706,12 +803,8 @@ export const ehentaiProvider: DoujinProvider = {
           }
           throw error;
         }
-        const img = /<img[^>]*id="image"[^>]*src="([^"]+)"/.exec(viewer.body)
-          ?? /<img[^>]*src="(https:\/\/[^"]+\.(?:jpe?g|png|gif|webp))"/.exec(viewer.body);
-        if (!img) {
-          throw new EhentaiUpstreamError('The E-Hentai viewer page did not expose an image (quota or error page?).', 'unavailable', viewer.status);
-        }
-        return { url: decodeEntities(img[1]) };
+        if (viewer.status !== 200) throw new EhentaiUpstreamError('The E-Hentai image page is unavailable.', 'unavailable', viewer.status);
+        return { url: parseEhentaiViewerImage(viewer.body, ref) };
       },
     };
     return gallery;
@@ -726,7 +819,6 @@ export const ehentaiProvider: DoujinProvider = {
 // itself exposed (per-request approval + magic-byte validation, no cookies on
 // image hosts). Quota/denial HTML can therefore never be published as an image.
 
-const VIEWER_PATH_RE = /^\/s\/([0-9a-f]{12})\/(\d+)-([0-9a-f]{12})\/\d+\.jpg$/i;
 const IMAGE_CONTENT_TYPES: Record<ImageFormat, string> = {
   jpg: 'image/jpeg',
   png: 'image/png',
@@ -734,9 +826,31 @@ const IMAGE_CONTENT_TYPES: Record<ImageFormat, string> = {
   webp: 'image/webp',
 };
 
-/** True for a family-host viewer reference (`/s/<tok>/<gid>-<tok>/N.jpg`). */
+/** True for an exact family-host viewer reference (`/s/<page-token>/<gid>-N`). */
 export function isEhentaiViewerUrl(url: URL): boolean {
-  return (url.hostname === 'e-hentai.org' || url.hostname === 'exhentai.org') && VIEWER_PATH_RE.test(url.pathname);
+  return url.protocol === 'https:' && !url.port && !url.username && !url.password && !url.search && !url.hash
+    && (url.hostname === 'e-hentai.org' || url.hostname === 'exhentai.org') && VIEWER_PATH_RE.test(url.pathname);
+}
+
+/** Only the primary viewer image is downloadable; navigation icons and the
+ * original-image purchase link are deliberately excluded. */
+export function parseEhentaiViewerImage(html: string, viewerUrl: string): string {
+  if (/exceeded your image viewing limits|image limit has been reached|quota exceeded/i.test(stripTags(html))) {
+    throw new EhentaiUpstreamError('The E-Hentai image quota is exhausted for this account.', 'quota', 509);
+  }
+  for (const image of html.matchAll(/<img\b[^>]*>/gi)) {
+    if (htmlAttribute(image[0], 'id') !== 'img') continue;
+    const src = htmlAttribute(image[0], 'src');
+    if (!src) break;
+    let url: URL;
+    try { url = new URL(src, viewerUrl); } catch { break; }
+    if (url.hostname === 'ehgt.org' && url.pathname === '/g/509.gif') {
+      throw new EhentaiUpstreamError('The E-Hentai image quota is exhausted for this account.', 'quota', 509);
+    }
+    if (url.protocol !== 'https:' || url.username || url.password) break;
+    return url.toString();
+  }
+  throw new EhentaiUpstreamError('The E-Hentai viewer page did not expose its primary image (quota or error page?).', 'parse');
 }
 
 /** Resolve one viewer reference to validated image bytes (media proxy only).
@@ -747,15 +861,12 @@ export async function ehentaiPreviewBytes(viewerUrl: string): Promise<{ buf: Buf
     throw new EhentaiUpstreamError('Not a valid E-Hentai viewer reference.', 'parse');
   }
   const [, token, gid] = VIEWER_PATH_RE.exec(url.pathname)!;
-  const { site, session } = currentSession();
+  const { session } = currentSession();
+  const site: EhentaiSite = url.hostname === 'exhentai.org' ? 'exhentai' : 'e-hentai';
   const referer = `https://${ehentaiHost(site)}/`;
   const viewer = await ehentaiFetchText(viewerUrl, 'html', { site, session, headers: { Referer: referer } });
-  const img = /<img[^>]*id="image"[^>]*src="([^"]+)"/.exec(viewer.body)
-    ?? /<img[^>]*src="(https:\/\/[^"]+\.(?:jpe?g|png|gif|webp))"/.exec(viewer.body);
-  if (!img) {
-    throw new EhentaiUpstreamError('The E-Hentai viewer page did not expose an image (quota or error page?).', 'unavailable', viewer.status);
-  }
-  const imageUrl = decodeEntities(img[1]);
+  if (viewer.status !== 200) throw new EhentaiUpstreamError('The E-Hentai image page is unavailable.', 'unavailable', viewer.status);
+  const imageUrl = parseEhentaiViewerImage(viewer.body, viewerUrl);
   const galleryKey = `${site}/${gid}-${token}`;
   approveGalleryImageRefs(galleryKey, [imageUrl]);
   const destPath = path.join(os.tmpdir(), `htosho-ehentai-preview-${randomUUID()}`);

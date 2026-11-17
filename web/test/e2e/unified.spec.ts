@@ -36,6 +36,35 @@ async function runUnifiedQuery(page: Page, query: string) {
   await expect(page.locator('p[role="status"]')).toContainText('unique');
 }
 
+test('unified and E-Hentai autocomplete replace the active term without submitting', async ({ page }, testInfo) => {
+  const requests: { source: string; query: string }[] = [];
+  await page.route('**/api/doujin/suggestions', route => {
+    const body = route.request().postDataJSON();
+    requests.push(body);
+    return route.fulfill({ json: [{ source: 'ehentai', type: 'artist', name: 'Sample Artist', filter: body.source === 'unified' ? 'artist:"Sample Artist"' : 'artist:"Sample Artist$"' }] });
+  });
+  await openUnifiedTab(page);
+  const input = page.getByRole('combobox', { name: 'Unified search query', exact: true });
+  await input.fill('-artist:sam');
+  await expect(page.getByRole('option', { name: /Sample Artist/ })).toBeVisible();
+  await page.screenshot({ path: `.impeccable/review/unified-autocomplete-${testInfo.project.name}.png` });
+  await input.press('ArrowDown');
+  await input.press('Enter');
+  await expect(input).toHaveValue('-artist:"Sample Artist" ');
+  await expect(page.getByText('One query, three sources', { exact: true })).toBeVisible();
+  expect(requests.at(-1)).toMatchObject({ source: 'unified', query: 'artist:sam' });
+
+  await page.getByRole('tab', { name: 'Search', exact: true }).click();
+  await page.getByRole('radio', { name: 'E-Hentai', exact: true }).click();
+  const native = page.getByRole('combobox', { name: 'Search galleries', exact: true });
+  await native.fill('artist:sam');
+  await expect(page.getByRole('option', { name: /Sample Artist/ })).toBeVisible();
+  await page.screenshot({ path: `.impeccable/review/ehentai-autocomplete-${testInfo.project.name}.png` });
+  await page.getByRole('option', { name: /Sample Artist/ }).click();
+  await expect(native).toHaveValue('artist:"Sample Artist$" ');
+  expect(requests.at(-1)).toMatchObject({ source: 'ehentai', query: 'artist:sam' });
+});
+
 test('unified search groups the same work across providers with variant provenance', async ({ page }, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -66,6 +95,11 @@ test('unified search groups the same work across providers with variant provenan
   await expect(group.getByRole('radio')).toHaveCount(2);
   await expect(group).toContainText('nHentai');
   await expect(group).toContainText('Hitomi.la');
+  await expect(group.getByRole('radio').filter({ hasText: 'nHentai' })).toContainText('[Digital]');
+  await page.getByRole('dialog').evaluate(async element => {
+    await Promise.allSettled(element.getAnimations({ subtree: true })
+      .filter(animation => animation.effect?.getTiming().iterations !== Infinity).map(animation => animation.finished));
+  });
   await page.screenshot({ path: `.impeccable/review/unified-grouped-${testInfo.project.name}.png` });
 
   expect(errors).toEqual([]);

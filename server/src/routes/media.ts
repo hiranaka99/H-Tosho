@@ -56,7 +56,7 @@ const DISK_MAX_FILES = 400;
 const ALLOWED_HOSTS = ['uploads.mangadex.org', 'gold-usergeneratedcontent.net'];
 const NHENTAI_CDN_HOST = /^[it]\d+\.nhentai\.net$/i;
 /** E-Hentai cover CDN hosts (hotlink-protected: they need a family Referer). */
-const EH_COVER_HOSTS = new Set(['t1.e-hentai.org', 't2.e-hentai.org', 't3.e-hentai.org', 'ehgt.e-hentai.org']);
+const EH_COVER_HOSTS = new Set(['ehgt.org', 't1.e-hentai.org', 't2.e-hentai.org', 't3.e-hentai.org', 'ehgt.e-hentai.org']);
 
 function isEhentaiCoverHost(hostname: string): boolean {
   return EH_COVER_HOSTS.has(hostname.toLowerCase());

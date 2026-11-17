@@ -92,7 +92,7 @@ doujinProviders.nhentai = {
     if (query === `artist:"e2e-unified"`) {
       // Same fingerprint as hitomi's e2e-unified-1: groups into one entry.
       return unifiedChunk([
-        { source: 'nhentai' as const, galleryId: 'e2e-unified-nh-1', title: 'Unified Fixture Work', language: 'english', tags: [], artists: ['Unified Fixture Artist'], pageCount: 42, url: 'https://nhentai.net/g/100001/' },
+        { source: 'nhentai' as const, galleryId: 'e2e-unified-nh-1', title: 'Unified Fixture Work [Digital]', language: 'english', tags: [], artists: ['Unified Fixture Artist'], pageCount: 42, url: 'https://nhentai.net/g/100001/' },
       ]);
     }
     if (query === UNIFIED_PARTIAL) throw new Error('Fixture provider unavailable');
@@ -101,7 +101,7 @@ doujinProviders.nhentai = {
   async getGallery(idOrUrl) {
     if (idOrUrl.includes('e2e-unified-nh-1')) {
       return {
-        source: 'nhentai' as const, galleryId: 'e2e-unified-nh-1', title: 'Unified Fixture Work',
+        source: 'nhentai' as const, galleryId: 'e2e-unified-nh-1', title: 'Unified Fixture Work [Digital]',
         language: 'english', tags: [], artists: ['Unified Fixture Artist'], pageCount: 42,
         url: 'https://nhentai.net/g/100001/', pages: [],
       };

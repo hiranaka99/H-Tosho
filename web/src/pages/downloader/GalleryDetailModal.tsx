@@ -198,9 +198,12 @@ export function GalleryDetailModal({ item, onClose, onDownload, checking, downlo
                               )}
                             >
                               <SourceBadge source={v.source} />
-                              <span className="min-w-0 flex-1 truncate text-xs text-muted">
-                                {position ? `Position #${position} on ${SOURCE_LABELS[v.source]}` : `Found on ${SOURCE_LABELS[v.source]}`}
-                                {v.language ? ` · ${v.language}` : ''}{typeof v.pageCount === 'number' ? ` · ${v.pageCount} pages` : ''}
+                              <span className="min-w-0 flex-1 text-xs">
+                                <span className="block truncate text-foreground" title={v.title}>{v.title}</span>
+                                <span className="block truncate text-muted">
+                                  {position ? `Position #${position} on ${SOURCE_LABELS[v.source]}` : `Found on ${SOURCE_LABELS[v.source]}`}
+                                  {v.language ? ` · ${v.language}` : ''}{typeof v.pageCount === 'number' ? ` · ${v.pageCount} pages` : ''}
+                                </span>
                               </span>
                               {active && <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />}
                             </button>

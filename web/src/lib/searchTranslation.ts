@@ -129,7 +129,7 @@ export function translateSearch(query: string, from: DoujinSource, to: DoujinSou
         addIssue(`The all-languages filter cannot be represented in ${sourceName} and was left out.`);
       } else if (to === 'hitomi' && /["\\]/.test(value)) {
         addIssue(`${raw} contains characters Hitomi.la cannot represent and was left out.`);
-      } else out.push(`${prefix}${namespace}:${to === 'hitomi' ? value.toLowerCase().replace(/\s+/g, '_') : to === 'ehentai' ? value : quote(value)}`);
+      } else out.push(`${prefix}${namespace}:${to === 'hitomi' ? value.toLowerCase().replace(/\s+/g, '_') : quote(value)}`);
     } else if ((from === 'hitomi' && namespace === 'type') || (from === 'nhentai' && namespace === 'category')) {
       if (to === 'ehentai') {
         addIssue(`${raw} has no matching category in ${sourceName} and was left out.`);

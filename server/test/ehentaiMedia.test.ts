@@ -28,24 +28,24 @@ initDb();
 // https.request. Cover traffic uses the generic lane (global fetch), stubbed
 // separately.
 
-type FakeResponse = { status: number; body: Buffer | string; contentType?: string };
+type FakeResponse = { status: number; body: Buffer | string; contentType?: string; location?: string };
 type Router = (hostname: string, pathAndQuery: string, method: string, headers: Record<string, unknown>) => FakeResponse;
 
 let route: Router = () => ({ status: 404, body: 'no route' });
-const requests: Array<{ hostname: string; path: string; headers: Record<string, unknown> }> = [];
+const requests: Array<{ hostname: string; path: string; port: number; headers: Record<string, unknown> }> = [];
 
 const realRequest = https.request;
 const realLookup = dns.lookup;
 const realFetch = globalThis.fetch;
 
-function fakeRequest(options: { servername?: string; path?: string; method?: string; headers?: Record<string, unknown> }, onResponse: (res: { statusCode: number; headers: Record<string, string>; resume(): void; on(event: 'data' | 'end' | 'error', cb: (chunk?: Buffer, error?: Error) => void): unknown; [Symbol.asyncIterator](): AsyncIterator<Buffer> }) => void): unknown {
+function fakeRequest(options: { servername?: string; path?: string; method?: string; port?: number; headers?: Record<string, unknown> }, onResponse: (res: { statusCode: number; headers: Record<string, string>; resume(): void; on(event: 'data' | 'end' | 'error', cb: (chunk?: Buffer, error?: Error) => void): unknown; [Symbol.asyncIterator](): AsyncIterator<Buffer> }) => void): unknown {
   const reqEvents = new EventEmitter();
   const req = {
     end(_body?: string): unknown {
       const hostname = options.servername ?? '';
       const requestPath = options.path ?? '/';
       const headers = options.headers ?? {};
-      requests.push({ hostname, path: requestPath, headers });
+      requests.push({ hostname, path: requestPath, port: options.port ?? 443, headers });
       let response: FakeResponse;
       try {
         response = route(hostname, requestPath, options.method ?? 'GET', headers as Record<string, unknown>);
@@ -58,7 +58,7 @@ function fakeRequest(options: { servername?: string; path?: string; method?: str
         const buf = Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body, 'utf8');
         onResponse({
           statusCode: response.status,
-          headers: { 'content-type': response.contentType ?? 'text/html; charset=utf-8', 'content-length': String(buf.length) },
+          headers: { 'content-type': response.contentType ?? 'text/html; charset=utf-8', 'content-length': String(buf.length), ...(response.location ? { location: response.location } : {}) },
           on: (event, cb) => resEvents.on(event, cb),
           resume: () => { /* fixture: body delivered in one chunk */ },
           [Symbol.asyncIterator]: async function* () {
@@ -101,9 +101,9 @@ const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a
 const HTML_PAGE = Buffer.from('<html><body>quota</body></html>');
 
 const viewerHtml = (imageUrl: string | null): string =>
-  `<html><body><div id="img_holder">${imageUrl ? `<img id="image" src="${imageUrl}">` : '<span>quota exceeded</span>'}</div></body></html>`;
+  `<html><body><div id="i2"><img src="https://ehgt.org/g/p.jpg"></div><div id="i3">${imageUrl ? `<img id="img" src="${imageUrl}">` : '<span>quota exceeded</span>'}</div></body></html>`;
 
-const viewerPath = (gid: string, token: string, n: number): string => `/s/${token}/${gid}-${token}/${n}.jpg`;
+const viewerPath = (gid: string, token: string, n: number): string => `/s/${token}/${gid}-${n}`;
 
 resetEhentaiGate({ html: { minGapMs: 1, maxConcurrent: 4 }, api: { minGapMs: 1, maxConcurrent: 4 }, image: { minGapMs: 1, maxConcurrent: 4 } });
 const router = mediaRouter();
@@ -116,7 +116,7 @@ test('viewer ref resolves lazily to the H@H image with session cookie only on th
   assert.ok(account.revision >= 1);
   requests.length = 0;
   const gid = '3300001';
-  const token = '0a0b0c0d0e0f';
+  const token = '0a0b0c0d0e';
   const viewerUrl = `https://exhentai.org${viewerPath(gid, token, 1)}`;
   route = (hostname, reqPath) => {
     if (hostname === 'exhentai.org' && reqPath.startsWith('/s/')) return { status: 200, body: viewerHtml(`https://i1.hathost.com/file/${token}.jpg`) };
@@ -142,7 +142,7 @@ test('viewer ref resolves lazily to the H@H image with session cookie only on th
 
 test('a viewer page without an image (quota/error) is not published as an image', async () => {
   requests.length = 0;
-  const viewerUrl = `https://e-hentai.org${viewerPath('3300002', '1a1b1c1d1e1f', 3)}`;
+  const viewerUrl = `https://e-hentai.org${viewerPath('3300002', '1a1b1c1d1e', 3)}`;
   route = (hostname) => {
     if (hostname === 'e-hentai.org') return { status: 200, body: viewerHtml(null) };
     return { status: 404, body: 'no route' };
@@ -152,10 +152,38 @@ test('a viewer page without an image (quota/error) is not published as an image'
   assert.equal(requests.filter((r) => r.hostname !== 'e-hentai.org').length, 0, 'no image fetch may follow a quota page');
 });
 
+test('public-site previews use the viewer origin and only its approved H@H port', async () => {
+  requests.length = 0;
+  const viewerUrl = 'https://e-hentai.org/s/390551b182/4334310-1';
+  route = (hostname) => hostname === 'e-hentai.org'
+    ? { status: 200, body: viewerHtml('https://images.hath.network:10692/h/preview.webp') }
+    : { status: 200, body: PNG, contentType: 'image/png' };
+  const res = await mediaGet(viewerUrl);
+  assert.equal(res.status, 200);
+  assert.deepEqual(Buffer.from(await res.arrayBuffer()), PNG);
+  assert.equal(requests[0].hostname, 'e-hentai.org', 'the saved ExHentai setting does not replace the viewer origin');
+  assert.ok(String(requests[0].headers.Cookie).includes('ipb_member_id=77'));
+  assert.ok(!String(requests[0].headers.Cookie).includes('igneous'));
+  const image = requests.find((r) => r.hostname === 'images.hath.network')!;
+  assert.equal(image.port, 10692);
+  assert.equal(image.headers.Host, 'images.hath.network:10692');
+  assert.equal(image.headers.Cookie, undefined);
+});
+
+test('image redirects cannot change the approved H@H port', async () => {
+  requests.length = 0;
+  route = (hostname) => hostname === 'exhentai.org'
+    ? { status: 200, body: viewerHtml('https://images.hath.network:10692/h/redirect.webp') }
+    : { status: 302, body: '', location: 'https://images.hath.network:444/h/redirect.webp' };
+  const res = await mediaGet('https://exhentai.org/s/390551b183/4334310-2');
+  assert.equal(res.status, 502);
+  assert.equal(requests.filter((r) => r.hostname === 'images.hath.network').length, 1);
+});
+
 // ---------------- cover lane ----------------
 
 test('E-Hentai covers are fetched with the family Referer and validated by bytes', async () => {
-  const coverUrl = 'https://t2.e-hentai.org/g/3300003/2a2b2c2d2e2f-1.jpg';
+  const coverUrl = 'https://ehgt.org/w/02/805/22654-rf0vixom.webp';
   const seen: { headers: Record<string, string> | null } = { headers: null };
   globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
     seen.headers = { ...(init?.headers as Record<string, string>) };
@@ -177,6 +205,10 @@ test('E-Hentai covers are fetched with the family Referer and validated by bytes
 // ---------------- SSRF surface ----------------
 
 test('non-allowlisted and non-viewer family targets are rejected', async () => {
+  for (const url of ['http://e-hentai.org/s/390551b182/4334310-1', 'https://user:pass@e-hentai.org/s/390551b182/4334310-1', 'https://e-hentai.org:444/s/390551b182/4334310-1', 'https://e-hentai.org/s/390551b182/4334310-1?x=1', 'https://e-hentai.org/s/390551b182/4334310-0']) {
+    assert.equal((await mediaGet(url)).status, 400, url);
+  }
+  assert.equal((await mediaGet('https://ehgt.org.attacker.example/x.jpg')).status, 400);
   assert.equal((await mediaGet('http://127.0.0.1:3000/x.jpg')).status, 400);
   assert.equal((await mediaGet('https://e-hentai.org/account.php')).status, 400);
   assert.equal((await mediaGet('https://exhentai.org/g/3300004/3a3b3c3d3e3f/')).status, 400);

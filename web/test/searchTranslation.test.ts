@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { switchProviderSearch, translateSearch } from '../src/lib/searchTranslation.js';
+import { buildTagSearchFragment } from '../src/lib/utils.js';
+
+test('E-Hentai artist and tag links preserve quoted values', () => {
+  assert.equal(buildTagSearchFragment('mana', 'artist', 'ehentai'), 'artist:"mana"');
+  assert.equal(buildTagSearchFragment('two words', 'artist', 'ehentai'), 'artist:"two words"');
+  assert.equal(buildTagSearchFragment('big breasts', 'female', 'ehentai'), 'female:"big breasts"');
+  assert.equal(buildTagSearchFragment('keyword', null, 'ehentai'), 'keyword');
+  assert.equal(buildTagSearchFragment('  ', 'artist', 'ehentai'), '');
+});
+
+test('switching to E-Hentai quotes artist names and multi-word shared filters', () => {
+  assert.deepEqual(translateSearch('artist:mana -group:other_circle', 'hitomi', 'ehentai'), {
+    query: 'artist:"mana" -group:"other circle"', sort: 'default', issues: [],
+  });
+});
 
 test('Hitomi shared fields translate to quoted nHentai fields without quoting ordinary keywords', () => {
   assert.deepEqual(translateSearch('portrait artist:sample_name -group:other_group language:japanese', 'hitomi', 'nhentai', 'popular-week'), {
