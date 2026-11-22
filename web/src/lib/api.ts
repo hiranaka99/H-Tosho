@@ -404,6 +404,7 @@ export const api = {
   homeMatches: () => request<HomeMatches>('/home/matches'),
   scanMatchable: () => request<{ id: number; alreadyRunning: boolean }>('/home/matches/scan', { method: 'POST' }),
   rejectMatchCandidate: (item: MatchSuggestion) => request<{ ok: boolean }>(`/home/matches/${item.seriesId}/reject`, { method: 'POST', body: JSON.stringify({ providerId: item.candidate.providerId, providerSeriesId: item.candidate.providerSeriesId }) }),
+  restoreMatchCandidate: (item: MatchSuggestion) => request<{ ok: boolean }>(`/home/matches/${item.seriesId}/reject`, { method: 'DELETE', body: JSON.stringify({ providerId: item.candidate.providerId, providerSeriesId: item.candidate.providerSeriesId }) }),
   homeActivity: () => request<HomeActivity[]>('/home/activity'),
   authStatus: () => request<AuthStatus>('/auth/status'),
   version: () => request<{ version: string | null }>('/version'),

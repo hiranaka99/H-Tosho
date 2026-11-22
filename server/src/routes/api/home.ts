@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { desc, eq } from 'drizzle-orm';
 import { getDb, schema } from '../../db/index.js';
 import { jobQueue } from '../../jobs/queue.js';
-import { listMatchSuggestions, rejectMatchCandidate } from '../../services/matchSuggestions.js';
+import { listMatchSuggestions, rejectMatchCandidate, restoreMatchCandidate } from '../../services/matchSuggestions.js';
 import { connectedClient, intParam, kavitaCoverUrl } from './helpers.js';
 import { rewriteMangaDexCoverUrl } from '../media.js';
 
@@ -28,6 +28,14 @@ api.post('/home/matches/:id/reject', async c => {
   const body = await c.req.json().catch(() => null);
   if (id === null || !body || typeof body.providerId !== 'string' || typeof body.providerSeriesId !== 'string' || !body.providerId.trim() || !body.providerSeriesId.trim()) return c.json({ error: 'Provide a series and provider candidate.' }, 400);
   if (!rejectMatchCandidate(id, body.providerId, body.providerSeriesId)) return c.json({ error: 'This candidate changed. Refresh and try again.' }, 409);
+  return c.json({ ok: true });
+});
+
+api.delete('/home/matches/:id/reject', async c => {
+  const id = intParam(c.req.param('id'));
+  const body = await c.req.json().catch(() => null);
+  if (id === null || !body || typeof body.providerId !== 'string' || typeof body.providerSeriesId !== 'string' || !body.providerId.trim() || !body.providerSeriesId.trim()) return c.json({ error: 'Provide a series and provider candidate.' }, 400);
+  restoreMatchCandidate(id, body.providerId, body.providerSeriesId);
   return c.json({ ok: true });
 });
 

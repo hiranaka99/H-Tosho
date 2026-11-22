@@ -10,11 +10,14 @@ export interface ToastInput {
   title: string;
   description?: string;
   tone?: ToastTone;
+  /** Optional single recovery action such as Undo. Dismisses the toast when used. */
+  action?: { label: string; onClick: () => void };
 }
 
 interface ToastItem extends Required<Pick<ToastInput, 'title' | 'tone'>> {
   id: number;
   description?: string;
+  action?: ToastInput['action'];
 }
 
 /**
@@ -26,7 +29,7 @@ let listeners: ((t: ToastItem) => void)[] = [];
 let seq = 0;
 
 export function toast(input: ToastInput): void {
-  const item: ToastItem = { id: ++seq, title: input.title, tone: input.tone ?? 'info', description: input.description };
+  const item: ToastItem = { id: ++seq, title: input.title, tone: input.tone ?? 'info', description: input.description, action: input.action };
   for (const l of listeners) l(item);
 }
 
@@ -89,7 +92,8 @@ function ToastCard({ item: t, hidden, dismiss }: { item: ToastItem; hidden: bool
       {TONE_STYLE[t.tone].icon}
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium">{t.title}</p>
-        {t.description && <p className={cn('mt-0.5 text-xs text-muted', t.tone === 'danger' ? 'line-clamp-4' : 'truncate')} title={t.description}>{t.description}</p>}
+        {t.description && <p className={cn('mt-0.5 text-xs text-muted', t.tone === 'danger' ? 'line-clamp-4' : 'line-clamp-2')} title={t.description}>{t.description}</p>}
+        {t.action && <Button size="sm" variant="outline" className="mt-2 max-lg:min-h-11 pointer-coarse:min-h-11" onClick={() => { t.action?.onClick(); setClosing(true); }}>{t.action.label}</Button>}
       </div>
       <Button size="icon" variant="ghost" onClick={() => setClosing(true)} className="shrink-0" aria-label={`Dismiss ${t.title}`}>
         <X className="h-3.5 w-3.5" />

@@ -50,8 +50,13 @@ test('Home is first in navigation, shows four live sections, and shares recommen
   if (await page.getByRole('button', { name: 'Open navigation', exact: true }).isVisible()) await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('link').first()).toHaveText('Home');
   if (await page.getByRole('button', { name: 'Close navigation', exact: true }).isVisible()) await page.getByRole('button', { name: 'Close navigation', exact: true }).click();
-  for (const name of ['Recommended galleries', 'Galleries that can be matched', 'Unreviewed saved search results', 'Recent activity']) await expect(page.getByRole('heading', { name, exact: false })).toBeVisible();
+  for (const name of ['Recommended galleries', 'Matches to review', 'New in Following', 'Recent activity']) await expect(page.getByRole('heading', { name, exact: false })).toBeVisible();
   await expect(page.getByText('After the rain', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Matches to review 2 candidates', exact: true })).toBeVisible();
+  const waiting = page.getByRole('navigation', { name: 'Waiting for you' });
+  await expect(waiting.getByRole('link', { name: '2 matches to review', exact: true })).toBeVisible();
+  await expect(waiting.getByRole('link', { name: '8 new in Following', exact: true })).toBeVisible();
+  await expect(page.getByText('Showing 4 of 8. The rest are waiting in Following.', { exact: true })).toBeVisible();
   await page.getByRole('link', { name: 'View all picks' }).click();
   await expect(page.getByRole('tab', { name: 'For you', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByText('After the rain', { exact: true })).toBeVisible();
@@ -61,28 +66,37 @@ test('Home is first in navigation, shows four live sections, and shares recommen
   expect(errors).toEqual([]);
 });
 
-test('No match found persists the displayed candidate identity; reviewed finds leave the inbox', async ({ page }) => {
+test('Not a match persists the displayed candidate identity and can be undone; reviewed finds leave the inbox and can be restored', async ({ page }) => {
   let rejected = false, reviewed = false;
   await page.route('**/api/home/matches', route => route.fulfill({ json: { items: rejected ? [] : [match], configured: true, scan: null } }));
   await page.route('**/api/home/matches/11/reject', async route => {
     expect(route.request().postDataJSON()).toEqual({ providerId: 'anilist', providerSeriesId: 'new-candidate' });
-    rejected = true;
+    rejected = route.request().method() === 'POST';
     await route.fulfill({ json: { ok: true } });
   });
   await page.route('**/api/watched-searches/feed?*', route => route.fulfill({ json: { items: reviewed ? [] : [discoveries[0]], total: reviewed ? 0 : 1, inboxCount: reviewed ? 0 : 1, historyCount: 1, watches: [] } }));
   await page.route('**/api/watched-searches/review', async route => {
-    expect(route.request().postDataJSON()).toEqual({ items: [{ source: 'hitomi', galleryId: '200' }], reviewed: true });
-    reviewed = true;
+    const body = route.request().postDataJSON();
+    expect(body.items).toEqual([{ source: 'hitomi', galleryId: '200' }]);
+    reviewed = body.reviewed;
     await route.fulfill({ json: { ok: true } });
   });
   await page.reload();
-  await page.getByRole('button', { name: 'No match found', exact: true }).click();
+  await page.getByRole('button', { name: 'Not a match', exact: true }).click();
+  await expect(page.getByText('No matching candidates yet', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Undo', exact: true }).last().click();
+  await expect(page.getByRole('button', { name: 'Not a match', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Not a match', exact: true }).click();
   await expect(page.getByText('No matching candidates yet', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click();
-  await expect(page.getByText('Your inbox is clear', { exact: true })).toBeVisible();
+  await expect(page.getByText('Nothing new to review', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Undo', exact: true }).last().click();
+  await expect(page.getByRole('button', { name: 'Mark reviewed', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click();
+  await expect(page.getByText('Nothing new to review', { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByText('No matching candidates yet', { exact: true })).toBeVisible();
-  await expect(page.getByText('Your inbox is clear', { exact: true })).toBeVisible();
+  await expect(page.getByText('Nothing new to review', { exact: true })).toBeVisible();
 });
 
 test('review opens the discovered candidate directly, returns to provider matches, and previews galleries on Home', async ({ page }, testInfo) => {
