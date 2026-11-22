@@ -1,0 +1,903 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-10T08:47:51.432Z",
+  "title": "Design System: H-Tosho",
+  "extensions": {
+    "colorMeta": {
+      "background": {
+        "role": "neutral",
+        "displayName": "Blush Paper",
+        "tonalRamp": [
+          "oklch(15.000% 0.00940 352.357)",
+          "oklch(26.429% 0.00940 352.357)",
+          "oklch(37.857% 0.00940 352.357)",
+          "oklch(49.286% 0.00940 352.357)",
+          "oklch(60.714% 0.00940 352.357)",
+          "oklch(72.143% 0.00940 352.357)",
+          "oklch(83.571% 0.00940 352.357)",
+          "oklch(95.000% 0.00940 352.357)"
+        ]
+      },
+      "sidebar": {
+        "role": "neutral",
+        "displayName": "Sidebar Paper",
+        "tonalRamp": [
+          "oklch(15.000% 0.00841 349.237)",
+          "oklch(26.429% 0.00841 349.237)",
+          "oklch(37.857% 0.00841 349.237)",
+          "oklch(49.286% 0.00841 349.237)",
+          "oklch(60.714% 0.00841 349.237)",
+          "oklch(72.143% 0.00841 349.237)",
+          "oklch(83.571% 0.00841 349.237)",
+          "oklch(95.000% 0.00841 349.237)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Card Paper",
+        "tonalRamp": [
+          "oklch(15.000% 0.00000 0.000)",
+          "oklch(26.429% 0.00000 0.000)",
+          "oklch(37.857% 0.00000 0.000)",
+          "oklch(49.286% 0.00000 0.000)",
+          "oklch(60.714% 0.00000 0.000)",
+          "oklch(72.143% 0.00000 0.000)",
+          "oklch(83.571% 0.00000 0.000)",
+          "oklch(95.000% 0.00000 0.000)"
+        ]
+      },
+      "surface-2": {
+        "role": "neutral",
+        "displayName": "Inset Blush",
+        "tonalRamp": [
+          "oklch(15.000% 0.01864 347.433)",
+          "oklch(26.429% 0.01864 347.433)",
+          "oklch(37.857% 0.01864 347.433)",
+          "oklch(49.286% 0.01864 347.433)",
+          "oklch(60.714% 0.01864 347.433)",
+          "oklch(72.143% 0.01864 347.433)",
+          "oklch(83.571% 0.01864 347.433)",
+          "oklch(95.000% 0.01864 347.433)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Fine Blush Line",
+        "tonalRamp": [
+          "oklch(15.000% 0.02658 347.166)",
+          "oklch(26.429% 0.02658 347.166)",
+          "oklch(37.857% 0.02658 347.166)",
+          "oklch(49.286% 0.02658 347.166)",
+          "oklch(60.714% 0.02658 347.166)",
+          "oklch(72.143% 0.02658 347.166)",
+          "oklch(83.571% 0.02658 347.166)",
+          "oklch(95.000% 0.02658 347.166)"
+        ]
+      },
+      "border-2": {
+        "role": "neutral",
+        "displayName": "Strong Blush Line",
+        "tonalRamp": [
+          "oklch(15.000% 0.04327 347.292)",
+          "oklch(26.429% 0.04327 347.292)",
+          "oklch(37.857% 0.04327 347.292)",
+          "oklch(49.286% 0.04327 347.292)",
+          "oklch(60.714% 0.04327 347.292)",
+          "oklch(72.143% 0.04327 347.292)",
+          "oklch(83.571% 0.04327 347.292)",
+          "oklch(95.000% 0.04327 347.292)"
+        ]
+      },
+      "foreground": {
+        "role": "neutral",
+        "displayName": "Plum Ink",
+        "tonalRamp": [
+          "oklch(15.000% 0.04246 337.186)",
+          "oklch(26.429% 0.04246 337.186)",
+          "oklch(37.857% 0.04246 337.186)",
+          "oklch(49.286% 0.04246 337.186)",
+          "oklch(60.714% 0.04246 337.186)",
+          "oklch(72.143% 0.04246 337.186)",
+          "oklch(83.571% 0.04246 337.186)",
+          "oklch(95.000% 0.04246 337.186)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted Plum",
+        "tonalRamp": [
+          "oklch(15.000% 0.04584 338.429)",
+          "oklch(26.429% 0.04584 338.429)",
+          "oklch(37.857% 0.04584 338.429)",
+          "oklch(49.286% 0.04584 338.429)",
+          "oklch(60.714% 0.04584 338.429)",
+          "oklch(72.143% 0.04584 338.429)",
+          "oklch(83.571% 0.04584 338.429)",
+          "oklch(95.000% 0.04584 338.429)"
+        ]
+      },
+      "primary": {
+        "role": "primary",
+        "displayName": "Sakura Rose",
+        "tonalRamp": [
+          "oklch(15.000% 0.15586 356.962)",
+          "oklch(26.429% 0.15586 356.962)",
+          "oklch(37.857% 0.15586 356.962)",
+          "oklch(49.286% 0.15586 356.962)",
+          "oklch(60.714% 0.15586 356.962)",
+          "oklch(72.143% 0.15586 356.962)",
+          "oklch(83.571% 0.15586 356.962)",
+          "oklch(95.000% 0.15586 356.962)"
+        ]
+      },
+      "primary-hover": {
+        "role": "primary",
+        "displayName": "Sakura Rose Hover",
+        "tonalRamp": [
+          "oklch(15.000% 0.14261 357.390)",
+          "oklch(26.429% 0.14261 357.390)",
+          "oklch(37.857% 0.14261 357.390)",
+          "oklch(49.286% 0.14261 357.390)",
+          "oklch(60.714% 0.14261 357.390)",
+          "oklch(72.143% 0.14261 357.390)",
+          "oklch(83.571% 0.14261 357.390)",
+          "oklch(95.000% 0.14261 357.390)"
+        ]
+      },
+      "primary-button": {
+        "role": "primary",
+        "displayName": "Filled Sakura Rose",
+        "tonalRamp": [
+          "oklch(15.000% 0.15586 356.962)",
+          "oklch(26.429% 0.15586 356.962)",
+          "oklch(37.857% 0.15586 356.962)",
+          "oklch(49.286% 0.15586 356.962)",
+          "oklch(60.714% 0.15586 356.962)",
+          "oklch(72.143% 0.15586 356.962)",
+          "oklch(83.571% 0.15586 356.962)",
+          "oklch(95.000% 0.15586 356.962)"
+        ]
+      },
+      "primary-button-hover": {
+        "role": "primary",
+        "displayName": "Filled Sakura Rose Hover",
+        "tonalRamp": [
+          "oklch(15.000% 0.14261 357.390)",
+          "oklch(26.429% 0.14261 357.390)",
+          "oklch(37.857% 0.14261 357.390)",
+          "oklch(49.286% 0.14261 357.390)",
+          "oklch(60.714% 0.14261 357.390)",
+          "oklch(72.143% 0.14261 357.390)",
+          "oklch(83.571% 0.14261 357.390)",
+          "oklch(95.000% 0.14261 357.390)"
+        ]
+      },
+      "success": {
+        "role": "semantic",
+        "displayName": "Jade Success",
+        "tonalRamp": [
+          "oklch(15.000% 0.09831 173.494)",
+          "oklch(26.429% 0.09831 173.494)",
+          "oklch(37.857% 0.09831 173.494)",
+          "oklch(49.286% 0.09831 173.494)",
+          "oklch(60.714% 0.09831 173.494)",
+          "oklch(72.143% 0.09831 173.494)",
+          "oklch(83.571% 0.09831 173.494)",
+          "oklch(95.000% 0.09831 173.494)"
+        ]
+      },
+      "warning": {
+        "role": "semantic",
+        "displayName": "Amber Warning",
+        "tonalRamp": [
+          "oklch(15.000% 0.12156 67.457)",
+          "oklch(26.429% 0.12156 67.457)",
+          "oklch(37.857% 0.12156 67.457)",
+          "oklch(49.286% 0.12156 67.457)",
+          "oklch(60.714% 0.12156 67.457)",
+          "oklch(72.143% 0.12156 67.457)",
+          "oklch(83.571% 0.12156 67.457)",
+          "oklch(95.000% 0.12156 67.457)"
+        ]
+      },
+      "danger": {
+        "role": "semantic",
+        "displayName": "Rose Danger",
+        "tonalRamp": [
+          "oklch(15.000% 0.16565 15.231)",
+          "oklch(26.429% 0.16565 15.231)",
+          "oklch(37.857% 0.16565 15.231)",
+          "oklch(49.286% 0.16565 15.231)",
+          "oklch(60.714% 0.16565 15.231)",
+          "oklch(72.143% 0.16565 15.231)",
+          "oklch(83.571% 0.16565 15.231)",
+          "oklch(95.000% 0.16565 15.231)"
+        ]
+      },
+      "info": {
+        "role": "semantic",
+        "displayName": "Orchid Information",
+        "tonalRamp": [
+          "oklch(15.000% 0.10518 312.765)",
+          "oklch(26.429% 0.10518 312.765)",
+          "oklch(37.857% 0.10518 312.765)",
+          "oklch(49.286% 0.10518 312.765)",
+          "oklch(60.714% 0.10518 312.765)",
+          "oklch(72.143% 0.10518 312.765)",
+          "oklch(83.571% 0.10518 312.765)",
+          "oklch(95.000% 0.10518 312.765)"
+        ]
+      },
+      "skeleton-base": {
+        "role": "neutral",
+        "displayName": "Skeleton Blush",
+        "tonalRamp": [
+          "oklch(15.000% 0.01864 347.433)",
+          "oklch(26.429% 0.01864 347.433)",
+          "oklch(37.857% 0.01864 347.433)",
+          "oklch(49.286% 0.01864 347.433)",
+          "oklch(60.714% 0.01864 347.433)",
+          "oklch(72.143% 0.01864 347.433)",
+          "oklch(83.571% 0.01864 347.433)",
+          "oklch(95.000% 0.01864 347.433)"
+        ]
+      },
+      "skeleton-hi": {
+        "role": "neutral",
+        "displayName": "Skeleton Highlight",
+        "tonalRamp": [
+          "oklch(15.000% 0.02658 347.166)",
+          "oklch(26.429% 0.02658 347.166)",
+          "oklch(37.857% 0.02658 347.166)",
+          "oklch(49.286% 0.02658 347.166)",
+          "oklch(60.714% 0.02658 347.166)",
+          "oklch(72.143% 0.02658 347.166)",
+          "oklch(83.571% 0.02658 347.166)",
+          "oklch(95.000% 0.02658 347.166)"
+        ]
+      },
+      "dark-background": {
+        "role": "neutral",
+        "displayName": "Dark Blush Paper",
+        "tonalRamp": [
+          "oklch(15.000% 0.02108 318.628)",
+          "oklch(26.429% 0.02108 318.628)",
+          "oklch(37.857% 0.02108 318.628)",
+          "oklch(49.286% 0.02108 318.628)",
+          "oklch(60.714% 0.02108 318.628)",
+          "oklch(72.143% 0.02108 318.628)",
+          "oklch(83.571% 0.02108 318.628)",
+          "oklch(95.000% 0.02108 318.628)"
+        ]
+      },
+      "dark-sidebar": {
+        "role": "neutral",
+        "displayName": "Dark Sidebar Paper",
+        "tonalRamp": [
+          "oklch(15.000% 0.02684 317.539)",
+          "oklch(26.429% 0.02684 317.539)",
+          "oklch(37.857% 0.02684 317.539)",
+          "oklch(49.286% 0.02684 317.539)",
+          "oklch(60.714% 0.02684 317.539)",
+          "oklch(72.143% 0.02684 317.539)",
+          "oklch(83.571% 0.02684 317.539)",
+          "oklch(95.000% 0.02684 317.539)"
+        ]
+      },
+      "dark-surface": {
+        "role": "neutral",
+        "displayName": "Dark Card Paper",
+        "tonalRamp": [
+          "oklch(15.000% 0.03221 316.866)",
+          "oklch(26.429% 0.03221 316.866)",
+          "oklch(37.857% 0.03221 316.866)",
+          "oklch(49.286% 0.03221 316.866)",
+          "oklch(60.714% 0.03221 316.866)",
+          "oklch(72.143% 0.03221 316.866)",
+          "oklch(83.571% 0.03221 316.866)",
+          "oklch(95.000% 0.03221 316.866)"
+        ]
+      },
+      "dark-surface-2": {
+        "role": "neutral",
+        "displayName": "Dark Inset Blush",
+        "tonalRamp": [
+          "oklch(15.000% 0.03843 320.715)",
+          "oklch(26.429% 0.03843 320.715)",
+          "oklch(37.857% 0.03843 320.715)",
+          "oklch(49.286% 0.03843 320.715)",
+          "oklch(60.714% 0.03843 320.715)",
+          "oklch(72.143% 0.03843 320.715)",
+          "oklch(83.571% 0.03843 320.715)",
+          "oklch(95.000% 0.03843 320.715)"
+        ]
+      },
+      "dark-border": {
+        "role": "neutral",
+        "displayName": "Dark Fine Blush Line",
+        "tonalRamp": [
+          "oklch(15.000% 0.04819 323.609)",
+          "oklch(26.429% 0.04819 323.609)",
+          "oklch(37.857% 0.04819 323.609)",
+          "oklch(49.286% 0.04819 323.609)",
+          "oklch(60.714% 0.04819 323.609)",
+          "oklch(72.143% 0.04819 323.609)",
+          "oklch(83.571% 0.04819 323.609)",
+          "oklch(95.000% 0.04819 323.609)"
+        ]
+      },
+      "dark-border-2": {
+        "role": "neutral",
+        "displayName": "Dark Strong Blush Line",
+        "tonalRamp": [
+          "oklch(15.000% 0.05385 330.135)",
+          "oklch(26.429% 0.05385 330.135)",
+          "oklch(37.857% 0.05385 330.135)",
+          "oklch(49.286% 0.05385 330.135)",
+          "oklch(60.714% 0.05385 330.135)",
+          "oklch(72.143% 0.05385 330.135)",
+          "oklch(83.571% 0.05385 330.135)",
+          "oklch(95.000% 0.05385 330.135)"
+        ]
+      },
+      "dark-foreground": {
+        "role": "neutral",
+        "displayName": "Dark Plum Ink",
+        "tonalRamp": [
+          "oklch(15.000% 0.02020 345.690)",
+          "oklch(26.429% 0.02020 345.690)",
+          "oklch(37.857% 0.02020 345.690)",
+          "oklch(49.286% 0.02020 345.690)",
+          "oklch(60.714% 0.02020 345.690)",
+          "oklch(72.143% 0.02020 345.690)",
+          "oklch(83.571% 0.02020 345.690)",
+          "oklch(95.000% 0.02020 345.690)"
+        ]
+      },
+      "dark-muted": {
+        "role": "neutral",
+        "displayName": "Dark Muted Plum",
+        "tonalRamp": [
+          "oklch(15.000% 0.04423 338.400)",
+          "oklch(26.429% 0.04423 338.400)",
+          "oklch(37.857% 0.04423 338.400)",
+          "oklch(49.286% 0.04423 338.400)",
+          "oklch(60.714% 0.04423 338.400)",
+          "oklch(72.143% 0.04423 338.400)",
+          "oklch(83.571% 0.04423 338.400)",
+          "oklch(95.000% 0.04423 338.400)"
+        ]
+      },
+      "dark-primary": {
+        "role": "primary",
+        "displayName": "Dark Sakura Rose",
+        "tonalRamp": [
+          "oklch(15.000% 0.11078 355.602)",
+          "oklch(26.429% 0.11078 355.602)",
+          "oklch(37.857% 0.11078 355.602)",
+          "oklch(49.286% 0.11078 355.602)",
+          "oklch(60.714% 0.11078 355.602)",
+          "oklch(72.143% 0.11078 355.602)",
+          "oklch(83.571% 0.11078 355.602)",
+          "oklch(95.000% 0.11078 355.602)"
+        ]
+      },
+      "dark-primary-hover": {
+        "role": "primary",
+        "displayName": "Dark Sakura Rose Hover",
+        "tonalRamp": [
+          "oklch(15.000% 0.07757 355.098)",
+          "oklch(26.429% 0.07757 355.098)",
+          "oklch(37.857% 0.07757 355.098)",
+          "oklch(49.286% 0.07757 355.098)",
+          "oklch(60.714% 0.07757 355.098)",
+          "oklch(72.143% 0.07757 355.098)",
+          "oklch(83.571% 0.07757 355.098)",
+          "oklch(95.000% 0.07757 355.098)"
+        ]
+      },
+      "dark-primary-button": {
+        "role": "primary",
+        "displayName": "Dark Filled Sakura Rose",
+        "tonalRamp": [
+          "oklch(15.000% 0.16254 356.818)",
+          "oklch(26.429% 0.16254 356.818)",
+          "oklch(37.857% 0.16254 356.818)",
+          "oklch(49.286% 0.16254 356.818)",
+          "oklch(60.714% 0.16254 356.818)",
+          "oklch(72.143% 0.16254 356.818)",
+          "oklch(83.571% 0.16254 356.818)",
+          "oklch(95.000% 0.16254 356.818)"
+        ]
+      },
+      "dark-primary-button-hover": {
+        "role": "primary",
+        "displayName": "Dark Filled Sakura Rose Hover",
+        "tonalRamp": [
+          "oklch(15.000% 0.16634 355.445)",
+          "oklch(26.429% 0.16634 355.445)",
+          "oklch(37.857% 0.16634 355.445)",
+          "oklch(49.286% 0.16634 355.445)",
+          "oklch(60.714% 0.16634 355.445)",
+          "oklch(72.143% 0.16634 355.445)",
+          "oklch(83.571% 0.16634 355.445)",
+          "oklch(95.000% 0.16634 355.445)"
+        ]
+      },
+      "dark-success": {
+        "role": "semantic",
+        "displayName": "Dark Jade Success",
+        "tonalRamp": [
+          "oklch(15.000% 0.13302 171.754)",
+          "oklch(26.429% 0.13302 171.754)",
+          "oklch(37.857% 0.13302 171.754)",
+          "oklch(49.286% 0.13302 171.754)",
+          "oklch(60.714% 0.13302 171.754)",
+          "oklch(72.143% 0.13302 171.754)",
+          "oklch(83.571% 0.13302 171.754)",
+          "oklch(95.000% 0.13302 171.754)"
+        ]
+      },
+      "dark-warning": {
+        "role": "semantic",
+        "displayName": "Dark Amber Warning",
+        "tonalRamp": [
+          "oklch(15.000% 0.12641 81.921)",
+          "oklch(26.429% 0.12641 81.921)",
+          "oklch(37.857% 0.12641 81.921)",
+          "oklch(49.286% 0.12641 81.921)",
+          "oklch(60.714% 0.12641 81.921)",
+          "oklch(72.143% 0.12641 81.921)",
+          "oklch(83.571% 0.12641 81.921)",
+          "oklch(95.000% 0.12641 81.921)"
+        ]
+      },
+      "dark-danger": {
+        "role": "semantic",
+        "displayName": "Dark Rose Danger",
+        "tonalRamp": [
+          "oklch(15.000% 0.14133 14.145)",
+          "oklch(26.429% 0.14133 14.145)",
+          "oklch(37.857% 0.14133 14.145)",
+          "oklch(49.286% 0.14133 14.145)",
+          "oklch(60.714% 0.14133 14.145)",
+          "oklch(72.143% 0.14133 14.145)",
+          "oklch(83.571% 0.14133 14.145)",
+          "oklch(95.000% 0.14133 14.145)"
+        ]
+      },
+      "dark-info": {
+        "role": "semantic",
+        "displayName": "Dark Orchid Information",
+        "tonalRamp": [
+          "oklch(15.000% 0.09479 312.019)",
+          "oklch(26.429% 0.09479 312.019)",
+          "oklch(37.857% 0.09479 312.019)",
+          "oklch(49.286% 0.09479 312.019)",
+          "oklch(60.714% 0.09479 312.019)",
+          "oklch(72.143% 0.09479 312.019)",
+          "oklch(83.571% 0.09479 312.019)",
+          "oklch(95.000% 0.09479 312.019)"
+        ]
+      },
+      "dark-skeleton-base": {
+        "role": "neutral",
+        "displayName": "Dark Skeleton Blush",
+        "tonalRamp": [
+          "oklch(15.000% 0.03843 320.715)",
+          "oklch(26.429% 0.03843 320.715)",
+          "oklch(37.857% 0.03843 320.715)",
+          "oklch(49.286% 0.03843 320.715)",
+          "oklch(60.714% 0.03843 320.715)",
+          "oklch(72.143% 0.03843 320.715)",
+          "oklch(83.571% 0.03843 320.715)",
+          "oklch(95.000% 0.03843 320.715)"
+        ]
+      },
+      "dark-skeleton-hi": {
+        "role": "neutral",
+        "displayName": "Dark Skeleton Highlight",
+        "tonalRamp": [
+          "oklch(15.000% 0.05129 322.445)",
+          "oklch(26.429% 0.05129 322.445)",
+          "oklch(37.857% 0.05129 322.445)",
+          "oklch(49.286% 0.05129 322.445)",
+          "oklch(60.714% 0.05129 322.445)",
+          "oklch(72.143% 0.05129 322.445)",
+          "oklch(83.571% 0.05129 322.445)",
+          "oklch(95.000% 0.05129 322.445)"
+        ]
+      },
+      "white": {
+        "role": "neutral",
+        "displayName": "White",
+        "tonalRamp": [
+          "oklch(15.000% 0.00000 0.000)",
+          "oklch(26.429% 0.00000 0.000)",
+          "oklch(37.857% 0.00000 0.000)",
+          "oklch(49.286% 0.00000 0.000)",
+          "oklch(60.714% 0.00000 0.000)",
+          "oklch(72.143% 0.00000 0.000)",
+          "oklch(83.571% 0.00000 0.000)",
+          "oklch(95.000% 0.00000 0.000)"
+        ]
+      },
+      "provider-anilist": {
+        "role": "provider",
+        "displayName": "AniList Green",
+        "tonalRamp": [
+          "oklch(15.000% 0.17251 154.324)",
+          "oklch(26.429% 0.17251 154.324)",
+          "oklch(37.857% 0.17251 154.324)",
+          "oklch(49.286% 0.17251 154.324)",
+          "oklch(60.714% 0.17251 154.324)",
+          "oklch(72.143% 0.17251 154.324)",
+          "oklch(83.571% 0.17251 154.324)",
+          "oklch(95.000% 0.17251 154.324)"
+        ]
+      },
+      "provider-mangadex": {
+        "role": "provider",
+        "displayName": "MangaDex Gold",
+        "tonalRamp": [
+          "oklch(15.000% 0.14750 85.653)",
+          "oklch(26.429% 0.14750 85.653)",
+          "oklch(37.857% 0.14750 85.653)",
+          "oklch(49.286% 0.14750 85.653)",
+          "oklch(60.714% 0.14750 85.653)",
+          "oklch(72.143% 0.14750 85.653)",
+          "oklch(83.571% 0.14750 85.653)",
+          "oklch(95.000% 0.14750 85.653)"
+        ]
+      },
+      "provider-myanimelist": {
+        "role": "provider",
+        "displayName": "MyAnimeList Blue",
+        "tonalRamp": [
+          "oklch(15.000% 0.18801 259.815)",
+          "oklch(26.429% 0.18801 259.815)",
+          "oklch(37.857% 0.18801 259.815)",
+          "oklch(49.286% 0.18801 259.815)",
+          "oklch(60.714% 0.18801 259.815)",
+          "oklch(72.143% 0.18801 259.815)",
+          "oklch(83.571% 0.18801 259.815)",
+          "oklch(95.000% 0.18801 259.815)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "headline",
+        "purpose": "Page headings."
+      },
+      "title": {
+        "displayName": "title",
+        "purpose": "Card and section headings."
+      },
+      "dialog-title": {
+        "displayName": "dialog-title",
+        "purpose": "Standard dialog headings."
+      },
+      "body": {
+        "displayName": "body",
+        "purpose": "Interface copy and metadata."
+      },
+      "label": {
+        "displayName": "label",
+        "purpose": "Fields and badges."
+      },
+      "micro-label": {
+        "displayName": "micro-label",
+        "purpose": "Tiny overlay chips only."
+      },
+      "button": {
+        "displayName": "button",
+        "purpose": "Default action labels."
+      },
+      "metric": {
+        "displayName": "metric",
+        "purpose": "Jobs summary counts."
+      },
+      "mono": {
+        "displayName": "mono",
+        "purpose": "Logs and technical output."
+      }
+    },
+    "shadows": [
+      {
+        "name": "control-shadow-light",
+        "value": "rgb(92 35 64 / 0.12)",
+        "purpose": "Light-theme shadow ink; --control-shadow."
+      },
+      {
+        "name": "control-shadow-dark",
+        "value": "rgb(0 0 0 / 0.28)",
+        "purpose": "Dark-theme shadow ink; --control-shadow."
+      },
+      {
+        "name": "card-shadow-light",
+        "value": "rgb(92 35 64 / 0.045)",
+        "purpose": "Light-theme shadow ink; --card-shadow."
+      },
+      {
+        "name": "card-shadow-dark",
+        "value": "rgb(0 0 0 / 0.12)",
+        "purpose": "Dark-theme shadow ink; --card-shadow."
+      },
+      {
+        "name": "control-rest",
+        "value": "0 1px 2px var(--control-shadow)",
+        "purpose": "Raised buttons at rest."
+      },
+      {
+        "name": "control-hover",
+        "value": "0 3px 8px var(--control-shadow)",
+        "purpose": "Fine-pointer raised-button hover."
+      },
+      {
+        "name": "card-rest",
+        "value": "0 2px 6px var(--card-shadow)",
+        "purpose": "Standard cards."
+      },
+      {
+        "name": "card-hover",
+        "value": "0 4px 14px var(--control-shadow)",
+        "purpose": "Interactive card hover."
+      },
+      {
+        "name": "switch-thumb",
+        "value": "0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)",
+        "purpose": "Installed Tailwind small shadow for switch thumbs and segmented indicators."
+      },
+      {
+        "name": "toast",
+        "value": "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)",
+        "purpose": "Installed Tailwind large shadow."
+      },
+      {
+        "name": "dialog",
+        "value": "0 25px 50px -12px rgb(0 0 0 / 0.25)",
+        "purpose": "Installed Tailwind 2xl shadow."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out-soft",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Entrances and local control transforms."
+      },
+      {
+        "name": "control-state",
+        "value": "160ms ease",
+        "purpose": "Color, border, opacity, and shadow feedback."
+      },
+      {
+        "name": "control-press",
+        "value": "80ms",
+        "purpose": "Scale 0.98; icon buttons scale 0.94."
+      },
+      {
+        "name": "card-hover",
+        "value": "180ms ease",
+        "purpose": "Interactive border and shadow feedback."
+      },
+      {
+        "name": "selection-indicator",
+        "value": "220ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Selection indicator movement and tab-panel entrance."
+      },
+      {
+        "name": "fade-up",
+        "value": "fade-up 0.5s var(--ease-out-soft) both",
+        "purpose": "Existing @theme animation; honor reduced motion."
+      },
+      {
+        "name": "fade-in",
+        "value": "fade-in 0.4s ease both",
+        "purpose": "Existing @theme animation; honor reduced motion."
+      },
+      {
+        "name": "scale-in",
+        "value": "scale-in 0.22s var(--ease-out-soft) both",
+        "purpose": "Existing @theme animation; honor reduced motion."
+      },
+      {
+        "name": "slide-in-right",
+        "value": "slide-in-right 0.35s var(--ease-out-soft) both",
+        "purpose": "Existing @theme animation; honor reduced motion."
+      },
+      {
+        "name": "shimmer",
+        "value": "shimmer 1.8s ease-in-out infinite",
+        "purpose": "Existing @theme animation; honor reduced motion."
+      },
+      {
+        "name": "toast-progress",
+        "value": "toast-progress 5s linear both",
+        "purpose": "Existing @theme animation; honor reduced motion."
+      },
+      {
+        "name": "pulse-soft",
+        "value": "pulse-soft 1.6s ease-in-out infinite",
+        "purpose": "Existing @theme animation; honor reduced motion."
+      },
+      {
+        "name": "indeterminate",
+        "value": "indeterminate 1.4s ease-in-out infinite",
+        "purpose": "Existing @theme animation; honor reduced motion."
+      },
+      {
+        "name": "dialog-open",
+        "value": "dialog-in 0.28s var(--ease-out-soft) both",
+        "purpose": "Dialog content entrance."
+      },
+      {
+        "name": "dialog-close",
+        "value": "dialog-out 0.16s ease both",
+        "purpose": "Dialog content exit."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "0.01ms",
+        "purpose": "Single animation iteration; transforms removed; indicator transitions disabled."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "choice-labels",
+        "value": "360px"
+      },
+      {
+        "name": "downloader-covers",
+        "value": "420px"
+      },
+      {
+        "name": "sm",
+        "value": "640px"
+      },
+      {
+        "name": "md",
+        "value": "768px"
+      },
+      {
+        "name": "lg",
+        "value": "1024px"
+      },
+      {
+        "name": "xl",
+        "value": "1280px"
+      },
+      {
+        "name": "2xl",
+        "value": "1536px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The shared primary action variant, including hover, keyboard focus, press, disabled, and touch states.",
+      "html": "<button type=\"button\" class=\"ds-button ds-control\">Apply &amp; Sync</button>",
+      "css": ".ds-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 12px; border: 0; border-radius: 8px; font-family: \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif; font-size: 14px; font-weight: 500; line-height: 1.25; cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, opacity 160ms ease, box-shadow 160ms ease, transform 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-button:disabled { pointer-events: none; opacity: 0.5; } .ds-button:active:not(:disabled) { transform: scale(0.98); box-shadow: none; transition-duration: 80ms; }.ds-button { background: var(--primary-button, #aa386a); color: #fff; box-shadow: 0 1px 2px var(--control-shadow, rgb(92 35 64 / 0.12)); }.ds-button:hover:not(:disabled) { background: var(--primary-button-hover, #902a57); color: #fff; }@media (hover: hover) and (pointer: fine) { .ds-button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 3px 8px var(--control-shadow, rgb(92 35 64 / 0.12)); } .ds-button:active:not(:disabled) { transform: scale(0.98); box-shadow: none; } }.ds-control:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary, #aa386a) 70%, transparent); outline-offset: 2px; }@media (max-width: 1023px), (pointer: coarse) { .ds-control { min-height: 44px; } }@media (prefers-reduced-motion: reduce) { .ds-control { transform: none !important; transition-duration: 0.01ms !important; } }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "The shared outline action variant, including hover, keyboard focus, press, disabled, and touch states.",
+      "html": "<button type=\"button\" class=\"ds-button ds-control\">Refresh library</button>",
+      "css": ".ds-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 12px; border: 0; border-radius: 8px; font-family: \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif; font-size: 14px; font-weight: 500; line-height: 1.25; cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, opacity 160ms ease, box-shadow 160ms ease, transform 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-button:disabled { pointer-events: none; opacity: 0.5; } .ds-button:active:not(:disabled) { transform: scale(0.98); box-shadow: none; transition-duration: 80ms; }.ds-button { background: var(--surface, #ffffff); color: var(--foreground, #392333); border: 1px solid var(--border-2, #d9b8c8); box-shadow: 0 1px 2px var(--control-shadow, rgb(92 35 64 / 0.12)); }.ds-button:hover:not(:disabled) { background: var(--surface-2, #f7e8ef); color: var(--foreground, #392333); }@media (hover: hover) and (pointer: fine) { .ds-button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 3px 8px var(--control-shadow, rgb(92 35 64 / 0.12)); } .ds-button:active:not(:disabled) { transform: scale(0.98); box-shadow: none; } }.ds-control:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary, #aa386a) 70%, transparent); outline-offset: 2px; }@media (max-width: 1023px), (pointer: coarse) { .ds-control { min-height: 44px; } }@media (prefers-reduced-motion: reduce) { .ds-control { transform: none !important; transition-duration: 0.01ms !important; } }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "The shared ghost action variant, including hover, keyboard focus, press, disabled, and touch states.",
+      "html": "<button type=\"button\" class=\"ds-button ds-control\">Cancel</button>",
+      "css": ".ds-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 12px; border: 0; border-radius: 8px; font-family: \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif; font-size: 14px; font-weight: 500; line-height: 1.25; cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, opacity 160ms ease, box-shadow 160ms ease, transform 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-button:disabled { pointer-events: none; opacity: 0.5; } .ds-button:active:not(:disabled) { transform: scale(0.98); box-shadow: none; transition-duration: 80ms; }.ds-button { background: transparent; color: var(--muted, #795d70); }.ds-button:hover:not(:disabled) { background: var(--surface-2, #f7e8ef); color: var(--foreground, #392333); }.ds-control:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary, #aa386a) 70%, transparent); outline-offset: 2px; }@media (max-width: 1023px), (pointer: coarse) { .ds-control { min-height: 44px; } }@media (prefers-reduced-motion: reduce) { .ds-control { transform: none !important; transition-duration: 0.01ms !important; } }"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "The shared danger action variant, including hover, keyboard focus, press, disabled, and touch states.",
+      "html": "<button type=\"button\" class=\"ds-button ds-control\">Unmatch</button>",
+      "css": ".ds-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 12px; border: 0; border-radius: 8px; font-family: \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif; font-size: 14px; font-weight: 500; line-height: 1.25; cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, opacity 160ms ease, box-shadow 160ms ease, transform 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-button:disabled { pointer-events: none; opacity: 0.5; } .ds-button:active:not(:disabled) { transform: scale(0.98); box-shadow: none; transition-duration: 80ms; }.ds-button { background: var(--danger, #b8364c); color: #fff; box-shadow: 0 1px 2px var(--control-shadow, rgb(92 35 64 / 0.12)); }.ds-button:hover:not(:disabled) { background: var(--danger, #b8364c); color: #fff; opacity: 0.9; }:host-context(.dark) .ds-button, :host-context(.dark) .ds-button:hover:not(:disabled) { color: var(--background, #160f18); }@media (hover: hover) and (pointer: fine) { .ds-button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 3px 8px var(--control-shadow, rgb(92 35 64 / 0.12)); } .ds-button:active:not(:disabled) { transform: scale(0.98); box-shadow: none; } }.ds-control:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary, #aa386a) 70%, transparent); outline-offset: 2px; }@media (max-width: 1023px), (pointer: coarse) { .ds-control { min-height: 44px; } }@media (prefers-reduced-motion: reduce) { .ds-control { transform: none !important; transition-duration: 0.01ms !important; } }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "The shared secondary action variant, including hover, keyboard focus, press, disabled, and touch states.",
+      "html": "<button type=\"button\" class=\"ds-button ds-control\">Select series</button>",
+      "css": ".ds-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 12px; border: 0; border-radius: 8px; font-family: \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif; font-size: 14px; font-weight: 500; line-height: 1.25; cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, opacity 160ms ease, box-shadow 160ms ease, transform 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-button:disabled { pointer-events: none; opacity: 0.5; } .ds-button:active:not(:disabled) { transform: scale(0.98); box-shadow: none; transition-duration: 80ms; }.ds-button { background: var(--surface-2, #f7e8ef); color: var(--foreground, #392333); box-shadow: 0 1px 2px var(--control-shadow, rgb(92 35 64 / 0.12)); }.ds-button:hover:not(:disabled) { background: color-mix(in oklab, var(--border, #eed9e3) 60%, transparent); color: var(--foreground, #392333); }@media (hover: hover) and (pointer: fine) { .ds-button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 3px 8px var(--control-shadow, rgb(92 35 64 / 0.12)); } .ds-button:active:not(:disabled) { transform: scale(0.98); box-shadow: none; } }.ds-control:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary, #aa386a) 70%, transparent); outline-offset: 2px; }@media (max-width: 1023px), (pointer: coarse) { .ds-control { min-height: 44px; } }@media (prefers-reduced-motion: reduce) { .ds-control { transform: none !important; transition-duration: 0.01ms !important; } }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "An inset text field with the shared merged focus indicator.",
+      "html": "<label class=\"ds-label\" for=\"ds-search\">Search series</label><input id=\"ds-search\" class=\"ds-input ds-control\" placeholder=\"Search series or artists…\" />",
+      "css": ".ds-label { display: block; margin-bottom: 4px; font-family: \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif; font-size: 12px; font-weight: 500; color: var(--muted, #795d70); } .ds-input { width: 100%; height: 36px; padding: 0 12px; border: 1px solid var(--border-2, #d9b8c8); border-radius: 8px; background: var(--surface-2, #f7e8ef); color: var(--foreground, #392333); font-family: \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif; font-size: 14px; transition: border-color 160ms ease, background-color 160ms ease; } .ds-input::placeholder { color: color-mix(in oklab, var(--muted, #795d70) 70%, transparent); } .ds-input:focus { border-color: var(--primary, #aa386a); background: var(--surface, #ffffff); } .ds-input:focus-visible { outline: 2px solid var(--primary, #aa386a); outline-offset: -1px; } .ds-input:disabled { cursor: not-allowed; opacity: 0.5; }@media (max-width: 1023px), (pointer: coarse) { .ds-control { min-height: 44px; } }@media (prefers-reduced-motion: reduce) { .ds-control { transform: none !important; transition-duration: 0.01ms !important; } }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "A bordered card with a header divider and responsive internal padding.",
+      "html": "<article class=\"ds-card\"><header class=\"ds-card-header\"><h3 class=\"ds-card-title\">Library metadata</h3></header><div class=\"ds-card-content\">Review matches and manage metadata.</div></article>",
+      "css": ".ds-card { min-width: 0; border: 1px solid var(--border, #eed9e3); border-radius: 12px; background: var(--surface, #ffffff); color: var(--foreground, #392333); box-shadow: 0 2px 6px var(--card-shadow, rgb(92 35 64 / 0.045)); font-family: \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif; font-size: 14px; line-height: 20px; } .ds-card-header, .ds-card-content { padding: 12px; } .ds-card-header { border-bottom: 1px solid var(--border, #eed9e3); } .ds-card-title { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.025em; } @media (min-width: 640px) { .ds-card-header, .ds-card-content { padding: 16px; } }"
+    },
+    {
+      "name": "Status Badges",
+      "kind": "chip",
+      "refersTo": "badge-default",
+      "description": "Text-labeled pills with default, success, and warning treatments.",
+      "html": "<div class=\"ds-badges\"><span class=\"ds-badge\">Status</span><span class=\"ds-badge ds-success\">Matched</span><span class=\"ds-badge ds-warning\">Needs review</span></div>",
+      "css": ".ds-badges { display: flex; flex-wrap: wrap; gap: 4px; } .ds-badge { display: inline-flex; align-items: center; gap: 4px; border-radius: calc(infinity * 1px); padding: 2px 8px; background: var(--surface-2, #f7e8ef); color: var(--foreground, #392333); font-family: \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif; font-size: 12px; font-weight: 500; line-height: 16px; } .ds-success { background: color-mix(in oklab, var(--success, #0b7d66) 15%, transparent); color: var(--success, #0b7d66); } .ds-warning { background: color-mix(in oklab, var(--warning, #aa6b15) 15%, transparent); color: var(--warning, #aa6b15); }"
+    },
+    {
+      "name": "Primary Navigation",
+      "kind": "nav",
+      "refersTo": "navigation-active",
+      "description": "Active and inactive sidebar links with inline outline icons.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Primary navigation\"><a href=\"#libraries\" class=\"ds-nav-link ds-control\" aria-current=\"page\"><svg aria-hidden=\"true\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m16 6 4 14\"/><path d=\"M12 6v14\"/><path d=\"M8 8v12\"/><path d=\"M4 4v16\"/></svg>Libraries</a><a href=\"#jobs\" class=\"ds-nav-link ds-control\"><svg aria-hidden=\"true\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m3 17 2 2 4-4\"/><path d=\"m3 7 2 2 4-4\"/><path d=\"M13 6h8\"/><path d=\"M13 12h8\"/><path d=\"M13 18h8\"/></svg>Jobs</a></nav>",
+      "css": ".ds-nav { display: flex; flex-direction: column; gap: 4px; padding: 12px; background: var(--sidebar, #fff8fb); } .ds-nav-link { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 44px 0 12px; border-radius: 8px; color: var(--muted, #795d70); font-family: \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif; font-size: 14px; text-decoration: none; transition: background-color 160ms ease, color 160ms ease, transform 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-nav-link svg { width: 16px; height: 16px; flex-shrink: 0; } .ds-nav-link:hover { background: color-mix(in oklab, var(--surface-2, #f7e8ef) 70%, transparent); color: var(--foreground, #392333); } .ds-nav-link[aria-current] { background: color-mix(in oklab, var(--primary, #aa386a) 10%, transparent); color: var(--primary, #aa386a); font-weight: 500; } .ds-nav-link:active { transform: scale(0.98); }.ds-control:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary, #aa386a) 70%, transparent); outline-offset: 2px; }@media (max-width: 1023px), (pointer: coarse) { .ds-control { min-height: 44px; } }@media (prefers-reduced-motion: reduce) { .ds-control { transform: none !important; transition-duration: 0.01ms !important; } }"
+    },
+    {
+      "name": "Section Tabs",
+      "kind": "custom",
+      "refersTo": "tab-active",
+      "description": "A visual specimen of the underline tab pattern; keyboard and animated indicator behavior live in the React component.",
+      "html": "<div class=\"ds-tabs\" role=\"tablist\" aria-label=\"Library sections\"><button type=\"button\" class=\"ds-tab ds-control\" role=\"tab\" aria-selected=\"true\">Manga</button><button type=\"button\" class=\"ds-tab ds-control\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\">Needs review</button></div>",
+      "css": ".ds-tabs { display: flex; gap: 0; overflow-x: auto; border-bottom: 1px solid var(--border, #eed9e3); padding: 4px; } .ds-tab { position: relative; min-height: 36px; flex-shrink: 0; padding: 0 4px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted, #795d70); font-family: \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif; font-size: 12px; font-weight: 500; cursor: pointer; transition: color 160ms ease, transform 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-tab:hover { color: var(--foreground, #392333); } .ds-tab[aria-selected=\"true\"] { color: var(--primary, #aa386a); } .ds-tab[aria-selected=\"true\"]::after { content: ''; position: absolute; bottom: -2px; left: 0; width: 100%; height: 2px; border-radius: calc(infinity * 1px); background: var(--primary, #aa386a); } .ds-tab:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary, #aa386a) 70%, transparent); outline-offset: -2px; } .ds-tab:active { transform: scale(0.98); } @media (min-width: 360px) { .ds-tab { padding: 0 6px; } } @media (min-width: 640px) { .ds-tab { padding: 0 12px; font-size: 14px; } }@media (max-width: 1023px), (pointer: coarse) { .ds-control { min-height: 44px; } }@media (prefers-reduced-motion: reduce) { .ds-control { transform: none !important; transition-duration: 0.01ms !important; } }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Sakura Library",
+    "overview": "The Sakura Library is warm and precise: a compact, task-focused interface with gentle expression. Sakura Rose accents and Blush Paper surfaces surround Plum Ink text. The light theme feels like a softly tinted catalogue; the dark theme carries the same identity through moonlit plum surfaces and pale pink highlights.\n\nControls are softly rounded, precise, and quietly tactile. Tonal layers organize dense work, subtle structural shadows separate surfaces, and a small hover lift gives eligible controls feedback. Cover artwork supplies the strongest imagery; the surrounding interface keeps titles, metadata, states, and actions readable.",
+    "keyCharacteristics": [
+      "Sakura Rose accents, Blush Paper surfaces, and Plum Ink neutrals.",
+      "Compact Inter typography with JetBrains Mono for technical output.",
+      "Tonal layering, fine borders, and subtle structural shadows.",
+      "Softly rounded controls with brief, local interaction feedback.",
+      "Light, dark, and system themes; desktop and touch layouts."
+    ],
+    "rules": [
+      {
+        "name": "The Two Pink Roles Rule",
+        "body": "Use the semantic primary token for text, indicators, and translucent highlights; use primary-button for filled actions with white text. Preserve their separate dark-theme values.",
+        "section": "colors"
+      },
+      {
+        "name": "The Single Focus Rule",
+        "body": "Use the shared keyboard focus outline. Fields merge it into their border; choice groups draw it inward. Do not stack an additional ring over that indicator.",
+        "section": "components"
+      },
+      {
+        "name": "The Local Feedback Rule",
+        "body": "Press feedback stays on the control. Pointer hover may lift raised buttons; reduced motion removes transforms and effectively stops animation.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use semantic CSS variables so surfaces, text, borders, and states follow the selected theme.",
+      "Do preserve the separate primary and primary-button roles, especially in dark mode.",
+      "Do use existing button, field, card, badge, tab, and disclosure primitives for consistent states.",
+      "Do retain visible keyboard focus, labeled icon actions, and text labels alongside status colors.",
+      "Do preserve the 44px minimum touch target rules and the reduced-motion behavior.",
+      "Do allow long titles, paths, and errors to wrap; keep dense table truncation local to tables.",
+      "Do keep current and proposed metadata visibly distinct, with field selection before applying changes."
+    ],
+    "donts": [
+      "Don't use the pale dark-theme primary color as a white-text filled-button background.",
+      "Don't add a second focus ring on top of the global keyboard focus outline.",
+      "Don't hard-code light-theme surface or text colors into app components.",
+      "Don't replace the installed Inter and JetBrains Mono fonts with a runtime CDN dependency.",
+      "Don't apply pointer hover lift to touch controls or retain transforms under reduced motion.",
+      "Don't treat external cover art or the screenshot sample counts as product-owned assets or measured results."
+    ]
+  }
+}
