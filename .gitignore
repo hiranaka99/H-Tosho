@@ -11,7 +11,9 @@ test-results/
 .nyc_output/
 
 # ---- Local Impeccable state, caches, reports & previews ---------------------
-.impeccable/
+# (design.json is the tracked sidecar of DESIGN.md; everything else stays local)
+**/.impeccable/*
+!**/.impeccable/design.json
 
 # ---- Environment / local config & secrets ---------------------------------
 .env
