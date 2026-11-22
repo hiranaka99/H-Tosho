@@ -111,6 +111,7 @@ export function useSettingsDraft<T>({ id, label, initial, source, valid = () => 
   return {
     value: entry.value as T, setValue, save: saveDraft,
     submit: () => { void saveDraft().catch(() => { /* The section displays the rejection. */ }); },
+    discard: () => { entry.value = entry.baseline; entry.error = ''; entry.saved = false; store.notify(); },
     dirty: dirty(entry), pending: entry.pending, valid: isValid, status, error: entry.error,
     canSave: dirty(entry) && isValid && !entry.pending,
   };
