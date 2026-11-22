@@ -75,12 +75,14 @@ interface GalleryCardProps {
   review?: { state: 'pending' | 'reviewed' | 'unreviewed'; onChange: (item: DoujinSearchResult, reviewed: boolean) => void };
   feedback?: { pending: boolean; onOpen: (item: DoujinSearchResult) => void };
   display?: 'full' | 'recommendation' | 'discovery';
+  /** Render the download action as an outline button so a shelf of cards stays calm. */
+  quietAction?: boolean;
   /** Extra sources this gallery was also found on (unified search grouping).
    *  Text labels — never color-only. */
   provenance?: { extraSources: DoujinSource[] };
 }
 
-export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', provenance }: GalleryCardProps) {
+export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', quietAction = false, provenance }: GalleryCardProps) {
   const selectMode = selection?.mode === 'select', selected = selection?.selected ?? false;
   const onToggleSelect = selection?.onToggle, onReview = review?.onChange;
   const reviewed = review?.state === 'reviewed', reviewPending = review?.state === 'pending';
@@ -143,7 +145,7 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
           {selectMode ? <>
             <Button size="sm" variant={selected ? 'default' : 'outline'} className="min-w-0 flex-1 px-2" onClick={() => onToggleSelect?.(item)} aria-pressed={selected} aria-label={`${selected ? 'Remove' : 'Select'} ${item.title} ${selected ? 'from' : 'for'} merging`}><CheckSquare className="h-3.5 w-3.5 shrink-0" /><span>{selected ? 'Selected' : 'Select'}</span></Button>
             <Button size="sm" variant="ghost" onClick={() => onOpen(item)} aria-label={`View details for ${item.title}`}>Details</Button>
-          </> : <Button size="sm" variant={alreadyOwned || libraryMatch === 'possible' ? 'outline' : 'default'} className={cn('max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 px-2', onReview && 'h-auto min-h-11 px-1.5')} onClick={() => onDownload(item)} disabled={active || alreadyOwned || downloadSetup === 'loading' || downloadSetup === 'error'} aria-label={starting && !task ? `Checking duplicates for ${item.title}` : active ? `${item.title} is ${task?.status ?? 'starting'}` : alreadyOwned ? `${item.title} already in library` : libraryMatch === 'possible' ? `Review possible duplicate of ${item.title}` : downloadSetup === 'missing' ? `Set output folder before downloading ${item.title}` : `Download ${item.title}`}>
+          </> : <Button size="sm" variant={quietAction || alreadyOwned || libraryMatch === 'possible' ? 'outline' : 'default'} className={cn('max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 px-2', onReview && 'h-auto min-h-11 px-1.5')} onClick={() => onDownload(item)} disabled={active || alreadyOwned || downloadSetup === 'loading' || downloadSetup === 'error'} aria-label={starting && !task ? `Checking duplicates for ${item.title}` : active ? `${item.title} is ${task?.status ?? 'starting'}` : alreadyOwned ? `${item.title} already in library` : libraryMatch === 'possible' ? `Review possible duplicate of ${item.title}` : downloadSetup === 'missing' ? `Set output folder before downloading ${item.title}` : `Download ${item.title}`}>
             {!onReview && (task?.status === 'paused' ? <Pause className="h-3.5 w-3.5 shrink-0" /> : task?.status === 'queued' ? <Circle className="h-3.5 w-3.5 shrink-0" /> : active ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : alreadyOwned ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <DownloadIcon className="h-3.5 w-3.5 shrink-0" />)}
             <span>{task?.state?.type === 'retry-wait' ? 'Retry scheduled' : task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : starting && !task ? 'Checking…' : active ? 'Downloading' : inLibrary ? 'In library' : alreadyOwned ? 'Downloaded' : libraryMatch === 'possible' ? 'Review duplicate' : downloadSetup === 'missing' ? 'Set folder' : 'Download'}</span>
           </Button>}

@@ -439,9 +439,9 @@ export function ConfirmDialog({ open, title, description, details, confirmLabel,
   );
 }
 
-export function EmptyState({ icon, title, description }: { icon?: React.ReactNode; title: string; description?: string }) {
+export function EmptyState({ icon, title, description, compact = false }: { icon?: React.ReactNode; title: string; description?: React.ReactNode; compact?: boolean }) {
   return (
-    <div className="flex animate-fade-in flex-col items-center justify-center gap-2 px-3 py-12 text-center sm:py-16">
+    <div className={cn('flex animate-fade-in flex-col items-center justify-center gap-2 px-3 text-center', compact ? 'py-8' : 'py-12 sm:py-16')}>
       {icon && <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-full bg-surface-2 text-muted">{icon}</div>}
       <p className="text-sm font-medium">{title}</p>
       {description && <p className="max-w-sm break-words text-sm text-muted">{description}</p>}

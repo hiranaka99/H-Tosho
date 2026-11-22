@@ -9,7 +9,7 @@ process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-home-'));
 const { initDb, getDb, schema } = await import('../src/db/index.js');
 const { setKavitaConnection, setProviderSetting } = await import('../src/services/settings.js');
 const { getProvider } = await import('../src/providers/registry.js');
-const { listMatchSuggestions, rejectMatchCandidate, scanMatchSuggestions } = await import('../src/services/matchSuggestions.js');
+const { listMatchSuggestions, rejectMatchCandidate, restoreMatchCandidate, scanMatchSuggestions } = await import('../src/services/matchSuggestions.js');
 const { api } = await import('../src/routes/api.js');
 initDb();
 const provider = getProvider('anilist')!;
@@ -62,6 +62,16 @@ test('a persisted rejection hides the same candidate on repeat scans but allows 
   await scan();
   assert.equal(listMatchSuggestions()[0].candidate.providerSeriesId, 'different');
   assert.equal(rejectMatchCandidate(1, 'anilist', 'stale'), false);
+});
+
+test('restoring a rejected candidate makes it reappear and is idempotent', async () => {
+  await scan();
+  assert.equal(rejectMatchCandidate(1, 'anilist', 'first'), true);
+  assert.equal(listMatchSuggestions().length, 0);
+  restoreMatchCandidate(1, 'anilist', 'first');
+  restoreMatchCandidate(1, 'anilist', 'first');
+  assert.equal(listMatchSuggestions()[0].candidate.providerSeriesId, 'first');
+  assert.equal(getDb().select().from(schema.rejectedMatchCandidates).all().length, 0);
 });
 
 test('provider outages preserve prior suggestions and fail visibly instead of reporting no matches', async () => {

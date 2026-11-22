@@ -37,6 +37,17 @@ export function rejectMatchCandidate(seriesId: number, providerId: string, provi
   return true;
 }
 
+/** Undo a rejection so the same candidate can surface again. Idempotent. */
+export function restoreMatchCandidate(seriesId: number, providerId: string, providerSeriesId: string): void {
+  const connectionKey = currentMatchConnection(), db = getDb();
+  db.delete(schema.rejectedMatchCandidates).where(and(
+    eq(schema.rejectedMatchCandidates.connectionKey, connectionKey),
+    eq(schema.rejectedMatchCandidates.seriesId, seriesId),
+    eq(schema.rejectedMatchCandidates.providerId, providerId),
+    eq(schema.rejectedMatchCandidates.providerSeriesId, providerSeriesId),
+  )).run();
+}
+
 export interface MatchSuggestionTarget { id: number; name: string; libraryId: number; libraryName: string; cover?: string }
 
 /** Search only: never creates matches, fetches full metadata, or writes to Kavita. */
