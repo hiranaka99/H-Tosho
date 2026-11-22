@@ -115,7 +115,7 @@ test('watched Dismiss marks reviewed beside Download and retains reversible Hist
   const theme = testInfo.project.name === 'desktop' ? 'Dark' : 'Light';
   await page.getByRole('radio', { name: theme, exact: true }).click();
   await navigate(page, 'Discover');
-  await page.getByRole('tab', { name: 'Following', exact: true }).click();
+  await page.getByRole('tab', { name: /^Following/ }).click();
   const inbox = page.getByRole('radio', { name: 'Inbox (6)', exact: true });
   await expect(inbox).toHaveAttribute('aria-checked', 'true');
   const card = page.locator('article').filter({ has: page.getByRole('button', { name: 'View details for History gallery 12', exact: true }) });
@@ -190,7 +190,7 @@ test('watched queries use full-height autocomplete shared with Search', async ({
   await navigate(page, 'Settings');
   await page.getByRole('radio', { name: testInfo.project.name === 'desktop' ? 'Dark' : 'Light', exact: true }).click();
   await navigate(page, 'Discover');
-  await page.getByRole('tab', { name: 'Following', exact: true }).click();
+  await page.getByRole('tab', { name: /^Following/ }).click();
   await page.getByText(/^Manage watches/).click();
   const form = page.getByRole('form', { name: 'Add a watched search' });
   const query = form.getByRole('combobox', { name: 'Watched search query' });
@@ -230,6 +230,7 @@ test('watched queries use full-height autocomplete shared with Search', async ({
   await query.press('Escape');
   await expect(query).toHaveAttribute('aria-expanded', 'false');
   await expect(query).toHaveValue('mi');
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
 
   await page.getByRole('tab', { name: 'Search', exact: true }).click();
   await page.getByRole('radio', { name: 'nHentai', exact: true }).click();
@@ -251,10 +252,9 @@ test('Watched controls fit each viewport and failed removal can be retried', asy
   await navigate(page, 'Settings');
   await page.getByRole('radio', { name: testInfo.project.name === 'desktop' ? 'Dark' : 'Light', exact: true }).click();
   await navigate(page, 'Discover');
-  await page.getByRole('tab', { name: 'Following', exact: true }).click();
+  await page.getByRole('tab', { name: /^Following/ }).click();
   for (const control of [
-    page.getByLabel('Watched search check interval'),
-    page.getByRole('button', { name: 'Check now', exact: true }),
+    page.getByRole('button', { name: /^Manage watches/ }),
     page.getByLabel('Filter discoveries by watch'),
     page.getByLabel('Filter discoveries by source'),
     page.getByRole('button', { name: 'Select galleries', exact: true }),
@@ -268,18 +268,20 @@ test('Watched controls fit each viewport and failed removal can be retried', asy
     const navigation = page.locator('#app-navigation');
     await expect(page.getByRole('button', { name: 'Open navigation', exact: true })).toBeVisible();
     await expect(navigation).toBeHidden();
-    await expect(page.getByRole('button', { name: 'Check now', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Manage watches/ })).toBeVisible();
     expect(await page.locator('main').evaluate(element => element.scrollWidth <= element.clientWidth)).toBeTruthy();
     await page.screenshot({ path: testInfo.outputPath('watched-tablet.png'), fullPage: true });
     await page.setViewportSize({ width: 1280, height: 720 });
   }
-  await page.getByText(/^Manage watches/).click();
+  await page.getByRole('button', { name: /^Manage watches/ }).click();
+  const drawer = page.getByRole('dialog', { name: 'Manage watches', exact: true });
+  for (const control of [page.getByLabel('Watched search check interval'), page.getByRole('button', { name: 'Check now', exact: true })]) expect(Math.round((await control.boundingBox())!.height)).toBeGreaterThanOrEqual(44);
   const remove = page.getByRole('button', { name: `Remove watch ${watchQuery}`, exact: true });
   await expect(remove).toBeVisible();
-  expect(await page.locator('main').evaluate(element => element.scrollWidth <= element.clientWidth)).toBeTruthy();
-  await page.getByText(/^Manage watches/).locator('..').locator('..').screenshot({ path: testInfo.outputPath('watched-manage.png') });
+  expect(await drawer.evaluate(element => element.scrollWidth <= element.clientWidth)).toBeTruthy();
+  await drawer.screenshot({ path: testInfo.outputPath('watched-manage.png') });
   await remove.click();
-  const dialog = page.getByRole('dialog');
+  const dialog = page.getByRole('dialog', { name: 'Remove watched search?', exact: true });
   let finishDelete!: () => void;
   const pausedDelete = new Promise<void>(resolve => { finishDelete = resolve; });
   const removalRoute = /\/api\/watched-searches\/\d+$/;
@@ -301,6 +303,7 @@ test('Watched controls fit each viewport and failed removal can be retried', asy
   await dialog.getByRole('button', { name: 'Remove', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await expect(remove).toHaveCount(0);
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await expect(page.getByRole('radio', { name: 'History (13)', exact: true })).toBeVisible();
 });
 
@@ -315,21 +318,19 @@ test('Watched motion preserves drafts, keyboard access and reduced-motion feedba
   await navigate(page, 'Settings');
   await page.getByRole('radio', { name: testInfo.project.name === 'desktop' ? 'Dark' : 'Light', exact: true }).click();
   await navigate(page, 'Discover');
-  await page.getByRole('tab', { name: 'Following', exact: true }).click();
+  await page.getByRole('tab', { name: /^Following/ }).click();
   const manage = page.getByRole('button', { name: /^Manage watches/ });
-  const panel = page.locator(`[id="${await manage.getAttribute('aria-controls')}"]`);
+  const drawer = page.getByRole('dialog', { name: 'Manage watches', exact: true });
+  const close = page.getByRole('button', { name: 'Close dialog', exact: true });
   const query = page.getByRole('combobox', { name: 'Watched search query', exact: true });
-  await expect(manage).toHaveAttribute('aria-expanded', 'false');
   await expect(query).toHaveCount(0);
   await manage.focus();
   await manage.press('Enter');
   await expect(query).toBeVisible();
   await query.fill('artist:unsaved-motion-draft');
-  await manage.click();
-  await expect(panel).toHaveAttribute('inert', '');
-  await expect(query).toHaveCount(0);
-  await manage.press('Enter');
-  await manage.press('Enter');
+  await close.click();
+  await expect(drawer).toHaveCount(0);
+  await expect(manage).toBeFocused();
   await manage.press('Enter');
   await expect(query).toHaveValue('artist:unsaved-motion-draft');
   const finds = page.getByRole('button', { name: 'Show 1 latest finds for artist:history-test', exact: true });
@@ -340,16 +341,16 @@ test('Watched motion preserves drafts, keyboard access and reduced-motion feedba
   await expect(latest).toHaveCount(0);
   await finds.click();
   await expect(latest).toBeVisible();
-  await manage.locator('..').screenshot({ path: testInfo.outputPath('watched-motion-expanded.png') });
-  expect(await page.locator('main').evaluate(element => element.scrollWidth <= element.clientWidth)).toBeTruthy();
+  await drawer.screenshot({ path: testInfo.outputPath('watched-motion-expanded.png') });
+  expect(await drawer.evaluate(element => element.scrollWidth <= element.clientWidth)).toBeTruthy();
 
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await manage.click();
-  await expect(panel).toBeHidden();
+  await close.click();
+  await expect(drawer).toHaveCount(0);
   await manage.press('Enter');
   await expect(query).toHaveValue('artist:unsaved-motion-draft');
-  await expect.poll(() => panel.evaluate(element => getComputedStyle(element).transitionProperty)).toBe('none');
-  await manage.click();
+  await close.click();
+  await expect(drawer).toHaveCount(0);
   const card = page.locator('[data-gallery-motion-id="hitomi:history-12"]').locator('..');
   let finishReview!: () => void;
   const pausedReview = new Promise<void>(resolve => { finishReview = resolve; });
@@ -383,6 +384,7 @@ test('Hitomi search preserves exclusions, scoped autocomplete and website sort c
     return route.fulfill({ json: [] });
   });
   await navigate(page, 'Discover');
+  await page.getByRole('radio', { name: 'Hitomi.la', exact: true }).click();
   const search = page.getByRole('combobox', { name: 'Search galleries', exact: true });
   const draft = 'language:english -artist:mi type:doujinshi';
   await search.fill(draft);
@@ -433,6 +435,7 @@ test('Hitomi pages browse the full result count and preserve selections across p
     return route.fulfill({ json: { items, total } });
   });
   await navigate(page, 'Discover');
+  await page.getByRole('radio', { name: 'Hitomi.la', exact: true }).click();
   const search = page.getByRole('combobox', { name: 'Search galleries', exact: true });
   await search.fill('sample');
   await search.press('Enter');
@@ -459,6 +462,8 @@ test('Hitomi pages browse the full result count and preserve selections across p
   await expect(later).toBeVisible();
   await later.getByRole('button', { name: 'Select Sample gallery 1301', exact: true }).click();
   const selection = page.getByRole('region', { name: 'Merge selected galleries', exact: true }).filter({ visible: true });
+  // The phone tray keeps its title list collapsed until asked.
+  if (await selection.getByRole('button', { name: 'Show list', exact: true }).count()) await selection.getByRole('button', { name: 'Show list', exact: true }).click();
   await expect(selection.getByRole('list', { name: 'Selected galleries', exact: true }).getByRole('listitem')).toHaveCount(2);
   await expect(selection.getByRole('button', { name: 'Remove Sample gallery 1 from selection', exact: true })).toBeVisible();
   await expect(selection.getByRole('button', { name: 'Remove Sample gallery 1301 from selection', exact: true })).toBeVisible();
@@ -517,6 +522,7 @@ test('nHentai search keeps quoted exclusions, website sorts and selections acros
   expect(searches.at(-1)).toMatchObject({ source: 'nhentai', offset: 700, limit: 25 });
   await page.locator('[data-gallery-motion-id="nhentai:native-701"]').getByRole('button', { name: 'Select Native gallery 701', exact: true }).click();
   const selected = page.getByRole('region', { name: 'Merge selected galleries', exact: true }).filter({ visible: true });
+  if (await selected.getByRole('button', { name: 'Show list', exact: true }).count()) await selected.getByRole('button', { name: 'Show list', exact: true }).click();
   await expect(selected.getByRole('listitem')).toHaveCount(2);
   await expect(selected.getByRole('button', { name: 'Remove Native gallery 1 from selection', exact: true })).toBeVisible();
   await selected.getByRole('button', { name: 'Cancel', exact: true }).click();
@@ -544,6 +550,7 @@ test('provider switching translates current queries, reports losses and preserve
   const hitomi = page.getByRole('radio', { name: 'Hitomi.la', exact: true });
   const nhentai = page.getByRole('radio', { name: 'nHentai', exact: true });
   const sort = page.getByRole('combobox', { name: 'Sort results', exact: true });
+  await hitomi.click();
   const original = ' artist:sample_name -group:other_group language:japanese ';
   await query.fill(original);
   await sort.selectOption('popular-week');
@@ -587,7 +594,7 @@ test('provider switching translates current queries, reports losses and preserve
 test('watched provider switching shares translation and retains unsupported filters on return', async ({ page }) => {
   await page.route('**/api/doujin/suggestions', route => route.fulfill({ json: [] }));
   await navigate(page, 'Discover');
-  await page.getByRole('tab', { name: 'Following', exact: true }).click();
+  await page.getByRole('tab', { name: /^Following/ }).click();
   await page.getByRole('button', { name: /^Manage watches/ }).click();
   const form = page.getByRole('form', { name: 'Add a watched search' });
   const query = form.getByRole('combobox', { name: 'Watched search query' });

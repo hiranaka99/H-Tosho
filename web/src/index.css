@@ -305,6 +305,22 @@ select {
   animation: dialog-out 0.16s ease both;
 }
 
+/* Side sheet: same dialog primitive, entering from the trailing edge. */
+@keyframes sheet-in {
+  from { opacity: 0; transform: translateX(1.5rem); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes sheet-out {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(1rem); }
+}
+.sheet-content[data-state="open"] {
+  animation: sheet-in 0.28s var(--ease-out-soft) both;
+}
+.sheet-content[data-state="closed"] {
+  animation: sheet-out 0.16s ease both;
+}
+
 /* Feedback stays local to the control: no layout movement or looping effects. */
 .ui-button,
 .ui-choice {

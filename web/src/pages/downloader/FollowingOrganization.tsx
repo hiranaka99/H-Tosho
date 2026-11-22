@@ -195,7 +195,7 @@ export function FollowingFolders({ folders, watches, watchesReady, renderWatch, 
   return <section aria-labelledby={`${id}-heading`} className="flex flex-col gap-3 border-t border-border pt-4">
     <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
       <h3 id={`${id}-heading`} className="text-sm font-semibold">Folders</h3>
-      {creating ? <form id={`${id}-create`} aria-label="Add a watch folder" aria-busy={pending}
+      {creating ? <form id={`${id}-create`} aria-label="Add a watch folder" aria-busy={pending} data-owns-escape=""
         onSubmit={event => { event.preventDefault(); if (name.trim()) void mutate(() => api.addWatchedSearchFolder(name.trim())).then(saved => { if (saved) closeCreate(); }); }}
         onKeyDown={event => { if (event.key === 'Escape' && !pending) { event.preventDefault(); event.stopPropagation(); closeCreate(); } }}
         className="flex w-full min-w-0 items-center gap-2 sm:w-auto sm:max-w-md">

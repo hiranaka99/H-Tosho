@@ -7,25 +7,29 @@ import { useGalleryDownload } from './downloader/useGalleryDownload';
 import * as React from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
-import { Search, Loader2, RotateCcw, CheckCircle2, Check, ListVideo, Star, Sparkles, CheckSquare } from 'lucide-react';
+import { Search, Loader2, RotateCcw, CheckCircle2, Check, Compass, Star, Sparkles, CheckSquare, Settings2 } from 'lucide-react';
 import { api, ApiError, type DoujinSource, type DoujinSort, type DoujinSearchResult } from '../lib/api';
 import { cn, timeAgo } from '../lib/utils';
 import { downloadErrorHelp } from '../lib/downloadErrors';
 import { toast } from '../lib/toast';
-import { Button, Card, CardContent, Badge, Select, EmptyState, Spinner, PageHeader, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, ErrorState, Skeleton, Pager } from '../components/ui';
+import { Button, Card, CardContent, Badge, Select, EmptyState, Spinner, PageHeader, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, ErrorState, Pager } from '../components/ui';
 import { MergeIntoSeriesDialog } from '../components/MergeIntoSeriesDialog';
 import { GalleryFeedbackDialog, RecommendationFeedbackManager } from '../components/RecommendationFeedback';
 import { GallerySelectionBar } from '../components/GallerySelectionBar';
 import { switchProviderSearch, type TranslationLink } from '../lib/searchTranslation';
 
-import { FALLBACK_SOURCES, SOURCE_COLORS, SOURCE_LABELS, sortsFor, readDownloaderState, writeDownloaderState, type DownloaderTab, type DownloaderStateCache } from './downloader/state';
+import { FALLBACK_SOURCES, SOURCE_COLORS, SOURCE_LABELS, sortsFor, readDownloaderState, writeDownloaderState, type DownloaderTab, type DownloaderStateCache, type SearchScope } from './downloader/state';
 import { DownloadDestination } from './downloader/DownloadSetup';
 import { GalleryCard } from './downloader/GalleryCard';
 import { GalleryDetailModal } from './downloader/GalleryDetailModal';
 import { ManagerTab } from './downloader/DownloadManager';
 import { UnifiedSearchTab, type UnifiedSelectionActions } from './downloader/UnifiedSearchTab';
 import { useUnifiedSearch, toWebResult } from './downloader/useUnifiedSearch';
-import { WatchedTab } from './downloader/WatchedSearchControls';
+import { WatchedManagerDrawer } from './downloader/WatchedSearchControls';
+import { SearchHint } from './downloader/SearchHint';
+import { SearchFailure } from './downloader/SearchFailure';
+import { GallerySkeletonGrid } from './downloader/GallerySkeletons';
+import { galleryKey, galleryOwnership } from './downloader/ownership';
 import { MergeDownloadDialog, folderNameFrom, type MergeDownloadResult } from './downloader/MergeDownloadDialog';
 import { useDownloaderTransitions } from './downloader/motion';
 import type { UnifiedSearchEntry } from '../lib/api';
@@ -52,6 +56,14 @@ export function Downloader() {
     if (requested && SOURCE_COLORS[requested as DoujinSource]) return requested as DoujinSource;
     return initialState.source && SOURCE_COLORS[initialState.source] ? initialState.source : 'hitomi';
   }, []);
+
+  // One Search tab: 'all' fans out to every source, a provider id searches just
+  // that source (with its own sort and Watch). Deep links pin their source.
+  const [scope, setScope] = React.useState<SearchScope>(() => {
+    if (linkedQuery !== null) return initialSource;
+    if (searchParams.get('tab') === 'unified') return 'all';
+    return initialState.scope === 'all' || (initialState.scope && SOURCE_COLORS[initialState.scope]) ? initialState.scope : 'all';
+  });
 
   // The server reports the registered doujin providers; the radio list follows
   // it so new sources appear without UI changes (static fallback while loading).
@@ -93,6 +105,7 @@ export function Downloader() {
     translation.current = null;
     setTranslationNotice(null);
     dispatchSearch({ type: 'replace', state: { source: nextSource, query: nextQuery, searchKey: trimmed || null, sort: sortsFor(nextSource).some(option => option.value === sort) ? sort : 'default' } });
+    setScope(nextSource);
     setSelected(null);
   }, [deepLink, searchParams, source]);
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
@@ -119,19 +132,22 @@ export function Downloader() {
   const downloadStatus = setup.status;
   // Top-of-page view tabs: search results vs. the download manager queue.
   const [rememberedTab, setRememberedTab] = React.useState<DownloaderTab>(() =>
-    ['search', 'unified', 'recommend', 'watched', 'manager'].includes(initialState.tab ?? '') ? initialState.tab! : 'search');
+    ['recommend', 'watched', 'manager'].includes(initialState.tab ?? '') ? initialState.tab as DownloaderTab : 'search');
   const requestedTab = searchParams.get('tab');
-  // An explicit unified-tab selection wins over the q/source deep-link that
-  // would otherwise force native Search.
-  const tab: DownloaderTab = requestedTab === 'unified' ? 'unified'
-    : requestedTab === 'downloads' ? 'manager'
+  const tab: DownloaderTab = requestedTab === 'downloads' ? 'manager'
     : requestedTab === 'recommend' || requestedTab === 'watched' ? requestedTab
     : requestedTab !== null || linkedQuery !== null ? 'search' : rememberedTab;
-  const unified = useUnifiedSearch(tab === 'unified');
+  const searchAll = tab === 'search' && scope === 'all';
+  const searchNative = tab === 'search' && scope !== 'all';
+  // The retired ?tab=unified link opens Search scoped to every source.
+  const wantsUnified = requestedTab === 'unified';
+  React.useEffect(() => { if (wantsUnified) setScope('all'); }, [wantsUnified]);
+  const unified = useUnifiedSearch(searchAll);
   React.useEffect(() => {
     setRememberedTab(tab);
     writeDownloaderState({ tab });
   }, [tab]);
+  React.useEffect(() => { writeDownloaderState({ scope }); }, [scope]);
   const setTab = (next: DownloaderTab) => {
     setRememberedTab(next);
     writeDownloaderState({ tab: next });
@@ -148,13 +164,14 @@ export function Downloader() {
   const { data: searchResponse, isFetching, isError: searchFailed, error: searchError, refetch: retrySearch } = useQuery({
     queryKey: ['doujin-search', source, searchKey, sort, page],
     queryFn: () => api.doujinSearchPage(source, searchKey!, (page - 1) * RESULTS_PAGE_SIZE, RESULTS_PAGE_SIZE, sort),
-    enabled: tab === 'search' && searchKey !== null && searchKey.trim().length > 0,
+    enabled: searchNative && searchKey !== null && searchKey.trim().length > 0,
     // Refocusing the window must not re-scrape Hitomi/nHentai, and while a new
     // search loads the grid keeps the previous results instead of blanking.
     staleTime: 5 * 60_000,
     placeholderData: keepPreviousData,
   });
   const results = searchResponse?.items;
+  const pageItems = results ?? EMPTY_GALLERIES;
 
   // Galleries with a completed download task — powers the duplicate badges.
   // The downloads context invalidates this key when a task completes.
@@ -173,14 +190,14 @@ export function Downloader() {
     queryKey: ['watched-searches'],
     queryFn: api.watchedSearches,
     // toggleWatch refetches after add/remove and the cache survives tab
-    // switches — no polling, and no fetch while the search tab is hidden.
-    enabled: tab === 'search',
+    // switches — no polling, and no fetch while neither view needs it.
+    enabled: searchNative || tab === 'watched',
   });
   const watchedQuery = searchKey?.trim() ?? '';
   const currentWatch = (watches ?? []).find((w) => w.source === source && w.query === watchedQuery);
   // The account view (never secrets) gates the E-Hentai empty state: an
   // unconfigured account gets a settings pointer instead of a dead search.
-  const ehAccount = useQuery({ queryKey: ['ehentai-account'], queryFn: api.ehentaiAccount, staleTime: 30_000, enabled: tab === 'search' && source === 'ehentai' });
+  const ehAccount = useQuery({ queryKey: ['ehentai-account'], queryFn: api.ehentaiAccount, staleTime: 30_000, enabled: searchNative && source === 'ehentai' });
 
   async function toggleWatch() {
     const q = watchedQuery;
@@ -205,6 +222,17 @@ export function Downloader() {
     }
   }
 
+  // The Following tab label carries the unreviewed count even while another tab is open.
+  const { data: inboxCount } = useQuery({
+    queryKey: ['watched-gallery-feed', 'inbox-count'],
+    queryFn: () => api.watchedGalleryFeed({ view: 'inbox', offset: 0, limit: 1 }),
+    select: feed => feed.inboxCount,
+    staleTime: 60_000,
+    refetchInterval: 120_000,
+  });
+  const [manageWatchesOpen, setManageWatchesOpen] = React.useState(false);
+  const manageWatchesTrigger = React.useRef<HTMLElement | null>(null);
+  const openManageWatches = () => { manageWatchesTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setManageWatchesOpen(true); };
   const selection = useGallerySelection();
   const { feedView, setFeedView, feedSource, setFeedSource, feedWatch, setFeedWatch, feedFolder, setFeedFolder, foldersQuery, setFeedPage, galleryFeed, feedWatches, feedLoading, feedFailed, feedError, retryFeed, feedItems, knownDiscoveries, feedMetaByKey, feedPageCount, feedCurPage, feedPageItems, reviewingKeys, reviewDiscoveries, reviewGallery } = useWatchedFeed(tab, selection.remove);
   const selectionView = React.useMemo(() => resolveGallerySelection(selection.chosen, results ?? EMPTY_GALLERIES, feedItems, knownDiscoveries.current), [selection.chosen, results, feedItems, knownDiscoveries]);
@@ -221,6 +249,13 @@ export function Downloader() {
     selection.clear();
     setSelectMode(false);
   }, [searchKey, source]);
+  const scopeMounted = React.useRef(false);
+  React.useEffect(() => {
+    if (!scopeMounted.current) { scopeMounted.current = true; return; }
+    selection.clear();
+    setUnifiedSelected([]);
+    setSelectMode(false);
+  }, [scope]);
   React.useEffect(() => {
     // Debounced so typing a long query does not serialize to sessionStorage on
     // every keystroke; the timer resets per change and clears on unmount.
@@ -286,8 +321,15 @@ export function Downloader() {
       return [...prev, { entryId: entry.entryId, source: entry.primary.source, galleryId: entry.primary.galleryId }];
     });
   }, []);
+  const unifiedSelectedIds = new Set(unifiedSelected.map((s) => s.entryId));
   const unifiedSelectionActions: UnifiedSelectionActions = {
     items: unifiedSelectedItems,
+    onDownloadEach: () => void downloadEach(unifiedSelectedItems),
+    onSelectAll: unified.entries.length ? () => setUnifiedSelected((prev) => {
+      const have = new Set(prev.map((s) => s.entryId));
+      return [...prev, ...unified.entries.filter((e) => !have.has(e.entryId)).map((e) => ({ entryId: e.entryId, source: e.primary.source, galleryId: e.primary.galleryId }))];
+    }) : undefined,
+    allSelected: unified.entries.length > 0 && unified.entries.every((e) => unifiedSelectedIds.has(e.entryId)),
     onMerge: () => openMergedDownload(unifiedSelectedItems),
     onMergeInto: () => openMergeInto(unifiedSelectedItems),
     onRemove: (item) => setUnifiedSelected((prev) => prev.filter((s) => `${s.source}:${s.galleryId}` !== `${item.source}:${item.galleryId}`)),
@@ -303,24 +345,34 @@ export function Downloader() {
     setUnifiedVariantKey(null);
     setSelectMode(false);
   }, [unified.committed]);
-  function unifiedOwnership(entry: UnifiedSearchEntry): { type: 'available' | 'downloaded' | 'in-library' | 'possible-duplicate'; downloadedAt: string | null; preferenceOwned: boolean } {
-    // Task/ownership is inspected across every variant, but only authoritative
-    // source matches (exact source+galleryId in library/downloads) claim it.
-    const keys = entry.variants.map((v) => `${v.source}:${v.galleryId}`);
+  function unifiedOwnership(entry: UnifiedSearchEntry) {
+    // Every variant is inspected, but only exact source+galleryId matches claim ownership.
     const primaryKey = `${entry.primary.source}:${entry.primary.galleryId}`;
-    const anyInLibrary = keys.some((k) => libraryMatches.get(k) === 'owned');
-    const anyPossible = keys.some((k) => libraryMatches.get(k) === 'possible');
-    const anyDownloaded = keys.some((k) => downloadedAt.has(k) || ownedKeys.has(k));
-    return {
-      type: anyInLibrary ? 'in-library' : anyDownloaded ? 'downloaded' : anyPossible ? 'possible-duplicate' : 'available',
-      downloadedAt: downloadedAt.get(primaryKey) ?? null,
-      preferenceOwned: keys.some((k) => ownedKeys.has(k)),
-    };
+    const variantKeys = entry.variants.map((v) => `${v.source}:${v.galleryId}`).filter((k) => k !== primaryKey);
+    return galleryOwnership([primaryKey, ...variantKeys], libraryMatches, downloadedAt, ownedKeys);
   }
 
-  const showSelection = (tab === 'search' || tab === 'unified' || tab === 'recommend' || tab === 'watched') && (selectMode || selectedGalleries.size > 0 || unifiedSelected.length > 0);
+  const showSelection = (tab === 'search' || tab === 'recommend' || tab === 'watched') && (selectMode || selectedGalleries.size > 0 || unifiedSelected.length > 0);
+  // Queue each chosen gallery on its own, one at a time so duplicate reviews never stack up.
+  const downloadingEach = React.useRef(false);
+  async function downloadEach(items: DoujinSearchResult[]) {
+    if (!items.length || downloadingEach.current || !ensureDownloadReady()) return;
+    downloadingEach.current = true;
+    try {
+      for (const item of items) await doStartDownload(item);
+      selection.clear();
+      setUnifiedSelected([]);
+      setSelectMode(false);
+    } finally {
+      downloadingEach.current = false;
+    }
+  }
+  const pageSelectable: DoujinSearchResult[] = tab === 'search' ? pageItems : tab === 'recommend' ? visibleRecs : tab === 'watched' ? feedPageItems : EMPTY_GALLERIES;
   const selectionActions = {
     items: selectedItems,
+    onDownloadEach: () => void downloadEach(selectedItems),
+    onSelectAll: pageSelectable.length ? () => selection.addMany(pageSelectable) : undefined,
+    allSelected: pageSelectable.length > 0 && pageSelectable.every(item => selectedGalleries.has(galleryKey(item))),
     onMerge: () => openMergedDownload(selectedItems),
     onMergeInto: () => openMergeInto(selectedItems),
     onRemove: toggleGallerySelect,
@@ -399,6 +451,7 @@ export function Downloader() {
     setTranslationNotice(null);
     const nextSource = itemSource ?? source;
     dispatchSearch({ type: 'replace', state: { source: nextSource, query: trimmed, searchKey: trimmed, sort: sortsFor(nextSource).some(option => option.value === sort) ? sort : 'default' } });
+    setScope(nextSource);
     setTab('search');
     setSelected(null);
   }
@@ -420,6 +473,21 @@ export function Downloader() {
     }, { replace: true });
   }
 
+  /** Moving between scopes carries a typed-but-unsent query along instead of dropping it. */
+  function changeScope(next: SearchScope) {
+    if (next === scope) return;
+    if (next === 'all') {
+      if (!unified.draft.trim() && query.trim()) unified.setDraft(query.trim());
+      setScope('all');
+      return;
+    }
+    const carried = scope === 'all' && !query.trim() && unified.draft.trim() ? unified.draft : null;
+    if (next !== source) switchSource(next);
+    if (carried) setQuery(carried);
+    setScope(next);
+  }
+  const scopeItems = React.useMemo(() => [{ id: 'all' as SearchScope, label: 'All sources' }, ...sources.map(item => ({ id: item.id as SearchScope, label: item.label }))], [sources]);
+
   const runSearch = (e: React.FormEvent) => {
     e.preventDefault();
     commitQuery(query);
@@ -433,9 +501,8 @@ export function Downloader() {
     setPage(nextPage);
     document.querySelector('main')?.scrollTo({ top: 0 });
   }
-  const pageItems = results ?? EMPTY_GALLERIES;
-  const matchItems = tab === 'search' ? pageItems : tab === 'recommend' ? visibleRecs : tab === 'watched' ? feedPageItems
-    : tab === 'unified' ? unified.entries.flatMap((e) => e.variants.map((v) => webVariant(e, `${v.source}:${v.galleryId}`)))
+  const matchItems = searchAll ? unified.entries.flatMap((e) => e.variants.map((v) => webVariant(e, `${v.source}:${v.galleryId}`)))
+    : tab === 'search' ? pageItems : tab === 'recommend' ? visibleRecs : tab === 'watched' ? feedPageItems
     : [];
   const matchQuery = useQuery({
     queryKey: ['gallery-library-matches', matchItems.map(({ source, galleryId, title, artists, language, pageCount }) => ({ source, galleryId, title, artists, language, pageCount }))],
@@ -448,15 +515,21 @@ export function Downloader() {
     `${report.source}:${report.galleryId}`,
     report.matches.some(match => match.confirmed && ['In library', 'Owned', 'completed'].includes(match.status)) ? 'owned' as const : report.matches.length ? 'possible' as const : undefined,
   ]));
+  const ownershipFor = (item: DoujinSearchResult) => galleryOwnership([galleryKey(item)], libraryMatches, downloadedAt, ownedKeys);
+  const folderCount = foldersQuery.data?.length ?? 0;
+  const showFolderFilter = folderCount > 0 || feedFolder !== '';
+  // Filters appear once there is something to choose between, and stay put while narrowing.
+  const showWatchFilter = (watches?.length ?? 0) > 1 || feedWatch !== '';
+  const showSourceFilter = new Set((watches ?? []).map(watch => watch.source)).size > 1 || feedSource !== '';
   const galleryMotionRef = useDownloaderTransitions(`${tab}:${pageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${visibleRecs.map(item => `${item.source}:${item.galleryId}`).join(',')}:${feedPageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${unified.entries.map(entry => entry.entryId).join(',')}:${selectMode}:${[...selectedGalleries].join(',')}`);
 
   return (
     <div ref={galleryMotionRef} className={cn('flex flex-col gap-4', showSelection && 'pb-[calc(var(--selection-tray-height,0px)+1rem)] lg:pb-0')} style={{ '--selection-tray-height': `${selectionHeight}px` } as React.CSSProperties}>
-      <PageHeader icon={<ListVideo className="h-5 w-5" />} title="Discover galleries" subtitle={tab === 'watched' ? undefined : "Search Hitomi.la, nHentai and E-Hentai/ExHentai, then download galleries into your Kavita library."} />
-      <DownloadDestination setup={setup} compact={tab === 'watched'} />
+      <PageHeader icon={<Compass className="h-5 w-5" />} title="Discover galleries" subtitle={tab === 'watched' ? undefined : "Search Hitomi.la, nHentai and E-Hentai, then download galleries into your Kavita library."} />
+      {tab !== 'manager' && <DownloadDestination setup={setup} compact={tab === 'watched'} />}
 
       <SegmentedTabs
-        items={[{ id: 'search' as const, label: 'Search' }, { id: 'unified' as const, label: 'Unified search' }, { id: 'recommend' as const, label: 'For you' }, { id: 'watched' as const, label: 'Following' }, { id: 'manager' as const, label: 'Downloads' }]}
+        items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'For you' }, { id: 'watched' as const, label: inboxCount ? `Following (${inboxCount})` : 'Following' }, { id: 'manager' as const, label: 'Downloads' }]}
         value={tab}
         onChange={setTab}
         label="Discover sections"
@@ -467,34 +540,58 @@ export function Downloader() {
 
       {tab === 'search' && (<>
 
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+        <span aria-hidden="true" className="text-sm font-medium text-muted">Search in</span>
+        <SegmentedControl items={scopeItems} value={scope} onChange={changeScope} label="Search in" className="max-w-full" itemClassName="min-h-9 px-3 text-xs sm:text-sm max-lg:min-h-11" />
+      </div>
+
+      {searchAll ? (
+        <UnifiedSearchTab
+          unified={unified}
+          onOpenEntry={(entry) => {
+            setUnifiedSelectedEntry(entry);
+            setUnifiedVariantKey(`${entry.primary.source}:${entry.primary.galleryId}`);
+            setSelected(null);
+          }}
+          onDownload={(item) => doStartDownload(item)}
+          downloadStatus={downloadStatus}
+          startingKeys={pendingKeys}
+          ownershipFor={unifiedOwnership}
+          selectedEntryIds={unifiedSelectedIds}
+          onToggleGroup={toggleUnifiedGroup}
+          selectMode={selectMode}
+          onToggleSelectMode={() => setSelectMode((m) => !m)}
+          selectionActions={unifiedSelectionActions}
+          showSelection={showSelection}
+        />
+      ) : (<>
+
       {/* Search bar */}
       <Card>
         <CardContent className="flex flex-col gap-3">
           <form onSubmit={runSearch} className="flex flex-col gap-2 lg:flex-row">
             <div className="flex min-w-0 flex-1 gap-2">
-              <GallerySearchInput value={query} onChange={setQuery} source={source} label="Search galleries" placeholder="Search by keyword, tag, artist, gallery ID or URL…" clearLabel="Clear search input" />
+              <GallerySearchInput value={query} onChange={setQuery} source={source} label="Search galleries" describedBy="search-hint" placeholder="Search by keyword, tag, artist, gallery ID or URL…" clearLabel="Clear search input" />
               <Button className="shrink-0" type="submit" disabled={isFetching || !query.trim()}>
                 {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
               </Button>
             </div>
-            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.7fr)] gap-2 lg:flex lg:shrink-0">
-              <SegmentedControl items={sources} value={source} onChange={switchSource} label="Download source" className="lg:shrink-0" itemClassName="px-2 text-xs sm:px-3 sm:text-sm" />
-              {/* Popularity ordering — mirrors each source's own sort controls. The
-                  sort travels as a separate field, so its syntax never appears in the search box. */}
-              {sortsFor(source).length > 1 && (
-                <Select
-                  value={sort}
-                  onChange={(e) => setSort(e.target.value as DoujinSort)}
-                  aria-label="Sort results"
-                  className="min-w-0 w-full shrink-0 text-xs sm:text-sm lg:w-40"
-                >
-                  {sortsFor(source).map((s) => (
-                    <option key={s.value} value={s.value}>{s.label}</option>
-                  ))}
-                </Select>
-              )}
-            </div>
+            {/* Popularity ordering — mirrors each source's own sort controls. The
+                sort travels as a separate field, so its syntax never appears in the search box. */}
+            {sortsFor(source).length > 1 && (
+              <Select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as DoujinSort)}
+                aria-label="Sort results"
+                className="min-w-0 w-full shrink-0 text-xs sm:text-sm lg:w-44"
+              >
+                {sortsFor(source).map((s) => (
+                  <option key={s.value} value={s.value}>{s.label}</option>
+                ))}
+              </Select>
+            )}
           </form>
+          <SearchHint id="search-hint" scope={source} />
           {translationNotice?.query === query && translationNotice.issues.length > 0 && <p role="status" aria-label="Search query translation" className="break-words text-sm text-muted">{translationNotice.issues.join(' ')} Review the query, then choose Search.</p>}
         </CardContent>
       </Card>
@@ -514,15 +611,18 @@ export function Downloader() {
               {isFetching ? 'Searching…' : results ? resultCount + (resultCount === 1 ? ' gallery' : ' galleries') + ' found on ' + SOURCE_LABELS[source] : 'Search results'}
               {!isFetching && pageCount > 1 && ' · ' + ((curPage - 1) * RESULTS_PAGE_SIZE + 1) + '–' + Math.min(curPage * RESULTS_PAGE_SIZE, resultCount)}
             </p>
-            <div className="ml-auto flex items-center gap-2">
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+              {source === 'ehentai' && <span id="watch-note" className="text-xs text-muted">Watching isn’t available for E-Hentai.</span>}
               <Button
                 type="button"
                 size="sm"
+                aria-label="Watch this search"
+                aria-describedby={source === 'ehentai' ? 'watch-note' : undefined}
                 aria-pressed={!!currentWatch}
                 variant={currentWatch ? 'secondary' : 'outline'}
                 onClick={() => void toggleWatch()}
                 disabled={!watchedQuery || source === 'ehentai'}
-                title={source === 'ehentai' ? 'Watching is not available for E-Hentai searches' : currentWatch ? `Stop watching “${watchedQuery}”` : watchedQuery ? `Watch the displayed results for “${watchedQuery}”` : 'Search first to watch these results'}
+                title={currentWatch ? `Stop watching “${watchedQuery}”` : watchedQuery ? `Watch the displayed results for “${watchedQuery}”` : 'Search first to watch these results'}
               >
                 <Star className={cn('h-4 w-4', currentWatch && 'fill-current')} /> {currentWatch ? 'Watching' : 'Watch'}
               </Button>
@@ -534,29 +634,11 @@ export function Downloader() {
             </div>
           </div>
           {searchFailed ? (
-            <ErrorState title="Search failed" description={searchError instanceof Error ? searchError.message : String(searchError)} onRetry={() => void retrySearch()} />
+            <SearchFailure title="Search failed" subject={SOURCE_LABELS[source]} error={searchError} onRetry={() => void retrySearch()} />
           // placeholderData keeps the previous grid mounted during a refetch —
           // the spinner only shows before any results exist.
           ) : isFetching && !results ? (
-            <div role="status" aria-label={`Searching ${SOURCE_LABELS[source]}`} className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-              {Array.from({ length: 12 }, (_, i) => (
-                <div key={i} className="overflow-hidden rounded-lg border border-border bg-surface">
-                  <Skeleton className="aspect-[3/4] w-full rounded-none" />
-                  <div className="flex flex-col gap-2 p-3">
-                    <Skeleton className="h-4 w-4/5" />
-                    <div className="flex flex-wrap gap-1">
-                      <Skeleton className="h-5 w-16 rounded-full" />
-                      <Skeleton className="h-5 w-20 rounded-full" />
-                      <Skeleton className="h-5 w-14 rounded-full" />
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between p-3 pt-2">
-                    <Skeleton className="h-5 w-20 rounded-full" />
-                    <Skeleton className="h-7 w-24 rounded-md" />
-                  </div>
-                </div>
-              ))}
-            </div>
+            <GallerySkeletonGrid label={`Searching ${SOURCE_LABELS[source]}`} />
           ) : results && results.length > 0 ? (
             <>
               {showSelection && <GallerySelectionBar {...selectionActions} />}
@@ -569,7 +651,7 @@ export function Downloader() {
                     starting={pendingKeys.has(`${item.source}:${item.galleryId}`)}
                     onDownload={doStartDownload}
                     downloadSetup={downloadStatus}
-                   ownership={{ type: libraryMatches.get(`${item.source}:${item.galleryId}`) === 'owned' ? 'in-library' : downloadedAt.has(`${item.source}:${item.galleryId}`) || ownedKeys.has(`${item.source}:${item.galleryId}`) ? 'downloaded' : libraryMatches.get(`${item.source}:${item.galleryId}`) === 'possible' ? 'possible-duplicate' : 'available', downloadedAt: downloadedAt.get(`${item.source}:${item.galleryId}`), preferenceOwned: ownedKeys.has(`${item.source}:${item.galleryId}`) }} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(`${item.source}:${item.galleryId}`), onToggle: toggleGallerySelect }} />
+                   ownership={ownershipFor(item)} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(`${item.source}:${item.galleryId}`), onToggle: toggleGallerySelect }} />
                 ))}
               </div>
               <Pager page={curPage} count={pageCount} onPageChange={changePage} />
@@ -580,30 +662,10 @@ export function Downloader() {
         </div>
       )}
 
-      </>)
-      }
+      </>)}
 
-      {/* Unified search — one query across all three sources */}
-      {tab === 'unified' && (
-        <UnifiedSearchTab
-          unified={unified}
-          onOpenEntry={(entry) => {
-            setUnifiedSelectedEntry(entry);
-            setUnifiedVariantKey(`${entry.primary.source}:${entry.primary.galleryId}`);
-            setSelected(null);
-          }}
-          onDownload={(item) => doStartDownload(item)}
-          downloadStatus={downloadStatus}
-          startingKeys={pendingKeys}
-          ownershipFor={unifiedOwnership}
-          selectedEntryIds={new Set(unifiedSelected.map((s) => s.entryId))}
-          onToggleGroup={toggleUnifiedGroup}
-          selectMode={selectMode}
-          onToggleSelectMode={() => setSelectMode((m) => !m)}
-          selectionActions={unifiedSelectionActions}
-          showSelection={showSelection}
-        />
-      )}
+      </>)}
+
 
       {/* Daily recommendations */}
       {tab === 'recommend' && (
@@ -612,7 +674,7 @@ export function Downloader() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               {recLibs && recLibs.length > 0 && (
                 <div role="group" aria-label="Libraries used for recommendations" className="flex min-w-0 flex-wrap items-center gap-2">
-                  <span className="mr-1 text-xs font-medium text-muted">Use libraries</span>
+                  <span className="mr-1 text-xs font-medium text-muted">Include libraries</span>
                   {recLibs.map((lib) => {
                     const excluded = (recSettings?.excludedLibraryIds ?? []).includes(lib.id);
                     return (
@@ -705,57 +767,59 @@ export function Downloader() {
                     downloadSetup={downloadStatus}
 
 
-                   ownership={{ type: libraryMatches.get(`${item.source}:${item.galleryId}`) === 'owned' ? 'in-library' : downloadedAt.has(`${item.source}:${item.galleryId}`) || ownedKeys.has(`${item.source}:${item.galleryId}`) ? 'downloaded' : libraryMatches.get(`${item.source}:${item.galleryId}`) === 'possible' ? 'possible-duplicate' : 'available', downloadedAt: downloadedAt.get(`${item.source}:${item.galleryId}`), preferenceOwned: ownedKeys.has(`${item.source}:${item.galleryId}`) }} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(`${item.source}:${item.galleryId}`), onToggle: toggleGallerySelect }} display="recommendation" feedback={{ pending: feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading, onOpen: setFeedbackItem }} />
+                   ownership={ownershipFor(item)} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(`${item.source}:${item.galleryId}`), onToggle: toggleGallerySelect }} display="recommendation" feedback={{ pending: feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading, onOpen: setFeedbackItem }} />
                 </div>
               ))}
             </div>
             </>
           ) : (
-            <EmptyState icon={<Sparkles className="h-8 w-8" />} title="No picks available" description="Hitomi returned no eligible galleries — try refreshing, or check back later." />
+            <EmptyState icon={<Sparkles className="h-8 w-8" />} title="No picks available" description="Nothing eligible came back. Refresh the picks, or include another library above." />
           )}
         </div>
       )}
 
-      {/* Watch controls stay above the inbox and retained discovery history. */}
+      {/* The inbox leads; watch upkeep lives in a side sheet. */}
       {tab === 'watched' && (
         <div className="flex flex-col gap-4">
-          <WatchedTab onOpenSearch={(src, q) => searchTagFragment(q, src)} />
           <section aria-label="Watched discoveries" className="flex flex-col gap-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <SegmentedControl items={[{ id: 'inbox' as const, label: `Inbox${galleryFeed ? ` (${galleryFeed.inboxCount})` : ''}` }, { id: 'history' as const, label: `History${galleryFeed ? ` (${galleryFeed.historyCount})` : ''}` }]} value={feedView} onChange={view => { setFeedView(view); setFeedPage(1); }} label="Discovery view" itemClassName="min-h-11" />
-              <Button size="sm" className="h-11" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode(current => !current)} disabled={!feedItems.length && !selectedGalleries.size}><CheckSquare className="h-3.5 w-3.5" />{selectMode ? 'Done selecting' : 'Select galleries'}</Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <SegmentedControl items={[{ id: 'inbox' as const, label: `Inbox${galleryFeed ? ` (${galleryFeed.inboxCount})` : ''}` }, { id: 'history' as const, label: `History${galleryFeed ? ` (${galleryFeed.historyCount})` : ''}` }]} value={feedView} onChange={view => { setFeedView(view); setFeedPage(1); }} label="Discovery view" itemClassName="min-h-11" />
+                <Button size="sm" className="h-11" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode(current => !current)} disabled={!feedItems.length && !selectedGalleries.size}><CheckSquare className="h-3.5 w-3.5" />{selectMode ? 'Done selecting' : 'Select galleries'}</Button>
+              </div>
+              <Button size="sm" className="h-11" variant="outline" onClick={openManageWatches}><Settings2 className="h-3.5 w-3.5" />Manage watches{watches ? ` (${watches.length})` : ''}</Button>
             </div>
-            <div className="grid min-w-0 grid-cols-1 gap-3 min-[420px]:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_12rem]">
-              <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">Folder
+            {(showFolderFilter || showWatchFilter || showSourceFilter) && <div className="flex min-w-0 flex-wrap gap-3">
+              {showFolderFilter && <label className="flex min-w-[10rem] flex-1 flex-col gap-1 text-xs font-medium text-muted lg:max-w-xs">Folder
                 <Select className="h-11" aria-label="Filter discoveries by folder" value={feedFolder} onChange={event => { setFeedFolder(event.target.value); setFeedWatch(''); setFeedPage(1); }} disabled={!foldersQuery.isSuccess}>
                   <option value="">All folders</option><option value="unfiled">Unfiled</option>
                   {(foldersQuery.data ?? []).map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
                 </Select>
-              </label>
-              <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">Watch
+              </label>}
+              {showWatchFilter && <label className="flex min-w-[10rem] flex-1 flex-col gap-1 text-xs font-medium text-muted lg:max-w-xs">Watch
                 <Select className="h-11" aria-label="Filter discoveries by watch" value={feedWatch} onChange={event => { setFeedWatch(event.target.value); setFeedPage(1); }}>
                   <option value="">All watches</option>
                   {feedWatches?.map(watch => <option key={watch.id} value={watch.id}>{SOURCE_LABELS[watch.source]} · {watch.watchLabel}{watch.removed ? ' (removed watch)' : ''}</option>)}
                 </Select>
-              </label>
-              <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">Source
+              </label>}
+              {showSourceFilter && <label className="flex min-w-[10rem] flex-1 flex-col gap-1 text-xs font-medium text-muted lg:max-w-[12rem]">Source
                 <Select className="h-11" aria-label="Filter discoveries by source" value={feedSource} onChange={event => { setFeedSource(event.target.value); setFeedPage(1); }}><option value="">All sources</option><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select>
-              </label>
-            </div>
+              </label>}
+            </div>}
             {foldersQuery.isError && <ErrorState title="Could not load folder filters" description={foldersQuery.error.message} onRetry={() => void foldersQuery.refetch()} />}
             {reviewableSelectedItems.length > 0 && <div className="flex justify-end">
               <Button size="sm" variant="outline" disabled={reviewingKeys.size > 0} onClick={() => void reviewDiscoveries(reviewableSelectedItems, true)}><Check className="h-3.5 w-3.5" />{reviewableSelectedItems.length === selectedItems.length ? 'Dismiss selected' : `Dismiss ${reviewableSelectedItems.length} finds`}</Button>
             </div>}
             {showSelection && <GallerySelectionBar {...selectionActions} />}
-            {feedFailed ? <ErrorState title="Could not load discoveries" description={feedError instanceof Error ? feedError.message : String(feedError)} onRetry={() => void retryFeed()} /> : !galleryFeed && feedLoading ? (
-              <div role="status" className="flex items-center justify-center gap-2 px-4 py-12 text-sm text-muted"><Spinner />Loading discoveries…</div>
+            {feedFailed ? <SearchFailure title="Could not load discoveries" subject="Your discoveries" error={feedError} onRetry={() => void retryFeed()} /> : !galleryFeed && feedLoading ? (
+              <GallerySkeletonGrid label="Loading discoveries" count={6} />
             ) : feedItems.length ? (
               <>
                 <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                   {feedPageItems.map(item => {
                     const key = `${item.source}:${item.galleryId}`, meta = feedMetaByKey.get(key);
                     return <div key={key} data-review-pending={reviewingKeys.has(key)} className="watched-discovery flex min-w-0 flex-col gap-1 [&>article]:flex-1">
-                      <GalleryCard item={item} onOpen={setSelected} starting={pendingKeys.has(key)} onDownload={doStartDownload} downloadSetup={downloadStatus}   ownership={{ type: libraryMatches.get(`${item.source}:${item.galleryId}`) === 'owned' ? 'in-library' : downloadedAt.has(`${item.source}:${item.galleryId}`) || ownedKeys.has(`${item.source}:${item.galleryId}`) ? 'downloaded' : libraryMatches.get(`${item.source}:${item.galleryId}`) === 'possible' ? 'possible-duplicate' : 'available', downloadedAt: downloadedAt.get(`${item.source}:${item.galleryId}`), preferenceOwned: ownedKeys.has(`${item.source}:${item.galleryId}`) }} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(`${item.source}:${item.galleryId}`), onToggle: toggleGallerySelect }} display="discovery" review={{ state: reviewingKeys.has(key) ? 'pending' : meta?.reviewedAt ? 'reviewed' : 'unreviewed', onChange: reviewGallery }} />
+                      <GalleryCard item={item} onOpen={setSelected} starting={pendingKeys.has(key)} onDownload={doStartDownload} downloadSetup={downloadStatus} ownership={ownershipFor(item)} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(key), onToggle: toggleGallerySelect }} display="discovery" review={{ state: reviewingKeys.has(key) ? 'pending' : meta?.reviewedAt ? 'reviewed' : 'unreviewed', onChange: reviewGallery }} />
                       {meta && <div className="flex min-w-0 flex-col gap-1 px-1 text-xs">
                         <button className="min-h-11 break-words text-left text-muted underline-offset-4 hover:text-primary hover:underline line-clamp-2" onClick={() => { setFeedWatch(String(meta.searchId)); setFeedPage(1); }} title={`Filter by ${meta.watchLabel} · ${meta.query}`}>via {meta.watchLabel}{meta.watchRemoved ? ' · removed watch' : ''} · {timeAgo(meta.foundAt)}</button>
                         {meta.reviewedAt && <Button size="sm" variant="ghost" className="min-h-11 justify-start px-1" disabled={reviewingKeys.has(key)} onClick={() => reviewGallery(item, false)}><RotateCcw className="h-3.5 w-3.5" />Return to inbox</Button>}
@@ -765,8 +829,16 @@ export function Downloader() {
                 </div>
                 <Pager page={feedCurPage} count={feedPageCount} onPageChange={page => { setFeedPage(page); document.querySelector('main')?.scrollTo({ top: 0 }); }} />
               </>
-            ) : <EmptyState icon={<Star className="h-8 w-8" />} title={feedWatch || feedSource || feedFolder ? 'No matching discoveries' : feedView === 'inbox' ? 'Inbox is clear' : 'No discoveries yet'} />}
+            ) : (
+              <div className="flex flex-col items-center">
+                <EmptyState icon={<Star className="h-8 w-8" />}
+                  title={feedWatch || feedSource || feedFolder ? 'No matching discoveries' : watches?.length === 0 ? 'Nothing followed yet' : feedView === 'inbox' ? 'Inbox is clear' : 'No discoveries yet'}
+                  description={feedWatch || feedSource || feedFolder ? 'Clear a filter to see the rest.' : watches?.length === 0 ? 'Choose Watch on a single-source search, or add a search to follow. New finds land here for review.' : feedView === 'inbox' ? 'New finds from your watched searches will appear here.' : 'Dismissed finds are kept here.'} />
+                {!feedWatch && !feedSource && !feedFolder && <Button variant="outline" className="-mt-6 mb-10 min-h-11" onClick={openManageWatches}><Settings2 className="h-3.5 w-3.5" />{watches?.length === 0 ? 'Add a watched search' : 'Manage watches'}</Button>}
+              </div>
+            )}
           </section>
+          <WatchedManagerDrawer open={manageWatchesOpen} onOpenChange={setManageWatchesOpen} returnFocusTo={manageWatchesTrigger} onOpenSearch={(src, q) => searchTagFragment(q, src)} />
         </div>
       )}
       {/* Merged download confirm — reachable from both results grids */}
@@ -845,7 +917,7 @@ export function Downloader() {
       {tab === 'manager' && <ManagerTab />}
 
       </TabPanel>
-      {showSelection && <GallerySelectionBar {...(tab === 'unified' ? unifiedSelectionActions : selectionActions)} mobile onHeightChange={setSelectionHeight} />}
+      {showSelection && <GallerySelectionBar {...(searchAll ? unifiedSelectionActions : selectionActions)} mobile onHeightChange={setSelectionHeight} />}
       {duplicateDialog}
     </div>
   );

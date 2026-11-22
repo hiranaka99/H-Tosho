@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { api, type DownloadTask, type DoujinSource } from './api';
 import { useDownloadEvents } from './useDownloadEvents';
 import { toast } from './toast';
@@ -40,10 +40,23 @@ export interface DownloadTasksApi {
   tasks: DownloadTask[];
   active: DownloadTask[];
   error: Error | null;
+  /** True until the first task list arrives, so views can tell loading from empty. */
+  loading: boolean;
   refetch: () => Promise<unknown>;
 }
 
 export interface DownloadsApi extends DownloadActionsApi, DownloadTasksApi {}
+
+/** Shared by every observer of ['downloads']: a refetch runs the most recently
+ * attached observer's queryFn, so per-card observers must carry one too. */
+function downloadsQueryFn(qc: QueryClient) {
+  return async () => {
+    const fresh = await api.downloads();
+    const prev = qc.getQueryData<DownloadTask[]>(['downloads']);
+    if (!prev) return fresh;
+    return mergeDownloadPoll(prev, fresh);
+  };
+}
 
 const ActionsCtx = React.createContext<DownloadActionsApi | null>(null);
 const TasksCtx = React.createContext<DownloadTasksApi | null>(null);
@@ -67,12 +80,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   // this same cache, so a concurrent poll would only double the traffic.
   const downloadsQuery = useQuery({
     queryKey: ['downloads'],
-    queryFn: async () => {
-      const fresh = await api.downloads();
-      const prev = qc.getQueryData<DownloadTask[]>(['downloads']);
-      if (!prev) return fresh;
-      return mergeDownloadPoll(prev, fresh);
-    },
+    queryFn: downloadsQueryFn(qc),
     refetchInterval: liveConnected ? false : 5000,
   });
   const data = downloadsQuery.data;
@@ -154,11 +162,12 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   const tasksValue = React.useMemo<DownloadTasksApi>(
     () => ({
       error: downloadsQuery.error instanceof Error ? downloadsQuery.error : null,
+      loading: downloadsQuery.isPending,
       refetch: downloadsQuery.refetch,
       tasks,
       active,
     }),
-    [tasks, active, downloadsQuery.error, downloadsQuery.refetch],
+    [tasks, active, downloadsQuery.error, downloadsQuery.isPending, downloadsQuery.refetch],
   );
 
   return (
@@ -195,5 +204,6 @@ export function useDownloads(): DownloadsApi {
 export function useGalleryDownloadTask(source: DoujinSource, galleryId: string): DownloadTask | undefined {
   const select = React.useCallback((tasks: DownloadTask[]) => tasks.find(task => task.source === source && task.galleryId === galleryId &&
     (['queued', 'downloading', 'paused'].includes(task.status) || task.state?.type === 'retry-wait')), [source, galleryId]);
-  return useQuery({ queryKey: ['downloads'], enabled: false, select }).data;
+  const qc = useQueryClient();
+  return useQuery({ queryKey: ['downloads'], queryFn: downloadsQueryFn(qc), enabled: false, select }).data;
 }

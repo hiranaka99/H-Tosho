@@ -33,7 +33,7 @@ export function sourceDisplayName(source: string): string {
   switch (source) {
     case 'hitomi': return 'Hitomi.la';
     case 'nhentai': return 'nHentai';
-    case 'ehentai': return 'E-Hentai / ExHentai';
+    case 'ehentai': return 'E-Hentai';
     case 'library': return 'Library';
     default: return source;
   }

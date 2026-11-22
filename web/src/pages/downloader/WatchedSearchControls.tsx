@@ -5,11 +5,11 @@ import { WatchedDisclosure, WatchedReveal } from '../../components/WatchedMotion
 import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router';
-import { Bell, CheckCircle2, Clock3, GripVertical, Loader2, Pause, Pencil, Play, X, ExternalLink, Star, ChevronDown, Plus } from 'lucide-react';
+import { GripVertical, Loader2, Pause, Pencil, Play, X, ExternalLink, Star, ChevronDown, Plus } from 'lucide-react';
 import { api, ApiError, type DoujinSource } from '../../lib/api';
 import { cn, timeAgo } from '../../lib/utils';
 import { toast } from '../../lib/toast';
-import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Select, ErrorState, ConfirmDialog, Skeleton } from '../../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Select, ErrorState, ConfirmDialog, Skeleton, Dialog, DialogContent, DialogTitle, DialogDescription } from '../../components/ui';
 import { PageCountPill } from '../../components/PageCountPill';
 import { switchProviderSearch, type TranslationLink } from '../../lib/searchTranslation';
 
@@ -28,7 +28,10 @@ const WATCH_INTERVAL_OPTIONS = [
   { minutes: 1440, label: '24 hours' },
 ] as const;
 
-export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSource, query: string) => void }) {
+/** Unsent add-watch draft, kept across closing and reopening the side sheet. */
+let watchDraft: { source: DoujinSource; query: string } = { source: 'hitomi', query: '' };
+
+export function WatchedTab({ onOpenSearch, inDrawer = false }: { onOpenSearch: (source: DoujinSource, query: string) => void; inDrawer?: boolean }) {
   const qc = useQueryClient();
   const watchesQuery = useQuery({ queryKey: ['watched-searches'], queryFn: api.watchedSearches, staleTime: 30_000, refetchInterval: 30_000 });
   const watches = watchesQuery.data;
@@ -54,8 +57,10 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const intervalMinutes = settingsQuery.data?.watchedSearchIntervalMinutes ?? 15;
   const [savingInterval, setSavingInterval] = React.useState(false);
-  const [source, setSource] = React.useState<DoujinSource>('hitomi');
-  const [query, setQuery] = React.useState('');
+  const [source, setSource] = React.useState<DoujinSource>(watchDraft.source);
+  const [query, setQuery] = React.useState(watchDraft.query);
+  // The side sheet unmounts when closed; an unsent watch draft survives that.
+  React.useEffect(() => { watchDraft = { source, query }; }, [source, query]);
   const watchTranslation = React.useRef<TranslationLink | null>(null);
   const [watchTranslationNotice, setWatchTranslationNotice] = React.useState<{ query: string; issues: string[] } | null>(null);
   function switchWatchSource(next: DoujinSource) {
@@ -236,7 +241,7 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
             <Button size="icon" variant="ghost" className="h-11 w-11" title="Remove watch" aria-label={`Remove watch ${w.displayName ?? w.query}`} disabled={movingWatch !== null} onClick={() => setRemoveTarget(w)}><X className="h-3.5 w-3.5" /></Button>
           </div>
         </div>
-        <div className="ml-13 flex min-w-0 flex-col gap-1">
+        <div className="ml-[3.25rem] flex min-w-0 flex-col gap-1">
           {w.displayName && <p className="break-words text-muted">{w.query}</p>}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><Badge tone="muted">{SOURCE_LABELS[w.source] ?? w.source}</Badge><Badge tone={w.pausedAt ? 'warning' : 'muted'}>{w.pausedAt ? 'Paused' : 'Active'}</Badge><span className="text-muted">{folders.find(folder => folder.id === w.folderId)?.name ?? 'Unfiled'}</span>{movingWatch === w.id && <span role="status" className="inline-flex items-center gap-1 text-muted"><Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />Moving…</span>}
             {w.lastResults.length > 0 && (
@@ -246,14 +251,12 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
               </Button>
             )}
           </div>
-          <dl className="mt-1 grid grid-cols-1 gap-x-4 gap-y-1 text-muted sm:grid-cols-2">
-            <div className="flex min-w-0 items-start gap-2"><dt className="shrink-0" title="Last success"><CheckCircle2 aria-hidden="true" className="h-4 w-4" /><span className="sr-only">Last success: </span></dt><dd className="min-w-0 break-words"><time dateTime={w.lastCheckedAt ?? undefined} title={w.lastCheckedAt ? new Date(w.lastCheckedAt).toLocaleString() : undefined}>{w.lastCheckedAt ? timeAgo(w.lastCheckedAt) : 'Not checked yet'}</time></dd></div>
-            {w.lastFailedAt && <div><dt className="inline">Last failed attempt: </dt><dd className="inline"><time dateTime={w.lastFailedAt} title={new Date(w.lastFailedAt).toLocaleString()}>{timeAgo(w.lastFailedAt)}</time></dd></div>}
-            <div className="flex min-w-0 items-start gap-2"><dt className="shrink-0" title="Automatic checks"><Clock3 aria-hidden="true" className="h-4 w-4" /><span className="sr-only">Automatic checks: </span></dt><dd className="min-w-0 break-words">{w.effectiveIntervalMinutes === 0 ? w.pausedAt ? 'Off · paused' : 'Off globally' : `Every ${cadenceLabel(w.effectiveIntervalMinutes)} · ${w.intervalMinutes === null ? 'inherited' : 'custom'}`}</dd></div>
-            <div><dt className="inline">Next due: </dt><dd className="inline">{w.nextCheckAt ? <time dateTime={w.nextCheckAt}>{new Date(w.nextCheckAt).toLocaleString()}</time> : 'Not scheduled'}</dd></div>
-            <div className="flex min-w-0 items-start gap-2"><dt className="shrink-0" title="Notifications"><Bell aria-hidden="true" className="h-4 w-4" /><span className="sr-only">Notifications: </span></dt><dd className="min-w-0 break-words">{w.notificationMode === 'in-app' ? 'In-app only' : 'Immediate Discord'}</dd></div>
-          </dl>
-          {w.lastError ? <p className="break-words text-warning">{w.lastError}</p> : w.lastNewCount !== null && w.lastNewCount !== undefined ? <p className="text-muted">{w.lastNewCount ? `${w.lastNewCount} new ${w.lastNewCount === 1 ? 'find' : 'finds'}` : 'No new finds'}</p> : null}
+          <p className="text-muted">
+            {w.lastCheckedAt ? <>Checked <time dateTime={w.lastCheckedAt} title={new Date(w.lastCheckedAt).toLocaleString()}>{timeAgo(w.lastCheckedAt)}</time></> : 'Not checked yet'}
+            {' · '}{w.effectiveIntervalMinutes === 0 ? w.pausedAt ? 'Off · paused' : 'Off globally' : `Every ${cadenceLabel(w.effectiveIntervalMinutes)} · ${w.intervalMinutes === null ? 'inherited' : 'custom'}`}
+            {w.nextCheckAt && !w.pausedAt && w.effectiveIntervalMinutes > 0 && <>{' · next '}<time dateTime={w.nextCheckAt} title={new Date(w.nextCheckAt).toLocaleString()}>{new Date(w.nextCheckAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></>}
+          </p>
+          {w.lastError ? <p className="break-words text-warning">{w.lastFailedAt ? `Last attempt failed ${timeAgo(w.lastFailedAt)}: ` : ''}{w.lastError}</p> : w.lastNewCount !== null && w.lastNewCount !== undefined ? <p className="text-muted">{w.lastNewCount ? `${w.lastNewCount} new ${w.lastNewCount === 1 ? 'find' : 'finds'}` : 'No new finds'}</p> : null}
         </div>
         {watchError?.id === w.id && <p role="alert" className="mt-2 break-words text-sm text-danger">{watchError.message}</p>}
         {editingWatch === w.id && <div id={`watch-edit-${w.id}`}><WatchEditor watch={w} folders={folders} foldersReady={foldersQuery.isSuccess} globalInterval={intervalMinutes} onClose={closeEditor} onSaved={() => { if (editSession.current === session) closeEditor(); }} onRefresh={() => watchesQuery.refetch()} /></div>}
@@ -273,14 +276,37 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
     );
   }
 
+  const manageBody = () => (
+        <div className="flex flex-col gap-4 pt-3">
+        <form className="grid grid-cols-1 gap-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-end" aria-label="Add a watched search" onSubmit={(e) => { e.preventDefault(); void add(); }}>
+          <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Source<Select aria-label="Watched search source" value={source} onChange={(e) => switchWatchSource(e.target.value as DoujinSource)} disabled={adding} className="h-11 sm:w-32 sm:shrink-0"><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select></label>
+          <div className="flex min-w-0 flex-col gap-1"><label htmlFor={watchQueryId} className="text-xs text-muted">Query</label><GallerySearchInput id={watchQueryId} value={query} onChange={setQuery} source={source} label="Watched search query" placeholder="Artist, tag, or search query" clearLabel="Clear watched search query" disabled={adding} className="h-11" /></div>
+          <Button size="sm" className="h-11" type="submit" disabled={adding || !query.trim()}>{adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add watch</Button>
+        </form>
+        {watchTranslationNotice?.query === query && watchTranslationNotice.issues.length > 0 && <p role="status" aria-label="Watch query translation" className="break-words text-sm text-muted">{watchTranslationNotice.issues.join(' ')} Review the query before adding the watch.</p>}
+        {foldersQuery.isError && <ErrorState title="Could not load watch folders" description={foldersQuery.error.message} onRetry={() => void foldersQuery.refetch()} />}
+        {foldersQuery.isPending ? <Skeleton className="h-20 w-full" /> : foldersQuery.data && <FollowingFolders folders={folders} watches={watches ?? []} watchesReady={watches !== undefined} renderWatch={renderWatch} onRefresh={() => foldersQuery.refetch()} draggedWatch={draggedWatch} movePending={movingWatch !== null || foldersQuery.isError} onMoveWatch={(watch, folderId) => void moveWatch(watch, folderId)} />}
+        {watchesQuery.isPending ? (
+          <div role="status" aria-label="Loading watched searches" className="flex flex-col gap-2"><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /><span className="sr-only">Loading watched searches…</span></div>
+        ) : !foldersQuery.data && watches && watches.length > 0 ? (
+          <div className="flex flex-col border-t border-border">
+            {watches.map(renderWatch)}
+          </div>
+        ) : (
+          watches?.length === 0 && <p className="text-sm text-muted">No watched searches yet. Add one above, or choose Watch on any single-source search.</p>
+        )}
+
+        </div>
+  );
+
   const watchMotionRef = useDownloaderTransitions(`${manageOpen}:${(watches ?? []).map(watch => `${watch.id}:${watch.folderId}`).join(',')}`, '[data-watched-search-id]');
 
   return (
     <div ref={watchMotionRef}>
-    <Card>
+    <Card className={inDrawer ? 'border-0 bg-transparent p-0 shadow-none' : undefined}>
       <CardHeader className="gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
         <div className="min-w-0 flex-1">
-          <CardTitle as="h2" className="flex items-center gap-2">
+          <CardTitle as="h2" className={cn('flex items-center gap-2', inDrawer && 'sr-only')}>
             <Star aria-hidden="true" className="h-4 w-4 shrink-0" /> Watched searches
           </CardTitle>
           <div role="status" className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
@@ -305,30 +331,11 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
       <CardContent className="flex flex-col gap-3">
         {watchesQuery.isError && <ErrorState title="Could not load watched searches" description={watchesQuery.error instanceof Error ? watchesQuery.error.message : String(watchesQuery.error)} onRetry={() => void watchesQuery.refetch()} />}
         {settingsQuery.isError && <ErrorState title="Could not load the check interval" description={settingsQuery.error instanceof Error ? settingsQuery.error.message : String(settingsQuery.error)} onRetry={() => void settingsQuery.refetch()} />}
-        <WatchedDisclosure label={`Manage watches${watches ? ` (${watches.length})` : ''}`} open={manageOpen || watches?.length === 0} onOpenChange={setManageOpen}>
-        {() => (
-        <div className="flex flex-col gap-4 pt-3">
-        <form className="grid grid-cols-1 gap-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-end" aria-label="Add a watched search" onSubmit={(e) => { e.preventDefault(); void add(); }}>
-          <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Source<Select aria-label="Watched search source" value={source} onChange={(e) => switchWatchSource(e.target.value as DoujinSource)} disabled={adding} className="h-11 sm:w-32 sm:shrink-0"><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select></label>
-          <div className="flex min-w-0 flex-col gap-1"><label htmlFor={watchQueryId} className="text-xs text-muted">Query</label><GallerySearchInput id={watchQueryId} value={query} onChange={setQuery} source={source} label="Watched search query" placeholder="Artist, tag, or search query" clearLabel="Clear watched search query" disabled={adding} className="h-11" /></div>
-          <Button size="sm" className="h-11" type="submit" disabled={adding || !query.trim()}>{adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add watch</Button>
-        </form>
-        {watchTranslationNotice?.query === query && watchTranslationNotice.issues.length > 0 && <p role="status" aria-label="Watch query translation" className="break-words text-sm text-muted">{watchTranslationNotice.issues.join(' ')} Review the query before adding the watch.</p>}
-        {foldersQuery.isError && <ErrorState title="Could not load watch folders" description={foldersQuery.error.message} onRetry={() => void foldersQuery.refetch()} />}
-        {foldersQuery.isPending ? <Skeleton className="h-20 w-full" /> : foldersQuery.data && <FollowingFolders folders={folders} watches={watches ?? []} watchesReady={watches !== undefined} renderWatch={renderWatch} onRefresh={() => foldersQuery.refetch()} draggedWatch={draggedWatch} movePending={movingWatch !== null || foldersQuery.isError} onMoveWatch={(watch, folderId) => void moveWatch(watch, folderId)} />}
-        {watchesQuery.isPending ? (
-          <div role="status" aria-label="Loading watched searches" className="flex flex-col gap-2"><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /><span className="sr-only">Loading watched searches…</span></div>
-        ) : !foldersQuery.data && watches && watches.length > 0 ? (
-          <div className="flex flex-col border-t border-border">
-            {watches.map(renderWatch)}
-          </div>
-        ) : (
-          watches?.length === 0 && <p className="text-sm text-muted">No watched searches yet</p>
+        {inDrawer ? manageBody() : (
+          <WatchedDisclosure label={`Manage watches${watches ? ` (${watches.length})` : ''}`} open={manageOpen || watches?.length === 0} onOpenChange={setManageOpen}>
+          {manageBody}
+          </WatchedDisclosure>
         )}
-
-        </div>
-        )}
-        </WatchedDisclosure>
         <ConfirmDialog
           open={removeTarget !== null}
           title="Remove watched search?"
@@ -341,6 +348,24 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
       </CardContent>
     </Card>
     </div>
+  );
+}
+
+/** Watch management lives beside the inbox, not above it: the inbox is the payoff, this is upkeep. */
+export function WatchedManagerDrawer({ open, onOpenChange, onOpenSearch, returnFocusTo }: { open: boolean; onOpenChange: (open: boolean) => void; onOpenSearch: (source: DoujinSource, query: string) => void; returnFocusTo?: React.RefObject<HTMLElement | null> }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sheet-content left-auto right-0 top-0 h-dvh max-h-dvh w-full max-w-xl translate-x-0 translate-y-0 overflow-y-auto rounded-none rounded-l-2xl border-y-0 border-r-0 p-4 sm:max-h-dvh sm:w-full"
+        // Escape first closes an open suggestion list or a draft that owns it; only then the sheet.
+        onCloseAutoFocus={event => { if (returnFocusTo?.current?.isConnected) { event.preventDefault(); returnFocusTo.current.focus(); } }}
+        onEscapeKeyDown={event => { if ((event.target as Element | null)?.closest?.('[role="combobox"][aria-expanded="true"], [data-owns-escape]')) event.preventDefault(); }}>
+        <div className="flex flex-col gap-1 pb-3 pr-10">
+          <DialogTitle>Manage watches</DialogTitle>
+          <DialogDescription>Add searches to follow, choose how often they are checked, and organise them into folders.</DialogDescription>
+        </div>
+        <WatchedTab inDrawer onOpenSearch={(source, query) => { onOpenChange(false); onOpenSearch(source, query); }} />
+      </DialogContent>
+    </Dialog>
   );
 }
 

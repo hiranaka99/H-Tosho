@@ -12,13 +12,16 @@ import { Link } from 'react-router';
 import { Search, Loader2, CheckCircle2, AlertTriangle, XCircle, Minus, CheckSquare, RotateCcw } from 'lucide-react';
 import { type DoujinSearchResult, type DoujinSource, type ProviderSearchStatus, type UnifiedSearchEntry } from '../../lib/api';
 import { cn } from '../../lib/utils';
-import { Button, Card, CardContent, EmptyState, Skeleton } from '../../components/ui';
+import { Button, Card, CardContent, EmptyState } from '../../components/ui';
 import { GallerySelectionBar } from '../../components/GallerySelectionBar';
 import { GallerySearchInput } from '../../components/GallerySearchInput';
 
 import { DOWNLOADER_SETTINGS_URL, SOURCE_LABELS, type DownloadSetup } from './state';
 import { GalleryCard } from './GalleryCard';
 import { toWebResult, type UnifiedSearchValue } from './useUnifiedSearch';
+import { SearchHint } from './SearchHint';
+import { GallerySkeletonGrid } from './GallerySkeletons';
+import { galleryKey, type GalleryOwnership } from './ownership';
 
 // ---------------- provider status chips ----------------
 
@@ -95,6 +98,9 @@ export interface UnifiedSelectionActions {
   items: DoujinSearchResult[];
   onMerge: () => void;
   onMergeInto: () => void;
+  onDownloadEach?: () => void;
+  onSelectAll?: () => void;
+  allSelected?: boolean;
   onRemove: (item: DoujinSearchResult) => void;
   onClear: () => void;
   onCancel: () => void;
@@ -106,7 +112,7 @@ interface UnifiedSearchTabProps {
   onDownload: (item: DoujinSearchResult, entryId: string) => void;
   downloadStatus: DownloadSetup['status'];
   startingKeys: ReadonlySet<string>;
-  ownershipFor: (entry: UnifiedSearchEntry) => { type: 'available' | 'downloaded' | 'in-library' | 'possible-duplicate'; downloadedAt?: string | null; preferenceOwned?: boolean };
+  ownershipFor: (entry: UnifiedSearchEntry) => GalleryOwnership;
   selectedEntryIds: Set<string>;
   onToggleGroup: (entry: UnifiedSearchEntry) => void;
   selectMode: boolean;
@@ -139,17 +145,15 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
             <GallerySearchInput
               value={formDraft} source="unified"
               onChange={(value) => { setFormDraft(value); unified.setDraft(value); }}
-              label="Unified search query" describedBy="unified-search-hint"
-              placeholder='Search all three sources at once — e.g. “sister” or artist:foo -bar'
-              clearLabel="Clear unified search query" className="h-11"
+              label="Search galleries" describedBy="unified-search-hint"
+              placeholder="Search all sources, e.g. sister or artist:foo -bar"
+              clearLabel="Clear search input" className="h-11"
             />
             <Button className="shrink-0 sm:h-11" type="submit" disabled={busy || !formDraft.trim()}>
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
             </Button>
           </form>
-          <p id="unified-search-hint" className="break-words text-xs text-muted">
-            One query searches Hitomi.la, nHentai and E-Hentai/ExHentai together; repeated editions are grouped into one card. Shared filters: artist:, group:, parody:, character:, language: · “quoted phrases” · -exclusions.
-          </p>
+          <SearchHint id="unified-search-hint" scope="all" />
         </CardContent>
       </Card>
 
@@ -157,8 +161,8 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
         <Card className="flex items-center justify-center">
           <EmptyState
             icon={<Search className="h-8 w-8" />}
-            title="One query, three sources"
-            description="Search Hitomi.la, nHentai and E-Hentai/ExHentai with a single query. Repeated editions of the same work are grouped into a single card, and every source it was found on stays visible. A bare numeric ID is ambiguous across sources — paste the full gallery URL instead."
+            title="Search every source at once"
+            description="Every source a work was found on stays visible on its card. A bare numeric ID is ambiguous across sources, so paste the full gallery URL instead."
           />
         </Card>
       )}
@@ -179,20 +183,7 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
       )}
 
       {committed !== null && !error && status === 'searching' && (
-        <div role="status" aria-label="Searching all sources" className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-          {Array.from({ length: 12 }, (_, i) => (
-            <div key={i} className="overflow-hidden rounded-lg border border-border bg-surface">
-              <Skeleton className="aspect-[3/4] w-full rounded-none" />
-              <div className="flex flex-col gap-2 p-3">
-                <Skeleton className="h-4 w-4/5" />
-                <div className="flex flex-wrap gap-1">
-                  <Skeleton className="h-5 w-16 rounded-full" />
-                  <Skeleton className="h-5 w-20 rounded-full" />
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+        <GallerySkeletonGrid label="Searching all sources" />
       )}
 
       {committed !== null && !error && status !== 'searching' && entries.length === 0 && (
@@ -211,7 +202,7 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
               title="No results"
               description={
                 okProviders.length
-                  ? `No galleries for “${committed}” on ${okProviders.map((p) => SOURCE_LABELS[p.source]).join(', ')}.${failedProviders.length ? ` ${failedProviders.length} source(s) did not answer successfully, so more may exist.` : ''}`
+                  ? `No galleries for “${committed}” on ${okProviders.map((p) => SOURCE_LABELS[p.source]).join(', ')}.${failedProviders.length ? ` ${failedProviders.length === 1 ? '1 source' : `${failedProviders.length} sources`} did not answer, so more may exist.` : ''}`
                   : `No galleries for “${committed}”.`
               }
             />
@@ -239,7 +230,7 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
           <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
             {entries.map((entry) => {
               const primary = toWebResult(entry.primary);
-              const key = `${primary.source}:${primary.galleryId}`;
+              const key = galleryKey(primary);
               const provenance = entry.variants.length > 1 ? { extraSources: extraSources(entry) } : undefined;
               return (
                 <GalleryCard
