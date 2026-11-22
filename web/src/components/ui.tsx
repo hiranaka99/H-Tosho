@@ -302,7 +302,7 @@ export function ErrorState({ title = 'Something went wrong', description, onRetr
   );
 }
 
-export function SegmentedTabs<T extends string>({ items, value, onChange, label, panelId, className }: { items: readonly { id: T; label: string; dirty?: boolean }[]; value: T; onChange: (id: T) => void; label: string; panelId: string; className?: string }) {
+export function SegmentedTabs<T extends string>({ items, value, onChange, label, panelId, className }: { items: readonly { id: T; label: string; dirty?: boolean; count?: number; alert?: boolean }[]; value: T; onChange: (id: T) => void; label: string; panelId: string; className?: string }) {
   const { ref, indicatorStyle } = useSelectionIndicator(value, items);
   return (
     <div ref={ref} role="tablist" aria-label={label} className={cn('ui-tablist relative flex w-full max-w-full flex-nowrap overflow-x-auto border-b border-border p-1', className)}>
@@ -331,7 +331,7 @@ export function SegmentedTabs<T extends string>({ items, value, onChange, label,
             value === item.id ? 'text-primary' : 'text-muted hover:text-foreground',
           )}
         >
-          {item.label}{item.dirty && <><span aria-hidden="true" className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-primary align-middle" /><span className="sr-only">, unsaved changes</span></>}
+          {item.label}{item.count !== undefined && <span className={cn('ml-1.5 rounded-full px-1.5 text-xs tabular-nums', item.alert ? 'bg-danger/15 text-danger' : value === item.id ? 'bg-primary/15 text-primary' : 'bg-surface-2 text-muted')}><span className="sr-only"> </span>{item.count}</span>}{item.dirty && <><span aria-hidden="true" className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-primary align-middle" /><span className="sr-only">, unsaved changes</span></>}
         </button>
       ))}
     </div>

@@ -1,42 +1,73 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router';
-import { Activity, AlertTriangle, ArrowDown, Ban, CheckCircle2, Circle, Copy, Download, ListChecks, RotateCcw, Search, Terminal, Trash2, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowDown, Ban, CheckCheck, CheckCircle2, Circle, Copy, Download, Eye, FilePen, ListChecks, Merge, RefreshCw, RotateCcw, ScanLine, Search, SlidersHorizontal, Trash2, X, XCircle, type LucideIcon } from 'lucide-react';
 import { api, type Job, type JobLog } from '../lib/api';
-import { Badge, Button, Card, CardContent, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle, EmptyState, ErrorState, Input, Label, PageHeader, ProgressBar, Select, Spinner, Disclosure } from '../components/ui';
+import { Badge, Button, Card, CardContent, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle, EmptyState, ErrorState, Input, Label, PageHeader, ProgressBar, SegmentedTabs, Select, Skeleton, Spinner, Disclosure } from '../components/ui';
 import { cn, timeAgo, toIsoUtc, jobLabel } from '../lib/utils';
+import { isActive, hasWarnings, needsAttention } from '../lib/jobStatus';
+import { useMediaQuery } from '../lib/useMediaQuery';
 import { toast } from '../lib/toast';
 
 type JobFilter = 'active' | 'failed' | 'done' | 'all';
 type JobDetails = { job: Job; logs: JobLog[] };
+type PanelMode = 'dialog' | 'inline';
+// Filter ids stay stable because the sidebar and saved links use `?filter=failed`.
 const FILTERS: readonly { id: JobFilter; label: string }[] = [
-  { id: 'all', label: 'All activity' },
+  { id: 'all', label: 'All' },
   { id: 'active', label: 'Active' },
   { id: 'failed', label: 'Needs attention' },
   { id: 'done', label: 'Finished' },
 ];
+const EMPTY_COPY: Record<JobFilter, { title: string; description: string }> = {
+  failed: { title: 'All clear', description: 'Nothing needs attention. Recent tasks finished cleanly.' },
+  active: { title: 'Nothing is running', description: 'Scans and matching you start from Libraries show up here.' },
+  done: { title: 'No finished tasks yet', description: 'Completed and cancelled tasks are kept here for review.' },
+  all: { title: 'No tasks yet', description: 'Scans, matching, and other background work appear here.' },
+};
 const LOG_COLOR: Record<string, string> = { info: 'text-muted', warn: 'text-warning', warning: 'text-warning', error: 'text-danger', success: 'text-success' };
 const controlClass = 'max-lg:min-h-11 pointer-coarse:min-h-11';
+const INSPECTOR_QUERY = '(min-width: 1280px)';
+const STOP_CONFIRM_MS = 6000;
 
+const JOB_GLYPH: Record<string, LucideIcon> = {
+  'scan-matchable': ScanLine,
+  'scan-downloaded': ScanLine,
+  'scan-new': ScanLine,
+  'match-unmatched': RefreshCw,
+  'match-library': RefreshCw,
+  'match-series': RefreshCw,
+  'sync-series': RefreshCw,
+  'apply-series': CheckCheck,
+  'restore-metadata': RotateCcw,
+  'clear-overrides': SlidersHorizontal,
+  'check-watched-searches': Eye,
+  'edit-comicinfo': FilePen,
+  'merge-series': Merge,
+  'delete-series': Trash2,
+};
 
-function isActive(job: Job): boolean {
-  return job.status === 'running' || job.status === 'queued';
+function matchesFilter(job: Job, filter: JobFilter): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'active') return isActive(job);
+  if (filter === 'failed') return needsAttention(job);
+  return !isActive(job) && !needsAttention(job);
 }
 
-function hasWarnings(result: unknown): boolean {
-  if (!result || typeof result !== 'object') return false;
-  return Object.entries(result).some(([key, value]) => {
-    if (/^(warnings?|errors?|failed|notificationFailed|notificationUnknown|unknown)$/i.test(key)) {
-      if (Array.isArray(value)) return value.length > 0;
-      if (typeof value === 'object' && value !== null) return Object.keys(value).length > 0;
-      return typeof value === 'number' ? value > 0 : Boolean(value);
-    }
-    return typeof value === 'object' && hasWarnings(value);
-  });
+/** First visit: land on what needs a decision, else what is running, else everything. */
+function defaultFilter(jobs: Job[]): JobFilter {
+  return jobs.some(needsAttention) ? 'failed' : jobs.some(isActive) ? 'active' : 'all';
 }
 
-function needsAttention(job: Job): boolean {
-  return job.status === 'failed' || (job.status === 'completed' && hasWarnings(job.result));
+function useNow(intervalMs: number, enabled = true): number {
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    if (!enabled) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(id);
+  }, [intervalMs, enabled]);
+  return now;
 }
 
 function fieldLabel(key: string): string {
@@ -82,25 +113,36 @@ function jobSeries(job: Job): { id: number; name: string }[] {
 function SeriesCover({ series, version, className }: { series?: { id: number; name: string }; version: string; className?: string }) {
   const src = series ? `/api/kavita/series/${series.id}/cover?v=${encodeURIComponent(version)}` : undefined;
   const [failedSrc, setFailedSrc] = React.useState<string>();
+  // Skip leading brackets and punctuation so "[Circle (Artist)] Title" shows a letter, not "[".
+  const initial = series ? (series.name.replace(/^[^\p{L}\p{N}]+/u, '').charAt(0) || series.name.charAt(0)).toUpperCase() : '';
   return (
     <div aria-hidden="true" className={cn('aspect-[3/4] w-16 shrink-0 overflow-hidden rounded-md bg-surface-2 sm:w-24', className)}>
       {src && failedSrc !== src ? (
         <img src={src} alt="" width={96} height={128} loading="lazy" decoding="async" className="h-full w-full object-cover" onError={() => setFailedSrc(src)} />
       ) : (
         <div className="flex h-full items-center justify-center text-sm font-semibold text-muted">
-          {series ? series.name.charAt(0).toUpperCase() : <ListChecks className="h-5 w-5" />}
+          {series ? initial : <ListChecks className="h-5 w-5" />}
         </div>
       )}
     </div>
   );
 }
 
-function JobCover({ job, className }: { job: Job; className?: string }) {
+/** A cover when the task targets a series; otherwise a glyph for what kind of work it is. */
+function JobCover({ job, className, chipClassName }: { job: Job; className?: string; chipClassName?: string }) {
   const series = jobSeries(job);
+  if (!series.length) {
+    const Glyph = JOB_GLYPH[job.type] ?? ListChecks;
+    return (
+      <div aria-hidden="true" className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-muted sm:h-10 sm:w-10', job.status === 'failed' && 'text-danger', job.status === 'running' && 'text-primary', chipClassName)}>
+        <Glyph className="h-4 w-4 sm:h-5 sm:w-5" />
+      </div>
+    );
+  }
   return (
     <div className="relative shrink-0" title={series.length > 1 ? `${series.length} affected series` : series[0]?.name}>
-      <SeriesCover series={series[0]} version={job.finishedAt ?? job.startedAt ?? job.createdAt} className={className} />
-      {series.length > 1 && <span aria-hidden="true" className="absolute bottom-1 right-1 rounded bg-black/70 px-1 py-0.5 text-2xs font-medium tabular-nums text-white">+{series.length - 1}</span>}
+      <SeriesCover series={series[0]} version={job.finishedAt ?? job.startedAt ?? job.createdAt} className={cn('w-8 rounded sm:w-10', className)} />
+      {series.length > 1 && <span aria-hidden="true" className="absolute -bottom-1 -right-1 rounded bg-black/70 px-1 text-2xs font-medium tabular-nums text-white">+{series.length - 1}</span>}
     </div>
   );
 }
@@ -119,7 +161,6 @@ function AffectedSeries({ job }: { job: Job }) {
     </ul>
   );
 }
-
 const JOB_PURPOSE: Record<string, string> = {
   'scan-matchable': 'Find metadata candidates for unmatched galleries to review on Home',
   'scan-downloaded': 'Import the completed download into Kavita and find metadata candidates to review on Home',
@@ -129,7 +170,7 @@ const JOB_PURPOSE: Record<string, string> = {
   'match-series': 'Find and apply metadata matches for the selected series',
   'sync-series': 'Re-match and update series metadata and covers',
   'apply-series': 'Apply the reviewed metadata candidate and selected fields',
-    'restore-metadata': 'Restore the reviewed historical metadata and selected ComicInfo values',
+  'restore-metadata': 'Restore the reviewed historical metadata and selected ComicInfo values',
   'clear-overrides': 'Remove library-specific settings overrides',
   'check-watched-searches': 'Check saved searches for new galleries',
   'edit-comicinfo': 'Rewrite ComicInfo.xml in the selected archive',
@@ -224,7 +265,6 @@ function duration(job: Job): string {
 function timestamp(value: string | null | undefined): string {
   return value ? new Date(toIsoUtc(value)).toLocaleString() : '—';
 }
-
 function JobStatus({ job }: { job: Job }) {
   if (job.status === 'running') return <Badge tone="info"><Activity className="h-3 w-3 animate-pulse-soft" /> Running</Badge>;
   if (job.status === 'queued') return <Badge tone="muted"><Circle className="h-3 w-3" /> Queued</Badge>;
@@ -234,15 +274,6 @@ function JobStatus({ job }: { job: Job }) {
   if (job.status === 'cancelled') return <Badge tone="muted"><Ban className="h-3 w-3" /> Cancelled</Badge>;
   return <Badge tone="danger"><XCircle className="h-3 w-3" /> {fieldLabel(job.status)}</Badge>;
 }
-
-function RecoveryActions({ job }: { job: Job }) {
-  if (!job.recovery) return null;
-  return <div className="mt-3 space-y-2 rounded-md border border-border bg-surface/60 p-3">
-    <p className="text-sm text-muted">{job.recovery.explanation}</p>
-    <div className="flex flex-wrap gap-2">{job.recovery.actions.map(action => <Button asChild variant="outline" size="sm" className={controlClass} key={action.href}><Link to={action.href}>{action.label}</Link></Button>)}</div>
-  </div>;
-}
-
 function StructuredValue({ value }: { value: unknown }) {
   if (value === null || value === undefined) return <p className="text-sm text-muted">None</p>;
   if (Array.isArray(value)) return value.length ? (
@@ -261,6 +292,139 @@ function StructuredValue({ value }: { value: unknown }) {
     </dl>
   ) : <p className="text-sm text-muted">None</p>;
   return <p className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{readableValue(value)}</p>;
+}
+
+/** Clean completions are quiet; pills are kept for the states that need a second look. */
+function RowStatus({ job }: { job: Job }) {
+  if (job.status === 'completed' && !hasWarnings(job.result)) {
+    return <span className="inline-flex items-center gap-1 text-xs font-medium text-success"><CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" /><span className="sr-only">Completed</span><span aria-hidden="true">Done</span></span>;
+  }
+  return <JobStatus job={job} />;
+}
+
+function formatRemaining(seconds: number): string {
+  if (seconds < 60) return 'under 1 min';
+  const minutes = Math.round(seconds / 60);
+  return minutes < 60 ? `about ${minutes} min` : `about ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function copyText(text: string, success: string): void {
+  navigator.clipboard.writeText(text).then(
+    () => toast({ tone: 'success', title: success }),
+    (error) => toast({ tone: 'danger', title: 'Could not copy', description: error instanceof Error ? error.message : String(error) }),
+  );
+}
+
+interface FailureGuidance { headline: string; paragraphs: string[]; path?: string; retryAfter: number | null; rateLimited: boolean }
+
+/** Turn what we know about a failure into one plain headline and a next step. */
+function failureGuidance(job: Job): FailureGuidance {
+  const message = job.errorMessage ?? '';
+  const firstLine = message.split('\n')[0].trim();
+  if (job.type === 'restore-metadata') return { headline: 'Review required before restoring again', paragraphs: [jobOutcome(job)], retryAfter: null, rateLimited: false };
+  const retryAfterMatch = /Retry-After:\s*(\d+)/i.exec(message);
+  const retryAfter = retryAfterMatch ? Number(retryAfterMatch[1]) : null;
+  const rateLimited = retryAfter !== null || /\b429\b|rate.?limit/i.test(message);
+  const denied = /EACCES|EPERM|permission denied/i.test(message);
+  const path = denied ? /\b(?:open|access|mkdir|rename|unlink|write|copyfile)\s+'([^']+)'/i.exec(message)?.[1] : undefined;
+  const paragraphs: string[] = [];
+  if (rateLimited && retryAfter !== null) paragraphs.push(`It asked H-Tosho to wait ${retryAfter} seconds before the next request.`);
+  if (job.recovery) paragraphs.push(job.recovery.explanation);
+  else if (firstLine && !denied) paragraphs.push(firstLine);
+  else if (!firstLine) paragraphs.push('No error message was recorded. The logs below may show what happened.');
+  return {
+    headline: rateLimited ? 'A metadata provider is rate-limiting H-Tosho.' : denied ? (path ? "H-Tosho can't write to this file." : "H-Tosho doesn't have permission to do that.") : 'This task failed.',
+    paragraphs,
+    path,
+    retryAfter,
+    rateLimited,
+  };
+}
+
+interface RetryControl { onClick: () => void; pending: boolean; disabled: boolean }
+
+/** What happened, what to do next, then (collapsed) the raw error. */
+function FailureCard({ job, retry }: { job: Job; retry?: RetryControl }) {
+  const guidance = failureGuidance(job);
+  const now = useNow(1000, guidance.retryAfter !== null);
+  const finished = job.finishedAt ? new Date(toIsoUtc(job.finishedAt)).getTime() : NaN;
+  // Capped at the server's own Retry-After so a skewed clock can never lock Retry for long.
+  const wait = guidance.retryAfter !== null && Number.isFinite(finished)
+    ? Math.min(guidance.retryAfter, Math.max(0, Math.ceil((finished + guidance.retryAfter * 1000 - now) / 1000)))
+    : 0;
+  const recoveryActions = job.type === 'restore-metadata' ? [] : job.recovery?.actions ?? [];
+  const retryFirst = guidance.rateLimited || !recoveryActions.length;
+  const retryLabel = wait > 0 ? `Retry in ${Math.floor(wait / 60)}:${String(wait % 60).padStart(2, '0')}` : 'Retry task';
+  return (
+    <>
+      <section aria-labelledby={`failure-${job.id}`} className="space-y-3 rounded-xl border border-danger/35 bg-danger/5 p-4">
+        <h3 id={`failure-${job.id}`} className="text-base font-semibold leading-snug tracking-tight">{guidance.headline}</h3>
+        {guidance.path && <p className="break-all rounded-md bg-surface-2 px-2 py-1.5 font-mono text-xs [overflow-wrap:anywhere]">{guidance.path}</p>}
+        {guidance.paragraphs.map((text) => <p key={text} className="text-sm text-muted">{text}</p>)}
+        {(retry || recoveryActions.length > 0) && (
+          <div className="flex flex-wrap gap-2 pt-1">
+            {retry && (
+              <Button className={controlClass} variant={retryFirst ? 'default' : 'outline'} disabled={retry.disabled || retry.pending || wait > 0} onClick={retry.onClick}>
+                {retry.pending ? <Spinner /> : <RotateCcw className="h-4 w-4" />}{retry.pending ? 'Retrying…' : retryLabel}
+              </Button>
+            )}
+            {recoveryActions.map((action, index) => (
+              <Button asChild variant={!retryFirst && index === 0 ? 'default' : 'outline'} className={controlClass} key={action.href}><Link to={action.href}>{action.label}</Link></Button>
+            ))}
+          </div>
+        )}
+      </section>
+      {job.errorMessage && (
+        <Disclosure label="Error details" summaryClassName="px-0">
+          <div className="space-y-2 pb-1">
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs [overflow-wrap:anywhere]">{job.errorMessage}</pre>
+            {navigator.clipboard && <Button variant="ghost" size="sm" className={controlClass} onClick={() => copyText(job.errorMessage ?? '', 'Error copied')}><Copy className="h-4 w-4" /> Copy error</Button>}
+          </div>
+        </Disclosure>
+      )}
+    </>
+  );
+}
+
+/** Two deliberate steps for an action the app itself says cannot be undone. */
+function StopConfirm({ job, pending, onKeep, onStop }: { job: Job; pending: boolean; onKeep: () => void; onStop: () => void }) {
+  const keepRef = React.useRef<HTMLButtonElement>(null);
+  React.useEffect(() => { keepRef.current?.focus({ preventScroll: true }); }, []);
+  const consequence = job.status === 'queued'
+    ? "It hasn't started yet, so nothing will change."
+    : job.progressTotal > 0
+      ? `The ${job.progressCurrent} of ${job.progressTotal} items already processed keep their changes.`
+      : 'Work already performed is not undone.';
+  return (
+    <div role="group" aria-label="Confirm stopping this task" className="relative mt-2 max-w-xl space-y-3 overflow-hidden rounded-lg border border-danger/35 bg-danger/5 p-3">
+      <p className="text-sm"><span className="font-semibold">Stop this task?</span> {consequence}</p>
+      <div className="flex flex-wrap gap-2">
+        <Button ref={keepRef} variant="outline" size="sm" className={controlClass} onClick={onKeep}>Keep running</Button>
+        <Button variant="danger" size="sm" className={controlClass} disabled={pending} onClick={onStop}>{pending ? <Spinner /> : <Ban className="h-4 w-4" />} Stop task</Button>
+      </div>
+      <span aria-hidden="true" className="confirm-countdown absolute bottom-0 left-0 h-0.5 w-full bg-danger/70" />
+    </div>
+  );
+}
+
+function RunningFacts({ job, now }: { job: Job; now: number }) {
+  const { progressCurrent: current, progressTotal: total } = job;
+  const percent = total > 0 ? Math.round((current / total) * 100) : null;
+  const started = job.startedAt ? new Date(toIsoUtc(job.startedAt)).getTime() : NaN;
+  const remaining = total > 0 && current > 0 && Number.isFinite(started) ? ((total - current) / current) * Math.max(1, (now - started) / 1000) : null;
+  if (job.status === 'queued') return <p className="text-sm text-muted">Waiting to start. No work has been performed yet.</p>;
+  return (
+    <section aria-label="Task progress" className="space-y-3">
+      {total > 0 ? (
+        <dl className="grid grid-cols-3 gap-3">
+          <div className="min-w-0"><dt className="text-xs text-muted">Processed</dt><dd className="text-xl font-semibold tabular-nums tracking-tight">{current}<span className="text-xs font-medium text-muted"> of {total}</span></dd></div>
+          <div className="min-w-0"><dt className="text-xs text-muted">Done</dt><dd className="text-xl font-semibold tabular-nums tracking-tight">{percent}%</dd></div>
+          <div className="min-w-0"><dt className="text-xs text-muted">Remaining</dt><dd className="text-sm font-semibold leading-8">{remaining === null ? '—' : formatRemaining(remaining)}</dd></div>
+        </dl>
+      ) : <p className="text-sm text-muted">Work is in progress; no item count reported yet.</p>}
+      <ProgressBar value={current} max={total} active />
+    </section>
+  );
 }
 
 function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
@@ -282,14 +446,6 @@ function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
     if (element && follow && nearBottom.current) element.scrollTop = element.scrollHeight;
   }, [latestId, severity, follow]);
   const logText = visible.map((log) => `${timestamp(log.createdAt)} [${log.level.toUpperCase()}] ${log.message}`).join('\n');
-  const copyLogs = async () => {
-    try {
-      await navigator.clipboard.writeText(logText);
-      toast({ tone: 'success', title: 'Logs copied' });
-    } catch (error) {
-      toast({ tone: 'danger', title: 'Could not copy logs', description: error instanceof Error ? error.message : String(error) });
-    }
-  };
   const downloadLogs = () => {
     const url = URL.createObjectURL(new Blob([logText], { type: 'text/plain;charset=utf-8' }));
     const link = document.createElement('a');
@@ -301,45 +457,70 @@ function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
   return (
     <section className="min-w-0 space-y-3" aria-label="Job logs">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="flex items-center gap-2 text-sm font-semibold"><Terminal className="h-4 w-4" /> Logs <span className="text-xs font-normal text-muted">{visible.length} / {logs.length}</span></h3>
-        <div className="flex flex-wrap gap-2">
-          {navigator.clipboard && <Button variant="outline" size="sm" className={controlClass} disabled={!visible.length} onClick={() => void copyLogs()}><Copy className="h-4 w-4" /> Copy</Button>}
+        <p className="text-xs text-muted" aria-live="off">{visible.length} of {logs.length} entries</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Label htmlFor={`severity-${jobId}`} className="sr-only">Severity</Label>
+          <Select id={`severity-${jobId}`} aria-label="Severity" value={severity} onChange={(event) => setSeverity(event.target.value)} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-auto"><option value="all">All levels</option>{levels.map((level) => <option key={level} value={level}>{fieldLabel(level)}</option>)}</Select>
+          {navigator.clipboard && <Button variant="outline" size="sm" className={controlClass} disabled={!visible.length} onClick={() => copyText(logText, 'Logs copied')}><Copy className="h-4 w-4" /> Copy</Button>}
           <Button variant="outline" size="sm" className={controlClass} disabled={!visible.length} onClick={downloadLogs}><Download className="h-4 w-4" /> Download</Button>
         </div>
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2"><Label htmlFor={`severity-${jobId}`}>Severity</Label><Select id={`severity-${jobId}`} value={severity} onChange={(event) => setSeverity(event.target.value)} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-auto"><option value="all">All levels</option>{levels.map((level) => <option key={level} value={level}>{fieldLabel(level)}</option>)}</Select></div>
-        <label className="flex max-lg:min-h-11 pointer-coarse:min-h-11 cursor-pointer items-center gap-2 text-sm"><input type="checkbox" checked={follow} onChange={(event) => { if (event.target.checked) jumpToLatest(); else setFollow(false); }} className="h-4 w-4 accent-primary" /> Follow logs</label>
-      </div>
+      <label className="flex max-lg:min-h-11 pointer-coarse:min-h-11 cursor-pointer items-center gap-2 text-sm"><input type="checkbox" checked={follow} onChange={(event) => { if (event.target.checked) jumpToLatest(); else setFollow(false); }} className="h-4 w-4 accent-primary" /> Follow logs</label>
       <div ref={ref} tabIndex={0} aria-label="Scrollable task log entries" onScroll={(event) => {
         const element = event.currentTarget;
         nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 36;
         if (!nearBottom.current) setFollow(false);
-      }} className="h-72 overflow-y-auto overscroll-contain rounded-lg border border-border bg-background p-3 font-mono text-xs">
-        {!visible.length ? <p className="text-muted">{logs.length ? 'No logs match this severity.' : 'No logs yet.'}</p> : visible.map((log) => (
-          <div key={log.id} className="mb-2 min-w-0">
-            <div className="mb-0.5 flex flex-wrap gap-x-2"><time className="text-muted/70" dateTime={toIsoUtc(log.createdAt)}>{new Date(toIsoUtc(log.createdAt)).toLocaleTimeString()}</time><span className={cn('uppercase', LOG_COLOR[log.level] ?? 'text-muted')}>{log.level}</span></div>
-            <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{log.message}</p>
-          </div>
-        ))}
+      }} className="h-64 overflow-y-auto overscroll-contain rounded-lg border border-border bg-background p-2 font-mono text-xs leading-relaxed">
+        {!visible.length ? <p className="p-1 text-muted">{logs.length ? 'No logs match this severity.' : 'No logs yet.'}</p> : visible.map((log) => {
+          const level = log.level === 'warning' ? 'warn' : log.level;
+          return (
+            <div key={log.id} className={cn('flex min-w-0 gap-2 rounded px-1', level === 'error' && 'bg-danger/10', level === 'warn' && 'bg-warning/10')}>
+              <time className="shrink-0 text-muted" dateTime={toIsoUtc(log.createdAt)}>{new Date(toIsoUtc(log.createdAt)).toLocaleTimeString()}</time>
+              <span className={cn('w-12 shrink-0 uppercase', LOG_COLOR[log.level] ?? 'text-muted')}>{log.level}</span>
+              <span className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{log.message}</span>
+            </div>
+          );
+        })}
       </div>
       {!follow && <Button className={cn(controlClass, 'w-full')} variant="secondary" onClick={jumpToLatest}><ArrowDown className="h-4 w-4" /> Jump to latest and follow</Button>}
     </section>
   );
 }
 
+const PanelTitle = React.forwardRef<HTMLHeadingElement, { mode: PanelMode; children: React.ReactNode }>(({ mode, children }, ref) =>
+  mode === 'dialog'
+    ? <DialogTitle ref={ref} tabIndex={-1} className="outline-none">{children}</DialogTitle>
+    : <h2 ref={ref} tabIndex={-1} className="text-base font-semibold tracking-tight outline-none">{children}</h2>);
+PanelTitle.displayName = 'PanelTitle';
+
+function PanelDescription({ mode, children }: { mode: PanelMode; children: React.ReactNode }) {
+  return mode === 'dialog'
+    ? <DialogDescription className="mt-1 break-words">{children}</DialogDescription>
+    : <p className="mt-1 break-words text-sm text-muted">{children}</p>;
+}
+
 export function Jobs() {
   const [searchParams, setSearchParams] = useSearchParams();
   const rawFilter = searchParams.get('filter');
-  const filter: JobFilter = FILTERS.some((item) => item.id === rawFilter) ? rawFilter as JobFilter : 'all';
+  const urlFilter: JobFilter | null = FILTERS.some((item) => item.id === rawFilter) ? rawFilter as JobFilter : null;
   const rawId = searchParams.get('job');
   const selectedId = rawId && /^\d+$/.test(rawId) && Number(rawId) > 0 && Number.isSafeInteger(Number(rawId)) ? Number(rawId) : null;
   const [search, setSearch] = React.useState('');
   const [type, setType] = React.useState('all');
+  const [typeOpen, setTypeOpen] = React.useState(false);
   const [clearTarget, setClearTarget] = React.useState<number | 'all' | null>(null);
+  const [stopConfirmId, setStopConfirmId] = React.useState<number | null>(null);
+  const [hovering, setHovering] = React.useState(false);
+  const frozenOrder = React.useRef<number[] | null>(null);
+  const titleRef = React.useRef<HTMLHeadingElement>(null);
+  const inspector = useMediaQuery(INSPECTOR_QUERY);
   const qc = useQueryClient();
   const jobsQuery = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, refetchInterval: 2500 });
   const jobs = jobsQuery.data ?? [];
+  // Resolved once from the first load so tabs never jump while a task finishes.
+  const autoFilter = React.useRef<JobFilter | null>(null);
+  if (autoFilter.current === null && jobsQuery.data) autoFilter.current = defaultFilter(jobsQuery.data);
+  const filter: JobFilter = urlFilter ?? autoFilter.current ?? 'all';
   const previousStatuses = React.useRef<Map<number, string> | null>(null);
   const [announcement, setAnnouncement] = React.useState('');
   React.useEffect(() => {
@@ -362,7 +543,9 @@ export function Jobs() {
     },
   });
   const selectedJob = detailQuery.data?.job ?? selectedListJob;
-  const updateUrl = (updates: { filter?: JobFilter; job?: number | null }) => {
+  const selectedActive = selectedJob !== undefined && isActive(selectedJob);
+  const now = useNow(1000, selectedActive);
+  const updateUrl = (updates: { filter?: JobFilter; job?: number | null }, replace = false) => {
     setSearchParams((previous) => {
       const next = new URLSearchParams(previous);
       if (updates.filter !== undefined) next.set('filter', updates.filter);
@@ -371,15 +554,16 @@ export function Jobs() {
         else next.set('job', String(updates.job));
       }
       return next;
-    });
+    }, { replace });
   };
   const cancelMutation = useMutation({
     mutationFn: api.cancelJob,
     onSuccess: async (_, id) => {
+      setStopConfirmId(null);
       await Promise.all([qc.invalidateQueries({ queryKey: ['jobs'] }), qc.invalidateQueries({ queryKey: ['job', id] })]);
-      toast({ tone: 'success', title: 'Cancellation requested' });
+      toast({ tone: 'success', title: 'Stop requested' });
     },
-    onError: (error) => toast({ tone: 'danger', title: 'Could not cancel task', description: error.message }),
+    onError: (error) => toast({ tone: 'danger', title: 'Could not stop task', description: error.message }),
   });
   const retryMutation = useMutation({
     mutationFn: api.retryJob,
@@ -400,122 +584,230 @@ export function Jobs() {
       await qc.cancelQueries({ queryKey: ['jobs'] });
       qc.setQueryData<Job[]>(['jobs'], (previous) => previous?.filter((job) => target === 'all' ? job.status !== 'failed' : job.id !== target));
       await Promise.all([qc.invalidateQueries({ queryKey: ['jobs'] }), qc.invalidateQueries({ queryKey: ['job'] }), qc.invalidateQueries({ queryKey: ['logs'] })]);
-      toast({ tone: 'success', title: result.removed === 1 ? 'Failed task cleared' : `${result.removed} failed tasks cleared` });
+      toast({ tone: 'success', title: result.removed === 1 ? 'Failed task removed' : `${result.removed} failed tasks removed` });
     },
-    onError: (error) => toast({ tone: 'danger', title: 'Could not clear failed tasks', description: error.message }),
+    onError: (error) => toast({ tone: 'danger', title: 'Could not remove failed tasks', description: error.message }),
   });
-  const actions = (job: Job, compact = false) => (
-    <>
-      {job.status === 'failed' && <>
-        {job.type !== 'restore-metadata' && <Button className={controlClass} size={compact ? 'sm' : 'default'} variant="outline" disabled={retryMutation.isPending || clearMutation.isPending} onClick={() => retryMutation.mutate(job.id)}>{retryMutation.isPending && retryMutation.variables === job.id ? <Spinner /> : <RotateCcw className="h-4 w-4" />}{retryMutation.isPending && retryMutation.variables === job.id ? 'Retrying…' : compact ? 'Retry' : 'Retry task'}</Button>}
-        {!compact && <Button className={controlClass} variant="outline" disabled={retryMutation.isPending || clearMutation.isPending} onClick={() => setClearTarget(job.id)}><Trash2 className="h-4 w-4" /> Clear task</Button>}
-      </>}
-      {isActive(job) && <Button className={controlClass} size={compact ? 'sm' : 'default'} variant="outline" disabled={cancelMutation.isPending} onClick={() => cancelMutation.mutate(job.id)}>{cancelMutation.isPending && cancelMutation.variables === job.id ? <Spinner /> : <Ban className="h-4 w-4" />}{cancelMutation.isPending && cancelMutation.variables === job.id ? 'Cancelling…' : compact ? 'Cancel' : 'Cancel task'}</Button>}
-    </>
-  );
+
+  // Escape reverts an open stop confirmation, or clears the inline inspector; the confirmation times out on its own.
+  React.useEffect(() => {
+    if (stopConfirmId === null) return;
+    const timer = window.setTimeout(() => setStopConfirmId(null), STOP_CONFIRM_MS);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      setStopConfirmId(null);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => { window.clearTimeout(timer); window.removeEventListener('keydown', onKey, true); };
+  }, [stopConfirmId]);
+  React.useEffect(() => {
+    if (!inspector || selectedId === null || clearTarget !== null) return;
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (event.key !== 'Escape' || event.defaultPrevented || target?.closest('input, select, textarea, [role="dialog"], [role="alertdialog"]')) return;
+      updateUrl({ job: null });
+      document.getElementById(`task-open-${selectedId}`)?.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inspector, selectedId, clearTarget]);
+
   const types = Array.from(new Set(jobs.map((job) => job.type))).sort();
   const query = search.trim().toLowerCase();
-  const visibleJobs = jobs.filter((job) => {
-    const matchesFilter = filter === 'all' || (filter === 'active' ? isActive(job) : filter === 'failed' ? needsAttention(job) : job.status === 'completed' || job.status === 'cancelled');
-    return matchesFilter && (type === 'all' || job.type === type) && (!query || `${job.id} ${jobLabel(job.type, job.payload)} ${job.type} ${jobTarget(job)} ${job.context?.series.map((series) => series.name).join(' ') ?? ''} ${job.context?.libraryName ?? ''} ${JOB_PURPOSE[job.type] ?? ''} ${jobOutcome(job)} ${job.errorMessage ?? ''} ${readableValue(job.result)}`.toLowerCase().includes(query));
+  const searchActive = query !== '' || type !== 'all';
+  const sorted = jobs.filter((job) => {
+    return matchesFilter(job, filter) && (type === 'all' || job.type === type) && (!query || `${job.id} ${jobLabel(job.type, job.payload)} ${job.type} ${jobTarget(job)} ${job.context?.series.map((series) => series.name).join(' ') ?? ''} ${job.context?.libraryName ?? ''} ${JOB_PURPOSE[job.type] ?? ''} ${jobOutcome(job)} ${job.errorMessage ?? ''} ${readableValue(job.result)}`.toLowerCase().includes(query));
   }).sort((a, b) => {
     const priority = (job: Job) => job.status === 'running' ? 0 : job.status === 'queued' ? 1 : needsAttention(job) ? 2 : 3;
     return priority(a) - priority(b) || b.id - a.id;
   });
+  // While the pointer is over the list, rows keep their place instead of re-sorting under it.
+  const frozen = hovering ? frozenOrder.current : null;
+  const visibleJobs = frozen
+    ? [...sorted].sort((a, b) => {
+      const ia = frozen.indexOf(a.id);
+      const ib = frozen.indexOf(b.id);
+      return (ia < 0 ? Infinity : ia) - (ib < 0 ? Infinity : ib) || b.id - a.id;
+    })
+    : sorted;
   const statusCounts: Record<JobFilter, number> = {
     all: jobs.length,
     active: jobs.filter(isActive).length,
     failed: jobs.filter(needsAttention).length,
-    done: jobs.filter((job) => job.status === 'completed' || job.status === 'cancelled').length,
+    done: jobs.filter((job) => matchesFilter(job, 'done')).length,
   };
+  const failedCount = jobs.filter((job) => job.status === 'failed').length;
+  const warningCount = statusCounts.failed - failedCount;
+  const countsReady = !jobsQuery.isPending && !(jobsQuery.isError && !jobsQuery.data);
+  const openJob = (id: number, replace = false) => updateUrl({ job: id }, replace);
+  const retryFor = (job: Job): RetryControl | undefined => job.type === 'restore-metadata' ? undefined : {
+    onClick: () => retryMutation.mutate(job.id),
+    pending: retryMutation.isPending && retryMutation.variables === job.id,
+    disabled: retryMutation.isPending || clearMutation.isPending,
+  };
+  const stopConfirm = (job: Job) => stopConfirmId === job.id && isActive(job) && (
+    <StopConfirm job={job} pending={cancelMutation.isPending && cancelMutation.variables === job.id} onKeep={() => setStopConfirmId(null)} onStop={() => cancelMutation.mutate(job.id)} />
+  );
+  const onListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    const current = (event.target as HTMLElement).closest<HTMLElement>('[data-task-open]');
+    if (!current) return;
+    const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[data-task-open]'));
+    const next = buttons[buttons.indexOf(current) + (event.key === 'ArrowDown' ? 1 : -1)];
+    if (!next) return;
+    event.preventDefault();
+    next.focus();
+    if (inspector && selectedId !== null) openJob(Number(next.dataset.taskOpen), true);
+  };
+
+  const row = (job: Job) => {
+    const summary = jobSummary(job);
+    const selected = job.id === selectedId;
+    const retry = job.status === 'failed' ? retryFor(job) : undefined;
+    return (
+      <article
+        key={job.id}
+        className={cn('grid min-w-0 cursor-pointer grid-cols-[2rem_minmax(0,1fr)] gap-x-3 gap-y-2 px-3 py-3 transition-colors duration-150 sm:grid-cols-[2.5rem_minmax(0,1fr)_auto] sm:gap-y-0 sm:px-4', stopConfirmId === job.id ? 'sm:items-start' : 'sm:items-center', selected ? 'bg-primary/10 ring-1 ring-inset ring-primary/50' : job.status === 'failed' ? 'bg-danger/5 hover:bg-danger/10' : 'hover:bg-surface-2/50')}
+        onClick={(event) => { if (!(event.target as HTMLElement).closest('button, a, input, select, summary')) openJob(job.id); }}
+      >
+        <JobCover job={job} />
+        <div className="min-w-0">
+          <h2 className="text-sm leading-snug [overflow-wrap:anywhere]">
+            <button type="button" id={`task-open-${job.id}`} data-task-open={job.id} aria-current={selected ? 'true' : undefined} aria-label={`View details for task #${job.id}: ${jobTarget(job)}`} onClick={() => openJob(job.id)} className="rounded text-left font-semibold underline-offset-4 hover:underline">{jobLabel(job.type, job.payload)}</button>{' '}
+            <span className="text-muted">{jobTarget(job)}</span>
+          </h2>
+          {summary && <p className={cn('mt-0.5 text-sm', job.status === 'failed' ? 'line-clamp-2 text-danger' : 'text-muted')} title={job.status === 'failed' ? job.errorMessage ?? undefined : undefined}>{summary}</p>}
+          {job.status === 'running' && <div className="mt-2 flex items-center gap-2"><ProgressBar value={job.progressCurrent} max={job.progressTotal} active label={`Progress for ${jobTarget(job)}`} className="h-1.5 max-w-xs" />{job.progressTotal > 0 && <span className="shrink-0 text-xs tabular-nums text-muted">{job.progressCurrent} / {job.progressTotal}</span>}</div>}
+          {stopConfirm(job)}
+        </div>
+        <div className="col-start-2 flex min-w-0 items-center justify-between gap-3 sm:col-start-auto sm:justify-end">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 sm:min-w-24 sm:flex-col sm:items-end sm:gap-y-0.5">
+            <RowStatus job={job} />
+            <time className="text-xs tabular-nums text-muted" dateTime={toIsoUtc(job.createdAt)} title={`${timestamp(job.createdAt)}${job.startedAt ? ` · ${duration(job)}` : ''}`}>{timeAgo(job.createdAt)}</time>
+          </div>
+          {retry && <Button className={controlClass} size="sm" variant="outline" disabled={retry.disabled || retry.pending} onClick={retry.onClick}>{retry.pending ? <Spinner /> : <RotateCcw className="h-4 w-4" />}{retry.pending ? 'Retrying…' : 'Retry'}</Button>}
+          {isActive(job) && stopConfirmId !== job.id && <Button className={cn(controlClass, 'hover:bg-danger/10 hover:text-danger')} size="sm" variant="ghost" aria-label={`Stop task #${job.id}: ${jobTarget(job)}`} onClick={() => setStopConfirmId(job.id)}>Stop</Button>}
+        </div>
+      </article>
+    );
+  };
+
+  const renderDetails = (mode: PanelMode) => {
+    const job = selectedJob;
+    const active = job !== undefined && isActive(job);
+    const failed = job?.status === 'failed';
+    return (
+      <div className="flex h-full min-h-0 min-w-0 flex-col">
+        <div className="relative flex shrink-0 items-start gap-3 border-b border-border p-4 pr-16 sm:p-5 sm:pr-16">
+          {job && <JobCover job={job} className="w-11 sm:w-14" chipClassName="h-11 w-11 sm:h-14 sm:w-14" />}
+          <div className="min-w-0 flex-1">
+            <PanelTitle ref={titleRef} mode={mode}>{job ? jobTarget(job) : 'Task details'}</PanelTitle>
+            <PanelDescription mode={mode}>{job ? `${jobLabel(job.type, job.payload)} · ` : ''}Task #{selectedId}</PanelDescription>
+            {job && <div className="mt-3"><JobStatus job={job} /></div>}
+          </div>
+          {mode === 'inline' && <button type="button" aria-label="Close task details" onClick={() => { updateUrl({ job: null }); document.getElementById(`task-open-${selectedId}`)?.focus(); }} className="ui-button ui-button-icon absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground"><X className="h-4 w-4" /></button>}
+        </div>
+        <div className="min-h-0 min-w-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-4 sm:p-5">
+          {detailQuery.isError && <ErrorState title="Could not load task details" description={detailQuery.error.message} onRetry={() => void detailQuery.refetch()} />}
+          {detailQuery.isPending && <div role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner /> Loading task details…</div>}
+          {job && <>
+            {active ? <>
+              {stopConfirm(job)}
+              <RunningFacts job={job} now={now} />
+              <p className="text-sm text-muted">{JOB_PURPOSE[job.type] ?? jobOutcome(job)}.</p>
+            </> : failed ? <>
+              <FailureCard job={job} retry={retryFor(job)} />
+              {job.type === 'restore-metadata' && typeof job.payload.seriesId === 'number' && <section className="space-y-2"><h3 className="text-sm font-semibold">Metadata history</h3><p className="text-sm text-muted">Inspect the observed before-and-after values. Failed or interrupted restores require a fresh reviewed preview, never a blind retry.</p><Button asChild variant="outline" className="min-h-11"><Link to={`/libraries?series=${job.payload.seriesId}&action=identify`}>Open series metadata history</Link></Button></section>}
+            </> : <section className="space-y-2">
+              <h3 className="text-sm font-semibold">Summary</h3>
+              <p className="text-sm">{jobOutcome(job)}</p>
+              {JOB_PURPOSE[job.type] && <p className="text-sm text-muted">{JOB_PURPOSE[job.type]}.</p>}
+              {job.type === 'restore-metadata' && typeof job.payload.seriesId === 'number' && <div className="pt-2"><Button asChild variant="outline" className="min-h-11"><Link to={`/libraries?series=${job.payload.seriesId}&action=identify`}>Open series metadata history</Link></Button></div>}
+            </section>}
+            {(job.context?.libraryName || (job.type === 'apply-series' && typeof job.payload.selectedTitle === 'string') || jobSeries(job).length > 1) && <section className="space-y-2">
+              {job.type === 'apply-series' && typeof job.payload.selectedTitle === 'string' && <p className="text-sm">Selected title: {job.payload.selectedTitle}</p>}
+              {job.context?.libraryName && <p className="text-sm">Library: {job.context.libraryName}</p>}
+              {jobSeries(job).length > 1 && <Disclosure label={`Affected series (${jobSeries(job).length})`} summaryClassName="px-0"><AffectedSeries job={job} /></Disclosure>}
+            </section>}
+            {job.result !== null && job.result !== undefined && <Disclosure label="Recorded result" summaryClassName="px-0"><div className="pt-3"><StructuredValue value={job.result} /></div></Disclosure>}
+            <Disclosure label="Timing" summaryClassName="px-0"><p className="mt-2 text-sm">{duration(job)}</p><dl className="mt-3 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">{[['Created', job.createdAt], ['Started', job.startedAt], ['Finished', job.finishedAt]].map(([label, value]) => <div key={label}><dt className="text-xs text-muted">{label}</dt><dd className="mt-1 break-words">{timestamp(value)}</dd></div>)}</dl></Disclosure>
+            <Disclosure label="Technical details" summaryClassName="px-0"><p className="py-3 font-mono text-xs text-muted">{job.type} · Task #{job.id}</p><StructuredValue value={job.payload} /></Disclosure>
+          </>}
+          {detailQuery.data && <Disclosure key={selectedId} label={`Logs (${detailQuery.data.logs.length})`} open={active || failed} summaryClassName="px-0"><div className="pt-3"><LogConsole jobId={selectedId!} logs={detailQuery.data.logs} /></div></Disclosure>}
+        </div>
+        {job && (failed || active) && (
+          <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border px-4 py-2 text-xs text-muted sm:px-5">
+            {failed ? <>
+              <span>Remove this failed task and its logs from history.</span>
+              <Button variant="ghost" size="sm" className={controlClass} disabled={retryMutation.isPending || clearMutation.isPending} onClick={() => setClearTarget(job.id)}><Trash2 className="h-4 w-4" /> Remove from history</Button>
+            </> : <>
+              <span aria-live="off">{detailQuery.dataUpdatedAt ? `Updated ${Math.max(0, Math.floor((now - detailQuery.dataUpdatedAt) / 1000)) < 2 ? 'just now' : `${Math.floor((now - detailQuery.dataUpdatedAt) / 1000)}s ago`}` : 'Updating…'}</span>
+              {stopConfirmId !== job.id && <Button variant="ghost" size="sm" className={cn(controlClass, 'hover:bg-danger/10 hover:text-danger')} onClick={() => setStopConfirmId(job.id)}>Stop task</Button>}
+            </>}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const showInspector = inspector && selectedId !== null;
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
-      <PageHeader icon={<ListChecks className="h-5 w-5" />} title="Tasks" subtitle="Background work and recent results.">
-        {jobs.some((job) => job.status === 'failed') && <Button variant="outline" className={controlClass} disabled={clearMutation.isPending || retryMutation.isPending} onClick={() => setClearTarget('all')}><Trash2 className="h-4 w-4" /> Clear failed tasks</Button>}
-      </PageHeader>
-      <Card className="min-w-0">
-        <div className="space-y-3 border-b border-border p-3 sm:p-4">
-          <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
-            <div className="space-y-1"><Label htmlFor="jobs-status">Status</Label><Select id="jobs-status" value={filter} onChange={(event) => updateUrl({ filter: event.target.value as JobFilter })} className={controlClass}>{FILTERS.map((item) => <option key={item.id} value={item.id}>{item.label} ({jobsQuery.isPending || (jobsQuery.isError && !jobsQuery.data) ? '—' : statusCounts[item.id]})</option>)}</Select></div>
-            <div className="space-y-1"><Label htmlFor="jobs-search">Search activity</Label><div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" /><Input id="jobs-search" type="search" placeholder="Task, target, result, or ID…" value={search} onChange={(event) => setSearch(event.target.value)} className="max-lg:min-h-11 pointer-coarse:min-h-11 pl-9" /></div></div>
+      <PageHeader icon={<ListChecks className="h-5 w-5" />} title="Tasks" subtitle="Background work and recent results." />
+      <div className={cn('grid min-w-0 gap-4', showInspector ? 'grid-cols-[minmax(0,1fr)_440px] items-start' : 'grid-cols-1')}>
+        <Card className="min-w-0">
+          <SegmentedTabs
+            label="Task status"
+            panelId="jobs-panel"
+            value={filter}
+            onChange={(id) => updateUrl({ filter: id })}
+            items={FILTERS.map((item) => ({ id: item.id, label: item.label, count: countsReady ? statusCounts[item.id] : undefined, alert: item.id === 'failed' && countsReady && statusCounts.failed > 0 }))}
+          />
+          <div className="flex items-center gap-2 p-3 sm:p-4">
+            <div className="relative min-w-0 flex-1"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" /><Input id="jobs-search" type="search" aria-label="Search tasks" placeholder="Search tasks…" value={search} onChange={(event) => setSearch(event.target.value)} className="max-lg:min-h-11 pointer-coarse:min-h-11 pl-9" /></div>
+            <Button variant="outline" size="icon" className={cn(controlClass, 'relative max-lg:w-11 pointer-coarse:w-11')} aria-label="Filter by task type" aria-expanded={typeOpen} aria-controls="jobs-type-filter" onClick={() => setTypeOpen((open) => !open)}>
+              <SlidersHorizontal className="h-4 w-4" />
+              {type !== 'all' && <span aria-hidden="true" className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-primary" />}
+            </Button>
           </div>
-          <div className="flex flex-wrap items-start justify-between gap-2 text-xs text-muted">
-            <p className="py-2">{visibleJobs.length} of {jobs.length} tasks</p>
-            <Disclosure label={type === 'all' ? 'Task type' : `Task type: ${jobLabel(type)}`} className="max-w-full" summaryClassName="px-0 text-xs">
-              <div className="pb-1 pt-2"><Select aria-label="Task type" value={type} onChange={(event) => setType(event.target.value)} className={cn(controlClass, 'w-full sm:w-48')}><option value="all">All task types</option>{types.map((value) => <option key={value} value={value}>{jobLabel(value)}</option>)}</Select></div>
-            </Disclosure>
-          </div>
-        </div>
-        <CardContent className="!p-0 divide-y divide-border">
-          {jobsQuery.isError && <ErrorState title="Could not load activity" description={jobsQuery.error.message} onRetry={() => void jobsQuery.refetch()} />}
-          {jobsQuery.isPending ? <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted" role="status"><Spinner /> Loading activity…</div> : !visibleJobs.length && !jobsQuery.isError ? <div><EmptyState icon={<ListChecks className="h-8 w-8" />} title={jobs.length ? 'No matching tasks' : 'No activity yet'} description={jobs.length ? 'Try another status, task type, or search.' : 'Scans, matching, and other background work appear here.'} />{jobs.length > 0 && <div className="flex justify-center"><Button variant="outline" className={controlClass} onClick={() => { setSearch(''); setType('all'); updateUrl({ filter: 'all' }); }}>Clear filters</Button></div>}</div> : visibleJobs.map((job) => (
-            <article key={job.id} className={cn('min-w-0 px-3 py-3 sm:px-4', job.id === selectedId ? 'bg-primary/5' : job.status === 'failed' ? 'bg-danger/5' : undefined)}>
-              <div className="flex min-w-0 items-start gap-3">
-                <JobCover job={job} />
-                <div className="flex min-w-0 flex-1 flex-col gap-2 md:flex-row md:items-start md:justify-between md:gap-4">
-                    <div className="min-w-0 flex-1">
-                      <h2 className="break-words text-sm font-semibold [overflow-wrap:anywhere]">{jobTarget(job)}</h2>
-                      <p className="mt-1 break-words text-xs text-muted">
-                        {jobLabel(job.type, job.payload)} · <time dateTime={toIsoUtc(job.createdAt)} title={timestamp(job.createdAt)}>{timeAgo(job.createdAt)}</time>{job.startedAt && <> · {duration(job)}</>}
-                      </p>
-                      {jobSummary(job) && <p className={cn('mt-1 text-sm', job.status === 'failed' ? 'line-clamp-2 text-danger' : 'text-muted')} title={job.status === 'failed' ? job.errorMessage ?? undefined : undefined}>{jobSummary(job)}</p>}
-                      {job.status === 'running' && <div className="mt-2 flex items-center gap-2"><ProgressBar value={job.progressCurrent} max={job.progressTotal} active label={`Progress for ${jobTarget(job)}`} className="max-w-xs" />{job.progressTotal > 0 && <span className="shrink-0 text-xs tabular-nums text-muted">{job.progressCurrent} / {job.progressTotal}</span>}</div>}
-                    </div>
-                    <div className="flex shrink-0 flex-wrap items-center gap-2 md:justify-end">
-                      <JobStatus job={job} />
-                      {actions(job, true)}
-                      <Button variant="ghost" size="sm" className={controlClass} aria-label={`View details for task #${job.id}: ${jobTarget(job)}`} onClick={() => updateUrl({ job: job.id })}>Details</Button>
-                    </div>
-                </div>
-              </div>
-            </article>
-          ))}
-        </CardContent>
-      </Card>
-      <Dialog open={selectedId !== null} onOpenChange={(open) => { if (!open) updateUrl({ job: null }); }}>
-        <DialogContent className="!left-auto !right-0 !top-0 !h-dvh !max-h-dvh !w-full !max-w-none !translate-x-0 !translate-y-0 !animate-none !rounded-none border-y-0 border-r-0 sm:!w-full lg:!w-[min(640px,55vw)]">
-          <div className="flex h-full min-h-0 min-w-0 flex-col">
-            <div className="flex shrink-0 items-start gap-3 border-b border-border p-4 pr-16 sm:p-5 sm:pr-16">
-              {selectedJob && <JobCover job={selectedJob} className="w-20 sm:w-28" />}
-              <div className="min-w-0 flex-1">
-                <DialogTitle>{selectedJob ? jobTarget(selectedJob) : 'Task details'}</DialogTitle>
-                <DialogDescription className="mt-1 break-words">{selectedJob ? `${jobLabel(selectedJob.type, selectedJob.payload)} · ` : ''}Task #{selectedId}</DialogDescription>
-                {selectedJob && <div className="mt-3"><JobStatus job={selectedJob} /></div>}
-              </div>
+          {typeOpen && <div id="jobs-type-filter" className="px-3 pb-3 sm:px-4"><Select aria-label="Task type" value={type} onChange={(event) => setType(event.target.value)} className={cn(controlClass, 'w-full sm:w-64')}><option value="all">All task types</option>{types.map((value) => <option key={value} value={value}>{jobLabel(value)}</option>)}</Select></div>}
+          {searchActive && countsReady && <p className="px-3 pb-2 text-xs text-muted sm:px-4" role="status">{visibleJobs.length} of {statusCounts[filter]} tasks</p>}
+          {filter === 'failed' && failedCount > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-y border-border bg-danger/5 px-3 py-1.5 text-sm sm:px-4">
+              <span>{failedCount} failed{warningCount > 0 ? ` · ${warningCount} with warnings` : ''}</span>
+              <Button variant="ghost" size="sm" className={controlClass} disabled={clearMutation.isPending || retryMutation.isPending} onClick={() => setClearTarget('all')}><Trash2 className="h-4 w-4" /> Clear {failedCount} failed</Button>
             </div>
-            <div className="min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto overscroll-contain p-4 sm:p-5">
-              {detailQuery.isError && <ErrorState title="Could not load task details" description={detailQuery.error.message} onRetry={() => void detailQuery.refetch()} />}
-              {detailQuery.isPending && <div role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner /> Loading task details…</div>}
-              {selectedJob && <>
-                <section className="space-y-2">
-                  <h3 className="text-sm font-semibold">Summary</h3>
-                  <p className="text-sm">{jobOutcome(selectedJob)}</p>
-                  {selectedJob.type === 'apply-series' && typeof selectedJob.payload.selectedTitle === 'string' && <p className="text-sm">Selected title: {selectedJob.payload.selectedTitle}</p>}
-                  {selectedJob.context?.libraryName && <p className="text-sm">Library: {selectedJob.context.libraryName}</p>}
-                  {jobSeries(selectedJob).length > 1 && <Disclosure label={`Affected series (${jobSeries(selectedJob).length})`} summaryClassName="px-0"><AffectedSeries job={selectedJob} /></Disclosure>}
-                </section>
-                {isActive(selectedJob) && <section className="space-y-2" aria-label="Task progress"><ProgressBar value={selectedJob.progressCurrent} max={selectedJob.progressTotal} active /><p className="text-xs text-muted">{duration(selectedJob)}</p></section>}
-                {(isActive(selectedJob) || selectedJob.status === 'failed') && <div className="flex flex-wrap gap-2">{actions(selectedJob)}</div>}
-                {selectedJob.errorMessage && <section role="alert" className="rounded-lg border border-danger/30 bg-danger/5 p-3"><h3 className="mb-2 text-sm font-semibold text-danger">Failure</h3><p className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{selectedJob.errorMessage}</p></section>}
-                <RecoveryActions job={selectedJob} />
-                {selectedJob.type === 'restore-metadata' && typeof selectedJob.payload.seriesId === 'number' && <section className="space-y-2"><h3 className="text-sm font-semibold">Metadata history</h3><p className="text-sm text-muted">Inspect the observed before-and-after values. Failed or interrupted restores require a fresh reviewed preview, never a blind retry.</p><Button asChild variant="outline" className="min-h-11"><Link to={`/libraries?series=${selectedJob.payload.seriesId}&action=identify`}>Open series metadata history</Link></Button></section>}
-                {selectedJob.result !== null && selectedJob.result !== undefined && <Disclosure label="Recorded result" summaryClassName="px-0"><div className="pt-3"><StructuredValue value={selectedJob.result} /></div></Disclosure>}
-                <Disclosure label="Timing" summaryClassName="px-0"><p className="mt-2 text-sm">{duration(selectedJob)}</p><dl className="mt-3 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">{[['Created', selectedJob.createdAt], ['Started', selectedJob.startedAt], ['Finished', selectedJob.finishedAt]].map(([label, value]) => <div key={label}><dt className="text-xs text-muted">{label}</dt><dd className="mt-1 break-words">{timestamp(value)}</dd></div>)}</dl></Disclosure>
-                <Disclosure label="Technical details" summaryClassName="px-0"><p className="py-3 font-mono text-xs text-muted">{selectedJob.type} · Task #{selectedJob.id}</p><StructuredValue value={selectedJob.payload} /></Disclosure>
-              </>}
-              {detailQuery.data && <Disclosure key={selectedId} label={`Logs (${detailQuery.data.logs.length})`} open={selectedJob?.status === 'failed'} summaryClassName="px-0"><div className="pt-3"><LogConsole jobId={selectedId!} logs={detailQuery.data.logs} /></div></Disclosure>}
-            </div>
-          </div>
+          )}
+          <CardContent id="jobs-panel" role="tabpanel" aria-labelledby={`jobs-panel-tab-${filter}`} className="!p-0 divide-y divide-border" onKeyDown={onListKeyDown} onPointerEnter={(event) => { if (event.pointerType === 'mouse') { frozenOrder.current = sorted.map((job) => job.id); setHovering(true); } }} onPointerLeave={() => { setHovering(false); frozenOrder.current = null; }}>
+            {jobsQuery.isError && <ErrorState title="Could not load tasks" description={jobsQuery.error.message} onRetry={() => void jobsQuery.refetch()} />}
+            {jobsQuery.isPending ? <div role="status" aria-label="Loading tasks" className="divide-y divide-border">{[0, 1, 2].map((index) => <div key={index} className="flex items-center gap-3 px-3 py-3 sm:px-4"><Skeleton className="h-10 w-10 shrink-0 rounded-lg" /><div className="min-w-0 flex-1 space-y-2"><Skeleton className="h-4 w-1/3" /><Skeleton className="h-3 w-1/2" /></div></div>)}</div> : !visibleJobs.length && !jobsQuery.isError ? <div>{searchActive
+              ? <EmptyState icon={<Search className="h-8 w-8" />} title="No matching tasks" description="Try another search or task type." />
+              : <EmptyState icon={filter === 'failed' ? <CheckCircle2 className="h-8 w-8" /> : <ListChecks className="h-8 w-8" />} title={EMPTY_COPY[filter].title} description={EMPTY_COPY[filter].description} />}
+              {searchActive && <div className="flex justify-center pb-6"><Button variant="outline" className={controlClass} onClick={() => { setSearch(''); setType('all'); }}>Clear search and type</Button></div>}
+            </div> : visibleJobs.map(row)}
+          </CardContent>
+        </Card>
+        {showInspector && (
+          <aside aria-label="Task details" className="ui-card sticky top-4 flex max-h-[calc(100dvh-2rem)] min-h-96 min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-surface">
+            {renderDetails('inline')}
+          </aside>
+        )}
+      </div>
+      <Dialog open={selectedId !== null && !inspector} onOpenChange={(open) => { if (!open) updateUrl({ job: null }); }}>
+        <DialogContent onOpenAutoFocus={(event) => { event.preventDefault(); titleRef.current?.focus({ preventScroll: true }); }} className="!left-auto !right-0 !top-0 !h-dvh !max-h-dvh !w-full !max-w-none !translate-x-0 !translate-y-0 !animate-none !rounded-none border-y-0 border-r-0 sm:!w-full lg:!w-[min(640px,55vw)]">
+          {renderDetails('dialog')}
         </DialogContent>
       </Dialog>
       <ConfirmDialog
         open={clearTarget !== null}
-        title={clearTarget === 'all' ? 'Clear all failed tasks?' : `Clear failed task #${clearTarget}?`}
+        title={clearTarget === 'all' ? 'Clear all failed tasks?' : `Remove failed task #${clearTarget}?`}
         description={clearTarget === 'all'
           ? 'Permanently remove all failed tasks and their logs, including those outside the current filters or loaded history. Active, completed, and cancelled tasks are kept. This cannot be undone.'
           : 'Permanently remove this failed task and its logs from history. This does not change your library or files and cannot be undone.'}
-        confirmLabel={clearMutation.isPending ? 'Clearing…' : clearTarget === 'all' ? 'Clear failed tasks' : 'Clear task'}
+        confirmLabel={clearMutation.isPending ? 'Removing…' : clearTarget === 'all' ? 'Clear failed tasks' : 'Remove task'}
         danger
         pending={clearMutation.isPending}
         onOpenChange={(open) => { if (!open && !clearMutation.isPending) setClearTarget(null); }}

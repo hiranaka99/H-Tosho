@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Rework the Tasks tab from a design critique. Stopping a task now takes an inline
+  confirmation that says what is kept, and opening Details no longer focuses a
+  destructive action. Rows lead with the action, use a type glyph instead of an empty
+  cover, and show clean completions as a quiet check. Failed tasks open on a plain-language
+  explanation with the next step (including a Retry-After countdown), with the raw error
+  under Error details. Status is now tabs with counts (All, Active, Needs attention,
+  Finished) that open on Needs attention when something needs it, and the sidebar says
+  "Needs attention" with the same count. From 1280px wide, Details is a non-modal side
+  panel with progress, an estimate, a freshness stamp and open, following logs for running
+  tasks; arrow keys move between tasks, and rows stay put while the pointer is over the list.
+
 ## v4.0.1
 
 - Normalize leading artist/circle credits in unified search, including arbitrary

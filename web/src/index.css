@@ -270,6 +270,19 @@ select {
   animation: shimmer 1.5s linear infinite;
 }
 
+/* Inline stop confirmation: the bar shows how long it stays open before reverting. */
+@keyframes confirm-countdown {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+.confirm-countdown {
+  transform-origin: left;
+  animation: confirm-countdown 6s linear forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .confirm-countdown { display: none; }
+}
+
 /* Radix dialog open/close — driven by data-state on the portal elements. */
 @keyframes dialog-in {
   from { opacity: 0; transform: translateY(10px) scale(0.97); }
