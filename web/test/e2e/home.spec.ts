@@ -5,6 +5,8 @@ import { coverImage } from '../../../server/test/fixtures/coverImage';
 import type { CoverHistory, RecordedCover, CoverRestorePreview } from '../../../server/src/contracts/metadataCovers';
 import type { RestorePreviewRequest } from '../../../server/src/contracts/metadataRestore';
 
+// At 1280px and wider Task details is a non-modal side panel; below that it is a dialog.
+const taskPanel = (page: Page) => page.getByRole('dialog').or(page.getByRole('complementary', { name: 'Task details' }));
 const titles = ['After the rain', 'An evening in June', 'The long way home', 'Summer sketches', 'A quiet afternoon', 'Letters from the coast'];
 const items = titles.map((title, index) => ({ source: 'hitomi', galleryId: String(100 + index), title, artists: ['Sample Artist'], tags: [], language: 'English', pageCount: 24 + index * 4, reasons: ['Artist in your library'], coverUrl: `/test-cover/${index}` }));
 const recommendationSet = { date: '2026-11-15', generatedAt: '2026-11-15T09:00:00Z', mode: 'library', profile: { artists: [], tags: [], series: [], language: 'English' }, items, repeatedCount: 0, degradedReason: null, ownedKeys: [], dismissedKeys: [] };
@@ -148,7 +150,7 @@ test('download discovery updates Home automatically and explains its review-only
   await page.locator('section[aria-labelledby="home-matches"]').screenshot({ path: `.impeccable/review/download-discovery-home-${testInfo.project.name}.png` });
   await navigate(page, 'Tasks');
   await page.getByRole('button', { name: `View details for task #71: ${match.name}`, exact: true }).click();
-  const dialog = page.getByRole('dialog');
+  const dialog = taskPanel(page);
   await expect(dialog.getByText('1 galleries checked · 1 galleries with candidates · 0 galleries with provider errors.', { exact: true })).toBeVisible();
   await expect(dialog.getByText('Find matches for downloaded gallery · Task #71', { exact: true })).toBeVisible();
   await dialog.screenshot({ path: `.impeccable/review/download-discovery-job-${testInfo.project.name}.png` });
@@ -604,19 +606,21 @@ test('restore Tasks show verified fields and send failed restores back to series
   await page.route('**/api/jobs/92', route => route.fulfill({ json: { job: failed, logs: [] } }));
   await page.route('**/api/jobs/93', route => route.fulfill({ json: { job: archiveOnly, logs: [] } }));
   await navigate(page, 'Tasks');
+  // The failed restore needs attention, so Tasks opens there; the completed restores are under All.
+  await page.getByRole('tab', { name: /^All/ }).click();
   await expect(page.getByText('Restored: Summary, Tags', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: `View details for task #91: ${match.name}`, exact: true }).click();
-  await expect(page.getByRole('dialog').getByText('Verified restored fields: Summary, Tags. Inspect linked history for metadata and archive results.', { exact: true })).toBeVisible();
+  await expect(taskPanel(page).getByText('Verified restored fields: Summary, Tags. Inspect linked history for metadata and archive results.', { exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: `View details for task #92: ${match.name}`, exact: true }).click();
-  const dialog = page.getByRole('dialog');
+  const dialog = taskPanel(page);
   await expect(dialog.getByText(/This task cannot be retried directly/)).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Retry task', exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('link', { name: 'Open series metadata history' })).toHaveAttribute('href', '/libraries?series=11&action=identify');
   await page.keyboard.press('Escape');
   await expect(page.getByText('Restored: 2 archives',{exact:true})).toBeVisible();
   await page.getByRole('button',{name:`View details for task #93: ${match.name}`,exact:true}).click();
-  await expect(page.getByRole('dialog').getByText('ComicInfo.xml verified in 2 archives. Inspect linked history for metadata and archive results.',{exact:true})).toBeVisible();
+  await expect(taskPanel(page).getByText('ComicInfo.xml verified in 2 archives. Inspect linked history for metadata and archive results.',{exact:true})).toBeVisible();
   await page.screenshot({path:`.impeccable/review/metadata-h3-task-${testInfo.project.name}-light.png`,animations:'disabled'});
   await page.evaluate(()=>document.documentElement.classList.add('dark'));
   await page.screenshot({path:`.impeccable/review/metadata-h3-task-${testInfo.project.name}-dark.png`,animations:'disabled'});

@@ -7,6 +7,7 @@ import { toast } from '../lib/toast';
 import { useDownloads } from '../lib/DownloadsContext';
 import { formatBytes, formatSpeed } from '../lib/format';
 import { jobLabel } from '../lib/utils';
+import { needsAttention } from '../lib/jobStatus';
 import { ProgressBar } from './ui';
 
 function JobRow({ job }: { job: Job }) {
@@ -126,9 +127,9 @@ export function SidebarStatus() {
     previousJobs.current = current;
   }, [jobs, qc]);
   const shownTasks = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
-  const failedJobs = jobs.filter((job) => job.status === 'failed');
+  const attentionJobs = jobs.filter(needsAttention);
   const failedDownloads = tasks.filter((task) => task.status === 'failed' && task.errorMessage !== 'Cancelled by user');
-  if (activeJobs.length === 0 && shownTasks.length === 0 && failedJobs.length === 0 && failedDownloads.length === 0) return null;
+  if (activeJobs.length === 0 && shownTasks.length === 0 && attentionJobs.length === 0 && failedDownloads.length === 0) return null;
 
   const onTaskAction = (op: 'pause' | 'resume' | 'cancel', id: number) => {
     if (op === 'pause') pause(id);
@@ -140,7 +141,7 @@ export function SidebarStatus() {
     <div className="flex max-h-1/2 min-h-0 flex-col gap-3 overflow-y-auto border-t border-border p-3">
       <nav aria-label="Activity shortcuts" className="flex flex-col gap-1">
         {activeJobs.length > 0 && <button type="button" onClick={() => navigate('/jobs?filter=active')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-primary hover:bg-surface-2">Active tasks · {activeJobs.length}</button>}
-        {failedJobs.length > 0 && <button type="button" onClick={() => navigate('/jobs?filter=failed')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Failed tasks · {failedJobs.length}</button>}
+        {attentionJobs.length > 0 && <button type="button" onClick={() => navigate('/jobs?filter=failed')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Needs attention · {attentionJobs.length}</button>}
         {failedDownloads.length > 0 && <button type="button" onClick={() => navigate('/downloader?tab=downloads&status=failed')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Failed downloads · {failedDownloads.length}</button>}
       </nav>
       {activeJobs.length > 0 && (
