@@ -38,8 +38,8 @@
   --primary-hover: #902a57;
   --primary-button: #aa386a;
   --primary-button-hover: #902a57;
-  --success: #0b7d66;
-  --warning: #aa6b15;
+  --success: #066350;
+  --warning: #80490a;
   --danger: #b8364c;
   --info: #79518f;
   --skeleton-base: #f7e8ef;
@@ -481,6 +481,15 @@ html[data-motion-paused] :is(.skeleton, .progress-stripes, .animate-spin,
   transition: transform 240ms var(--ease-out-soft);
 }
 
+/* A shelf book whose status just changed (e.g. after a match run) glows once. */
+@keyframes library-card-changed {
+  from { box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 60%, transparent); }
+  to { box-shadow: 0 0 0 3px transparent; }
+}
+.library-card-changed {
+  animation: library-card-changed 2400ms var(--ease-out-soft) both;
+}
+
 @media (hover: hover) and (pointer: fine) {
   .group:hover :is(.library-cover, .downloader-cover) { transform: scale(1.04); }
 }
@@ -523,6 +532,7 @@ html[data-motion-paused] :is(.skeleton, .progress-stripes, .animate-spin,
   }
 
   .library-cover, .downloader-cover { transform: none !important; }
+  .library-card-changed { animation: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 45%, transparent); }
 
   .ui-tab-indicator {
     transition: none !important;

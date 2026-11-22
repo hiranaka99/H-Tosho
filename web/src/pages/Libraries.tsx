@@ -1,9 +1,9 @@
 import * as React from 'react';
 import { Link, useParams, useNavigate, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { Search, RefreshCw, Play, BookOpen, Unlink, FileText, Combine, Check, CheckSquare, EllipsisVertical, Trash2, Eye, X } from 'lucide-react';
+import { Search, RefreshCw, Play, BookOpen, Unlink, FileText, Combine, Check, CheckSquare, EllipsisVertical, Trash2, Eye, X, Settings2, ListChecks } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource, type Job } from '../lib/api';
-import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog, SegmentedControl, TabPanel, Spinner, ProgressBar, Pager, Disclosure } from '../components/ui';
+import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog, SegmentedControl, TabPanel, Spinner, ProgressBar, Pager } from '../components/ui';
 import { IdentifyModal } from '../components/IdentifyModal';
 import { ComicInfoModal } from '../components/ComicInfoModal';
 import { SeriesPreviewModal } from '../components/SeriesPreviewModal';
@@ -11,8 +11,7 @@ import { MergeSeriesModal } from '../components/MergeSeriesModal';
 import { PageCountPill } from '../components/PageCountPill';
 import { buildTagSearchFragment, cn, jobLabel } from '../lib/utils';
 import { toast } from '../lib/toast';
-import { useMediaQuery } from '../lib/useMediaQuery';
-import { filterLibraryRows, librarySearchTerm, needsReview, prepareLibraryRows } from '../lib/libraryShelf';
+import { DEFAULT_REVIEW_THRESHOLD, filterLibraryRows, librarySearchTerm, normalizeSort, normalizeStatusFilter, prepareLibraryRows, rowBucket, type LibraryBucket, type LibrarySort, type LibraryStatusFilter } from '../lib/libraryShelf';
 const SERIES_PAGE_SIZE = 40;
 const EMPTY_SERIES: SeriesRow[] = [];
 
@@ -21,7 +20,7 @@ const LIBRARY_STATE_KEY = 'h-tosho:library-state';
 interface LibraryStateCache {
   query?: string;
   statusFilter?: string;
-  sortBy?: 'name' | 'date-added';
+  sortBy?: LibrarySort;
   pages?: Record<string, number>;
 }
 
@@ -68,7 +67,7 @@ const ARTIST_SOURCE_META: Record<DoujinSource, { label: string; color: string; i
   ehentai: { label: 'E-Hentai / ExHentai', color: '#00a1d6', icon: 'ehentai.svg' },
 };
 
-function CardActionMenu({ row, onEdit, onUnmatch, onDelete }: { row: SeriesRow; onEdit: () => void; onUnmatch: () => void; onDelete: () => void }) {
+function CardActionMenu({ row, onPreview, onEdit, onUnmatch, onDelete }: { row: SeriesRow; onPreview: () => void; onEdit: () => void; onUnmatch: () => void; onDelete: () => void }) {
   const navigate = useNavigate();
   const [open, setOpen] = React.useState(false);
   const root = React.useRef<HTMLDivElement>(null);
@@ -134,6 +133,10 @@ function CardActionMenu({ row, onEdit, onUnmatch, onDelete }: { row: SeriesRow; 
       </button>
       {open && (
         <div id={menuId} role="menu" aria-label={`Actions for ${row.name}`} onKeyDown={menuKeys} className="absolute right-0 top-full mt-1 w-52 overflow-hidden rounded-md border border-border bg-surface p-1 text-foreground shadow-xl">
+          <button type="button" role="menuitem" tabIndex={-1} onClick={() => { setOpen(false); trigger.current?.focus(); onPreview(); }} className="flex max-lg:min-h-11 pointer-coarse:min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2">
+            <Eye className="h-4 w-4" /> Preview pages
+          </button>
+          <div role="separator" className="mx-1 my-1 h-px bg-border" />
           {row.artists?.length ? (
             <>
               <p className="px-3 pb-1 pt-1.5 text-xs font-medium text-muted">More by this artist</p>
@@ -163,6 +166,55 @@ function CardActionMenu({ row, onEdit, onUnmatch, onDelete }: { row: SeriesRow; 
     </div>
   );
 }
+
+/** Rarely-used library maintenance lives behind one button so the toolbar stays on a single task. */
+function LibraryToolsMenu({ children }: { children: (close: () => void) => React.ReactNode }) {
+  const [open, setOpen] = React.useState(false);
+  const root = React.useRef<HTMLDivElement>(null);
+  const trigger = React.useRef<HTMLButtonElement>(null);
+  const panelId = React.useId();
+  React.useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [open]);
+  return (
+    <div
+      ref={root}
+      className="relative ml-auto"
+      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
+      onKeyDown={(event) => { if (event.key === 'Escape' && open) { event.stopPropagation(); setOpen(false); trigger.current?.focus(); } }}
+    >
+      <Button ref={trigger} variant="ghost" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11" aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={() => setOpen((value) => !value)}>
+        <Settings2 className="h-4 w-4" aria-hidden="true" /> Library tools
+      </Button>
+      {open && (
+        <div id={panelId} role="group" aria-label="Library tools" className="absolute right-0 top-full z-40 mt-1 flex w-72 max-w-[calc(100vw-2rem)] flex-col gap-2 rounded-md border border-border bg-surface p-3 shadow-xl">
+          {children(() => setOpen(false))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One contextual action per card: the next step for that book, quiet when nothing is needed. */
+function cardAction(row: SeriesRow, bucket: LibraryBucket): { label: string; aria: string; needsAction: boolean } {
+  switch (bucket) {
+    case 'failed': return { label: 'Retry', aria: `Retry identification for ${row.name}`, needsAction: true };
+    case 'unmatched': return { label: 'Identify', aria: `Identify ${row.name} with a provider`, needsAction: true };
+    case 'review': return { label: 'Review', aria: `Review match for ${row.name}`, needsAction: true };
+    default: return { label: 'Details', aria: `Details for ${row.name}`, needsAction: false };
+  }
+}
+
+const STATUS_CHIPS: readonly { id: LibraryStatusFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'review', label: 'Needs review' },
+  { id: 'unmatched', label: 'Unmatched' },
+  { id: 'failed', label: 'Failed' },
+  { id: 'matched', label: 'Matched' },
+];
 
 /** Follow visible books through shelf changes; never measure on idle job polls. */
 function useLibraryMotion(state: string) {
@@ -217,16 +269,16 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const initialState = React.useMemo(readLibraryState, []);
   const [selected, setSelected] = React.useState<number | null>(libraryId ? Number(libraryId) : null);
   const [query, setQuery] = React.useState(review ? '' : initialState.query ?? '');
-  const [statusFilter, setStatusFilter] = React.useState(() => review ? 'all' : initialState.statusFilter ?? 'all');
-  const [sortBy, setSortBy] = React.useState<'name' | 'date-added'>(review ? 'name' : initialState.sortBy ?? 'date-added');
+  const [statusFilter, setStatusFilter] = React.useState<LibraryStatusFilter>(() => review ? 'all' : normalizeStatusFilter(initialState.statusFilter));
+  const [sortBy, setSortBy] = React.useState<LibrarySort>(() => review ? 'name' : normalizeSort(initialState.sortBy));
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
   const [identify, setIdentify] = React.useState<{ id: number; name: string; cover?: string | null } | null>(null);
   const reviewQueue = React.useRef<SeriesRow[]>([]);
   const browseScroll = React.useRef(0);
-  const wideControls = useMediaQuery('(min-width: 640px)');
-  const openIdentify = (row: SeriesRow) => {
+  /** A filtered shelf is a work queue: opening any book lets you step through the rest. */
+  const openIdentify = (row: SeriesRow, queue?: readonly SeriesRow[]) => {
     browseScroll.current = document.querySelector('main')?.scrollTop ?? 0;
-    reviewQueue.current = review ? [...filtered] : [];
+    reviewQueue.current = queue ? [...queue] : review || statusFilter !== 'all' ? [...filtered] : [];
     setIdentify({ id: row.id, name: row.name, cover: row.cover });
   };
   const closeIdentify = () => {
@@ -234,7 +286,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
     requestAnimationFrame(() => document.querySelector('main')?.scrollTo({ top: browseScroll.current }));
   };
   const reviewIndex = identify ? reviewQueue.current.findIndex((row) => row.id === identify.id) : -1;
-  const nextReview = reviewQueue.current[reviewIndex + 1];
+  const nextReview = reviewIndex >= 0 ? reviewQueue.current[reviewIndex + 1] : undefined;
   const [comicInfo, setComicInfo] = React.useState<{ id: number; name: string } | null>(null);
   const [preview, setPreview] = React.useState<{ id: number; name: string } | null>(null);
   const [mergeOpen, setMergeOpen] = React.useState(false);
@@ -244,6 +296,14 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const [deleteTarget, setDeleteTarget] = React.useState<{ id: number; name: string; dir: string } | null>(null);
   const [recoveryFile, setRecoveryFile] = React.useState<string | null>(null);
   const [lastQueuedJob, setLastQueuedJob] = React.useState<{ id: number; type: string; libraryId: number } | null>(null);
+  const [dismissedJob, setDismissedJob] = React.useState<number | null>(null);
+  const [settledJobId, setSettledJobId] = React.useState<number | null>(null);
+  const [flashIds, setFlashIds] = React.useState<ReadonlySet<number>>(new Set());
+  const [bulkUnmatchOpen, setBulkUnmatchOpen] = React.useState(false);
+  /** Which books were waiting when a match run was queued, so its result can be summarised. */
+  const matchBaseline = React.useRef<{ jobId: number; ids: Set<number> } | null>(null);
+  const flashTimer = React.useRef<number | undefined>(undefined);
+  React.useEffect(() => () => window.clearTimeout(flashTimer.current), []);
   const requestedSeries = Number(searchParams.get('series'));
   const linkedSeriesId = Number.isSafeInteger(requestedSeries) && requestedSeries > 0 ? requestedSeries : null;
   const linkedSeries = useQuery({ queryKey: ['series', linkedSeriesId], queryFn: () => api.series(linkedSeriesId!), enabled: linkedSeriesId !== null });
@@ -326,9 +386,15 @@ export function Libraries({ review = false }: { review?: boolean }) {
   }, [libs.data, selected, navigate, review, linkedSeriesId, searchParams]);
 
   const rows = series.data ?? EMPTY_SERIES;
-  const shelf = React.useMemo(() => prepareLibraryRows(rows, sortBy), [rows, sortBy]);
+  const threshold = reviewCount.data?.threshold ?? DEFAULT_REVIEW_THRESHOLD;
+  const thresholdPercent = Math.round(threshold * 100);
+  const shelf = React.useMemo(() => prepareLibraryRows(rows, sortBy, threshold), [rows, sortBy, threshold]);
+  const bucketById = React.useMemo(() => new Map(shelf.entries.map((entry) => [entry.row.id, entry.bucket])), [shelf]);
+  const rowsRef = React.useRef(rows);
+  rowsRef.current = rows;
   const filtered = React.useMemo(() => filterLibraryRows(shelf, query, statusFilter, review), [shelf, statusFilter, query, review]);
   const selectedRows = React.useMemo(() => rows.filter(row => checked.has(row.id)), [rows, checked]);
+  const matchedSelected = React.useMemo(() => selectedRows.filter(row => row.providerId), [selectedRows]);
   const pageCount = React.useMemo(() => Math.max(1, Math.ceil(filtered.length / SERIES_PAGE_SIZE)), [filtered.length]);
   const currentPage = Math.min(page, pageCount);
   const visibleRows = filtered.slice((currentPage - 1) * SERIES_PAGE_SIZE, currentPage * SERIES_PAGE_SIZE);
@@ -364,6 +430,9 @@ export function Libraries({ review = false }: { review?: boolean }) {
     mutationFn: ({ type, libraryId }: { type: 'scan-new' | 'match-unmatched'; libraryId: number }) => api.enqueue(type, { libraryId }),
     onSuccess: (result, variables) => {
       setLastQueuedJob({ id: result.id, ...variables });
+      if (variables.type === 'match-unmatched') {
+        matchBaseline.current = { jobId: result.id, ids: new Set(rowsRef.current.filter((row) => row.status === 'unmatched').map((row) => row.id)) };
+      }
       void qc.invalidateQueries({ queryKey: ['jobs'] });
       const libraryName = libs.data?.find((library) => library.id === variables.libraryId)?.name;
       toast({ tone: 'info', title: variables.type === 'scan-new' ? 'Refresh queued' : 'Matching queued', description: `${libraryName ? `${libraryName}. ` : ''}Follow progress below or in Tasks.` });
@@ -379,6 +448,39 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const runningLibraryJobs = libraryJobs.filter((job) => job.status === 'queued' || job.status === 'running');
   const lastJob = lastQueuedJob?.libraryId === selected ? (jobs ?? []).find((job) => job.id === lastQueuedJob.id) : undefined;
   const libraryActivity: Pick<Job, 'id' | 'type' | 'payload' | 'status' | 'progressCurrent' | 'progressTotal'> | null = runningLibraryJobs[0] ?? lastJob ?? (lastQueuedJob?.libraryId === selected ? { ...lastQueuedJob, payload: { libraryId: selected }, status: 'queued', progressCurrent: 0, progressTotal: 0 } : null);
+  const finishedJobId = lastJob && lastJob.status !== 'queued' && lastJob.status !== 'running' ? lastJob.id : null;
+  // The shelf only polls while a job runs, so refresh once when it ends to capture the outcome.
+  React.useEffect(() => {
+    if (finishedJobId === null) return;
+    let cancelled = false;
+    void qc.invalidateQueries({ queryKey: ['library-series'] }).then(() => { if (!cancelled) setSettledJobId(finishedJobId); });
+    return () => { cancelled = true; };
+  }, [finishedJobId, qc]);
+  const outcome = React.useMemo(() => {
+    const baseline = matchBaseline.current;
+    if (!lastJob || lastJob.status !== 'completed' || settledJobId !== lastJob.id || baseline?.jobId !== lastJob.id) return null;
+    const tally = { total: baseline.ids.size, matched: 0, review: 0, failed: 0, unmatched: 0 };
+    const changed: number[] = [];
+    for (const row of rows) {
+      if (!baseline.ids.has(row.id)) continue;
+      const bucket = rowBucket(row, threshold);
+      if (bucket === 'matched') tally.matched++;
+      else if (bucket === 'review') tally.review++;
+      else if (bucket === 'failed') tally.failed++;
+      else tally.unmatched++;
+      if (bucket !== 'unmatched') changed.push(row.id);
+    }
+    return { ...tally, changed };
+  }, [lastJob, settledJobId, rows, threshold]);
+  const flashedJob = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (!outcome || !lastJob || flashedJob.current === lastJob.id) return;
+    flashedJob.current = lastJob.id;
+    if (!outcome.changed.length) return;
+    setFlashIds(new Set(outcome.changed));
+    flashTimer.current = window.setTimeout(() => setFlashIds(new Set()), 2600);
+  }, [outcome, lastJob]);
+  const showFilter = (status: LibraryStatusFilter) => { setStatusFilter(status); setPage(1); };
   const saveAutoMatch = useMutation({
     mutationFn: ({ libraryId, autoMatch }: { libraryId: number; autoMatch: boolean }) => api.saveLibraryOverride(libraryId, { autoMatch }),
     onSuccess: (_result, variables) => qc.invalidateQueries({ queryKey: ['library-override', variables.libraryId] }),
@@ -393,6 +495,26 @@ export function Libraries({ review = false }: { review?: boolean }) {
       qc.invalidateQueries({ queryKey: ['low-confidence'] });
       setUnmatchTarget(null);
       toast({ tone: 'success', title: 'Unmatched', description: row.name });
+    },
+    onError: (e) => toast({ tone: 'danger', title: 'Unmatch failed', description: e instanceof Error ? e.message : String(e) }),
+  });
+
+  const bulkUnmatch = useMutation({
+    mutationFn: async (targets: SeriesRow[]) => {
+      let ok = 0;
+      let failed = 0;
+      for (const target of targets) {
+        try { await api.unmatch(target.id); ok++; } catch { failed++; }
+      }
+      return { ok, failed };
+    },
+    onSuccess: ({ ok, failed }) => {
+      qc.invalidateQueries({ queryKey: ['library-series'] });
+      qc.invalidateQueries({ queryKey: ['libraries'] });
+      qc.invalidateQueries({ queryKey: ['low-confidence'] });
+      setBulkUnmatchOpen(false);
+      setChecked(new Set());
+      toast(failed ? { tone: 'danger', title: `Unmatched ${ok}, ${failed} failed`, description: 'Check the Tasks page or try the failed series again.' } : { tone: 'success', title: `Unmatched ${ok} series` });
     },
     onError: (e) => toast({ tone: 'danger', title: 'Unmatch failed', description: e instanceof Error ? e.message : String(e) }),
   });
@@ -417,6 +539,33 @@ export function Libraries({ review = false }: { review?: boolean }) {
     onError: (e) => toast({ tone: 'danger', title: 'Could not queue the deletion', description: e instanceof Error ? e.message : String(e) }),
   });
 
+  /** Arrow keys move between books; Tab still walks the actions inside each card. */
+  const gridKeys = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const target = event.target as HTMLElement;
+    if (!target.matches('[data-grid-cell]') || event.altKey || event.ctrlKey || event.metaKey) return;
+    const cells = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[data-grid-cell]'));
+    const index = cells.indexOf(target);
+    const rect = target.getBoundingClientRect();
+    let next: HTMLElement | undefined;
+    if (event.key === 'ArrowRight') next = cells[index + 1];
+    else if (event.key === 'ArrowLeft') next = cells[index - 1];
+    else if (event.key === 'Home') next = cells[0];
+    else if (event.key === 'End') next = cells[cells.length - 1];
+    else {
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      const beyond = cells.filter((cell) => direction * (cell.getBoundingClientRect().top - rect.top) > 4);
+      if (beyond.length) {
+        const tops = beyond.map((cell) => cell.getBoundingClientRect().top);
+        const rowTop = direction === 1 ? Math.min(...tops) : Math.max(...tops);
+        next = beyond
+          .filter((cell) => Math.abs(cell.getBoundingClientRect().top - rowTop) < 4)
+          .sort((a, b) => Math.abs(a.getBoundingClientRect().left - rect.left) - Math.abs(b.getBoundingClientRect().left - rect.left))[0];
+      }
+    }
+    if (next) { event.preventDefault(); next.focus(); next.scrollIntoView({ block: 'nearest' }); }
+  };
+
   if (needsConnection) {
     return <div className="flex flex-col gap-4">
       <PageHeader icon={<BookOpen className="h-5 w-5" />} title="Libraries" subtitle="Review matches and manage Kavita metadata." />
@@ -429,94 +578,114 @@ export function Libraries({ review = false }: { review?: boolean }) {
 
   return (
     <div ref={motionRef} className="flex min-w-0 flex-col gap-4">
-      <PageHeader icon={<BookOpen className="h-5 w-5" />} title={review ? 'Needs review' : 'Libraries'} subtitle={review ? 'Review uncertain matches across all your libraries.' : 'Review matches and manage Kavita metadata.'} />
+      <PageHeader icon={<BookOpen className="h-5 w-5" />} title={review ? 'Review queue' : 'Libraries'} subtitle={review ? 'Uncertain matches across all your libraries.' : 'Review matches and manage Kavita metadata.'} />
       {linkedSeriesId && linkedSeries.isPending && <p role="status" className="text-sm text-muted">Opening series…</p>}
       {linkedSeries.isError && <ErrorState title="Could not open series" description={linkedSeries.error.message} onRetry={() => void linkedSeries.refetch()} />}
       <Card className="min-w-0">
-        <div className="flex min-w-0 flex-col gap-3 border-b border-border px-3 py-3 sm:px-4 xl:flex-row xl:items-center xl:justify-between">
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
-            {libs.isError ? (
-              <ErrorState title="Could not load libraries" description={libs.error instanceof Error ? libs.error.message : String(libs.error)} onRetry={() => void libs.refetch()} />
-            ) : libs.data && libs.data.length > 0 ? (
-              review ? <Button asChild variant="ghost"><Link to="/libraries">Back to libraries</Link></Button> : <>
-                <label htmlFor="library-picker" className="flex min-w-0 w-full flex-col gap-1 text-xs font-medium text-muted sm:hidden">Library
-                  <Select id="library-picker" aria-label="Kavita library" value={selected ?? ''} onChange={event => pickLibrary(Number(event.target.value))} title={libs.data.find(lib => lib.id === selected)?.name} className="min-h-11">
-                    {libs.data.map(lib => <option key={lib.id} value={lib.id}>{lib.name}</option>)}
-                  </Select>
-                </label>
-                <SegmentedControl items={libs.data.map((lib) => ({ id: lib.id, label: lib.name }))} value={selected} onChange={pickLibrary} label="Kavita library" className="hidden sm:flex" />
-              </>
-            ) : (
-              <p className="text-sm text-muted">{libs.isLoading ? 'Loading libraries…' : 'No libraries — connect Kavita in Settings.'}</p>
-            )}
-            {!review && reviewCount.data && reviewCount.data.count > 0 && (
-              <Link to="/libraries/review" aria-current={review ? 'page' : undefined} className="inline-flex min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 shrink-0 items-center gap-2 rounded-md px-2 text-xs font-medium text-primary hover:bg-primary/10">
-                Needs review <Badge tone="warning">{reviewCount.data.count}</Badge>
-              </Link>
-            )}
-          </div>
-          {!review && (
-            <Disclosure label="Library actions" className="min-w-0" summaryClassName="min-h-11 text-sm">
-            {override.isError && <ErrorState title="Could not load auto-match settings" description={override.error instanceof Error ? override.error.message : String(override.error)} onRetry={() => void override.refetch()} />}
-            <div role="group" aria-label="Library actions" className="flex min-w-0 flex-wrap items-center gap-2 pt-2">
-              <Button size="sm" variant="outline" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 flex-1 sm:flex-none" onClick={() => queueLibraryJob('scan-new')} disabled={selected === null || enqueue.isPending}>{enqueue.isPending && enqueue.variables?.type === 'scan-new' && enqueue.variables.libraryId === selected ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5 shrink-0" />} {enqueue.isPending && enqueue.variables?.type === 'scan-new' && enqueue.variables.libraryId === selected ? 'Queuing refresh…' : 'Refresh library'}</Button>
-              <Button size="sm" variant="outline" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 flex-1 sm:flex-none" onClick={() => queueLibraryJob('match-unmatched')} disabled={selected === null || enqueue.isPending}>{enqueue.isPending && enqueue.variables?.type === 'match-unmatched' && enqueue.variables.libraryId === selected ? <Spinner /> : <Play className="h-3.5 w-3.5 shrink-0" />} {enqueue.isPending && enqueue.variables?.type === 'match-unmatched' && enqueue.variables.libraryId === selected ? 'Queuing matching…' : 'Match all unmatched'}</Button>
-              <label className="flex min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 w-full cursor-pointer select-none items-center justify-between gap-3 px-1 text-xs font-medium text-muted sm:w-auto sm:pl-3">
-                <span className="flex items-center gap-2">Auto-match new series{saveAutoMatch.isPending && <Spinner />}</span>
-                <Switch aria-label="Automatically match new series" aria-busy={saveAutoMatch.isPending} checked={saveAutoMatch.isPending && saveAutoMatch.variables.libraryId === selected ? saveAutoMatch.variables.autoMatch : override.data?.autoMatch ?? true} onCheckedChange={autoMatch => { if (selected !== null) saveAutoMatch.mutate({ libraryId: selected, autoMatch }); }} disabled={selected === null || !override.data || saveAutoMatch.isPending} />
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-3 py-3 sm:px-4">
+          {libs.isError ? (
+            <ErrorState title="Could not load libraries" description={libs.error instanceof Error ? libs.error.message : String(libs.error)} onRetry={() => void libs.refetch()} />
+          ) : libs.data && libs.data.length > 0 ? (
+            review ? <Button asChild variant="ghost"><Link to="/libraries">Back to libraries</Link></Button> : <>
+              <label htmlFor="library-picker" className="flex min-w-0 w-full flex-col gap-1 text-xs font-medium text-muted sm:hidden">Library
+                <Select id="library-picker" aria-label="Kavita library" value={selected ?? ''} onChange={event => pickLibrary(Number(event.target.value))} title={libs.data.find(lib => lib.id === selected)?.name} className="min-h-11">
+                  {libs.data.map(lib => <option key={lib.id} value={lib.id}>{lib.name}</option>)}
+                </Select>
               </label>
-            </div>
-            </Disclosure>
+              <SegmentedControl items={libs.data.map((lib) => ({ id: lib.id, label: lib.name }))} value={selected} onChange={pickLibrary} label="Kavita library" className="hidden sm:flex" />
+            </>
+          ) : (
+            <p className="text-sm text-muted">{libs.isLoading ? 'Loading libraries…' : 'No libraries — connect Kavita in Settings.'}</p>
+          )}
+          {!review && reviewCount.data && reviewCount.data.count > 0 && (
+            <Link to="/libraries/review" title={`Matches below ${thresholdPercent}% confidence, across every library`} className="inline-flex min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 shrink-0 items-center gap-2 rounded-md px-2 text-sm font-medium text-primary-hover hover:bg-primary/10">
+              <span>Review queue<span className="hidden md:inline"> · all libraries</span></span> <Badge tone="warning">{reviewCount.data.count}</Badge>
+            </Link>
+          )}
+          {!review && (
+            <LibraryToolsMenu>
+              {(close) => <>
+                {override.isError && <ErrorState title="Could not load auto-match settings" description={override.error instanceof Error ? override.error.message : String(override.error)} onRetry={() => void override.refetch()} />}
+                <Button size="sm" variant="outline" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 w-full justify-start" onClick={() => { queueLibraryJob('scan-new'); close(); }} disabled={selected === null || enqueue.isPending}>{enqueue.isPending && enqueue.variables?.type === 'scan-new' && enqueue.variables.libraryId === selected ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5 shrink-0" />} {enqueue.isPending && enqueue.variables?.type === 'scan-new' && enqueue.variables.libraryId === selected ? 'Queuing refresh…' : 'Refresh library'}</Button>
+                <label className="flex min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 w-full cursor-pointer select-none items-center justify-between gap-3 px-1 text-sm font-medium text-foreground">
+                  <span className="flex items-center gap-2">Auto-match new series{saveAutoMatch.isPending && <Spinner />}</span>
+                  <Switch aria-label="Automatically match new series" aria-busy={saveAutoMatch.isPending} checked={saveAutoMatch.isPending && saveAutoMatch.variables.libraryId === selected ? saveAutoMatch.variables.autoMatch : override.data?.autoMatch ?? true} onCheckedChange={autoMatch => { if (selected !== null) saveAutoMatch.mutate({ libraryId: selected, autoMatch }); }} disabled={selected === null || !override.data || saveAutoMatch.isPending} />
+                </label>
+              </>}
+            </LibraryToolsMenu>
           )}
         </div>
 
-        {!review && libraryActivity && (
-          <div aria-label="Library activity" role="region" className="flex flex-wrap items-center gap-3 border-b border-border bg-surface-2/50 px-3 py-3 sm:px-4">
-            <div className="min-w-0 flex-1">
+        {!review && libraryActivity && (libraryActivity.status === 'queued' || libraryActivity.status === 'running' || libraryActivity.id !== dismissedJob) && (
+          <div aria-label="Library activity" role="region" className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-surface-2/50 px-3 py-3 sm:px-4">
+            <div className="min-w-0 flex-1 basis-60">
               <p role="status" className={cn('flex items-center gap-2 text-sm font-medium', libraryActivity.status === 'failed' ? 'text-danger' : libraryActivity.status === 'completed' ? 'text-success' : 'text-foreground')}>
                 {libraryActivity.status === 'running' && <Spinner />}
-                <span>{jobLabel(libraryActivity.type, libraryActivity.payload)} · {libraryActivity.status === 'running' ? 'In progress' : libraryActivity.status.charAt(0).toUpperCase() + libraryActivity.status.slice(1)}</span>
+                <span>
+                  {jobLabel(libraryActivity.type, libraryActivity.payload)} · {libraryActivity.status === 'running' ? 'In progress' : libraryActivity.status.charAt(0).toUpperCase() + libraryActivity.status.slice(1)}
+                  {outcome && (outcome.total === 0
+                    ? ' · nothing was waiting to match'
+                    : ` · ${[outcome.matched && `${outcome.matched} matched`, outcome.review && `${outcome.review} need review`, outcome.failed && `${outcome.failed} failed`, outcome.unmatched && `${outcome.unmatched} still unmatched`].filter(Boolean).join(', ')}`)}
+                </span>
               </p>
               {libraryActivity.status === 'running' && libraryActivity.progressTotal > 0 && (
                 <div className="mt-2 flex items-center gap-2"><ProgressBar label="Library task progress" value={libraryActivity.progressCurrent} max={libraryActivity.progressTotal} className="max-w-xs" /><span className="shrink-0 text-xs tabular-nums text-muted">{libraryActivity.progressCurrent}/{libraryActivity.progressTotal}</span></div>
               )}
               {runningLibraryJobs.length > 1 && <p className="mt-1 text-xs text-muted">{runningLibraryJobs.length} active tasks for this library</p>}
             </div>
-            <Button asChild size="sm" variant="outline"><Link to={runningLibraryJobs.length > 1 ? '/jobs?filter=active' : `/jobs?job=${libraryActivity.id}`}>{runningLibraryJobs.length > 1 ? 'View tasks' : 'View task'}</Link></Button>
+            <div className="flex flex-wrap items-center gap-2">
+              {outcome && outcome.review > 0 && <Button size="sm" className="max-lg:min-h-11 pointer-coarse:min-h-11" onClick={() => showFilter('review')}>Review {outcome.review}</Button>}
+              {outcome && outcome.failed > 0 && <Button size="sm" variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11" onClick={() => showFilter('failed')}>Show {outcome.failed} failed</Button>}
+              <Button asChild size="sm" variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11"><Link to={runningLibraryJobs.length > 1 ? '/jobs?filter=active' : `/jobs?job=${libraryActivity.id}`}>{runningLibraryJobs.length > 1 ? 'View tasks' : 'View task'}</Link></Button>
+              {libraryActivity.status !== 'queued' && libraryActivity.status !== 'running' && (
+                <Button size="icon" variant="ghost" className="max-lg:h-11 max-lg:w-11 pointer-coarse:h-11 pointer-coarse:w-11" aria-label="Dismiss task result" onClick={() => setDismissedJob(libraryActivity.id)}><X className="h-4 w-4" /></Button>
+              )}
+            </div>
           </div>
         )}
 
         {(review || selected !== null) && (
           <div className="flex flex-col gap-3 p-3 sm:p-4">
-            <div className="grid w-full grid-cols-2 items-start gap-2 sm:flex sm:flex-wrap sm:items-center">
-              <div className="relative col-span-2 min-w-0 flex-1">
+            <div className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-2 sm:flex sm:flex-wrap sm:items-center">
+              <div className="relative col-span-2 min-w-0 flex-1 sm:basis-64">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
                 <Input aria-label="Filter series, artists or tags" placeholder="Search series, artists or tags…" title="Use tag:romance to search tags only" value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-full pl-8 pr-11 sm:min-h-9" />
                 {query && <Button size="icon" variant="ghost" className="absolute right-0 top-1/2 -translate-y-1/2" aria-label="Clear series search" onClick={() => { setQuery(''); setPage(1); }}><X className="h-4 w-4" /></Button>}
               </div>
-              {!review && <Select aria-label="Filter by match status" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 sm:min-h-9 sm:w-44">
-                <option value="all">All statuses</option>
-                <option value="matched">Matched</option>
-                <option value="unmatched">Unmatched</option>
-                <option value="failed">Failed</option>
-                <option value="low-score">Needs review (&lt;80%)</option>
-              </Select>}
-              {!review && <Disclosure open={wideControls || undefined} label="Sort" className="min-w-0 sm:contents" summaryClassName="min-h-11 sm:hidden">
-              <div className="flex flex-wrap gap-2 pt-2 sm:flex-nowrap sm:pt-0">
-              {!review && <Select aria-label="Sort series" value={sortBy} onChange={(e) => { setSortBy(e.target.value as 'name' | 'date-added'); setPage(1); }} className="max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 sm:min-h-9 sm:w-44">
+              {!review && <Select aria-label="Sort series" value={sortBy} onChange={(e) => { setSortBy(normalizeSort(e.target.value)); setPage(1); }} className={cn('max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 sm:min-h-9 sm:w-52', selectMode || checked.size > 0 ? 'col-span-2' : '')}>
                 <option value="name">Sort · A–Z</option>
                 <option value="date-added">Sort · Date added</option>
+                <option value="confidence">Sort · Least certain first</option>
               </Select>}
-              </div></Disclosure>}
+              {!review && !selectMode && checked.size === 0 && <Button variant="outline" aria-label="Select to merge" className="max-lg:min-h-11 pointer-coarse:min-h-11 shrink-0 sm:min-h-9" onClick={() => setSelectMode(true)}><CheckSquare className="h-4 w-4" /> <span>Select<span className="hidden sm:inline"> to merge</span></span></Button>}
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-              <div className="contents sm:flex sm:min-w-0 sm:flex-1 sm:flex-wrap sm:items-baseline sm:gap-x-3 sm:gap-y-1">
-                <h2 aria-live="polite" aria-atomic="true" className="mr-auto text-sm font-semibold tabular-nums sm:mr-0">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h2>
-                {series.data && <p className="order-last w-full text-xs text-muted sm:order-none sm:w-auto">{review ? 'Matches below 80% confidence · All libraries' : `${shelf.counts.matched} matched · ${shelf.counts.unmatched} unmatched${shelf.counts.failed ? ` · ${shelf.counts.failed} failed` : ''}`}</p>}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <h2 aria-live="polite" aria-atomic="true" className="text-sm font-semibold tabular-nums">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h2>
+              {review && series.data && <p className="text-xs text-muted">Matches below {thresholdPercent}% confidence · All libraries</p>}
+              {!review && series.data && rows.length > 0 && (
+                <div role="group" aria-label="Filter by match status" className="flex min-w-0 flex-wrap items-center gap-1.5">
+                  {STATUS_CHIPS.map((chip) => {
+                    const count = chip.id === 'all' ? rows.length : shelf.counts[chip.id];
+                    if (chip.id !== 'all' && count === 0 && statusFilter !== chip.id) return null;
+                    const active = statusFilter === chip.id;
+                    return (
+                      <button key={chip.id} type="button" aria-pressed={active} title={chip.id === 'review' ? `Matches below ${thresholdPercent}% confidence` : undefined} onClick={() => showFilter(chip.id)} className={cn('inline-flex min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors duration-150', active ? 'border-primary bg-primary/10 text-primary-hover' : 'border-border-2 bg-surface text-muted hover:bg-surface-2 hover:text-foreground')}>
+                        {chip.label} <span className="tabular-nums">{count}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+                {!review && shelf.counts.unmatched > 0 && (
+                  <Button size="sm" variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11" onClick={() => queueLibraryJob('match-unmatched')} disabled={selected === null || enqueue.isPending}>
+                    {enqueue.isPending && enqueue.variables?.type === 'match-unmatched' && enqueue.variables.libraryId === selected ? <Spinner /> : <Play className="h-3.5 w-3.5 shrink-0" />} Match {shelf.counts.unmatched} unmatched
+                  </Button>
+                )}
+                {!review && statusFilter !== 'all' && filtered.length > 0 && <Button size="sm" className="max-lg:min-h-11 pointer-coarse:min-h-11" onClick={() => openIdentify(filtered[0])}><ListChecks className="h-3.5 w-3.5" /> Review these {filtered.length}</Button>}
+                {review && filtered.length > 0 && <Button size="sm" onClick={() => openIdentify(filtered[0])}>Start review</Button>}
               </div>
-              {!review && !selectMode && checked.size === 0 && <Button variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11 shrink-0 sm:min-h-9" onClick={() => setSelectMode(true)}><CheckSquare className="h-4 w-4" /> Select to merge</Button>}
             </div>
-              {review && filtered.length > 0 && <Button size="sm" onClick={() => openIdentify(filtered[0])}>Start review</Button>}
           </div>
         )}
       </Card>
@@ -526,6 +695,12 @@ export function Libraries({ review = false }: { review?: boolean }) {
           <span role="status" className="mr-auto text-sm font-medium tabular-nums">{checked.size} selected</span>
           <Button size="sm" className="max-lg:min-h-11 pointer-coarse:min-h-11 sm:min-h-9" onClick={() => setMergeOpen(true)} disabled={checked.size < 2} title={checked.size < 2 ? 'Select at least two series' : undefined}>
             <Combine className="h-3.5 w-3.5" /> <span>Merge<span className="hidden sm:inline"> selected</span></span>
+          </Button>
+          <Button size="sm" variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11 sm:min-h-9" onClick={() => openIdentify(selectedRows[0], selectedRows)} disabled={selectedRows.length === 0} title={selectedRows.length === 0 ? 'Select at least one series' : 'Step through the selected series one by one'}>
+            <ListChecks className="h-3.5 w-3.5" /> <span>Identify<span className="hidden sm:inline"> selected</span></span>
+          </Button>
+          <Button size="sm" variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11 sm:min-h-9" onClick={() => setBulkUnmatchOpen(true)} disabled={matchedSelected.length === 0 || bulkUnmatch.isPending} title={matchedSelected.length === 0 ? 'None of the selected series have a match to remove' : undefined}>
+            <Unlink className="h-3.5 w-3.5" /> <span>Unmatch<span className="hidden sm:inline"> selected</span></span>
           </Button>
           <Button size="sm" variant="ghost" className="max-lg:min-h-11 pointer-coarse:min-h-11 sm:min-h-9" disabled={checked.size === 0} onClick={() => setChecked(new Set())}><span>Clear<span className="hidden sm:inline"> selection</span></span></Button>
           <Button size="sm" variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11 sm:min-h-9" onClick={() => { setSelectMode(false); setChecked(new Set()); }}><span>Exit<span className="hidden sm:inline"> selection</span></span></Button>
@@ -561,18 +736,23 @@ export function Libraries({ review = false }: { review?: boolean }) {
                 {!review && rows.length === 0 && <div className="flex flex-wrap justify-center gap-2"><Button onClick={() => queueLibraryJob('scan-new')} disabled={enqueue.isPending}>Refresh library</Button><Button asChild variant="outline"><Link to="/settings#kavita-connection">Check connection</Link></Button></div>}
               </Card>
             ) : (
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-                {visibleRows.map(r => (
+              <div onKeyDown={gridKeys} className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+                {visibleRows.map(r => {
+                  const bucket = bucketById.get(r.id) ?? 'other';
+                  const action = cardAction(r, bucket);
+                  return (
                   <Card
                     key={r.id}
                     data-library-motion-id={`shelf:${r.id}`}
                     className={cn(
                       'ui-card-interactive group relative z-0 flex min-w-0 flex-col transition-colors duration-200 focus-within:z-40',
                       checked.has(r.id) ? 'border-primary bg-primary/10 ring-2 ring-primary' : 'hover:border-border-2',
+                      flashIds.has(r.id) && 'library-card-changed',
                     )}
                   >
                     <button
                       type="button"
+                      data-grid-cell
                       className="flex w-full flex-col rounded-xl text-left"
                       onClick={(event) => {
                         event.stopPropagation();
@@ -594,23 +774,23 @@ export function Libraries({ review = false }: { review?: boolean }) {
                         <p className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]" title={r.name}>{r.name}</p>
                       </div>
                     </button>
-                    <div className="flex min-w-0 flex-1 flex-col gap-2 px-3 pb-3">
+                    <div className="flex min-w-0 flex-1 flex-col gap-2 px-3 pb-3 pt-2">
+                      <div className="flex min-h-6 flex-wrap items-center gap-1">
+                        {bucket === 'review'
+                          ? <Badge tone="warning">Needs review · {Math.round(r.matchScore! * 100)}%</Badge>
+                          : <StatusBadge status={r.status} />}
+                      </div>
+                      {r.status === 'failed' && <p className="break-words text-xs text-danger line-clamp-2" title={r.errorMessage || undefined}>{r.errorMessage || 'Matching or sync failed. Retry identification, or check provider settings.'}</p>}
                       {!!r.artists?.length && <p className="min-w-0 break-words text-xs font-medium text-foreground line-clamp-2" title={`Artists: ${r.artists.join(', ')}`}><span className="text-muted">Artist{r.artists.length > 1 ? 's' : ''} · </span>{r.artists.join(', ')}</p>}
                       <MatchingTags tags={r.tags} query={query} />
-                        {review && <p className="text-xs text-muted">{r.libraryName}</p>}
-                        <div className="mt-auto flex flex-wrap items-center gap-1">
-                          {needsReview(r)
-                            ? <Badge tone="warning">Needs review · {Math.round(r.matchScore! * 100)}%</Badge>
-                            : <StatusBadge status={r.status} />}
-                          {r.status === 'failed' && <p className="w-full break-words text-xs text-danger">{r.errorMessage || 'Matching or sync failed. Retry identification, or check provider settings.'}</p>}
-                        </div>
-                        {!selectMode && (r.status === 'failed' || r.providerId) && <Button variant="ghost" className="min-h-9 justify-start px-0 text-xs text-primary" onClick={() => openIdentify(r)}>{r.status === 'failed' ? 'Retry identification' : 'Review metadata'} <Play aria-hidden="true" className="h-3 w-3" /></Button>}
-                        {!selectMode && <Button variant="outline" className="min-h-11 w-full px-2 text-xs" aria-label={`Preview pages of ${r.name}`} onClick={() => setPreview({ id: r.id, name: r.name })}><Eye className="h-4 w-4 shrink-0" />Preview pages</Button>}
-                        {selectMode && <Button size="sm" variant={checked.has(r.id) ? 'default' : 'outline'} aria-pressed={checked.has(r.id)} aria-label={`${checked.has(r.id) ? 'Remove' : 'Select'} ${r.name} ${checked.has(r.id) ? 'from' : 'for'} merging`} onClick={() => toggleCheck(r.id)}><CheckSquare className="h-4 w-4" />{checked.has(r.id) ? 'Selected' : 'Select'}</Button>}
+                      {review && <p className="text-xs text-muted">{r.libraryName}</p>}
+                      {!selectMode && <Button variant={action.needsAction ? 'outline' : 'ghost'} aria-label={action.aria} className={cn('mt-auto min-h-9 w-full px-2 text-xs max-lg:min-h-11 pointer-coarse:min-h-11', action.needsAction ? 'border-primary/40 text-primary-hover hover:text-primary-hover' : 'text-muted')} onClick={() => openIdentify(r)}>{action.label}</Button>}
+                      {selectMode && <Button size="sm" className="mt-auto" variant={checked.has(r.id) ? 'default' : 'outline'} aria-pressed={checked.has(r.id)} aria-label={`${checked.has(r.id) ? 'Remove' : 'Select'} ${r.name} ${checked.has(r.id) ? 'from' : 'for'} merging`} onClick={() => toggleCheck(r.id)}><CheckSquare className="h-4 w-4" />{checked.has(r.id) ? 'Selected' : 'Select'}</Button>}
                     </div>
-                    {!selectMode && <CardActionMenu row={r} onEdit={() => setComicInfo({ id: r.id, name: r.name })} onUnmatch={() => setUnmatchTarget(r)} onDelete={() => prepareDelete.mutate(r)} />}
+                    {!selectMode && <CardActionMenu row={r} onPreview={() => setPreview({ id: r.id, name: r.name })} onEdit={() => setComicInfo({ id: r.id, name: r.name })} onUnmatch={() => setUnmatchTarget(r)} onDelete={() => prepareDelete.mutate(r)} />}
                   </Card>
-                ))}
+                  );
+                })}
               </div>
             )}
             {filtered.length > SERIES_PAGE_SIZE && (
@@ -633,6 +813,16 @@ export function Libraries({ review = false }: { review?: boolean }) {
         onConfirm={() => { if (unmatchTarget) unmatch.mutate(unmatchTarget); }}
       />
       <ConfirmDialog
+        open={bulkUnmatchOpen}
+        title={`Unmatch ${matchedSelected.length} series?`}
+        description="This removes each match and the metadata and covers previously applied by H-Tosho. Series without a match are skipped."
+        confirmLabel="Unmatch"
+        danger
+        pending={bulkUnmatch.isPending}
+        onOpenChange={(open) => { if (!open && !bulkUnmatch.isPending) setBulkUnmatchOpen(false); }}
+        onConfirm={() => bulkUnmatch.mutate(matchedSelected)}
+      />
+      <ConfirmDialog
         open={deleteTarget !== null}
         title="Delete series files?"
         description={deleteTarget ? `This permanently deletes the folder containing “${deleteTarget.name}” and its .cbz files:` : ''}
@@ -652,7 +842,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
         <IdentifyModal
           key={identify.id}
           reviewPosition={reviewIndex >= 0 ? `${reviewIndex + 1} of ${reviewQueue.current.length}` : undefined}
-          onNext={review && nextReview ? () => setIdentify({ id: nextReview.id, name: nextReview.name, cover: nextReview.cover }) : undefined}
+          onNext={nextReview ? () => setIdentify({ id: nextReview.id, name: nextReview.name, cover: nextReview.cover }) : undefined}
           seriesId={identify.id}
           autoReview
           current={{

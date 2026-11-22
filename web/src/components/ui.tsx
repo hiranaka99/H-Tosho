@@ -217,19 +217,19 @@ export function Pager({ page, count, onPageChange }: { page: number; count: numb
   if (count <= 1) return null;
   return (
     <nav aria-label="Pages" className="flex flex-wrap items-center justify-center gap-1">
-      <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
+      <Button size="sm" variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
         <ChevronLeft className="h-3.5 w-3.5" /> Previous
       </Button>
       {pageList(page, count).map((p, i) =>
         p === '…' ? (
           <span key={`e${i}`} className="px-1 text-xs text-muted">…</span>
         ) : (
-          <Button key={p} size="sm" variant="outline" className={p === page ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15' : undefined} onClick={() => onPageChange(p)} aria-current={p === page ? 'page' : undefined}>
+          <Button key={p} size="sm" variant="outline" className={cn('max-lg:min-w-11 pointer-coarse:min-w-11 max-lg:min-h-11 pointer-coarse:min-h-11', p === page && 'border-primary/40 bg-primary/10 text-primary-hover hover:bg-primary/15')} onClick={() => onPageChange(p)} aria-current={p === page ? 'page' : undefined}>
             {p}
           </Button>
         ),
       )}
-      <Button size="sm" variant="outline" disabled={page >= count} onClick={() => onPageChange(page + 1)}>
+      <Button size="sm" variant="outline" className="max-lg:min-h-11 pointer-coarse:min-h-11" disabled={page >= count} onClick={() => onPageChange(page + 1)}>
         Next <ChevronRight className="h-3.5 w-3.5" />
       </Button>
     </nav>

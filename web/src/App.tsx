@@ -22,7 +22,7 @@ function LowConfidenceBadge() {
   const { data } = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, refetchInterval: 60_000 });
   if (!data || data.count === 0) return null;
   return (
-    <Link to="/libraries/review" className="absolute right-1 top-0 flex h-9 min-w-9 items-center justify-center rounded-md" aria-label={`Needs review · ${data.count}`} title={`Review matches below ${Math.round(data.threshold * 100)}% confidence`}>
+    <Link to="/libraries/review" className="absolute right-1 top-0 flex h-9 min-w-9 items-center justify-center rounded-md" aria-label={`Review queue · ${data.count}`} title={`Review matches below ${Math.round(data.threshold * 100)}% confidence`}>
       <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-foreground">{data.count}</span>
     </Link>
   );
