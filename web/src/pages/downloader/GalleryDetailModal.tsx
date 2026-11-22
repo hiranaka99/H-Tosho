@@ -1,56 +1,19 @@
-import { formatDate } from './GalleryCard';
+import { formatDate, Cover, SourceBadge } from './GalleryCard';
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router';
-import { Loader2, Download as DownloadIcon, RotateCcw, CheckCircle2, ImageOff, Languages, X, ExternalLink, BookOpen, Users, Layers, Star, Tags } from 'lucide-react';
+import { Loader2, Download as DownloadIcon, RotateCcw, CheckCircle2, Languages, X, ExternalLink, BookOpen, Users, Layers, Star, Tags } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSearchResult } from '../../lib/api';
 import { useGalleryDownloadTask } from '../../lib/DownloadsContext';
 import { buildTagSearchFragment, cn } from '../../lib/utils';
 import { Button, Badge, Spinner, Dialog, DialogContent, DialogTitle } from '../../components/ui';
 import { PagePreview } from '../../components/PagePreview';
 
-import { SOURCE_COLORS, SOURCE_LABELS, type DownloadSetup } from './state';
-function SourceBadge({ source }: { source: DoujinSource }) {
-  const color = SOURCE_COLORS[source];
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium" style={{ backgroundColor: color + '22', color }}>
-      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
-      {SOURCE_LABELS[source]}
-    </span>
-  );
-}
-
-function Cover({ url, title, className }: { url?: string | null; title: string; className?: string }) {
-  const [failed, setFailed] = React.useState(false);
-  React.useEffect(() => setFailed(false), [url]);
-  const size = className ?? 'h-40 w-full';
-  if (!url || failed) {
-    return (
-      <div className={cn('flex items-center justify-center bg-surface-2 text-muted', size)}>
-        <ImageOff className="h-6 w-6" />
-      </div>
-    );
-  }
-  return (
-    <img
-      src={url}
-      alt={title}
-      referrerPolicy="no-referrer"
-      loading="lazy"
-      onError={() => setFailed(true)}
-      className={cn('object-cover', size)}
-    />
-  );
-}
-
+import { SOURCE_LABELS, type DownloadSetup } from './state';
 /** Galleries per page, matching both official search APIs. */
 import { DownloadDestination, DownloadFailure } from './DownloadSetup';
-const TAG_GROUP_STYLES: Record<string, string> = {
-  Artists: 'bg-violet-500/10 text-violet-700 dark:bg-violet-400/20 dark:text-violet-300',
-  Groups: 'bg-amber-500/10 text-amber-700 dark:bg-amber-400/20 dark:text-amber-300',
-  Characters: 'bg-pink-500/10 text-pink-700 dark:bg-pink-400/20 dark:text-pink-300',
-  Series: 'bg-cyan-500/10 text-cyan-700 dark:bg-cyan-400/20 dark:text-cyan-300',
-  Tags: 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/20 dark:text-slate-300' };
+/** One neutral chip style: the group heading names the kind, so hue carries no meaning. */
+const TAG_CHIP_STYLE = 'bg-surface-2 text-foreground';
 
 function TagList({ label, items, namespaces, icon, onSearch, titleFor }: {
   label: string;
@@ -63,7 +26,6 @@ function TagList({ label, items, namespaces, icon, onSearch, titleFor }: {
   titleFor?: (value: string, ns?: string | null) => string | undefined;
 }) {
   if (!items?.length) return null;
-  const style = Object.entries(TAG_GROUP_STYLES).find(([k]) => label.startsWith(k))?.[1] ?? 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/20 dark:text-slate-300';
   return (
     <div className="flex flex-col gap-1.5">
       <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
@@ -80,8 +42,8 @@ function TagList({ label, items, namespaces, icon, onSearch, titleFor }: {
               title={titleFor ? titleFor(t, ns) : onSearch ? `Search for “${t}”` : undefined}
               className={cn(
                 'max-lg:min-h-11 pointer-coarse:min-h-11 rounded-full px-2.5 py-1 text-xs transition-all',
-                style,
-                onSearch && 'cursor-pointer hover:brightness-125',
+                TAG_CHIP_STYLE,
+                onSearch && 'cursor-pointer hover:bg-border',
               )}
             >
               {t}

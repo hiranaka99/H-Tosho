@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router';
-import { House, Library, Settings as SettingsIcon, ListChecks, Download, Menu, X, LogOut, Monitor, Sun, Moon } from 'lucide-react';
+import { House, Library, Settings as SettingsIcon, ListChecks, Compass, Menu, X, LogOut, Monitor, Sun, Moon } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './lib/api';
 // Route-level code splitting: each page (and the modals only it imports) loads
@@ -100,7 +100,7 @@ function ThemeToggle() {
 const NAV = [
   { to: '/', label: 'Home', icon: House },
   { to: '/libraries', label: 'Libraries', icon: Library },
-  { to: '/downloader', label: 'Discover', icon: Download },
+  { to: '/downloader', label: 'Discover', icon: Compass },
   { to: '/jobs', label: 'Tasks', icon: ListChecks },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ];

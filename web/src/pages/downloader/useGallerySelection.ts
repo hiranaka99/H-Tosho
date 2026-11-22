@@ -21,7 +21,15 @@ export function useGallerySelection() {
       return next;
     });
   }, []);
+  /** Adds items that are not yet chosen, keeping click order for the rest. */
+  const addMany = React.useCallback((items: readonly DoujinSearchResult[]) => {
+    setChosen(previous => {
+      const next = new Map(previous);
+      for (const item of items) if (!next.has(keyOf(item))) next.set(keyOf(item), item);
+      return next.size === previous.size ? previous : next;
+    });
+  }, []);
   const remove = React.useCallback((handled: ReadonlySet<string>) => setChosen(previous => new Map([...previous].filter(([key]) => !handled.has(key)))), []);
   const clear = React.useCallback(() => setChosen(new Map()), []);
-  return { keys, chosen, toggle, remove, clear };
+  return { keys, chosen, toggle, addMany, remove, clear };
 }

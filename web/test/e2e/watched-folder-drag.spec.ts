@@ -5,8 +5,8 @@ let watchId: number | undefined;
 let folderIds: number[] = [];
 
 async function dragWatch(page: Page, handle: Locator, destination: Locator) {
-  // Native mouse coordinates must be measured after the opening panel settles.
-  await expect.poll(() => handle.evaluate(element => element.closest('.watched-reveal')?.getAttribute('data-clipping'))).toBe('false');
+  // Native mouse coordinates must be measured after the side sheet settles.
+  await expect.poll(() => handle.evaluate(element => !element.closest('.sheet-content')?.getAnimations().some(animation => animation.playState === 'running'))).toBe(true);
   await handle.hover();
   const bounds = await handle.boundingBox();
   expect(bounds).not.toBeNull();
@@ -153,10 +153,8 @@ test('the move handle opens a keyboard and touch accessible folder selector', as
   const group = page.locator(`[data-watch-folder-id="${folderIds[0]}"]`);
   await expect(group.locator(`[data-watched-search-id="${watchId}"]`)).toBeVisible();
   await expect(page.locator('[data-watch-folder-id="unfiled"]').locator(`[data-watched-search-id="${watchId}"]`)).toHaveCount(0);
-  for (const label of ['Last success', 'Automatic checks', 'Notifications']) {
-    await expect(row.locator(`dt[title="${label}"] svg`)).toBeVisible();
-    await expect(row.locator(`dt[title="${label}"] .sr-only`)).toContainText(label);
-  }
+  await expect(row).toContainText('Not checked yet');
+  await expect(row).toContainText(/Every .+ · (inherited|custom)/);
   expect((await currentWatch(page)).folderId).toBe(folderIds[0]);
   await expect(row.getByRole('button', { name: /^Edit watch/ })).toBeFocused();
   await expect(row.getByRole('button', { name: /^Check once/ })).toHaveCount(0);

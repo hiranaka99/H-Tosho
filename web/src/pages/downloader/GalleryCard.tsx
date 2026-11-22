@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Search, Loader2, Download as DownloadIcon, Pause, XCircle, CheckCircle2, RotateCcw, Check, Circle, ImageOff, Bookmark, CheckSquare, EllipsisVertical } from 'lucide-react';
+import { Search, Loader2, Download as DownloadIcon, Pause, XCircle, CheckCircle2, RotateCcw, Check, Circle, ImageOff, Bookmark, AlertTriangle, EllipsisVertical } from 'lucide-react';
 import { type DoujinSource, type DoujinSearchResult } from '../../lib/api';
 import { useGalleryDownloadTask } from '../../lib/DownloadsContext';
 import { cn, toIsoUtc } from '../../lib/utils';
@@ -7,12 +7,30 @@ import { Button, Badge } from '../../components/ui';
 import { PageCountPill } from '../../components/PageCountPill';
 
 import { SOURCE_COLORS, SOURCE_LABELS, type DownloadSetup } from './state';
-function SourceBadge({ source }: { source: DoujinSource }) {
-  const color = SOURCE_COLORS[source];
+import { OWNERSHIP_LABELS, type GalleryOwnership } from './ownership';
+/** Source is named in text; the dot is the only colour so the label never fights the brand rose. */
+export function SourceBadge({ source }: { source: DoujinSource }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium" style={{ backgroundColor: color + '22', color }}>
-      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-foreground">
+      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: SOURCE_COLORS[source] }} />
       {SOURCE_LABELS[source]}
+    </span>
+  );
+}
+
+const OWNERSHIP_STYLE = {
+  'in-library': 'border-success/40 bg-surface text-success',
+  downloaded: 'border-border-2 bg-surface text-foreground',
+  'possible-duplicate': 'border-warning/50 bg-surface text-warning',
+} as const;
+
+/** Ownership as text plus icon, never colour alone; the title carries the full meaning. */
+export function OwnershipChip({ type, className }: { type: Exclude<GalleryOwnership['type'], 'available'>; className?: string }) {
+  const { label, help } = OWNERSHIP_LABELS[type];
+  const Icon = type === 'in-library' ? CheckCircle2 : type === 'downloaded' ? Bookmark : AlertTriangle;
+  return (
+    <span title={help} className={cn('inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium', OWNERSHIP_STYLE[type], className)}>
+      <Icon aria-hidden="true" className="h-3 w-3 shrink-0" /><span className="truncate">{label}</span>
     </span>
   );
 }
@@ -70,7 +88,7 @@ interface GalleryCardProps {
   onDownload: (item: DoujinSearchResult) => void;
   downloadSetup: DownloadSetup['status'];
   starting?: boolean;
-  ownership: { type: 'available' | 'downloaded' | 'in-library' | 'possible-duplicate'; downloadedAt?: string | null; preferenceOwned?: boolean };
+  ownership: GalleryOwnership;
   selection?: { mode: 'select' | 'browse'; selected: boolean; onToggle: (item: DoujinSearchResult) => void };
   review?: { state: 'pending' | 'reviewed' | 'unreviewed'; onChange: (item: DoujinSearchResult, reviewed: boolean) => void };
   feedback?: { pending: boolean; onOpen: (item: DoujinSearchResult) => void };
@@ -87,9 +105,9 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
   const onToggleSelect = selection?.onToggle, onReview = review?.onChange;
   const reviewed = review?.state === 'reviewed', reviewPending = review?.state === 'pending';
   const onFeedback = feedback?.onOpen, dismissing = feedback?.pending ?? false;
-  const owned = ownership.preferenceOwned ?? false;
   const libraryMatch = ownership.type === 'in-library' ? 'owned' : ownership.type === 'possible-duplicate' ? 'possible' : undefined;
   const showSource = display !== 'recommendation', showTags = display === 'full';
+  const ownershipType = ownership.type === 'available' ? null : ownership.type;
   const tags = item.tags.slice(0, 4);
   const inLibrary = libraryMatch === 'owned';
   const alreadyOwned = ownership.type === 'downloaded' || inLibrary;
@@ -107,6 +125,7 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
         <div className="relative overflow-hidden">
           <Cover url={item.coverUrl} title={item.title} className="downloader-cover aspect-[3/4] w-full" />
           <PageCountPill pageCount={item.pageCount} className={cn('absolute right-2', selectMode || selected ? 'bottom-2' : 'top-2')} />
+          {ownershipType && !selectMode && !selected && <OwnershipChip type={ownershipType} className="pointer-events-none absolute bottom-2 left-2 max-w-[calc(100%-1rem)] max-[419px]:hidden" />}
           {(selectMode || selected) && (
             <span className={cn('pointer-events-none absolute left-2 top-2 z-20 inline-flex h-8 w-8 items-center justify-center rounded-md border', selected ? 'border-primary-button bg-primary-button text-white' : 'border-border-2 bg-surface text-muted')} aria-hidden="true">
               {selected ? <Check className="downloader-selection-check h-5 w-5" /> : <span className="h-4 w-4 rounded-sm border-2 border-current" />}
@@ -129,8 +148,9 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
         </div>
       </button>
       <div className="mt-auto flex min-w-0 flex-col gap-2 p-3">
-        {(showSource || owned || provenance) && (
+        {(showSource || ownershipType || provenance) && (
           <div className="flex min-h-6 flex-wrap items-center gap-2">
+            {ownershipType && <OwnershipChip type={ownershipType} className="min-[420px]:hidden" />}
             {showSource && <SourceBadge source={item.source} />}
             {provenance && provenance.extraSources.length > 0 && (
               <span className="flex min-w-0 flex-wrap items-center gap-1" aria-label={`Also found on ${provenance.extraSources.map((s) => SOURCE_LABELS[s]).join(', ')}`}>
@@ -138,13 +158,11 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
                 {provenance.extraSources.map((s) => <SourceBadge key={s} source={s} />)}
               </span>
             )}
-            {owned && <Badge tone="muted"><Bookmark className="h-3 w-3" /> Owned</Badge>}
           </div>
         )}
         <div className="flex min-w-0 items-stretch gap-2">
           {selectMode ? <>
-            <Button size="sm" variant={selected ? 'default' : 'outline'} className="min-w-0 flex-1 px-2" onClick={() => onToggleSelect?.(item)} aria-pressed={selected} aria-label={`${selected ? 'Remove' : 'Select'} ${item.title} ${selected ? 'from' : 'for'} merging`}><CheckSquare className="h-3.5 w-3.5 shrink-0" /><span>{selected ? 'Selected' : 'Select'}</span></Button>
-            <Button size="sm" variant="ghost" onClick={() => onOpen(item)} aria-label={`View details for ${item.title}`}>Details</Button>
+            <Button size="sm" variant="outline" className="min-w-0 flex-1 px-2" onClick={() => onOpen(item)} aria-label={`View details for ${item.title}`}>Details</Button>
           </> : <Button size="sm" variant={quietAction || alreadyOwned || libraryMatch === 'possible' ? 'outline' : 'default'} className={cn('max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 px-2', onReview && 'h-auto min-h-11 px-1.5')} onClick={() => onDownload(item)} disabled={active || alreadyOwned || downloadSetup === 'loading' || downloadSetup === 'error'} aria-label={starting && !task ? `Checking duplicates for ${item.title}` : active ? `${item.title} is ${task?.status ?? 'starting'}` : alreadyOwned ? `${item.title} already in library` : libraryMatch === 'possible' ? `Review possible duplicate of ${item.title}` : downloadSetup === 'missing' ? `Set output folder before downloading ${item.title}` : `Download ${item.title}`}>
             {!onReview && (task?.status === 'paused' ? <Pause className="h-3.5 w-3.5 shrink-0" /> : task?.status === 'queued' ? <Circle className="h-3.5 w-3.5 shrink-0" /> : active ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : alreadyOwned ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <DownloadIcon className="h-3.5 w-3.5 shrink-0" />)}
             <span>{task?.state?.type === 'retry-wait' ? 'Retry scheduled' : task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : starting && !task ? 'Checking…' : active ? 'Downloading' : inLibrary ? 'In library' : alreadyOwned ? 'Downloaded' : libraryMatch === 'possible' ? 'Review duplicate' : downloadSetup === 'missing' ? 'Set folder' : 'Download'}</span>
@@ -152,7 +170,6 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
           {!selectMode && onReview && <Button size="sm" variant="outline" className="relative h-auto min-h-11 shrink-0 px-1.5" disabled={reviewPending || reviewed} onClick={() => onReview(item, true)} aria-label={reviewed ? `${item.title} dismissed from inbox` : `Dismiss ${item.title}`} title={reviewed ? 'Kept in History' : 'Remove from Inbox and keep in History'}><span className={reviewPending ? 'invisible' : undefined}>{reviewed ? 'Dismissed' : 'Dismiss'}</span>{reviewPending && <Loader2 aria-hidden="true" className="absolute h-3.5 w-3.5 animate-spin" />}</Button>}
           {onFeedback && <Button size="icon" variant="outline" className="max-lg:min-h-11 max-lg:min-w-11 pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 text-muted" disabled={dismissing} onClick={() => onFeedback(item)} aria-label={`Tune recommendations for ${item.title}`} title="Tune recommendations"><EllipsisVertical className="h-4 w-4" /></Button>}
         </div>
-        {!selectMode && selected && <Button size="sm" onClick={() => onToggleSelect?.(item)} aria-pressed={true} aria-label={`Remove ${item.title} from merging`}><CheckSquare className="h-3.5 w-3.5 shrink-0" />Selected for merge</Button>}
       </div>
     </article>
   );

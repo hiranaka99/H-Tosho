@@ -117,7 +117,7 @@ for (const tab of ['search', 'recommend']) {
 
   test(`${tab} can choose the name for a newly merged download`, async ({ page }, testInfo) => {
     await selectGallery(page);
-    await page.getByRole('button', { name: 'Download as new series', exact: true }).filter({ visible: true }).click();
+    await page.getByRole('button', { name: 'Merge into new series', exact: true }).filter({ visible: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Merged download', exact: true });
     const name = dialog.getByLabel('Merged series name', { exact: true });
     await expect(name).toHaveValue(gallery.title);
@@ -142,7 +142,7 @@ test('three selected galleries are submitted as one merged batch with their chap
   await page.goto('/downloader?tab=search&q=garden');
   await page.getByRole('button', { name: 'Select galleries', exact: true }).click();
   for (const item of galleries) await page.getByRole('button', { name: `Select ${item.title}`, exact: true }).click();
-  await page.getByRole('button', { name: 'Download as new series', exact: true }).filter({ visible: true }).click();
+  await page.getByRole('button', { name: 'Merge into new series', exact: true }).filter({ visible: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Merged download', exact: true });
   await dialog.getByLabel('Merged series name', { exact: true }).fill('Garden Collection');
   const submissions: Record<string, unknown>[] = [];
@@ -187,7 +187,7 @@ test('a merged batch retry keeps successful entries and the remaining chapter nu
   await page.goto('/downloader?tab=search&q=garden');
   await page.getByRole('button', { name: 'Select galleries', exact: true }).click();
   for (const item of galleries) await page.getByRole('button', { name: `Select ${item.title}`, exact: true }).click();
-  await page.getByRole('button', { name: 'Download as new series', exact: true }).filter({ visible: true }).click();
+  await page.getByRole('button', { name: 'Merge into new series', exact: true }).filter({ visible: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Merged download', exact: true });
   const submissions: { items: { galleryId: string; chapter: number }[] }[] = [];
   await page.route('**/api/downloads/merged', route => {

@@ -77,13 +77,15 @@ test('Watched keeps large saved lists cheap and follows checks promptly', async 
   expect(await page.locator('a[href="https://example.com/gallery"]').count()).toBe(20);
   await page.getByRole('button', { name: 'Hide 20 latest finds for artist:performance_0', exact: true }).click();
   await expect(page.locator('a[href="https://example.com/gallery"]')).toHaveCount(0);
-  await manage.locator('..').screenshot({ path: testInfo.outputPath('watched-large-list.png') });
-  await manage.click();
+  await page.getByRole('dialog', { name: 'Manage watches', exact: true }).screenshot({ path: testInfo.outputPath('watched-large-list.png') });
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await expect(page.locator('[data-watched-search-id]')).toHaveCount(0);
+  await manage.click();
   await page.getByRole('button', { name: 'Check now', exact: true }).click();
   await expect(page.getByText(/Checking \d+ of 52 watches/)).toBeVisible();
   await expect(page.getByText(/^3 new finds/)).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole('button', { name: 'Check now', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await page.getByRole('tab', { name: 'Search', exact: true }).click();
   const requestsAfterLeaving = statusRequests;
   await page.waitForTimeout(3000);

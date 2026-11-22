@@ -21,17 +21,6 @@ function activeTermBounds(full: string, caret: number) {
   return { start, end: full.length };
 }
 
-const TYPE_STYLES: Record<string, string> = {
-  artist: 'bg-violet-500/10 text-violet-700 dark:bg-violet-400/20 dark:text-violet-300',
-  group: 'bg-amber-500/10 text-amber-700 dark:bg-amber-400/20 dark:text-amber-300',
-  character: 'bg-pink-500/10 text-pink-700 dark:bg-pink-400/20 dark:text-pink-300',
-  parody: 'bg-blue-500/10 text-blue-700 dark:bg-blue-400/20 dark:text-blue-300',
-  series: 'bg-cyan-500/10 text-cyan-700 dark:bg-cyan-400/20 dark:text-cyan-300',
-  language: 'bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/20 dark:text-emerald-300',
-  category: 'bg-rose-500/10 text-rose-700 dark:bg-rose-400/20 dark:text-rose-300',
-  tag: 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/20 dark:text-slate-300',
-};
-
 interface GallerySearchInputProps {
   id?: string;
   value: string;
@@ -157,7 +146,7 @@ export function GallerySearchInput({ id, value, onChange, source, label, placeho
             aria-selected={index === highlight} onMouseDown={event => event.preventDefault()}
             onClick={() => selectSuggestion(suggestion)} onPointerMove={event => { if (event.pointerType === 'mouse') setHighlight(index); }}
             className={cn('flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left text-sm', index === highlight ? 'bg-surface-2' : 'hover:bg-surface-2')}>
-            <span className={cn('shrink-0 rounded px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide', TYPE_STYLES[suggestion.type] ?? TYPE_STYLES.tag)}>{suggestion.type}</span>
+            <span className={'shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide text-muted'}>{suggestion.type}</span>
             <span className="min-w-0 truncate">{suggestion.name}</span>
             {typeof suggestion.count === 'number' && <span className="text-xs text-muted">{suggestion.count}</span>}
             <ArrowRight className="ml-auto h-3.5 w-3.5 shrink-0 text-muted" />

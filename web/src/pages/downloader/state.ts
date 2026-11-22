@@ -15,10 +15,14 @@ export const SOURCE_COLORS: Record<DoujinSource, string> = {
   ehentai: '#00a1d6' };
 
 const DOWNLOADER_STATE_KEY = 'h-tosho:downloader-state';
-export type DownloaderTab = 'search' | 'unified' | 'recommend' | 'watched' | 'manager';
+export type DownloaderTab = 'search' | 'recommend' | 'watched' | 'manager';
+/** Search scope: every source at once, or one provider with its own sort and Watch. */
+export type SearchScope = 'all' | DoujinSource;
 
 export interface DownloaderStateCache {
-  tab?: DownloaderTab;
+  /** Older sessions may still hold the retired 'unified' tab id. */
+  tab?: DownloaderTab | 'unified';
+  scope?: SearchScope;
   source?: DoujinSource;
   query?: string;
   searchKey?: string | null;
@@ -72,7 +76,7 @@ export const sortsFor = (src: DoujinSource): { value: DoujinSort; label: string 
   src === 'nhentai' ? NHENTAI_SORTS : src === 'hitomi' ? HITOMI_SORTS : DEFAULT_SORTS;
 
 /** Human-facing display name for a doujin source. */
-export const SOURCE_LABELS: Record<DoujinSource, string> = { hitomi: 'Hitomi.la', nhentai: 'nHentai', ehentai: 'E-Hentai / ExHentai' };
+export const SOURCE_LABELS: Record<DoujinSource, string> = { hitomi: 'Hitomi.la', nhentai: 'nHentai', ehentai: 'E-Hentai' };
 
 export type DownloadSetup = { status: 'loading' | 'error' | 'missing' | 'ready'; directory?: string; format?: 'cbz' | 'folder'; onRetry: () => void };
 export const DOWNLOADER_SETTINGS_URL = '/settings?tab=downloader';

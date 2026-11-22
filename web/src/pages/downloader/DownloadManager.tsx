@@ -8,7 +8,7 @@ import { type DownloadTask } from '../../lib/api';
 import { useDownloads } from '../../lib/DownloadsContext';
 import { timeAgo } from '../../lib/utils';
 import { formatBytes, formatSpeed } from '../../lib/format';
-import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Select, EmptyState, ProgressBar, ErrorState, ConfirmDialog } from '../../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Badge, Select, EmptyState, ProgressBar, ErrorState, ConfirmDialog, Skeleton } from '../../components/ui';
 import { ComicInfoModal } from '../../components/ComicInfoModal';
 
 import { DownloadStatusBadge } from './GalleryCard';
@@ -92,7 +92,7 @@ const QueueRow = React.memo(function QueueRow({ task, onAction, onEditComicInfo,
 
 /** Sanitize a gallery title into a usable folder name. */
 export function ManagerTab() {
-  const { tasks, error: downloadsError, refetch: refetchDownloads, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
+  const { tasks, loading: downloadsLoading, error: downloadsError, refetch: refetchDownloads, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedStatus = searchParams.get('status');
   const status = requestedStatus === 'failed' || requestedStatus === 'active' ? requestedStatus : 'all';
@@ -152,8 +152,10 @@ export function ManagerTab() {
           </div>
           {downloadsError ? (
             <ErrorState title="Could not load downloads" description={downloadsError.message} onRetry={() => void refetchDownloads()} />
+          ) : downloadsLoading ? (
+            <div role="status" aria-label="Loading downloads" className="flex flex-col gap-2"><Skeleton className="h-20 w-full" /><Skeleton className="h-20 w-full" /><span className="sr-only">Loading downloads…</span></div>
           ) : tasks.length === 0 ? (
-            <EmptyState icon={<DownloadIcon className="h-8 w-8" />} title="No downloads yet" description="Click Download on a gallery to queue it. Set the output folder in Settings first." />
+            <EmptyState icon={<DownloadIcon className="h-8 w-8" />} title="No downloads yet" description="Choose Download on any gallery in Search, For you or Following to queue it here. Set the output folder in Settings first." />
           ) : (status === 'failed' && failed.length === 0) || (status === 'active' && currentTasks.length === 0) ? (
             <EmptyState icon={status === 'failed' ? <CheckCircle2 className="h-8 w-8" /> : <DownloadIcon className="h-8 w-8" />} title={status === 'failed' ? 'No failed downloads' : 'No active downloads'} description="Choose All downloads to view the rest of your queue and history." />
           ) : (

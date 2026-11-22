@@ -10,10 +10,10 @@ import { expect, test, type Page } from '@playwright/test';
 async function openUnifiedTab(page: Page) {
   await page.goto('/downloader?tab=unified');
   const tabs = page.getByRole('tab');
-  await expect(tabs).toHaveCount(5);
+  await expect(tabs).toHaveCount(4);
   await expect(tabs.nth(0)).toHaveText('Search');
-  await expect(tabs.nth(1)).toHaveText('Unified search');
-  await expect(page.getByRole('tab', { name: 'Unified search', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'Search', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('radio', { name: 'All sources', exact: true })).toBeChecked();
 }
 
 test.beforeEach(async ({ page }) => {
@@ -31,7 +31,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 async function runUnifiedQuery(page: Page, query: string) {
-  await page.getByLabel('Unified search query', { exact: true }).fill(query);
+  await page.getByLabel('Search galleries', { exact: true }).fill(query);
   await page.getByRole('button', { name: 'Search', exact: true }).click();
   await expect(page.locator('p[role="status"]')).toContainText('unique');
 }
@@ -44,14 +44,14 @@ test('unified and E-Hentai autocomplete replace the active term without submitti
     return route.fulfill({ json: [{ source: 'ehentai', type: 'artist', name: 'Sample Artist', filter: body.source === 'unified' ? 'artist:"Sample Artist"' : 'artist:"Sample Artist$"' }] });
   });
   await openUnifiedTab(page);
-  const input = page.getByRole('combobox', { name: 'Unified search query', exact: true });
+  const input = page.getByRole('combobox', { name: 'Search galleries', exact: true });
   await input.fill('-artist:sam');
   await expect(page.getByRole('option', { name: /Sample Artist/ })).toBeVisible();
   await page.screenshot({ path: `.impeccable/review/unified-autocomplete-${testInfo.project.name}.png` });
   await input.press('ArrowDown');
   await input.press('Enter');
   await expect(input).toHaveValue('-artist:"Sample Artist" ');
-  await expect(page.getByText('One query, three sources', { exact: true })).toBeVisible();
+  await expect(page.getByText('Search every source at once', { exact: true })).toBeVisible();
   expect(requests.at(-1)).toMatchObject({ source: 'unified', query: 'artist:sam' });
 
   await page.getByRole('tab', { name: 'Search', exact: true }).click();

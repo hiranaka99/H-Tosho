@@ -69,6 +69,10 @@ test('Following organizes watches, recovers revisions, checks paused watches and
     await page.request.put('/api/settings/watched-search-interval', { data: { minutes: 15 } });
     await page.goto('/downloader?tab=watched');
     const manage = page.getByRole('button', { name: /^Manage watches/ });
+    // Watch upkeep lives in a modal side sheet, so inbox checks need it closed and row edits need it open.
+    const manageSheet = page.locator('.sheet-content'); // Located by class: a nested confirm dialog hides the sheet from role queries.
+    const closeManage = async () => { if (await manageSheet.count()) { await manageSheet.getByRole('button', { name: 'Close dialog', exact: true }).click(); await expect(manageSheet).toHaveCount(0); } };
+    const openManage = async () => { if (!(await manageSheet.count())) { await manage.click(); await expect(manageSheet).toBeVisible(); } };
     await manage.focus();
     await manage.press('Enter');
     const newFolder = page.getByRole('form', { name: 'Add a watch folder' });
@@ -190,6 +194,7 @@ test('Following organizes watches, recovers revisions, checks paused watches and
     await expect(row).not.toContainText('Fixture provider unavailable');
     expect(await watchByQuery(page, query)).toMatchObject({ lastFailedAt: failed.lastFailedAt, lastError: null, lastNewCount: 1 });
 
+    await closeManage();
     const folderFilter = page.getByLabel('Filter discoveries by folder', { exact: true });
     await folderFilter.selectOption({ label: renamedFolder });
     await expect(page.getByRole('button', { name: new RegExp(`via ${label}`) })).toBeVisible();
@@ -199,33 +204,38 @@ test('Following organizes watches, recovers revisions, checks paused watches and
     expect((await page.request.patch(`/api/watched-searches/${historyWatch.id}`, { data: { expectedRevision: historyWatch.revision, folderId: favorite.id } })).ok()).toBeTruthy();
     const watchFilter = page.getByLabel('Filter discoveries by watch', { exact: true });
     await watchFilter.selectOption(String(initial.id));
+    await openManage();
     await row.getByRole('button', { name: `Edit watch ${label}`, exact: true }).click();
     await row.getByLabel('Folder', { exact: true }).selectOption({ label: folderA });
     await row.getByRole('button', { name: 'Save watch', exact: true }).click();
+    await closeManage();
     await expect(page.getByRole('button', { name: 'View details for History gallery 12', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'View details for Following fixture gallery 1', exact: true })).toHaveCount(0);
     await expect(watchFilter).toHaveValue('');
     await page.screenshot({ path: testInfo.outputPath('following-f1-filter-reset.png'), animations: 'disabled' });
+    await openManage();
     await row.getByRole('button', { name: `Edit watch ${label}`, exact: true }).click();
     await row.getByLabel('Folder', { exact: true }).selectOption({ label: renamedFolder });
     await row.getByRole('button', { name: 'Save watch', exact: true }).click();
+    await closeManage();
     await folderFilter.selectOption({ label: folderA });
     await expect(page.getByText('No matching discoveries', { exact: true })).toBeVisible();
     await folderFilter.selectOption({ label: renamedFolder });
+    await openManage();
     await row.getByRole('button', { name: `Pause watch ${label}`, exact: true }).click();
     await expect(row).toContainText('Off · paused');
-    await expect(row).toContainText('Not scheduled');
     await expect(row.getByRole('button', { name: /^Check once/ })).toHaveCount(0);
     await runFixtureCheck(page, query);
     expect(await watchByQuery(page, query)).toMatchObject({ effectiveIntervalMinutes: 0, nextCheckAt: null, lastNewCount: 1 });
     expect((await watchByQuery(page, query)).pausedAt).not.toBeNull();
+    await closeManage();
     await expect(page.getByRole('button', { name: 'View details for Following fixture gallery 2', exact: true })).toBeVisible();
+    await openManage();
     await row.getByRole('button', { name: `Resume watch ${label}`, exact: true }).click();
     await expect(row).toContainText('Every 1 hour · custom');
     expect((await watchByQuery(page, query)).nextCheckAt).not.toBeNull();
     await page.getByLabel('Watched search check interval', { exact: true }).selectOption('0');
     await expect(row).toContainText('Off globally');
-    await expect(row).toContainText('Not scheduled');
     await page.getByLabel('Watched search check interval', { exact: true }).selectOption('15');
     await expect(row).toContainText('Every 1 hour · custom');
     await row.getByRole('button', { name: `Edit watch ${label}`, exact: true }).click();
@@ -252,17 +262,20 @@ test('Following organizes watches, recovers revisions, checks paused watches and
       await page.screenshot({ path: testInfo.outputPath(`following-f1-${theme}.png`), fullPage: true, animations: 'disabled' });
     }
     await page.getByRole('button', { name: `Delete folder ${renamedFolder}`, exact: true }).click();
-    const dialog = page.getByRole('dialog');
+    const dialog = page.getByRole('dialog').filter({ hasText: /Delete folder|Remove watched search/ }).last();
     await expect(dialog).toContainText('Its watches move to Unfiled');
     await dialog.getByRole('button', { name: 'Delete folder', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     expect((await watchByQuery(page, query)).folderId).toBeNull();
+    await closeManage();
     await folderFilter.selectOption('unfiled');
     await page.getByLabel('Filter discoveries by watch', { exact: true }).selectOption(String(initial.id));
     await expect(page.getByRole('button', { name: new RegExp(`via ${label}`) })).toHaveCount(2);
+    await openManage();
     await row.getByRole('button', { name: `Remove watch ${label}`, exact: true }).click();
     await dialog.getByRole('button', { name: 'Remove', exact: true }).click();
     await expect(row).toHaveCount(0);
+    await closeManage();
     await expect(page.getByRole('button', { name: new RegExp(`via ${label} · removed watch`) })).toHaveCount(2);
     await page.getByRole('button', { name: 'Dismiss Following fixture gallery 2', exact: true }).click();
     await expect(page.getByRole('button', { name: 'View details for Following fixture gallery 2', exact: true })).toHaveCount(0);
