@@ -63,8 +63,26 @@ and the repository:
   through the existing metadata comparison before Apply & Sync.
 - Automatic matching, a review queue, ComicInfo.xml editing, and series merging
   support ongoing library maintenance.
-- Gallery sources are Hitomi.la and nHentai. Downloads support CBZ archives or
-  image folders, queue controls, and duplicate prevention.
+- Gallery sources are Hitomi.la, nHentai, and E-Hentai/ExHentai. E-Hentai/ExHentai
+  needs the user's own account, saved in Settings → Downloader; its cookies are
+  encrypted at rest and never sent to the browser. Unified search runs one query
+  across all three sources, groups repeated editions into one entry listing every
+  real source, and shows per-source status so one failing source leaves the others
+  visible. Downloads support CBZ archives or image folders, queue controls, and
+  duplicate prevention.
+- Users can protect selected metadata fields from provider sync. Metadata history
+  records provider updates, unmatch, ComicInfo edits, merges, and restores, and
+  supports previewed, selective restores (including archive fields) that users
+  review before queuing; Tasks reports the verified result. Cover history is
+  opt-in, with a configurable storage limit, and supports reviewed cover restores.
+  Restores never silently overwrite: protected fields need an explicit unlock, and
+  partial or interrupted outcomes require fresh review rather than blind retry.
+- Following (watched searches) supports names, folders, pause/resume, and
+  inherited or custom check cadence. Notifications are direct, deduplicated
+  Discord sends or in-app finds only.
+- Tasks is both a progress view and a review surface: it opens on Needs attention
+  when something needs it, explains failures in plain language with the next step,
+  and asks for inline confirmation before stopping a task.
 - Completed downloads in a shared Kavita library are imported in background jobs
   and checked for metadata candidates to review on Home before applying changes.
 - Recommendation feedback, muted artists, dismissed galleries, watched

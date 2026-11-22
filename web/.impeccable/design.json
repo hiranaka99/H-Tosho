@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-10T08:47:51.432Z",
+  "generatedAt": "2026-11-22T20:49:27.000Z",
   "title": "Design System: H-Tosho",
   "extensions": {
     "colorMeta": {
@@ -737,6 +737,21 @@
         "purpose": "Dialog content exit."
       },
       {
+        "name": "sheet-open",
+        "value": "sheet-in 0.28s var(--ease-out-soft) both",
+        "purpose": "Trailing-edge side sheet entrance: 1.5rem slide with fade."
+      },
+      {
+        "name": "sheet-close",
+        "value": "sheet-out 0.16s ease both",
+        "purpose": "Side sheet exit: 1rem slide with fade."
+      },
+      {
+        "name": "confirm-countdown",
+        "value": "confirm-countdown 6s linear forwards",
+        "purpose": "Bar that drains across an inline destructive confirmation before it reverts; hidden under reduced motion."
+      },
+      {
         "name": "reduced-motion",
         "value": "0.01ms",
         "purpose": "Single animation iteration; transforms removed; indicator transitions disabled."
@@ -850,9 +865,9 @@
       "name": "Section Tabs",
       "kind": "custom",
       "refersTo": "tab-active",
-      "description": "A visual specimen of the underline tab pattern; keyboard and animated indicator behavior live in the React component.",
-      "html": "<div class=\"ds-tabs\" role=\"tablist\" aria-label=\"Library sections\"><button type=\"button\" class=\"ds-tab ds-control\" role=\"tab\" aria-selected=\"true\">Manga</button><button type=\"button\" class=\"ds-tab ds-control\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\">Needs review</button></div>",
-      "css": ".ds-tabs { display: flex; gap: 0; overflow-x: auto; border-bottom: 1px solid var(--border, #eed9e3); padding: 4px; } .ds-tab { position: relative; min-height: 36px; flex-shrink: 0; padding: 0 4px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted, #795d70); font-family: \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif; font-size: 12px; font-weight: 500; cursor: pointer; transition: color 160ms ease, transform 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-tab:hover { color: var(--foreground, #392333); } .ds-tab[aria-selected=\"true\"] { color: var(--primary, #aa386a); } .ds-tab[aria-selected=\"true\"]::after { content: ''; position: absolute; bottom: -2px; left: 0; width: 100%; height: 2px; border-radius: calc(infinity * 1px); background: var(--primary, #aa386a); } .ds-tab:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary, #aa386a) 70%, transparent); outline-offset: -2px; } .ds-tab:active { transform: scale(0.98); } @media (min-width: 360px) { .ds-tab { padding: 0 6px; } } @media (min-width: 640px) { .ds-tab { padding: 0 12px; font-size: 14px; } }@media (max-width: 1023px), (pointer: coarse) { .ds-control { min-height: 44px; } }@media (prefers-reduced-motion: reduce) { .ds-control { transform: none !important; transition-duration: 0.01ms !important; } }"
+      "description": "A visual specimen of the underline tab pattern, including the optional count pill (idle, selected and needs-attention); keyboard and animated indicator behavior live in the React component.",
+      "html": "<div class=\"ds-tabs\" role=\"tablist\" aria-label=\"Library sections\"><button type=\"button\" class=\"ds-tab ds-control\" role=\"tab\" aria-selected=\"true\">All<span class=\"ds-tab-count\">12</span></button><button type=\"button\" class=\"ds-tab ds-control\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\">Needs attention<span class=\"ds-tab-count ds-tab-count-alert\">3</span></button></div>",
+      "css": ".ds-tabs { display: flex; gap: 0; overflow-x: auto; border-bottom: 1px solid var(--border, #eed9e3); padding: 4px; } .ds-tab { position: relative; min-height: 36px; flex-shrink: 0; padding: 0 4px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted, #795d70); font-family: \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif; font-size: 12px; font-weight: 500; cursor: pointer; transition: color 160ms ease, transform 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-tab:hover { color: var(--foreground, #392333); } .ds-tab[aria-selected=\"true\"] { color: var(--primary, #aa386a); } .ds-tab[aria-selected=\"true\"]::after { content: ''; position: absolute; bottom: -2px; left: 0; width: 100%; height: 2px; border-radius: calc(infinity * 1px); background: var(--primary, #aa386a); } .ds-tab:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary, #aa386a) 70%, transparent); outline-offset: -2px; } .ds-tab:active { transform: scale(0.98); } @media (min-width: 360px) { .ds-tab { padding: 0 6px; } } @media (min-width: 640px) { .ds-tab { padding: 0 12px; font-size: 14px; } }@media (max-width: 1023px), (pointer: coarse) { .ds-control { min-height: 44px; } }@media (prefers-reduced-motion: reduce) { .ds-control { transform: none !important; transition-duration: 0.01ms !important; } } .ds-tab-count { margin-left: 6px; border-radius: 9999px; padding: 0 6px; font-size: 12px; font-variant-numeric: tabular-nums; background: var(--surface-2, #f7e8ef); color: var(--muted, #795d70); } .ds-tab[aria-selected=\"true\"] .ds-tab-count { background: color-mix(in srgb, var(--primary, #aa386a) 15%, transparent); color: var(--primary, #aa386a); } .ds-tab .ds-tab-count-alert { background: color-mix(in srgb, var(--danger, #b8364c) 15%, transparent); color: var(--danger, #b8364c); }"
     }
   ],
   "narrative": {

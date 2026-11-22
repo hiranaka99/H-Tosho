@@ -272,6 +272,8 @@ Page inset padding grows from 12px to 20px at 640px and 32px at 1024px. Cards us
 
 Standard breakpoints are 640px, 768px, 1024px, 1280px, and 1536px. Local 360px and 420px breakpoints serve choice labels and Discover covers. Libraries uses two cover columns by default, then three at 640px, four at 768px, five at 1280px, and six at 1536px. Discover uses a single column below 420px with a compact horizontal cover layout, then two, three, four, five, and six columns at 420px, 768px, 1024px, 1280px, and 1536px. Both use 12px grid gaps.
 
+Tasks is the one two-pane page. From 1280px the task list and a sticky details card sit side by side (the card is a fixed 440px column and stays within the viewport height); the list stays interactive and selecting a row updates the card without a dim overlay. Below 1280px, details open as a trailing-edge sheet that is full width on phones and at most 640px (55% of the viewport) from 1024px.
+
 Page headings stack on narrow screens and allow actions to wrap. Choice groups scroll horizontally instead of widening the page. Settings tabs remain sticky inside the content scrollport. Long text wraps, and most truncation and line clamping are relaxed below 1024px; dense tables retain local truncation. The Libraries title clamp is implemented locally and should not be assumed to inherit every global clamping override.
 
 Controls have compact desktop sizes, but below 1024px or with a coarse pointer, buttons, fields, selects, navigation links, and disclosures have a minimum 44px height. Icon-only buttons also receive a 44px minimum width. Do not force the compact desktop control height onto touch layouts.
@@ -290,13 +292,13 @@ Depth comes from tonal layers with subtle structural shadows. Fine borders separ
 
 **The The Local Feedback Rule.** Press feedback stays on the control. Pointer hover may lift raised buttons; reduced motion removes transforms and effectively stops animation.
 
-Ordinary press feedback scales controls to 0.98; icon buttons use 0.94. State transitions generally take 160ms, presses 80ms, and selection indicators 220ms. Page entrance uses a short upward fade (500ms); tab panels enter once as a unit (220ms) without remounting forms. Dialog content opens in 280ms and closes in 160ms. Loading shimmer is an intentional repeating state. Reduced motion removes control transforms, stops indicator transitions, and reduces animations and other transitions to near-zero duration.
+Ordinary press feedback scales controls to 0.98; icon buttons use 0.94. State transitions generally take 160ms, presses 80ms, and selection indicators 220ms. Page entrance uses a short upward fade (500ms); tab panels enter once as a unit (220ms) without remounting forms. Dialog content opens in 280ms and closes in 160ms; side sheets slide in 1.5rem from the trailing edge over the same 280ms and leave in 160ms. Loading shimmer is an intentional repeating state. Reduced motion removes control transforms, stops indicator transitions, and reduces animations and other transitions to near-zero duration.
 
 ## Shapes
 
 Soft corners establish a consistent form language. Small inset regions and thumbnails use 4px or 6px corners. Buttons, fields, navigation items, and toasts use 8px; cards and page icon chips use 12px; standard dialogs use 16px. Badges, switches, selection dots, and progress tracks use fully rounded silhouettes. Fine 1px borders define most surfaces.
 
-Cover cards use a 3:4 image region with clipped upper corners; the surrounding title and metadata stay outside the image. The Tasks detail drawer is a deliberate full-height rectangular exception. Native selects retain their OS dropdown while the closed field receives an inline chevron.
+Cover cards use a 3:4 image region with clipped upper corners; the surrounding title and metadata stay outside the image. Trailing-edge side sheets are the deliberate full-height exception: the Following editor sheet rounds only its leading corners (16px), and the Tasks sheet below 1280px is fully rectangular. At 1280px and wider, Tasks details is an ordinary 12px card instead of a sheet. Rows without a cover, such as Tasks, use a 40px rounded glyph chip for the kind of work rather than an empty image frame. Native selects retain their OS dropdown while the closed field receives an inline chevron.
 
 ## Components
 
@@ -334,7 +336,7 @@ The primary sidebar uses 36px rows, 8px corners, 16px outline icons, and 14px te
 
 ### Tabs and segmented choices
 
-Tabs use an underline indicator, a fine lower border, muted inactive labels, and primary active labels. Labels are 12px on narrow screens and 14px from 640px. The indicator moves in 220ms; keyboard arrows, Home, and End change the selected tab and move focus. Segmented radio choices instead use an inset rounded group with a raised surface indicator. Both patterns scroll horizontally when needed and preserve focus inside the scroll area.
+Tabs use an underline indicator, a fine lower border, muted inactive labels, and primary active labels. Labels are 12px on narrow screens and 14px from 640px. The indicator moves in 220ms; keyboard arrows, Home, and End change the selected tab and move focus. Segmented radio choices instead use an inset rounded group with a raised surface indicator. Tabs may carry a count pill after the label: 12px tabular numerals, fully rounded, an inset surface with muted text when idle and a 15% primary tint with primary text when selected. A count that needs action (Tasks' Needs attention) switches to a 15% danger tint with danger text, and the number itself stays visible alongside the color. Both patterns scroll horizontally when needed and preserve focus inside the scroll area.
 
 ### Metadata comparison
 
@@ -344,7 +346,7 @@ This signature pattern makes review concrete. At 640px and above, each field is 
 
 Standard dialogs use a 50% black overlay, a surface fill, a fine border, 16px corners, and a stronger shadow. Their base maximum width is 64rem, with viewport-safe width and height margins; screens can override this for comparisons, confirmations, or the Tasks drawer. Titles, descriptions, close labels, and Radix keyboard behavior remain part of the component contract.
 
-Toasts sit above dialogs in the upper-right corner, use 8px corners, 12px padding, a semantic left border, and a visible countdown. Success and information last 5 seconds; errors last 10 seconds. Empty states use a centered icon, compact title, and optional muted explanation. Error states add a semantic danger icon and optional retry. Skeletons shimmer using their dedicated theme tokens; progress bars use a pill-shaped inset track and a primary fill.
+Toasts sit above dialogs in the upper-right corner, use 8px corners, 12px padding, a semantic left border, and a visible countdown. Success and information last 5 seconds; errors last 10 seconds. Empty states use a centered icon, compact title, and optional muted explanation, which may include an inline link; a compact variant (32px vertical padding instead of 48px–64px) serves empty sections embedded in a page such as Home. Destructive actions confirm inline where the action started: a danger-tinted group (35% danger border, 5% fill) states what is kept, and a thin danger bar at its bottom edge counts down six seconds before the group reverts; reduced motion hides the bar. Error states add a semantic danger icon and optional retry. Skeletons shimmer using their dedicated theme tokens; progress bars use a pill-shaped inset track and a primary fill.
 
 ## Do's and Don'ts
 
