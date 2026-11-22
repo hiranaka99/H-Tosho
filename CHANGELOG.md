@@ -1,6 +1,24 @@
 # Changelog
 
-## Unreleased
+## v4.1.0
+
+- Refine the Settings tab. Account and downloader tabs show a marker when they hold unsaved
+  changes, with draft feedback. Kavita connection Test and Save are now separate actions, and
+  a saved connection can be reverted. When the saved Discord settings differ from the draft,
+  you choose explicitly between Load and Replace. Validation errors appear only on fields
+  you have touched.
+
+- Streamline Discover search and selection. The separate unified search tab is replaced by
+  All sources / per-provider search scopes. The selection tray adds download-each and
+  select-all-page actions, and loading, failure, hint and Following inbox states are clearer.
+
+- Add undo and clearer review flows on Home. Rejected match candidates and reviewed following
+  galleries can be undone, bulk review and waiting-count links are supported, and empty
+  states, action styling and accessibility labels are refined.
+
+- Improve the Libraries review workflow with status chips, confidence sorting and match-run
+  outcome summaries. Adds a library tools menu, card preview actions, bulk unmatch and
+  keyboard grid navigation, with clearer review queue labels, touch targets and contrast.
 
 - Rework the Identify dialog from a design critique into a guided review. Reviewing a match
   now leads with what will change: Apply says exactly how many changes it will make
