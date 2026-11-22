@@ -1,5 +1,6 @@
 import { rememberDuplicateLibraryRoots } from '../../services/galleryDuplicates.js';
 import { Hono } from 'hono';
+import { eq } from 'drizzle-orm';
 import { libraryMutations } from '../../lib/mutations.js';
 import { jobQueue } from '../../jobs/queue.js';
 import { downloadQueue } from '../../downloader/engine.js';
@@ -12,6 +13,9 @@ import { kavitaSeriesSearchMetadata } from '../../services/seriesArtists.js';
 
 import { connectedClient, errMsg, intParam, stringsFromMatchMetadata, kavitaCoverUrl } from './helpers.js';
 export const api = new Hono();
+
+/** Snapshot of the connection that was replaced by a save whose test failed. */
+const KAVITA_PREVIOUS_KEY = 'kavita-previous';
 api.get('/kavita/status', async (c) => {
   const conn = getKavitaConnection();
   // The API key itself is never returned; the UI only needs to know it exists.
@@ -24,14 +28,32 @@ api.get('/kavita/status', async (c) => {
   }
 });
 
+/** Tests candidate values without persisting them, so a working connection is never replaced by a failed guess. */
+api.post('/kavita/connection/test', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { baseUrl?: string; apiKey?: string };
+  const saved = getKavitaConnection();
+  const baseUrl = body.baseUrl?.trim() || saved.baseUrl;
+  if (!baseUrl) return c.json({ connected: false, test: 'Enter a server address first.' });
+  // A blank key reuses the stored one only when the address matches the saved server.
+  const apiKey = body.apiKey?.trim() || (kavitaConnectionKey(baseUrl) === kavitaConnectionKey(saved.baseUrl) ? saved.apiKey : '');
+  if (!apiKey) return c.json({ connected: false, test: 'Enter an Auth Key for this server address.' });
+  try {
+    const info = await new KavitaClient(baseUrl, apiKey).testConnection();
+    return c.json({ connected: true, test: `Connected (Kavita ${info.version})` });
+  } catch (e) {
+    return c.json({ connected: false, test: errMsg(e) });
+  }
+});
+
 api.post('/kavita/connection', async (c) => {
   const body = (await c.req.json()) as { baseUrl: string; apiKey?: string };
   if (!body.baseUrl) return c.json({ error: 'baseUrl is required' }, 400);
+  const previous = getKavitaConnection();
   // A blank key keeps the stored one, so the UI can change the URL without
   // re-entering the secret (the server never returns it).
-  const apiKey = body.apiKey?.trim() ? body.apiKey.trim() : getKavitaConnection().apiKey;
+  const apiKey = body.apiKey?.trim() ? body.apiKey.trim() : previous.apiKey;
   if (!apiKey) return c.json({ error: 'apiKey is required' }, 400);
-  if (kavitaConnectionKey(body.baseUrl) !== kavitaConnectionKey(getKavitaConnection().baseUrl)
+  if (kavitaConnectionKey(body.baseUrl) !== kavitaConnectionKey(previous.baseUrl)
     && (libraryMutations.isBusy('*') || downloadQueue.activeCount() > 0 || jobQueue.active().some(job => job.type !== 'check-watched-searches'))) {
     return c.json({ error: 'Finish or cancel active library jobs and downloads before changing Kavita servers.' }, 409);
   }
@@ -46,7 +68,27 @@ api.post('/kavita/connection', async (c) => {
     test = 'Saved, but connection test failed: ' + errMsg(e);
     connected = false;
   }
-  return c.json({ saved: true, connected, test });
+  // A failed test keeps the previous connection restorable; the key never leaves the server.
+  const db = getDb();
+  const canRestore = !connected && Boolean(previous.baseUrl && previous.apiKey);
+  if (canRestore) {
+    const snapshot = JSON.stringify({ baseUrl: previous.baseUrl, apiKey: previous.apiKey });
+    db.insert(schema.keyValueStore).values({ key: KAVITA_PREVIOUS_KEY, valueJson: snapshot })
+      .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: snapshot } }).run();
+  } else {
+    db.delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, KAVITA_PREVIOUS_KEY)).run();
+  }
+  return c.json({ saved: true, connected, test, canRestore });
+});
+
+api.post('/kavita/connection/restore', (c) => {
+  const db = getDb();
+  const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, KAVITA_PREVIOUS_KEY)).get();
+  if (!row) return c.json({ error: 'No previous connection to restore.' }, 409);
+  db.delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, KAVITA_PREVIOUS_KEY)).run();
+  const snapshot = JSON.parse(row.valueJson) as { baseUrl: string; apiKey: string };
+  setKavitaConnection(snapshot);
+  return c.json({ restored: true, baseUrl: snapshot.baseUrl });
 });
 
 api.get('/kavita/libraries', async (c) => {

@@ -50,6 +50,13 @@ function SettingsInput({ id, error, hint, ...props }: React.InputHTMLAttributes<
   </>;
 }
 
+/** Field-level validation: show a field's error only after that field was edited and blurred. */
+function useFieldTouched() {
+  const [touched, setTouched] = React.useState<Record<string, boolean>>({});
+  const onBlur = (key: string) => () => setTouched((current) => (current[key] ? current : { ...current, [key]: true }));
+  return { touched, onBlur };
+}
+
 function httpUrlError(value: string, httpsOnly = false) {
   try {
     const url = new URL(value);
@@ -64,6 +71,19 @@ function numberError(value: string | number, min: number, max?: number, integer 
   return max !== undefined
     ? `Enter ${integer ? 'a whole number' : 'a number'} from ${min} to ${max}.`
     : `Enter ${integer ? 'a whole number' : 'a number'} of ${min} or more.`;
+}
+
+function webhookLabel(url: string) {
+  if (!url) return 'no webhook URL';
+  try {
+    const parsed = new URL(url);
+    const last = parsed.pathname.split('/').filter(Boolean).pop() ?? '';
+    return `${parsed.hostname}${last ? ` · …${last.slice(-6)}` : ''}`;
+  } catch { return 'invalid webhook URL'; }
+}
+
+function notifSummary(notif: Notif) {
+  return `Discord ${notif.discord.enabled ? 'on' : 'off'} · ${webhookLabel(notif.discord.webhookUrl)}`;
 }
 
 function folderError(value: string) {
@@ -90,6 +110,7 @@ function AppearanceCard() {
 
 function AccountSettingsCard() {
   const auth = useAuth();
+  const { touched, onBlur } = useFieldTouched();
   const account = useSettingsDraft({
     id: 'account', label: 'Account security',
     initial: { currentPassword: '', username: auth.username ?? '', password: '', confirmPassword: '' },
@@ -113,11 +134,11 @@ function AccountSettingsCard() {
       <Disclosure label="Change credentials" summaryClassName="p-3 text-foreground sm:p-4">
         <CardContent>
           <form className="flex max-w-xl flex-col gap-3" onSubmit={submit}>
-            <div className="flex flex-col gap-1"><Label htmlFor="account-username">Username</Label><SettingsInput id="account-username" autoComplete="username" required maxLength={100} value={username} onChange={(event) => setUsername(event.target.value)} error={account.dirty && !username.trim() ? 'Enter your username.' : undefined} /></div>
-            <div className="flex flex-col gap-1"><Label htmlFor="current-password">Current password</Label><SettingsInput id="current-password" type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} error={account.dirty && !currentPassword ? 'Enter your current password to authorize this change.' : undefined} /></div>
+            <div className="flex flex-col gap-1"><Label htmlFor="account-username">Username</Label><SettingsInput id="account-username" autoComplete="username" required maxLength={100} value={username} onChange={(event) => setUsername(event.target.value)} onBlur={onBlur('username')} error={touched.username && !username.trim() ? 'Enter your username.' : undefined} /></div>
+            <div className="flex flex-col gap-1"><Label htmlFor="current-password">Current password</Label><SettingsInput id="current-password" type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} onBlur={onBlur('currentPassword')} error={touched.currentPassword && !currentPassword ? 'Enter your current password to authorize this change.' : undefined} /></div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div className="flex flex-col gap-1"><Label htmlFor="new-password">New password</Label><SettingsInput id="new-password" type="password" autoComplete="new-password" required minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} hint="Use at least 8 characters." error={account.dirty && password.length < 8 ? 'Enter a new password with at least 8 characters.' : undefined} /></div>
-              <div className="flex flex-col gap-1"><Label htmlFor="confirm-new-password">Confirm new password</Label><SettingsInput id="confirm-new-password" type="password" autoComplete="new-password" required minLength={8} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} hint="Enter your new password again." error={confirmPassword && password !== confirmPassword ? 'Passwords do not match. Enter the same password in both fields.' : account.dirty && password.length >= 8 && !confirmPassword ? 'Confirm your new password.' : undefined} /></div>
+              <div className="flex flex-col gap-1"><Label htmlFor="new-password">New password</Label><SettingsInput id="new-password" type="password" autoComplete="new-password" required minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} onBlur={onBlur('password')} hint="Use at least 8 characters." error={touched.password && password.length < 8 ? 'Enter a new password with at least 8 characters.' : undefined} /></div>
+              <div className="flex flex-col gap-1"><Label htmlFor="confirm-new-password">Confirm new password</Label><SettingsInput id="confirm-new-password" type="password" autoComplete="new-password" required minLength={8} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} onBlur={onBlur('confirmPassword')} hint="Enter your new password again." error={confirmPassword && password !== confirmPassword ? 'Passwords do not match. Enter the same password in both fields.' : touched.confirmPassword && password.length >= 8 && !confirmPassword ? 'Confirm your new password.' : undefined} /></div>
             </div>
             <Button type="submit" className="self-start" disabled={!account.canSave}>
               {account.pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Update account
@@ -141,7 +162,7 @@ export function Settings() {
   const provs = providers.data ?? [];
 
   const invalidate = (key: string) => () => qc.invalidateQueries({ queryKey: [key] });
-  const [kavitaMsg, setKavitaMsg] = React.useState<{ ok: boolean; text: string } | null>(null);
+  const [kavitaMsg, setKavitaMsg] = React.useState<{ ok: boolean; text: string; canRestore?: boolean } | null>(null);
   const connection = useSettingsDraft({
     id: 'connection', label: 'Kavita connection', initial: { baseUrl: '', apiKey: '' },
     source: kavita.data ? { baseUrl: kavita.data.baseUrl ?? '', apiKey: '' } : undefined,
@@ -155,19 +176,27 @@ export function Settings() {
       void qc.resetQueries({ predicate: query => connectionQueries.has(String(query.queryKey[0])) });
       qc.setQueryData(['kavita-status'], { ...kavita.data, baseUrl: value.baseUrl, configured: true, hasApiKey: Boolean(value.apiKey) || kavita.data?.hasApiKey, error: result.connected ? null : result.test });
       void qc.invalidateQueries({ queryKey: ['kavita-status'] });
-      setKavitaMsg({ ok: result.connected, text: result.test });
+      setKavitaMsg({ ok: result.connected, text: result.test, canRestore: result.canRestore });
       return { ...value, apiKey: '' };
     },
   });
   const conn = connection.value;
   const setConn = connection.setValue;
+  const connTouched = useFieldTouched();
   const testKavita = useMutation({
-    mutationFn: api.kavitaStatus,
+    // Tests the entered values (or the saved ones when the fields are blank) without persisting anything.
+    mutationFn: () => api.testConnection({ baseUrl: conn.baseUrl, apiKey: conn.apiKey }),
+    onSuccess: (result) => setKavitaMsg({ ok: result.connected, text: result.connected ? `Test passed. ${result.test}` : `Test failed. ${result.test}` }),
+    onError: (error) => setKavitaMsg({ ok: false, text: `Could not run the connection test. ${error instanceof Error ? error.message : String(error)} Try again.` }),
+  });
+  const revertConnection = useMutation({
+    mutationFn: api.restoreConnection,
     onSuccess: (result) => {
-      qc.setQueryData(['kavita-status'], result);
-      setKavitaMsg({ ok: Boolean(result.configured && !result.error), text: result.error ?? (result.configured ? 'Saved connection verified.' : 'Save a server address and Auth Key first.') });
+      connection.setValue({ baseUrl: result.baseUrl, apiKey: '' });
+      void qc.invalidateQueries({ queryKey: ['kavita-status'] });
+      setKavitaMsg({ ok: true, text: 'Previous connection restored.' });
     },
-    onError: (error) => setKavitaMsg({ ok: false, text: `Could not check the saved connection. ${error instanceof Error ? error.message : String(error)} Try again.` }),
+    onError: (error) => setKavitaMsg({ ok: false, text: `Could not restore the previous connection. ${error instanceof Error ? error.message : String(error)} Try again.` }),
   });
   React.useEffect(() => { if (connection.dirty) setKavitaMsg(null); }, [conn.baseUrl, conn.apiKey, connection.dirty]);
   const priorities = useSettingsDraft({
@@ -209,7 +238,7 @@ export function Settings() {
     id: 'notifications', label: 'Notifications', initial: DEFAULT_NOTIFICATION_DRAFT, source: s?.notifications,
     valid: (value) => (!value.discord.enabled || !httpUrlError(value.discord.webhookUrl, true)),
     save: async (value) => {
-      if (value.revision !== s?.notifications.revision) throw new Error('Notification settings changed. Review the latest saved destination and use “Use latest revision” before saving your retained draft.');
+      if (value.revision !== s?.notifications.revision) throw new Error('Notification settings changed. Choose “Load saved settings” or “Replace saved settings with my draft” before saving your retained draft.');
       let result;
       try { result = await api.saveNotifications(value); }
       catch (error) { if (error instanceof ApiError && error.status === 409) await settings.refetch(); throw error; }
@@ -219,6 +248,7 @@ export function Settings() {
   });
   const notif = notifications.value;
   const setNotif = notifications.setValue;
+  const notifTouched = useFieldTouched();
   const [notifMsg, setNotifMsg] = React.useState<{ discord: string } | null>(null);
   const testNotif = useMutation({ mutationFn: () => api.testNotifications(notif), onSuccess: (r) => setNotifMsg(r), onError: (error) => setNotifMsg({ discord: `Could not send a test notification. ${error instanceof Error ? error.message : String(error)} Try again.` }) });
   React.useEffect(() => setNotifMsg(null), [notif.discord.enabled, notif.discord.webhookUrl]);
@@ -268,7 +298,7 @@ export function Settings() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader icon={<SlidersHorizontal className="h-5 w-5" />} title="Settings" subtitle="Manage connections, downloads, notifications and your account." />
-      <SegmentedTabs items={SETTINGS_TABS.map(item => ({ ...item, dirty: dirtyIds.some(id => item.id === 'general' ? ['connection', 'library-folders', 'poll', 'account'].includes(id) : item.id === 'providers' ? id === 'priorities' || id.startsWith('provider:') : id === item.id) }))} value={tab} onChange={setTab} label="Settings sections" panelId="settings-panel" className="sticky top-0 z-10 self-start bg-background" />
+      <SegmentedTabs items={SETTINGS_TABS.map(item => ({ ...item, dirty: dirtyIds.some(id => item.id === 'general' ? ['connection', 'library-folders', 'poll', 'account'].includes(id) : item.id === 'providers' ? id === 'priorities' || id.startsWith('provider:') : item.id === 'downloader' ? id === 'downloader' || id === 'ehentai-account' : id === item.id) }))} value={tab} onChange={setTab} label="Settings sections" panelId="settings-panel" className="sticky top-0 z-10 self-start bg-background" />
 
       <TabPanel value={tab} tabOrder={SETTINGS_TAB_ORDER} id="settings-panel" role="tabpanel" aria-labelledby={`settings-panel-tab-${tab}`}>
       <div hidden={tab !== 'general'} className="flex flex-col gap-4">
@@ -286,23 +316,28 @@ export function Settings() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="flex flex-col gap-1">
               <Label htmlFor="kavita-base-url">Base URL</Label>
-              <SettingsInput id="kavita-base-url" type="url" autoComplete="url" spellCheck={false} disabled={connection.pending || testKavita.isPending} value={conn.baseUrl} onChange={(e) => setConn({ ...conn, baseUrl: e.target.value })} placeholder="http://kavita:5000" error={connection.dirty ? httpUrlError(conn.baseUrl) : undefined} hint="Use the server address without /api. In Docker, use an address reachable from H-Tosho's container, such as http://kavita:5000." />
+              <SettingsInput id="kavita-base-url" type="url" autoComplete="url" spellCheck={false} disabled={connection.pending || testKavita.isPending} value={conn.baseUrl} onChange={(e) => setConn({ ...conn, baseUrl: e.target.value })} onBlur={connTouched.onBlur('baseUrl')} placeholder="http://kavita:5000" error={connTouched.touched.baseUrl ? httpUrlError(conn.baseUrl) : undefined} hint="Use the server address without /api. In Docker, use an address reachable from H-Tosho's container, such as http://kavita:5000." />
             </div>
             <div className="flex flex-col gap-1">
               <Label htmlFor="kavita-auth-key">Auth Key</Label>
-              <SettingsInput id="kavita-auth-key" type="password" autoComplete="off" disabled={connection.pending || testKavita.isPending} value={conn.apiKey} onChange={(e) => setConn({ ...conn, apiKey: e.target.value })} placeholder={kavita?.data?.hasApiKey ? 'Saved key' : 'Kavita admin Auth Key'} error={connection.dirty && !conn.apiKey.trim() && !kavita.data?.hasApiKey ? 'Enter an Auth Key for a Kavita admin account.' : undefined} hint={<>{kavita.data?.hasApiKey && 'A key is saved. Leave blank to keep it. '}Create an admin key in Kavita under User Settings → Manage Auth Keys. <a href="https://www.kavitareader.com/docs/api/" target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2">Kavita Auth Key help<span className="sr-only"> (opens in a new tab)</span></a></>} />
+              <SettingsInput id="kavita-auth-key" type="password" autoComplete="off" disabled={connection.pending || testKavita.isPending} value={conn.apiKey} onChange={(e) => setConn({ ...conn, apiKey: e.target.value })} onBlur={connTouched.onBlur('apiKey')} placeholder={kavita?.data?.hasApiKey ? 'Saved key' : 'Kavita admin Auth Key'} error={connTouched.touched.apiKey && !conn.apiKey.trim() && !kavita.data?.hasApiKey ? 'Enter an Auth Key for a Kavita admin account.' : undefined} hint={<>{kavita.data?.hasApiKey && 'A key is saved. Leave blank to keep it. '}Create an admin key in Kavita under User Settings → Manage Auth Keys. <a href="https://www.kavitareader.com/docs/api/" target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2">Kavita Auth Key help<span className="sr-only"> (opens in a new tab)</span></a></>} />
             </div>
           </div>
           <DraftFeedback draft={connection} />
-          {connection.dirty && <p className="text-sm text-muted">The connection status reflects your saved settings. Save your changes to test the new values.</p>}
+          {connection.dirty && <p className="text-sm text-muted">The status badge reflects your saved settings. Test connection checks the values entered above without saving them; Save connection replaces the saved connection.</p>}
           {(kavita.isError || kavita.data?.error) && !testKavita.isPending && <p role="alert" className="break-words text-sm text-danger">{kavita.data?.error ?? `Could not load connection status. ${kavita.error instanceof Error ? kavita.error.message : String(kavita.error)}`} Check the server address, Auth Key and network access, then retry.</p>}
           <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
+            <Button variant="outline" onClick={() => { setKavitaMsg(null); testKavita.mutate(); }} disabled={connection.pending || testKavita.isPending}>
+              {testKavita.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Test connection
+            </Button>
             <Button onClick={connection.submit} disabled={!connection.canSave || testKavita.isPending}>
-              {connection.pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Server className="h-3.5 w-3.5" />} Save & test connection
+              {connection.pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />} Save connection
             </Button>
-            <Button variant="outline" onClick={() => { setKavitaMsg(null); testKavita.mutate(); }} disabled={connection.pending || testKavita.isPending || connection.dirty || (!kavita.data?.configured && !kavita.isError)}>
-              {testKavita.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />} {kavita.isError ? 'Retry connection check' : 'Test saved connection'}
-            </Button>
+            {kavitaMsg?.canRestore && (
+              <Button size="sm" variant="outline" onClick={() => revertConnection.mutate()} disabled={revertConnection.isPending}>
+                {revertConnection.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Revert to previous connection
+              </Button>
+            )}
             {kavitaMsg && (
               <span role={kavitaMsg.ok ? 'status' : 'alert'} className={cn('flex min-w-0 items-start gap-1 break-words text-sm', kavitaMsg.ok ? 'text-success' : 'text-danger')}>
                 {kavitaMsg.ok ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : <XCircle className="h-4 w-4 shrink-0" />}{kavitaMsg.text}
@@ -380,7 +415,7 @@ export function Settings() {
             <DraftFeedback draft={notifications} />
             <SaveButton label={notifications.status === 'saved' ? 'Saved' : 'Save'} onClick={notifications.submit} disabled={!notifications.canSave || testNotif.isPending} />
             <Button size="sm" variant="outline" onClick={() => testNotif.mutate()} disabled={testNotif.isPending || notifications.pending || !notif.discord.enabled || !notifications.valid}>
-              {testNotif.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Test draft
+              {testNotif.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Send test notification
             </Button>
           </div>
         </SectionHeader>
@@ -390,9 +425,22 @@ export function Settings() {
               <Label htmlFor="discord-webhook">Discord webhook</Label>
               <Switch aria-label="Enable Discord notifications" disabled={testNotif.isPending || notifications.pending} checked={notif.discord.enabled} onCheckedChange={(c) => setNotif((n) => ({ ...n, discord: { ...n.discord, enabled: c } }))} />
             </div>
-            <SettingsInput id="discord-webhook" type="url" spellCheck={false} disabled={testNotif.isPending || notifications.pending} value={notif.discord.webhookUrl} onChange={(e) => setNotif((n) => ({ ...n, discord: { ...n.discord, webhookUrl: e.target.value } }))} placeholder="https://discord.com/api/webhooks/…" hint="Enable Discord and enter a webhook URL. Test draft sends a notification using the values shown, without saving them." error={notif.discord.enabled ? httpUrlError(notif.discord.webhookUrl, true) : undefined} />
+            <SettingsInput id="discord-webhook" type="url" spellCheck={false} disabled={testNotif.isPending || notifications.pending} value={notif.discord.webhookUrl} onChange={(e) => setNotif((n) => ({ ...n, discord: { ...n.discord, webhookUrl: e.target.value } }))} onBlur={notifTouched.onBlur('webhook')} placeholder="https://discord.com/api/webhooks/…" hint="Enable Discord and enter a webhook URL. Send test notification uses the values shown without saving them." error={notif.discord.enabled && notifTouched.touched.webhook ? httpUrlError(notif.discord.webhookUrl, true) : undefined} />
           </div>
-          {notif.revision !== s.notifications.revision && <div role="alert" className="flex flex-col gap-2 text-sm text-warning"><p>Saved notification settings changed. Latest destination: {s.notifications.destinationIdentity.slice(0, 12) || 'not configured'}. Your draft is retained.</p><Button variant="outline" className="min-h-11 self-start" onClick={() => setNotif(value => ({ ...value, revision: s.notifications.revision }))}>Use latest revision</Button></div>}
+          {notif.revision !== s.notifications.revision && (
+            <div role="alert" className="flex flex-col gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+              <p className="font-medium text-warning">The saved notification settings changed while you were editing. Your draft is kept.</p>
+              <div className="grid gap-1 sm:grid-cols-2">
+                <p><span className="font-medium">Saved now:</span> {notifSummary(s.notifications)}</p>
+                <p><span className="font-medium">Your draft:</span> {notifSummary(notif)}</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" className="min-h-11" onClick={() => notifications.discard()}>Load saved settings</Button>
+                <Button variant="outline" className="min-h-11" onClick={() => setNotif((value) => ({ ...value, revision: s.notifications.revision }))}>Replace saved settings with my draft</Button>
+              </div>
+              <p className="text-xs text-muted">“Replace” keeps your draft and marks it current; the next Save overwrites the saved destination.</p>
+            </div>
+          )}
           {notifMsg && (
             <div role={notifMsg.discord === 'ok' ? 'status' : 'alert'} className="flex flex-col gap-1 rounded-md border border-border bg-surface-2 p-3 text-sm">
               <span className={notifMsg.discord === 'ok' ? 'text-success' : 'text-danger'}>{notifMsg.discord === 'ok' ? 'Test notification sent to Discord.' : `Discord test failed: ${notifMsg.discord}`}</span>
@@ -470,8 +518,8 @@ function KavitaLibraryFoldersCard({ connected }: { connected: boolean }) {
             })}
             {other.map(({ mapping, index }) => (
               <div key={index} className="grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-[1fr_1fr_auto]">
-                <div className="flex min-w-0 flex-col gap-1"><Label htmlFor={`extra-kavita-path-${index}`}>Kavita folder</Label><SettingsInput id={`extra-kavita-path-${index}`} value={mapping.kavitaPath} onChange={(e) => setDraft(draft.map((m, i) => i === index ? { ...m, kavitaPath: e.target.value } : m))} placeholder="/media/Manga" error={folderError(mapping.kavitaPath)} /></div>
-                <div className="flex min-w-0 flex-col gap-1"><Label htmlFor={`extra-local-path-${index}`}>H-Tosho folder</Label><SettingsInput id={`extra-local-path-${index}`} value={mapping.localPath} onChange={(e) => setDraft(draft.map((m, i) => i === index ? { ...m, localPath: e.target.value } : m))} placeholder="/mnt/manga" error={folderError(mapping.localPath)} /></div>
+                <div className="flex min-w-0 flex-col gap-1"><Label htmlFor={`extra-kavita-path-${index}`}>Kavita folder</Label><SettingsInput id={`extra-kavita-path-${index}`} value={mapping.kavitaPath} onChange={(e) => setDraft(draft.map((m, i) => i === index ? { ...m, kavitaPath: e.target.value } : m))} placeholder="/media/Manga" error={mapping.kavitaPath ? folderError(mapping.kavitaPath) : undefined} /></div>
+                <div className="flex min-w-0 flex-col gap-1"><Label htmlFor={`extra-local-path-${index}`}>H-Tosho folder</Label><SettingsInput id={`extra-local-path-${index}`} value={mapping.localPath} onChange={(e) => setDraft(draft.map((m, i) => i === index ? { ...m, localPath: e.target.value } : m))} placeholder="/mnt/manga" error={mapping.localPath ? folderError(mapping.localPath) : undefined} /></div>
                 <Button type="button" variant="ghost" aria-label={`Remove extra folder mapping ${index + 1}`} onClick={() => setDraft(draft.filter((_, i) => i !== index))}><X className="h-4 w-4" /> Remove</Button>
               </div>
             ))}
@@ -541,6 +589,7 @@ function DownloaderSettingsCard() {
   const dlSettings = downloader.value;
   const setDlSettings = downloader.setValue;
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
+  const [exclusionsOpen, setExclusionsOpen] = React.useState(false);
   const advancedInvalid = Boolean(dlSettings && (numberError(dlSettings.maxConcurrentDownloads, 1, 10, true) || numberError(dlSettings.maxImageConcurrency, 1, 20, true) || numberError(dlSettings.requestDelayMs, 0, 60000)));
   React.useEffect(() => { if (advancedInvalid) setAdvancedOpen(true); }, [advancedInvalid]);
 
@@ -556,9 +605,13 @@ function DownloaderSettingsCard() {
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-col gap-1"><Label htmlFor="download-directory">Output folder</Label><SettingsInput id="download-directory" value={dlSettings.downloadDirectory} onChange={(e) => setDlSettings({ ...dlSettings, downloadDirectory: e.target.value })} placeholder="/downloads" error={downloader.dirty ? folderError(dlSettings.downloadDirectory) : undefined} hint="Absolute path as seen by H-Tosho, including inside Docker. Use a Kavita library folder to have new media picked up automatically." /></div>
         <div className="flex flex-col gap-1"><Label htmlFor="download-format">Output format</Label><Select id="download-format" value={dlSettings.format} onChange={(e) => setDlSettings({ ...dlSettings, format: e.target.value as 'cbz' | 'folder' })}><option value="cbz">CBZ archive (recommended)</option><option value="folder">Image folder</option></Select></div>
-        <BannedTagsEditor id="nhentai-banned-tags" label="nHentai banned tags" hint="Galleries carrying any of these tags never appear in nHentai searches. Separate multiple tags with commas." value={dlSettings.nhentaiBannedTags ?? []} onChange={(tags) => setDlSettings((current) => current ? { ...current, nhentaiBannedTags: tags } : current)} draft={dlSettings.nhentaiTagInput} setDraft={(nhentaiTagInput) => setDlSettings((current) => current ? { ...current, nhentaiTagInput } : current)} />
-        <BannedTagsEditor id="hitomi-banned-tags" label="Hitomi banned tags" hint="Galleries carrying any of these tags never appear in Hitomi searches or recommendations. A plain name matches anywhere; a namespace prefix (e.g. artist:foo) scopes the ban to that area. Separate multiple tags with commas." value={dlSettings.hitomiBannedTags ?? []} onChange={(tags) => setDlSettings((current) => current ? { ...current, hitomiBannedTags: tags } : current)} draft={dlSettings.hitomiTagInput} setDraft={(hitomiTagInput) => setDlSettings((current) => current ? { ...current, hitomiTagInput } : current)} />
-        <BannedTagsEditor id="ehentai-banned-tags" label="E-Hentai / ExHentai banned tags" hint="Galleries carrying any of these tags never appear in E-Hentai/ExHentai searches or downloads. Separate multiple tags with commas." value={dlSettings.ehentaiBannedTags ?? []} onChange={(tags) => setDlSettings((current) => current ? { ...current, ehentaiBannedTags: tags } : current)} draft={dlSettings.ehentaiTagInput} setDraft={(ehentaiTagInput) => setDlSettings((current) => current ? { ...current, ehentaiTagInput } : current)} />
+        <Disclosure label={`Content exclusions (nHentai ${(dlSettings.nhentaiBannedTags ?? []).length} · Hitomi ${(dlSettings.hitomiBannedTags ?? []).length} · E-Hentai ${(dlSettings.ehentaiBannedTags ?? []).length})`} open={exclusionsOpen} onToggle={(event) => setExclusionsOpen(event.currentTarget.open)} summaryClassName="px-0">
+          <div className="flex flex-col gap-4 pt-3">
+            <BannedTagsEditor id="nhentai-banned-tags" label="nHentai banned tags" hint="Galleries carrying any of these tags never appear in nHentai searches. Separate multiple tags with commas." value={dlSettings.nhentaiBannedTags ?? []} onChange={(tags) => setDlSettings((current) => current ? { ...current, nhentaiBannedTags: tags } : current)} draft={dlSettings.nhentaiTagInput} setDraft={(nhentaiTagInput) => setDlSettings((current) => current ? { ...current, nhentaiTagInput } : current)} />
+            <BannedTagsEditor id="hitomi-banned-tags" label="Hitomi banned tags" hint="Galleries carrying any of these tags never appear in Hitomi searches or recommendations. A plain name matches anywhere; a namespace prefix (e.g. artist:foo) scopes the ban to that area. Separate multiple tags with commas." value={dlSettings.hitomiBannedTags ?? []} onChange={(tags) => setDlSettings((current) => current ? { ...current, hitomiBannedTags: tags } : current)} draft={dlSettings.hitomiTagInput} setDraft={(hitomiTagInput) => setDlSettings((current) => current ? { ...current, hitomiTagInput } : current)} />
+            <BannedTagsEditor id="ehentai-banned-tags" label="E-Hentai / ExHentai banned tags" hint="Galleries carrying any of these tags never appear in E-Hentai/ExHentai searches or downloads. Separate multiple tags with commas." value={dlSettings.ehentaiBannedTags ?? []} onChange={(tags) => setDlSettings((current) => current ? { ...current, ehentaiBannedTags: tags } : current)} draft={dlSettings.ehentaiTagInput} setDraft={(ehentaiTagInput) => setDlSettings((current) => current ? { ...current, ehentaiTagInput } : current)} />
+          </div>
+        </Disclosure>
         <p className="break-words text-sm text-muted">Completed downloads in a shared Kavita library are imported and checked for matches in the background. Review candidates on Home before applying metadata.</p>
         <Disclosure label={`Advanced: download performance and API key${advancedInvalid ? ' — needs attention' : ''}`} open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)} className="border-t border-border pt-2" summaryClassName="px-0">
           <div className="flex flex-col gap-4 pt-3">
@@ -624,10 +677,14 @@ function EhentaiAccountCard() {
     },
   });
   const [removeOpen, setRemoveOpen] = React.useState(false);
+  const [removeError, setRemoveError] = React.useState('');
+  const [connectOpen, setConnectOpen] = React.useState(false);
   const draftMember = draft.value.memberId.trim();
   const draftHash = draft.value.passHash.trim();
   const hasDraftSession = Boolean(draftMember || draftHash);
   const partialCookies = (draftMember === '') !== (draftHash === '');
+  const connectInvalid = draft.dirty && partialCookies;
+  React.useEffect(() => { if (connectInvalid) setConnectOpen(true); }, [connectInvalid]);
   const test = useMutation({
     mutationFn: () => hasDraftSession
       ? api.testEhentaiAccount('draft', { ipb_member_id: draft.value.memberId.trim(), ipb_pass_hash: draft.value.passHash.trim(), ...(draft.value.igneous.trim() ? { igneous: draft.value.igneous.trim() } : {}) })
@@ -644,11 +701,13 @@ function EhentaiAccountCard() {
     onSuccess: (next) => {
       qc.setQueryData(['ehentai-account'], next);
       setRemoveOpen(false);
+      setRemoveError('');
       setTestResult(null);
       toast({ tone: 'info', title: 'E-Hentai account removed', description: 'E-Hentai/ExHentai is no longer a download source until you save an account again.' });
     },
     onError: (error) => {
       if (error instanceof ApiError && error.status === 409) { setConflict(true); void account.refetch(); }
+      else setRemoveError(error instanceof Error ? error.message : String(error));
       setRemoveOpen(false);
     },
   });
@@ -661,10 +720,59 @@ function EhentaiAccountCard() {
     { label: 'e-hentai.org (public site)', access: testResult ? testResult.eHentai : view.eHentai },
     { label: 'exhentai.org (ExHentai)', access: testResult ? testResult.exHentai : view.exHentai },
   ];
+  const form = (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1">
+        <Label htmlFor="ehentai-site">Site</Label>
+        <Select id="ehentai-site" aria-describedby="ehentai-site-hint" value={draft.value.site} onChange={(e) => setDraft((current) => ({ ...current, site: e.target.value as EhentaiSite }))} disabled={draft.pending}>
+          <option value="e-hentai">E-Hentai (e-hentai.org)</option>
+          <option value="exhentai">ExHentai (exhentai.org — requires ExHentai access)</option>
+        </Select>
+        <p id="ehentai-site-hint" className="text-sm text-muted">Searches, previews and downloads use this site. Changing it does not rewrite downloads already in the queue.</p>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="ehentai-member-id">ipb_member_id</Label>
+          <SettingsInput id="ehentai-member-id" type="password" autoComplete="off" spellCheck={false} disabled={draft.pending} value={draft.value.memberId} onChange={(e) => setDraft((current) => ({ ...current, memberId: e.target.value }))} placeholder={view.configured ? 'Saved — enter to replace' : 'Member ID cookie'} error={draft.dirty && partialCookies ? 'Enter both cookie values, or leave both blank to keep the saved session.' : undefined} hint="Copy the ipb_member_id cookie from your logged-in browser." />
+        </div>
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="ehentai-pass-hash">ipb_pass_hash</Label>
+          <SettingsInput id="ehentai-pass-hash" type="password" autoComplete="off" spellCheck={false} disabled={draft.pending} value={draft.value.passHash} onChange={(e) => setDraft((current) => ({ ...current, passHash: e.target.value }))} placeholder={view.configured ? 'Saved — enter to replace' : 'Pass hash cookie'} error={draft.dirty && partialCookies ? 'Enter both cookie values, or leave both blank to keep the saved session.' : undefined} hint="Copy the ipb_pass_hash cookie from the same browser session." />
+        </div>
+        <div className="flex flex-col gap-1 sm:col-span-2">
+          <Label htmlFor="ehentai-igneous">igneous (optional)</Label>
+          <SettingsInput id="ehentai-igneous" type="password" autoComplete="off" spellCheck={false} disabled={draft.pending} value={draft.value.igneous} onChange={(e) => setDraft((current) => ({ ...current, igneous: e.target.value }))} placeholder={view.hasIgneous ? 'Saved — enter to replace' : 'Optional'} hint="Only some ExHentai sessions need the igneous cookie. Leave blank if yours does not have it." />
+        </div>
+      </div>
+      <div className="flex flex-col gap-2 rounded-md border border-border bg-surface-2/50 p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-medium">Access check</span>
+          <span className="flex-1" />
+          <Button size="sm" variant="secondary" onClick={() => { setTestResult(null); test.mutate(); }} disabled={test.isPending || draft.pending || (!view.configured && !hasDraftSession)}>
+            {test.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} {hasDraftSession ? 'Test entered cookies' : 'Test saved account'}
+          </Button>
+        </div>
+        {hasDraftSession && <p className="text-sm text-muted">Testing entered cookies never saves or alters the saved account.</p>}
+        <ul className="flex flex-col gap-1.5">
+          {accessRows.map(({ label, access }) => (
+            <li key={label} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+              <span className="min-w-0 flex-1 break-words">{label}</span>
+              <Badge tone={access.state === 'verified' ? 'success' : access.state === 'untested' ? 'muted' : access.state === 'denied' || access.state === 'unavailable' ? 'danger' : 'warning'}>{access.state.replace(/-/g, ' ')}</Badge>
+              {access.testedAt && <span className="text-xs text-muted">checked {timeAgo(access.testedAt)}</span>}
+            </li>
+          ))}
+        </ul>
+        {accessRows.some(({ access }) => access.message) && (
+          <p role={testResult?.eHentai.state === 'verified' && testResult.exHentai.state === 'verified' ? 'status' : 'alert'} className="break-words text-sm text-muted">{accessRows.filter(({ access }) => access.message).map(({ label, access }) => `${label}: ${access.message}`).join(' · ')}</p>
+        )}
+      </div>
+    </div>
+  );
   return (
     <Card className="animate-fade-up">
       <SectionHeader icon={<KeyRound className="h-4 w-4" />} title="E-Hentai account">
         <Badge tone={view.configured ? 'success' : 'muted'}>{view.configured ? 'configured' : 'not configured'}</Badge>
+        <DraftFeedback draft={draft} />
         <SaveButton label={draft.status === 'saved' ? 'Saved' : 'Save'} onClick={draft.submit} disabled={!draft.canSave} />
       </SectionHeader>
       <CardContent className="flex flex-col gap-4">
@@ -681,50 +789,12 @@ function EhentaiAccountCard() {
             <Button variant="outline" size="sm" className="min-h-11 self-start" onClick={() => { setConflict(false); void account.refetch(); }}>Reload saved account</Button>
           </div>
         )}
-        <div className="flex flex-col gap-1">
-          <Label htmlFor="ehentai-site">Site</Label>
-          <Select id="ehentai-site" aria-describedby="ehentai-site-hint" value={draft.value.site} onChange={(e) => setDraft((current) => ({ ...current, site: e.target.value as EhentaiSite }))} disabled={draft.pending}>
-            <option value="e-hentai">E-Hentai (e-hentai.org)</option>
-            <option value="exhentai">ExHentai (exhentai.org — requires ExHentai access)</option>
-          </Select>
-          <p id="ehentai-site-hint" className="text-sm text-muted">Searches, previews and downloads use this site. Changing it does not rewrite downloads already in the queue.</p>
-        </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="ehentai-member-id">ipb_member_id</Label>
-            <SettingsInput id="ehentai-member-id" type="password" autoComplete="off" spellCheck={false} disabled={draft.pending} value={draft.value.memberId} onChange={(e) => setDraft((current) => ({ ...current, memberId: e.target.value }))} placeholder={view.configured ? 'Saved — enter to replace' : 'Member ID cookie'} error={draft.dirty && partialCookies ? 'Enter both cookie values, or leave both blank to keep the saved session.' : undefined} hint="Copy the ipb_member_id cookie from your logged-in browser." />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="ehentai-pass-hash">ipb_pass_hash</Label>
-            <SettingsInput id="ehentai-pass-hash" type="password" autoComplete="off" spellCheck={false} disabled={draft.pending} value={draft.value.passHash} onChange={(e) => setDraft((current) => ({ ...current, passHash: e.target.value }))} placeholder={view.configured ? 'Saved — enter to replace' : 'Pass hash cookie'} hint="Copy the ipb_pass_hash cookie from the same browser session." />
-          </div>
-          <div className="flex flex-col gap-1 sm:col-span-2">
-            <Label htmlFor="ehentai-igneous">igneous (optional)</Label>
-            <SettingsInput id="ehentai-igneous" type="password" autoComplete="off" spellCheck={false} disabled={draft.pending} value={draft.value.igneous} onChange={(e) => setDraft((current) => ({ ...current, igneous: e.target.value }))} placeholder={view.hasIgneous ? 'Saved — enter to replace' : 'Optional'} hint="Only some ExHentai sessions need the igneous cookie. Leave blank if yours does not have it." />
-          </div>
-        </div>
-        <div className="flex flex-col gap-2 rounded-md border border-border bg-surface-2/50 p-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-medium">Access check</span>
-            <span className="flex-1" />
-            <Button size="sm" variant="secondary" onClick={() => { setTestResult(null); test.mutate(); }} disabled={test.isPending || draft.pending || (!view.configured && !hasDraftSession)}>
-              {test.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} {hasDraftSession ? 'Test entered cookies' : 'Test saved account'}
-            </Button>
-          </div>
-          {hasDraftSession && <p className="text-sm text-muted">Testing entered cookies never saves or alters the saved account.</p>}
-          <ul className="flex flex-col gap-1.5">
-            {accessRows.map(({ label, access }) => (
-              <li key={label} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-                <span className="min-w-0 flex-1 break-words">{label}</span>
-                <Badge tone={access.state === 'verified' ? 'success' : access.state === 'untested' ? 'muted' : access.state === 'denied' || access.state === 'unavailable' ? 'danger' : 'warning'}>{access.state.replace(/-/g, ' ')}</Badge>
-                {access.testedAt && <span className="text-xs text-muted">checked {timeAgo(access.testedAt)}</span>}
-              </li>
-            ))}
-          </ul>
-          {accessRows.some(({ access }) => access.message) && (
-            <p role={testResult?.eHentai.state === 'verified' && testResult.exHentai.state === 'verified' ? 'status' : 'alert'} className="break-words text-sm text-muted">{accessRows.filter(({ access }) => access.message).map(({ label, access }) => `${label}: ${access.message}`).join(' · ')}</p>
-          )}
-        </div>
+        {view.configured ? form : (
+          <Disclosure label="Connect E-Hentai account" open={connectOpen} onToggle={(event) => setConnectOpen(event.currentTarget.open)} className="border-t border-border pt-2" summaryClassName="px-0">
+            {form}
+          </Disclosure>
+        )}
+        {removeError && <p role="alert" className="break-words text-sm text-danger">Could not remove the account. {removeError} Try again.</p>}
         {view.configured && (
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
             <p className="break-words text-sm text-muted">Removing the account keeps downloaded galleries in the library and queue.</p>
@@ -741,7 +811,7 @@ function EhentaiAccountCard() {
         confirmLabel="Remove account"
         danger
         pending={remove.isPending}
-        onConfirm={() => remove.mutate()}
+        onConfirm={() => { setRemoveError(''); remove.mutate(); }}
         onOpenChange={setRemoveOpen}
       />
     </Card>
@@ -749,6 +819,7 @@ function EhentaiAccountCard() {
 }
 
 function ProviderCreds({ provider, onChanged }: { provider: ProviderInfo; onChanged: () => void }) {
+  const { touched, onBlur } = useFieldTouched();
   const credentials = useSettingsDraft<Record<string, string>>({
     id: `provider:${provider.id}`, label: `${provider.name} credentials`, initial: {}, source: provider.credentials ?? {},
     valid: (value) => !provider.requiresCredentials || provider.credentialFields.every(field => Boolean(value[field.key]?.trim())),
@@ -796,7 +867,7 @@ function ProviderCreds({ provider, onChanged }: { provider: ProviderInfo; onChan
           {provider.credentialFields.map((cf) => (
             <div key={cf.key} className="flex flex-col gap-1">
               <Label htmlFor={`provider-${provider.id}-${cf.key}`}>{cf.label}</Label>
-              <SettingsInput id={`provider-${provider.id}-${cf.key}`} type="password" autoComplete="off" disabled={test.isPending || credentials.pending} value={creds[cf.key] ?? ''} onChange={(e) => setCreds((prev) => ({ ...prev, [cf.key]: e.target.value }))} placeholder={cf.label} error={credentials.dirty && provider.requiresCredentials && !creds[cf.key]?.trim() ? `Enter ${cf.label}.` : undefined} />
+              <SettingsInput id={`provider-${provider.id}-${cf.key}`} type="password" autoComplete="off" disabled={test.isPending || credentials.pending} value={creds[cf.key] ?? ''} onChange={(e) => setCreds((prev) => ({ ...prev, [cf.key]: e.target.value }))} onBlur={onBlur(cf.key)} placeholder={cf.label} error={touched[cf.key] && provider.requiresCredentials && !creds[cf.key]?.trim() ? `Enter ${cf.label}.` : undefined} />
             </div>
           ))}
         </div>

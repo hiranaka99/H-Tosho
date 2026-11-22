@@ -421,10 +421,17 @@ export const api = {
     error?: string | null;
   }>('/kavita/status'),
   saveConnection: (conn: KavitaConnection) =>
-    request<{ saved: boolean; connected: boolean; test: string }>('/kavita/connection', {
+    request<{ saved: boolean; connected: boolean; test: string; canRestore: boolean }>('/kavita/connection', {
       method: 'POST',
       body: JSON.stringify(conn),
     }),
+  testConnection: (conn: Partial<KavitaConnection>) =>
+    request<{ connected: boolean; test: string }>('/kavita/connection/test', {
+      method: 'POST',
+      body: JSON.stringify(conn),
+    }),
+  restoreConnection: () =>
+    request<{ restored: boolean; baseUrl: string }>('/kavita/connection/restore', { method: 'POST' }),
   libraries: () => request<KavitaLibrary[]>('/kavita/libraries'),
   librarySeries: (libraryId: number) => request<SeriesRow[]>(`/kavita/libraries/${libraryId}/series`),
   libraryOverride: (id: number) =>
