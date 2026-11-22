@@ -147,10 +147,15 @@ export function Badge({
 
 export function ProviderBadge({ id, className, solid = false }: { id: string; className?: string; solid?: boolean }) {
   const color = PROVIDER_COLORS[id] ?? '#888';
+  // The provider hue tints the chip and its dot; the label is the hue mixed into
+  // the theme foreground so it stays readable on its own tint in both themes
+  // (raw provider yellow/green on a pale tint measured 1.6–2.3:1).
   return (
     <span
       className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium', className)}
-      style={solid ? { backgroundColor: 'rgba(0, 0, 0, 0.75)', color } : { backgroundColor: color + '22', color }}
+      style={solid
+        ? { backgroundColor: 'rgba(0, 0, 0, 0.75)', color }
+        : { backgroundColor: `color-mix(in srgb, ${color} 16%, var(--surface))`, color: `color-mix(in srgb, ${color} 38%, var(--foreground))` }}
     >
       <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
       {PROVIDER_NAMES[id] ?? id}

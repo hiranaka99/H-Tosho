@@ -83,7 +83,7 @@ test('artist browsing bypasses title matching, preserves provider pages, and rev
   await dialog.getByRole('button', { name: 'Back to artist works', exact: true }).click();
   await expect(chosenWork).toBeFocused();
   await chosenWork.click();
-  await dialog.getByRole('button', { name: 'Apply & Sync', exact: true }).click();
+  await dialog.getByRole('button', { name: /^Apply/ }).click();
   await expect.poll(() => applyRequests.length).toBe(1);
   expect(applyRequests[0]).toMatchObject({ providerId: 'anilist', providerSeriesId: '402' });
 });
@@ -120,7 +120,7 @@ test('MyAnimeList people links open cover tiles and use MAL metadata review', as
   await dialog.getByRole('button', { name: 'Review metadata for An unexpected catalogue title', exact: true }).click();
   await expect(dialog.getByText('Artist-discovered metadata for review', { exact: true })).toBeVisible();
   expect(applyRequests).toEqual([]);
-  await dialog.getByRole('button', { name: 'Apply & Sync', exact: true }).click();
+  await dialog.getByRole('button', { name: /^Apply/ }).click();
   await expect.poll(() => applyRequests.length).toBe(1);
   expect(applyRequests[0]).toMatchObject({ providerId: 'myanimelist' });
 });
@@ -149,4 +149,30 @@ test('artist choice, empty states, keyboard tabs and responsive themes stay usab
   const viewport = page.viewportSize()!;
   expect(bounds!.x).toBeGreaterThanOrEqual(0);
   expect(bounds!.width).toBeLessThanOrEqual(viewport.width);
+});
+
+test('guided review leads with what will change and folds away what needs no decision', async ({ page }) => {
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: /An unexpected catalogue title/ }).first().click();
+  const heading = dialog.getByRole('heading', { name: /changes? ready to apply/ });
+  await expect(heading).toBeVisible();
+  // The primary action names exactly what it will do, and the count matches the summary.
+  const apply = dialog.getByRole('button', { name: /^Apply \d+ changes?$/ });
+  const count = Number((await apply.textContent())!.match(/\d+/)![0]);
+  await expect(heading).toHaveText(count + ' ' + (count === 1 ? 'change' : 'changes') + ' ready to apply');
+  // Only fields that change get a decision. Artists already match, so they are folded away rather than pre-checked.
+  await expect(dialog.getByRole('group', { name: 'Description', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('group', { name: 'Artists', exact: true })).toHaveCount(0);
+  const unchanged = dialog.locator('summary').filter({ hasText: /won.t change/ });
+  await unchanged.click();
+  await expect(dialog.locator('dd').filter({ hasText: 'Already matches' })).toBeVisible();
+  // Skipping a field lowers the count and says so, without strikethrough.
+  await dialog.getByRole('group', { name: 'Description', exact: true }).getByRole('checkbox').uncheck();
+  await expect(dialog.getByRole('button', { name: new RegExp('^Apply ' + (count - 1) + ' change') })).toBeVisible();
+  await expect(dialog.getByText('1 skipped by you', { exact: false })).toBeVisible();
+  await expect(dialog.getByRole('group', { name: 'Description', exact: true }).getByText('Not synced')).toBeVisible();
+  expect(applyRequests).toEqual([]);
+  await dialog.getByRole('button', { name: /^Apply/ }).click();
+  await expect.poll(() => applyRequests.length).toBe(1);
+  expect((applyRequests[0] as { excludedFields: string[] }).excludedFields).toContain('summary');
 });

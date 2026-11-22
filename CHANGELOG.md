@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Rework the Identify dialog from a design critique into a guided review. Reviewing a match
+  now leads with what will change: Apply says exactly how many changes it will make
+  ("Apply 5 changes"), fields that already match or have nothing to sync fold under
+  "N fields won’t change", and protected fields sit apart with a lock and an inline Unlock
+  instead of looking like fields you deselected. A match below the review threshold shows its
+  score and a warning, and changing the title says it rewrites ComicInfo.xml in every chapter
+  file. The covers are a compact pair at the top, the title chooser is part of the Title row,
+  and the artist browser is one Back away rather than competing with the comparison. Match
+  candidates show their confidence and are ranked best first, with no nested scroller. Provider
+  badges now meet text contrast in both themes, the provider filters report their selected
+  state, and closing the dialog returns focus to the button that opened it.
+
 - Rework the Tasks tab from a design critique. Stopping a task now takes an inline
   confirmation that says what is kept, and opening Details no longer focuses a
   destructive action. Rows lead with the action, use a type glyph instead of an empty
