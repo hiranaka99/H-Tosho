@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DATA_DIR } from '../db/index.js';
+import { mapLimit } from '../lib/http.js';
 import { refreshHitomiImageUrl } from '../downloader/hitomi.js';
 import { detectImageFormat } from '../downloader/ehentaiClient.js';
 import { ehentaiPreviewBytes, isEhentaiViewerUrl } from '../downloader/ehentai.js';
@@ -232,105 +233,115 @@ async function readBodyWithCap(res: Response, maxBytes: number): Promise<Buffer>
   return buf;
 }
 
+type MediaResult = { ok: true; type: string; buf: Buffer } | { ok: false; status: 400 | 502; error: string };
+
+/** Parse and allowlist-check a proxy target; null when it must not be fetched. */
+function validTarget(target: string | null): URL | null {
+  if (!target) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(target);
+  } catch {
+    return null;
+  }
+  if (!isHttpUrl(parsed) || !isAllowedHost(parsed.hostname)) return null;
+  // Family hosts are only ever served as viewer references (resolved
+  // server-side below); any other family path is rejected, not proxied.
+  if ((parsed.hostname === 'e-hentai.org' || parsed.hostname === 'exhentai.org') && !isEhentaiViewerUrl(parsed)) return null;
+  return parsed;
+}
+
+/** Resolve one proxy target through the memory → disk → upstream layers. */
+async function loadMedia(target: string, parsed: URL): Promise<MediaResult> {
+  const cached = getCached(target);
+  if (cached) return { ok: true, ...cached };
+
+  const onDisk = await getFromDisk(target);
+  if (onDisk) {
+    setCached(target, onDisk.type, onDisk.buf); // promote to L1
+    return { ok: true, ...onDisk };
+  }
+
+  // E-Hentai viewer refs never go through the generic fetch: they are
+  // resolved server-side (session + gate + pinned IP) and the image bytes
+  // come only from the URL the viewer page itself exposed, so a quota or
+  // denial page can never be published as an image.
+  if (isEhentaiViewerUrl(parsed)) {
+    let out: { buf: Buffer; type: string };
+    try {
+      out = await ehentaiPreviewBytes(target);
+    } catch (error) {
+      return { ok: false, status: 502, error: error instanceof Error ? error.message : 'E-Hentai preview unavailable' };
+    }
+    if (out.buf.length > MAX_DOWNLOAD_BYTES) return { ok: false, status: 502, error: 'Response too large' };
+    setCached(target, out.type, out.buf);
+    void setDisk(target, out.type, out.buf);
+    return { ok: true, ...out };
+  }
+
+  let res: Response;
+  try {
+    res = await fetchWithValidatedRedirects(parsed);
+    // Hitomi cover URLs embed a routing prefix from gg.js that rotates every
+    // few minutes. Recommendation sets are cached for a day, so rebuild a
+    // stale URL on demand instead of returning a broken cover.
+    if (!res.ok && parsed.hostname.endsWith('.gold-usergeneratedcontent.net')) {
+      const refreshed = await refreshHitomiImageUrl(parsed.href);
+      if (refreshed && refreshed !== parsed.href) {
+        const next = new URL(refreshed);
+        if (isAllowedHost(next.hostname)) res = await fetchWithValidatedRedirects(next);
+      }
+    }
+  } catch {
+    return { ok: false, status: 502, error: 'Upstream fetch failed' };
+  }
+
+  if (!res.ok) return { ok: false, status: 502, error: `Upstream returned HTTP ${res.status}` };
+
+  let buf: Buffer;
+  try {
+    buf = await readBodyWithCap(res, MAX_DOWNLOAD_BYTES);
+  } catch {
+    return { ok: false, status: 502, error: 'Response too large' };
+  }
+
+  let type = res.headers.get('content-type') || 'image/jpeg';
+  if (isEhentaiCoverHost(parsed.hostname)) {
+    // E-Hentai serves quota/denial HTML with image content types under
+    // load: trust only the bytes, never the header.
+    const format = detectImageFormat(buf);
+    if (!format) return { ok: false, status: 502, error: 'Upstream did not return an image' };
+    type = format === 'jpg' ? 'image/jpeg' : format === 'png' ? 'image/png' : format === 'gif' ? 'image/gif' : 'image/webp';
+  }
+  setCached(target, type, buf);
+  void setDisk(target, type, buf);
+  return { ok: true, type, buf };
+}
+
+/**
+ * Warm the cover cache for absolute CDN URLs (e.g. the daily recommendation
+ * covers) so the first page view is served from disk instead of the CDN.
+ * Best-effort: disallowed URLs are skipped. Returns how many failed to load.
+ */
+export async function prefetchMedia(urls: Iterable<string>, concurrency = 4): Promise<{ loaded: number; failed: number }> {
+  const targets = [...new Set(urls)].map((url) => ({ url, parsed: validTarget(url) }))
+    .filter((t): t is { url: string; parsed: URL } => t.parsed !== null);
+  const results = await mapLimit(targets, concurrency, ({ url, parsed }) => loadMedia(url, parsed).then((r) => r.ok, () => false));
+  const loaded = results.filter(Boolean).length;
+  return { loaded, failed: results.length - loaded };
+}
+
 export function mediaRouter(): Hono {
   const r = new Hono();
 
   r.get('/media', async (c) => {
     const target = decodeUrlParam(c.req.query('u'));
-    let parsed: URL | null = null;
-    if (target) {
-      try {
-        parsed = new URL(target);
-      } catch {
-        parsed = null;
-      }
-    }
-    if (!parsed || !isHttpUrl(parsed) || !isAllowedHost(parsed.hostname)) {
-      return c.json({ error: 'Invalid media URL' }, 400);
-    }
-    // Family hosts are only ever served as viewer references (resolved
-    // server-side below); any other family path is rejected, not proxied.
-    if ((parsed.hostname === 'e-hentai.org' || parsed.hostname === 'exhentai.org') && !isEhentaiViewerUrl(parsed)) {
-      return c.json({ error: 'Invalid media URL' }, 400);
-    }
-
-    const cached = getCached(target as string);
-    if (cached) {
-      return c.body(new Uint8Array(cached.buf), 200, {
-        'Content-Type': cached.type,
-        'Cache-Control': 'private, max-age=3600',
-      });
-    }
-
-    const onDisk = await getFromDisk(target as string);
-    if (onDisk) {
-      setCached(target as string, onDisk.type, onDisk.buf); // promote to L1
-      return c.body(new Uint8Array(onDisk.buf), 200, {
-        'Content-Type': onDisk.type,
-        'Cache-Control': 'private, max-age=3600',
-      });
-    }
-
-    // E-Hentai viewer refs never go through the generic fetch: they are
-    // resolved server-side (session + gate + pinned IP) and the image bytes
-    // come only from the URL the viewer page itself exposed, so a quota or
-    // denial page can never be published as an image.
-    if (isEhentaiViewerUrl(parsed)) {
-      let out: { buf: Buffer; type: string };
-      try {
-        out = await ehentaiPreviewBytes(target as string);
-      } catch (error) {
-        return c.json({ error: error instanceof Error ? error.message : 'E-Hentai preview unavailable' }, 502);
-      }
-      if (out.buf.length > MAX_DOWNLOAD_BYTES) return c.json({ error: 'Response too large' }, 502);
-      setCached(target as string, out.type, out.buf);
-      void setDisk(target as string, out.type, out.buf);
-      return c.body(new Uint8Array(out.buf), 200, {
-        'Content-Type': out.type,
-        'Cache-Control': 'private, max-age=3600',
-      });
-    }
-
-    let res: Response;
-    try {
-      res = await fetchWithValidatedRedirects(parsed);
-      // Hitomi cover URLs embed a routing prefix from gg.js that rotates every
-      // few minutes. Recommendation sets are cached for a day, so rebuild a
-      // stale URL on demand instead of returning a broken cover.
-      if (!res.ok && parsed.hostname.endsWith('.gold-usergeneratedcontent.net')) {
-        const refreshed = await refreshHitomiImageUrl(parsed.href);
-        if (refreshed && refreshed !== parsed.href) {
-          const next = new URL(refreshed);
-          if (isAllowedHost(next.hostname)) res = await fetchWithValidatedRedirects(next);
-        }
-      }
-    } catch {
-      return c.json({ error: 'Upstream fetch failed' }, 502);
-    }
-
-    if (!res.ok) {
-      return c.json({ error: `Upstream returned HTTP ${res.status}` }, 502);
-    }
-
-    let buf: Buffer;
-    try {
-      buf = await readBodyWithCap(res, MAX_DOWNLOAD_BYTES);
-    } catch {
-      return c.json({ error: 'Response too large' }, 502);
-    }
-
-    let type = res.headers.get('content-type') || 'image/jpeg';
-    if (isEhentaiCoverHost(parsed.hostname)) {
-      // E-Hentai serves quota/denial HTML with image content types under
-      // load: trust only the bytes, never the header.
-      const format = detectImageFormat(buf);
-      if (!format) return c.json({ error: 'Upstream did not return an image' }, 502);
-      type = format === 'jpg' ? 'image/jpeg' : format === 'png' ? 'image/png' : format === 'gif' ? 'image/gif' : 'image/webp';
-    }
-    setCached(target as string, type, buf);
-    void setDisk(target as string, type, buf);
-    return c.body(new Uint8Array(buf), 200, {
-      'Content-Type': type,
+    const parsed = validTarget(target);
+    if (!target || !parsed) return c.json({ error: 'Invalid media URL' }, 400);
+    const result = await loadMedia(target, parsed);
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.body(new Uint8Array(result.buf), 200, {
+      'Content-Type': result.type,
       'Cache-Control': 'private, max-age=3600',
     });
   });

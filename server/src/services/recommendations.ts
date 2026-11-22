@@ -760,9 +760,36 @@ export async function getRecommendations(): Promise<RecommendationResponse> {
   });
 }
 
-/** Prepare each day's persisted picks even when no browser has the app open. */
-export function startRecommendationPreloading(): () => void {
+/** Cover warmer injected by the server (the media proxy's prefetch). */
+export type CoverWarmer = (urls: string[]) => Promise<{ loaded: number; failed: number }>;
+
+/** Attempts per displayed set before cover warming gives up until the set changes. */
+const COVER_WARM_ATTEMPTS = 5;
+
+/**
+ * Prepare each day's persisted picks — and their cover images — even when no
+ * browser has the app open, so the first visit of the day renders instantly.
+ */
+export function startRecommendationPreloading(warmCovers?: CoverWarmer): () => void {
   let pending = false;
+  // Warming is keyed by the displayed set's generation stamp, so a new day, a
+  // manual refresh or a settings re-roll each warm their own covers once.
+  let warmed: { generatedAt: string; attempts: number; done: boolean } | null = null;
+  const warm = async (): Promise<void> => {
+    if (!warmCovers) return;
+    const set = readDisplayedSet();
+    if (!set) return;
+    if (warmed?.generatedAt !== set.generatedAt) warmed = { generatedAt: set.generatedAt, attempts: 0, done: false };
+    if (warmed.done || warmed.attempts >= COVER_WARM_ATTEMPTS) return;
+    warmed.attempts += 1;
+    const urls = [...set.items, ...set.reserve]
+      .map((item) => item.coverUrl)
+      .filter((url): url is string => typeof url === 'string' && url.startsWith('http'));
+    const { failed } = await warmCovers(urls);
+    // Cached covers are disk hits, so retrying only re-fetches the failures.
+    if (failed === 0) warmed.done = true;
+    else console.warn(`[recommendations] ${failed} cover(s) failed to prefetch; retrying in one minute`);
+  };
   const preload = (): void => {
     if (pending) return;
     pending = true;
@@ -771,6 +798,8 @@ export function startRecommendationPreloading(): () => void {
       if (!readCached(date)) await generateFor(date, 0);
     }).catch((error: unknown) => {
       console.warn('[recommendations] daily preload failed; retrying in one minute:', error);
+    }).then(() => warm()).catch((error: unknown) => {
+      console.warn('[recommendations] cover prefetch failed; retrying in one minute:', error);
     }).finally(() => { pending = false; });
   };
   // Checking the local date handles midnight, DST and a sleeping server without

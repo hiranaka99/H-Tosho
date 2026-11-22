@@ -9,7 +9,7 @@ import { afterEach, describe, it } from 'node:test';
 // level) — otherwise cached test covers leak into the real data dir.
 process.env.HTOSHO_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'htosho-media-'));
 
-const { mediaRouter, rewriteDoujinPages, rewriteMangaDexCoverUrl } = await import('../src/routes/media.js');
+const { mediaRouter, prefetchMedia, rewriteDoujinPages, rewriteMangaDexCoverUrl } = await import('../src/routes/media.js');
 
 const originalFetch = globalThis.fetch;
 
@@ -95,6 +95,29 @@ describe('media proxy', () => {
     const res = await mediaRouter().request(proxyRequest(url));
     assert.equal(res.status, 200);
     assert.deepEqual(calls, [{ url, referer: 'https://nhentai.net/' }]);
+  });
+
+  it('prefetches allowed covers so later proxy requests skip the CDN', async () => {
+    const calls: string[] = [];
+    globalThis.fetch = async (input) => {
+      calls.push(String(input));
+      return new Response(new Uint8Array([0x01, 0x02]), { status: 200, headers: { 'Content-Type': 'image/avif' } });
+    };
+    const url = 'https://a2.gold-usergeneratedcontent.net/prefetched-cover.avif';
+    const result = await prefetchMedia([url, url, 'https://example.com/not-allowed.jpg']);
+    assert.deepEqual(result, { loaded: 1, failed: 0 });
+    assert.deepEqual(calls, [url], 'duplicates and disallowed hosts must not be fetched');
+
+    const res = await mediaRouter().request(proxyRequest(url));
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'image/avif');
+    assert.deepEqual(calls, [url], 'proxy must serve the prefetched cover from cache');
+  });
+
+  it('reports failed prefetches', async () => {
+    globalThis.fetch = async () => new Response('nope', { status: 500 });
+    const result = await prefetchMedia(['https://i3.nhentai.net/galleries/9/cover.jpg']);
+    assert.deepEqual(result, { loaded: 0, failed: 1 });
   });
 
   it('rejects non-CDN nHentai hosts', async () => {

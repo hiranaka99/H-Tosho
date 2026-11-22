@@ -8,6 +8,7 @@ import { getCredentialMap, getKavitaConnection, getPollIntervalHours, onSettingC
 import { backfillNewGalleries, initializeWatchedSchedule, rescheduleWatchedSearches, dueWatchedSearchIds } from './services/watchedSearches.js';
 import { downloadQueue } from './downloader/engine.js';
 import { startRecommendationPreloading } from './services/recommendations.js';
+import { prefetchMedia } from './routes/media.js';
 import { interruptMetadataHistory } from './services/metadataHistory.js';
 import { interruptMetadataRestore } from './services/metadataRestore.js';
 
@@ -87,7 +88,7 @@ function main(): void {
   const app = createApp();
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST });
   console.log(`[h-tosho] listening on http://${HOST}:${PORT} (api at /api)`);
-  const stopRecommendationPreloading = startRecommendationPreloading();
+  const stopRecommendationPreloading = startRecommendationPreloading(prefetchMedia);
 
   const shutdown = (): void => {
     console.log('[h-tosho] shutting down');

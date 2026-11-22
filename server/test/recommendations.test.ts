@@ -729,3 +729,40 @@ test('concurrent dismissals preserve both replacements when provider eligibility
     setDownloaderSettings(previousSettings);
   }
 });
+
+test('background preloading warms every daily cover once and retries only failed sets', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: new Date(2030, 1, 3, 9) });
+  t.mock.method(console, 'warn', () => {});
+  doujinProviders.hitomi = {
+    ...stubProvider('hitomi', () => []),
+    async search(query, limit = 30) {
+      return Array.from({ length: limit }, (_, index) => ({ source: 'hitomi' as const, galleryId: `cover-${localDate(new Date())}-${slug(query)}-${index}`, title: `Cover ${index}`, artists: [], tags: [], coverUrl: `https://a2.gold-usergeneratedcontent.net/${localDate(new Date())}-${slug(query)}-${index}.avif` }));
+    },
+  };
+  const batches: string[][] = [];
+  let failNext = true;
+  const stop = recs.startRecommendationPreloading(async (urls) => {
+    batches.push(urls);
+    const failed = failNext ? 1 : 0;
+    failNext = false;
+    return { loaded: urls.length - failed, failed };
+  });
+  t.after(stop);
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
+  await settle();
+  const today = await recs.getRecommendations();
+  assert.equal(batches.length, 1, 'startup must warm covers right after the daily set is ready');
+  for (const item of today.items) assert.ok(batches[0].includes(item.coverUrl!), `cover for ${item.galleryId} was not warmed`);
+
+  t.mock.timers.tick(60_000);
+  await settle();
+  assert.equal(batches.length, 2, 'a partially failed warm must retry on the next tick');
+  t.mock.timers.tick(60_000);
+  await settle();
+  assert.equal(batches.length, 2, 'a fully warmed set must not be fetched again');
+
+  t.mock.timers.tick(86_400_000);
+  await settle();
+  assert.equal(batches.length, 3, 'the next day must warm its own covers');
+  assert.equal(overlap(new Set(batches[2]), new Set(batches[0])), 0);
+});
