@@ -2,7 +2,7 @@ import { PUBLICATION_STATUS as CANDIDATE_STATUS, mergeTagLists, releaseYear } fr
 import { PROTECTABLE_FIELDS, type FieldPolicy, type ProtectedField } from '../../../server/src/contracts/metadata';
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, Sparkles, AlertTriangle, ArrowLeft, ArrowRight, Link2, Unlink, ChevronRight, Users, History } from 'lucide-react';
+import { Search, Sparkles, AlertTriangle, ArrowLeft, ArrowRight, Link2, Unlink, ChevronRight, Users, History, Lock, LockOpen } from 'lucide-react';
 import { Link } from 'react-router';
 import {
   api,
@@ -27,6 +27,21 @@ const STATUS_LABELS: Record<number, string> = {
   3: 'Cancelled',
   4: 'Ended',
 };
+
+/** One vocabulary for a field everywhere in the dialog: the rows, the unchanged list and the protection panel. */
+const PROTECT_LABELS = {
+  title: 'Title',
+  summary: 'Description',
+  genres: 'Genres',
+  tags: 'Tags',
+  writers: 'Writers',
+  artists: 'Artists',
+  releaseDate: 'Release year',
+  language: 'Language',
+  status: 'Publication status',
+  url: 'Source URL',
+  cover: 'Series and volume covers',
+} as const;
 
 interface CurrentKavita {
   name: string;
@@ -64,7 +79,7 @@ interface DiffRow {
   label: string;
   current: string;
   candidate: string;
-  /** Render the summary with more breathing room. */
+  /** Render the description with more breathing room. */
   multiline?: boolean;
   /** Candidate is empty and syncing will clear the current value. */
   clearing?: boolean;
@@ -97,6 +112,30 @@ function computeDiffers(row: DiffRow): boolean {
   return a.toLowerCase() !== b.toLowerCase();
 }
 
+type RowChange = 'change' | 'same' | 'empty';
+interface RowEntry { row: DiffRow; kind: RowChange }
+
+/**
+ * What applying this row would do. `change` rewrites or adds a value, `same`
+ * already matches Kavita, `empty` means the provider has nothing to offer.
+ * The Apply count and the guided list are both built from this one answer.
+ */
+function rowChange(row: DiffRow): RowChange {
+  if (row.clearing) return 'change';
+  if (!row.candidate.trim()) return 'empty';
+  if (row.tagMerge) {
+    const have = new Set(row.tagMerge.existing.map((t) => t.trim().toLowerCase()).filter(Boolean));
+    return row.tagMerge.incoming.some((t) => t.trim() && !have.has(t.trim().toLowerCase())) ? 'change' : 'same';
+  }
+  if (!row.current.trim()) return 'change';
+  return computeDiffers(row) ? 'change' : 'same';
+}
+
+/** Reading order for the guided list: what identifies the series first, housekeeping last. */
+const FIELD_ORDER = ['title', 'releaseDate', 'summary', 'genres', 'tags', 'writers', 'artists', 'language', 'status', 'url'] as const;
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
 /** URL values render as clickable links (Kavita webLinks may hold several, newline/comma separated). */
 function UrlValue({ text }: { text: string }) {
   const urls = text.split(/[\n,]+/).map((s) => s.trim()).filter((s) => /^https?:\/\//i.test(s));
@@ -106,7 +145,7 @@ function UrlValue({ text }: { text: string }) {
       {urls.map((u, i) => (
         <React.Fragment key={i}>
           {i > 0 ? ', ' : null}
-          <a href={u} target="_blank" rel="noopener noreferrer" className="underline decoration-dotted underline-offset-2 hover:decoration-solid">
+          <a href={u} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-6 items-center break-all underline decoration-dotted underline-offset-2 hover:decoration-solid pointer-coarse:min-h-11">
             {u}
           </a>
         </React.Fragment>
@@ -116,7 +155,7 @@ function UrlValue({ text }: { text: string }) {
 }
 
 /** Label column (fixed width) + two equal-width value columns: Kavita on the left, candidate on the right. */
-const ROW_GRID = 'grid grid-cols-1 items-start gap-1 sm:grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)] sm:gap-x-3';
+const ROW_GRID = 'grid grid-cols-1 items-start gap-1 sm:grid-cols-[8rem_minmax(0,1fr)_minmax(0,1fr)] sm:gap-x-3';
 
 function ComparisonValue({ label, field, className, title, children }: { label: 'Current' | 'Proposed'; field: string; className?: string; title?: string; children: React.ReactNode }) {
   return (
@@ -127,39 +166,67 @@ function ComparisonValue({ label, field, className, title, children }: { label: 
   );
 }
 
-function FieldRow({ row, checked, onToggle, protectedField }: { row: DiffRow; checked?: boolean; onToggle?: () => void; protectedField?: boolean }) {
+interface FieldRowProps {
+  row: DiffRow;
+  checked?: boolean;
+  onToggle?: () => void;
+  /** Protected fields are never overwritten: no checkbox, a visible lock and an inline way out. */
+  locked?: boolean;
+  onUnlock?: () => void;
+  unlockDisabled?: boolean;
+  /** Replaces the proposed value (the title chooser). */
+  proposedControl?: React.ReactNode;
+  note?: React.ReactNode;
+}
+
+function FieldRow({ row, checked, onToggle, locked, onUnlock, unlockDisabled, proposedControl, note }: FieldRowProps) {
   const labelId = React.useId();
   const merge = row.tagMerge;
-  const differs = !protectedField && !merge && computeDiffers(row);
-  // Multiline fields (Summary) are never truncated: full text, wrapping, with an internal scroll for very long descriptions.
+  const showCheckbox = !locked && !!row.field && (row.candidate.trim() !== '' || row.clearing) && !!onToggle;
+  const skipped = !!locked || (showCheckbox && !checked);
+  // Multiline fields (Description) are never truncated: full text, wrapping, with an internal scroll for very long descriptions.
   const valueCls = row.multiline ? 'min-w-0 max-h-56 overflow-y-auto whitespace-pre-wrap break-words' : 'min-w-0 whitespace-pre-wrap break-words';
-  const showCheckbox = !!row.field && (row.candidate.trim() !== '' || row.clearing) && !!onToggle;
   return (
-    <div role="group" aria-labelledby={labelId} className={cn(ROW_GRID, 'border-b border-border py-3 last:border-0', differs ? 'bg-warning/5' : 'transition-colors hover:bg-surface-2/40')}>
-      <div id={labelId} className="flex min-w-0 items-start gap-1.5">
+    <div role="group" aria-labelledby={labelId} className={cn(ROW_GRID, 'border-b border-border py-3 transition-colors last:border-0 hover:bg-surface-2/40')}>
+      <div className="flex min-w-0 flex-col items-start gap-0.5">
         {showCheckbox ? (
-          <label className="flex min-h-11 cursor-pointer items-center gap-2 py-1 text-xs font-medium uppercase tracking-wider text-muted sm:min-h-9 pointer-coarse:min-h-11">
-            <input type="checkbox" checked={!!checked} onChange={onToggle} disabled={protectedField} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
+          <label id={labelId} className="flex min-h-11 cursor-pointer items-center gap-2 py-1 text-xs font-medium uppercase tracking-wider text-muted sm:min-h-9 pointer-coarse:min-h-11">
+            <input type="checkbox" checked={!!checked} onChange={onToggle} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
             {row.label}
           </label>
         ) : (
-          <span className="min-h-9 py-3 text-xs font-medium uppercase tracking-wider text-muted">{row.label}</span>
+          <span id={labelId} className="flex min-h-9 items-center gap-1.5 py-1 text-xs font-medium uppercase tracking-wider text-muted">
+            {locked && <Lock aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}
+            {row.label}
+          </span>
+        )}
+        {locked && (
+          <div className="flex flex-wrap items-center gap-x-1 text-xs text-muted">
+            <span>Protected</span>
+            {onUnlock && (
+              <Button type="button" size="sm" variant="ghost" aria-label={`Unlock ${row.label}`} disabled={unlockDisabled} onClick={onUnlock} className="min-h-9 gap-1 px-1.5 pointer-coarse:min-h-11">
+                <LockOpen aria-hidden="true" className="h-3.5 w-3.5" />Unlock
+              </Button>
+            )}
+          </div>
         )}
       </div>
-      <ComparisonValue label="Current" field={row.label} className={cn(valueCls, 'min-h-8', differs && 'text-muted line-through')} title={row.current}>
+      <ComparisonValue label="Current" field={row.label} className={cn(valueCls, 'min-h-8 text-muted')} title={row.current}>
         {row.link ? <UrlValue text={row.current} /> : row.current || '—'}
       </ComparisonValue>
-      <ComparisonValue label="Proposed" field={row.label} className={cn(valueCls, 'min-h-8', differs && 'text-primary', !merge && showCheckbox && !checked && 'text-muted line-through opacity-60')} title={row.candidate}>
-        {merge ? (
-          <MergedTags existing={merge.existing} incoming={merge.incoming} dimmed={!checked} />
+      <ComparisonValue label="Proposed" field={row.label} className={cn(valueCls, 'min-h-8', skipped ? 'text-muted' : 'text-foreground')} title={row.candidate}>
+        {proposedControl ?? (merge ? (
+          <MergedTags existing={merge.existing} incoming={merge.incoming} dimmed={skipped} />
         ) : row.clearing ? (
           <>
-            <span className="text-primary">Will be cleared</span>
-            <span className="text-muted"> — the provider's summary contains only the tag list.</span>
+            <span className={skipped ? 'text-muted' : 'font-medium text-warning'}>{skipped ? 'Would be cleared' : 'Will be cleared'}</span>
+            <span className="text-muted"> — the provider's description contains only the tag list.</span>
           </>
         ) : (
           row.link ? <UrlValue text={row.candidate} /> : row.candidate || '—'
-        )}
+        ))}
+        {skipped && !merge && <span className="mt-1 block text-xs text-muted">Not synced{locked ? ' · protected' : ''}</span>}
+        {note}
       </ComparisonValue>
     </div>
   );
@@ -171,30 +238,55 @@ function MergedTags({ existing, incoming, dimmed }: { existing: string[]; incomi
   const merged = mergeTagLists(existing, incoming);
   const kept = new Set(existing.map((t) => t.trim().toLowerCase()).filter(Boolean));
   return (
-    <span className={cn('min-w-0 flex-1', dimmed && 'opacity-60')} title="Existing tags are kept; highlighted tags will be added">
+    <span className="min-w-0 flex-1" title="Existing tags are kept; highlighted tags will be added">
       {merged.map((tag, i) => (
         <React.Fragment key={tag}>
           {i > 0 ? ', ' : null}
-          <span className={kept.has(tag.toLowerCase()) ? undefined : 'font-medium text-primary'}>{tag}</span>
+          <span className={kept.has(tag.toLowerCase()) || dimmed ? undefined : 'font-medium text-primary'}>{tag}</span>
         </React.Fragment>
       ))}
-      {dimmed && <span className="text-muted"> · not synced</span>}
+      {dimmed && <span className="mt-1 block text-xs text-muted">Not synced</span>}
     </span>
   );
 }
 
+/** Fields that need no decision: they already match, or the provider has nothing to offer. Collapsed by default. */
+function UnchangedFields({ entries }: { entries: RowEntry[] }) {
+  if (entries.length === 0) return null;
+  return (
+    <details className="group/unchanged min-w-0">
+      <summary className="flex min-h-11 w-fit max-w-full cursor-pointer list-none items-center gap-2 rounded-md px-2 py-2 text-sm text-muted hover:bg-surface-2 hover:text-foreground sm:min-h-9 [&::-webkit-details-marker]:hidden">
+        <ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 group-open/unchanged:rotate-90" />
+        {plural(entries.length, 'field')} won’t change
+      </summary>
+      <dl className="mt-1 divide-y divide-border rounded-md border border-border text-sm">
+        {entries.map(({ row, kind }) => (
+          <div key={row.label} className="grid gap-x-3 gap-y-0.5 px-3 py-2 sm:grid-cols-[8rem_minmax(0,1fr)]">
+            <dt className="text-xs font-medium uppercase tracking-wider text-muted">{row.label}</dt>
+            <dd className="min-w-0 break-words text-muted">
+              {kind === 'same' ? <>Already matches · <span className="text-foreground">{row.current}</span></> : 'The provider has no value for this field'}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  );
+}
+
+/** Compact cover for the review summary; tap to enlarge. */
 function CoverThumb({ src, alt, onZoom }: { src?: string | null; alt: string; onZoom?: (src: string, alt: string) => void }) {
   const [failed, setFailed] = React.useState(false);
   React.useEffect(() => {
     setFailed(false);
   }, [src]);
-  if (!src || failed) return <span className="text-muted">—</span>;
+  const size = 'aspect-[2/3] h-32 sm:h-40';
+  if (!src || failed) return <span className={cn(size, 'flex items-center justify-center rounded bg-surface-2 text-xs text-muted')}>No cover</span>;
   const img = (
-    <img src={src} alt={alt} loading="lazy" onError={() => setFailed(true)} className="max-h-[55vh] w-full max-w-80 shrink-0 rounded object-cover sm:h-[427px]" />
+    <img src={src} alt={alt} loading="lazy" onError={() => setFailed(true)} className={cn(size, 'rounded object-cover')} />
   );
   if (!onZoom) return img;
   return (
-    <button type="button" aria-label={`Enlarge ${alt}`} onClick={() => onZoom(src, alt)} className="shrink-0 cursor-zoom-in transition-opacity hover:opacity-90">
+    <button type="button" aria-label={`Enlarge ${alt}`} onClick={() => onZoom(src, alt)} className="shrink-0 cursor-zoom-in rounded transition-opacity hover:opacity-90">
       {img}
     </button>
   );
@@ -232,7 +324,14 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const backButton = React.useRef<HTMLButtonElement>(null);
   const existingReviewButton = React.useRef<HTMLButtonElement>(null);
   const manualLoadButton = React.useRef<HTMLButtonElement>(null);
-  const comparisonId = React.useId();
+  // Remember what opened the dialog so closing it puts keyboard focus back there
+  // instead of on <body>. A remount between queue items finds focus inside the
+  // previous dialog and records nothing, which falls back to the default.
+  const opener = React.useRef<HTMLElement | null>(
+    typeof document !== 'undefined' && document.activeElement instanceof HTMLElement && document.activeElement !== document.body && !document.activeElement.closest('[role="dialog"]')
+      ? document.activeElement
+      : null,
+  );
   const [manualUrl, setManualUrl] = React.useState('');
   const [manualOpen, setManualOpen] = React.useState(false);
   const [manualCandidate, setManualCandidate] = React.useState<MatchCandidate | null>(null);
@@ -241,6 +340,8 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const [excluded, setExcluded] = React.useState<ReadonlySet<string>>(new Set());
   const [coverEnabled, setCoverEnabled] = React.useState(true);
   const protection = useQuery({ queryKey: ['field-policy', seriesId], queryFn: () => api.fieldPolicy(seriesId) });
+  // Shares the sidebar badge's query, so the review threshold costs no extra request.
+  const threshold = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, staleTime: 60_000 }).data?.threshold;
   const protectedKeys = new Set<string>(protection.data?.lockedFields ?? []);
   const effectiveExcluded = new Set([...excluded, ...protectedKeys]);
   const protect = useMutation({
@@ -356,9 +457,13 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const tabProviders = React.useMemo(() => {
     return [...new Set(alternatives.map((candidate) => candidate.providerId))];
   }, [alternatives]);
+  const manualKey = manualCandidate ? manualCandidate.providerId + ':' + manualCandidate.providerSeriesId : null;
   const visibleCandidates = React.useMemo(() => {
-    return tab === 'all' ? alternatives : alternatives.filter((c) => c.providerId === tab);
-  }, [alternatives, tab]);
+    const filtered = tab === 'all' ? alternatives : alternatives.filter((c) => c.providerId === tab);
+    // Best match first, so the list reads as a ranking; a URL or artist work the user picked stays on top.
+    const pinned = (c: MatchCandidate) => (manualKey !== null && c.providerId + ':' + c.providerSeriesId === manualKey ? 1 : 0);
+    return [...filtered].sort((a, b) => pinned(b) - pinned(a) || b.score - a.score);
+  }, [alternatives, tab, manualKey]);
   const openedExisting = React.useRef(false);
   React.useEffect(() => {
     if (!autoReview || openedExisting.current || !match?.providerId || !match.providerSeriesId) return;
@@ -382,68 +487,126 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
     const m = preview.data;
     const candStatus = m?.status != null ? (CANDIDATE_STATUS[m.status as keyof typeof CANDIDATE_STATUS] ?? null) : null;
     const rows: DiffRow[] = [
-      { label: 'Title', current: current.name, candidate: resolvedTitle, field: 'title' },
+      { label: PROTECT_LABELS.title, current: current.name, candidate: resolvedTitle, field: 'title' },
       {
-        label: 'Year',
+        label: PROTECT_LABELS.releaseDate,
         current: k && k.releaseYear > 0 ? String(k.releaseYear) : '',
         candidate: candidateYear(m, selected.year),
         field: 'releaseDate',
       },
       {
-        label: 'Summary',
+        label: PROTECT_LABELS.summary,
         current: k?.summary ?? '',
         // Fall back to the raw search summary only while the full preview is
         // still loading; once loaded, an empty candidate means the provider's
-        // description was tag blocks only and the summary will be cleared.
+        // description was tag blocks only and the description will be cleared.
         candidate: m ? (m.summary ?? '') : (selected.summary ?? ''),
         multiline: true,
         field: 'summary',
         clearing: !!m && m.summary === '' && Boolean((k?.summary ?? '').trim()),
       },
-      { label: 'Genres', current: tagNames(k?.genres), candidate: m ? m.genres.join(', ') : '', field: 'genres', list: true },
-      { label: 'Tags', current: tagNames(k?.tags), candidate: m ? m.tags.join(', ') : '', field: 'tags', tagMerge: { existing: (k?.tags ?? []).map((t) => t.title).filter((t): t is string => Boolean(t)), incoming: m?.tags ?? [] } },
-      { label: 'Writers', current: peopleNames(k?.writers), candidate: m ? m.writers.join(', ') : '', field: 'writers', list: true },
+      { label: PROTECT_LABELS.genres, current: tagNames(k?.genres), candidate: m ? m.genres.join(', ') : '', field: 'genres', list: true },
+      { label: PROTECT_LABELS.tags, current: tagNames(k?.tags), candidate: m ? m.tags.join(', ') : '', field: 'tags', tagMerge: { existing: (k?.tags ?? []).map((t) => t.title).filter((t): t is string => Boolean(t)), incoming: m?.tags ?? [] } },
+      { label: PROTECT_LABELS.writers, current: peopleNames(k?.writers), candidate: m ? m.writers.join(', ') : '', field: 'writers', list: true },
       // H-Tosho writes provider artists into Kavita's penciller role.
-      { label: 'Artists', current: peopleNames(k?.pencillers), candidate: m ? m.artists.join(', ') : '', field: 'artists', list: true },
-      { label: 'Language', current: k?.language ?? '', candidate: m?.language ?? '', field: 'language' },
+      { label: PROTECT_LABELS.artists, current: peopleNames(k?.pencillers), candidate: m ? m.artists.join(', ') : '', field: 'artists', list: true },
+      { label: PROTECT_LABELS.language, current: k?.language ?? '', candidate: m?.language ?? '', field: 'language' },
       {
-        label: 'Status',
+        label: PROTECT_LABELS.status,
         current: k ? (STATUS_LABELS[k.publicationStatus] ?? '') : '',
         candidate: candStatus != null ? (STATUS_LABELS[candStatus] ?? '') : '',
         field: 'status',
       },
-      { label: 'URL', current: k?.webLinks ?? '', candidate: m?.url ?? '', field: 'url', link: true },
+      { label: PROTECT_LABELS.url, current: k?.webLinks ?? '', candidate: m?.url ?? '', field: 'url', link: true },
     ];
     return { rows, coverCandidate: m?.coverUrl ?? selected.coverUrl };
   }, [selected, preview.data, resolvedTitle, current, k]);
-  const selectedFieldCount = diff?.rows.filter((row) => row.field && (row.candidate.trim() !== '' || row.clearing) && !effectiveExcluded.has(row.field)).length ?? 0;
 
   const doApply = (ids: { providerId: string; providerSeriesId: string }, opts?: { selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) => {
     apply.mutate({ ...ids, ...opts, excludedFields: [...effectiveExcluded], cover: coverEnabled && !protectedKeys.has('cover') });
   };
 
+  // ---- Guided review model --------------------------------------------------
+  // Sort every field into what it will do. The dialog leads with the changes,
+  // keeps protected fields visibly apart, and folds away what needs no decision.
+  const titleChoices = preview.data?.titleOptions ?? [];
+  const hasTitleChoice = titleChoices.length > 1;
+  const changedRows: RowEntry[] = [];
+  const lockedRows: RowEntry[] = [];
+  const unchangedRows: RowEntry[] = [];
+  if (diff) {
+    for (const field of FIELD_ORDER) {
+      const row = diff.rows.find((r) => r.field === field);
+      if (!row) continue;
+      const kind = rowChange(row);
+      if (protectedKeys.has(field)) {
+        if (kind === 'change') lockedRows.push({ row, kind });
+        else if (kind === 'same') unchangedRows.push({ row, kind });
+        continue;
+      }
+      // The title chooser stays reachable even when the first option already matches.
+      if (kind === 'change' || (field === 'title' && hasTitleChoice && kind !== 'empty')) changedRows.push({ row, kind });
+      else unchangedRows.push({ row, kind });
+    }
+  }
+  const includedChanges = changedRows.filter(({ row, kind }) => kind === 'change' && !excluded.has(row.field!)).length;
+  const skippedByUser = changedRows.filter(({ row, kind }) => kind === 'change' && excluded.has(row.field!)).length;
+  const sameCount = unchangedRows.filter(({ kind }) => kind === 'same').length;
+  const coverLocked = protectedKeys.has('cover');
+  const coverIncluded = !!diff?.coverCandidate && coverEnabled && !coverLocked;
+  const totalChanges = includedChanges + (coverIncluded ? 1 : 0);
+  const protectedCount = lockedRows.length + (coverLocked && diff?.coverCandidate ? 1 : 0);
+  const reviewScore = selected ? (reviewingExistingMatch ? match?.matchScore : selected.score) : undefined;
+  const scorePct = typeof reviewScore === 'number' ? Math.round(reviewScore * 100) : null;
+  const lowScore = typeof reviewScore === 'number' && typeof threshold === 'number' && reviewScore < threshold;
+  const metadataReady = currentReady && preview.isSuccess;
+  const changeSummary = [
+    totalChanges === 0 ? 'No changes' : plural(totalChanges, 'change'),
+    sameCount ? `${sameCount} already ${sameCount === 1 ? 'matches' : 'match'}` : null,
+    protectedCount ? `${protectedCount} protected` : null,
+    lowScore && scorePct !== null ? `${scorePct}% match, below threshold` : null,
+  ].filter(Boolean).join(' · ');
+  const applyLabel = !metadataReady ? 'Apply changes' : totalChanges > 0 ? `Apply ${plural(totalChanges, 'change')}` : 'Apply match';
+
+  const toggleField = (field: string) =>
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(field)) next.delete(field);
+      else next.add(field);
+      return next;
+    });
+
   return (
     <>
     <Dialog open onOpenChange={(o) => { if (!o && !apply.isPending) onClose(); }}>
-      <DialogContent className="flex max-h-[90dvh] max-w-[min(96vw,1440px)] flex-col overflow-hidden">
-        <div ref={dialogScroll} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-3 sm:p-5">
-          <div className="flex items-start gap-2 pr-10">
-            <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-            <div>
-              <DialogTitle className="break-words">Identify “{current.name}”</DialogTitle>
-              <DialogDescription>{selected ? 'Review the changes and choose which fields to sync.' : browseArtists ? 'Find the artist, browse their works by provider, and choose a work to review.' : 'Choose a match to review its metadata before syncing.'}</DialogDescription>
-            </div>
+      <DialogContent
+        className="flex max-h-[90dvh] max-w-[min(96vw,1440px)] flex-col overflow-hidden"
+        onCloseAutoFocus={(event) => {
+          if (opener.current?.isConnected) {
+            event.preventDefault();
+            opener.current.focus();
+          }
+        }}
+      >
+        {/* The title sits outside the scroll area so the close button never overlaps rows scrolling beneath it. */}
+        <div className="flex shrink-0 items-start gap-2 px-3 pb-3 pr-14 pt-3 sm:px-5 sm:pt-5">
+          <Sparkles aria-hidden="true" className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+          <div className="min-w-0">
+            <DialogTitle className="break-words text-balance">Identify “{current.name}”</DialogTitle>
+            <DialogDescription>{selected ? 'Review the changes and choose which fields to sync.' : browseArtists ? 'Find the artist, browse their works by provider, and choose a work to review.' : 'Choose a match to review its metadata before syncing.'}</DialogDescription>
           </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-border pb-2">
+        </div>
+        <div ref={dialogScroll} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto border-t border-border px-3 pb-3 pt-3 sm:px-5 sm:pb-5">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
             {selected && (
               <Button ref={backButton} size="sm" variant="outline" className="min-h-11" disabled={apply.isPending} onClick={() => { returningToMatches.current = true; setSelected(null); }}><ArrowLeft aria-hidden="true" className="h-4 w-4" />{browseArtists ? 'Back to artist works' : 'Back to matches'}</Button>
             )}
             <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
-              {(!selected || !browseArtists) && <Button ref={artistTrigger} size="sm" variant="outline" className="min-h-11" disabled={apply.isPending} aria-expanded={browseArtists && !selected} aria-controls={artistBrowserId} onClick={() => { if (selected) { setSelected(null); setBrowseArtists(true); } else setBrowseArtists(value => !value); }}>
-                {browseArtists && !selected ? <ArrowLeft aria-hidden="true" className="h-4 w-4" /> : <Users aria-hidden="true" className="h-4 w-4" />}{browseArtists && !selected ? 'Back to matches' : 'Browse artist works'}
+              {/* While reviewing, the artist browser is one Back away; it only competes for attention here. */}
+              {!selected && <Button ref={artistTrigger} size="sm" variant="outline" className="min-h-11" disabled={apply.isPending} aria-expanded={browseArtists} aria-controls={artistBrowserId} onClick={() => setBrowseArtists(value => !value)}>
+                {browseArtists ? <ArrowLeft aria-hidden="true" className="h-4 w-4" /> : <Users aria-hidden="true" className="h-4 w-4" />}{browseArtists ? 'Back to matches' : 'Browse artist works'}
               </Button>}
-              <Button size="sm" variant="outline" disabled={apply.isPending} aria-expanded={historyOpen} aria-controls={historyId} className={cn('min-h-11', historyOpen && 'border-primary/50 bg-primary/10 text-primary')} onClick={() => setHistoryOpen(value => !value)}>
+              <Button size="sm" variant={selected ? 'ghost' : 'outline'} disabled={apply.isPending} aria-expanded={historyOpen} aria-controls={historyId} className={cn('min-h-11', historyOpen && 'border border-primary/50 bg-primary/10 text-primary')} onClick={() => setHistoryOpen(value => !value)}>
                 <History aria-hidden="true" className="h-4 w-4" />Metadata history
               </Button>
             </div>
@@ -487,14 +650,14 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
           )}
 
           {!selected && !browseArtists && identify.isLoading && (
-            <div className="flex items-center gap-2 py-8 text-muted">
+            <div role="status" className="flex items-center gap-2 py-8 text-muted">
               <Spinner /> Searching providers…
             </div>
           )}
 
           {!selected && !browseArtists && identify.isError && (
             <div role="alert" className="flex flex-wrap items-center gap-3 text-sm">
-              <AlertTriangle className="h-4 w-4" />
+              <AlertTriangle aria-hidden="true" className="h-4 w-4 text-danger" />
               <div className="min-w-0 flex-1"><p className="font-medium">Could not search for matches</p><p className="mt-1 break-words text-muted">{identify.error instanceof Error ? identify.error.message : String(identify.error)}</p></div>
               <Button size="sm" variant="outline" onClick={() => void identify.refetch()} disabled={identify.isFetching}>Retry search</Button>
             </div>
@@ -504,31 +667,34 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
             <>
               {!selected && !browseArtists && outcome && alternatives.length > 0 && <h3 className="text-sm font-semibold">{match?.providerId ? 'Other matches' : 'Choose a match'}</h3>}
               {!selected && !browseArtists && tabProviders.length > 1 && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  onClick={() => setTab('all')}
-                  className={cn('rounded-full border px-2.5 py-1 text-xs transition-colors', tab === 'all' ? 'border-primary bg-primary/15 font-medium text-primary' : 'border-border text-muted hover:bg-surface-2')}
-                >
-                  All ({alternatives.length})
-                </button>
-                {tabProviders.map((id) => (
-                  <button
-                    key={id}
-                    onClick={() => setTab(id)}
-                    className={cn('rounded-full border px-2.5 py-1 text-xs transition-colors', tab === id ? 'border-primary bg-primary/15 font-medium text-primary' : 'border-border text-muted hover:bg-surface-2')}
-                  >
-                    {PROVIDER_NAMES[id] ?? id} ({alternatives.filter((c) => c.providerId === id).length})
-                  </button>
-                ))}
+              <div role="group" aria-label="Filter matches by provider" className="flex flex-wrap items-center gap-1.5">
+                {['all', ...tabProviders].map((id) => {
+                  const active = tab === id;
+                  const label = id === 'all' ? 'All' : (PROVIDER_NAMES[id] ?? id);
+                  const count = id === 'all' ? alternatives.length : alternatives.filter((c) => c.providerId === id).length;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => setTab(id)}
+                      className={cn('min-h-9 rounded-full border px-3 text-xs transition-colors pointer-coarse:min-h-11', active ? 'border-primary bg-primary/15 font-medium text-primary' : 'border-border text-muted hover:bg-surface-2')}
+                    >
+                      {label} ({count})
+                    </button>
+                  );
+                })}
               </div>)}
               {!selected && !browseArtists && outcome && (
-              <div ref={candidateList} className="max-h-[42vh] overflow-y-auto">
+              <div ref={candidateList}>
                 {visibleCandidates.length === 0 && (
                   <p className="py-2 text-sm text-muted">{tab === 'all' ? (match?.providerId ? 'No other matches found.' : 'No matches found. Try a provider URL below.') : `No matches from ${PROVIDER_NAMES[tab] ?? tab}.`}</p>
                 )}
                 {visibleCandidates.map((c) => {
                   const key = c.providerId + ':' + c.providerSeriesId;
                   const isBest = autoBest?.providerId === c.providerId && autoBest?.providerSeriesId === c.providerSeriesId;
+                  const picked = key === manualKey;
+                  const low = typeof threshold === 'number' && c.score < threshold;
                   return (
                     <button
                       key={key}
@@ -542,12 +708,15 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                         <CandidateCover src={c.coverUrl} />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                           <ProviderBadge id={c.providerId} />
+                          {picked
+                            ? <span className="text-xs text-muted">Picked by you</span>
+                            : <span className={cn('text-xs font-medium tabular-nums', low ? 'text-muted' : 'text-foreground')}>{Math.round(c.score * 100)}% match{low ? ' · low' : ''}</span>}
                           {isBest && <span className="text-xs font-medium text-primary">Recommended</span>}
                           {c.year && <span className="text-xs text-muted">{c.year}</span>}
                         </div>
-                        <p className="mt-1 truncate text-sm font-medium">{c.title}</p>
+                        <p title={c.title} className="mt-1 line-clamp-2 break-words text-sm font-medium">{c.title}</p>
                         {c.summary && <p className="mt-0.5 line-clamp-1 text-xs text-muted">{c.summary}</p>}
                       </div>
                       <ArrowRight aria-hidden="true" className="h-4 w-4 shrink-0 text-muted" />
@@ -583,11 +752,11 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
               )}
 
               {selected && diff && (
-                <div className="flex min-w-0 flex-col gap-2">
+                <div className="flex min-w-0 flex-col gap-4">
                   <div className="flex flex-wrap items-center gap-2 text-sm">
                     <ProviderBadge id={selected.providerId} />
                     <span className="min-w-0 break-words font-medium">{preview.data?.title ?? selected.title}</span>
-                    {(!reviewingExistingMatch || match?.matchScore != null) && <span className="text-xs text-muted">{Math.round(selected.score * 100)}% match</span>}
+                    {scorePct !== null && <span className={cn('text-xs tabular-nums', lowScore ? 'font-medium text-warning' : 'text-muted')}>{scorePct}% match</span>}
                   </div>
                   {preview.isPending && <p role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner /> Loading proposed metadata…</p>}
                   {preview.isError && (
@@ -596,94 +765,120 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                       <Button size="sm" variant="outline" onClick={() => void preview.refetch()}>Retry preview</Button>
                     </div>
                   )}
-                  {currentReady && preview.isSuccess && !preview.isError && (<>
-                  <details className="group/protection min-w-0">
-                    <summary className="flex min-h-9 w-fit max-w-full cursor-pointer list-none items-center gap-2 rounded-md px-2 py-2 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground [&::-webkit-details-marker]:hidden"><ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 group-open/protection:rotate-90" />Protected from H-Tosho sync{protectedKeys.size ? ` (${protectedKeys.size})` : ''}</summary>
-                    <p className="mt-2 text-xs text-muted">Selected fields stay protected across candidates and future syncs. Cover protection includes volume covers. Unlock a field here to sync it. Manual ComicInfo edits are still allowed.</p>
-                    {protection.isPending ? <p role="status" className="mt-3 text-sm text-muted">Loading field protection…</p> : protection.isError ? <Button size="sm" variant="outline" onClick={() => void protection.refetch()}>Retry field protection</Button> : <div className="mt-3 grid gap-x-4 sm:grid-cols-2">
-                      {PROTECTABLE_FIELDS.map(field => <label key={field} className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={protectedKeys.has(field)} disabled={protect.isPending || apply.isPending} onChange={() => protect.mutate(field)} className="h-4 w-4 accent-primary" />{({title:'Title',summary:'Description',genres:'Genres',tags:'Tags',writers:'Writers',artists:'Artists',releaseDate:'Release year',language:'Language',status:'Publication status',url:'Source URL',cover:'Series and volume covers'} as const)[field]}</label>)}
-                    </div>}
-                  </details>
-                  {(preview.data?.titleOptions?.length ?? 0) > 1 && (
-                    <div className="mb-2 grid min-w-0 items-center gap-x-3 gap-y-2 sm:grid-cols-[7rem_minmax(0,1fr)] sm:px-3">
-                      <Label htmlFor="provider-title-choice">Series title</Label>
-                      <select
-                        id="provider-title-choice"
-                        aria-describedby="provider-title-help"
-                        disabled={protectedKeys.has('title')}
-                        value={resolvedTitle}
-                        onChange={(e) => setSelectedTitle(e.target.value)}
-                        className="h-9 w-full min-w-0 rounded-md border border-border-2 bg-surface px-3 text-sm"
-                      >
-                        {preview.data!.titleOptions!.map((title) => <option key={title} value={title}>{title}</option>)}
-                      </select>
-                      <p id="provider-title-help" className="text-xs text-muted sm:col-start-2">Updates Kavita and every chapter’s ComicInfo.xml. Requires access to the series’ CBZ files.</p>
+                  {metadataReady && !preview.isError && (<>
+                  {/* Summary: the covers a curator recognises a series by, and an honest count of what Apply will do. */}
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+                    <div className="flex shrink-0 items-start gap-2.5">
+                      <figure className="m-0 flex flex-col gap-1.5">
+                        <CoverThumb src={currentCover ?? `/api/kavita/series/${seriesId}/cover`} alt="Current cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
+                        <figcaption className="text-xs text-muted">Current</figcaption>
+                      </figure>
+                      <ArrowRight aria-hidden="true" className="mt-14 h-4 w-4 shrink-0 text-muted sm:mt-[4.5rem]" />
+                      <figure className="m-0 flex flex-col gap-1.5">
+                        <CoverThumb src={diff.coverCandidate} alt="Proposed cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
+                        <figcaption className="text-xs text-muted">{coverIncluded ? 'Proposed' : 'Proposed · not synced'}</figcaption>
+                      </figure>
                     </div>
-                  )}
-                  <div className="rounded-md border border-border">
-                  {/* Mirrors the row grid so each header label sits above its column. */}
-                  <div aria-hidden="true" className="hidden grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)] gap-x-3 border-b border-border px-3 py-2 text-xs sm:grid">
-                    <span />
-                    <span className="font-semibold text-muted">Current (Kavita)</span>
-                    <span className="flex items-center gap-2 font-semibold text-primary">
-                      Proposed ({PROVIDER_NAMES[selected.providerId] ?? selected.providerId})
-                    </span>
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <h3 className="text-base font-semibold">{totalChanges === 0 ? 'No metadata changes' : `${plural(totalChanges, 'change')} ready to apply`}</h3>
+                      {(sameCount > 0 || protectedCount > 0 || skippedByUser > 0) && (
+                        <p className="text-sm text-muted">
+                          {[
+                            sameCount ? `${sameCount} already ${sameCount === 1 ? 'matches' : 'match'}` : null,
+                            protectedCount ? `${protectedCount} protected` : null,
+                            skippedByUser ? `${skippedByUser} skipped by you` : null,
+                          ].filter(Boolean).join(' · ')}
+                        </p>
+                      )}
+                      {lowScore && scorePct !== null && typeof threshold === 'number' && (
+                        <p className="flex items-start gap-2 text-sm text-warning"><AlertTriangle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />A {scorePct}% match is below your {Math.round(threshold * 100)}% review threshold. Check the title and cover before applying.</p>
+                      )}
+                      {!diff.coverCandidate ? (
+                        <p className="text-sm text-muted">The provider has no cover, so the current one stays.</p>
+                      ) : coverLocked ? (
+                        <div className="flex flex-wrap items-center gap-x-2 text-sm text-muted">
+                          <Lock aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />Series and volume covers are protected.
+                          <Button type="button" size="sm" variant="ghost" aria-label="Unlock Series and volume covers" disabled={protect.isPending || apply.isPending || !protection.isSuccess} onClick={() => protect.mutate('cover')} className="min-h-9 px-2 pointer-coarse:min-h-11"><LockOpen aria-hidden="true" className="h-3.5 w-3.5" />Unlock</Button>
+                        </div>
+                      ) : (
+                        <label className="flex min-h-11 w-fit cursor-pointer items-center gap-2 text-sm sm:min-h-9 pointer-coarse:min-h-11">
+                          <input type="checkbox" checked={coverEnabled} onChange={(e) => setCoverEnabled(e.target.checked)} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
+                          Replace cover
+                        </label>
+                      )}
+                    </div>
                   </div>
-                  <div className="px-3 pb-1">
-                    {[
-                      { title: 'Identity', fields: ['title', 'releaseDate', 'language', 'status', 'url'] },
-                      { title: 'Description & tags', fields: ['summary', 'genres', 'tags'] },
-                      { title: 'Contributors', fields: ['writers', 'artists'] },
-                    ].map((section) => (
-                      <section key={section.title} aria-labelledby={`${comparisonId}-${section.fields[0]}`} className="border-b border-border pb-2 last:border-0">
-                        <h3 id={`${comparisonId}-${section.fields[0]}`} className="pb-1 pt-4 text-sm font-semibold">{section.title}</h3>
-                        {diff.rows.filter((row) => section.fields.includes(row.field ?? '')).map((row) => (
+
+                  <section aria-label="Field changes" className="rounded-md border border-border">
+                    {/* Mirrors the row grid so each header label sits above its column. */}
+                    <div aria-hidden="true" className="hidden grid-cols-[8rem_minmax(0,1fr)_minmax(0,1fr)] gap-x-3 border-b border-border px-3 py-2 text-xs font-semibold text-muted sm:grid">
+                      <span />
+                      <span>Current (Kavita)</span>
+                      <span className="text-foreground">Proposed ({PROVIDER_NAMES[selected.providerId] ?? selected.providerId})</span>
+                    </div>
+                    <div className="px-3">
+                      {changedRows.length === 0 && lockedRows.length === 0 && (
+                        <p className="py-4 text-sm text-muted">Nothing to change. Every field the provider knows already matches Kavita.</p>
+                      )}
+                      {changedRows.map(({ row, kind }) => {
+                        const isTitle = row.field === 'title';
+                        const included = !effectiveExcluded.has(row.field ?? '');
+                        return (
                           <FieldRow
                             key={row.label}
                             row={row}
-                            checked={!effectiveExcluded.has(row.field ?? '')}
-                            protectedField={protectedKeys.has(row.field ?? '')}
-                            onToggle={
-                              row.field
-                                ? () =>
-                                    setExcluded((prev) => {
-                                      const next = new Set(prev);
-                                      if (next.has(row.field!)) next.delete(row.field!);
-                                      else next.add(row.field!);
-                                      return next;
-                                    })
-                                : undefined
-                            }
+                            checked={included}
+                            onToggle={row.field ? () => toggleField(row.field!) : undefined}
+                            proposedControl={isTitle && hasTitleChoice ? (
+                              <>
+                                <Label htmlFor="provider-title-choice" className="sr-only">Proposed series title</Label>
+                                <select
+                                  id="provider-title-choice"
+                                  value={resolvedTitle}
+                                  onChange={(e) => setSelectedTitle(e.target.value)}
+                                  className="h-9 w-full min-w-0 rounded-md border border-border-2 bg-surface px-3 text-sm pointer-coarse:min-h-11"
+                                >
+                                  {titleChoices.map((title) => <option key={title} value={title}>{title}</option>)}
+                                </select>
+                                {!included && <span className="mt-1 block text-xs text-muted">Not synced</span>}
+                              </>
+                            ) : undefined}
+                            note={isTitle && included && kind === 'change' ? (
+                              <p className="mt-1.5 flex items-start gap-1.5 text-xs text-muted"><AlertTriangle aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />Also rewrites ComicInfo.xml in every chapter file. This needs access to the CBZ files; if H-Tosho can’t reach them, the title is skipped and everything else still syncs.</p>
+                            ) : undefined}
                           />
-                        ))}
-                      </section>
-                    ))}
-                    <section aria-labelledby={`${comparisonId}-cover`}>
-                      <h3 id={`${comparisonId}-cover`} className="pb-1 pt-4 text-sm font-semibold">Cover</h3>
-                    <div className={cn(ROW_GRID, 'py-3')}>
-                      <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted sm:min-h-9 pointer-coarse:min-h-11">
-                        <input type="checkbox" checked={coverEnabled && !protectedKeys.has('cover')} disabled={protectedKeys.has('cover')} onChange={(e) => setCoverEnabled(e.target.checked)} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
-                        Apply cover
-                      </label>
-                      <ComparisonValue label="Current" field="cover">
-                        <CoverThumb src={currentCover ?? `/api/kavita/series/${seriesId}/cover`} alt="Current cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
-                      </ComparisonValue>
-                      <ComparisonValue label="Proposed" field="cover" className="flex flex-col gap-1.5">
-                        <CoverThumb src={diff.coverCandidate} alt="Proposed cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
-                        {!coverEnabled && <span className="text-sm text-muted">not synced</span>}
-                      </ComparisonValue>
+                        );
+                      })}
+                      {lockedRows.map(({ row }) => (
+                        <FieldRow
+                          key={row.label}
+                          row={row}
+                          locked
+                          unlockDisabled={protect.isPending || apply.isPending || !protection.isSuccess}
+                          onUnlock={() => protect.mutate(row.field as ProtectedField)}
+                        />
+                      ))}
                     </div>
-                    </section>
-                  </div>
-                </div>
+                  </section>
+
+                  <UnchangedFields entries={unchangedRows} />
+
+                  <details className="group/protection min-w-0">
+                    <summary className="flex min-h-11 w-fit max-w-full cursor-pointer list-none items-center gap-2 rounded-md px-2 py-2 text-sm text-muted hover:bg-surface-2 hover:text-foreground sm:min-h-9 [&::-webkit-details-marker]:hidden"><ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 group-open/protection:rotate-90" />Protected from H-Tosho sync{protectedKeys.size ? ` (${protectedKeys.size})` : ''}</summary>
+                    <p className="mt-2 text-xs text-muted">Checked fields are never overwritten, by this review or by future syncs. Cover protection includes volume covers. Manual ComicInfo edits are still allowed.</p>
+                    {protection.isPending ? <p role="status" className="mt-3 text-sm text-muted">Loading field protection…</p> : protection.isError ? <Button size="sm" variant="outline" onClick={() => void protection.refetch()}>Retry field protection</Button> : <fieldset className="mt-3 grid gap-x-4 sm:grid-cols-2">
+                      <legend className="sr-only">Never overwrite these fields</legend>
+                      {PROTECTABLE_FIELDS.map(field => <label key={field} className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={protectedKeys.has(field)} disabled={protect.isPending || apply.isPending} onChange={() => protect.mutate(field)} className="h-4 w-4 accent-primary" />{PROTECT_LABELS[field]}</label>)}
+                    </fieldset>}
+                  </details>
                 </>)}
                 </div>
               )}
 
 
               {apply.isError && (
-                <div className="flex items-center gap-2 rounded-md bg-danger/10 p-3 text-sm text-danger">
-                  <AlertTriangle className="h-4 w-4" />
+                <div role="alert" className="flex items-center gap-2 rounded-md bg-danger/10 p-3 text-sm text-danger">
+                  <AlertTriangle aria-hidden="true" className="h-4 w-4" />
                   {apply.error instanceof Error ? apply.error.message : String(apply.error)}
                 </div>
               )}
@@ -692,12 +887,12 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
         </div>
         {(selected || reviewPosition) && <div className="shrink-0 border-t border-border bg-surface px-3 py-3 sm:px-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p role="status" className="text-xs text-muted">{historyOpen ? 'Close Metadata history to apply provider changes.' : <>{reviewPosition && `Review ${reviewPosition}${selected ? ' · ' : ''}`}{selected && (currentReady && preview.isSuccess ? `${selectedFieldCount} fields selected${coverEnabled && !protectedKeys.has('cover') && diff?.coverCandidate ? ' · cover selected' : ''}` : 'Load metadata before applying')}</>}</p>
+            <p role="status" className="text-xs text-muted">{historyOpen ? 'Close Metadata history to apply provider changes.' : <>{reviewPosition && `Review ${reviewPosition}${selected ? ' · ' : ''}`}{selected && (metadataReady ? changeSummary : 'Load metadata before applying')}</>}</p>
             <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
               <Button variant="outline" className="min-h-11" onClick={onClose} disabled={apply.isPending}>Close</Button>
               {onNext && <Button variant="outline" className="min-h-11" onClick={onNext} disabled={apply.isPending}>Skip to next</Button>}
-              {selected && <Button className="min-h-11 flex-1 sm:flex-none" onClick={() => doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: (preview.data?.titleOptions?.length ?? 0) > 1 ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: reviewingExistingMatch ? undefined : selected.score })} disabled={historyOpen || !currentReady || !preview.isSuccess || preview.isError || apply.isPending || !protection.isSuccess || protect.isPending}>
-                {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} {onNext ? 'Apply & next' : 'Apply & Sync'}
+              {selected && <Button title="Queues an Apply & Sync task. Progress and errors appear in Tasks." className="min-h-11 flex-1 sm:flex-none" onClick={() => doApply({ providerId: selected.providerId, providerSeriesId: selected.providerSeriesId }, { selectedTitle: hasTitleChoice ? resolvedTitle : undefined, excludedFields: [...excluded], cover: coverEnabled, score: reviewingExistingMatch ? undefined : selected.score })} disabled={historyOpen || !metadataReady || preview.isError || apply.isPending || !protection.isSuccess || protect.isPending}>
+                {apply.isPending ? <Spinner /> : <ArrowRight className="h-4 w-4" />} {applyLabel}{onNext ? ' & next' : ''}
               </Button>}
             </div>
           </div>

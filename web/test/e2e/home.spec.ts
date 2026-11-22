@@ -195,7 +195,11 @@ test('field protection persists across candidate review and prevents selecting p
   await panel.locator('summary').click();
   await panel.getByRole('checkbox', { name: 'Description', exact: true }).click();
   await expect(panel.getByRole('checkbox', { name: 'Description', exact: true })).toBeChecked();
-  await expect(dialog.getByRole('group', { name: 'Summary', exact: true }).getByRole('checkbox')).toBeDisabled();
+  // A protected field leaves the decision list: it is marked, has no checkbox, and can be unlocked in place.
+  const lockedRow = dialog.getByRole('group', { name: 'Description', exact: true });
+  await expect(lockedRow.getByText(/^Protected/)).toBeVisible();
+  await expect(lockedRow.getByRole('checkbox')).toHaveCount(0);
+  await expect(lockedRow.getByRole('button', { name: 'Unlock Description', exact: true })).toBeVisible();
   expect(policy.lockedFields).toEqual(['summary']);
   await dialog.screenshot({ path: `.impeccable/review/field-protection-${testInfo.project.name}.png`, animations: 'disabled' });
   await page.evaluate(() => document.documentElement.classList.add('dark'));
@@ -449,9 +453,9 @@ test('metadata restore requires preview review, preserves locks by default and q
   await page.getByRole('button', { name: 'Review match', exact: false }).first().click();
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Metadata history', exact: true }).click();
-  await expect(dialog.getByRole('button', { name: 'Apply & Sync', exact: true })).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: /^Apply/ })).toBeDisabled();
   await dialog.getByRole('button', { name: 'Metadata history', exact: true }).click();
-  await expect(dialog.getByRole('button', { name: 'Apply & Sync', exact: true })).toBeEnabled();
+  await expect(dialog.getByRole('button', { name: /^Apply/ })).toBeEnabled();
   await dialog.getByRole('button', { name: 'Metadata history', exact: true }).click();
   await dialog.getByRole('button', { name: 'View changes', exact: true }).click();
   const restore = dialog.getByRole('region', { name: 'Restore metadata' });
