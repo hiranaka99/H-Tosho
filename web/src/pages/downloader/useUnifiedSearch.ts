@@ -71,6 +71,7 @@ type Action =
   | { type: 'busy-more' }
   | { type: 'page'; items: UnifiedSearchEntry[]; updates: UnifiedSearchEntry[]; cursor: string | null; hasMore: boolean; loadedUniqueCount: number; totalUnique: number | null; providers: ProviderSearchStatus[] }
   | { type: 'retry'; source: string }
+  | { type: 'cancel' }
   | { type: 'fail'; error: UnifiedSessionError };
 
 /** Merge a late group update into a delivered entry without moving it: the
@@ -81,7 +82,7 @@ function mergeEntry(existing: UnifiedSearchEntry, update: UnifiedSearchEntry): U
   return extra.length ? { ...existing, variants: [...existing.variants, ...extra] } : existing;
 }
 
-function reducer(state: UnifiedState, action: Action): UnifiedState {
+export function reducer(state: UnifiedState, action: Action): UnifiedState {
   switch (action.type) {
     case 'draft':
       return { ...state, draft: action.value };
@@ -120,6 +121,10 @@ function reducer(state: UnifiedState, action: Action): UnifiedState {
     }
     case 'retry':
       return { ...state, status: 'loading-more', retrying: action.source };
+    case 'cancel':
+      // The current request was aborted without being replaced (the hook
+      // unmounted). Leave the busy state so the search can start again.
+      return { ...state, status: 'idle', retrying: null };
     case 'fail':
       return { ...state, status: 'idle', error: action.error, retrying: null };
   }
@@ -165,7 +170,14 @@ export function useUnifiedSearch(visible: boolean) {
     return () => window.clearTimeout(t);
   }, [state.draft, state.committed]);
 
-  React.useEffect(() => () => abortRef.current?.abort(), []);
+  // Unmounting aborts the request in flight and forgets that a restored
+  // query was started. React StrictMode unmounts and remounts every component
+  // once in development: without the reset, the restored search was aborted
+  // and never restarted, leaving the tab on its loading skeleton forever.
+  React.useEffect(() => () => {
+    abortRef.current?.abort();
+    startedRef.current = false;
+  }, []);
 
   function run(body: { query?: string; cursor?: string; retry?: string }, busy: 'start' | 'retry' | 'more') {
     abortRef.current?.abort();
@@ -190,9 +202,11 @@ export function useUnifiedSearch(visible: boolean) {
         });
       })
       .catch((e) => {
+        // A newer search or reset bumps the sequence first, so only an abort
+        // that nothing replaced (unmount) reaches 'cancel'.
         if (seq !== seqRef.current) return;
         const error = classifyError(e);
-        if (error) dispatch({ type: 'fail', error });
+        dispatch(error ? { type: 'fail', error } : { type: 'cancel' });
       });
   }
 
