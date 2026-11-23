@@ -114,7 +114,7 @@ export function Home() {
         : !recommendationItems.length ? <div className="rounded-xl border border-border bg-surface"><EmptyState compact icon={<Sparkles className="h-5 w-5" />} title="No recommendations yet" description={<>Try Refresh picks, or <Link to="/downloader" className="font-medium text-primary underline underline-offset-4">browse Discover</Link> to find galleries and build your preferences.</>} /></div>
         : <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">{recommendationItems.map((item, index) => {
           const key = `${item.source}:${item.galleryId}`;
-          return <div key={key} className={cn('min-w-0 [&>article]:h-full', index >= 2 && 'hidden md:block')}><GalleryCard item={item} onOpen={setSelected} onDownload={doStartDownload} downloadSetup={setup.status} starting={pendingKeys.has(key)} display="recommendation" quietAction ownership={{ type: inLibrary.has(key) ? 'in-library' : owned.has(key) ? 'downloaded' : possible.has(key) ? 'possible-duplicate' : 'available' }} /></div>;
+          return <div key={key} className={cn('min-w-0 [&>article]:h-full', index >= 2 && 'hidden md:block')}><GalleryCard item={item} onOpen={setSelected} onDownload={doStartDownload} downloadSetup={setup.status} starting={pendingKeys.has(key)} display="recommendation" reasons={item.reasons} quietAction ownership={{ type: inLibrary.has(key) ? 'in-library' : owned.has(key) ? 'downloaded' : possible.has(key) ? 'possible-duplicate' : 'available' }} /></div>;
         })}</div>}
     </section>
 

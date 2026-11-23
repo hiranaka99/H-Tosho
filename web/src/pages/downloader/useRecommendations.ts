@@ -42,7 +42,14 @@ export function useRecommendations(tab: DownloaderTab) {
       qc.setQueryData(['recommendation-feedback'], result.feedback);
       qc.setQueryData(['recommendations'], result.recommendations);
       setFeedbackItem(null);
-      const title = { like: 'More like this saved', unlike: 'Preference removed', 'mute-artist': 'Artist muted', 'unmute-artist': 'Artist unmuted' }[request.action];
+      const title = {
+        like: 'More like this saved',
+        unlike: 'Preference removed',
+        'mute-artist': 'Artist muted',
+        'unmute-artist': 'Artist unmuted',
+        'mute-tag': 'Tag muted',
+        'unmute-tag': 'Tag unmuted',
+      }[request.action];
       toast({ tone: 'success', title, description: request.action === 'like' || request.action === 'unlike' ? 'Refresh picks to use your updated preferences.' : undefined });
     } catch (error) {
       toast({ tone: 'danger', title: 'Could not save recommendation feedback', description: error instanceof Error ? error.message : String(error) });
