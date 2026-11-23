@@ -121,11 +121,6 @@ export function ehentaiGalleryUrl(site: EhentaiSite, gid: string, token: string)
   return `https://${EHENTAI_HOSTS[site]}/g/${gid}/${token.toLowerCase()}/`;
 }
 
-/** True when two E-Hentai locators (any host) name the same gallery revision. */
-export function ehentaiSameIdentity(a: { canonicalId: string }, b: { canonicalId: string }): boolean {
-  return a.canonicalId === b.canonicalId;
-}
-
 // ---------------------------------------------------------------------------
 // Public result DTO
 // ---------------------------------------------------------------------------

@@ -182,6 +182,22 @@ test('image redirects cannot change the approved H@H port', async () => {
   assert.equal(requests.filter((r) => r.hostname === 'images.hath.network').length, 1);
 });
 
+test('family-host redirects to another port or with credentials in the URL are not followed', async () => {
+  for (const [index, location] of [
+    'https://exhentai.org:8443/s/390551b183/4334311-1',
+    'https://user:secret@exhentai.org/s/390551b183/4334311-1',
+  ].entries()) {
+    requests.length = 0;
+    // Any request that gets past the redirect check would receive a valid viewer page.
+    route = (_hostname, reqPath) => reqPath === `/s/390551b183/4334311-${index + 2}`
+      ? { status: 302, body: '', location }
+      : { status: 200, body: viewerHtml('https://images.hath.network/h/followed.webp') };
+    const res = await mediaGet(`https://exhentai.org/s/390551b183/4334311-${index + 2}`);
+    assert.equal(res.status, 502, location);
+    assert.deepEqual(requests.map((r) => `${r.hostname}:${r.port}${r.path}`), [`exhentai.org:443/s/390551b183/4334311-${index + 2}`], location);
+  }
+});
+
 // ---------------- cover lane ----------------
 
 test('E-Hentai covers are fetched with the family Referer and validated by bytes', async () => {

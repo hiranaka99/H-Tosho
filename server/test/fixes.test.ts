@@ -22,7 +22,6 @@ const { testNotification } = await import('../src/notify/dispatcher.js');
 const { MAX_POLL_INTERVAL_HOURS, MAX_WATCHED_SEARCH_INTERVAL_MINUTES, getDownloaderSettings, getNotificationSettings, getPollIntervalHours, getWatchedSearchIntervalMinutes, onSettingChange, parseDownloaderSettings, parseNotificationSettings, setNotificationSettings, setPollIntervalHours, setWatchedSearchIntervalMinutes } = await import('../src/services/settings.js');
 const { anilistProvider } = await import('../src/providers/anilist.js');
 const { mediaRouter, mediaProxyUrl } = await import('../src/routes/media.js');
-const { enqueueMatchForNewSeries } = await import('../src/services/sync.js');
 const { mapLimit } = await import('../src/lib/http.js');
 const { addWatchedSearch, checkWatchedSearches } = await import('../src/services/watchedSearches.js');
 const { autoMatch } = await import('../src/match/autoMatcher.js');
@@ -312,29 +311,6 @@ describe('job queue fixes', () => {
   });
 });
 
-describe('new-series matching trigger', () => {
-  // No real handler is needed; a stub keeps enqueued jobs from failing.
-  jobQueue.registerHandler(async () => ({}));
-
-  const seriesList = (ids: number[]) =>
-    ids.map((id) => ({ id, libraryId: 7, name: `S${id}`, slug: String(id), bookCount: 0 }));
-
-  it('enqueues a match job only for series new to Kavita and H-Tosho', async () => {
-    // 101 was already processed (row exists); 102 was in the pre-rescan snapshot; 103 is brand new.
-    getDb().insert(schema.seriesMatches).values({ kavitaSeriesId: 101, status: 'matched' }).run();
-    const fresh = await enqueueMatchForNewSeries({ getSeries: async () => seriesList([101, 102, 103]) }, 7, new Set([102]));
-    assert.deepEqual(fresh, [103]);
-    const job = jobQueue.list().find((j) => j.type === 'match-series' && (j.payload.seriesIds ?? []).includes(103));
-    assert.ok(job);
-    assert.deepEqual(job!.payload.seriesIds, [103]);
-  });
-
-  it('enqueues nothing when the rescan adds no unknown series', async () => {
-    const fresh = await enqueueMatchForNewSeries({ getSeries: async () => seriesList([201]) }, 7, new Set([201]));
-    assert.deepEqual(fresh, []);
-  });
-});
-
 describe('autoMatch candidate dedup', () => {
   it('collapses the same title returned by repeated provider searches', async () => {
     globalThis.fetch = (async (input: unknown) => {
@@ -526,9 +502,17 @@ describe('media proxy allowlist', () => {
   });
 
   it('does not follow redirects to disallowed hosts', async () => {
-    globalThis.fetch = (async () => new Response(null, { status: 302, headers: { location: 'https://evil.example.com/x' } })) as typeof fetch;
-    const res = await app.request(`/media?u=${u('https://uploads.mangadex.org/covers/abc/1.png')}`);
+    const fetched: string[] = [];
+    // The disallowed host would serve a valid image: only the redirect check can turn this into a 502.
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      fetched.push(url);
+      if (url.startsWith('https://evil.example.com/')) return new Response(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), { status: 200, headers: { 'content-type': 'image/png' } });
+      return new Response(null, { status: 302, headers: { location: 'https://evil.example.com/x.png' } });
+    }) as typeof fetch;
+    const res = await app.request(`/media?u=${u('https://uploads.mangadex.org/covers/abc/redirect-to-evil.png')}`);
     assert.equal(res.status, 502);
+    assert.deepEqual(fetched, ['https://uploads.mangadex.org/covers/abc/redirect-to-evil.png']);
   });
 
   it('mediaProxyUrl produces a base64url target', () => {

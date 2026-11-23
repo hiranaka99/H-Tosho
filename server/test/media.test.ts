@@ -163,6 +163,36 @@ describe('media proxy', () => {
     const res = await app.request(proxyRequest('https://uploads.mangadex.org/covers/manga-1/missing.jpg'));
     assert.equal(res.status, 502);
   });
+
+  it('does not follow a redirect to a non-viewer E-Hentai page', async () => {
+    const fetched: string[] = [];
+    // e-hentai.org passes the host allowlist, so only the viewer-path check can stop this hop.
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      fetched.push(url);
+      if (url.startsWith('https://e-hentai.org/')) return new Response(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), { status: 200, headers: { 'content-type': 'image/png' } });
+      return new Response(null, { status: 302, headers: { location: 'https://e-hentai.org/home.php' } });
+    };
+    const res = await mediaRouter().request(proxyRequest('https://uploads.mangadex.org/covers/manga-1/redirect-to-eh.png'));
+    assert.equal(res.status, 502);
+    assert.deepEqual(fetched, ['https://uploads.mangadex.org/covers/manga-1/redirect-to-eh.png']);
+  });
+
+  it('stops reading an upstream body once it exceeds the size cap', async () => {
+    const chunk = new Uint8Array(1024 * 1024);
+    chunk.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    let pulled = 0;
+    globalThis.fetch = async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        // 40 MiB in total, twice the 20 MiB cap.
+        if (++pulled > 40) controller.close();
+        else controller.enqueue(chunk);
+      },
+    }), { status: 200, headers: { 'content-type': 'image/png' } });
+    const res = await mediaRouter().request(proxyRequest('https://uploads.mangadex.org/covers/manga-1/oversized.png'));
+    assert.equal(res.status, 502);
+    assert.ok(pulled < 40, `the proxy read ${pulled} MiB before giving up`);
+  });
 });
 
 describe('rewriteMangaDexCoverUrl', () => {

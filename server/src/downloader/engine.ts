@@ -3,7 +3,6 @@ import { archiveMutations, archiveResource, libraryMutations } from '../lib/muta
 import { downloadPages } from './transfer.js';
 import { DownloadPausedError, DownloadShutdownError, wakePaused, type RunContext, type LiveFields } from './runtime.js';
 import { isTransientError, retryTransient, classifyDownloadError, errorRetryAfterMs } from './requests.js';
-export { isTransientError, retryTransient } from './requests.js';
 import { downloadState, MAX_AUTO_RETRIES, type DownloadTask, type DownloadStatus, type DownloadErrorCode } from '../contracts/downloads.js';
 export type { DownloadTask, DownloadStatus } from '../contracts/downloads.js';
 import { queueDownloadedMatchDiscovery } from '../services/downloadDiscovery.js';

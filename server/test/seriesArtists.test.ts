@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-const { kavitaSeriesArtists, kavitaSeriesSearchMetadata, invalidateSeriesArtists } = await import('../src/services/seriesArtists.js');
+const { kavitaSeriesSearchMetadata, invalidateSeriesArtists } = await import('../src/services/seriesArtists.js');
+
+/** The artist names from each series' cached search metadata. */
+async function artistsFor(source: Parameters<typeof kavitaSeriesSearchMetadata>[0], ids: number[]): Promise<Map<number, string[]>> {
+  const metadata = await kavitaSeriesSearchMetadata(source, ids);
+  return new Map([...metadata].map(([id, item]) => [id, item.artists]));
+}
 
 type Person = { name: string | null };
 type Meta = { pencillers?: Person[] | null; inkers?: Person[] | null; writers?: Person[] | null; tags?: { id: number; title: string | null }[] | null };
@@ -33,20 +39,20 @@ function makeSource() {
   };
 }
 
-describe('kavitaSeriesArtists', () => {
+describe('kavitaSeriesSearchMetadata', () => {
   it('merges pencillers, inkers and writers in priority order, deduped case-insensitively', async () => {
     const s = makeSource();
     s.set(101, { pencillers: [{ name: 'Alpha' }], inkers: [{ name: 'Beta' }], writers: [{ name: 'alpha' }, { name: 'Gamma' }] });
-    const out = await kavitaSeriesArtists(s.source, [101]);
+    const out = await artistsFor(s.source, [101]);
     assert.deepEqual(out.get(101), ['Alpha', 'Beta', 'Gamma']);
   });
 
   it('serves fresh results from the cache without re-fetching', async () => {
     const s = makeSource();
     s.set(102, { writers: [{ name: 'Circle A' }] });
-    const first = await kavitaSeriesArtists(s.source, [102]);
+    const first = await artistsFor(s.source, [102]);
     assert.deepEqual(first.get(102), ['Circle A']);
-    const second = await kavitaSeriesArtists(s.source, [102]);
+    const second = await artistsFor(s.source, [102]);
     assert.deepEqual(second.get(102), ['Circle A']);
     assert.deepEqual(s.calls, [102], 'second call must not fetch again');
   });
@@ -54,9 +60,9 @@ describe('kavitaSeriesArtists', () => {
   it('caches 404s as empty so series without a metadata row are fetched once', async () => {
     const s = makeSource();
     s.fail404(103);
-    const first = await kavitaSeriesArtists(s.source, [103]);
+    const first = await artistsFor(s.source, [103]);
     assert.deepEqual(first.get(103), []);
-    const second = await kavitaSeriesArtists(s.source, [103]);
+    const second = await artistsFor(s.source, [103]);
     assert.deepEqual(second.get(103), []);
     assert.deepEqual(s.calls, [103], '404 must not be re-fetched');
   });
@@ -64,10 +70,10 @@ describe('kavitaSeriesArtists', () => {
   it('does not cache transient failures and retries on the next call', async () => {
     const s = makeSource();
     s.failTransient(104);
-    const first = await kavitaSeriesArtists(s.source, [104]);
+    const first = await artistsFor(s.source, [104]);
     assert.deepEqual(first.get(104), []);
     s.set(104, { writers: [{ name: 'Recovered' }] });
-    const second = await kavitaSeriesArtists(s.source, [104]);
+    const second = await artistsFor(s.source, [104]);
     assert.deepEqual(second.get(104), ['Recovered']);
     assert.deepEqual(s.calls, [104, 104], 'transient failure must be retried');
   });
@@ -75,17 +81,17 @@ describe('kavitaSeriesArtists', () => {
   it('invalidateSeriesArtists forces a re-fetch', async () => {
     const s = makeSource();
     s.set(105, { writers: [{ name: 'Old' }] });
-    await kavitaSeriesArtists(s.source, [105]);
+    await artistsFor(s.source, [105]);
     s.set(105, { writers: [{ name: 'New' }] });
     invalidateSeriesArtists(105);
-    const out = await kavitaSeriesArtists(s.source, [105]);
+    const out = await artistsFor(s.source, [105]);
     assert.deepEqual(out.get(105), ['New']);
     assert.equal(s.calls.length, 2);
   });
 
   it('returns an empty map for no ids', async () => {
     const s = makeSource();
-    const out = await kavitaSeriesArtists(s.source, []);
+    const out = await artistsFor(s.source, []);
     assert.equal(out.size, 0);
     assert.deepEqual(s.calls, []);
   });
@@ -95,7 +101,7 @@ describe('kavitaSeriesArtists', () => {
     s.set(106, { writers: [{ name: 'Artist' }], tags: [{ id: 1, title: ' Romance ' }, { id: 2, title: 'romance' }, { id: 3, title: null }, { id: 4, title: 'Slice of Life' }] });
     const rows = await kavitaSeriesSearchMetadata(s.source, [106, 106]);
     assert.deepEqual(rows.get(106), { artists: ['Artist'], tags: ['Romance', 'Slice of Life'] });
-    assert.deepEqual((await kavitaSeriesArtists(s.source, [106])).get(106), ['Artist']);
+    assert.deepEqual((await artistsFor(s.source, [106])).get(106), ['Artist']);
     assert.deepEqual(s.calls, [106]);
   });
 
@@ -118,10 +124,10 @@ describe('kavitaSeriesArtists', () => {
     invalidateSeriesArtists(109);
     assert.deepEqual((await kavitaSeriesSearchMetadata(s.source, [109])).get(109)?.tags, ['New']);
   });
-it('serves expired entries immediately and refreshes them once in the background', async () => {
+  it('serves expired entries immediately and refreshes them once in the background', async () => {
     const s = makeSource();
     s.set(110, { writers: [{ name: 'Before' }] });
-    await kavitaSeriesArtists(s.source, [110]);
+    await artistsFor(s.source, [110]);
     const realNow = Date.now;
     Date.now = () => realNow() + 6 * 60 * 1000;
     try {
@@ -129,11 +135,11 @@ it('serves expired entries immediately and refreshes them once in the background
       const gate = new Promise<void>(resolve => { release = resolve; });
       const slow = { async getSeriesMetadata(id: number) { await gate; return s.source.getSeriesMetadata(id); } };
       s.set(110, { writers: [{ name: 'After' }] });
-      assert.deepEqual((await kavitaSeriesArtists(slow, [110])).get(110), ['Before'], 'an expired entry must not block the response');
-      assert.deepEqual((await kavitaSeriesArtists(slow, [110])).get(110), ['Before'], 'a refresh already in flight is not started again');
+      assert.deepEqual((await artistsFor(slow, [110])).get(110), ['Before'], 'an expired entry must not block the response');
+      assert.deepEqual((await artistsFor(slow, [110])).get(110), ['Before'], 'a refresh already in flight is not started again');
       release();
       await new Promise(resolve => setImmediate(resolve));
-      assert.deepEqual((await kavitaSeriesArtists(s.source, [110])).get(110), ['After']);
+      assert.deepEqual((await artistsFor(s.source, [110])).get(110), ['After']);
       assert.deepEqual(s.calls, [110, 110], 'one initial read and one background refresh');
     } finally {
       Date.now = realNow;
@@ -146,12 +152,12 @@ it('serves expired entries immediately and refreshes them once in the background
     const gate = new Promise<void>(resolve => { release = resolve; });
     s.set(111, { writers: [{ name: 'Old' }] });
     const slow = { async getSeriesMetadata(id: number) { const meta = await s.source.getSeriesMetadata(id); await gate; return meta; } };
-    const pending = kavitaSeriesArtists(slow, [111]);
+    const pending = artistsFor(slow, [111]);
     await new Promise(resolve => setImmediate(resolve));
     invalidateSeriesArtists(111);
     s.set(111, { writers: [{ name: 'New' }] });
     release();
     await pending;
-    assert.deepEqual((await kavitaSeriesArtists(s.source, [111])).get(111), ['New']);
+    assert.deepEqual((await artistsFor(s.source, [111])).get(111), ['New']);
   });
 });

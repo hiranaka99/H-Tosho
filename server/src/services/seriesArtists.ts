@@ -173,9 +173,3 @@ export async function kavitaSeriesSearchMetadata(client: MetadataSource, seriesI
   ]);
   return out;
 }
-
-/** Compatibility for artist-only consumers; shares the metadata cache. */
-export async function kavitaSeriesArtists(client: MetadataSource, seriesIds: number[]): Promise<Map<number, string[]>> {
-  const metadata = await kavitaSeriesSearchMetadata(client, seriesIds);
-  return new Map([...metadata].map(([id, item]) => [id, item.artists]));
-}

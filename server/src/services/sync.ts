@@ -18,7 +18,7 @@ import { listCbzFiles, resolveSeriesHostDir, setSeriesTitleInCbzFiles } from '..
 import { mapLimit } from '../lib/http.js';
 import { invalidateSeriesArtists } from './seriesArtists.js';
 import { getCredentialMap, getDownloaderSettings } from './settings.js';
-import { jobQueue, JobCancelled } from '../jobs/queue.js';
+import { JobCancelled } from '../jobs/queue.js';
 
 /** Fields H-Tosho can push to a Kavita series. */
 export interface ApplyResult {
@@ -269,31 +269,6 @@ export function matchVolumeCovers(volumes: KavitaVolume[], covers: VolumeCover[]
     out.push({ volumeId: vol.id, number: cover.number, url: cover.url });
   }
   return out;
-}
-
-/**
- * Diff a library's current series against a pre-rescan snapshot and enqueue a
- * match-series job for exactly the titles that appeared — new to Kavita AND
- * never processed by H-Tosho before. Existing series are never re-matched.
- * Returns the enqueued series IDs (empty when nothing is new).
- */
-export async function enqueueMatchForNewSeries(
-  client: Pick<KavitaClient, 'getSeries'>,
-  libraryId: number,
-  seenIds: ReadonlySet<number>,
-): Promise<number[]> {
-  const series = await client.getSeries(libraryId);
-  const known = new Set(
-    getDb()
-      .select({ kavitaSeriesId: schema.seriesMatches.kavitaSeriesId })
-      .from(schema.seriesMatches)
-      .all()
-      .map((r) => r.kavitaSeriesId),
-  );
-  const fresh = series.filter((s) => !seenIds.has(s.id) && !known.has(s.id));
-  const seriesIds = fresh.map((s) => s.id);
-  if (fresh.length > 0) jobQueue.enqueue('match-series', { libraryId, seriesIds, context: { libraryId, series: fresh.map(({ id, name }) => ({ id, name })) } });
-  return seriesIds;
 }
 
 export interface ApplySeriesOptions {
