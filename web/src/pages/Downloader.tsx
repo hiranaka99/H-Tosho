@@ -12,6 +12,7 @@ import { api, ApiError, type DoujinSource, type DoujinSort, type DoujinSearchRes
 import { cn, timeAgo } from '../lib/utils';
 import { downloadErrorHelp } from '../lib/downloadErrors';
 import { toast } from '../lib/toast';
+import { useDownloadSummary } from '../lib/DownloadsContext';
 import { Button, Card, CardContent, Badge, Select, EmptyState, Spinner, PageHeader, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, ErrorState, Pager } from '../components/ui';
 import { MergeIntoSeriesDialog } from '../components/MergeIntoSeriesDialog';
 import { GalleryFeedbackDialog, RecommendationFeedbackManager } from '../components/RecommendationFeedback';
@@ -129,6 +130,8 @@ export function Downloader() {
   const [mergeIntoOpen, setMergeIntoOpen] = React.useState(false);
 
   const { setup, checkDuplicates, duplicateDialog, ensureDownloadReady, pendingKeys, doStartDownload } = useGalleryDownload();
+  // Failures win the Downloads tab count (red); otherwise it shows what is moving.
+  const downloadSummary = useDownloadSummary();
   const downloadStatus = setup.status;
   // Top-of-page view tabs: search results vs. the download manager queue.
   const [rememberedTab, setRememberedTab] = React.useState<DownloaderTab>(() =>
@@ -525,11 +528,11 @@ export function Downloader() {
 
   return (
     <div ref={galleryMotionRef} className={cn('flex flex-col gap-4', showSelection && 'pb-[calc(var(--selection-tray-height,0px)+1rem)] lg:pb-0')} style={{ '--selection-tray-height': `${selectionHeight}px` } as React.CSSProperties}>
-      <PageHeader icon={<Compass className="h-5 w-5" />} title="Discover galleries" subtitle={tab === 'watched' ? undefined : "Search Hitomi.la, nHentai and E-Hentai, then download galleries into your Kavita library."} />
+      <PageHeader icon={<Compass className="h-5 w-5" />} title="Discover galleries" subtitle={tab === 'watched' ? undefined : tab === 'manager' ? 'Follow each download from the queue into your Kavita library.' : "Search Hitomi.la, nHentai and E-Hentai, then download galleries into your Kavita library."} />
       {tab !== 'manager' && <DownloadDestination setup={setup} compact={tab === 'watched'} />}
 
       <SegmentedTabs
-        items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'For you' }, { id: 'watched' as const, label: inboxCount ? `Following (${inboxCount})` : 'Following' }, { id: 'manager' as const, label: 'Downloads' }]}
+        items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'For you' }, { id: 'watched' as const, label: inboxCount ? `Following (${inboxCount})` : 'Following' }, { id: 'manager' as const, label: 'Downloads', count: downloadSummary.failed || downloadSummary.active || undefined, alert: downloadSummary.failed > 0 }]}
         value={tab}
         onChange={setTab}
         label="Discover sections"

@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Clock, Download, Pause, Play, XCircle, Ban } from 'lucide-react';
 import { api, type Job, type DownloadTask } from '../lib/api';
 import { toast } from '../lib/toast';
-import { useDownloads } from '../lib/DownloadsContext';
+import { useDownloads, needsAttention as downloadNeedsAttention } from '../lib/DownloadsContext';
 import { formatBytes, formatSpeed } from '../lib/format';
 import { jobLabel } from '../lib/utils';
 import { needsAttention } from '../lib/jobStatus';
@@ -123,12 +123,13 @@ export function SidebarStatus() {
       void qc.invalidateQueries({ queryKey: ['home-matches'] });
       void qc.invalidateQueries({ queryKey: ['home-activity'] });
       void qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
+      void qc.invalidateQueries({ queryKey: ['downloads-library'] });
     }
     previousJobs.current = current;
   }, [jobs, qc]);
   const shownTasks = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
   const attentionJobs = jobs.filter(needsAttention);
-  const failedDownloads = tasks.filter((task) => task.status === 'failed' && task.errorMessage !== 'Cancelled by user');
+  const failedDownloads = tasks.filter(downloadNeedsAttention);
   if (activeJobs.length === 0 && shownTasks.length === 0 && attentionJobs.length === 0 && failedDownloads.length === 0) return null;
 
   const onTaskAction = (op: 'pause' | 'resume' | 'cancel', id: number) => {

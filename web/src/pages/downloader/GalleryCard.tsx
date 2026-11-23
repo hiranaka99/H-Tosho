@@ -74,8 +74,10 @@ export function DownloadStatusBadge({ status }: { status: string }) {
     failed: <Badge tone="danger"><XCircle className="h-3 w-3" /> Failed</Badge>,
     'retry-wait': <Badge tone="warning"><RotateCcw className="h-3 w-3" /> Retry scheduled</Badge>,
     cancelled: <Badge tone="muted"><XCircle className="h-3 w-3" /> Cancelled</Badge>,
+    resolving: <Badge tone="info"><Loader2 className="h-3 w-3 animate-spin" /> Resolving</Badge>,
     packing: <Badge tone="info"><Loader2 className="h-3 w-3 animate-spin" /> Packing archive</Badge>,
-    paused: <Badge tone="warning"><Pause className="h-3 w-3" /> Paused</Badge> };
+    // Paused is the user's choice, not a warning: neutral, so amber stays with retries.
+    paused: <Badge tone="default"><Pause className="h-3 w-3" /> Paused</Badge> };
   return <span key={status} className="downloader-task-status inline-flex">{map[status] ?? <Badge>{status}</Badge>}</span>;
 }
 

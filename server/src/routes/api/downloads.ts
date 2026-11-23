@@ -16,6 +16,7 @@ import { jobQueue } from '../../jobs/queue.js';
 import type { MergeProtectionState } from '../../contracts/mergeProtection.js';
 import { resolveMergeProtection, requireMergeProtection, MergeProtectionError } from '../../services/mergeProtection.js';
 
+import { downloadLibraryStates } from '../../services/downloadLibraryState.js';
 import { connectedClient, errMsg, intParam } from './helpers.js';
 export const api = new Hono();
 api.post('/downloads/library-matches', async (c) => {
@@ -169,7 +170,21 @@ api.post('/downloads/merged', async (c) => {
   return c.json({ items }, 202);
 });
 
-api.get('/downloads', (c) => c.json(downloadQueue.list(100)));
+// Every active and failed task, plus the newest completed ones; older history is paged.
+api.get('/downloads', (c) => c.json(downloadQueue.listForManager()));
+
+/** Older completed downloads, newest finish first, with the full completed count. */
+api.get('/downloads/history', (c) => {
+  const offset = Math.max(0, Math.floor(Number(c.req.query('offset') ?? 0)) || 0);
+  const limit = Math.min(100, Math.max(0, Math.floor(Number(c.req.query('limit') ?? 50)) || 0));
+  return c.json(downloadQueue.completedHistory(offset, limit));
+});
+
+/** Kavita import state for completed downloads (`?ids=1,2,3`, at most 200). */
+api.get('/downloads/library', (c) => {
+  const ids = (c.req.query('ids') ?? '').split(',').map(Number).filter((id) => Number.isSafeInteger(id) && id > 0);
+  return c.json(downloadLibraryStates(ids));
+});
 
 /** Completed galleries (source + galleryId + finish time) for duplicate badges. */
 api.get('/downloads/completed', (c) => c.json(downloadQueue.completedGalleries()));
@@ -218,7 +233,7 @@ api.get('/downloads/gallery-files', (c) => {
 api.get('/downloads/events', (c) =>
   streamSSE(c, async (sse) => {
     // Push the current state immediately so a freshly-opened client is up to date.
-    await sse.write(`data: ${JSON.stringify({ type: 'snapshot', tasks: downloadQueue.list(100) })}\n\n`);
+    await sse.write(`data: ${JSON.stringify({ type: 'snapshot', tasks: downloadQueue.listForManager() })}\n\n`);
 
     const unsubscribe = downloadQueue.subscribe((task) => {
       void sse.write(`data: ${JSON.stringify({ type: 'task', task })}\n\n`).catch(() => {});

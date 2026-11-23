@@ -5,6 +5,7 @@ import { useDownloadEvents } from './useDownloadEvents';
 import { toast } from './toast';
 import { downloadErrorHelp } from './downloadErrors';
 import { mergeDownloadPoll } from './downloadPoll';
+import { SOURCE_LABELS } from '../pages/downloader/state';
 
 export interface StartDownloadInput {
   source: DoujinSource;
@@ -103,8 +104,16 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
     },
     onError: mutationError('Download action failed'),
   });
-  const remove = useMutation({ mutationFn: (id: number) => api.deleteDownload(id), onSuccess: () => { void invalidate(); void invalidateCompleted(); toast({ tone: 'info', title: 'Removed from download history' }); }, onError: mutationError('Could not remove download') });
-  const clear = useMutation({ mutationFn: api.clearCompletedDownloads, onSuccess: () => { void invalidate(); void invalidateCompleted(); }, onError: mutationError('Could not clear completed downloads') });
+  const invalidateHistory = React.useCallback(() => qc.invalidateQueries({ queryKey: ['downloads-history'] }), [qc]);
+  const remove = useMutation({ mutationFn: (id: number) => api.deleteDownload(id), onSuccess: () => { void invalidate(); void invalidateCompleted(); void invalidateHistory(); toast({ tone: 'info', title: 'Removed from download history', description: 'The downloaded files were not touched.' }); }, onError: mutationError('Could not remove download') });
+  const clear = useMutation({
+    mutationFn: api.clearCompletedDownloads,
+    onSuccess: ({ removed }) => {
+      void invalidate(); void invalidateCompleted(); void invalidateHistory();
+      toast({ tone: 'info', title: removed === 1 ? 'Cleared 1 completed download' : `Cleared ${removed} completed downloads`, description: 'The downloaded files were not touched.' });
+    },
+    onError: mutationError('Could not clear completed downloads'),
+  });
 
   // Toast on status transitions to completed/failed. A completion also makes
   // the Downloaded badges stale, so refresh that query directly instead of
@@ -128,7 +137,8 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
         toast({ tone: 'success', title: 'Download complete', description: title });
       } else if (t.status === 'failed' && t.state?.type !== 'cancelled') {
         // Surface genuine failures; a user cancel also lands as "failed" but carries a distinct message.
-        toast({ tone: 'danger', title: 'Download failed', description: t.errorMessage ? downloadErrorHelp(t.errorMessage, t.errorCode).message : title });
+        // A scheduled automatic retry is H-Tosho's job, not the user's: no failure toast.
+        if (t.state?.type !== 'retry-wait') toast({ tone: 'danger', title: 'Download failed', description: t.errorMessage ? `${title}: ${downloadErrorHelp(t.errorMessage, t.errorCode, SOURCE_LABELS[t.source]).message}` : title });
       }
     }
     if (completed) {
@@ -136,6 +146,8 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
       void qc.invalidateQueries({ queryKey: ['home-activity'] });
       void qc.invalidateQueries({ queryKey: ['home-matches'] });
       void qc.invalidateQueries({ queryKey: ['jobs'] });
+      void qc.invalidateQueries({ queryKey: ['downloads-library'] });
+      void qc.invalidateQueries({ queryKey: ['downloads-history'] });
     }
   }, [tasks, qc]);
 
@@ -206,4 +218,24 @@ export function useGalleryDownloadTask(source: DoujinSource, galleryId: string):
     (['queued', 'downloading', 'paused'].includes(task.status) || task.state?.type === 'retry-wait')), [source, galleryId]);
   const qc = useQueryClient();
   return useQuery({ queryKey: ['downloads'], queryFn: downloadsQueryFn(qc), enabled: false, select }).data;
+}
+
+/** Tasks the user should look at: real failures, never cancels or scheduled retries. */
+export function needsAttention(task: DownloadTask): boolean {
+  return task.status === 'failed' && task.state?.type !== 'retry-wait' && task.state?.type !== 'cancelled';
+}
+
+/** Moving or waiting to move, including automatic retries; paused waits on the user. */
+export function isActiveDownload(task: DownloadTask): boolean {
+  return task.status === 'downloading' || task.status === 'queued' || task.state?.type === 'retry-wait';
+}
+
+/** Two counts for tab labels; the selected numbers are stable, so progress ticks never re-render. */
+export function useDownloadSummary(): { active: number; failed: number } {
+  const select = React.useCallback((tasks: DownloadTask[]) => ({
+    active: tasks.filter(isActiveDownload).length,
+    failed: tasks.filter(needsAttention).length,
+  }), []);
+  const qc = useQueryClient();
+  return useQuery({ queryKey: ['downloads'], queryFn: downloadsQueryFn(qc), enabled: false, select }).data ?? { active: 0, failed: 0 };
 }

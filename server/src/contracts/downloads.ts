@@ -42,7 +42,19 @@ export interface DownloadTask {
   finishedAt: string | null;
 }
 
-export type DownloadErrorCode = 'cancelled' | 'network' | 'rate-limit' | 'upstream' | 'access-denied' | 'output-missing' | 'permissions' | 'download-failed';
+/** Transient failures re-queue themselves this many times before settling as failed. */
+export const MAX_AUTO_RETRIES = 3;
+
+/** Where a completed download stands in Kavita, from the import task it queued. */
+export type DownloadLibraryState =
+  | { state: 'importing'; jobId: number }
+  | { state: 'imported'; jobId: number; series: { id: number; name: string }[]; review: boolean }
+  | { state: 'failed'; jobId: number; message: string | null };
+
+/** One page of completed download history, newest finish first. */
+export interface DownloadHistoryPage { items: DownloadTask[]; total: number }
+
+export type DownloadErrorCode ='cancelled' | 'network' | 'rate-limit' | 'upstream' | 'access-denied' | 'output-missing' | 'permissions' | 'download-failed';
 export type DownloadState = { type: 'retry-wait'; retryAt: string; retryCount: number }
   | { type: 'cancelled' }
   | { type: 'packing' }
