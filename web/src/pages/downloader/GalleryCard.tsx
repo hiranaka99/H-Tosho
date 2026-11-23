@@ -198,12 +198,12 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
           <PageCountPill pageCount={item.pageCount} className={cn('absolute right-2', selectMode || selected ? 'bottom-2' : 'top-2')} />
           {ownershipType && !selectMode && !selected && <OwnershipChip type={ownershipType} className="pointer-events-none absolute bottom-2 left-2 max-w-[calc(100%-1rem)] max-[419px]:hidden" />}
           {(selectMode || selected) && (
-            <span className={cn('pointer-events-none absolute left-2 top-2 z-20 inline-flex h-8 w-8 items-center justify-center rounded-md border', selected ? 'border-primary-button bg-primary-button text-white' : 'border-border-2 bg-surface text-muted')} aria-hidden="true">
+            <span className={cn('pointer-events-none absolute left-2 top-2 z-[2] inline-flex h-8 w-8 items-center justify-center rounded-md border', selected ? 'border-primary-button bg-primary-button text-white' : 'border-border-2 bg-surface text-muted')} aria-hidden="true">
               {selected ? <Check className="downloader-selection-check h-5 w-5" /> : <span className="h-4 w-4 rounded-sm border-2 border-current" />}
             </span>
           )}
           {!selectMode && !selected && <div className="pointer-events-none absolute inset-0 flex items-end justify-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-            <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-primary-button px-3 py-1 text-xs font-medium text-white">
+            <span className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-surface/95 px-3 py-1 text-xs font-medium text-foreground shadow-[0_1px_2px_var(--control-shadow)]">
               <Search className="h-3 w-3" /> Details
             </span>
           </div>}
@@ -226,7 +226,8 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
       <div className={cn('mt-auto flex min-w-0 flex-col gap-2', compact ? 'p-2.5' : 'p-3')}>
         {(showSource || ownershipType || provenance) && (
           <div className="flex min-h-6 flex-wrap items-center gap-2">
-            {ownershipType && <OwnershipChip type={ownershipType} className="min-[420px]:hidden" />}
+            {/* Select mode moves the chip off the cover so it never hides behind the checkbox. */}
+            {ownershipType && <OwnershipChip type={ownershipType} className={selectMode || selected ? undefined : 'min-[420px]:hidden'} />}
             {showSource && <SourceBadge source={item.source} />}
             {provenance && provenance.extraSources.length > 0 && (
               <span className="flex min-w-0 flex-wrap items-center gap-1" aria-label={`Also found on ${provenance.extraSources.map((s) => SOURCE_LABELS[s]).join(', ')}`}>

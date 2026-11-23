@@ -169,7 +169,7 @@ test('gallery details show searchable groups and circles', async ({ page }, test
   await expect(dialog.getByText('Groups / circles', { exact: true })).toBeVisible();
   const circle = dialog.getByRole('button', { name: 'shirukke no ooi zakuro', exact: true });
   await expect(circle).toBeVisible();
-  await expect(circle).toHaveAttribute('title', 'Search for “group:shirukke_no_ooi_zakuro”');
+  await expect(circle).toHaveAttribute('title', 'Search Hitomi.la for “group:shirukke_no_ooi_zakuro”');
   const directory = path.resolve('.impeccable/review');
   fs.mkdirSync(directory, { recursive: true });
   for (const theme of ['light', 'dark']) {

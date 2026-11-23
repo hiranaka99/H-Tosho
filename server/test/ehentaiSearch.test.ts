@@ -482,6 +482,9 @@ test('metadata outages preserve list results and foreign or changed-search conti
     'https://attacker.example/?f_search=fallback%20language%3Aenglish%24&next=3200000',
     'https://exhentai.org/?f_search=different&next=3200000',
     'https://exhentai.org/account.php?f_search=fallback%20language%3Aenglish%24&next=3200000',
+    'https://exhentai.org:8443/?f_search=fallback%20language%3Aenglish%24&next=3200000',
+    'https://user:secret@exhentai.org/?f_search=fallback%20language%3Aenglish%24&next=3200000',
+    'https://exhentai.org/?f_search=fallback%20language%3Aenglish%24&next=3200000#top',
   ]) {
     resetRequests();
     route = (hostname) => hostname === 'api.e-hentai.org'

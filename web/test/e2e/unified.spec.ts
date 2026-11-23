@@ -33,7 +33,7 @@ test.beforeEach(async ({ page }) => {
 async function runUnifiedQuery(page: Page, query: string) {
   await page.getByLabel('Search galleries', { exact: true }).fill(query);
   await page.getByRole('button', { name: 'Search', exact: true }).click();
-  await expect(page.locator('p[role="status"]')).toContainText('unique');
+  await expect(page.locator('p[role="status"]')).toContainText(/galler(y|ies)/);
 }
 
 test('unified and E-Hentai autocomplete replace the active term without submitting', async ({ page }, testInfo) => {
@@ -74,7 +74,7 @@ test('unified search groups the same work across providers with variant provenan
 
   // The cross-provider duplicate collapses into one entry: 2 unique, not 3.
   // Both lanes are exhausted, so the exact total is reported too.
-  await expect(page.locator('p[role="status"]')).toHaveText('2 unique galleries loaded · 2 total');
+  await expect(page.locator('p[role="status"]')).toHaveText('2 galleries across sources');
   await expect(page.getByRole('article')).toHaveCount(2);
 
   // The grouped card names its second real source.
@@ -114,19 +114,19 @@ test('a failed lane keeps the other lanes visible and retries once', async ({ pa
 
   // The surviving hitomi result is delivered; the nHentai lane reports its
   // failure with a scoped retry offer.
-  await expect(page.locator('p[role="status"]')).toHaveText('1 unique gallery loaded');
+  await expect(page.locator('p[role="status"]')).toHaveText('Showing 1 gallery');
   await expect(page.getByRole('article')).toHaveCount(1);
   const chips = page.getByLabel('Provider status for this search');
   await expect(chips).toContainText('nHentai');
-  const retry = page.getByRole('button', { name: 'Retry', exact: true });
+  const retry = page.getByRole('button', { name: 'Retry nHentai', exact: true });
   await expect(retry).toBeVisible();
 
   // The retry re-fetches only the failed lane: the surviving result is
   // untouched and the one-time retry budget is consumed.
   await retry.click();
-  await expect(page.locator('p[role="status"]')).toHaveText('1 unique gallery loaded');
+  await expect(page.locator('p[role="status"]')).toHaveText('Showing 1 gallery');
   await expect(page.getByRole('article')).toHaveCount(1);
-  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Retry nHentai', exact: true })).toHaveCount(0);
 
   expect(errors).toEqual([]);
 });

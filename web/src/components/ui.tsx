@@ -154,7 +154,7 @@ export function ProviderBadge({ id, className, solid = false }: { id: string; cl
     <span
       className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium', className)}
       style={solid
-        ? { backgroundColor: 'rgba(0, 0, 0, 0.75)', color }
+        ? { backgroundColor: 'var(--cover-scrim)', color }
         : { backgroundColor: `color-mix(in srgb, ${color} 16%, var(--surface))`, color: `color-mix(in srgb, ${color} 38%, var(--foreground))` }}
     >
       <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />

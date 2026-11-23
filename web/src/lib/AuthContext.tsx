@@ -2,13 +2,13 @@ import * as React from 'react';
 import { Loader2, LockKeyhole } from 'lucide-react';
 import { api, type AuthStatus } from './api';
 import { Button, Card, CardContent, Input, Label } from '../components/ui';
+import { AuthContext } from './appContexts';
 
-interface AuthContextValue extends AuthStatus {
+export interface AuthContextValue extends AuthStatus {
   refresh: () => Promise<void>;
   logout: () => Promise<void>;
 }
 
-const AuthContext = React.createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = React.useState<AuthStatus | null>(null);

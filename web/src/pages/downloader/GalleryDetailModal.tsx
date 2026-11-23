@@ -65,7 +65,7 @@ function MetaItem({ label, value }: { label: string; value?: string | number | n
   );
 }
 
-export function GalleryDetailModal({ item, onClose, onDownload, checking, downloaded, inLibrary, setup, onSearchTag, variants, selectedVariantKey, onSelectVariant }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; checking: boolean; downloaded: boolean; inLibrary: boolean; setup: DownloadSetup; onSearchTag: (fragment: string, source?: DoujinSource) => void; variants?: { item: DoujinSearchResult; position?: number }[]; selectedVariantKey?: string; onSelectVariant?: (item: DoujinSearchResult) => void }) {
+export function GalleryDetailModal({ item, onClose, onDownload, checking, downloaded, inLibrary, setup, onSearchTag, searchAcrossSources = false, variants, selectedVariantKey, onSelectVariant }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; checking: boolean; downloaded: boolean; inLibrary: boolean; setup: DownloadSetup; onSearchTag: (fragment: string, source?: DoujinSource | 'all') => void; /** Opened from All sources: shared filters search every source again. */ searchAcrossSources?: boolean; variants?: { item: DoujinSearchResult; position?: number }[]; selectedVariantKey?: string; onSelectVariant?: (item: DoujinSearchResult) => void }) {
   const downloading = !!useGalleryDownloadTask(item.source, item.galleryId);
   const { data: gallery, isPending, isFetching, isError, error, refetch } = useQuery({
     queryKey: ['doujin-gallery', item.source, item.galleryId],
@@ -77,15 +77,28 @@ export function GalleryDetailModal({ item, onClose, onDownload, checking, downlo
     ? ((item as { reasons: string[] }).reasons).filter((r) => typeof r === 'string' && r.trim())
     : [];
 
-  /** Search a single tag/artist value (from the details card) on this source. */
-  const searchFor = (value: string, ns?: string | null) => {
+  /**
+   * Search a single tag/artist value (from the details card). From All sources,
+   * a shared filter (artist, group, character, series) stays in All sources;
+   * provider-only tags search the gallery's own source, where they mean something.
+   */
+  const tagSearch = (value: string, ns?: string | null): { fragment: string; source: DoujinSource | 'all' } | null => {
+    const shared = ns === 'series' ? 'parody' : ns;
+    const clean = value.replace(/"/g, '').trim();
+    if (searchAcrossSources && clean && shared && ['artist', 'group', 'character', 'parody'].includes(shared)) {
+      return { fragment: `${shared}:"${clean}"`, source: 'all' };
+    }
     const fragment = buildTagSearchFragment(value, ns, item.source);
-    if (fragment) onSearchTag(fragment, item.source);
+    return fragment ? { fragment, source: item.source } : null;
   };
-  /** Tooltip showing the exact query a pill will run. */
+  const searchFor = (value: string, ns?: string | null) => {
+    const target = tagSearch(value, ns);
+    if (target) onSearchTag(target.fragment, target.source);
+  };
+  /** Tooltip showing the exact query a pill will run, and where. */
   const searchTitle = (value: string, ns?: string | null) => {
-    const fragment = buildTagSearchFragment(value, ns, item.source);
-    return fragment ? `Search for “${fragment}”` : undefined;
+    const target = tagSearch(value, ns);
+    return target ? `Search ${target.source === 'all' ? 'all sources' : SOURCE_LABELS[target.source]} for “${target.fragment}”` : undefined;
   };
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -174,7 +187,7 @@ export function GalleryDetailModal({ item, onClose, onDownload, checking, downlo
                               <span className="min-w-0 flex-1 text-xs">
                                 <span className="block truncate text-foreground" title={v.title}>{v.title}</span>
                                 <span className="block truncate text-muted">
-                                  {position ? `Position #${position} on ${SOURCE_LABELS[v.source]}` : `Found on ${SOURCE_LABELS[v.source]}`}
+                                  {position ? `Result ${position} on ${SOURCE_LABELS[v.source]}` : `Found on ${SOURCE_LABELS[v.source]}`}
                                   {v.language ? ` · ${v.language}` : ''}{typeof v.pageCount === 'number' ? ` · ${v.pageCount} pages` : ''}
                                 </span>
                               </span>
@@ -199,7 +212,7 @@ export function GalleryDetailModal({ item, onClose, onDownload, checking, downlo
                       type="button"
                       onClick={() => searchFor(g.series ?? '', 'series')}
                       title={searchTitle(g.series ?? '', 'series')}
-                      className="max-lg:min-h-11 pointer-coarse:min-h-11 w-fit cursor-pointer rounded-full bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-700 transition-all hover:brightness-125 dark:bg-cyan-400/20 dark:text-cyan-300"
+                      className="max-lg:min-h-11 pointer-coarse:min-h-11 w-fit cursor-pointer rounded-full bg-info/10 px-2.5 py-1 text-xs text-info transition-colors hover:bg-info/20"
                     >
                       {g.series}
                     </button>
@@ -222,7 +235,7 @@ export function GalleryDetailModal({ item, onClose, onDownload, checking, downlo
           <div className="ml-auto flex shrink-0 justify-end gap-2">
             <Button variant="ghost" onClick={onClose}><X className="h-4 w-4" /> Close</Button>
             {(downloaded || setup.status !== 'missing') && <Button onClick={onDownload} disabled={downloaded || downloading || checking || setup.status !== 'ready'}>
-              {downloaded ? <CheckCircle2 className="h-4 w-4" /> : (downloading || checking) ? <Loader2 className="h-4 w-4 animate-spin" /> : <DownloadIcon className="h-4 w-4" />}{inLibrary ? 'In library' : downloaded ? 'Downloaded' : checking ? 'Checking…' : downloading ? 'Queued / downloading' : 'Download'}
+              {downloaded ? <CheckCircle2 className="h-4 w-4" /> : (downloading || checking) ? <Loader2 className="h-4 w-4 animate-spin" /> : <DownloadIcon className="h-4 w-4" />}{inLibrary ? 'In library' : downloaded ? 'Downloaded' : checking ? 'Checking…' : downloading ? 'In Downloads' : 'Download'}
             </Button>}
           </div>
         </div>
