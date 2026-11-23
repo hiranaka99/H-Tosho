@@ -6,6 +6,7 @@ import { toast } from './toast';
 import { downloadErrorHelp } from './downloadErrors';
 import { mergeDownloadPoll } from './downloadPoll';
 import { SOURCE_LABELS } from '../pages/downloader/state';
+import { DownloadActionsContext as ActionsCtx, DownloadTasksContext as TasksCtx, GalleryStatusContext as GalleryStatusCtx } from './appContexts';
 
 export interface StartDownloadInput {
   source: DoujinSource;
@@ -66,15 +67,12 @@ function downloadsQueryFn(qc: QueryClient) {
 
 export type GalleryDownloadStatus = 'queued' | 'downloading' | 'paused' | 'retry-wait';
 
-interface GalleryStatusStore {
+export interface GalleryStatusStore {
   subscribe: (key: string, listener: () => void) => () => void;
   get: (key: string) => GalleryDownloadStatus | undefined;
   sync: (tasks: DownloadTask[]) => void;
 }
 
-const ActionsCtx = React.createContext<DownloadActionsApi | null>(null);
-const TasksCtx = React.createContext<DownloadTasksApi | null>(null);
-const GalleryStatusCtx = React.createContext<GalleryStatusStore | null>(null);
 
 function createGalleryStatusStore(): GalleryStatusStore {
   let statuses = new Map<string, GalleryDownloadStatus>();
