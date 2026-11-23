@@ -21,6 +21,13 @@ api.use('/kavita/libraries/:id/series', compress());
 
 /** Snapshot of the connection that was replaced by a save whose test failed. */
 const KAVITA_PREVIOUS_KEY = 'kavita-previous';
+const SERVER_SWITCH_BUSY = 'Finish or cancel active library jobs and downloads before changing Kavita servers.';
+
+/** Switching servers mid-run would point in-flight jobs at another library. */
+function serverSwitchBlocked(nextBaseUrl: string): boolean {
+  return kavitaConnectionKey(nextBaseUrl) !== kavitaConnectionKey(getKavitaConnection().baseUrl)
+    && (libraryMutations.isBusy('*') || downloadQueue.activeCount() > 0 || jobQueue.active().some(job => job.type !== 'check-watched-searches'));
+}
 api.get('/kavita/status', async (c) => {
   const conn = getKavitaConnection();
   // The API key itself is never returned; the UI only needs to know it exists.
@@ -35,7 +42,8 @@ api.get('/kavita/status', async (c) => {
 
 /** Tests candidate values without persisting them, so a working connection is never replaced by a failed guess. */
 api.post('/kavita/connection/test', async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { baseUrl?: string; apiKey?: string };
+  const raw: unknown = await c.req.json().catch(() => null);
+  const body = (raw && typeof raw === 'object' ? raw : {}) as { baseUrl?: string; apiKey?: string };
   const saved = getKavitaConnection();
   const baseUrl = body.baseUrl?.trim() || saved.baseUrl;
   if (!baseUrl) return c.json({ connected: false, test: 'Enter a server address first.' });
@@ -51,22 +59,21 @@ api.post('/kavita/connection/test', async (c) => {
 });
 
 api.post('/kavita/connection', async (c) => {
-  const body = (await c.req.json()) as { baseUrl: string; apiKey?: string };
-  if (!body.baseUrl) return c.json({ error: 'baseUrl is required' }, 400);
+  const body = (await c.req.json().catch(() => null)) as { baseUrl?: unknown; apiKey?: unknown } | null;
+  if (typeof body?.baseUrl !== 'string' || !body.baseUrl.trim()) return c.json({ error: 'baseUrl is required' }, 400);
+  if (body.apiKey !== undefined && typeof body.apiKey !== 'string') return c.json({ error: 'apiKey must be a string' }, 400);
+  const baseUrl = body.baseUrl;
   const previous = getKavitaConnection();
   // A blank key keeps the stored one, so the UI can change the URL without
   // re-entering the secret (the server never returns it).
   const apiKey = body.apiKey?.trim() ? body.apiKey.trim() : previous.apiKey;
   if (!apiKey) return c.json({ error: 'apiKey is required' }, 400);
-  if (kavitaConnectionKey(body.baseUrl) !== kavitaConnectionKey(previous.baseUrl)
-    && (libraryMutations.isBusy('*') || downloadQueue.activeCount() > 0 || jobQueue.active().some(job => job.type !== 'check-watched-searches'))) {
-    return c.json({ error: 'Finish or cancel active library jobs and downloads before changing Kavita servers.' }, 409);
-  }
-  setKavitaConnection({ baseUrl: body.baseUrl, apiKey });
+  if (serverSwitchBlocked(baseUrl)) return c.json({ error: SERVER_SWITCH_BUSY }, 409);
+  setKavitaConnection({ baseUrl, apiKey });
   let test: string;
   let connected: boolean;
   try {
-    const info = await new KavitaClient(body.baseUrl, apiKey).testConnection();
+    const info = await new KavitaClient(baseUrl, apiKey).testConnection();
     test = `Connected (Kavita ${info.version})`;
     connected = true;
   } catch (e) {
@@ -90,8 +97,19 @@ api.post('/kavita/connection/restore', (c) => {
   const db = getDb();
   const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, KAVITA_PREVIOUS_KEY)).get();
   if (!row) return c.json({ error: 'No previous connection to restore.' }, 409);
+  let snapshot: { baseUrl: string; apiKey: string } | null = null;
+  try {
+    const parsed = JSON.parse(row.valueJson) as { baseUrl?: unknown; apiKey?: unknown } | null;
+    if (typeof parsed?.baseUrl === 'string' && parsed.baseUrl && typeof parsed.apiKey === 'string' && parsed.apiKey) snapshot = { baseUrl: parsed.baseUrl, apiKey: parsed.apiKey };
+  } catch { /* handled below */ }
+  if (!snapshot) {
+    db.delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, KAVITA_PREVIOUS_KEY)).run();
+    return c.json({ error: 'The saved previous connection is unreadable; enter the server details again.' }, 409);
+  }
+  // Same rule as saving: never swap servers under running work. The snapshot
+  // is kept so the restore can be retried once that work finishes.
+  if (serverSwitchBlocked(snapshot.baseUrl)) return c.json({ error: SERVER_SWITCH_BUSY }, 409);
   db.delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, KAVITA_PREVIOUS_KEY)).run();
-  const snapshot = JSON.parse(row.valueJson) as { baseUrl: string; apiKey: string };
   setKavitaConnection(snapshot);
   return c.json({ restored: true, baseUrl: snapshot.baseUrl });
 });

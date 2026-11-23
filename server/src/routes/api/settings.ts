@@ -49,8 +49,14 @@ api.get('/providers', (c) => {
 api.put('/providers/:id', async (c) => {
   const id = c.req.param('id');
   if (!getProvider(id)) return c.json({ error: 'Unknown provider' }, 404);
-  const body = (await c.req.json()) as { enabled?: boolean; credentials?: Record<string, string> };
-  setProviderSetting(id, { enabled: body.enabled, credentials: body.credentials });
+  const body = (await c.req.json().catch(() => null)) as { enabled?: unknown; credentials?: unknown } | null;
+  if (!body || typeof body !== 'object') return c.json({ error: 'Provide enabled and/or credentials' }, 400);
+  if (body.enabled !== undefined && typeof body.enabled !== 'boolean') return c.json({ error: 'enabled must be true or false' }, 400);
+  const credentials = body.credentials;
+  if (credentials !== undefined && (!credentials || typeof credentials !== 'object' || Array.isArray(credentials) || Object.values(credentials).some((value) => typeof value !== 'string'))) {
+    return c.json({ error: 'credentials must map field names to strings' }, 400);
+  }
+  setProviderSetting(id, { enabled: body.enabled, credentials: credentials as Record<string, string> | undefined });
   return c.json({ ok: true });
 });
 
@@ -102,14 +108,19 @@ api.put('/settings/notifications/test', async (c) => {
 });
 
 api.put('/settings/poll-interval', async (c) => {
-  const body = (await c.req.json()) as { hours: number };
-  setPollIntervalHours(Math.max(0, Number(body.hours) || 0));
+  const body = (await c.req.json().catch(() => null)) as { hours?: unknown } | null;
+  // A malformed body must not silently disable scanning (Number(undefined) || 0).
+  const hours = typeof body?.hours === 'number' ? body.hours : typeof body?.hours === 'string' && body.hours.trim() ? Number(body.hours) : NaN;
+  if (!Number.isFinite(hours) || hours < 0) return c.json({ error: 'hours must be a non-negative number' }, 400);
+  setPollIntervalHours(hours);
   return c.json({ ok: true });
 });
 
 api.put('/settings/watched-search-interval', async (c) => {
-  const body = (await c.req.json()) as { minutes: number };
-  setWatchedSearchIntervalMinutes(Math.max(0, Number(body.minutes) || 0));
+  const body = (await c.req.json().catch(() => null)) as { minutes?: unknown } | null;
+  const minutes = typeof body?.minutes === 'number' ? body.minutes : typeof body?.minutes === 'string' && body.minutes.trim() ? Number(body.minutes) : NaN;
+  if (!Number.isFinite(minutes) || minutes < 0) return c.json({ error: 'minutes must be a non-negative number' }, 400);
+  setWatchedSearchIntervalMinutes(minutes);
   return c.json({ ok: true });
 });
 

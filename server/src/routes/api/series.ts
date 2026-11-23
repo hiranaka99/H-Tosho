@@ -264,7 +264,7 @@ api.post('/series/:id/apply', async (c) => {
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
   const body = await c.req.json();
-  if (!body.providerId || !body.providerSeriesId) return c.json({ error: 'providerId and providerSeriesId required' }, 400);
+  if (!body || typeof body !== 'object' || !body.providerId || !body.providerSeriesId) return c.json({ error: 'providerId and providerSeriesId required' }, 400);
   const seriesId = intParam(c.req.param('id'));
   if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
   try { parseJobCommand('apply-series', { ...body, seriesId }); } catch (error) { return c.json({ error: errMsg(error) }, 400); }

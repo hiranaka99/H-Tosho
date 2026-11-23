@@ -23,8 +23,8 @@ api.get('/doujin/providers', (c) => {
 
 /** Search a doujinshi source by keyword/tag/artist/id-or-url. */
 api.post('/doujin/search', async (c) => {
-  const body = (await c.req.json()) as { source: string; query: string; sort?: DoujinSort; offset?: number; limit?: number };
-  if (!body.source || !body.query?.trim()) return c.json({ error: 'source and query are required' }, 400);
+  const body = (await c.req.json()) as { source: string; query: string; sort?: DoujinSort; offset?: number; limit?: number } | null;
+  if (!body || typeof body.source !== 'string' || !body.source || typeof body.query !== 'string' || !body.query.trim()) return c.json({ error: 'source and query are required' }, 400);
   const provider = getDoujinProvider(body.source);
   if (!provider) return c.json({ error: `Unknown source: ${body.source}` }, 400);
   // Each provider supports its own subset of ordering options.
@@ -91,8 +91,8 @@ api.post('/doujin/search/unified', async (c) => {
 
 /** Autocomplete tag/artist suggestions for a doujinshi source search box. */
 api.post('/doujin/suggestions', async (c) => {
-  const body = (await c.req.json()) as { source: string; query: string; context?: string };
-  if (!body.source || !body.query?.trim()) return c.json({ error: 'source and query are required' }, 400);
+  const body = (await c.req.json()) as { source: string; query: string; context?: string } | null;
+  if (!body || typeof body.source !== 'string' || !body.source || typeof body.query !== 'string' || !body.query.trim()) return c.json({ error: 'source and query are required' }, 400);
   if (body.source === 'unified') return c.json(await unifiedSuggestions(body.query, 10, c.req.raw.signal));
   const provider = getDoujinProvider(body.source);
   if (!provider) return c.json({ error: `Unknown source: ${body.source}` }, 400);
@@ -106,8 +106,8 @@ api.post('/doujin/suggestions', async (c) => {
 
 /** Resolve full gallery metadata + image list (for preview / page count). */
 api.post('/doujin/gallery', async (c) => {
-  const body = (await c.req.json()) as { source: string; idOrUrl: string };
-  if (!body.source || !body.idOrUrl?.trim()) return c.json({ error: 'source and idOrUrl are required' }, 400);
+  const body = (await c.req.json()) as { source: string; idOrUrl: string } | null;
+  if (!body || typeof body.source !== 'string' || !body.source || typeof body.idOrUrl !== 'string' || !body.idOrUrl.trim()) return c.json({ error: 'source and idOrUrl are required' }, 400);
   const provider = getDoujinProvider(body.source);
   if (!provider) return c.json({ error: `Unknown source: ${body.source}` }, 400);
   try {

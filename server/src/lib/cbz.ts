@@ -524,11 +524,26 @@ export async function listCbzImages(p: string): Promise<string[]> {
   }
 }
 
+/** Hard cap on a cover payload (a single page image, never the whole archive). */
+const COVER_MAX_BYTES = 32 * 1024 * 1024;
+/** Hard cap on any single entry read for serving (one page image). */
+const ENTRY_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Reject an entry whose declared payload exceeds the cap or runs past the end
+ * of the file. Central-directory sizes are untrusted: a corrupt or hostile
+ * archive could otherwise force a multi-GiB allocation.
+ */
+function checkPayloadBounds(e: ZipEntryInfo, start: number, fileSize: number, maxBytes: number): void {
+  if (e.compressedSize > maxBytes || e.uncompressedSize > maxBytes) throw new Error(`Entry "${e.name}" exceeds the ${Math.round(maxBytes / (1024 * 1024))} MiB limit`);
+  if (start + e.compressedSize > fileSize) throw new Error(`Corrupt ZIP (entry "${e.name}" extends past end of file)`);
+}
+
 /**
  * Read one CBZ entry as raw bytes. Positional read: only the central directory
  * and this entry's payload are touched, never the whole archive.
  */
-export async function readZipEntryFromDisk(p: string, entryName: string): Promise<Buffer> {
+export async function readZipEntryFromDisk(p: string, entryName: string, maxBytes = ENTRY_MAX_BYTES): Promise<Buffer> {
   const fh = await fs.promises.open(p, 'r');
   try {
     const stat = await fh.stat();
@@ -536,13 +551,15 @@ export async function readZipEntryFromDisk(p: string, entryName: string): Promis
     const e = entries.find((x) => x.name === entryName);
     if (!e) throw new Error(`Entry "${entryName}" not found`);
     const start = await payloadStartFromDisk(fh, e);
+    // Sizes come from the archive itself: bound them before allocating.
+    checkPayloadBounds(e, start, stat.size, maxBytes);
     const raw = Buffer.alloc(e.compressedSize);
     await readFull(fh, raw, start);
     switch (e.method) {
       case 0:
         return raw;
       case 8:
-        return await inflateRawAsync(raw);
+        return await inflateRawAsync(raw, { maxOutputLength: maxBytes });
       default:
         throw new Error(`Unsupported compression method ${e.method} for entry "${entryName}"`);
     }
@@ -551,8 +568,6 @@ export async function readZipEntryFromDisk(p: string, entryName: string): Promis
   }
 }
 
-/** Hard cap on a cover payload (a single page image, never the whole archive). */
-const COVER_MAX_BYTES = 32 * 1024 * 1024;
 
 /**
  * Resolve a cover image for a download output path: the first image entry of a
@@ -586,7 +601,12 @@ export async function readCoverImage(outputPath: string): Promise<{ data: Buffer
     }
   }
 
-  const fh = await fs.promises.open(outputPath, 'r');
+  let fh: fs.promises.FileHandle;
+  try {
+    fh = await fs.promises.open(outputPath, 'r');
+  } catch {
+    return null;
+  }
   try {
     const entries = await readZipEntriesFromDisk(fh, st.size);
     const imageEntries = entries
@@ -594,10 +614,17 @@ export async function readCoverImage(outputPath: string): Promise<{ data: Buffer
       .sort((a, b) => comparePageNames(a.name, b.name));
     for (const e of imageEntries) {
       const mime = imageMime(e.name)!;
-      const start = await payloadStartFromDisk(fh, e);
-      const raw = Buffer.allocUnsafe(e.compressedSize);
-      await readFull(fh, raw, start);
-      const data = e.method === 0 ? raw : await inflateRawAsync(raw);
+      let data: Buffer;
+      try {
+        const start = await payloadStartFromDisk(fh, e);
+        checkPayloadBounds(e, start, st.size, COVER_MAX_BYTES);
+        const raw = Buffer.allocUnsafe(e.compressedSize);
+        await readFull(fh, raw, start);
+        // The declared size is untrusted; cap what inflate may produce.
+        data = e.method === 0 ? raw : await inflateRawAsync(raw, { maxOutputLength: COVER_MAX_BYTES });
+      } catch {
+        continue; // one bad entry must not hide a later valid cover
+      }
       if (data.length === 0) continue;
       return { data, mime };
     }

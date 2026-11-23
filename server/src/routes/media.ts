@@ -81,6 +81,40 @@ function isAllowedHost(hostname: string): boolean {
   return ALLOWED_HOSTS.some((a) => h === a || h.endsWith('.' + a)) || NHENTAI_CDN_HOST.test(h);
 }
 
+/**
+ * Raster types the proxy may serve. Everything it returns is same-origin, so
+ * an upstream answering with HTML or SVG must never pass through: that would
+ * run script on the app's origin with the viewer's session.
+ */
+const SAFE_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/jxl', 'image/heic', 'image/heif', 'image/bmp']);
+
+/** Identify a raster image from its leading bytes (null when unrecognized). */
+function sniffImageType(buf: Buffer): string | null {
+  const format = detectImageFormat(buf);
+  if (format) return format === 'jpg' ? 'image/jpeg' : format === 'png' ? 'image/png' : format === 'gif' ? 'image/gif' : 'image/webp';
+  if (buf.length >= 12 && buf.toString('latin1', 4, 8) === 'ftyp') {
+    const brand = buf.toString('latin1', 8, 12);
+    if (brand === 'avif' || brand === 'avis') return 'image/avif';
+    if (brand === 'heic' || brand === 'heix' || brand === 'hevc' || brand === 'heim' || brand === 'heis') return 'image/heic';
+    if (brand === 'mif1' || brand === 'msf1') return 'image/heif';
+  }
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0x0a) return 'image/jxl';
+  if (buf.length >= 12 && buf.readUInt32BE(0) === 0x0c && buf.toString('latin1', 4, 8) === 'JXL ') return 'image/jxl';
+  if (buf.length >= 2 && buf[0] === 0x42 && buf[1] === 0x4d) return 'image/bmp';
+  return null;
+}
+
+/**
+ * The content type to serve for proxied bytes: a declared raster type is
+ * kept (served with nosniff, so it can never be reinterpreted); anything else
+ * — HTML, SVG, missing — is replaced by the sniffed format or rejected.
+ */
+export function safeMediaType(declared: string | null | undefined, buf: Buffer): string | null {
+  const base = (declared ?? '').split(';', 1)[0].trim().toLowerCase();
+  if (SAFE_IMAGE_TYPES.has(base)) return base;
+  return sniffImageType(buf);
+}
+
 function isHttpUrl(u: URL): boolean {
   return u.protocol === 'https:' || u.protocol === 'http:';
 }
@@ -363,14 +397,11 @@ async function loadMediaUncached(target: string, parsed: URL): Promise<MediaResu
     return { ok: false, status: 502, error: 'Response too large' };
   }
 
-  let type = res.headers.get('content-type') || 'image/jpeg';
-  if (isEhentaiCoverHost(parsed.hostname)) {
-    // E-Hentai serves quota/denial HTML with image content types under
-    // load: trust only the bytes, never the header.
-    const format = detectImageFormat(buf);
-    if (!format) return { ok: false, status: 502, error: 'Upstream did not return an image' };
-    type = format === 'jpg' ? 'image/jpeg' : format === 'png' ? 'image/png' : format === 'gif' ? 'image/gif' : 'image/webp';
-  }
+  // E-Hentai serves quota/denial HTML with image content types under load:
+  // trust only its bytes, never the header. Other CDNs keep a declared raster
+  // type; non-image types are sniffed or rejected (see safeMediaType).
+  const type = isEhentaiCoverHost(parsed.hostname) ? sniffImageType(buf) : safeMediaType(res.headers.get('content-type'), buf);
+  if (!type) return { ok: false, status: 502, error: 'Upstream did not return an image' };
   setCached(target, type, buf);
   void setDisk(target, type, buf);
   return { ok: true, type, buf };
@@ -398,13 +429,19 @@ export function mediaRouter(): Hono {
     if (!target || !parsed) return c.json({ error: 'Invalid media URL' }, 400);
     const result = await loadMedia(target, parsed);
     if (!result.ok) return c.json({ error: result.error }, result.status);
+    // Re-checked on every response: disk-cache entries written by older
+    // builds may carry an unvalidated upstream type.
+    const type = safeMediaType(result.type, result.buf);
+    if (!type) return c.json({ error: 'Upstream did not return an image' }, 502);
     const buffer = result.buf.buffer;
     const bytes = buffer instanceof ArrayBuffer
       ? new Uint8Array(buffer, result.buf.byteOffset, result.buf.byteLength)
       : Uint8Array.from(result.buf);
     return c.body(bytes, 200, {
-      'Content-Type': result.type,
+      'Content-Type': type,
       'Cache-Control': 'private, max-age=3600',
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "default-src 'none'; sandbox",
     });
   });
 

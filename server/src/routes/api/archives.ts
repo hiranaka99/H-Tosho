@@ -107,7 +107,7 @@ api.get('/cbz/page', async (c) => {
   if (!mime) return c.json({ error: 'Entry is not a recognized image' }, 400);
   try {
     const buf = await readZipEntryFromDisk(full, name);
-    return new Response(buf, { status: 200, headers: { 'Content-Type': mime, 'Cache-Control': 'private, max-age=3600' } });
+    return new Response(buf, { status: 200, headers: { 'Content-Type': mime, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' } });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 404);
   }

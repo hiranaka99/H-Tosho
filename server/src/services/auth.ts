@@ -2,6 +2,7 @@ import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Context, MiddlewareHandler } from 'hono';
+import { getConnInfo } from '@hono/node-server/conninfo';
 import { getDb, schema } from '../db/index.js';
 
 const AUTH_KEY = 'app-auth';
@@ -22,6 +23,69 @@ interface Session {
 }
 
 const sessions = new Map<string, Session>();
+
+/**
+ * Failed password attempts per client socket address. scrypt alone only slows
+ * each guess; it never limits how many run in parallel. After
+ * FREE_FAILED_ATTEMPTS failures inside the window, each further attempt from
+ * that address must wait an exponentially growing delay (capped, so a shared
+ * reverse-proxy address can never lock the owner out for long). The socket
+ * address is used rather than X-Forwarded-For, which any client can forge.
+ */
+const FAILURE_WINDOW_MS = 15 * 60_000;
+const FREE_FAILED_ATTEMPTS = 5;
+const MAX_LOCKOUT_MS = 5 * 60_000;
+const MAX_TRACKED_CLIENTS = 10_000;
+interface FailureRecord { count: number; firstAt: number; lockedUntil: number }
+const failures = new Map<string, FailureRecord>();
+
+function clientKey(c: Context): string {
+  try {
+    return getConnInfo(c).remote.address ?? 'unknown';
+  } catch {
+    return 'unknown'; // non-socket adapters (tests, app.request)
+  }
+}
+
+/** Remaining lockout in ms for this client, 0 when it may try a password. */
+function lockoutRemaining(key: string, now = Date.now()): number {
+  const record = failures.get(key);
+  if (!record) return 0;
+  if (now - record.firstAt > FAILURE_WINDOW_MS && now >= record.lockedUntil) {
+    failures.delete(key);
+    return 0;
+  }
+  return Math.max(0, record.lockedUntil - now);
+}
+
+function recordFailure(key: string, now = Date.now()): void {
+  let record = failures.get(key);
+  if (!record || (now - record.firstAt > FAILURE_WINDOW_MS && now >= record.lockedUntil)) {
+    if (!record && failures.size >= MAX_TRACKED_CLIENTS) {
+      const oldest = failures.keys().next().value;
+      if (oldest !== undefined) failures.delete(oldest);
+    }
+    record = { count: 0, firstAt: now, lockedUntil: 0 };
+    failures.set(key, record);
+  }
+  record.count++;
+  const excess = record.count - FREE_FAILED_ATTEMPTS;
+  if (excess > 0) record.lockedUntil = now + Math.min(1000 * 2 ** (excess - 1), MAX_LOCKOUT_MS);
+}
+
+function tooManyAttempts(c: Context, remainingMs: number) {
+  const seconds = Math.ceil(remainingMs / 1000);
+  c.header('Retry-After', String(seconds));
+  return c.json({ error: `Too many failed attempts. Try again in ${seconds} second${seconds === 1 ? '' : 's'}.` }, 429);
+}
+
+/** Test hook: forget all failed-attempt state. */
+export function resetLoginThrottle(): void {
+  failures.clear();
+}
+
+/** Setup hashes asynchronously; this closes the check-then-write window. */
+let setupInProgress = false;
 
 /**
  * Parsed credentials cache: credentials() runs on every authenticated request
@@ -149,11 +213,18 @@ export function authStatus(c: Context) {
 
 export async function setup(c: Context) {
   const body = await c.req.json().catch(() => null) as { username?: unknown; password?: unknown } | null;
-  if (credentials()) return c.json({ error: 'Setup has already been completed' }, 409);
+  if (credentials() || setupInProgress) return c.json({ error: 'Setup has already been completed' }, 409);
   const error = validateCredentialsInput(body?.username, body?.password);
   if (error) return c.json({ error }, 400);
   const username = (body!.username as string).trim();
-  await storeCredentials(username, body!.password as string);
+  // Claimed synchronously: a concurrent setup cannot pass the check above
+  // while this one is hashing, so only one caller ever receives a session.
+  setupInProgress = true;
+  try {
+    await storeCredentials(username, body!.password as string);
+  } finally {
+    setupInProgress = false;
+  }
   setSession(c, username);
   return c.json({ authenticated: true, username }, 201);
 }
@@ -161,10 +232,15 @@ export async function setup(c: Context) {
 export async function login(c: Context) {
   const stored = credentials();
   if (!stored) return c.json({ error: 'Setup required' }, 403);
+  const key = clientKey(c);
+  const locked = lockoutRemaining(key);
+  if (locked > 0) return tooManyAttempts(c, locked);
   const body = await c.req.json().catch(() => null) as { username?: unknown; password?: unknown } | null;
   if (typeof body?.username !== 'string' || typeof body.password !== 'string' || body.username.trim() !== stored.username || !(await validPassword(body.password, stored))) {
+    recordFailure(key);
     return c.json({ error: 'Invalid username or password' }, 401);
   }
+  failures.delete(key);
   setSession(c, stored.username);
   return c.json({ authenticated: true, username: stored.username });
 }
@@ -177,10 +253,15 @@ export function logout(c: Context) {
 export async function changeCredentials(c: Context) {
   const stored = credentials();
   if (!stored) return c.json({ error: 'Setup required' }, 403);
+  const key = clientKey(c);
+  const locked = lockoutRemaining(key);
+  if (locked > 0) return tooManyAttempts(c, locked);
   const body = await c.req.json().catch(() => null) as { currentPassword?: unknown; username?: unknown; password?: unknown } | null;
   if (typeof body?.currentPassword !== 'string' || !(await validPassword(body.currentPassword, stored))) {
+    recordFailure(key);
     return c.json({ error: 'Current password is incorrect' }, 401);
   }
+  failures.delete(key);
   const username = body.username === undefined ? stored.username : body.username;
   const password = body.password;
   const error = validateCredentialsInput(username, password);
