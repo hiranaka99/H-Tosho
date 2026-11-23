@@ -115,6 +115,46 @@ function titleKeys(identity: GalleryIdentity): Set<string> {
     return [normalize(title), normalize(work), normalize(unwrapped)].filter(key => key.length >= 6);
   }));
 }
+
+// Bracketed annotation groups doujin titles wrap around the work's name:
+// "(C97) [Circle (Artist)] Title (Parody) [English] [Decensored]".
+const ANNOTATION = String.raw`(?:\([^()]*\)|\[[^\[\]]*\]|\{[^{}]*\}|【[^【】]*】)`;
+const LEADING_ANNOTATION = new RegExp(String.raw`^\s*${ANNOTATION}\s*`);
+const TRAILING_ANNOTATION = new RegExp(String.raw`\s*(${ANNOTATION})\s*$`);
+// A trailing annotation that may distinguish one part of a work from another
+// ("(2)", "(Jou)"/"(Ge)", "[Zenpen]", "(Final)", "(II)") is kept, never stripped.
+const PART_MARKER = /\d|[①-⑳]|^.\s*(?:[上中下続]|[前中後]編|[前中後]篇|完結編?|続編|総集編)\s*.$|chapter|volume|part|final|\b(?:ch|vol|ep|jou|chuu|ge|zenpen|chuuhen|kouhen|kanketsu|zoku|sequel|prequel|extra|omake|bonus|after|side|another|ex|[ivx]+)\b/i;
+
+/** The work's own name with event, circle/artist, parody, language and release annotations removed. */
+function coreTitle(raw: string): string {
+  let title = raw.normalize('NFKC').trim();
+  for (let match = LEADING_ANNOTATION.exec(title); match && match[0].length < title.length; match = LEADING_ANNOTATION.exec(title)) {
+    title = title.slice(match[0].length);
+  }
+  for (let match = TRAILING_ANNOTATION.exec(title); match && match.index > 0 && !PART_MARKER.test(match[1]); match = TRAILING_ANNOTATION.exec(title)) {
+    title = title.slice(0, match.index);
+  }
+  return title.trim();
+}
+
+/**
+ * Looser title keys: annotation-free core titles (each side of a bilingual
+ * "Japanese | English" title too) and titles too short for titleKeys. Only
+ * trusted together with an exactly equal page count — see duplicateReasons.
+ */
+function coreTitleKeys(identity: GalleryIdentity): Set<string> {
+  return new Set([identity.title, identity.titleAlt ?? ''].flatMap(title => {
+    const variants = [title, ...title.split(/\s+\|\s+/).filter((_, __, parts) => parts.length > 1)];
+    return variants.flatMap(variant => [normalize(variant), normalize(coreTitle(variant))]);
+  }).filter(key => key.length >= 3));
+}
+
+/** Every key a candidate may be found by; duplicateReasons decides which ones count. */
+function indexTitleKeys(identity: GalleryIdentity): Set<string> {
+  return new Set([...titleKeys(identity), ...coreTitleKeys(identity)]);
+}
+
+const intersects = (a: Set<string>, b: Set<string>) => [...a].some(key => b.has(key));
 function languageKey(value?: string | null): string {
   const key = normalize(value ?? '');
   const aliases: Record<string, string> = { en: 'english', eng: 'english', ja: 'japanese', jp: 'japanese', jpn: 'japanese', zh: 'chinese', zho: 'chinese', chi: 'chinese', ko: 'korean', kor: 'korean', de: 'german', deu: 'german', ger: 'german', fr: 'french', fra: 'french', fre: 'french', es: 'spanish', spa: 'spanish' };
@@ -123,14 +163,16 @@ function languageKey(value?: string | null): string {
 
 /** Conservative metadata evidence, never a claim of byte-identical content. */
 export function duplicateReasons(a: GalleryIdentity, b: GalleryIdentity): string[] {
-  const titles = titleKeys(b);
-  if (![...titleKeys(a)].some(title => titles.has(title))) return [];
   const artists = new Set(b.artists.map(normalize).filter(Boolean));
   if (!a.artists.some(artist => artists.has(normalize(artist)))) return [];
   const languageA = languageKey(a.language), languageB = languageKey(b.language);
   if (languageA && languageB && languageA !== languageB) return [];
   if (a.pageCount && b.pageCount && a.pageCount !== b.pageCount) return [];
-  return ['Same title', 'Same artist', ...(languageA && languageB ? ['Same language'] : []), ...(a.pageCount && b.pageCount ? ['Same page count'] : [])];
+  const samePageCount = Boolean(a.pageCount && b.pageCount);
+  // Exact titles stand on their own; a renamed or re-annotated title
+  // ("(Mana) Ganyu" vs "Ganyu") also needs the identical page count.
+  if (!intersects(titleKeys(a), titleKeys(b)) && !(samePageCount && intersects(coreTitleKeys(a), coreTitleKeys(b)))) return [];
+  return ['Same title', 'Same artist', ...(languageA && languageB ? ['Same language'] : []), ...(samePageCount ? ['Same page count'] : [])];
 }
 
 const storeKey = (identity: GalleryIdentity) => identity.path ? `duplicate-file:${identity.path}` : `duplicate-gallery:${identity.source}:${identity.galleryId}`;
@@ -316,7 +358,7 @@ export function findDuplicateReports(incoming: GalleryIdentity[], excludedPaths:
   }
   const byTitle = new Map<string, Set<GalleryIdentity>>();
   for (const candidate of includeOwned ? candidates : [...candidates, ...incoming]) {
-    for (const title of titleKeys(candidate)) {
+    for (const title of indexTitleKeys(candidate)) {
       let bucket = byTitle.get(title);
       if (!bucket) { bucket = new Set(); byTitle.set(title, bucket); }
       bucket.add(candidate);
@@ -333,7 +375,7 @@ export function findDuplicateReports(incoming: GalleryIdentity[], excludedPaths:
     const seen = new Set<string>();
     const itemKey = `${item.source}:${item.galleryId}`;
     const titleMatches = new Set<GalleryIdentity>();
-    for (const title of titleKeys(item)) {
+    for (const title of indexTitleKeys(item)) {
       const bucket = byTitle.get(title);
       if (bucket) for (const candidate of bucket) titleMatches.add(candidate);
     }
@@ -374,7 +416,7 @@ export function findKnownLibraryDuplicateKeys(incoming: GalleryIdentity[]): Set<
   const byTitle = new Map<string, Set<GalleryIdentity>>();
   const bySourceKey = new Map<string, GalleryIdentity[]>();
   for (const candidate of candidates) {
-    for (const title of titleKeys(candidate)) {
+    for (const title of indexTitleKeys(candidate)) {
       if (!byTitle.has(title)) byTitle.set(title, new Set());
       byTitle.get(title)!.add(candidate);
     }
@@ -392,7 +434,7 @@ export function findKnownLibraryDuplicateKeys(incoming: GalleryIdentity[]): Set<
       duplicates.add(key);
       continue;
     }
-    const titleCandidates = new Set([...titleKeys(item)].flatMap(title => [...(byTitle.get(title) ?? [])]));
+    const titleCandidates = new Set([...indexTitleKeys(item)].flatMap(title => [...(byTitle.get(title) ?? [])]));
     for (const candidate of titleCandidates) {
       if (!candidate.path && candidate.source === item.source && candidate.galleryId === item.galleryId) continue;
       if (candidate.path && !fs.existsSync(candidate.path)) continue;
