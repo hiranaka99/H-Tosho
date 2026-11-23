@@ -31,5 +31,25 @@ export function useGallerySelection() {
   }, []);
   const remove = React.useCallback((handled: ReadonlySet<string>) => setChosen(previous => new Map([...previous].filter(([key]) => !handled.has(key)))), []);
   const clear = React.useCallback(() => setChosen(new Map()), []);
-  return { keys, chosen, toggle, addMany, remove, clear };
+  /** One choice per edition group: any selected variant deselects the group, otherwise `item` joins. */
+  const toggleGroup = React.useCallback((groupKeys: readonly string[], item: DoujinSearchResult) => {
+    setChosen(previous => {
+      if (groupKeys.some(key => previous.has(key))) return new Map([...previous].filter(([key]) => !groupKeys.includes(key)));
+      return new Map(previous).set(keyOf(item), item);
+    });
+  }, []);
+  /** Re-point a selected group at another variant, keeping its place in click order. */
+  const replaceGroup = React.useCallback((groupKeys: readonly string[], item: DoujinSearchResult) => {
+    setChosen(previous => {
+      if (!groupKeys.some(key => previous.has(key))) return previous;
+      const next = new Map<string, DoujinSearchResult>();
+      let placed = false;
+      for (const [key, value] of previous) {
+        if (!groupKeys.includes(key) && key !== keyOf(item)) next.set(key, value);
+        else if (!placed) { next.set(keyOf(item), item); placed = true; }
+      }
+      return next;
+    });
+  }, []);
+  return { keys, chosen, toggle, addMany, remove, clear, toggleGroup, replaceGroup };
 }

@@ -155,7 +155,7 @@ export function parseCommonQuery(raw: string): ParsedCommonQuery {
     if (alias) {
       return { error: alias === 'language'
         ? 'That language is not a supported unified-search language. Try one like english, japanese, chinese, korean, or all.'
-        : `Filter "${alias}" is not available in unified search. Use the native Search tab for provider-specific filters.` };
+        : `Filter "${alias}" is not available in unified search. Choose a single source under Search in to use its own filters.` };
     }
   }
 
