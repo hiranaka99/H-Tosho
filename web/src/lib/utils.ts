@@ -48,11 +48,11 @@ export const STATUS_LABEL: Record<MatchStatus, string> = {
   failed: 'Failed',
 };
 
-/** Provider accent colors (mirrors backend provider.color). */
+/** Provider accent colors; the values live as `--provider-*` tokens in index.css. */
 export const PROVIDER_COLORS: Record<string, string> = {
-  anilist: '#02b968',
-  mangadex: '#f4c145',
-  myanimelist: '#3b82f6',
+  anilist: 'var(--provider-anilist)',
+  mangadex: 'var(--provider-mangadex)',
+  myanimelist: 'var(--provider-myanimelist)',
 };
 
 export const PROVIDER_NAMES: Record<string, string> = {

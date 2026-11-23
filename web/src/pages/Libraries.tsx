@@ -4,16 +4,34 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { Search, RefreshCw, Play, BookOpen, Unlink, FileText, Combine, Check, CheckSquare, EllipsisVertical, Trash2, Eye, X, Settings2, ListChecks } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource, type Job } from '../lib/api';
 import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog, SegmentedControl, TabPanel, Spinner, ProgressBar, Pager } from '../components/ui';
-import { IdentifyModal } from '../components/IdentifyModal';
-import { ComicInfoModal } from '../components/ComicInfoModal';
-import { SeriesPreviewModal } from '../components/SeriesPreviewModal';
-import { MergeSeriesModal } from '../components/MergeSeriesModal';
 import { PageCountPill } from '../components/PageCountPill';
 import { buildTagSearchFragment, cn, jobLabel } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { DEFAULT_REVIEW_THRESHOLD, filterLibraryRows, librarySearchTerm, normalizeSort, normalizeStatusFilter, prepareLibraryRows, rowBucket, type LibraryBucket, type LibrarySort, type LibraryStatusFilter } from '../lib/libraryShelf';
 const SERIES_PAGE_SIZE = 40;
 const EMPTY_SERIES: SeriesRow[] = [];
+
+// Dialogs open on demand, so they stay out of the shelf's first paint and are
+// fetched once the shelf is idle; the first open is then as quick as before.
+const loadIdentifyModal = () => import('../components/IdentifyModal');
+const loadComicInfoModal = () => import('../components/ComicInfoModal');
+const loadSeriesPreviewModal = () => import('../components/SeriesPreviewModal');
+const loadMergeSeriesModal = () => import('../components/MergeSeriesModal');
+const IdentifyModal = React.lazy(() => loadIdentifyModal().then((m) => ({ default: m.IdentifyModal })));
+const ComicInfoModal = React.lazy(() => loadComicInfoModal().then((m) => ({ default: m.ComicInfoModal })));
+const SeriesPreviewModal = React.lazy(() => loadSeriesPreviewModal().then((m) => ({ default: m.SeriesPreviewModal })));
+const MergeSeriesModal = React.lazy(() => loadMergeSeriesModal().then((m) => ({ default: m.MergeSeriesModal })));
+const DIALOG_PREFETCH_DELAY_MS = 1500;
+function prefetchLibraryDialogs() {
+  for (const load of [loadIdentifyModal, loadComicInfoModal, loadSeriesPreviewModal, loadMergeSeriesModal]) void load().catch(() => undefined);
+}
+
+/** A stable function identity that always runs the latest render's closure, so memoized cards skip unrelated renders. */
+function useStableCallback<A extends unknown[], R>(callback: (...args: A) => R): (...args: A) => R {
+  const latest = React.useRef(callback);
+  React.useLayoutEffect(() => { latest.current = callback; });
+  return React.useCallback((...args: A) => latest.current(...args), []);
+}
 
 const LIBRARY_STATE_KEY = 'h-tosho:library-state';
 
@@ -207,6 +225,76 @@ function cardAction(row: SeriesRow, bucket: LibraryBucket): { label: string; ari
     default: return { label: 'Details', aria: `Details for ${row.name}`, needsAction: false };
   }
 }
+
+interface SeriesCardProps {
+  row: SeriesRow;
+  bucket: LibraryBucket;
+  review: boolean;
+  selectMode: boolean;
+  checked: boolean;
+  flashed: boolean;
+  query: string;
+  onOpen: (row: SeriesRow) => void;
+  onToggle: (id: number) => void;
+  onPreview: (row: SeriesRow) => void;
+  onEdit: (row: SeriesRow) => void;
+  onUnmatch: (row: SeriesRow) => void;
+  onDelete: (row: SeriesRow) => void;
+}
+
+/** Memoized: polls keep unchanged rows referentially equal, and checking one card re-renders only that card. */
+const SeriesCard = React.memo(function SeriesCard({ row: r, bucket, review, selectMode, checked, flashed, query, onOpen, onToggle, onPreview, onEdit, onUnmatch, onDelete }: SeriesCardProps) {
+  const action = cardAction(r, bucket);
+  return (
+    <Card
+      data-library-motion-id={`shelf:${r.id}`}
+      className={cn(
+        'ui-card-interactive group relative z-0 flex min-w-0 flex-col transition-colors duration-200 focus-within:z-40',
+        checked ? 'border-primary bg-primary/10 ring-2 ring-primary' : 'hover:border-border-2',
+        flashed && 'library-card-changed',
+      )}
+    >
+      <button
+        type="button"
+        data-grid-cell
+        className="flex w-full flex-col rounded-xl text-left"
+        onClick={(event) => {
+          event.stopPropagation();
+          if (selectMode) onToggle(r.id);
+          else onOpen(r);
+        }}
+        title={selectMode ? (checked ? 'Deselect series' : 'Select series') : `${r.providerId ? 'Review metadata for' : 'Identify'} ${r.name}`}
+        aria-label={selectMode ? (checked ? `Deselect ${r.name}` : `Select ${r.name}`) : `${r.providerId ? 'Review metadata for' : 'Identify'} ${r.name}`}
+        aria-pressed={selectMode ? checked : undefined}
+      >
+        {selectMode && (
+          <span className={cn('pointer-events-none absolute left-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md border transition-colors duration-150', checked ? 'border-primary-button bg-primary-button text-white' : 'border-border-2 bg-surface text-muted')} aria-hidden>{checked ? <Check className="library-selection-check h-5 w-5" /> : <span className="h-4 w-4 rounded-sm border-2 border-current" />}</span>
+        )}
+        <div className="relative aspect-[3/4] w-full overflow-hidden rounded-t-xl">
+          <Cover src={r.cover} name={r.name} className="library-cover" />
+          <PageCountPill pageCount={r.pageCount} className="absolute bottom-2 right-2" />
+        </div>
+        <div className="min-w-0 w-full px-3 pt-3">
+          <p className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]" title={r.name}>{r.name}</p>
+        </div>
+      </button>
+      <div className="flex min-w-0 flex-1 flex-col gap-2 px-3 pb-3 pt-2">
+        <div className="flex min-h-6 flex-wrap items-center gap-1">
+          {bucket === 'review'
+            ? <Badge tone="warning">Needs review · {Math.round(r.matchScore! * 100)}%</Badge>
+            : <StatusBadge status={r.status} />}
+        </div>
+        {r.status === 'failed' && <p className="break-words text-xs text-danger line-clamp-2" title={r.errorMessage || undefined}>{r.errorMessage || 'Matching or sync failed. Retry identification, or check provider settings.'}</p>}
+        {!!r.artists?.length && <p className="min-w-0 break-words text-xs font-medium text-foreground line-clamp-2" title={`Artists: ${r.artists.join(', ')}`}><span className="text-muted">Artist{r.artists.length > 1 ? 's' : ''} · </span>{r.artists.join(', ')}</p>}
+        <MatchingTags tags={r.tags} query={query} />
+        {review && <p className="text-xs text-muted">{r.libraryName}</p>}
+        {!selectMode && <Button variant={action.needsAction ? 'outline' : 'ghost'} aria-label={action.aria} className={cn('mt-auto min-h-9 w-full px-2 text-xs max-lg:min-h-11 pointer-coarse:min-h-11', action.needsAction ? 'border-primary/40 text-primary-hover hover:text-primary-hover' : 'text-muted')} onClick={() => onOpen(r)}>{action.label}</Button>}
+        {selectMode && <Button size="sm" className="mt-auto" variant={checked ? 'default' : 'outline'} aria-pressed={checked} aria-label={`${checked ? 'Remove' : 'Select'} ${r.name} ${checked ? 'from' : 'for'} merging`} onClick={() => onToggle(r.id)}><CheckSquare className="h-4 w-4" />{checked ? 'Selected' : 'Select'}</Button>}
+      </div>
+      {!selectMode && <CardActionMenu row={r} onPreview={() => onPreview(r)} onEdit={() => onEdit(r)} onUnmatch={() => onUnmatch(r)} onDelete={() => onDelete(r)} />}
+    </Card>
+  );
+});
 
 const STATUS_CHIPS: readonly { id: LibraryStatusFilter; label: string }[] = [
   { id: 'all', label: 'All' },
@@ -417,14 +505,14 @@ export function Libraries({ review = false }: { review?: boolean }) {
     setPage(1);
   };
 
-  const toggleCheck = (id: number) => {
+  const toggleCheck = React.useCallback((id: number) => {
     setChecked((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  };
+  }, []);
 
   const enqueue = useMutation({
     mutationFn: ({ type, libraryId }: { type: 'scan-new' | 'match-unmatched'; libraryId: number }) => api.enqueue(type, { libraryId }),
@@ -538,6 +626,18 @@ export function Libraries({ review = false }: { review?: boolean }) {
     },
     onError: (e) => toast({ tone: 'danger', title: 'Could not queue the deletion', description: e instanceof Error ? e.message : String(e) }),
   });
+
+  const openCard = useStableCallback((row: SeriesRow) => openIdentify(row));
+  const previewCard = React.useCallback((row: SeriesRow) => setPreview({ id: row.id, name: row.name }), []);
+  const editCard = React.useCallback((row: SeriesRow) => setComicInfo({ id: row.id, name: row.name }), []);
+  const deleteCard = useStableCallback((row: SeriesRow) => prepareDelete.mutate(row));
+
+  const hasSeries = series.data !== undefined;
+  React.useEffect(() => {
+    if (!hasSeries) return;
+    const timer = window.setTimeout(prefetchLibraryDialogs, DIALOG_PREFETCH_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [hasSeries]);
 
   /** Arrow keys move between books; Tab still walks the actions inside each card. */
   const gridKeys = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -737,60 +837,24 @@ export function Libraries({ review = false }: { review?: boolean }) {
               </Card>
             ) : (
               <div onKeyDown={gridKeys} className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-                {visibleRows.map(r => {
-                  const bucket = bucketById.get(r.id) ?? 'other';
-                  const action = cardAction(r, bucket);
-                  return (
-                  <Card
+                {visibleRows.map(r => (
+                  <SeriesCard
                     key={r.id}
-                    data-library-motion-id={`shelf:${r.id}`}
-                    className={cn(
-                      'ui-card-interactive group relative z-0 flex min-w-0 flex-col transition-colors duration-200 focus-within:z-40',
-                      checked.has(r.id) ? 'border-primary bg-primary/10 ring-2 ring-primary' : 'hover:border-border-2',
-                      flashIds.has(r.id) && 'library-card-changed',
-                    )}
-                  >
-                    <button
-                      type="button"
-                      data-grid-cell
-                      className="flex w-full flex-col rounded-xl text-left"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (selectMode) toggleCheck(r.id);
-                        else openIdentify(r);
-                      }}
-                      title={selectMode ? (checked.has(r.id) ? 'Deselect series' : 'Select series') : `${r.providerId ? 'Review metadata for' : 'Identify'} ${r.name}`}
-                      aria-label={selectMode ? (checked.has(r.id) ? `Deselect ${r.name}` : `Select ${r.name}`) : `${r.providerId ? 'Review metadata for' : 'Identify'} ${r.name}`}
-                      aria-pressed={selectMode ? checked.has(r.id) : undefined}
-                    >
-                      {selectMode && (
-                        <span className={cn('pointer-events-none absolute left-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md border transition-colors duration-150', checked.has(r.id) ? 'border-primary-button bg-primary-button text-white' : 'border-border-2 bg-surface text-muted')} aria-hidden>{checked.has(r.id) ? <Check className="library-selection-check h-5 w-5" /> : <span className="h-4 w-4 rounded-sm border-2 border-current" />}</span>
-                      )}
-                      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-t-xl">
-                        <Cover src={r.cover} name={r.name} className="library-cover" />
-                        <PageCountPill pageCount={r.pageCount} className="absolute bottom-2 right-2" />
-                      </div>
-                      <div className="min-w-0 w-full px-3 pt-3">
-                        <p className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]" title={r.name}>{r.name}</p>
-                      </div>
-                    </button>
-                    <div className="flex min-w-0 flex-1 flex-col gap-2 px-3 pb-3 pt-2">
-                      <div className="flex min-h-6 flex-wrap items-center gap-1">
-                        {bucket === 'review'
-                          ? <Badge tone="warning">Needs review · {Math.round(r.matchScore! * 100)}%</Badge>
-                          : <StatusBadge status={r.status} />}
-                      </div>
-                      {r.status === 'failed' && <p className="break-words text-xs text-danger line-clamp-2" title={r.errorMessage || undefined}>{r.errorMessage || 'Matching or sync failed. Retry identification, or check provider settings.'}</p>}
-                      {!!r.artists?.length && <p className="min-w-0 break-words text-xs font-medium text-foreground line-clamp-2" title={`Artists: ${r.artists.join(', ')}`}><span className="text-muted">Artist{r.artists.length > 1 ? 's' : ''} · </span>{r.artists.join(', ')}</p>}
-                      <MatchingTags tags={r.tags} query={query} />
-                      {review && <p className="text-xs text-muted">{r.libraryName}</p>}
-                      {!selectMode && <Button variant={action.needsAction ? 'outline' : 'ghost'} aria-label={action.aria} className={cn('mt-auto min-h-9 w-full px-2 text-xs max-lg:min-h-11 pointer-coarse:min-h-11', action.needsAction ? 'border-primary/40 text-primary-hover hover:text-primary-hover' : 'text-muted')} onClick={() => openIdentify(r)}>{action.label}</Button>}
-                      {selectMode && <Button size="sm" className="mt-auto" variant={checked.has(r.id) ? 'default' : 'outline'} aria-pressed={checked.has(r.id)} aria-label={`${checked.has(r.id) ? 'Remove' : 'Select'} ${r.name} ${checked.has(r.id) ? 'from' : 'for'} merging`} onClick={() => toggleCheck(r.id)}><CheckSquare className="h-4 w-4" />{checked.has(r.id) ? 'Selected' : 'Select'}</Button>}
-                    </div>
-                    {!selectMode && <CardActionMenu row={r} onPreview={() => setPreview({ id: r.id, name: r.name })} onEdit={() => setComicInfo({ id: r.id, name: r.name })} onUnmatch={() => setUnmatchTarget(r)} onDelete={() => prepareDelete.mutate(r)} />}
-                  </Card>
-                  );
-                })}
+                    row={r}
+                    bucket={bucketById.get(r.id) ?? 'other'}
+                    review={review}
+                    selectMode={selectMode}
+                    checked={checked.has(r.id)}
+                    flashed={flashIds.has(r.id)}
+                    query={query}
+                    onOpen={openCard}
+                    onToggle={toggleCheck}
+                    onPreview={previewCard}
+                    onEdit={editCard}
+                    onUnmatch={setUnmatchTarget}
+                    onDelete={deleteCard}
+                  />
+                ))}
               </div>
             )}
             {filtered.length > SERIES_PAGE_SIZE && (
@@ -838,6 +902,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
         onOpenChange={(open) => { if (!open && !deleteSeries.isPending) setDeleteTarget(null); }}
         onConfirm={() => { if (deleteTarget) deleteSeries.mutate(deleteTarget); }}
       />
+      <React.Suspense fallback={null}>
       {identify && (
         <IdentifyModal
           key={identify.id}
@@ -872,6 +937,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
           onClose={() => setMergeOpen(false)}
         />
       )}
+      </React.Suspense>
     </div>
   );
 }
