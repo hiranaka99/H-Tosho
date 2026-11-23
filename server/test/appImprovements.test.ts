@@ -260,3 +260,32 @@ test('switching Kavita connections clears cached library tags', async () => {
   const rows = await (await api.request('/kavita/libraries/7/series')).json();
   assert.deepEqual(rows[0].tags, ['Other Server Tag']);
 });
+
+test('the library picker lists libraries without downloading their series', async () => {
+  settings.setKavitaConnection({ baseUrl: 'http://library-picker.test', apiKey: 'test-key' });
+  let seriesCalls = 0;
+  KavitaClient.prototype.getLibraries = async () => [{ id: 7, name: 'Manga', monitor: true, mediaFormat: 'manga' }, { id: 8, name: 'Doujinshi', monitor: true, mediaFormat: 'manga' }];
+  KavitaClient.prototype.getSeries = async () => { seriesCalls++; return [series]; };
+  const response = await api.request('/kavita/libraries');
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).map((library: { id: number; name: string }) => [library.id, library.name]), [[7, 'Manga'], [8, 'Doujinshi']]);
+  assert.equal(seriesCalls, 0);
+});
+
+test('large library series lists are gzip-compressed for clients that accept it', async () => {
+  settings.setKavitaConnection({ baseUrl: 'http://library-gzip.test', apiKey: 'test-key' });
+  KavitaClient.prototype.getSeries = async () => Array.from({ length: 200 }, (_, index) => ({ ...series, id: 5000 + index, name: `Series title ${index}` }));
+  KavitaClient.prototype.getSeriesMetadata = async () => metadata({ tags: [{ id: 1, title: 'Romance' }] });
+  const compressed = await api.request('/kavita/libraries/7/series', { headers: { 'Accept-Encoding': 'gzip' } });
+  assert.equal(compressed.status, 200);
+  assert.equal(compressed.headers.get('Content-Encoding'), 'gzip');
+  assert.match(compressed.headers.get('Vary') ?? '', /Accept-Encoding/);
+  const { gunzipSync } = await import('node:zlib');
+  const rows = JSON.parse(gunzipSync(Buffer.from(await compressed.arrayBuffer())).toString('utf8'));
+  assert.equal(rows.length, 200);
+  assert.deepEqual(rows[0].tags, ['Romance']);
+  const plain = await api.request('/kavita/libraries/7/series');
+  assert.equal(plain.headers.get('Content-Encoding'), null);
+  assert.equal((await plain.json()).length, 200);
+});
+

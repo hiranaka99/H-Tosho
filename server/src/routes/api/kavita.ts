@@ -1,5 +1,6 @@
 import { rememberDuplicateLibraryRoots } from '../../services/galleryDuplicates.js';
 import { Hono } from 'hono';
+import { compress } from 'hono/compress';
 import { eq, inArray } from 'drizzle-orm';
 import { libraryMutations } from '../../lib/mutations.js';
 import { jobQueue } from '../../jobs/queue.js';
@@ -7,12 +8,16 @@ import { downloadQueue } from '../../downloader/engine.js';
 import { kavitaConnectionKey } from '../../services/kavitaState.js';
 import { getDb, schema } from '../../db/index.js';
 import { KavitaClient } from '../../kavita/client.js';
-import { KAVITA_OPENAPI_VERSION, type KavitaLibrary, type KavitaSeries } from '../../kavita/types.js';
+import { KAVITA_OPENAPI_VERSION, type KavitaSeries } from '../../kavita/types.js';
 import { getKavitaConnection, setKavitaConnection } from '../../services/settings.js';
 import { kavitaSeriesSearchMetadata } from '../../services/seriesArtists.js';
 
 import { connectedClient, errMsg, intParam, kavitaCoverUrl } from './helpers.js';
 export const api = new Hono();
+
+// A large library's series list is megabytes of repetitive JSON, fetched on open and
+// every few seconds while a task runs; gzip shrinks it by roughly 90% on the wire.
+api.use('/kavita/libraries/:id/series', compress());
 
 /** Snapshot of the connection that was replaced by a save whose test failed. */
 const KAVITA_PREVIOUS_KEY = 'kavita-previous';
@@ -97,31 +102,10 @@ api.get('/kavita/libraries', async (c) => {
   try {
     const libs = await client.getLibraries();
     rememberDuplicateLibraryRoots(libs);
-    const matchedIds = new Set(
-      getDb()
-        .select({ kavitaSeriesId: schema.seriesMatches.kavitaSeriesId })
-        .from(schema.seriesMatches)
-        .where(eq(schema.seriesMatches.status, 'matched'))
-        .all()
-        .map((r) => r.kavitaSeriesId),
-    );
-    // Fetch every library's series in parallel (was a sequential per-library
-    // round-trip) and count matches with an O(1) set lookup. One failing
-    // library must not 502 the whole list: it is reported with zero counts
-    // and an error note instead.
-    const results = await Promise.allSettled(libs.map((lib) => client.getSeries(lib.id)));
-    const out: (KavitaLibrary & { seriesCount: number; matchedCount: number; error?: string })[] = libs.map((l, i) => {
-      const r = results[i];
-      if (r.status === 'rejected') {
-        return { ...l, seriesCount: 0, matchedCount: 0, error: errMsg(r.reason) };
-      }
-      const series = r.value as KavitaSeries[];
-      return {
-        ...l,
-        seriesCount: series.length,
-        matchedCount: series.filter((s) => matchedIds.has(s.id)).length };
-    });
-    return c.json(out);
+    // Library pickers only need names and paths. Per-library series counts used to
+    // download every series of every library on each request; the series list
+    // endpoint below loads one library when it is actually opened.
+    return c.json(libs);
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

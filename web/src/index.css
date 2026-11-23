@@ -46,6 +46,10 @@
   --skeleton-hi: #eed9e3;
   --control-shadow: rgb(92 35 64 / 0.12);
   --card-shadow: rgb(92 35 64 / 0.045);
+  /* Metadata provider identity accents: the same in both themes (mirrors backend provider.color). */
+  --provider-anilist: #02b968;
+  --provider-mangadex: #f4c145;
+  --provider-myanimelist: #3b82f6;
 }
 
 .dark {

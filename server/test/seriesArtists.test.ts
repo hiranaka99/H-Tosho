@@ -118,4 +118,40 @@ describe('kavitaSeriesArtists', () => {
     invalidateSeriesArtists(109);
     assert.deepEqual((await kavitaSeriesSearchMetadata(s.source, [109])).get(109)?.tags, ['New']);
   });
+it('serves expired entries immediately and refreshes them once in the background', async () => {
+    const s = makeSource();
+    s.set(110, { writers: [{ name: 'Before' }] });
+    await kavitaSeriesArtists(s.source, [110]);
+    const realNow = Date.now;
+    Date.now = () => realNow() + 6 * 60 * 1000;
+    try {
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const slow = { async getSeriesMetadata(id: number) { await gate; return s.source.getSeriesMetadata(id); } };
+      s.set(110, { writers: [{ name: 'After' }] });
+      assert.deepEqual((await kavitaSeriesArtists(slow, [110])).get(110), ['Before'], 'an expired entry must not block the response');
+      assert.deepEqual((await kavitaSeriesArtists(slow, [110])).get(110), ['Before'], 'a refresh already in flight is not started again');
+      release();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual((await kavitaSeriesArtists(s.source, [110])).get(110), ['After']);
+      assert.deepEqual(s.calls, [110, 110], 'one initial read and one background refresh');
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it('does not cache a read that raced an invalidation', async () => {
+    const s = makeSource();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    s.set(111, { writers: [{ name: 'Old' }] });
+    const slow = { async getSeriesMetadata(id: number) { const meta = await s.source.getSeriesMetadata(id); await gate; return meta; } };
+    const pending = kavitaSeriesArtists(slow, [111]);
+    await new Promise(resolve => setImmediate(resolve));
+    invalidateSeriesArtists(111);
+    s.set(111, { writers: [{ name: 'New' }] });
+    release();
+    await pending;
+    assert.deepEqual((await kavitaSeriesArtists(s.source, [111])).get(111), ['New']);
+  });
 });

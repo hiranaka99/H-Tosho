@@ -32,8 +32,6 @@ export interface KavitaLibrary {
   paths?: string[];
   mediaFormat?: string;
   monitor?: boolean;
-  seriesCount?: number;
-  matchedCount?: number;
 }
 
 export interface SeriesRow {

@@ -11,11 +11,13 @@ test-results/
 .nyc_output/
 
 # ---- Local Impeccable state, caches, reports & previews ---------------------
-# Only the DESIGN.md sidecar and the live config are versioned; everything
-# else (screenshots, direction notes, process info, detector config) stays
-# local so the checkout stays clean for automatic pulls.
+# Only the DESIGN.md sidecar, the full DESIGN.md that its compact map points
+# to, and the live config are versioned; everything else (screenshots,
+# direction notes, process info, detector config) stays local so the checkout
+# stays clean for automatic pulls.
 **/.impeccable/*
 !**/.impeccable/design.json
+!**/.impeccable/design-full.md
 !**/.impeccable/live/
 **/.impeccable/live/*
 !**/.impeccable/live/config.json
