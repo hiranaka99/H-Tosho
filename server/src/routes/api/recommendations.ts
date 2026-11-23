@@ -55,12 +55,15 @@ api.get('/recommendations/settings', (c) => c.json(getRecommendationSettings()))
 api.get('/recommendations/feedback', (c) => c.json(getRecommendationFeedback()));
 api.post('/recommendations/feedback', async (c) => {
   const body = await c.req.json().catch(() => null);
-  const actions: FeedbackAction[] = ['like', 'unlike', 'mute-artist', 'unmute-artist'];
+  const actions: FeedbackAction[] = ['like', 'unlike', 'mute-artist', 'unmute-artist', 'mute-tag', 'unmute-tag'];
   if (!body || !actions.includes(body.action) || body.source !== 'hitomi'
     || typeof body.galleryId !== 'string' || !body.galleryId.trim() || body.galleryId.length > 200
-    || (body.action.includes('artist') && (typeof body.artist !== 'string' || !body.artist.trim() || body.artist.length > 200))) return c.json({ error: 'Invalid recommendation feedback' }, 400);
+    || (body.action.includes('artist') && (typeof body.artist !== 'string' || !body.artist.trim() || body.artist.length > 200))
+    || (body.action.includes('tag') && (typeof body.tag !== 'string' || !body.tag.trim() || body.tag.length > 200))) {
+    return c.json({ error: 'Invalid recommendation feedback' }, 400);
+  }
   try {
-    const result = await applyRecommendationFeedback(body.action, { source: body.source, galleryId: body.galleryId.trim(), artist: body.artist });
+    const result = await applyRecommendationFeedback(body.action, { source: body.source, galleryId: body.galleryId.trim(), artist: body.artist, tag: body.tag });
     return c.json({ ...result, recommendations: { ...result.recommendations, items: result.recommendations.items.map(rewriteDoujinCover) } });
   } catch (error) { return c.json({ error: errMsg(error) }, 400); }
 });

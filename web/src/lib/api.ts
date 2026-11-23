@@ -353,10 +353,11 @@ export interface RecommendationSettings {
 export interface RecommendationFeedback {
   liked: DoujinSearchResult[];
   mutedArtists: string[];
+  mutedTags?: string[];
 }
 export interface FeedbackRequest {
-  action: 'like' | 'unlike' | 'mute-artist' | 'unmute-artist';
-  source: DoujinSource; galleryId: string; artist?: string;
+  action: 'like' | 'unlike' | 'mute-artist' | 'unmute-artist' | 'mute-tag' | 'unmute-tag';
+  source: DoujinSource; galleryId: string; artist?: string; tag?: string;
 }
 
 export interface AuthStatus {

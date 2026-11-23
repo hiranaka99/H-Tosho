@@ -1,7 +1,7 @@
-import { buildProfile, backfillMissingTags, type ProfileTerm, type TasteProfile } from './recommendationProfile.js';
+import { buildProfile, backfillMissingTags, isBoilerplateTag, type ProfileTerm, type TasteProfile } from './recommendationProfile.js';
 import { MutationCoordinator } from '../lib/mutations.js';
 const recommendationMutations = new MutationCoordinator();
-import { and, asc, desc, eq, gte, lt, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery, DoujinSearchResult, DoujinSort } from '../downloader/types.js';
@@ -11,7 +11,7 @@ import { getDownloaderSettings, onSettingChange, setRecommendationSettings } fro
 import { buildKavitaSignals, clearRecommendationSignals, onRecommendationSeriesChange } from './recommendationSignals.js';
 import { eligibleRecommendations } from './recommendationEligibility.js';
 import type { DoujinProvider } from '../downloader/types.js';
-import { rankCandidates, selectRecommendations } from './recommendationRanking.js';
+import { rankCandidates, selectBalancedRecommendations, selectRecommendations } from './recommendationRanking.js';
 import type { Candidate } from './recommendationRanking.js';
 import { getRecommendationFeedback, saveRecommendationFeedback, type FeedbackAction, type RecommendationFeedback } from './recommendationFeedback.js';
 
@@ -49,39 +49,33 @@ import { getRecommendationFeedback, saveRecommendationFeedback, type FeedbackAct
  */
 const SOURCES = ['hitomi'] as const;
 
-/** Top-N profile terms turned into one search query each, per source. */
+/** Top-N profile terms turned into one search query each, per source (capped at <=9 total). */
 const ARTIST_QUERIES = 2; // artist terms per source — artists rotate, tags/series carry the set
-const TAG_QUERIES = 4; // top tag terms per source
-const SERIES_QUERIES = 3; // top Kavita series titles per source (series search)
+const PAIR_QUERIES = 2; // distinctive co-occurring tag pairs (replaces single-tag/series slots)
+const TAG_QUERIES = 4; // top tag terms per source when no tag pairs are available
+const SERIES_QUERIES = 3; // top parody/series terms per source when no tag pairs are available
 /**
- * How many heaviest terms per kind are eligible for queries. Wide pools are
- * what give later rolls somewhere to rotate to; without them every roll
- * queries the same handful of heaviest terms and returns the same galleries.
- * Artists sample without an anchor (they rotate fully); tags/series keep
- * their #1 anchor on only some rolls (see buildQuerySpecs).
+ * How many heaviest terms per kind are eligible for weighted query sampling.
+ * Wide pools let long-tail favorites surface while weight-proportional draws
+ * keep core tastes prominent.
  */
-const ARTIST_QUERY_POOL = 12;
-const TAG_QUERY_POOL = 16;
-const SERIES_QUERY_POOL = 12;
+const ARTIST_QUERY_POOL = 24;
+const TAG_QUERY_POOL = 32;
+const SERIES_QUERY_POOL = 20;
 /** Results fetched per candidate query — hydration is one request per gallery, so the cap stays tight. */
 const HITOMI_RESULTS_PER_QUERY = 12;
 /**
- * Seeded skip window for candidate queries. Popularity-sorted rankings barely
- * move between rolls, so without rotation every refresh would re-query the
- * same top slice per term and the fresh pool would dry up after a few sets —
- * forcing same-day re-serves. Each spec skips a seeded number of leading
- * results, sliding its sampled window down the ranking as the day's
- * refreshes accumulate.
+ * Seeded skip window for candidate queries. Combined with `wrapSkip: true`,
+ * popular rankings rotate cleanly while small artists/niche tags wrap within
+ * their available catalog instead of returning empty slices.
  */
 const ROLL_SKIP_WINDOW = 24;
-/**
- * Popularity horizons a roll draws one sort from, per source. All-time lists
- * barely move day to day; pairing them with a weekly horizon keeps the
- * candidate pool itself rotating, not just the terms querying it.
- */
-const SEARCH_SORTS: Record<(typeof SOURCES)[number], DoujinSort[]> = {
-  hitomi: ['popular-year', 'popular-week'],
-};
+const PAIR_SKIP_WINDOW = 12;
+/** Per-kind popularity/recency horizons so artists surface both classics and new releases. */
+const ARTIST_SORTS: DoujinSort[] = ['popular', 'default', 'popular-year'];
+const PAIR_SORTS: DoujinSort[] = ['popular-year', 'popular-month', 'popular'];
+const TAG_SORTS: DoujinSort[] = ['popular-year', 'popular-month', 'popular-week'];
+const SERIES_SORTS: DoujinSort[] = ['popular-year', 'popular-month', 'popular-week'];
 /** Target size; strict eligibility and artist/work diversity may yield fewer. */
 const TOTAL_PICKS = 12;
 /** Hydrated spares cached for instant dismissed-card replacement. */
@@ -154,13 +148,36 @@ function persistGalleryTags(source: DoujinSource, gallery: DoujinGallery, invali
     .map((name, i) => ({ name: String(name ?? '').trim(), ns: gallery.tagNamespaces?.[i] ?? null }))
     .filter((t) => t.name);
   const artists = (gallery.artists ?? []).map((a) => String(a ?? '').trim()).filter(Boolean);
+  const parodies = [...new Set([...(gallery.parodies ?? []), ...(gallery.series ? [gallery.series] : [])].map((p) => String(p ?? '').trim()).filter(Boolean))];
+  const characters = (gallery.characters ?? []).map((ch) => String(ch ?? '').trim()).filter(Boolean);
+  const groups = (gallery.groups ?? []).map((g) => String(g ?? '').trim()).filter(Boolean);
   try {
     getDb()
       .insert(schema.galleryTags)
-      .values({ source, galleryId: gallery.galleryId, title: gallery.title, tagsJson: JSON.stringify(tags), artistsJson: JSON.stringify(artists), language: gallery.language ?? null, fetchedAt: new Date().toISOString() })
+      .values({
+        source,
+        galleryId: gallery.galleryId,
+        title: gallery.title,
+        tagsJson: JSON.stringify(tags),
+        artistsJson: JSON.stringify(artists),
+        parodiesJson: JSON.stringify(parodies),
+        charactersJson: JSON.stringify(characters),
+        groupsJson: JSON.stringify(groups),
+        language: gallery.language ?? null,
+        fetchedAt: new Date().toISOString(),
+      })
       .onConflictDoUpdate({
         target: [schema.galleryTags.source, schema.galleryTags.galleryId],
-        set: { title: gallery.title, tagsJson: JSON.stringify(tags), artistsJson: JSON.stringify(artists), language: gallery.language ?? null, fetchedAt: new Date().toISOString() },
+        set: {
+          title: gallery.title,
+          tagsJson: JSON.stringify(tags),
+          artistsJson: JSON.stringify(artists),
+          parodiesJson: JSON.stringify(parodies),
+          charactersJson: JSON.stringify(characters),
+          groupsJson: JSON.stringify(groups),
+          language: gallery.language ?? null,
+          fetchedAt: new Date().toISOString(),
+        },
       })
       .run();
     getDb().insert(schema.ownedGalleries).values({ source, galleryId: gallery.galleryId }).onConflictDoNothing().run();
@@ -199,73 +216,180 @@ interface QuerySpec {
   skip: number;
 }
 
-/** Hitomi search fragment for a profile term (null = not searchable). */
-function fragmentFor(term: ProfileTerm): string | null {
-  const name = term.name.trim();
-  if (!name) return null;
-  // Hitomi namespaces use underscores for multi-word values.
-  if (term.kind === 'artist') return `artist:${name.replace(/\s+/g, '_')}`;
-  if (term.kind === 'series') {
-    // Fan works of a series are indexed under its name.
-    return `series:${name.replace(/\s+/g, '_')}`;
-  }
-  const ns = term.nsBySource.hitomi ?? null;
-  if (ns === 'language') return null; // language is handled as its own filter
-  return ns ? `${ns}:${name.replace(/\s+/g, '_')}` : name;
+interface ResolvedTagInfo {
+  ns: string;
+  count: number;
 }
 
+/** Hitomi search fragment for a profile term (null = not searchable). */
+function fragmentFor(term: ProfileTerm, resolvedTags?: Map<string, ResolvedTagInfo>): string | null {
+  const name = term.name.trim();
+  if (!name) return null;
+  const encoded = name.replace(/\s+/g, '_');
+  // Hitomi namespaces use underscores for multi-word values.
+  if (term.kind === 'artist') return `artist:${encoded}`;
+  if (term.kind === 'series') {
+    // Fan works of a series are indexed under its name.
+    return `series:${encoded}`;
+  }
+  const resolved = resolvedTags?.get(name.toLowerCase());
+  const ns = term.nsBySource.hitomi ?? (resolved && (resolved.ns === 'female' || resolved.ns === 'male') ? resolved.ns : null);
+  if (ns === 'language') return null; // language is handled as its own filter
+  return ns ? `${ns}:${encoded}` : encoded;
+}
 
 /**
- * The terms queried this roll. Tags/series keep their #1 heaviest term as a
- * taste anchor on only half the rolls (a seeded coin — anchoring every roll
- * re-queries the top term every time and the set converges on it); artists
- * are always fully seeded-sampled from their pool. One query per term, per
- * source (AND-combining would shrink pools too hard). Each spec also draws a
- * seeded skip so consecutive rolls sample different slices of each static
- * ranking.
+ * Resolve Hitomi namespaces & catalog counts for top profile tags (especially
+ * un-namespaced tags from Kavita, nHentai, and liked galleries). Cached in the
+ * provider; gracefully no-ops when the provider stub lacks `resolveTagInfo`.
  */
-function buildQuerySpecs(profile: TasteProfile, rng: () => number): QuerySpec[] {
-  const artists = sampleTerms(profile.terms.filter((t) => t.kind === 'artist'), ARTIST_QUERIES, ARTIST_QUERY_POOL, rng, false);
-  const tags = sampleTerms(
-    profile.terms.filter((t) => t.kind === 'tag' && (t.nsBySource.hitomi ?? null) !== 'language'),
-    TAG_QUERIES,
-    TAG_QUERY_POOL,
+async function resolveProfileTags(profile: TasteProfile, provider: DoujinProvider | null | undefined): Promise<Map<string, ResolvedTagInfo>> {
+  const out = new Map<string, ResolvedTagInfo>();
+  if (!provider?.resolveTagInfo) return out;
+  const tagTerms = profile.terms
+    .filter((t) => t.kind === 'tag' && (t.nsBySource.hitomi ?? null) !== 'language' && !isBoilerplateTag(t.name))
+    .slice(0, TAG_QUERY_POOL);
+  const results = await mapLimit(tagTerms, 4, async (term) => {
+    try {
+      const info = await provider.resolveTagInfo!(term.name);
+      return info ? { key: term.name.toLowerCase(), info } : null;
+    } catch {
+      return null;
+    }
+  });
+  for (const entry of results) {
+    if (entry) out.set(entry.key, { ns: entry.info.ns, count: entry.info.count });
+  }
+  return out;
+}
+
+/**
+ * Weighted sampling without replacement over the top `poolSize` terms.
+ * Uses sqrt(weight) so favorites are queried more frequently while long-tail
+ * tastes still surface across rolls.
+ */
+function sampleWeightedTerms<T extends { weight: number }>(terms: T[], count: number, poolSize: number, rng: () => number, anchor = false): T[] {
+  const pool = terms.slice(0, poolSize);
+  if (pool.length <= count) return pool;
+  const selected: T[] = [];
+  const remaining = [...pool];
+  if (anchor && remaining.length > 0) {
+    selected.push(remaining.shift()!);
+  }
+  while (selected.length < count && remaining.length > 0) {
+    const weights = remaining.map((item) => Math.sqrt(Math.max(0.1, item.weight)));
+    const total = weights.reduce((sum, w) => sum + w, 0);
+    let draw = rng() * total;
+    let pick = remaining.length - 1;
+    for (let i = 0; i < remaining.length; i++) {
+      draw -= weights[i];
+      if (draw < 0) {
+        pick = i;
+        break;
+      }
+    }
+    selected.push(remaining.splice(pick, 1)[0]);
+  }
+  return selected;
+}
+
+/**
+ * Build up to 9 Hitomi candidate queries per roll:
+ *   - 2 artist queries (classics + latest releases)
+ *   - up to 2 co-occurring tag-pair queries (multi-tag synergy)
+ *   - remaining tag queries (non-boilerplate only, with resolved namespaces)
+ *   - series/parody queries (preferring confirmed parodies over Kavita titles)
+ */
+function buildQuerySpecs(profile: TasteProfile, rng: () => number, resolvedTags?: Map<string, ResolvedTagInfo>): QuerySpec[] {
+  const artists = sampleWeightedTerms(
+    profile.terms.filter((t) => t.kind === 'artist'),
+    ARTIST_QUERIES,
+    ARTIST_QUERY_POOL,
     rng,
-    rng() < 0.5,
+    false,
   );
-  const series = sampleTerms(profile.terms.filter((t) => t.kind === 'series'), SERIES_QUERIES, SERIES_QUERY_POOL, rng, rng() < 0.5);
+
+  // Sample up to 2 distinctive co-occurring tag pairs.
+  const sampledPairs = sampleWeightedTerms(
+    profile.tagPairs.map((pair) => ({ ...pair, weight: pair.score })),
+    PAIR_QUERIES,
+    12,
+    rng,
+    false,
+  );
+  const pairSpecs: QuerySpec[] = [];
+  for (const source of SOURCES) {
+    for (const pair of sampledPairs) {
+      const fragA = fragmentFor(pair.a, resolvedTags);
+      const fragB = fragmentFor(pair.b, resolvedTags);
+      if (!fragA || !fragB || fragA === fragB) continue;
+      pairSpecs.push({
+        source,
+        query: `${fragA} ${fragB}`,
+        results: HITOMI_RESULTS_PER_QUERY,
+        terms: [pair.a, pair.b],
+        sort: PAIR_SORTS[Math.floor(rng() * PAIR_SORTS.length)],
+        skip: Math.floor(rng() * PAIR_SKIP_WINDOW),
+      });
+    }
+  }
+
+  const allNonLangTags = profile.terms.filter((t) => t.kind === 'tag' && (t.nsBySource.hitomi ?? null) !== 'language');
+  const distinctiveTags = allNonLangTags.filter((t) => !isBoilerplateTag(t.name));
+  const tagCandidates = distinctiveTags.length > 0 ? distinctiveTags : allNonLangTags;
+  const tagQuota = pairSpecs.length > 0 ? Math.max(2, TAG_QUERIES - pairSpecs.length) : TAG_QUERIES;
+  const tags = sampleWeightedTerms(tagCandidates, tagQuota, TAG_QUERY_POOL, rng, rng() < 0.4);
+
+  const allSeries = profile.terms.filter((t) => t.kind === 'series');
+  const confirmedSeries = allSeries.filter((t) => t.nsBySource.hitomi === 'series');
+  const fallbackSeries = allSeries.filter((t) => t.nsBySource.hitomi !== 'series');
+  const seriesQuota = pairSpecs.length > 0 ? Math.min(2, SERIES_QUERIES) : SERIES_QUERIES;
+  const seriesPool = [...confirmedSeries, ...fallbackSeries];
+  const series = sampleWeightedTerms(seriesPool, seriesQuota, SERIES_QUERY_POOL, rng, confirmedSeries.length > 0 && rng() < 0.4);
+
   const specs: QuerySpec[] = [];
   for (const source of SOURCES) {
-    for (const term of [...artists, ...tags, ...series]) {
-      const frag = fragmentFor(term);
+    for (const term of artists) {
+      const frag = fragmentFor(term, resolvedTags);
       if (!frag) continue;
       specs.push({
         source,
         query: frag,
         results: HITOMI_RESULTS_PER_QUERY,
         terms: [term],
-        sort: SEARCH_SORTS[source][Math.floor(rng() * SEARCH_SORTS[source].length)],
+        sort: ARTIST_SORTS[Math.floor(rng() * ARTIST_SORTS.length)],
+        skip: Math.floor(rng() * ROLL_SKIP_WINDOW),
+      });
+    }
+    for (const spec of pairSpecs) {
+      if (spec.source === source) specs.push(spec);
+    }
+    for (const term of tags) {
+      const frag = fragmentFor(term, resolvedTags);
+      if (!frag) continue;
+      specs.push({
+        source,
+        query: frag,
+        results: HITOMI_RESULTS_PER_QUERY,
+        terms: [term],
+        sort: TAG_SORTS[Math.floor(rng() * TAG_SORTS.length)],
+        skip: Math.floor(rng() * ROLL_SKIP_WINDOW),
+      });
+    }
+    for (const term of series) {
+      const frag = fragmentFor(term, resolvedTags);
+      if (!frag) continue;
+      specs.push({
+        source,
+        query: frag,
+        results: HITOMI_RESULTS_PER_QUERY,
+        terms: [term],
+        sort: SERIES_SORTS[Math.floor(rng() * SERIES_SORTS.length)],
         skip: Math.floor(rng() * ROLL_SKIP_WINDOW),
       });
     }
   }
   return specs;
-}
-
-/**
- * Top-`count` terms from a weight-descending list. With `anchor`, the #1 term
- * is always in and the remaining slots are seeded-sampled from the top
- * `poolSize`; without it, all slots are sampled from the pool.
- */
-function sampleTerms(terms: ProfileTerm[], count: number, poolSize: number, rng: () => number, anchor = true): ProfileTerm[] {
-  const pool = terms.slice(0, poolSize);
-  if (pool.length <= count) return pool;
-  const rest = anchor ? pool.slice(1) : [...pool];
-  for (let i = 0; i < (anchor ? count - 1 : count); i++) {
-    const j = i + Math.floor(rng() * (rest.length - i));
-    [rest[i], rest[j]] = [rest[j], rest[i]];
-  }
-  return anchor ? [pool[0], ...rest.slice(0, count - 1)] : rest.slice(0, count);
 }
 
 // ---------------------------------------------------------------------------
@@ -282,8 +406,24 @@ function credit(c: Candidate, termKey: string, reason: string): void {
 }
 
 
+function numericHitomiIds(keys: Set<string>): Set<number> {
+  const out = new Set<number>();
+  for (const key of keys) {
+    if (!key.startsWith('hitomi:')) continue;
+    const id = Number(key.slice('hitomi:'.length));
+    if (Number.isSafeInteger(id) && id > 0) out.add(id);
+  }
+  return out;
+}
+
 /** Search every spec and merge candidates by gallery (a gallery hit by several queries sums their weights). */
-async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, termIndex: Map<string, ProfileTerm>): Promise<Map<string, Candidate>> {
+async function gatherCandidates(
+  specs: QuerySpec[],
+  downloaded: Set<string>,
+  termIndex: Map<string, ProfileTerm>,
+  excludeIds?: Set<number>,
+  queryLanguage?: string,
+): Promise<Map<string, Candidate>> {
   const out = new Map<string, Candidate>();
   // Run one spec's search, returning its raw results (or null when the query
   // failed — one failing query cannot kill the whole generation).
@@ -291,7 +431,14 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
     const provider = getDoujinProvider(spec.source);
     if (!provider) return null;
     try {
-      return await provider.search(spec.query, spec.results, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES, skip: spec.skip, strictExclusions: true });
+      return await provider.search(spec.query, spec.results, spec.sort, {
+        excludeTypes: EXCLUDED_GALLERY_TYPES,
+        skip: spec.skip,
+        wrapSkip: true,
+        excludeIds,
+        language: queryLanguage,
+        strictExclusions: true,
+      });
     } catch (err) {
       console.warn(`[h-tosho] recommendations query failed (${spec.source} “${spec.query}”):`, err instanceof Error ? err.message : err);
       return null;
@@ -325,7 +472,7 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
           out.set(key, c);
         }
         for (const t of spec.terms) credit(c, `${t.kind}:${t.name.toLowerCase()}`, `${t.kind} ${t.name}`);
-        // Hitomi results carry their own tag/artist lists — credit extra profile terms they share.
+        // Hitomi results carry their own tag/artist/parody lists — credit extra profile terms they share.
         if (r.source === 'hitomi') {
           for (const a of r.artists ?? []) {
             const t = termIndex.get(`artist:${a.toLowerCase()}`);
@@ -334,6 +481,10 @@ async function gatherCandidates(specs: QuerySpec[], downloaded: Set<string>, ter
           for (const tag of r.tags ?? []) {
             const t = termIndex.get(`tag:${tag.toLowerCase()}`);
             if (t) credit(c, `tag:${tag.toLowerCase()}`, `tag ${t.name}`);
+          }
+          for (const parody of r.parodies ?? []) {
+            const t = termIndex.get(`series:${parody.toLowerCase()}`);
+            if (t) credit(c, `series:${parody.toLowerCase()}`, `series ${t.name}`);
           }
         }
       }
@@ -351,7 +502,12 @@ const POPULAR_FALLBACK: Record<(typeof SOURCES)[number], { query: string; sort: 
   hitomi: { query: 'doujinshi', sort: 'popular-year' },
 };
 
-async function gatherPopular(downloaded: Set<string>, rng: () => number): Promise<RecommendationItem[]> {
+async function gatherPopular(
+  downloaded: Set<string>,
+  rng: () => number,
+  excludeIds?: Set<number>,
+  queryLanguage?: string,
+): Promise<RecommendationItem[]> {
   const out: RecommendationItem[] = [];
   await Promise.all(
     SOURCES.map(async (source) => {
@@ -359,7 +515,14 @@ async function gatherPopular(downloaded: Set<string>, rng: () => number): Promis
       if (!provider) return;
       const spec = POPULAR_FALLBACK[source];
       try {
-        const results = await provider.search(spec.query, TOTAL_PICKS + RESERVE_PICKS, spec.sort, { excludeTypes: EXCLUDED_GALLERY_TYPES, skip: Math.floor(rng() * ROLL_SKIP_WINDOW), strictExclusions: true });
+        const results = await provider.search(spec.query, TOTAL_PICKS + RESERVE_PICKS, spec.sort, {
+          excludeTypes: EXCLUDED_GALLERY_TYPES,
+          skip: Math.floor(rng() * ROLL_SKIP_WINDOW),
+          wrapSkip: true,
+          excludeIds,
+          language: queryLanguage,
+          strictExclusions: true,
+        });
         const pool = results.filter((r) => !downloaded.has(keyOf(r)));
         for (let i = pool.length - 1; i > 0; i--) {
           const j = Math.floor(rng() * (i + 1));
@@ -407,11 +570,20 @@ function localDate(d = new Date()): string {
 // Generation + daily cache
 // ---------------------------------------------------------------------------
 
-function completedGalleryKeys(): Set<string> {
+function activeOrCompletedDownloadKeys(): Set<string> {
   const rows = getDb()
     .select({ source: schema.downloadQueue.source, galleryId: schema.downloadQueue.galleryId })
     .from(schema.downloadQueue)
-    .where(eq(schema.downloadQueue.status, 'completed'))
+    .where(inArray(schema.downloadQueue.status, ['completed', 'queued', 'downloading', 'paused']))
+    .all();
+  return new Set(rows.map((r) => `${r.source}:${r.galleryId}`));
+}
+
+function unreviewedFollowingKeys(): Set<string> {
+  const rows = getDb()
+    .select({ source: schema.watchedSearchNew.source, galleryId: schema.watchedSearchNew.galleryId })
+    .from(schema.watchedSearchNew)
+    .where(isNull(schema.watchedSearchNew.reviewedAt))
     .all();
   return new Set(rows.map((r) => `${r.source}:${r.galleryId}`));
 }
@@ -584,11 +756,19 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
   await backfillMissingTags(persistGalleryTags);
   const kavitaSignals = await buildKavitaSignals();
   const profile = buildProfile(kavitaSignals);
-  // Downloaded and owned galleries are hard exclusions. History is initially a
-  // freshness exclusion, then becomes the least-recent fallback pool.
+  // Downloaded, queued, owned, dismissed, and unreviewed Following items are
+  // hard exclusions. History is initially a freshness exclusion, then becomes
+  // the least-recent fallback pool.
   const history = pruneHistory();
-  const hardExcluded = new Set([...completedGalleryKeys(), ...ownedGalleryKeys(), ...getDb().select().from(schema.dismissedGalleries).all().map(keyOf)]);
+  const hardExcluded = new Set([
+    ...activeOrCompletedDownloadKeys(),
+    ...ownedGalleryKeys(),
+    ...unreviewedFollowingKeys(),
+    ...getDb().select().from(schema.dismissedGalleries).all().map(keyOf),
+  ]);
   const freshExcluded = new Set([...hardExcluded, ...history.map((h) => h.key)]);
+  const excludeIds = numericHitomiIds(freshExcluded);
+  const queryLanguage = profile.language ?? (profile.multiLanguage ? 'all' : undefined);
 
   let items: RecommendationItem[] = [];
   let libraryPicks = 0;
@@ -608,6 +788,7 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
     return { candidates, popular };
   };
   let { candidates, popular } = await readFreshPool();
+  let resolvedTags = new Map<string, ResolvedTagInfo>();
   // Count picks under the same gallery/work/artist constraints as selection,
   // rather than treating many galleries from one artist as a full pool. This
   // probe leaves the roll's RNG untouched and fetching stays bounded to one batch.
@@ -617,11 +798,12 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
   ], TOTAL_PICKS + RESERVE_PICKS, () => 0);
   if (usable.length < TOTAL_PICKS + RESERVE_PICKS) {
     if (profile.terms.length >= MIN_PROFILE_TERMS || getRecommendationFeedback().liked.length > 0) {
+      resolvedTags = await resolveProfileTags(profile, provider);
       const termIndex = new Map(profile.terms.map((term) => [`${term.kind}:${term.name.toLowerCase()}`, term]));
-      const fetched = await gatherCandidates(buildQuerySpecs(profile, rng), hardExcluded, termIndex);
+      const fetched = await gatherCandidates(buildQuerySpecs(profile, rng, resolvedTags), hardExcluded, termIndex, excludeIds, queryLanguage);
       for (const [key, candidate] of fetched) pool.candidates.set(key, candidate);
     }
-    const fetchedPopular = await gatherPopular(hardExcluded, rng);
+    const fetchedPopular = await gatherPopular(hardExcluded, rng, excludeIds, queryLanguage);
     const popularByKey = new Map(pool.popular.map((item) => [keyOf(item), item]));
     for (const item of fetchedPopular) popularByKey.set(keyOf(item), item);
     pool.popular = [...popularByKey.values()].slice(-240);
@@ -629,8 +811,21 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
     ({ candidates, popular } = await readFreshPool());
   }
   candidateCount = candidates.size;
-  rankCandidates([...candidates.values()], new Map(profile.terms.map((term) => [`${term.kind}:${term.name.toLowerCase()}`, term.weight])), profile.language);
-  items = selectRecommendations([...candidates.values()], TOTAL_PICKS, rng);
+  const globalTagCounts = new Map<string, number>();
+  for (const [name, info] of resolvedTags) {
+    if (info.count > 0) globalTagCounts.set(`tag:${name}`, info.count);
+  }
+  rankCandidates(
+    [...candidates.values()],
+    new Map(profile.terms.map((term) => [`${term.kind}:${term.name.toLowerCase()}`, term.weight])),
+    profile.language,
+    {
+      dislikedTerms: profile.dislikedTerms,
+      globalTagCounts: globalTagCounts.size > 0 ? globalTagCounts : undefined,
+      preferredPageCount: profile.preferredPageCount,
+    },
+  );
+  items = selectBalancedRecommendations([...candidates.values()], TOTAL_PICKS, rng);
   libraryPicks = items.length;
   items.push(...selectRecommendations(popular.map(asCandidate), TOTAL_PICKS - items.length, rng, items));
 
@@ -651,10 +846,12 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
       if (items.length >= TOTAL_PICKS) break;
     }
   }
-  // Reserves are ranked independently; promotion rechecks current diversity.
+  // Reserves are ordered highest-scored first so card dismissals promote strong spares.
   const visibleKeys = new Set(items.map(keyOf));
-  const leftovers = [...candidates.values()].filter((candidate) => !visibleKeys.has(keyOf(candidate.result)));
-  const reserve = selectRecommendations(leftovers, RESERVE_PICKS, rng);
+  const leftovers = [...candidates.values()]
+    .filter((candidate) => !visibleKeys.has(keyOf(candidate.result)))
+    .sort((a, b) => b.score - a.score);
+  const reserve = selectRecommendations(leftovers, RESERVE_PICKS, () => 0);
   reserve.push(...selectRecommendations(popular.filter((item) => !visibleKeys.has(keyOf(item))).map(asCandidate), RESERVE_PICKS - reserve.length, rng, reserve));
 
 
@@ -856,12 +1053,33 @@ export async function refreshRecommendations(): Promise<RecommendationResponse> 
     return withOwned(await generateFor(date, ++refreshNonce));
   });
 }
-/** Explicit feedback excludes only this gallery; it never becomes an ownership/taste vote. */
+/** Explicit feedback excludes this gallery and records its metadata as a soft negative taste signal. */
 export async function dismissAndReplace(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
   return recommendationMutations.run(['displayed-set'], async () => {
-    getDb().insert(schema.dismissedGalleries).values({ source, galleryId }).onConflictDoNothing().run();
-    profileRevision += 1;
     const cached = readDisplayedSet();
+    const targetKey = `${source}:${galleryId}`;
+    const known = cached?.items.find((item) => keyOf(item) === targetKey)
+      ?? cached?.reserve.find((item) => keyOf(item) === targetKey)
+      ?? readHistoryItem(source, galleryId);
+    getDb()
+      .insert(schema.dismissedGalleries)
+      .values({
+        source,
+        galleryId,
+        title: known?.title ?? null,
+        artistsJson: JSON.stringify(known?.artists ?? []),
+        tagsJson: JSON.stringify(known?.tags ?? []),
+      })
+      .onConflictDoUpdate({
+        target: [schema.dismissedGalleries.source, schema.dismissedGalleries.galleryId],
+        set: {
+          title: known?.title ?? null,
+          artistsJson: JSON.stringify(known?.artists ?? []),
+          tagsJson: JSON.stringify(known?.tags ?? []),
+        },
+      })
+      .run();
+    profileRevision += 1;
     if (!cached) return displayedRecommendations();
     const updated = await reconcileDisplayedSet(cached);
     return withOwned(updated);
@@ -914,11 +1132,17 @@ async function restoreHistoryItem(source: DoujinSource, galleryId: string): Prom
 }
 
 /** Use server-side history/provider metadata, not client-supplied taste signals. */
-export async function applyRecommendationFeedback(action: FeedbackAction, target: { source: DoujinSource; galleryId: string; artist?: string }): Promise<{ feedback: RecommendationFeedback; recommendations: RecommendationResponse }> {
+export async function applyRecommendationFeedback(
+  action: FeedbackAction,
+  target: { source: DoujinSource; galleryId: string; artist?: string; tag?: string },
+): Promise<{ feedback: RecommendationFeedback; recommendations: RecommendationResponse }> {
   return recommendationMutations.run(['displayed-set'], async () => {
     let item: DoujinSearchResult | undefined;
-    if (action === 'like' || action === 'mute-artist') {
-      item = readHistoryItem(target.source, target.galleryId);
+    if (action === 'like' || action === 'mute-artist' || action === 'mute-tag') {
+      const targetKey = `${target.source}:${target.galleryId}`;
+      const cached = readDisplayedSet();
+      item = cached?.items.find((entry) => keyOf(entry) === targetKey)
+        ?? readHistoryItem(target.source, target.galleryId);
       if (!item) {
         const provider = getDoujinProvider(target.source);
         if (!provider?.getGallery) throw new Error('Gallery metadata is unavailable');

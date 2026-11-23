@@ -242,6 +242,10 @@ export interface KavitaSeries {
   bookCount: number;
   /** Total page count across the series' chapters, as tracked by Kavita. */
   pages?: number;
+  pagesRead?: number;
+  totalReads?: number;
+  userRating?: number;
+  hasUserRated?: boolean;
   totalChapterCount?: number;
   lastAdded?: string;
   /** When the series was added to Kavita (series creation date). */

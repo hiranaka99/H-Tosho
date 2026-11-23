@@ -97,9 +97,13 @@ interface GalleryCardProps {
   display?: 'full' | 'recommendation' | 'discovery';
   /** Render the download action as an outline button so a shelf of cards stays calm. */
   quietAction?: boolean;
+  /** Denser tile for shelves: always vertical, tighter padding, one-line Artist label. */
+  compact?: boolean;
   /** Extra sources this gallery was also found on (unified search grouping).
    *  Text labels — never color-only. */
   provenance?: { extraSources: DoujinSource[] };
+  /** Profile reasons explaining why a recommendation card was picked. */
+  reasons?: string[];
 }
 
 function sameGalleryCardProps(prev: GalleryCardProps, next: GalleryCardProps): boolean {
@@ -109,6 +113,7 @@ function sameGalleryCardProps(prev: GalleryCardProps, next: GalleryCardProps): b
     || prev.starting !== next.starting
     || prev.display !== next.display
     || prev.quietAction !== next.quietAction
+    || prev.compact !== next.compact
     || prev.ownership.type !== next.ownership.type
     || prev.selection?.mode !== next.selection?.mode
     || prev.selection?.selected !== next.selection?.selected
@@ -122,6 +127,12 @@ function sameGalleryCardProps(prev: GalleryCardProps, next: GalleryCardProps): b
     || prev.review?.onChange !== next.review?.onChange
     || prev.feedback?.onOpen !== next.feedback?.onOpen
   ) return false;
+  const prevReasons = prev.reasons;
+  const nextReasons = next.reasons;
+  if (prevReasons !== nextReasons) {
+    if (!prevReasons || !nextReasons || prevReasons.length !== nextReasons.length) return false;
+    if (!prevReasons.every((reason, i) => reason === nextReasons[i])) return false;
+  }
   const prevExtra = prev.provenance?.extraSources;
   const nextExtra = next.provenance?.extraSources;
   if (prevExtra === nextExtra) return true;
@@ -129,13 +140,42 @@ function sameGalleryCardProps(prev: GalleryCardProps, next: GalleryCardProps): b
   return prevExtra.every((source, i) => source === nextExtra[i]);
 }
 
-export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', quietAction = false, provenance }: GalleryCardProps) {
+function summarizeRecommendationReasons(reasons?: string[]): { summary: string; full: string } | null {
+  if (!reasons?.length) return null;
+  const parsed = reasons
+    .map((reason) => {
+      const sep = reason.indexOf(' ');
+      if (sep <= 0) return null;
+      const kind = reason.slice(0, sep);
+      const value = reason.slice(sep + 1).trim();
+      return value ? { kind, value } : null;
+    })
+    .filter((entry): entry is { kind: string; value: string } => entry !== null);
+  if (!parsed.length) return null;
+  const priority: Record<string, number> = { artist: 0, series: 1, tag: 2 };
+  parsed.sort((a, b) => (priority[a.kind] ?? 3) - (priority[b.kind] ?? 3));
+  const full = parsed.map((entry) => `${entry.kind === 'artist' ? 'Artist' : entry.kind === 'series' ? 'Series' : 'Tag'}: ${entry.value}`).join(' · ');
+  const lead = parsed[0];
+  if (lead.kind === 'artist') {
+    const extraTag = parsed.find((entry) => entry.kind === 'tag');
+    return { summary: extraTag ? `Because you like ${lead.value} · ${extraTag.value}` : `Because you like ${lead.value}`, full };
+  }
+  if (lead.kind === 'series') {
+    const extraTag = parsed.find((entry) => entry.kind === 'tag');
+    return { summary: extraTag ? `Series: ${lead.value} · ${extraTag.value}` : `Series: ${lead.value}`, full };
+  }
+  const topTags = parsed.filter((entry) => entry.kind === 'tag').slice(0, 2).map((entry) => entry.value);
+  return { summary: `Matches: ${topTags.join(', ')}`, full };
+}
+
+export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', quietAction = false, compact = false, provenance, reasons }: GalleryCardProps) {
   const selectMode = selection?.mode === 'select', selected = selection?.selected ?? false;
   const onToggleSelect = selection?.onToggle, onReview = review?.onChange;
   const reviewed = review?.state === 'reviewed', reviewPending = review?.state === 'pending';
   const onFeedback = feedback?.onOpen, dismissing = feedback?.pending ?? false;
   const libraryMatch = ownership.type === 'in-library' ? 'owned' : ownership.type === 'possible-duplicate' ? 'possible' : undefined;
   const showSource = display !== 'recommendation', showTags = display === 'full';
+  const reasonLine = display === 'recommendation' ? summarizeRecommendationReasons(reasons) : null;
   const ownershipType = ownership.type === 'available' ? null : ownership.type;
   const tags = item.tags.slice(0, 4);
   const inLibrary = libraryMatch === 'owned';
@@ -150,7 +190,7 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
         selected ? 'border-primary bg-primary/10 ring-2 ring-primary' : 'border-border bg-surface hover:border-border-2',
       )}
     >
-      <button type="button" onClick={() => (selectMode ? onToggleSelect?.(item) : onOpen(item))} className="grid min-w-0 grid-cols-[5rem_minmax(0,1fr)] text-left min-[420px]:block" aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
+      <button type="button" onClick={() => (selectMode ? onToggleSelect?.(item) : onOpen(item))} className={cn('min-w-0 text-left', compact ? 'block' : 'grid grid-cols-[5rem_minmax(0,1fr)] min-[420px]:block')} aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
         <div className="relative overflow-hidden">
           <Cover url={item.coverUrl} title={item.title} className="downloader-cover aspect-[3/4] w-full" />
           <PageCountPill pageCount={item.pageCount} className={cn('absolute right-2', selectMode || selected ? 'bottom-2' : 'top-2')} />
@@ -166,17 +206,22 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
             </span>
           </div>}
         </div>
-        <div className="flex min-w-0 flex-col gap-2 p-3 pb-0">
+        <div className={cn('flex min-w-0 flex-col', compact ? 'gap-1 p-2.5 pb-0' : 'gap-2 p-3 pb-0')}>
           <p className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]" title={item.title}>{item.title}</p>
           {item.artists.length > 0 && (
             <p className="truncate text-xs font-medium text-foreground" title={`Artists: ${item.artists.join(', ')}`}>
-              <span className="text-muted">Artist{item.artists.length > 1 ? 's' : ''} · </span>{item.artists.join(', ')}
+              {!compact && <span className="text-muted">Artist{item.artists.length > 1 ? 's' : ''} · </span>}{item.artists.join(', ')}
+            </p>
+          )}
+          {reasonLine && (
+            <p className="truncate text-xs text-muted" title={reasonLine.full}>
+              {reasonLine.summary}
             </p>
           )}
           {showTags && tags.length > 0 && <div className="flex max-h-12 flex-wrap gap-1 overflow-hidden" aria-label="Tags">{tags.map((tag, i) => <span key={i} className="max-w-full truncate rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{tag}</span>)}</div>}
         </div>
       </button>
-      <div className="mt-auto flex min-w-0 flex-col gap-2 p-3">
+      <div className={cn('mt-auto flex min-w-0 flex-col gap-2', compact ? 'p-2.5' : 'p-3')}>
         {(showSource || ownershipType || provenance) && (
           <div className="flex min-h-6 flex-wrap items-center gap-2">
             {ownershipType && <OwnershipChip type={ownershipType} className="min-[420px]:hidden" />}

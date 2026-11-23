@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DoujinSearchResult } from '../src/downloader/types.js';
-import { rankCandidates, selectRecommendations, workKey, type Candidate } from '../src/services/recommendationRanking.js';
+import { rankCandidates, selectBalancedRecommendations, selectRecommendations, workKey, type Candidate } from '../src/services/recommendationRanking.js';
 
 function candidate(id: string, overrides: Partial<DoujinSearchResult> = {}, terms: string[] = []): Candidate {
   return {
@@ -110,4 +110,55 @@ test('unrelated similar titles, volumes and unspecified editions keep their own 
   assert.notEqual(workKey(unsuffixed), workKey({ ...unsuffixed, galleryId: 'different' }), 'identical generic titles are not reliable work identity');
   const unrelated = candidate('unrelated', { title: 'A Work [Japanese]', artists: ['Beta'], pageCount: 24 });
   assert.deepEqual(new Set(ids(selectRecommendations([{ ...candidate('original'), result: original }, unrelated], 2, seeded(4)))), new Set(['original', 'unrelated']));
+});
+
+test('workKey merges explicit language editions carrying known edition qualifiers like [Decensored]', () => {
+  const english = candidate('en', { title: 'A Work [English]', artists: ['Alpha'], pageCount: 24 }).result;
+  const decensored = candidate('dec', { title: 'A Work [English] [Decensored]', artists: ['Alpha'], pageCount: 24 }).result;
+  assert.equal(workKey(english), workKey(decensored));
+});
+
+test('tag precision favors focused matches over bloated kitchen-sink anthologies and respects global IDF & dislikes', () => {
+  const focused = candidate('focused', { tags: ['elf', 'stockings', 'vanilla', 'romance'] }, ['tag:elf', 'tag:stockings']);
+  const anthology = candidate('anthology', {
+    tags: ['elf', 'stockings', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p'],
+  }, ['tag:elf', 'tag:stockings']);
+  const dismissed = candidate('dismissed', { tags: ['elf', 'stockings', 'unwanted'], artists: ['Dismissed Artist'] }, ['tag:elf', 'tag:stockings']);
+  const weights = new Map([['tag:elf', 5], ['tag:stockings', 5]]);
+  const globalTagCounts = new Map([['tag:elf', 1200], ['tag:stockings', 40000]]);
+  rankCandidates([focused, anthology, dismissed], weights, 'english', {
+    globalTagCounts,
+    dislikedTerms: { 'artist:dismissed artist': 2, 'tag:unwanted': 2 },
+  });
+  assert.ok(focused.score > anthology.score, 'focused doujinshi should outrank bloated anthology');
+  assert.ok(focused.score > dismissed.score, 'disliked artist/tag penalty should demote candidate');
+});
+
+test('homogeneous language pools skip flat language bonus so relative score ratios stay intact', () => {
+  const low = candidate('low', { language: 'english' }, ['artist:small']);
+  const high = candidate('high', { language: 'english' }, ['artist:large', 'tag:elf']);
+  rankCandidates([low, high], new Map([['artist:small', 1], ['artist:large', 8], ['tag:elf', 4]]), 'english');
+  // Without flat +1.5, low has only 1 + log2(2) = 2.0.
+  assert.equal(low.score, 2);
+  assert.ok(high.score > low.score * 2);
+});
+
+test('boilerplate tags do not inflate overlap penalty during selection', () => {
+  const prior = { ...candidate('prior', { tags: ['sole female', 'sole male', 'mosaic censorship'] }).result, reasons: [] };
+  const normal = candidate('normal', { tags: ['sole female', 'sole male', 'mosaic censorship', 'elf'] }, ['tag:elf']);
+  const sparse = candidate('sparse', { tags: ['weird'] }, ['tag:weird']);
+  // Equal score: without boilerplate filtering, normal would be penalized 1/(1+3)=0.25 vs sparse 1.0.
+  normal.score = 2;
+  sparse.score = 2;
+  assert.deepEqual(ids(selectRecommendations([normal, sparse], 1, () => 0.45, [prior])), ['normal']);
+});
+
+test('selectBalancedRecommendations mixes artist/series anchors with tag picks', () => {
+  const anchors = Array.from({ length: 6 }, (_, i) => candidate(`anchor-${i}`, { artists: [`Anchor ${i}`] }, [`artist:anchor ${i}`]));
+  const tagged = Array.from({ length: 10 }, (_, i) => candidate(`tag-${i}`, { artists: [`Tagged ${i}`] }, ['tag:elf']));
+  for (const c of [...anchors, ...tagged]) c.score = 3;
+  const picks = selectBalancedRecommendations([...anchors, ...tagged], 12, seeded(7));
+  assert.equal(picks.length, 12);
+  const anchorCount = picks.filter(p => p.galleryId.startsWith('anchor-')).length;
+  assert.ok(anchorCount >= 4 && anchorCount < 12, `expected balanced anchor/tag mix, got ${anchorCount} anchors`);
 });

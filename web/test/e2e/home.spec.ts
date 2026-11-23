@@ -66,7 +66,7 @@ test('Home is first in navigation, shows four live sections, and shares recommen
   expect(errors).toEqual([]);
 });
 
-test('Not a match persists the displayed candidate identity and can be undone; reviewed finds leave the inbox and can be restored', async ({ page }) => {
+test('Not a match persists the displayed candidate identity and can be undone; dismissed finds leave the inbox and can be restored', async ({ page }) => {
   let rejected = false, reviewed = false;
   await page.route('**/api/home/matches', route => route.fulfill({ json: { items: rejected ? [] : [match], configured: true, scan: null } }));
   await page.route('**/api/home/matches/11/reject', async route => {
@@ -83,20 +83,19 @@ test('Not a match persists the displayed candidate identity and can be undone; r
   });
   await page.reload();
   await page.getByRole('button', { name: 'Not a match', exact: true }).click();
-  await expect(page.getByText('No matching candidates yet', { exact: true })).toBeVisible();
+  await expect(page.getByText('No candidates waiting.', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Undo', exact: true }).last().click();
   await expect(page.getByRole('button', { name: 'Not a match', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Not a match', exact: true }).click();
-  await expect(page.getByText('No matching candidates yet', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click();
-  await expect(page.getByText('Nothing new to review', { exact: true })).toBeVisible();
+  await expect(page.getByText('No candidates waiting.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Dismiss A new chapter', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'You’re all caught up', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Undo', exact: true }).last().click();
-  await expect(page.getByRole('button', { name: 'Mark reviewed', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click();
-  await expect(page.getByText('Nothing new to review', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Dismiss A new chapter', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Dismiss A new chapter', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'You’re all caught up', exact: true })).toBeVisible();
   await page.reload();
-  await expect(page.getByText('No matching candidates yet', { exact: true })).toBeVisible();
-  await expect(page.getByText('Nothing new to review', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'You’re all caught up', exact: true })).toBeVisible();
 });
 
 test('review opens the discovered candidate directly, returns to provider matches, and previews galleries on Home', async ({ page }, testInfo) => {
@@ -157,7 +156,7 @@ test('download discovery updates Home automatically and explains its review-only
   await page.route('**/api/jobs/71', route => route.fulfill({ json: { job: job(), logs: [] } }));
   await page.reload();
   await expect(page.getByText('Checking 0 of 1 galleries', { exact: true })).toBeVisible();
-  await expect(page.getByText('Looking for candidates', { exact: true })).toBeVisible();
+  await expect(page.getByText('Looking for candidates', { exact: false })).toBeVisible();
   done = true;
   await expect(page.getByRole('button', { name: 'Review match', exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText('Checking 0 of 1 galleries', { exact: true })).toHaveCount(0);
@@ -660,6 +659,8 @@ test('responsive visual review in light and dark themes', async ({ page }, testI
   await page.screenshot({ path: path.join(output, `${name}.png`), fullPage: true });
   const overflow = await page.evaluate(() => [...document.querySelectorAll('main, main *')].filter(element => {
     const rect = element.getBoundingClientRect();
+    // The recommendation shelf scrolls sideways on purpose: its tiles may run past the viewport inside it.
+    if (element.parentElement?.closest('[class*="overflow-x-auto"]')) return false;
     return rect.width > 0 && (rect.right > innerWidth + 1 || rect.left < -1);
   }).map(element => element.tagName + '.' + element.className).slice(0, 8));
   expect(overflow).toEqual([]);

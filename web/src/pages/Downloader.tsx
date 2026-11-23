@@ -780,7 +780,7 @@ export function Downloader() {
                     downloadSetup={downloadStatus}
 
 
-                   ownership={ownershipFor(item)} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(`${item.source}:${item.galleryId}`), onToggle: toggleGallerySelect }} display="recommendation" feedback={{ pending: feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading, onOpen: setFeedbackItem }} />
+                   ownership={ownershipFor(item)} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(`${item.source}:${item.galleryId}`), onToggle: toggleGallerySelect }} display="recommendation" reasons={item.reasons} feedback={{ pending: feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading, onOpen: setFeedbackItem }} />
                 </div>
               ))}
             </div>

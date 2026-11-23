@@ -52,7 +52,13 @@ export interface DoujinSearchResult {
   coverUrl?: string;
   language?: string;
   tags: string[];
+  /** Search namespace parallel to `tags` when exposed by the provider (e.g. Hitomi `female`/`male`). */
+  tagNamespaces?: (string | undefined)[];
   artists: string[];
+  /** Parody/series names when exposed by the provider during search hydration. */
+  parodies?: string[];
+  /** Circle/group names when exposed by the provider during search hydration. */
+  groups?: string[];
   pageCount?: number;
   /** Original gallery URL (for user reference). */
   url?: string;
@@ -138,6 +144,10 @@ export interface DoujinSearchOptions {
    * slices instead of the same top N. Providers that cannot skip ignore it.
    */
   skip?: number;
+  /** Wrap `skip` within available results so small artist/tag pools never return empty. */
+  wrapSkip?: boolean;
+  /** Numeric provider gallery IDs to drop before hydrating individual gallery metadata. */
+  excludeIds?: Set<number>;
   /** Automatic recommendations never override configured bans. */
   strictExclusions?: boolean;
 }
@@ -178,4 +188,6 @@ export interface DoujinProvider {
   suggest?(query: string, limit?: number, context?: string, signal?: AbortSignal): Promise<DoujinSuggestion[]>;
   /** Recheck cached/history candidates against current provider exclusions. */
   filterRecommendations?(items: DoujinSearchResult[]): Promise<DoujinSearchResult[]>;
+  /** Resolve a bare tag name to its canonical provider namespace and global catalog count. */
+  resolveTagInfo?(name: string): Promise<{ name: string; ns: string; count: number } | null>;
 }

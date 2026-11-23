@@ -415,6 +415,9 @@ export const galleryTags = sqliteTable('gallery_tags', {
   /** Tag entries as {name, ns} objects; ns is null when the tag is a plain keyword. */
   tagsJson: text('tags_json').notNull().default('[]'),
   artistsJson: text('artists_json').notNull().default('[]'),
+  parodiesJson: text('parodies_json').notNull().default('[]'),
+  charactersJson: text('characters_json').notNull().default('[]'),
+  groupsJson: text('groups_json').notNull().default('[]'),
   language: text('language'),
   fetchedAt: text('fetched_at')
     .notNull()
@@ -443,6 +446,9 @@ export const ownedGalleries = sqliteTable('owned_galleries', {
 export const dismissedGalleries = sqliteTable('dismissed_galleries', {
   source: text('source').notNull(),
   galleryId: text('gallery_id').notNull(),
+  title: text('title'),
+  artistsJson: text('artists_json').notNull().default('[]'),
+  tagsJson: text('tags_json').notNull().default('[]'),
   dismissedAt: text('dismissed_at').notNull().default(sql`(current_timestamp)`),
 }, (table) => [
   uniqueIndex('idx_dismissed_galleries_unique').on(table.source, table.galleryId),

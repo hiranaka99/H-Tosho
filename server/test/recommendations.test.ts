@@ -766,3 +766,102 @@ test('background preloading warms every daily cover once and retries only failed
   assert.equal(batches.length, 3, 'the next day must warm its own covers');
   assert.equal(overlap(new Set(batches[2]), new Set(batches[0])), 0);
 });
+
+test('parodies, co-occurring tag pairs, watched searches, Kavita engagement, and namespace resolution shape queries', async () => {
+  const db = getDb();
+  db.delete(schema.recommendationHistory).run();
+  db.delete(schema.galleryTags).run();
+  db.delete(schema.watchedSearches).run();
+  db.delete(schema.dismissedGalleries).run();
+
+  for (let i = 0; i < 4; i++) {
+    recs.recordGalleryTags('hitomi', {
+      source: 'hitomi',
+      galleryId: `parody-dl-${i}`,
+      title: `[Circle] Original Work ${i}`,
+      pages: [],
+      artists: ['fav artist'],
+      tags: ['sole female', 'mosaic censorship', 'elf', 'stockings'],
+      tagNamespaces: ['female', undefined, 'female', 'female'],
+      parodies: ['blue archive'],
+      language: 'japanese',
+    });
+  }
+  // Active watched search adds taste signal.
+  db.insert(schema.watchedSearches).values({ source: 'hitomi', query: 'artist:watched_author female:glasses' }).run();
+
+  const kavitaProfile = buildProfile([
+    { name: '[Artist] Single Title', tags: ['Action', 'glasses'], genres: ['Action'], artists: ['Penciller A'], hasUserRated: true, userRating: 5, pages: 30, pagesRead: 30 },
+    { name: 'Clean Franchise', tags: ['low rated tag'], genres: [], artists: ['Low Artist'], hasUserRated: true, userRating: 1, pages: 30, pagesRead: 5 },
+    // Linked to already-counted download — should not double-count base weight.
+    { name: 'Linked Copy', tags: ['elf'], genres: [], artists: ['fav artist'], webLinks: 'https://hitomi.la/galleries/parody-dl-0.html', pages: 30, pagesRead: 30 },
+  ]);
+  assert.ok(!kavitaProfile.terms.some(t => t.kind === 'tag' && t.name.toLowerCase() === 'action'), 'generic Kavita genre should be filtered');
+  assert.ok(!kavitaProfile.terms.some(t => t.kind === 'series' && t.name === '[Artist] Single Title'), 'bracketed doujin title must not become a series query');
+  assert.ok(kavitaProfile.terms.some(t => t.kind === 'series' && t.name === 'blue archive' && t.nsBySource.hitomi === 'series'));
+  assert.ok(kavitaProfile.terms.some(t => t.kind === 'artist' && t.name === 'watched author'));
+  assert.ok(kavitaProfile.terms.some(t => t.kind === 'artist' && t.name === 'Penciller A'));
+  const highWeight = kavitaProfile.terms.find(t => t.kind === 'artist' && t.name === 'Penciller A')!.weight;
+  const lowWeight = kavitaProfile.terms.find(t => t.kind === 'artist' && t.name === 'Low Artist')!.weight;
+  assert.ok(highWeight > lowWeight * 3, '5-star Kavita series should strongly outweigh 1-star series');
+  assert.ok(kavitaProfile.tagPairs.some(p => [p.a.name, p.b.name].sort().join('+') === 'elf+stockings'), 'distinctive co-occurring pair should be extracted');
+
+  const queries: { query: string; opts?: DoujinSearchOptions }[] = [];
+  doujinProviders.hitomi = {
+    ...stubProvider('hitomi', () => []),
+    async resolveTagInfo(name: string) {
+      if (name.toLowerCase() === 'glasses') return { name: 'glasses', ns: 'female', count: 15000 };
+      return null;
+    },
+    async search(query, limit = 12, _sort, opts) {
+      queries.push({ query, opts });
+      return Array.from({ length: limit }, (_, i) => ({
+        source: 'hitomi' as const,
+        galleryId: `smart-${slug(query)}-${i}`,
+        title: `Smart ${i}`,
+        tags: ['elf'],
+        artists: [`Artist ${slug(query)} ${i}`],
+        parodies: ['blue archive'],
+        language: 'japanese',
+      }));
+    },
+  };
+
+  const set = await recs.refreshRecommendations();
+  assert.equal(set.items.length, 12);
+  assert.ok(!queries.some(q => q.query.includes('sole_female') || q.query.includes('mosaic_censorship')), 'boilerplate tags must not be queried');
+  assert.ok(queries.some(q => q.query.includes('series:blue_archive')), 'persisted parody should drive series query');
+  assert.ok(queries.some(q => q.query.includes('female:elf') && q.query.includes('female:stockings')), 'co-occurring tag pair should be queried');
+  assert.ok(queries.every(q => q.opts?.wrapSkip === true), 'wrapSkip must be passed to Hitomi search');
+  assert.ok(queries.every(q => q.opts?.language === undefined || q.opts.language === 'japanese'), 'dominant language should be forwarded via opts.language');
+  assert.ok(set.items.some(item => item.reasons.includes('series blue archive')), 'hydrated parodies should be credited in reasons');
+});
+
+test('active downloads, unreviewed Following finds, and known library duplicates are excluded from recommendations', async () => {
+  const db = getDb();
+  db.delete(schema.recommendationHistory).run();
+  db.delete(schema.downloadQueue).run();
+  db.delete(schema.watchedSearchNew).run();
+  db.insert(schema.downloadQueue).values({ source: 'hitomi', galleryId: 'in-flight-1', title: 'Queued', status: 'queued' }).run();
+  db.insert(schema.watchedSearchNew).values({
+    searchId: 1, source: 'hitomi', query: 'artist:x', watchLabel: 'x', galleryId: 'inbox-1', title: 'In Inbox', foundAt: new Date().toISOString(),
+  }).run();
+  // Cross-source nHentai download already owned with same title + artist + page count.
+  db.insert(schema.ownedGalleries).values({ source: 'nhentai', galleryId: 'nh-owned-1' }).onConflictDoNothing().run();
+  db.insert(schema.keyValueStore).values({
+    key: 'duplicate-gallery:nhentai:nh-owned-1',
+    valueJson: JSON.stringify({ source: 'nhentai', galleryId: 'nh-owned-1', title: 'Duplicate Work Title', artists: ['Dup Artist'], language: 'english', pageCount: 28 }),
+  }).onConflictDoUpdate({
+    target: schema.keyValueStore.key,
+    set: { valueJson: JSON.stringify({ source: 'nhentai', galleryId: 'nh-owned-1', title: 'Duplicate Work Title', artists: ['Dup Artist'], language: 'english', pageCount: 28 }) },
+  }).run();
+
+  const { eligibleRecommendations } = await import('../src/services/recommendationEligibility.js');
+  const filtered = await eligibleRecommendations([
+    { source: 'hitomi', galleryId: 'in-flight-1', title: 'Queued', artists: ['A'], tags: [] },
+    { source: 'hitomi', galleryId: 'inbox-1', title: 'In Inbox', artists: ['B'], tags: [] },
+    { source: 'hitomi', galleryId: 'dup-hitomi-1', title: 'Duplicate Work Title', artists: ['Dup Artist'], tags: [], language: 'english', pageCount: 28 },
+    { source: 'hitomi', galleryId: 'clean-1', title: 'Brand New Work', artists: ['Fresh Artist'], tags: [], language: 'english', pageCount: 24 },
+  ]);
+  assert.deepEqual(filtered.map(i => i.galleryId), ['clean-1']);
+});

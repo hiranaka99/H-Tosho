@@ -10,6 +10,19 @@ playwright-report/
 test-results/
 .nyc_output/
 
+# ---- Local Impeccable state, caches, reports & previews ---------------------
+# Only the DESIGN.md sidecar and the live config are versioned; everything
+# else (screenshots, direction notes, process info, detector config) stays
+# local so the checkout stays clean for automatic pulls.
+**/.impeccable/*
+!**/.impeccable/design.json
+!**/.impeccable/live/
+**/.impeccable/live/*
+!**/.impeccable/live/config.json
+
+# ---- Local critique comparison pages & screenshots ------------------------
+_cmp/
+
 # ---- Environment / local config & secrets ---------------------------------
 .env
 .env.*
