@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   parseEhentaiGalleryId, parseEhentaiGalleryUrl,
-  ehentaiGalleryUrl, ehentaiSameIdentity, ehentaiSiteForHost,
+  ehentaiGalleryUrl, ehentaiSiteForHost,
 } from '../src/contracts/doujin.js';
 import { classifyAccessEvidence } from '../src/downloader/ehentaiClient.js';
 import { getEhentaiGate, resetEhentaiGate, RequestAbortedError } from '../src/downloader/ehentaiGate.js';
@@ -69,8 +69,8 @@ test('identity is host-agnostic and distinct per gallery', () => {
   const a = parseEhentaiGalleryUrl(`https://exhentai.org/g/${GID}/${TOKEN}/`)!;
   const b = parseEhentaiGalleryUrl(`https://e-hentai.org/g/${GID}/${TOKEN}/`)!;
   const c = parseEhentaiGalleryId(`${GID}-0123456789ab`)!;
-  assert.ok(ehentaiSameIdentity(a, b), 'the same gallery on either family host is one entry');
-  assert.ok(!ehentaiSameIdentity(a, c));
+  assert.equal(a.canonicalId, b.canonicalId, 'the same gallery on either family host is one entry');
+  assert.notEqual(a.canonicalId, c.canonicalId);
   assert.equal(ehentaiGalleryUrl('exhentai', GID, TOKEN), `https://exhentai.org/g/${GID}/${TOKEN}/`);
   assert.equal(ehentaiGalleryUrl('e-hentai', GID, TOKEN), `https://e-hentai.org/g/${GID}/${TOKEN}/`);
   assert.equal(ehentaiSiteForHost('EXHENTAI.ORG'), 'exhentai');

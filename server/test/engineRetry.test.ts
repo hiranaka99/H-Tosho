@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isTransientError, retryTransient } from '../src/downloader/engine.js';
+import { isTransientError, retryTransient } from '../src/downloader/requests.js';
 
 test('isTransientError classifies CDN and network errors as retryable', () => {
   assert.ok(isTransientError(new Error('Download failed: HTTP 503')));

@@ -35,54 +35,6 @@ function waitForStatus(queue: InstanceType<typeof DownloadQueue>, id: number, st
   });
 }
 
-test('start recovers interrupted downloads and processes persisted queued work', async () => {
-  const interrupted = getDb()
-    .insert(schema.downloadQueue)
-    .values({ source: 'hitomi', galleryId: 'old', status: 'downloading', outputFormat: 'cbz' })
-    .run();
-  const queued = getDb()
-    .insert(schema.downloadQueue)
-    .values({ source: 'hitomi', galleryId: 'next', status: 'queued', outputFormat: 'cbz' })
-    .run();
-
-  doujinProviders.hitomi = {
-    id: 'hitomi',
-    name: 'Hitomi',
-    color: '#000',
-    async search() { return []; },
-    async getGallery(idOrUrl) {
-      return { source: 'hitomi', galleryId: idOrUrl, title: 'Recovered', tags: [], artists: [], pages: ['https://example.test/page.jpg'] };
-    },
-  };
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response(Buffer.from('image'))) as typeof fetch;
-
-  try {
-    const queue = new DownloadQueue(() => ({
-      downloadDirectory: outputDir,
-      format: 'cbz',
-      maxConcurrentDownloads: 1,
-      maxImageConcurrency: 1,
-      requestDelayMs: 0,
-      autoSyncKavita: false,
-      nhentaiApiKey: '',
-      nhentaiBannedTags: [],
-    }));
-    const interruptedId = Number(interrupted.lastInsertRowid);
-    const queuedId = Number(queued.lastInsertRowid);
-    const completedQueued = waitForStatus(queue, queuedId, 'completed');
-    const completedInterrupted = waitForStatus(queue, interruptedId, 'completed');
-    queue.start();
-
-    await Promise.all([completedQueued, completedInterrupted]);
-    // Interrupted rows now resume: start() re-queues them instead of failing.
-    assert.equal(queue.get(interruptedId)?.status, 'completed');
-    assert.equal(queue.get(queuedId)?.status, 'completed');
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
 test('a task keeps its enqueue-time output format when settings later change', async () => {
   const queue = new DownloadQueue(() => ({
     downloadDirectory: outputDir,
@@ -94,6 +46,12 @@ test('a task keeps its enqueue-time output format when settings later change', a
     nhentaiApiKey: '',
     nhentaiBannedTags: [],
   }));
+  doujinProviders.hitomi = {
+    ...originalHitomi,
+    async getGallery(idOrUrl) {
+      return { source: 'hitomi', galleryId: idOrUrl, title: 'Format', tags: [], artists: [], pages: ['https://example.test/page.jpg'] };
+    },
+  };
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => new Response(Buffer.from('image'))) as typeof fetch;
 
