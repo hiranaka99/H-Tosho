@@ -6,9 +6,9 @@ import { api, type DoujinSearchResult, type MatchSuggestion } from '../lib/api';
 import { cn, PROVIDER_NAMES, sourceDisplayName, timeAgo, toIsoUtc } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { Badge, Button, EmptyState, ErrorState, PageHeader, Pager, ProgressBar, Skeleton, Spinner } from '../components/ui';
-import { IdentifyModal } from '../components/IdentifyModal';
+const IdentifyModal = React.lazy(() => import('../components/IdentifyModal').then((m) => ({ default: m.IdentifyModal })));
 import { Cover, GalleryCard } from './downloader/GalleryCard';
-import { GalleryDetailModal } from './downloader/GalleryDetailModal';
+const GalleryDetailModal = React.lazy(() => import('./downloader/GalleryDetailModal').then((m) => ({ default: m.GalleryDetailModal })));
 import { useGalleryDownload } from './downloader/useGalleryDownload';
 import { useRecommendations } from './downloader/useRecommendations';
 
@@ -57,16 +57,20 @@ export function Home() {
   const feed = useQuery({ queryKey: ['watched-gallery-feed', 'home'], queryFn: () => api.watchedGalleryFeed({ view: 'inbox', offset: 0, limit: 4 }), refetchInterval: 60_000 });
   const activity = useQuery({ queryKey: ['home-activity'], queryFn: api.homeActivity, refetchInterval: 30_000 });
   const completed = useQuery({ queryKey: ['downloads-completed'], queryFn: api.downloadsCompleted });
-  const recommendationItems = visibleRecs.slice(0, 6);
+  const recommendationItems = React.useMemo(() => visibleRecs.slice(0, 6), [visibleRecs]);
   const discoveryItems = React.useMemo<DoujinSearchResult[]>(() => (feed.data?.items ?? []).map(item => ({ ...item, coverUrl: item.coverUrl ?? undefined, tags: [] })), [feed.data]);
-  const visibleGalleries = [...recommendationItems, ...discoveryItems];
+  const visibleGalleries = React.useMemo(() => [...recommendationItems, ...discoveryItems], [recommendationItems, discoveryItems]);
+  const visibleGalleriesKey = React.useMemo(
+    () => visibleGalleries.map((item) => `${item.source}:${item.galleryId}`).join(','),
+    [visibleGalleries],
+  );
   const ownership = useQuery({
-    queryKey: ['gallery-library-matches', visibleGalleries.map(({ source, galleryId, title, artists, language, pageCount }) => ({ source, galleryId, title, artists, language, pageCount }))],
+    queryKey: ['gallery-library-matches', visibleGalleriesKey],
     queryFn: () => api.libraryMatches(visibleGalleries), enabled: visibleGalleries.length > 0, staleTime: 30_000,
   });
-  const owned = new Set([...ownedKeys, ...(completed.data ?? []).map(item => `${item.source}:${item.galleryId}`)]);
-  const inLibrary = new Set((ownership.data?.reports ?? []).filter(report => report.matches.some(match => match.confirmed && ['In library', 'Owned', 'completed'].includes(match.status))).map(report => `${report.source}:${report.galleryId}`));
-  const possible = new Set((ownership.data?.reports ?? []).filter(report => report.matches.length > 0).map(report => `${report.source}:${report.galleryId}`));
+  const owned = React.useMemo(() => new Set([...ownedKeys, ...(completed.data ?? []).map(item => `${item.source}:${item.galleryId}`)]), [ownedKeys, completed.data]);
+  const inLibrary = React.useMemo(() => new Set((ownership.data?.reports ?? []).filter(report => report.matches.some(match => match.confirmed && ['In library', 'Owned', 'completed'].includes(match.status))).map(report => `${report.source}:${report.galleryId}`)), [ownership.data]);
+  const possible = React.useMemo(() => new Set((ownership.data?.reports ?? []).filter(report => report.matches.length > 0).map(report => `${report.source}:${report.galleryId}`)), [ownership.data]);
   const scan = matches.data?.scan;
   const scanning = ['queued', 'running'].includes(scan?.status ?? '');
   const matchItems = matches.data?.items ?? [];
@@ -165,8 +169,10 @@ export function Home() {
           <div className="min-w-0 flex-1"><Link to={item.href} className="break-words text-sm font-medium underline-offset-4 hover:text-primary hover:underline max-lg:flex max-lg:min-h-11 max-lg:items-center pointer-coarse:flex pointer-coarse:min-h-11 pointer-coarse:items-center">{item.title}</Link><div className="mt-1 flex flex-wrap gap-x-2 text-xs text-muted"><span className={cn(item.action === 'failed' && 'font-medium text-danger')}>{activityLabels[item.action] ?? item.action}</span><time dateTime={toIsoUtc(item.createdAt)} title={new Date(toIsoUtc(item.createdAt)).toLocaleString()}>{timeAgo(item.createdAt)}</time></div></div>
         </li>)}</ul>}
     </section>
-    {review && <CandidateReview key={review.seriesId} item={review} onClose={() => { setReview(null); void qc.invalidateQueries({ queryKey: ['home-matches'] }); }} />}
-    {selected && <GalleryDetailModal item={selected} onClose={() => setSelected(null)} onDownload={() => void doStartDownload(selected)} checking={pendingKeys.has(`${selected.source}:${selected.galleryId}`)} downloaded={owned.has(`${selected.source}:${selected.galleryId}`) || inLibrary.has(`${selected.source}:${selected.galleryId}`)} inLibrary={inLibrary.has(`${selected.source}:${selected.galleryId}`)} setup={setup} onSearchTag={(fragment, source) => navigate(`/downloader?tab=search&source=${source ?? selected.source}&q=${encodeURIComponent(fragment)}`)} />}
+    <React.Suspense fallback={null}>
+      {review && <CandidateReview key={review.seriesId} item={review} onClose={() => { setReview(null); void qc.invalidateQueries({ queryKey: ['home-matches'] }); }} />}
+      {selected && <GalleryDetailModal item={selected} onClose={() => setSelected(null)} onDownload={() => void doStartDownload(selected)} checking={pendingKeys.has(`${selected.source}:${selected.galleryId}`)} downloaded={owned.has(`${selected.source}:${selected.galleryId}`) || inLibrary.has(`${selected.source}:${selected.galleryId}`)} inLibrary={inLibrary.has(`${selected.source}:${selected.galleryId}`)} setup={setup} onSearchTag={(fragment, source) => navigate(`/downloader?tab=search&source=${source ?? selected.source}&q=${encodeURIComponent(fragment)}`)} />}
+    </React.Suspense>
     {duplicateDialog}
   </div>;
 }

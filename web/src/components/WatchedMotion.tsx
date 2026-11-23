@@ -12,7 +12,10 @@ export function WatchedReveal({ open, id, children, className, lazy = false }: {
 }) {
   const [clipping, setClipping] = React.useState(true);
   const [mounted, setMounted] = React.useState(!lazy || open);
+  const mountedRef = React.useRef(mounted);
+  mountedRef.current = mounted;
   React.useLayoutEffect(() => {
+    if (!open && !mountedRef.current) return;
     setClipping(true);
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (!open) {

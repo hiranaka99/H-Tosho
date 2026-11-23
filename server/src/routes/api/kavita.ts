@@ -1,6 +1,6 @@
 import { rememberDuplicateLibraryRoots } from '../../services/galleryDuplicates.js';
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { libraryMutations } from '../../lib/mutations.js';
 import { jobQueue } from '../../jobs/queue.js';
 import { downloadQueue } from '../../downloader/engine.js';
@@ -11,7 +11,7 @@ import { KAVITA_OPENAPI_VERSION, type KavitaLibrary, type KavitaSeries } from '.
 import { getKavitaConnection, setKavitaConnection } from '../../services/settings.js';
 import { kavitaSeriesSearchMetadata } from '../../services/seriesArtists.js';
 
-import { connectedClient, errMsg, intParam, stringsFromMatchMetadata, kavitaCoverUrl } from './helpers.js';
+import { connectedClient, errMsg, intParam, kavitaCoverUrl } from './helpers.js';
 export const api = new Hono();
 
 /** Snapshot of the connection that was replaced by a save whose test failed. */
@@ -97,8 +97,14 @@ api.get('/kavita/libraries', async (c) => {
   try {
     const libs = await client.getLibraries();
     rememberDuplicateLibraryRoots(libs);
-    const rows = getDb().select().from(schema.seriesMatches).all();
-    const matchedIds = new Set(rows.filter((r) => r.status === 'matched').map((r) => r.kavitaSeriesId));
+    const matchedIds = new Set(
+      getDb()
+        .select({ kavitaSeriesId: schema.seriesMatches.kavitaSeriesId })
+        .from(schema.seriesMatches)
+        .where(eq(schema.seriesMatches.status, 'matched'))
+        .all()
+        .map((r) => r.kavitaSeriesId),
+    );
     // Fetch every library's series in parallel (was a sequential per-library
     // round-trip) and count matches with an O(1) set lookup. One failing
     // library must not 502 the whole list: it is reported with zero counts
@@ -129,17 +135,34 @@ api.get('/kavita/libraries/:id/series', async (c) => {
     const libraryId = intParam(c.req.param('id'));
     if (libraryId === null) return c.json({ error: 'Invalid library id' }, 400);
     const series = (await client.getSeries(libraryId)) as KavitaSeries[];
-    const rows = getDb().select().from(schema.seriesMatches).all();
-    const byId = new Map(rows.map((r) => [r.kavitaSeriesId, r]));
+    const seriesIds = series.map((s) => s.id);
+    const db = getDb();
+    const byId = new Map<number, typeof schema.seriesMatches.$inferSelect>();
+    for (let i = 0; i < seriesIds.length; i += 400) {
+      const batch = seriesIds.slice(i, i + 400);
+      for (const row of db.select().from(schema.seriesMatches).where(inArray(schema.seriesMatches.kavitaSeriesId, batch)).all()) {
+        byId.set(row.kavitaSeriesId, row);
+      }
+    }
     // Series without match-derived artists fall back to Kavita's own people
     // (pencillers/inkers/writers), so unmatched entries can also be searched by artist.
     // Read tags for every series, sharing the existing bounded metadata/artist
     // cache. Live Kavita tags take precedence over older provider match data.
-    const searchMetadata = await kavitaSeriesSearchMetadata(client, series.map(s => s.id));
+    const searchMetadata = await kavitaSeriesSearchMetadata(client, seriesIds);
     return c.json(
       series.map((s) => {
         const m = byId.get(s.id);
-        const matchArtists = stringsFromMatchMetadata(m?.metadataJson);
+        const liveMeta = searchMetadata.get(s.id);
+        let parsedMeta: { artists?: unknown; tags?: unknown } | null = null;
+        if (m?.metadataJson) {
+          try {
+            const raw = JSON.parse(m.metadataJson) as unknown;
+            if (raw && typeof raw === 'object') parsedMeta = raw as { artists?: unknown; tags?: unknown };
+          } catch { /* ignore malformed metadata */ }
+        }
+        const stringList = (values: unknown): string[] =>
+          Array.isArray(values) ? values.filter((v): v is string => typeof v === 'string' && v.trim().length > 0) : [];
+        const matchArtists = parsedMeta ? stringList(parsedMeta.artists) : [];
         return {
           id: s.id,
           name: s.name,
@@ -154,8 +177,8 @@ api.get('/kavita/libraries/:id/series', async (c) => {
           confirmed: m?.confirmed ?? false,
           lastSyncedAt: m?.lastSyncedAt ?? null,
           errorMessage: m?.errorMessage ?? null,
-          artists: matchArtists.length > 0 ? matchArtists : (searchMetadata.get(s.id)?.artists ?? []),
-          tags: searchMetadata.get(s.id)?.tags ?? stringsFromMatchMetadata(m?.metadataJson, 'tags') };
+          artists: matchArtists.length > 0 ? matchArtists : (liveMeta?.artists ?? []),
+          tags: liveMeta?.tags ?? (parsedMeta ? stringList(parsedMeta.tags) : []) };
       }),
     );
   } catch (e) {
@@ -170,9 +193,14 @@ api.get('/kavita/series/:id/cover', async (c) => {
     const seriesId = intParam(c.req.param('id'));
     if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
     const cover = await client.getSeriesCover(seriesId);
-    return c.body(new Uint8Array(cover.data), 200, {
+    const buffer = cover.data.buffer;
+    const bytes = buffer instanceof ArrayBuffer
+      ? new Uint8Array(buffer, cover.data.byteOffset, cover.data.byteLength)
+      : Uint8Array.from(cover.data);
+    const versioned = Boolean(c.req.query('v'));
+    return c.body(bytes, 200, {
       'Content-Type': cover.contentType,
-      'Cache-Control': 'private, no-store' });
+      'Cache-Control': versioned ? 'private, max-age=86400' : 'private, no-store' });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

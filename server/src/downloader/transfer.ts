@@ -13,14 +13,14 @@ export async function downloadPages(
   settings: DownloaderSettings,
   ctx: RunContext,
   tmpDir: string,
-  updateProgress: (id: number, patch: LiveFields, options?: { force?: boolean }) => void,
+  updateProgress: (id: number, patch: LiveFields, options?: { force?: boolean; forceBroadcast?: boolean }) => void,
 ): Promise<{ name: string; path: string }[]> {
   const pages = gallery.pages;
   const total = pages.length;
   const concurrency = Math.max(1, settings.maxImageConcurrency || 1);
   const delay = Math.max(0, settings.requestDelayMs || 0);
   const pageHeaders: Record<string, string> = { 'User-Agent': UA, ...gallery.requestHeaders };
-  fs.mkdirSync(tmpDir, { recursive: true });
+  await fs.promises.mkdir(tmpDir, { recursive: true });
   const out: { name: string; path: string }[] = new Array(total);
 
   // Real page names (with the extension of the *downloaded* image) persist in
@@ -28,9 +28,9 @@ export async function downloadPages(
   // reference — E-Hentai viewer URLs end in .jpg even when the H@H image they
   // resolve to is a different format.
   const namesPath = path.join(tmpDir, 'page-names.json');
-  const readNames = (): Record<string, string> => {
+  const readNames = async (): Promise<Record<string, string>> => {
     try {
-      const parsed: unknown = JSON.parse(fs.readFileSync(namesPath, 'utf8'));
+      const parsed: unknown = JSON.parse(await fs.promises.readFile(namesPath, 'utf8'));
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         const names: Record<string, string> = {};
         for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
@@ -43,21 +43,33 @@ export async function downloadPages(
     }
     return {};
   };
+  const savedNames = await readNames();
+  let namesDirty = false;
+  let namesFlushTimer: ReturnType<typeof setTimeout> | null = null;
   let namesWriteChain: Promise<void> = Promise.resolve();
-  const recordPageName = (index: number, name: string): void => {
-    namesWriteChain = namesWriteChain.then(() => {
+  const flushPageNames = (): Promise<void> => {
+    if (namesFlushTimer) { clearTimeout(namesFlushTimer); namesFlushTimer = null; }
+    if (!namesDirty) return namesWriteChain;
+    namesDirty = false;
+    const payload = JSON.stringify(savedNames);
+    namesWriteChain = namesWriteChain.then(async () => {
       try {
-        const names = readNames();
-        names[String(index)] = name;
         const tmp = `${namesPath}.tmp`;
-        fs.writeFileSync(tmp, JSON.stringify(names));
-        fs.renameSync(tmp, namesPath);
+        await fs.promises.writeFile(tmp, payload);
+        await fs.promises.rename(tmp, namesPath);
       } catch {
         /* best-effort: resume falls back to URL-derived names */
       }
     });
+    return namesWriteChain;
   };
-  const savedNames = readNames();
+  const recordPageName = (index: number, name: string): void => {
+    savedNames[String(index)] = name;
+    namesDirty = true;
+    if (!namesFlushTimer) {
+      namesFlushTimer = setTimeout(() => { void flushPageNames(); }, 750);
+    }
+  };
 
   // Resume-from-partial: page files from an earlier attempt live in tmpDir as
   // bare index names ("0", "1", …). Trust only a consecutive prefix starting
@@ -148,9 +160,9 @@ export async function downloadPages(
     if (i + 1 > frontier) frontier = i + 1;
     lastFileName = `Page ${frontier}/${total}`;
   };
-  const report = (force: boolean): void => {
+  const report = (forceBroadcast: boolean): void => {
     const now = Date.now();
-    if (!force && now - lastReport < 100) return;
+    if (!forceBroadcast && now - lastReport < 100) return;
     lastReport = now;
     updateProgress(
       taskId,
@@ -162,7 +174,7 @@ export async function downloadPages(
         bytesCurrent: Math.round(currentBytes()),
         bytesTotal: estimateTotal(),
       },
-      { force },
+      { forceBroadcast },
     );
   };
 
@@ -249,6 +261,7 @@ export async function downloadPages(
     throw error;
   }));
   const settled = await Promise.allSettled(workers);
+  await flushPageNames();
   const failed = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
   if (failed) throw failed.reason;
   updateProgress(

@@ -733,13 +733,15 @@ async function hydrateSearchIds(ids: number[], limit: number, opts?: DoujinSearc
   const excludedTypes = new Set(Object.keys(EXCLUDED_GALLERY_TYPES));
   for (const type of opts?.excludeTypes ?? []) excludedTypes.add(type.toLowerCase().replace(/[^a-z]/g, ''));
   const out: DoujinSearchResult[] = [];
+  let ggPromise: ReturnType<typeof loadGG> | null = null;
+  const getGG = () => (ggPromise ??= loadGG());
   for (let index = 0; index < scanLimit && out.length < target; index += 25) {
     await Promise.all(ids.slice(start + index, Math.min(start + index + 25, start + scanLimit)).map(async id => {
       try {
         const info = parseGalleryInfo(await fetchText(`${API_BASE}/galleries/${id}.js`));
         const type = typeof info.type === 'string' ? info.type.toLowerCase().replace(/[^a-z]/g, '') : '';
         if (excludedTypes.has(type)) return;
-        const gg = await loadGG();
+        const gg = await getGG();
         const files: HitomiFile[] = info.files ?? [];
         out.push({
           source: 'hitomi', galleryId: String(id), title: stripTags(info.title) || `Gallery ${id}`,
@@ -751,7 +753,7 @@ async function hydrateSearchIds(ids: number[], limit: number, opts?: DoujinSearc
     }));
   }
   const byId = new Map(out.map(result => [result.galleryId, result]));
-  return ids.slice(start).map(id => byId.get(String(id))).filter((result): result is DoujinSearchResult => !!result).slice(0, target);
+  return ids.slice(start, start + scanLimit).map(id => byId.get(String(id))).filter((result): result is DoujinSearchResult => !!result).slice(0, target);
 }
 
 export const hitomiProvider: DoujinProvider = {

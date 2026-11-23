@@ -146,6 +146,10 @@ export function migrateSchema(sqlite: Database.Database): void {
       }
       createSchemaTables(sqlite);
     },
+    () => {
+      // Performance indexes for hot queries and retention sweeps.
+      createIndexes(sqlite, true);
+    },
   ];
   for (const [index, migration] of migrations.entries()) {
     const version = index + 1;

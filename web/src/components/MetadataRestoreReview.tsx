@@ -47,8 +47,13 @@ export function MetadataRestoreReview({ seriesId, detail }: { seriesId: number; 
   }
   React.useEffect(() => {
     if (!preview) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
+    const remaining = Date.parse(preview.expiresAt) - Date.now();
+    if (remaining <= 0) {
+      setNow(Date.now());
+      return;
+    }
+    const timer = window.setTimeout(() => setNow(Date.now()), remaining + 50);
+    return () => window.clearTimeout(timer);
   }, [preview]);
   React.useEffect(() => {
     if (preview && policy.data && preview.policyRevision !== policy.data.revision) invalidate();

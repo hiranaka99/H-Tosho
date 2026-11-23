@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DATA_DIR } from '../db/index.js';
@@ -32,22 +32,30 @@ import { ehentaiPreviewBytes, isEhentaiViewerUrl } from '../downloader/ehentai.j
  * hostile or misbehaving upstream cannot pin unbounded memory.
  */
 
-/** In-memory cache of proxied image bytes so repeated renders don't re-fetch the CDN. */
+/** In-memory LRU cache of proxied image bytes so repeated renders don't re-fetch the CDN. */
 const cache = new Map<string, { at: number; type: string; buf: Buffer }>();
+let cacheBytes = 0;
+const inflight = new Map<string, Promise<MediaResult>>();
 const CACHE_TTL_MS = 60 * 60_000; // covers are stable once a gallery exists
 /** Cache holds realistic cover sizes only (a few MB at most per file). */
 const CACHE_MAX = 100;
 const CACHE_MAX_BYTES = 2 * 1024 * 1024;
+const CACHE_TOTAL_MAX_BYTES = 64 * 1024 * 1024;
 /** Hard cap on any single proxied response (covers never approach this). */
 const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 /** Max redirect hops followed (each hop is re-validated against the allowlist). */
 const MAX_REDIRECTS = 5;
+const UPSTREAM_TIMEOUT_MS = 20_000;
 // Disk layer under the data dir so cover bytes survive restarts and hold far
 // more entries than memory. Covers are immutable once a gallery exists, so
 // the TTL is long; eviction is by mtime when the file count exceeds the cap.
 const MEDIA_CACHE_DIR = path.join(DATA_DIR, 'media-cache');
 const DISK_TTL_MS = 7 * 24 * 60 * 60_000;
 const DISK_MAX_FILES = 400;
+let mediaCacheDirReady = false;
+let diskWritesSinceEvict = 0;
+let lastDiskEvictAt = 0;
+let diskEvictRunning: Promise<void> | null = null;
 
 /**
  * Hosts allowed as /media targets. A target host matches when it equals an
@@ -82,18 +90,31 @@ function getCached(key: string): { type: string; buf: Buffer } | null {
   if (!hit) return null;
   if (Date.now() - hit.at > CACHE_TTL_MS) {
     cache.delete(key);
+    cacheBytes -= hit.buf.length;
     return null;
   }
+  // Promote to MRU.
+  cache.delete(key);
+  cache.set(key, hit);
   return { type: hit.type, buf: hit.buf };
 }
 
 function setCached(key: string, type: string, buf: Buffer): void {
   if (buf.length > CACHE_MAX_BYTES) return;
-  if (cache.size >= CACHE_MAX) {
-    const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
+  const existing = cache.get(key);
+  if (existing) {
+    cache.delete(key);
+    cacheBytes -= existing.buf.length;
+  }
+  while (cache.size >= CACHE_MAX || (cacheBytes + buf.length > CACHE_TOTAL_MAX_BYTES && cache.size > 0)) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = cache.get(oldestKey);
+    cache.delete(oldestKey);
+    if (oldest) cacheBytes -= oldest.buf.length;
   }
   cache.set(key, { at: Date.now(), type, buf });
+  cacheBytes += buf.length;
 }
 
 function diskFile(key: string): string {
@@ -120,32 +141,58 @@ async function getFromDisk(key: string): Promise<{ type: string; buf: Buffer } |
   }
 }
 
-/** L2 store (best-effort): write bytes + content-type, evict oldest beyond the cap. */
+async function evictDiskCache(): Promise<void> {
+  if (diskEvictRunning) return diskEvictRunning;
+  diskEvictRunning = (async () => {
+    try {
+      const entries = await fs.readdir(MEDIA_CACHE_DIR);
+      const dataFiles = entries.filter((e) => !e.endsWith('.type') && !e.endsWith('.tmp'));
+      if (dataFiles.length <= DISK_MAX_FILES) return;
+      const stamped = (await mapLimit(dataFiles, 16, async (name) => {
+        try {
+          const st = await fs.stat(path.join(MEDIA_CACHE_DIR, name));
+          return { name, mtime: st.mtimeMs };
+        } catch {
+          return null;
+        }
+      })).filter((entry): entry is { name: string; mtime: number } => entry !== null);
+      stamped.sort((a, b) => a.mtime - b.mtime);
+      const excess = stamped.slice(0, Math.max(0, stamped.length - DISK_MAX_FILES));
+      await mapLimit(excess, 16, async (old) => {
+        await fs.rm(path.join(MEDIA_CACHE_DIR, old.name), { force: true });
+        await fs.rm(path.join(MEDIA_CACHE_DIR, old.name + '.type'), { force: true });
+      });
+    } catch {
+      /* disk cache eviction is best-effort */
+    } finally {
+      lastDiskEvictAt = Date.now();
+      diskWritesSinceEvict = 0;
+      diskEvictRunning = null;
+    }
+  })();
+  return diskEvictRunning;
+}
+
+/** L2 store (best-effort): write bytes + content-type atomically, evict oldest lazily. */
 async function setDisk(key: string, type: string, buf: Buffer): Promise<void> {
   if (buf.length > CACHE_MAX_BYTES) return;
   try {
-    await fs.mkdir(MEDIA_CACHE_DIR, { recursive: true });
-    const file = diskFile(key);
-    await fs.writeFile(file, buf);
-    await fs.writeFile(file + '.type', type);
-    const entries = await fs.readdir(MEDIA_CACHE_DIR);
-    const dataFiles = entries.filter((e) => !e.endsWith('.type'));
-    if (dataFiles.length <= DISK_MAX_FILES) return;
-    const stamped: { name: string; mtime: number }[] = [];
-    for (const name of dataFiles) {
-      try {
-        const st = await fs.stat(path.join(MEDIA_CACHE_DIR, name));
-        stamped.push({ name, mtime: st.mtimeMs });
-      } catch {
-        /* raced away — skip */
-      }
+    if (!mediaCacheDirReady) {
+      await fs.mkdir(MEDIA_CACHE_DIR, { recursive: true });
+      mediaCacheDirReady = true;
     }
-    stamped.sort((a, b) => a.mtime - b.mtime);
-    for (const old of stamped.slice(0, dataFiles.length - DISK_MAX_FILES)) {
-      await fs.rm(path.join(MEDIA_CACHE_DIR, old.name), { force: true });
-      await fs.rm(path.join(MEDIA_CACHE_DIR, old.name + '.type'), { force: true });
+    const file = diskFile(key);
+    const suffix = `.${randomUUID()}.tmp`;
+    await Promise.all([
+      fs.writeFile(file + suffix, buf).then(() => fs.rename(file + suffix, file)),
+      fs.writeFile(file + '.type' + suffix, type).then(() => fs.rename(file + '.type' + suffix, file + '.type')),
+    ]);
+    diskWritesSinceEvict += 1;
+    if (!diskEvictRunning && (diskWritesSinceEvict >= 16 || Date.now() - lastDiskEvictAt >= 30_000)) {
+      void evictDiskCache();
     }
   } catch {
+    mediaCacheDirReady = false;
     /* disk cache is best-effort; never fail a proxied request over it */
   }
 }
@@ -195,7 +242,7 @@ function hopHeaders(hostname: string): Record<string, string> {
 async function fetchWithValidatedRedirects(start: URL): Promise<Response> {
   let current = start;
   for (let hop = 0; ; hop++) {
-    const res = await fetch(current, { headers: hopHeaders(current.hostname), redirect: 'manual' });
+    const res = await fetch(current, { headers: hopHeaders(current.hostname), redirect: 'manual', signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get('location');
       if (!loc || hop >= MAX_REDIRECTS) throw new Error('Too many redirects');
@@ -256,6 +303,17 @@ async function loadMedia(target: string, parsed: URL): Promise<MediaResult> {
   const cached = getCached(target);
   if (cached) return { ok: true, ...cached };
 
+  const existing = inflight.get(target);
+  if (existing) return existing;
+
+  const promise = loadMediaUncached(target, parsed).finally(() => {
+    if (inflight.get(target) === promise) inflight.delete(target);
+  });
+  inflight.set(target, promise);
+  return promise;
+}
+
+async function loadMediaUncached(target: string, parsed: URL): Promise<MediaResult> {
   const onDisk = await getFromDisk(target);
   if (onDisk) {
     setCached(target, onDisk.type, onDisk.buf); // promote to L1
@@ -340,7 +398,11 @@ export function mediaRouter(): Hono {
     if (!target || !parsed) return c.json({ error: 'Invalid media URL' }, 400);
     const result = await loadMedia(target, parsed);
     if (!result.ok) return c.json({ error: result.error }, result.status);
-    return c.body(new Uint8Array(result.buf), 200, {
+    const buffer = result.buf.buffer;
+    const bytes = buffer instanceof ArrayBuffer
+      ? new Uint8Array(buffer, result.buf.byteOffset, result.buf.byteLength)
+      : Uint8Array.from(result.buf);
+    return c.body(bytes, 200, {
       'Content-Type': result.type,
       'Cache-Control': 'private, max-age=3600',
     });

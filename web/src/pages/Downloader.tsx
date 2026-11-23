@@ -13,7 +13,7 @@ import { cn, timeAgo } from '../lib/utils';
 import { downloadErrorHelp } from '../lib/downloadErrors';
 import { toast } from '../lib/toast';
 import { Button, Card, CardContent, Badge, Select, EmptyState, Spinner, PageHeader, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, ErrorState, Pager } from '../components/ui';
-import { MergeIntoSeriesDialog } from '../components/MergeIntoSeriesDialog';
+const MergeIntoSeriesDialog = React.lazy(() => import('../components/MergeIntoSeriesDialog').then((m) => ({ default: m.MergeIntoSeriesDialog })));
 import { GalleryFeedbackDialog, RecommendationFeedbackManager } from '../components/RecommendationFeedback';
 import { GallerySelectionBar } from '../components/GallerySelectionBar';
 import { switchProviderSearch, type TranslationLink } from '../lib/searchTranslation';
@@ -21,8 +21,8 @@ import { switchProviderSearch, type TranslationLink } from '../lib/searchTransla
 import { FALLBACK_SOURCES, SOURCE_COLORS, SOURCE_LABELS, sortsFor, readDownloaderState, writeDownloaderState, type DownloaderTab, type DownloaderStateCache, type SearchScope } from './downloader/state';
 import { DownloadDestination } from './downloader/DownloadSetup';
 import { GalleryCard } from './downloader/GalleryCard';
-import { GalleryDetailModal } from './downloader/GalleryDetailModal';
-import { ManagerTab } from './downloader/DownloadManager';
+const GalleryDetailModal = React.lazy(() => import('./downloader/GalleryDetailModal').then((m) => ({ default: m.GalleryDetailModal })));
+const ManagerTab = React.lazy(() => import('./downloader/DownloadManager').then((m) => ({ default: m.ManagerTab })));
 import { UnifiedSearchTab, type UnifiedSelectionActions } from './downloader/UnifiedSearchTab';
 import { useUnifiedSearch, toWebResult } from './downloader/useUnifiedSearch';
 import { WatchedManagerDrawer } from './downloader/WatchedSearchControls';
@@ -30,7 +30,9 @@ import { SearchHint } from './downloader/SearchHint';
 import { SearchFailure } from './downloader/SearchFailure';
 import { GallerySkeletonGrid } from './downloader/GallerySkeletons';
 import { galleryKey, galleryOwnership } from './downloader/ownership';
-import { MergeDownloadDialog, folderNameFrom, type MergeDownloadResult } from './downloader/MergeDownloadDialog';
+import { folderNameFrom } from '../lib/mergeNames';
+import type { MergeDownloadResult } from './downloader/MergeDownloadDialog';
+const MergeDownloadDialog = React.lazy(() => import('./downloader/MergeDownloadDialog').then((m) => ({ default: m.MergeDownloadDialog })));
 import { useDownloaderTransitions } from './downloader/motion';
 import type { UnifiedSearchEntry } from '../lib/api';
 const RESULTS_PAGE_SIZE = 25;
@@ -501,27 +503,38 @@ export function Downloader() {
     setPage(nextPage);
     document.querySelector('main')?.scrollTo({ top: 0 });
   }
-  const matchItems = searchAll ? unified.entries.flatMap((e) => e.variants.map((v) => webVariant(e, `${v.source}:${v.galleryId}`)))
-    : tab === 'search' ? pageItems : tab === 'recommend' ? visibleRecs : tab === 'watched' ? feedPageItems
-    : [];
+  const matchItems = React.useMemo(
+    () => (searchAll
+      ? unified.entries.flatMap((e) => e.variants.map((v) => webVariant(e, `${v.source}:${v.galleryId}`)))
+      : tab === 'search' ? pageItems : tab === 'recommend' ? visibleRecs : tab === 'watched' ? feedPageItems
+      : []),
+    [searchAll, unified.entries, tab, pageItems, visibleRecs, feedPageItems],
+  );
+  const matchItemsKey = React.useMemo(
+    () => matchItems.map((item) => `${item.source}:${item.galleryId}`).join(','),
+    [matchItems],
+  );
   const matchQuery = useQuery({
-    queryKey: ['gallery-library-matches', matchItems.map(({ source, galleryId, title, artists, language, pageCount }) => ({ source, galleryId, title, artists, language, pageCount }))],
+    queryKey: ['gallery-library-matches', matchItemsKey],
     queryFn: () => api.libraryMatches(matchItems),
     enabled: matchItems.length > 0,
-    staleTime: 30_000,
-    refetchInterval: 30_000,
+    staleTime: 60_000,
   });
-  const libraryMatches = new Map((matchQuery.data?.reports ?? []).map(report => [
+  const libraryMatches = React.useMemo(() => new Map((matchQuery.data?.reports ?? []).map(report => [
     `${report.source}:${report.galleryId}`,
     report.matches.some(match => match.confirmed && ['In library', 'Owned', 'completed'].includes(match.status)) ? 'owned' as const : report.matches.length ? 'possible' as const : undefined,
-  ]));
+  ])), [matchQuery.data]);
   const ownershipFor = (item: DoujinSearchResult) => galleryOwnership([galleryKey(item)], libraryMatches, downloadedAt, ownedKeys);
   const folderCount = foldersQuery.data?.length ?? 0;
   const showFolderFilter = folderCount > 0 || feedFolder !== '';
   // Filters appear once there is something to choose between, and stay put while narrowing.
   const showWatchFilter = (watches?.length ?? 0) > 1 || feedWatch !== '';
   const showSourceFilter = new Set((watches ?? []).map(watch => watch.source)).size > 1 || feedSource !== '';
-  const galleryMotionRef = useDownloaderTransitions(`${tab}:${pageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${visibleRecs.map(item => `${item.source}:${item.galleryId}`).join(',')}:${feedPageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${unified.entries.map(entry => entry.entryId).join(',')}:${selectMode}:${[...selectedGalleries].join(',')}`);
+  const galleryMotionKey = React.useMemo(
+    () => `${tab}:${pageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${visibleRecs.map(item => `${item.source}:${item.galleryId}`).join(',')}:${feedPageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${unified.entries.map(entry => entry.entryId).join(',')}:${selectMode}`,
+    [tab, pageItems, visibleRecs, feedPageItems, unified.entries, selectMode],
+  );
+  const galleryMotionRef = useDownloaderTransitions(galleryMotionKey);
 
   return (
     <div ref={galleryMotionRef} className={cn('flex flex-col gap-4', showSelection && 'pb-[calc(var(--selection-tray-height,0px)+1rem)] lg:pb-0')} style={{ '--selection-tray-height': `${selectionHeight}px` } as React.CSSProperties}>
@@ -841,6 +854,7 @@ export function Downloader() {
           <WatchedManagerDrawer open={manageWatchesOpen} onOpenChange={setManageWatchesOpen} returnFocusTo={manageWatchesTrigger} onOpenSearch={(src, q) => searchTagFragment(q, src)} />
         </div>
       )}
+      <React.Suspense fallback={null}>
       {/* Merged download confirm — reachable from both results grids */}
       {mergeOpen && mergeItems.length > 0 && (
         <MergeDownloadDialog
@@ -915,6 +929,7 @@ export function Downloader() {
 
       {/* Download manager — own component so live task ticks never re-render the page */}
       {tab === 'manager' && <ManagerTab />}
+      </React.Suspense>
 
       </TabPanel>
       {showSelection && <GallerySelectionBar {...(searchAll ? unifiedSelectionActions : selectionActions)} mobile onHeightChange={setSelectionHeight} />}

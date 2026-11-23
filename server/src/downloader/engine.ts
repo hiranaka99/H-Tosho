@@ -259,14 +259,17 @@ export class DownloadQueue {
     return row ? rowToTask(row) : null;
   }
 
-  /** Task with any fresher in-memory progress fields overlaid on the DB row. */
-  get(id: number): DownloadTask | null {
-    const base = this.readRow(id);
-    if (!base) return null;
-    const live = this.live.get(id);
+  private overlayLive(base: DownloadTask): DownloadTask {
+    const live = this.live.get(base.id);
     if (!live) return base;
     const task = { ...base, ...pickLiveFields(live) };
     return { ...task, state: downloadState(task) };
+  }
+
+  /** Task with any fresher in-memory progress fields overlaid on the DB row. */
+  get(id: number): DownloadTask | null {
+    const base = this.readRow(id);
+    return base ? this.overlayLive(base) : null;
   }
 
   list(limit = 100): DownloadTask[] {
@@ -276,12 +279,7 @@ export class DownloadQueue {
       .orderBy(desc(schema.downloadQueue.id))
       .limit(limit)
       .all();
-    return rows.map((row) => {
-      const task = rowToTask(row);
-      const live = this.live.get(task.id);
-      const merged = live ? { ...task, ...pickLiveFields(live) } : task;
-      return { ...merged, state: downloadState(merged) };
-    });
+    return rows.map((row) => this.overlayLive(rowToTask(row)));
   }
 
   /** Count of currently in-flight (downloading) tasks. */
@@ -313,10 +311,10 @@ export class DownloadQueue {
       const previous = this.live.get(id);
       if (previous) Object.assign(t, pickLiveFields(previous));
       t.state = downloadState(t);
-      t.revision = Math.max(t.revision, this.live.get(id)?.revision ?? 0) + 1;
-      getDb().update(schema.downloadQueue).set({ revision: t.revision }).where(eq(schema.downloadQueue.id, id)).run();
+      t.revision = Math.max(t.revision, previous?.revision ?? 0) + 1;
       this.live.set(id, t);
       this.persistProgress(id, t);
+      this.lastWrite.set(id, Date.now());
     }
     else this.live.delete(id);
     if (t) this.broadcast(t);
@@ -327,7 +325,7 @@ export class DownloadQueue {
    * subscribers and persist to SQLite — each on its own throttle so high-frequency
    * byte-level updates stay smooth without overloading the database.
    */
-  private updateProgress(id: number, patch: LiveFields, opts?: { force?: boolean }): void {
+  private updateProgress(id: number, patch: LiveFields, opts?: { force?: boolean; forceBroadcast?: boolean }): void {
     let snap = this.live.get(id);
     if (!snap) {
       const base = this.readRow(id);
@@ -340,12 +338,12 @@ export class DownloadQueue {
 
     const now = Date.now();
     const lastB = this.lastBroadcast.get(id) ?? 0;
-    if (opts?.force || now - lastB >= 80) {
+    if (opts?.force || opts?.forceBroadcast || now - lastB >= 80) {
       this.broadcast(merged);
       this.lastBroadcast.set(id, now);
     }
     const lastW = this.lastWrite.get(id) ?? 0;
-    if (opts?.force || now - lastW >= 250) {
+    if (opts?.force || now - lastW >= 500) {
       this.persistProgress(id, merged);
       this.lastWrite.set(id, now);
     }
@@ -533,7 +531,7 @@ export class DownloadQueue {
       .orderBy(desc(schema.downloadQueue.id))
       .limit(1)
       .get();
-    return row ? this.get(row.id) : null;
+    return row ? this.overlayLive(rowToTask(row)) : null;
   }
 
   /**
@@ -554,18 +552,22 @@ export class DownloadQueue {
       .orderBy(desc(schema.downloadQueue.id))
       .limit(1)
       .get();
-    return row ? this.get(row.id) : null;
+    return row ? this.overlayLive(rowToTask(row)) : null;
   }
 
   /** Every completed gallery (newest first) — powers the "already downloaded" badges. */
   completedGalleries(): { source: string; galleryId: string; title: string | null; finishedAt: string | null }[] {
     return getDb()
-      .select()
+      .select({
+        source: schema.downloadQueue.source,
+        galleryId: schema.downloadQueue.galleryId,
+        title: schema.downloadQueue.title,
+        finishedAt: schema.downloadQueue.finishedAt,
+      })
       .from(schema.downloadQueue)
       .where(eq(schema.downloadQueue.status, 'completed'))
       .orderBy(desc(schema.downloadQueue.id))
-      .all()
-      .map((r) => ({ source: r.source, galleryId: r.galleryId, title: r.title, finishedAt: r.finishedAt }));
+      .all();
   }
 
   // ---------------- Pump / concurrency ----------------
