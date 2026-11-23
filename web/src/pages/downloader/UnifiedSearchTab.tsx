@@ -17,7 +17,7 @@ import { Button, Card, CardContent, EmptyState, ErrorState } from '../../compone
 import { GallerySelectionBar, type GallerySelectionActions } from '../../components/GallerySelectionBar';
 import { GallerySearchInput } from '../../components/GallerySearchInput';
 
-import { DOWNLOADER_SETTINGS_URL, SOURCE_LABELS, type DownloadSetup } from './state';
+import { EHENTAI_ACCOUNT_SETTINGS_URL, SOURCE_LABELS, type DownloadSetup } from './state';
 import { GalleryCard } from './GalleryCard';
 import { toWebResult, type UnifiedSearchValue } from './useUnifiedSearch';
 import { SearchHint } from './SearchHint';
@@ -75,7 +75,7 @@ function ProviderStatusSummary({ providers, onRetry, busy, canRetry }: { provide
                 <span className="font-medium">{label}</span>
                 {note ? <>: {note}</> : null}
                 {p.status === 'not-configured' && (
-                  <Link to={DOWNLOADER_SETTINGS_URL} className="ml-1 underline underline-offset-2 hover:opacity-80">save the account</Link>
+                  <Link to={EHENTAI_ACCOUNT_SETTINGS_URL} className="ml-1 underline underline-offset-2 hover:opacity-80">save the account</Link>
                 )}
               </span>
             </span>

@@ -241,6 +241,11 @@ body {
   outline-offset: -1px;
 }
 
+/* The skip link moves focus to the page region itself; the region is not a control. */
+#main-content:focus-visible {
+  outline: none;
+}
+
 /* Keep keyboard focus visible inside horizontally scrollable choice groups. */
 :where([role='radiogroup'], [role='tablist']) :focus-visible {
   outline-offset: -2px;
@@ -648,4 +653,19 @@ html[data-motion-paused] :is(.skeleton::after, .progress-stripes::after, .animat
   .app-nav-scrim[data-state="open"] {
     transition-property: opacity;
   }
+}
+
+/* Settings save bar: pinned above the page bottom while sections have changes. */
+.settings-save-bar {
+  bottom: max(0.75rem, env(safe-area-inset-bottom));
+  box-shadow: 0 6px 20px var(--control-shadow), 0 1px 2px var(--control-shadow);
+  animation: settings-save-bar-in 220ms var(--ease-out-soft) both;
+}
+@keyframes settings-save-bar-in {
+  from { opacity: 0.4; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-save-bar { animation: settings-save-bar-fade 100ms ease-out both; }
+  @keyframes settings-save-bar-fade { from { opacity: 0.6; } to { opacity: 1; } }
 }

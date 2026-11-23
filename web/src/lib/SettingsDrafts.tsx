@@ -189,10 +189,11 @@ export function useSettingsDraft<T>({ id, label, initial, source, valid = () => 
   };
 }
 
-export function DraftFeedback({ draft }: { draft: { status: DraftStatus; error: string; valid: boolean } }) {
-  if (draft.status === 'clean') return null;
-  const text = draft.status === 'pending' ? 'Saving…' : draft.status === 'error' ? draft.error : draft.status === 'dirty' ? (draft.valid ? 'Unsaved changes' : 'Unsaved changes — fix the highlighted fields') : 'Saved';
-  return <p role={draft.status === 'error' ? 'alert' : 'status'} className={`text-xs break-words ${draft.status === 'error' || !draft.valid ? 'text-danger' : draft.status === 'saved' ? 'text-success' : 'text-muted'}`}>{text}</p>;
+/** A section's own save state; the page-level save bar owns the Save action. */
+export function DraftFeedback({ draft, hideSaved = false, hideError = false }: { draft: { status: DraftStatus; error: string; valid: boolean }; hideSaved?: boolean; hideError?: boolean }) {
+  if (draft.status === 'clean' || (hideSaved && draft.status === 'saved') || (hideError && draft.status === 'error')) return null;
+  const text = draft.status === 'pending' ? 'Saving…' : draft.status === 'error' ? draft.error : draft.status === 'dirty' ? (draft.valid ? 'Unsaved' : 'Fix highlighted fields') : 'Saved';
+  return <p role={draft.status === 'error' ? 'alert' : 'status'} className={`text-xs break-words ${draft.status === 'error' || (draft.status === 'dirty' && !draft.valid) ? 'text-danger' : draft.status === 'saved' ? 'text-success' : 'text-muted'}`}>{text}</p>;
 }
 
 export function useSettingsNavigation() {
@@ -205,12 +206,15 @@ export function useSettingsNavigation() {
     pending: entries.some((entry) => entry.pending),
     labels: changed.map((entry) => entry.label),
     dirtyIds: [...store.entries].filter(([, entry]) => entry.isDirty).map(([id]) => id),
+    /** Changed sections that cannot be saved until a field is fixed. */
+    invalid: [...store.entries].filter(([, entry]) => entry.isDirty && !entry.valid).map(([id, entry]) => ({ id, label: entry.label })),
     canSave: changed.length > 0 && changed.every((entry) => entry.valid && !entry.pending && entry.save),
     saveAll: async () => {
       // Sequential saves avoid races between sections sharing settings queries.
       for (const entry of store.entries.values()) if (entry.isDirty) {
         if (!entry.valid || entry.pending || !entry.save) throw new Error(`${entry.label} cannot be saved yet.`);
-        await entry.save();
+        try { await entry.save(); }
+        catch (cause) { throw new Error(`${entry.label} was not saved. ${cause instanceof Error ? cause.message : String(cause)}`); }
       }
     },
     discardAll: () => {

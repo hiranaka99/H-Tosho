@@ -26,7 +26,7 @@ export function NavigationGuard() {
           <DialogTitle>Save your settings changes?</DialogTitle>
           <DialogDescription className="mt-2">You have unsaved changes in {drafts.labels.join(', ')}. Save them before leaving, discard them, or stay to continue editing.</DialogDescription>
         </div>
-        {!drafts.canSave && !saving && <p className="text-sm text-muted">Complete invalid fields or wait for pending saves before saving all changes.</p>}
+        {!drafts.canSave && !saving && <p className="text-sm text-muted">{drafts.invalid.length > 0 ? `Fix the highlighted fields in ${drafts.invalid.map((entry) => entry.label).join(', ')} to save, or discard your changes.` : 'Wait for the current save to finish before saving all changes.'}</p>}
         {error && <p role="alert" className="break-words text-sm text-danger">{error}</p>}
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
           <Button variant="outline" disabled={saving || drafts.pending} onClick={stay}>Stay</Button>

@@ -288,8 +288,8 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
             <h3 className="text-sm font-semibold">Existing chapters</h3>
             {targetFiles.isFetching ? <p role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner /> Inspecting target archives…</p>
               : targetFiles.isError || !targetFiles.data?.dir || targetFiles.data.reason ? <div role="alert" className="space-y-2 text-sm">
-                <p className="text-danger">{targetFiles.isError ? 'Could not inspect the target series. Retry before merging.' : 'Could not locate the target series folder. Check library folder mappings in Downloader settings, then retry.'}</p>
-                <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={busy} onClick={() => void targetFiles.refetch()}><RotateCcw className="h-3.5 w-3.5" /> Retry target inspection</Button><Button asChild size="sm" variant="ghost"><Link to="/settings?tab=downloader">Downloader settings</Link></Button></div>
+                <p className="text-danger">{targetFiles.isError ? 'Could not inspect the target series. Retry before merging.' : 'Could not locate the target series folder. Check the Kavita library folders in Settings, then retry.'}</p>
+                <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={busy} onClick={() => void targetFiles.refetch()}><RotateCcw className="h-3.5 w-3.5" /> Retry target inspection</Button><Button asChild size="sm" variant="ghost"><Link to="/settings?tab=kavita#library-folders">Library folder settings</Link></Button></div>
               </div>
               : <>
                 <p id={`${id}-existing-help`} className="text-xs text-muted">Blank clears the number.</p>
@@ -338,7 +338,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
           {save.isError && <p role="alert" className="text-sm text-danger">Could not queue the merge. Drafts kept; try again.</p>}
           {hasErrors && <p role="alert" className="text-xs text-danger">Fix the chapter numbers above.</p>}
           {!downloadReady && <div role="status" className="flex flex-wrap items-center gap-2 text-xs text-muted">
-            {setup.status === 'loading' ? <><Spinner /> Checking download settings…</> : setup.status === 'error' ? <><span>Could not check download settings.</span><Button size="sm" variant="outline" onClick={setup.onRetry}>Retry settings</Button></> : <><span>Set an output folder before queueing downloads.</span><Link to="/settings?tab=downloader" className="inline-flex min-h-11 items-center text-primary underline underline-offset-4">Downloader settings</Link></>}
+            {setup.status === 'loading' ? <><Spinner /> Checking download settings…</> : setup.status === 'error' ? <><span>Could not check download settings.</span><Button size="sm" variant="outline" onClick={setup.onRetry}>Retry settings</Button></> : <><span>Set an output folder before queueing downloads.</span><Link to="/settings?tab=downloads" className="inline-flex min-h-11 items-center text-primary underline underline-offset-4">Download settings</Link></>}
           </div>}
           <div className="flex flex-wrap justify-end gap-2">
             <Button variant="outline" size="sm" disabled={busy} onClick={dismiss}>Cancel</Button>

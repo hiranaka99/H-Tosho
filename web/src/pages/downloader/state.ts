@@ -79,4 +79,7 @@ export const sortsFor = (src: DoujinSource): { value: DoujinSort; label: string 
 export const SOURCE_LABELS: Record<DoujinSource, string> = { hitomi: 'Hitomi.la', nhentai: 'nHentai', ehentai: 'E-Hentai' };
 
 export type DownloadSetup = { status: 'loading' | 'error' | 'missing' | 'ready'; directory?: string; format?: 'cbz' | 'folder'; onRetry: () => void };
-export const DOWNLOADER_SETTINGS_URL = '/settings?tab=downloader';
+export const DOWNLOADER_SETTINGS_URL = '/settings?tab=downloads';
+/** Source accounts and keys (E-Hentai cookies, nHentai key) live under Settings → Sources. */
+export const SOURCE_SETTINGS_URL = '/settings?tab=sources';
+export const EHENTAI_ACCOUNT_SETTINGS_URL = '/settings?tab=sources#ehentai-account';

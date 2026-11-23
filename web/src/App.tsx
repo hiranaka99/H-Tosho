@@ -177,6 +177,7 @@ export default function App() {
   };
   return (
     <div className="flex min-h-0 h-full flex-col overflow-hidden lg:flex-row">
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-lg focus:border focus:border-border-2 focus:bg-surface focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-primary focus:shadow-lg">Skip to content</a>
       <RecommendationLoader />
       <header aria-hidden={navOpen && !isDesktop ? true : undefined} className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-sidebar px-3 pt-[env(safe-area-inset-top)] sm:px-4 lg:hidden">
         {!isDesktop && <Brand />}
@@ -233,7 +234,7 @@ export default function App() {
         <KavitaIndicator />
         <SidebarStatus />
       </aside>
-      <main ref={mainRef} className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
+      <main ref={mainRef} id="main-content" tabIndex={-1} className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
         {/* Padding lives on an inner wrapper, not on the scroll container itself: sticky
             page elements (tab bars) pin flush to the scrollport edge this way. */}
         <div className="p-3 sm:p-5 lg:p-8">

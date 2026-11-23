@@ -744,7 +744,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-3 text-sm text-muted sm:min-h-9 sm:py-2 [&::-webkit-details-marker]:hidden"><ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 group-open:rotate-90" />{Object.keys(outcome.errors).map((id) => PROVIDER_NAMES[id] ?? id).join(', ')} search unavailable</summary>
                       <div className="space-y-2 pb-2 pt-1 text-xs text-muted">
                         {Object.entries(outcome.errors).map(([id, message]) => <p key={id} className="break-words"><span className="font-medium">{PROVIDER_NAMES[id] ?? id}:</span> {message}</p>)}
-                        <Link to="/settings?tab=providers" className="inline-flex min-h-9 items-center text-primary underline underline-offset-2">Check provider settings</Link>
+                        <Link to="/settings?tab=sources" className="inline-flex min-h-9 items-center text-primary underline underline-offset-2">Check provider settings</Link>
                       </div>
                     </details>
                   )}

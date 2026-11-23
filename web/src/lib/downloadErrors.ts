@@ -16,7 +16,7 @@ export function downloadErrorHelp(message: string, code?: DownloadErrorCode | nu
       quota: { message: 'Your image quota on the source is exhausted. Wait for it to reset, then retry.' },
       upstream: { message: 'The source is temporarily unavailable. Try again in a few minutes.' },
       'access-denied': { message: 'The source denied access. Check its connection settings before retrying.', settings: true },
-      'output-missing': { message: 'Check the output folder in Downloader settings, then retry.', settings: true },
+      'output-missing': { message: 'Check the output folder in Download settings, then retry.', settings: true },
       'disk-full': { message: 'The output drive is out of disk space. Free up space or choose another folder, then retry.', settings: true },
       permissions: { message: 'H-Tosho cannot write to the output folder. Check its permissions or choose another folder, then retry.', settings: true },
       'download-failed': { message: 'The request could not finish. Retry, or open technical details to investigate.' },
@@ -26,7 +26,7 @@ export function downloadErrorHelp(message: string, code?: DownloadErrorCode | nu
   // Legacy API responses and pre-enqueue errors have no structured code.
   if (/cancelled by user/i.test(message)) return { message: 'Download cancelled. Retry when you’re ready.' };
   if (/ENOSPC|EDQUOT|no space left|disk full/i.test(message)) return { message: 'The output drive is out of disk space. Free up space or choose another folder, then retry.', settings: true };
-  if (/download directory|output folder|downloadDirectory/i.test(message)) return { message: 'Set an output folder in Downloader settings, then retry.', settings: true };
+  if (/download directory|output folder|downloadDirectory/i.test(message)) return { message: 'Set an output folder in Download settings, then retry.', settings: true };
   if (/EACCES|EPERM|permission denied|not writable/i.test(message)) return { message: 'H-Tosho cannot write to the output folder. Check its permissions or choose another folder, then retry.', settings: true };
   if (/ENOENT|no such file|directory.*not.*exist/i.test(message)) return { message: 'The output folder or a required file is missing. Check the folder in settings, then retry.', settings: true };
   if (/509|image.?quota|quota.*exhausted/i.test(message)) return named({ message: 'Your image quota on the source is exhausted. Wait for it to reset, then retry.' }, source);

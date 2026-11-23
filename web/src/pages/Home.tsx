@@ -196,7 +196,7 @@ export function Home() {
 
     {kavitaMissing && <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-xl border border-border bg-surface px-4 py-2 sm:px-5">
       <p className="flex items-center gap-2 text-sm"><Link2 aria-hidden="true" className="h-4 w-4 shrink-0 text-primary" />Connect Kavita to find metadata matches for your library.</p>
-      <SectionLink to="/settings?tab=general#kavita-connection">Connect Kavita</SectionLink>
+      <SectionLink to="/settings?tab=kavita#kavita-connection">Connect Kavita</SectionLink>
     </div>}
 
     <section aria-labelledby="home-recommendations" className="min-w-0 space-y-4">
