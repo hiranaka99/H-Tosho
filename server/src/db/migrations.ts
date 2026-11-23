@@ -146,6 +146,22 @@ export function migrateSchema(sqlite: Database.Database): void {
       }
       createSchemaTables(sqlite);
     },
+    () => {
+      // Persist parodies/characters/groups on gallery_tags and dismissed
+      // gallery metadata so recommendations can learn from parodies and dismissals.
+      const add = (table: string, column: string, definition: string) => {
+        const columns = sqlite.prepare(`PRAGMA table_info(${quote(table)})`).all() as { name: string }[];
+        if (!columns.some(entry => entry.name === column)) sqlite.exec(`ALTER TABLE ${quote(table)} ADD COLUMN ${quote(column)} ${definition}`);
+      };
+      add('gallery_tags', 'parodies_json', "TEXT NOT NULL DEFAULT '[]'");
+      add('gallery_tags', 'characters_json', "TEXT NOT NULL DEFAULT '[]'");
+      add('gallery_tags', 'groups_json', "TEXT NOT NULL DEFAULT '[]'");
+      add('dismissed_galleries', 'title', 'TEXT');
+      add('dismissed_galleries', 'artists_json', "TEXT NOT NULL DEFAULT '[]'");
+      add('dismissed_galleries', 'tags_json', "TEXT NOT NULL DEFAULT '[]'");
+      createSchemaTables(sqlite);
+      createIndexes(sqlite, true);
+    },
   ];
   for (const [index, migration] of migrations.entries()) {
     const version = index + 1;

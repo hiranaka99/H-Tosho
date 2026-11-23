@@ -73,6 +73,9 @@ export function GalleryDetailModal({ item, onClose, onDownload, checking, downlo
     staleTime: 5 * 60_000 });
   const g = gallery;
   const previewPages = g?.previewPages ?? [];
+  const reasons = 'reasons' in item && Array.isArray((item as { reasons?: unknown }).reasons)
+    ? ((item as { reasons: string[] }).reasons).filter((r) => typeof r === 'string' && r.trim())
+    : [];
 
   /** Search a single tag/artist value (from the details card) on this source. */
   const searchFor = (value: string, ns?: string | null) => {
@@ -96,6 +99,14 @@ export function GalleryDetailModal({ item, onClose, onDownload, checking, downlo
                 {g?.language && <Badge tone="info"><Languages className="h-3 w-3" /> {g.language}</Badge>}
               </div>
               <DialogTitle className="break-words text-lg leading-snug">{g?.title ?? item.title}</DialogTitle>
+              {reasons.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5" aria-label="Why this was recommended">
+                  <span className="text-xs text-muted">Picked for:</span>
+                  {reasons.slice(0, 5).map((reason) => (
+                    <span key={reason} className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">{reason}</span>
+                  ))}
+                </div>
+              )}
             </div>
 
             {isPending && (

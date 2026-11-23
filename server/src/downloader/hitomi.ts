@@ -530,8 +530,8 @@ function tokenizeQuery(query: string): { ns?: string; val: string }[] {
  * that tag's exclusion, so searching a banned tag still returns results (a
  * bare gallery-id lookup never reaches this function at all).
  */
-async function searchGalleryIds(query: string, version: string, sort?: DoujinSort, strictExclusions = false): Promise<number[]> {
-  const { state, positive, negative, groups } = parseHitomiSearch(query, sort);
+async function searchGalleryIds(query: string, version: string, sort?: DoujinSort, strictExclusions = false, defaultLanguage?: string): Promise<number[]> {
+  const { state, positive, negative, groups } = parseHitomiSearch(query, sort, defaultLanguage);
   const resolve = (term: string) => term.includes(':')
     ? fetchNozomiUrl(`${API_BASE}${hitomiNozomiPath(hitomiStateForTerm(term, state))}`)
     : getGalleryIdsForTerm(term, version);
@@ -726,9 +726,36 @@ async function pagedSearchIds(query: string, sort?: DoujinSort): Promise<number[
   }
 }
 
+const tagInfoCache = new Map<string, { name: string; ns: string; count: number } | null>();
+const TAG_INFO_CACHE_MAX = 1024;
+
+async function resolveHitomiTagInfo(rawName: string): Promise<{ name: string; ns: string; count: number } | null> {
+  const key = rawName.trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
+  if (!key) return null;
+  if (tagInfoCache.has(key)) return tagInfoCache.get(key) ?? null;
+  const suggestions = await fetchTagSuggestions('global', key);
+  const tagMatches = suggestions.filter(
+    (s) => s.name.trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ') === key
+      && (s.ns === 'female' || s.ns === 'male' || s.ns === 'tag'),
+  );
+  // Prefer highest gallery count when a tag exists in multiple areas (e.g. female vs male).
+  tagMatches.sort((a, b) => b.count - a.count);
+  const match = tagMatches[0] ?? null;
+  const resolved = match ? { name: match.name, ns: match.ns, count: match.count } : null;
+  if (tagInfoCache.size >= TAG_INFO_CACHE_MAX) {
+    const oldest = tagInfoCache.keys().next().value;
+    if (oldest !== undefined) tagInfoCache.delete(oldest);
+  }
+  tagInfoCache.set(key, resolved);
+  return resolved;
+}
+
 async function hydrateSearchIds(ids: number[], limit: number, opts?: DoujinSearchOptions): Promise<DoujinSearchResult[]> {
   const target = Math.max(limit, 1);
-  const start = Math.min(Math.max(opts?.skip ?? 0, 0), ids.length);
+  const rawSkip = Math.max(opts?.skip ?? 0, 0);
+  const start = opts?.wrapSkip && ids.length > 0
+    ? (ids.length > target ? rawSkip % (ids.length - target + 1) : 0)
+    : Math.min(rawSkip, ids.length);
   const scanLimit = Math.min(ids.length - start, target * 4);
   const excludedTypes = new Set(Object.keys(EXCLUDED_GALLERY_TYPES));
   for (const type of opts?.excludeTypes ?? []) excludedTypes.add(type.toLowerCase().replace(/[^a-z]/g, ''));
@@ -741,10 +768,25 @@ async function hydrateSearchIds(ids: number[], limit: number, opts?: DoujinSearc
         if (excludedTypes.has(type)) return;
         const gg = await loadGG();
         const files: HitomiFile[] = info.files ?? [];
+        const tags: string[] = [];
+        const tagNamespaces: (string | undefined)[] = [];
+        for (const t of info.tags ?? []) {
+          if (tags.length >= 24) break;
+          const name = tagValue(t);
+          if (!name) continue;
+          tags.push(name);
+          tagNamespaces.push(tagNamespace(t));
+        }
+        const parodies = (info.parodys ?? info.parody ?? []).map(tagValue).filter(Boolean).slice(0, 8);
+        const groups = (info.groups ?? []).map(tagValue).filter(Boolean).slice(0, 8);
         out.push({
           source: 'hitomi', galleryId: String(id), title: stripTags(info.title) || `Gallery ${id}`,
           coverUrl: coverUrlFor(gg, files), language: typeof info.language === 'string' && info.language ? info.language : undefined,
-          tags: (info.tags ?? []).map(tagValue).filter(Boolean).slice(0, 24), artists: (info.artists ?? []).map(tagValue).filter(Boolean).slice(0, 8),
+          tags,
+          ...(tagNamespaces.some((ns) => ns !== undefined) ? { tagNamespaces } : {}),
+          artists: (info.artists ?? []).map(tagValue).filter(Boolean).slice(0, 8),
+          ...(parodies.length ? { parodies } : {}),
+          ...(groups.length ? { groups } : {}),
           pageCount: files.length || undefined, url: galleryUrlFor(info, String(id)), uploadedAt: toIsoDate(info.date),
         });
       } catch { /* Preserve partial results when an individual metadata lookup fails. */ }
@@ -776,7 +818,10 @@ export const hitomiProvider: DoujinProvider = {
           coverUrl: g.coverUrl,
           language: g.language,
           tags: g.tags,
+          ...(g.tagNamespaces?.some((ns) => ns !== undefined) ? { tagNamespaces: g.tagNamespaces } : {}),
           artists: g.artists,
+          ...(g.parodies?.length ? { parodies: g.parodies } : {}),
+          ...(g.groups?.length ? { groups: g.groups } : {}),
           pageCount: g.pageCount,
           url: g.url,
           uploadedAt: g.uploadedAt,
@@ -785,7 +830,8 @@ export const hitomiProvider: DoujinProvider = {
     }
 
     const version = await getGalleriesIndexVersion();
-    const ids = await searchGalleryIds(q, version, sort, opts?.strictExclusions);
+    let ids = await searchGalleryIds(q, version, sort, opts?.strictExclusions, opts?.language);
+    if (opts?.excludeIds?.size) ids = ids.filter((id) => !opts.excludeIds!.has(id));
     if (!ids.length) return [];
 
     return hydrateSearchIds(ids, limit, opts);
@@ -807,6 +853,10 @@ export const hitomiProvider: DoujinProvider = {
     const version = await getGalleriesIndexVersion();
     const banned = await bannedIdSet('', version, true);
     return items.filter((item) => !banned?.has(Number(item.galleryId)));
+  },
+
+  resolveTagInfo(name: string): Promise<{ name: string; ns: string; count: number } | null> {
+    return resolveHitomiTagInfo(name);
   },
 
   /**

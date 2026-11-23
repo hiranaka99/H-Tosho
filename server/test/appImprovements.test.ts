@@ -117,14 +117,18 @@ test('feedback is persistent, idempotent, reversible, and separate from ownershi
   assert.deepEqual(feedback.getRecommendationFeedback().mutedArtists, ['sample artist']);
   assert.throws(() => feedback.saveRecommendationFeedback('mute-artist', { ...target, artist: 'Not an artist' }, item()));
   feedback.saveRecommendationFeedback('unmute-artist', { ...target, artist: 'Sample Artist' });
+  feedback.saveRecommendationFeedback('mute-tag', { ...target, tag: 'ADVENTURE' }, item());
+  assert.deepEqual(feedback.getRecommendationFeedback().mutedTags, ['adventure']);
+  assert.throws(() => feedback.saveRecommendationFeedback('mute-tag', { ...target, tag: 'Not a tag' }, item()));
+  feedback.saveRecommendationFeedback('unmute-tag', { ...target, tag: 'adventure' });
   feedback.saveRecommendationFeedback('unlike', target);
-  assert.deepEqual(feedback.getRecommendationFeedback(), { liked: [], mutedArtists: [] });
+  assert.deepEqual(feedback.getRecommendationFeedback(), { liked: [], mutedArtists: [], mutedTags: [] });
 });
 
 test('legacy snoozes no longer hide galleries while saved likes and artist mutes remain intact', async () => {
   resetFeedback();
   const target = { source: 'hitomi' as const, galleryId: '123' };
-  const saved = { liked: [item()], mutedArtists: ['other artist'] };
+  const saved = { liked: [item()], mutedArtists: ['other artist'], mutedTags: [] };
   getDb().insert(schema.keyValueStore).values({
     key: 'recommendation-feedback-v1',
     valueJson: JSON.stringify({ ...saved, snoozed: [{ ...target, title: item().title, until: new Date(Date.now() + 30 * 86_400_000).toISOString() }] }),
@@ -134,7 +138,19 @@ test('legacy snoozes no longer hide galleries while saved likes and artist mutes
   assert.deepEqual(await eligibleRecommendations([{ ...item('999'), artists: ['Other Artist'] }]), []);
   feedback.saveRecommendationFeedback('unmute-artist', { ...target, artist: 'Other Artist' });
   const stored = JSON.parse(getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendation-feedback-v1')).get()!.valueJson);
-  assert.deepEqual(stored, { liked: [item()], mutedArtists: [] });
+  assert.deepEqual(stored, { liked: [item()], mutedArtists: [], mutedTags: [] });
+});
+
+test('tag muting excludes matching galleries and API validates tag actions', async () => {
+  resetFeedback();
+  const target = { source: 'hitomi' as const, galleryId: '123' };
+  feedback.saveRecommendationFeedback('mute-tag', { ...target, tag: 'adventure' }, item());
+  assert.deepEqual(await eligibleRecommendations([item(), { ...item('999'), tags: ['Adventure', 'romance'] }]), []);
+  assert.equal((await eligibleRecommendations([{ ...item('888'), tags: ['romance'] }])).length, 1);
+  feedback.saveRecommendationFeedback('unmute-tag', { ...target, tag: 'adventure' });
+  assert.equal((await eligibleRecommendations([item()])).length, 1);
+  const bad = await api.request('/recommendations/feedback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'mute-tag', source: 'hitomi', galleryId: '123', tag: '' }) });
+  assert.equal(bad.status, 400);
 });
 
 test('artist muting excludes collaborations and unmuting restores eligibility', async () => {
