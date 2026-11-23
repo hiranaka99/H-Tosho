@@ -4,11 +4,11 @@ import { downloadPages } from './transfer.js';
 import { wakePaused, type RunContext, type LiveFields } from './runtime.js';
 import { isTransientError, retryTransient, classifyDownloadError } from './requests.js';
 export { isTransientError, retryTransient } from './requests.js';
-import { downloadState, type DownloadTask, type DownloadStatus, type DownloadErrorCode } from '../contracts/downloads.js';
+import { downloadState, MAX_AUTO_RETRIES, type DownloadTask, type DownloadStatus, type DownloadErrorCode } from '../contracts/downloads.js';
 export type { DownloadTask, DownloadStatus } from '../contracts/downloads.js';
 import { queueDownloadedMatchDiscovery } from '../services/downloadDiscovery.js';
 import { recordGalleryIdentity, invalidateDuplicateLibrary, resolveDuplicateGallery } from '../services/galleryDuplicates.js';
-import { and, asc, desc, eq, inArray, or, isNotNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, or, isNotNull } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -42,7 +42,6 @@ import { resolveMergeProtection, requireMergeProtection } from '../services/merg
  * polling clients stay fresh without hammering the database.
  */
 
-const MAX_AUTO_RETRIES = 3;
 const AUTO_RETRY_DELAY_MS = 60_000;
 
 /**
@@ -280,6 +279,42 @@ export class DownloadQueue {
       .limit(limit)
       .all();
     return rows.map((row) => this.overlayLive(rowToTask(row)));
+  }
+
+  /**
+   * The manager's working set: every unsettled or failed task (they need the
+   * user or are still moving, so a history cap must never hide them) plus the
+   * most recently finished completed tasks. Older completed rows are paged
+   * through {@link completedHistory}.
+   */
+  listForManager(completedLimit = 100): DownloadTask[] {
+    const db = getDb();
+    const open = db.select().from(schema.downloadQueue)
+      .where(inArray(schema.downloadQueue.status, ['queued', 'downloading', 'paused', 'failed']))
+      .orderBy(desc(schema.downloadQueue.id))
+      .limit(2000)
+      .all();
+    const completed = db.select().from(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.status, 'completed'))
+      .orderBy(desc(schema.downloadQueue.finishedAt), desc(schema.downloadQueue.id))
+      .limit(completedLimit)
+      .all();
+    return [...open, ...completed].sort((a, b) => b.id - a.id).map((row) => this.overlayLive(rowToTask(row)));
+  }
+
+  /** One page of completed history, newest finish first, with the full count. */
+  completedHistory(offset: number, limit: number): { items: DownloadTask[]; total: number } {
+    const db = getDb();
+    const items = db.select().from(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.status, 'completed'))
+      .orderBy(desc(schema.downloadQueue.finishedAt), desc(schema.downloadQueue.id))
+      .limit(limit)
+      .offset(offset)
+      .all()
+      .map((row) => this.overlayLive(rowToTask(row)));
+    const total = db.select({ n: count() }).from(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.status, 'completed')).get()?.n ?? 0;
+    return { items, total };
   }
 
   /** Count of currently in-flight (downloading) tasks. */

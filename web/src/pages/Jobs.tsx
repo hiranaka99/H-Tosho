@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router';
 import { Activity, AlertTriangle, ArrowDown, Ban, CheckCheck, CheckCircle2, Circle, Copy, Download, Eye, FilePen, ListChecks, Merge, RefreshCw, RotateCcw, ScanLine, Search, SlidersHorizontal, Trash2, X, XCircle, type LucideIcon } from 'lucide-react';
 import { api, type Job, type JobLog } from '../lib/api';
-import { Badge, Button, Card, CardContent, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle, EmptyState, ErrorState, Input, Label, PageHeader, ProgressBar, SegmentedTabs, Select, Skeleton, Spinner, Disclosure } from '../components/ui';
+import { Badge, Button, Card, CardContent, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle, EmptyState, ErrorState, InlineConfirm, Input, Label, PageHeader, ProgressBar, SegmentedTabs, Select, Skeleton, Spinner, Disclosure } from '../components/ui';
 import { cn, timeAgo, toIsoUtc, jobLabel } from '../lib/utils';
 import { isActive, hasWarnings, needsAttention } from '../lib/jobStatus';
 import { useMediaQuery } from '../lib/useMediaQuery';
@@ -28,7 +28,6 @@ const EMPTY_COPY: Record<JobFilter, { title: string; description: string }> = {
 const LOG_COLOR: Record<string, string> = { info: 'text-muted', warn: 'text-warning', warning: 'text-warning', error: 'text-danger', success: 'text-success' };
 const controlClass = 'max-lg:min-h-11 pointer-coarse:min-h-11';
 const INSPECTOR_QUERY = '(min-width: 1280px)';
-const STOP_CONFIRM_MS = 6000;
 
 const JOB_GLYPH: Record<string, LucideIcon> = {
   'scan-matchable': ScanLine,
@@ -406,22 +405,15 @@ function FailureCard({ job, retry }: { job: Job; retry?: RetryControl }) {
 
 /** Two deliberate steps for an action the app itself says cannot be undone. */
 function StopConfirm({ job, pending, onKeep, onStop }: { job: Job; pending: boolean; onKeep: () => void; onStop: () => void }) {
-  const keepRef = React.useRef<HTMLButtonElement>(null);
-  React.useEffect(() => { keepRef.current?.focus({ preventScroll: true }); }, []);
   const consequence = job.status === 'queued'
     ? "It hasn't started yet, so nothing will change."
     : job.progressTotal > 0
       ? `The ${job.progressCurrent} of ${job.progressTotal} items already processed keep their changes.`
       : 'Work already performed is not undone.';
   return (
-    <div role="group" aria-label="Confirm stopping this task" className="relative mt-2 max-w-xl space-y-3 overflow-hidden rounded-lg border border-danger/35 bg-danger/5 p-3">
-      <p className="text-sm"><span className="font-semibold">Stop this task?</span> {consequence}</p>
-      <div className="flex flex-wrap gap-2">
-        <Button ref={keepRef} variant="outline" size="sm" className={controlClass} onClick={onKeep}>Keep running</Button>
-        <Button variant="danger" size="sm" className={controlClass} disabled={pending} onClick={onStop}>{pending ? <Spinner /> : <Ban className="h-4 w-4" />} Stop task</Button>
-      </div>
-      <span aria-hidden="true" className="confirm-countdown absolute bottom-0 left-0 h-0.5 w-full bg-danger/70" />
-    </div>
+    <InlineConfirm label="Confirm stopping this task" keepLabel="Keep running" confirmLabel="Stop task" icon={<Ban className="h-4 w-4" />} pending={pending} onKeep={onKeep} onConfirm={onStop} className="mt-2 max-w-xl" controlClassName={controlClass}>
+      <span className="font-semibold">Stop this task?</span> {consequence}
+    </InlineConfirm>
   );
 }
 
@@ -619,18 +611,7 @@ export function Jobs() {
     onError: (error) => toast({ tone: 'danger', title: 'Could not remove failed tasks', description: error.message }),
   });
 
-  // Escape reverts an open stop confirmation, or clears the inline inspector; the confirmation times out on its own.
-  React.useEffect(() => {
-    if (stopConfirmId === null) return;
-    const timer = window.setTimeout(() => setStopConfirmId(null), STOP_CONFIRM_MS);
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.stopPropagation();
-      setStopConfirmId(null);
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => { window.clearTimeout(timer); window.removeEventListener('keydown', onKey, true); };
-  }, [stopConfirmId]);
+  // The open stop confirmation reverts on Escape and times out on its own (InlineConfirm).
   React.useEffect(() => {
     if (!inspector || selectedId === null || clearTarget !== null) return;
     const onKey = (event: KeyboardEvent) => {

@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Clock, Download, Pause, Play, XCircle, Ban } from 'lucide-react';
 import { api, type Job, type DownloadTask } from '../lib/api';
 import { toast } from '../lib/toast';
-import { useDownloads } from '../lib/DownloadsContext';
+import { useDownloads, needsAttention as downloadNeedsAttention } from '../lib/DownloadsContext';
 import { formatBytes, formatSpeed } from '../lib/format';
 import { jobLabel } from '../lib/utils';
 import { needsAttention } from '../lib/jobStatus';
@@ -141,6 +141,7 @@ export function SidebarStatus() {
           void qc.invalidateQueries({ queryKey: ['low-confidence'] });
           void qc.invalidateQueries({ queryKey: ['home-matches'] });
           void qc.invalidateQueries({ queryKey: ['home-activity'] });
+          void qc.invalidateQueries({ queryKey: ['downloads-library'] });
         }
       }
     }
@@ -148,7 +149,7 @@ export function SidebarStatus() {
   }, [jobs, qc]);
   const shownTasks = React.useMemo(() => tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused'), [tasks]);
   const attentionJobs = React.useMemo(() => jobs.filter(needsAttention), [jobs]);
-  const failedDownloads = React.useMemo(() => tasks.filter((task) => task.status === 'failed' && task.errorMessage !== 'Cancelled by user'), [tasks]);
+  const failedDownloads = React.useMemo(() => tasks.filter(downloadNeedsAttention), [tasks]);
   const onTaskAction = React.useCallback((op: 'pause' | 'resume' | 'cancel', id: number) => {
     if (op === 'pause') pause(id);
     else if (op === 'resume') resume(id);
