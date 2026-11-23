@@ -98,15 +98,46 @@ interface GalleryCardProps {
   /** Extra sources this gallery was also found on (unified search grouping).
    *  Text labels — never color-only. */
   provenance?: { extraSources: DoujinSource[] };
+  /** Profile reasons explaining why a recommendation card was picked. */
+  reasons?: string[];
 }
 
-export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', quietAction = false, provenance }: GalleryCardProps) {
+function summarizeRecommendationReasons(reasons?: string[]): { summary: string; full: string } | null {
+  if (!reasons?.length) return null;
+  const parsed = reasons
+    .map((reason) => {
+      const sep = reason.indexOf(' ');
+      if (sep <= 0) return null;
+      const kind = reason.slice(0, sep);
+      const value = reason.slice(sep + 1).trim();
+      return value ? { kind, value } : null;
+    })
+    .filter((entry): entry is { kind: string; value: string } => entry !== null);
+  if (!parsed.length) return null;
+  const priority: Record<string, number> = { artist: 0, series: 1, tag: 2 };
+  parsed.sort((a, b) => (priority[a.kind] ?? 3) - (priority[b.kind] ?? 3));
+  const full = parsed.map((entry) => `${entry.kind === 'artist' ? 'Artist' : entry.kind === 'series' ? 'Series' : 'Tag'}: ${entry.value}`).join(' · ');
+  const lead = parsed[0];
+  if (lead.kind === 'artist') {
+    const extraTag = parsed.find((entry) => entry.kind === 'tag');
+    return { summary: extraTag ? `Because you like ${lead.value} · ${extraTag.value}` : `Because you like ${lead.value}`, full };
+  }
+  if (lead.kind === 'series') {
+    const extraTag = parsed.find((entry) => entry.kind === 'tag');
+    return { summary: extraTag ? `Series: ${lead.value} · ${extraTag.value}` : `Series: ${lead.value}`, full };
+  }
+  const topTags = parsed.filter((entry) => entry.kind === 'tag').slice(0, 2).map((entry) => entry.value);
+  return { summary: `Matches: ${topTags.join(', ')}`, full };
+}
+
+export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', quietAction = false, provenance, reasons }: GalleryCardProps) {
   const selectMode = selection?.mode === 'select', selected = selection?.selected ?? false;
   const onToggleSelect = selection?.onToggle, onReview = review?.onChange;
   const reviewed = review?.state === 'reviewed', reviewPending = review?.state === 'pending';
   const onFeedback = feedback?.onOpen, dismissing = feedback?.pending ?? false;
   const libraryMatch = ownership.type === 'in-library' ? 'owned' : ownership.type === 'possible-duplicate' ? 'possible' : undefined;
   const showSource = display !== 'recommendation', showTags = display === 'full';
+  const reasonLine = display === 'recommendation' ? summarizeRecommendationReasons(reasons) : null;
   const ownershipType = ownership.type === 'available' ? null : ownership.type;
   const tags = item.tags.slice(0, 4);
   const inLibrary = libraryMatch === 'owned';
@@ -142,6 +173,11 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
           {item.artists.length > 0 && (
             <p className="truncate text-xs font-medium text-foreground" title={`Artists: ${item.artists.join(', ')}`}>
               <span className="text-muted">Artist{item.artists.length > 1 ? 's' : ''} · </span>{item.artists.join(', ')}
+            </p>
+          )}
+          {reasonLine && (
+            <p className="truncate text-xs text-muted" title={reasonLine.full}>
+              {reasonLine.summary}
             </p>
           )}
           {showTags && tags.length > 0 && <div className="flex max-h-12 flex-wrap gap-1 overflow-hidden" aria-label="Tags">{tags.map((tag, i) => <span key={i} className="max-w-full truncate rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{tag}</span>)}</div>}

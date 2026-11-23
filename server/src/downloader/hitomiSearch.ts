@@ -15,10 +15,11 @@ export function normalizeHitomiQuery(query: string): string {
 }
 
 /** Official results.js grammar, with H-Tosho's existing default language. */
-export function parseHitomiSearch(query: string, sort?: DoujinSort) {
+export function parseHitomiSearch(query: string, sort?: DoujinSort, defaultLanguage = 'english') {
   const terms = normalizeHitomiQuery(query).split(/\s+/).filter(Boolean);
   // Equivalent to adding the user's default language to the website query.
-  if (!terms.some(term => term.startsWith('language:'))) terms.push('language:english');
+  const lang = defaultLanguage.trim().toLowerCase() || 'english';
+  if (!terms.some(term => term.startsWith('language:'))) terms.push(`language:${lang}`);
   const state: HitomiSearchState = {
     area: 'all', tag: 'index', language: 'all', orderby: 'date', orderbykey: '', direction: 'desc',
   };

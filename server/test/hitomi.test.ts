@@ -387,3 +387,18 @@ test('random search pages share one ranking snapshot without duplicates or gaps'
   assert.deepEqual(again.items.map(item => item.galleryId), first.items.map(item => item.galleryId));
   assert.deepEqual([...first.items, ...second.items].map(item => Number(item.galleryId)).sort((a, b) => a - b), [101, 103, 104, 105, 107, 108]);
 });
+
+test('search filters excludeIds before hydration, wraps skip on small pools, and honors opts.language', async () => {
+  const excluded = await hitomiProvider.search('cat', 3, undefined, { excludeIds: new Set([101, 103]) });
+  assert.deepEqual(excluded.map(r => r.galleryId), ['104', '105', '107']);
+  assert.ok(!fetchedUrls.some(u => u.endsWith('/galleries/101.js') || u.endsWith('/galleries/103.js')), 'excluded IDs must not be hydrated');
+
+  fetchedUrls = [];
+  const wrapped = await hitomiProvider.search('cat', 4, undefined, { skip: 20, wrapSkip: true });
+  assert.ok(wrapped.length >= 3, 'wrapSkip must keep small pools populated instead of returning empty');
+
+  fetchedUrls = [];
+  const jp = await hitomiProvider.search('moon', 10, undefined, { language: 'japanese' });
+  assert.deepEqual(jp.map(r => r.galleryId), ['301']);
+  assert.ok(fetchedUrls.includes(`${API_BASE}/n/index-japanese.nozomi`));
+});

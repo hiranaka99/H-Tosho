@@ -257,3 +257,55 @@ export function findDuplicateReports(incoming: GalleryIdentity[], excludedPaths:
     return { source: item.source as DoujinSource, galleryId: item.galleryId, title: item.title, matches };
   }), warnings: [...warnings] };
 }
+
+/**
+ * Fast synchronous check against already-indexed local library archives and
+ * cross-source download identities — never scans directories or contacts Kavita.
+ */
+export function findKnownLibraryDuplicateKeys(incoming: GalleryIdentity[]): Set<string> {
+  if (!incoming.length) return new Set();
+  const db = getDb();
+  const owned = new Set(db.select().from(schema.ownedGalleries).all().map(row => `${row.source}:${row.galleryId}`));
+  const tasks = new Set(
+    db.select({ source: schema.downloadQueue.source, galleryId: schema.downloadQueue.galleryId, status: schema.downloadQueue.status })
+      .from(schema.downloadQueue).all()
+      .filter(task => ['completed', 'queued', 'downloading', 'paused'].includes(task.status))
+      .map(task => `${task.source}:${task.galleryId}`),
+  );
+  const candidates = storedIdentities().filter(identity =>
+    identity.path ? true : owned.has(`${identity.source}:${identity.galleryId}`) || tasks.has(`${identity.source}:${identity.galleryId}`),
+  );
+  if (!candidates.length) return new Set();
+  const byTitle = new Map<string, Set<GalleryIdentity>>();
+  const bySourceKey = new Map<string, GalleryIdentity[]>();
+  for (const candidate of candidates) {
+    for (const title of titleKeys(candidate)) {
+      if (!byTitle.has(title)) byTitle.set(title, new Set());
+      byTitle.get(title)!.add(candidate);
+    }
+    for (const key of candidate.sourceKeys ?? []) {
+      const list = bySourceKey.get(key);
+      if (list) list.push(candidate);
+      else bySourceKey.set(key, [candidate]);
+    }
+  }
+  const duplicates = new Set<string>();
+  for (const item of incoming) {
+    const key = `${item.source}:${item.galleryId}`;
+    const direct = bySourceKey.get(key) ?? [];
+    if (direct.some(candidate => !candidate.path || fs.existsSync(candidate.path))) {
+      duplicates.add(key);
+      continue;
+    }
+    const titleCandidates = new Set([...titleKeys(item)].flatMap(title => [...(byTitle.get(title) ?? [])]));
+    for (const candidate of titleCandidates) {
+      if (!candidate.path && candidate.source === item.source && candidate.galleryId === item.galleryId) continue;
+      if (candidate.path && !fs.existsSync(candidate.path)) continue;
+      if (duplicateReasons(item, candidate).length > 0) {
+        duplicates.add(key);
+        break;
+      }
+    }
+  }
+  return duplicates;
+}
