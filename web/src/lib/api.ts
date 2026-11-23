@@ -296,8 +296,8 @@ export interface LibraryPathMapping {
   localPath: string;
 }
 
-export type { DownloadStatus, DownloadTask } from '../../../server/src/contracts/downloads';
-import type { DownloadTask } from '../../../server/src/contracts/downloads';
+export type { DownloadStatus, DownloadTask, DownloadLibraryState, DownloadHistoryPage } from '../../../server/src/contracts/downloads';
+import type { DownloadTask, DownloadLibraryState, DownloadHistoryPage } from '../../../server/src/contracts/downloads';
 
 /** A single frame pushed over the download SSE stream. */
 export type DownloadEvent =
@@ -605,6 +605,10 @@ export const api = {
   checkDuplicates: (items: { source: DoujinSource; galleryId: string }[], refreshLibrary = false) => request<DuplicateCheck>('/downloads/duplicates', { method: 'POST', body: JSON.stringify({ items, refreshLibrary }) }),
   libraryMatches: (items: DoujinSearchResult[]) => request<DuplicateCheck>('/downloads/library-matches', { method: 'POST', body: JSON.stringify({ items: items.map(({ source, galleryId, title, artists, language, pageCount }) => ({ source, galleryId, title, artists, language, pageCount })) }) }),
   downloads: () => request<DownloadTask[]>('/downloads'),
+  /** Older completed downloads beyond the live list, newest finish first. */
+  downloadHistory: (offset: number, limit = 50) => request<DownloadHistoryPage>(`/downloads/history?offset=${offset}&limit=${limit}`),
+  /** Kavita import state for completed downloads, keyed by task id. */
+  downloadLibrary: (ids: number[]) => request<Record<number, DownloadLibraryState>>(`/downloads/library?ids=${ids.join(',')}`),
   /** Completed galleries for the duplicate-download badges. */
   downloadsCompleted: () => request<DownloadedGallery[]>('/downloads/completed'),
   /** .cbz files on disk for a gallery (completed task first, per-gallery folder as fallback). */

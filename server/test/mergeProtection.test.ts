@@ -346,20 +346,20 @@ test('a new target behind an escaping symlink is rejected before any archives mo
 });
 
 test('cross-volume move interruption keeps the original and never publishes a partial target archive',async()=>{
-  const f=fixture('cross-volume');const destination=path.join(f.targetDir,path.basename(f.source));const rename=fs.renameSync,copy=fs.copyFileSync;
-  fs.renameSync=(source,target)=>{
+  const f=fixture('cross-volume');const destination=path.join(f.targetDir,path.basename(f.source));const rename=fs.promises.rename,copy=fs.promises.copyFile;
+  fs.promises.rename=async (source,target)=>{
     if(String(source)===f.source && String(target)===destination)throw Object.assign(new Error('Cross device'),{code:'EXDEV'});
     return rename(source,target);
   };
-  fs.copyFileSync=(source,target,flags)=>{
+  fs.promises.copyFile=async (source,target,flags)=>{
     assert.notEqual(String(target),destination);assert.equal(fs.existsSync(destination),false);
-    copy(source,target,flags);throw new Error('Simulated copy interruption');
+    await copy(source,target,flags);throw new Error('Simulated copy interruption');
   };
   try {
     const result=await mergeCbzFiles([f.source],f.targetDir,undefined,'Target');
     assert.equal(result.moved.length,0);assert.match(result.failed[0].error,/copy interruption/);assert.equal(fs.existsSync(f.source),true);assert.equal(fs.existsSync(destination),false);
     assert.deepEqual(fs.readdirSync(f.targetDir),['Existing.cbz']);
-  } finally {fs.renameSync=rename;fs.copyFileSync=copy;}
+  } finally {fs.promises.rename=rename;fs.promises.copyFile=copy;}
 });
 
 test('canceling a newly queued direct merge cancels only its owned staged download tasks',{timeout:6000},async()=>{

@@ -12,21 +12,28 @@ export interface ComicInfoDraft {
 export const EMPTY_COMICINFO = '<?xml version="1.0" encoding="UTF-8"?>\n<ComicInfo></ComicInfo>\n';
 
 /** Keep nested metadata in XML; only scalar elements belong in form fields. */
+function extractScalars(document: Document) {
+  const values: Record<string, string> = {};
+  const scalarFields: string[] = [];
+  const counts = new Map<string, number>();
+  for (const element of document.documentElement.children) {
+    counts.set(element.tagName, (counts.get(element.tagName) ?? 0) + 1);
+  }
+  for (const element of document.documentElement.children) {
+    // Repeated tags cannot be edited unambiguously through one scalar input.
+    if (element.children.length || (counts.get(element.tagName) ?? 0) > 1) continue;
+    scalarFields.push(element.tagName);
+    values[element.tagName] = element.textContent ?? '';
+  }
+  return { values, scalarFields };
+}
+
 function readDocument(xml: string) {
   const document = new DOMParser().parseFromString(xml, 'application/xml');
   if (document.querySelector('parsererror') || document.documentElement?.tagName !== 'ComicInfo') {
     throw new Error('Enter valid XML with a single ComicInfo root element. Your draft is kept; fix the XML before saving or switching to Fields.');
   }
-  const values: Record<string, string> = {};
-  const scalarFields: string[] = [];
-  for (const element of document.documentElement.children) {
-    // Repeated tags cannot be edited unambiguously through one scalar input.
-    if (element.children.length || scalarFields.includes(element.tagName)) continue;
-    if ([...document.documentElement.children].filter(child => child.tagName === element.tagName).length > 1) continue;
-    scalarFields.push(element.tagName);
-    values[element.tagName] = element.textContent ?? '';
-  }
-  return { document, values, scalarFields };
+  return { document, ...extractScalars(document) };
 }
 
 export function createComicInfoDraft(xml: string | null): ComicInfoDraft {
@@ -51,15 +58,19 @@ export function editComicInfoXml(draft: ComicInfoDraft, xml: string): ComicInfoD
 export function editComicInfoField(draft: ComicInfoDraft, field: string, value: string): ComicInfoDraft {
   const { document } = readDocument(draft.xml);
   const root = document.documentElement;
-  const existing = [...root.children].find(element => element.tagName === field);
+  let existing: Element | undefined;
+  for (const element of root.children) {
+    if (element.tagName === field) { existing = element; break; }
+  }
   if (!value.trim()) existing?.remove();
   else {
     const element = existing ?? document.createElement(field);
     element.textContent = value;
     if (!existing) root.appendChild(element);
   }
-  const parsed = readDocument(new XMLSerializer().serializeToString(document));
-  return { ...draft, xml: new XMLSerializer().serializeToString(document), values: parsed.values, scalarFields: parsed.scalarFields, error: null };
+  const xml = new XMLSerializer().serializeToString(document);
+  const { values, scalarFields } = extractScalars(document);
+  return { ...draft, xml, values, scalarFields, error: null };
 }
 
 export function changedComicInfoFields(draft: ComicInfoDraft): string[] {

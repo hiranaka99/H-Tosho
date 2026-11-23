@@ -640,10 +640,15 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
   for (const f of r.failed) log('warn', `Skipped ${f.file}: ${f.error}`);
   if (r.moved.length === 0) throw new Error('No files could be moved — check the source paths');
   let chapterEditFailures = 0;
+  const editedPaths = new Set<string>();
   for (const [file, number] of existingEdits) {
     throwIfJobCancelled(job.id);
+    const resolved = path.resolve(file);
     try {
-      await setComicInfoFields(path.resolve(file), { Number: number.trim() }, recheck);
+      const fields: Record<string, string> = { Number: number.trim() };
+      if (renamedSeries) fields.Series = renamedSeries;
+      await setComicInfoFields(resolved, fields, recheck);
+      editedPaths.add(archiveResource(resolved));
       log('success', `Updated existing chapter number: ${path.basename(file)}`);
     } catch (error) {
       chapterEditFailures += 1;
@@ -656,6 +661,7 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
     // a partial rename without downloading completed galleries again.
     for (const file of listCbzFiles(targetDir)) {
       throwIfJobCancelled(job.id);
+      if (editedPaths.has(archiveResource(file))) continue;
       const xml = await readComicInfo(file);
       if (!xml || parseComicInfo(xml).fields.Series !== renamedSeries) await setComicInfoFields(file, { Series: renamedSeries }, recheck);
     }

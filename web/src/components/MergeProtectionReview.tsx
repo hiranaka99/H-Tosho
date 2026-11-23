@@ -10,11 +10,29 @@ export function useMergeProtectionReview(request: MergeProtectionRequest, enable
   const qc = useQueryClient();
   const id = React.useId();
   const requestKey = JSON.stringify(request);
+  const [debounced, setDebounced] = React.useState<{ key: string; value: MergeProtectionRequest }>(() => ({ key: requestKey, value: request }));
+  const wasEnabled = React.useRef(enabled);
+  React.useEffect(() => {
+    if (!enabled) {
+      wasEnabled.current = false;
+      return;
+    }
+    if (!wasEnabled.current) {
+      wasEnabled.current = true;
+      setDebounced({ key: requestKey, value: request });
+      return;
+    }
+    if (debounced.key === requestKey) return;
+    const timer = window.setTimeout(() => setDebounced({ key: requestKey, value: request }), 250);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestKey, enabled]);
   const [reviewed, setReviewed] = React.useState<string | null>(null);
   const [reviewError,setReviewError] = React.useState<string | null>(null);
-  const query = useQuery({queryKey:['merge-protection',request],queryFn:()=>api.mergeProtectionPreview(request),enabled,retry:false,staleTime:0});
+  const query = useQuery({queryKey:['merge-protection',debounced.key],queryFn:()=>api.mergeProtectionPreview(debounced.value),enabled,retry:false,staleTime:0});
   const evidence = query.data ? JSON.stringify(query.data) : '';
   const reviewKey = `${requestKey}:${draftKey}:${evidence}`;
+  const isDebouncing = enabled && debounced.key !== requestKey;
   const unlock = useMutation({
     mutationFn: async (seriesId:number) => {
       setReviewed(null);
@@ -24,7 +42,7 @@ export function useMergeProtectionReview(request: MergeProtectionRequest, enable
       await query.refetch();
     },
   });
-  const ready = enabled && query.isSuccess && !query.isFetching && !!query.data.canQueue && reviewed === reviewKey && !unlock.isPending;
+  const ready = enabled && !isDebouncing && query.isSuccess && !query.isFetching && !!query.data.canQueue && reviewed === reviewKey && !unlock.isPending;
   const ensureCurrent = async () => {
     if (!ready) throw new Error('Review current merge protection before queueing.');
     try {

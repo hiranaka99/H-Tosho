@@ -315,10 +315,14 @@ function useLibraryMotion(state: string) {
     const origin = container.getBoundingClientRect();
     const positions = new Map<string, { x: number; y: number }>();
     const animations: Animation[] = [];
-    container.querySelectorAll<HTMLElement>('[data-library-motion-id]').forEach(element => {
-      const bounds = element.getBoundingClientRect();
+    // Batch all DOM measurements before starting animations to avoid layout thrashing.
+    const measured = Array.from(container.querySelectorAll<HTMLElement>('[data-library-motion-id]')).map((element) => ({
+      element,
+      id: element.dataset.libraryMotionId!,
+      bounds: element.getBoundingClientRect(),
+    }));
+    measured.forEach(({ element, id, bounds }) => {
       const position = { x: bounds.left - origin.left, y: bounds.top - origin.top };
-      const id = element.dataset.libraryMotionId!;
       positions.set(id, position);
       if (!previous.current || preference.matches || document.hidden || bounds.bottom < 0 || bounds.top > window.innerHeight || typeof element.animate !== 'function') return;
       const old = previous.current.get(id);
@@ -328,7 +332,7 @@ function useLibraryMotion(state: string) {
       const nearby = old && Math.abs(dx) < bounds.width * 2 && Math.abs(dy) < bounds.height * 2;
       animations.push(element.animate(
         nearby ? [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }]
-          : id.startsWith('selection:') ? [{ opacity: 0.4, clipPath: 'inset(0 100% 0 0)' }, { opacity: 1, clipPath: 'inset(0 0 0 0)' }]
+          : id.startsWith('selection:') ? [{ opacity: 0.4, transform: 'translateX(-8px)' }, { opacity: 1, transform: 'none' }]
             : [{ opacity: 0.65 }, { opacity: 1 }],
         { duration: nearby ? 260 : 180, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' },
       ));
@@ -442,16 +446,19 @@ export function Libraries({ review = false }: { review?: boolean }) {
   // ['jobs'] poll drives this. When the last active job finishes, one explicit
   // refresh captures the outcome without any idle polling.
   const { data: jobs } = useQuery({ queryKey: ['jobs'], queryFn: api.jobs });
-  const activeJobs = React.useMemo(
-    () => (jobs ?? []).filter((j) => j.status === 'queued' || j.status === 'running').length,
-    [jobs],
-  );
+  const hasRelevantActiveJob = React.useMemo(() => {
+    const active = (jobs ?? []).filter((j) => j.status === 'queued' || j.status === 'running');
+    if (review) return active.some((j) => j.type !== 'check-watched-searches');
+    return active.some((j) =>
+      j.type !== 'check-watched-searches' && (j.payload.libraryId === undefined || j.payload.libraryId === selected),
+    );
+  }, [jobs, review, selected]);
 
   const series = useQuery({
     queryKey: ['library-series', review ? 'review' : selected],
     queryFn: () => review ? api.reviewSeries() : api.librarySeries(selected!),
     enabled: !needsConnection && (review || selected !== null),
-    refetchInterval: activeJobs > 0 && !identify ? 5000 : false,
+    refetchInterval: hasRelevantActiveJob && !identify ? 5000 : false,
   });
   const currentMeta = useQuery({
     queryKey: ['series', identify?.id],
@@ -480,16 +487,18 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const bucketById = React.useMemo(() => new Map(shelf.entries.map((entry) => [entry.row.id, entry.bucket])), [shelf]);
   const rowsRef = React.useRef(rows);
   rowsRef.current = rows;
-  const filtered = React.useMemo(() => filterLibraryRows(shelf, query, statusFilter, review), [shelf, statusFilter, query, review]);
+  const deferredQuery = React.useDeferredValue(query);
+  const filtered = React.useMemo(() => filterLibraryRows(shelf, deferredQuery, statusFilter, review), [shelf, statusFilter, deferredQuery, review]);
   const selectedRows = React.useMemo(() => rows.filter(row => checked.has(row.id)), [rows, checked]);
   const matchedSelected = React.useMemo(() => selectedRows.filter(row => row.providerId), [selectedRows]);
   const pageCount = React.useMemo(() => Math.max(1, Math.ceil(filtered.length / SERIES_PAGE_SIZE)), [filtered.length]);
   const currentPage = Math.min(page, pageCount);
   const visibleRows = filtered.slice((currentPage - 1) * SERIES_PAGE_SIZE, currentPage * SERIES_PAGE_SIZE);
-  const motionRef = useLibraryMotion(`${review}:${selected}:${currentPage}:${visibleRows.map(row => row.id).join(',')}:${selectMode}:${[...checked].join(',')}`);
+  const motionRef = useLibraryMotion(`${review}:${selected}:${currentPage}:${visibleRows.map(row => row.id).join(',')}:${selectMode}`);
   React.useEffect(() => {
-    if (!review) writeLibraryState({ query, statusFilter, sortBy });
-  }, [query, statusFilter, sortBy, review]);
+    if (review) return;
+    writeLibraryState({ query: deferredQuery, statusFilter, sortBy });
+  }, [deferredQuery, statusFilter, sortBy, review]);
   const changePage = (nextPage: number) => {
     setPage(nextPage);
     document.querySelector('main')?.scrollTo({ top: 0 });
@@ -541,9 +550,9 @@ export function Libraries({ review = false }: { review?: boolean }) {
   React.useEffect(() => {
     if (finishedJobId === null) return;
     let cancelled = false;
-    void qc.invalidateQueries({ queryKey: ['library-series'] }).then(() => { if (!cancelled) setSettledJobId(finishedJobId); });
+    void qc.invalidateQueries({ queryKey: ['library-series', review ? 'review' : selected] }).then(() => { if (!cancelled) setSettledJobId(finishedJobId); });
     return () => { cancelled = true; };
-  }, [finishedJobId, qc]);
+  }, [finishedJobId, qc, review, selected]);
   const outcome = React.useMemo(() => {
     const baseline = matchBaseline.current;
     if (!lastJob || lastJob.status !== 'completed' || settledJobId !== lastJob.id || baseline?.jobId !== lastJob.id) return null;
@@ -903,40 +912,40 @@ export function Libraries({ review = false }: { review?: boolean }) {
         onConfirm={() => { if (deleteTarget) deleteSeries.mutate(deleteTarget); }}
       />
       <React.Suspense fallback={null}>
-      {identify && (
-        <IdentifyModal
-          key={identify.id}
-          reviewPosition={reviewIndex >= 0 ? `${reviewIndex + 1} of ${reviewQueue.current.length}` : undefined}
-          onNext={nextReview ? () => setIdentify({ id: nextReview.id, name: nextReview.name, cover: nextReview.cover }) : undefined}
-          seriesId={identify.id}
-          autoReview
-          current={{
-            name: currentMeta.data?.series.name ?? identify.name,
-            metadata: currentMeta.data?.kavita ?? null,
-          }}
-          currentLoading={currentMeta.isPending || currentMeta.isFetching}
-          currentError={currentMeta.isError ? (currentMeta.error instanceof Error ? currentMeta.error.message : String(currentMeta.error)) : null}
-          onRetryCurrent={() => void currentMeta.refetch()}
-          match={currentMeta.data?.match ?? null}
-          currentCover={identify.cover}
-          onClose={closeIdentify}
-        />
-      )}
+        {identify && (
+          <IdentifyModal
+            key={identify.id}
+            reviewPosition={reviewIndex >= 0 ? `${reviewIndex + 1} of ${reviewQueue.current.length}` : undefined}
+            onNext={nextReview ? () => setIdentify({ id: nextReview.id, name: nextReview.name, cover: nextReview.cover }) : undefined}
+            seriesId={identify.id}
+            autoReview
+            current={{
+              name: currentMeta.data?.series.name ?? identify.name,
+              metadata: currentMeta.data?.kavita ?? null,
+            }}
+            currentLoading={currentMeta.isPending || currentMeta.isFetching}
+            currentError={currentMeta.isError ? (currentMeta.error instanceof Error ? currentMeta.error.message : String(currentMeta.error)) : null}
+            onRetryCurrent={() => void currentMeta.refetch()}
+            match={currentMeta.data?.match ?? null}
+            currentCover={identify.cover}
+            onClose={closeIdentify}
+          />
+        )}
 
-      {comicInfo && (
-        <ComicInfoModal seriesId={comicInfo.id} onClose={() => setComicInfo(null)} />
-      )}
-      {preview && (
-        <SeriesPreviewModal seriesId={preview.id} name={preview.name} onClose={() => setPreview(null)} />
-      )}
-      {recoveryFile && <ComicInfoModal initialPath={recoveryFile} onClose={() => setRecoveryFile(null)} />}
+        {comicInfo && (
+          <ComicInfoModal seriesId={comicInfo.id} onClose={() => setComicInfo(null)} />
+        )}
+        {preview && (
+          <SeriesPreviewModal seriesId={preview.id} name={preview.name} onClose={() => setPreview(null)} />
+        )}
+        {recoveryFile && <ComicInfoModal initialPath={recoveryFile} onClose={() => setRecoveryFile(null)} />}
 
-      {mergeOpen && (
-        <MergeSeriesModal
-          selected={selectedRows}
-          onClose={() => setMergeOpen(false)}
-        />
-      )}
+        {mergeOpen && (
+          <MergeSeriesModal
+            selected={selectedRows}
+            onClose={() => setMergeOpen(false)}
+          />
+        )}
       </React.Suspense>
     </div>
   );

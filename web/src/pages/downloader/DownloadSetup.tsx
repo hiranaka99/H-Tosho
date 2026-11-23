@@ -13,11 +13,11 @@ export function DownloadDestination({ setup, compact = false }: { setup: Downloa
   </div>;
 }
 
-export function DownloadFailure({ message, code }: { message: string; code?: DownloadErrorCode | null }) {
-  const help = downloadErrorHelp(message, code);
-  return <div className="space-y-1 text-xs">
-    <p className="text-danger">{help.message}</p>
-    {help.settings && <Link className="inline-flex min-h-9 items-center text-primary underline underline-offset-4" to={DOWNLOADER_SETTINGS_URL}>Open Downloader settings</Link>}
-    <Disclosure label="Technical details" className="text-muted"><p className="break-all pt-2">{message}</p></Disclosure>
+export function DownloadFailure({ message, code, source }: { message: string; code?: DownloadErrorCode | null; source?: string }) {
+  const help = downloadErrorHelp(message, code, source);
+  return <div className="space-y-1">
+    <p className="text-pretty text-sm text-danger">{help.message}</p>
+    {help.settings && <Link className="inline-flex min-h-9 items-center text-sm font-medium text-primary underline underline-offset-4 max-lg:min-h-11 pointer-coarse:min-h-11" to={DOWNLOADER_SETTINGS_URL}>Open Downloader settings</Link>}
+    <Disclosure label="Technical details" className="text-muted" summaryClassName="w-fit justify-start px-0 text-xs max-lg:min-h-11 pointer-coarse:min-h-11"><p className="break-all pb-1 text-xs">{message}</p></Disclosure>
   </div>;
 }

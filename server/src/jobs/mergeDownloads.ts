@@ -2,7 +2,6 @@ import { prepareDuplicateCheck, findDuplicateReports } from '../services/gallery
 import fs from 'node:fs';
 import { downloadQueue } from '../downloader/engine.js';
 import { getDownloaderSettings } from '../services/settings.js';
-import { sleep } from '../lib/http.js';
 import { JobCancelled, jobQueue, type Job, type LogFn } from './queue.js';
 import { getDb,schema } from '../db/index.js';
 import { and,eq } from 'drizzle-orm';
@@ -76,13 +75,14 @@ export async function prepareMergeDownloads(job: Job, log: LogFn, signal?:AbortS
         log('info', `${task.status === 'completed' ? 'Reusing archive' : 'Waiting for download'}: ${plan.title} (task #${task.id})`);
       }
     }
+    let lastComplete = -1;
     for (;;) {
       checkCancelled();
       let complete = 0;
       for (const entry of tracked) {
         const task = queue.get(entry.id);
         if (!task) throw new Error(`Download removed: ${entry.plan.title}. Retry the merge to download it again.`);
-        if (task.status === 'failed' && !queue.isRunning(task.id) && !queue.hasPendingRetry(task.id)) {
+        if (task.status === 'failed' && !queue.isRunning(task.id) && task.state.type !== 'retry-wait') {
           throw new Error(`Download failed for ${entry.plan.title}: ${task.errorMessage ?? 'unknown error'}. Retry the merge in Jobs.`);
         }
         if (task.status !== 'completed' || queue.isRunning(task.id)) continue;
@@ -100,9 +100,32 @@ export async function prepareMergeDownloads(job: Job, log: LogFn, signal?:AbortS
         }
         complete += 1;
       }
-      jobQueue.setProgress(job.id, complete, tracked.length);
+      if (complete !== lastComplete) {
+        lastComplete = complete;
+        jobQueue.setProgress(job.id, complete, tracked.length);
+      }
       if (complete === tracked.length) break;
-      await sleep(500);
+      const watchedIds = new Set(tracked.map((entry) => entry.id));
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          unsubTask();
+          unsubRemovals();
+          signal?.removeEventListener('abort', done);
+          resolve();
+        };
+        const unsubTask = queue.subscribe((task) => {
+          if (watchedIds.has(task.id) && (task.status === 'completed' || task.status === 'failed')) done();
+        });
+        const unsubRemovals = queue.subscribeRemovals((ids) => {
+          if (ids.some((id) => watchedIds.has(id))) done();
+        });
+        const timer = setTimeout(done, 1000);
+        signal?.addEventListener('abort', done, { once: true });
+      });
     }
     checkCancelled();
     const files = tracked.map(entry => queue.get(entry.id)!.outputPath!);

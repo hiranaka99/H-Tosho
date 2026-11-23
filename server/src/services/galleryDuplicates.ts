@@ -2,12 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, schema } from '../db/index.js';
 import { getDownloaderSettings, getKavitaConnection } from './settings.js';
-import { eq } from 'drizzle-orm';
+import { and, eq, gte, inArray, lt } from 'drizzle-orm';
 import type { KavitaLibrary } from '../kavita/types.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery } from '../downloader/types.js';
 import type { DoujinSource } from '../contracts/doujin.js';
-import { readComicInfo, listCbzImages, mapKavitaPathToLocalPath } from '../lib/cbz.js';
+import { readComicInfoAndImageCount, mapKavitaPathToLocalPath } from '../lib/cbz.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
 import { mapLimit } from '../lib/http.js';
 import { onEhentaiAccountChange } from './ehentaiAccount.js';
@@ -111,9 +111,14 @@ function saveIdentity(identity: GalleryIdentity): void {
   getDb().insert(schema.keyValueStore).values({ key: storeKey(identity), valueJson }).onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson } }).run();
 }
 function storedIdentities(): GalleryIdentity[] {
-  return getDb().select().from(schema.keyValueStore).all().filter(row => row.key.startsWith('duplicate-')).flatMap(row => {
-    try { return [JSON.parse(row.valueJson) as GalleryIdentity]; } catch { return []; }
-  });
+  return getDb()
+    .select({ valueJson: schema.keyValueStore.valueJson })
+    .from(schema.keyValueStore)
+    .where(and(gte(schema.keyValueStore.key, 'duplicate-'), lt(schema.keyValueStore.key, 'duplicate.')))
+    .all()
+    .flatMap(row => {
+      try { return [JSON.parse(row.valueJson) as GalleryIdentity]; } catch { return []; }
+    });
 }
 
 let scan: Promise<void> | null = null;
@@ -126,7 +131,10 @@ export function invalidateDuplicateLibrary(): void { scannedAt = 0; }
 /** Learn folders from normal library browsing; downloading never waits for Kavita. */
 export function rememberDuplicateLibraryRoots(libraries: KavitaLibrary[]): void {
   const valueJson = JSON.stringify({ baseUrl: getKavitaConnection().baseUrl, paths: libraries.flatMap(library => library.paths ?? (library.path ? [library.path] : [])) });
-  getDb().insert(schema.keyValueStore).values({ key: 'library-duplicate-roots', valueJson }).onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson } }).run();
+  const db = getDb();
+  const existing = db.select({ valueJson: schema.keyValueStore.valueJson }).from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'library-duplicate-roots')).get();
+  if (existing?.valueJson === valueJson) return;
+  db.insert(schema.keyValueStore).values({ key: 'library-duplicate-roots', valueJson }).onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson } }).run();
   invalidateDuplicateLibrary();
 }
 
@@ -170,12 +178,13 @@ async function scanLibrary(): Promise<void> {
     }
     for (const root of new Set(roots)) await walk(root);
     const previous = new Map(storedIdentities().filter(identity => identity.path).map(identity => [identity.path!, identity]));
+    const updatedIdentities: GalleryIdentity[] = [];
     await mapLimit([...files], 6, async file => {
       try {
         const stat = await fs.promises.stat(file);
         const stamp = `v3:${stat.mtimeMs}:${stat.size}`;
         if (previous.get(file)?.stamp === stamp) return;
-        const raw = await readComicInfo(file);
+        const { xml: raw, imageCount: count } = await readComicInfoAndImageCount(file);
         if (!raw) { missingMetadata++; files.delete(file); return; }
         const fields = parseComicInfo(raw).fields;
         const artists = `${fields.Artist ?? ''},${fields.Writer ?? ''}`.split(/[,;]/).map(artist => artist.trim()).filter(Boolean);
@@ -183,11 +192,15 @@ async function scanLibrary(): Promise<void> {
         const filenameKey = path.basename(file).match(/\[(hitomi|nhentai)-(\d+)\]\.cbz$/i);
         const keys = [...new Set([...sourceKeys(fields.Web ?? ''), ...(filenameKey ? [`${filenameKey[1].toLowerCase()}:${filenameKey[2]}`] : [])])];
         if ((!title || !artists.length) && !keys.length) { missingMetadata++; files.delete(file); return; }
-        const count = (await listCbzImages(file)).length;
         const originalFilename = path.basename(file).replace(/\.cbz$/i, '').replace(/\s*\[(?:hitomi|nhentai)-\d+\]$/i, '').trim();
-        saveIdentity({ source: 'library', galleryId: file, path: file, title: title || originalFilename, titleAlt: originalFilename, artists, language: fields.LanguageISO || fields.Language, pageCount: count, stamp, sourceKeys: keys });
+        updatedIdentities.push({ source: 'library', galleryId: file, path: file, title: title || originalFilename, titleAlt: originalFilename, artists, language: fields.LanguageISO || fields.Language, pageCount: count, stamp, sourceKeys: keys });
       } catch { files.delete(file); problems.push(`Could not read archive metadata: ${file}`); }
     });
+    if (updatedIdentities.length) {
+      getDb().transaction(() => {
+        for (const identity of updatedIdentities) saveIdentity(identity);
+      });
+    }
     availableFiles = files;
     if (missingMetadata) problems.push(`${missingMetadata} archive${missingMetadata === 1 ? '' : 's'} missing title or artist metadata could not be compared.`);
     warnings = problems.length > 10 ? [...problems.slice(0, 10), `${problems.length - 10} additional archive or folder warnings.`] : problems;
@@ -216,8 +229,14 @@ export async function lookupLibraryMatches(items: GalleryIdentity[]) {
 /** Synchronous check immediately before enqueue closes races with other requests. */
 export function findDuplicateReports(incoming: GalleryIdentity[], excludedPaths: string[] = [], includeOwned = false): { reports: DuplicateReport[]; warnings: string[] } {
   const db = getDb();
-  const tasks = db.select().from(schema.downloadQueue).all().filter(task => ['completed', 'queued', 'downloading', 'paused'].includes(task.status));
-  const owned = new Set(db.select().from(schema.ownedGalleries).all().map(row => `${row.source}:${row.galleryId}`));
+  const tasks = db.select({
+    id: schema.downloadQueue.id,
+    source: schema.downloadQueue.source,
+    galleryId: schema.downloadQueue.galleryId,
+    status: schema.downloadQueue.status,
+    outputPath: schema.downloadQueue.outputPath,
+  }).from(schema.downloadQueue).where(inArray(schema.downloadQueue.status, ['completed', 'queued', 'downloading', 'paused'])).all();
+  const owned = new Set(db.select({ source: schema.ownedGalleries.source, galleryId: schema.ownedGalleries.galleryId }).from(schema.ownedGalleries).all().map(row => `${row.source}:${row.galleryId}`));
   const tasksByGallery = new Map(tasks.map(task => [`${task.source}:${task.galleryId}`, task]));
   const excluded = new Set(excludedPaths.map(file => path.resolve(file)));
   const candidates = storedIdentities().filter(identity => identity.path ? availableFiles.has(identity.path) && !excluded.has(identity.path) : owned.has(`${identity.source}:${identity.galleryId}`) || tasksByGallery.has(`${identity.source}:${identity.galleryId}`));
@@ -227,29 +246,62 @@ export function findDuplicateReports(incoming: GalleryIdentity[], excludedPaths:
     const key = `${item.source}:${item.galleryId}`;
     if ((owned.has(key) || tasksByGallery.has(key)) && !known.has(storeKey(item))) candidates.push({ ...item });
   }
-  for (const row of db.select().from(schema.galleryTags).all()) {
+  for (const row of db.select({
+    source: schema.galleryTags.source,
+    galleryId: schema.galleryTags.galleryId,
+    title: schema.galleryTags.title,
+    artistsJson: schema.galleryTags.artistsJson,
+    language: schema.galleryTags.language,
+  }).from(schema.galleryTags).all()) {
+    const key = `${row.source}:${row.galleryId}`;
+    if (!owned.has(key) && !tasksByGallery.has(key)) continue;
     const identity: GalleryIdentity = { source: row.source, galleryId: row.galleryId, title: row.title ?? '', artists: [], language: row.language };
+    if (known.has(storeKey(identity))) continue;
     try { identity.artists = JSON.parse(row.artistsJson); } catch { continue; }
-    if (!known.has(storeKey(identity)) && (owned.has(`${row.source}:${row.galleryId}`) || tasksByGallery.has(`${row.source}:${row.galleryId}`))) candidates.push(identity);
+    candidates.push(identity);
+  }
+  const candidateSet = new Set(candidates);
+  const bySourceKey = new Map<string, GalleryIdentity[]>();
+  const addSourceKey = (key: string, candidate: GalleryIdentity) => {
+    const list = bySourceKey.get(key);
+    if (list) list.push(candidate);
+    else bySourceKey.set(key, [candidate]);
+  };
+  for (const candidate of candidates) {
+    if (candidate.sourceKeys) for (const sk of candidate.sourceKeys) addSourceKey(sk, candidate);
+    if (includeOwned) addSourceKey(`${candidate.source}:${candidate.galleryId}`, candidate);
   }
   const byTitle = new Map<string, Set<GalleryIdentity>>();
   for (const candidate of includeOwned ? candidates : [...candidates, ...incoming]) {
     for (const title of titleKeys(candidate)) {
-      if (!byTitle.has(title)) byTitle.set(title, new Set());
-      byTitle.get(title)!.add(candidate);
+      let bucket = byTitle.get(title);
+      if (!bucket) { bucket = new Set(); byTitle.set(title, bucket); }
+      bucket.add(candidate);
     }
   }
+  const existsCache = new Map<string, boolean>();
+  const pathExists = (filePath: string): boolean => {
+    let hit = existsCache.get(filePath);
+    if (hit === undefined) { hit = fs.existsSync(filePath); existsCache.set(filePath, hit); }
+    return hit;
+  };
   return { reports: incoming.map(item => {
     const matches: DuplicateMatch[] = [];
     const seen = new Set<string>();
-    const titleMatches = new Set([...titleKeys(item)].flatMap(title => [...(byTitle.get(title) ?? [])]));
-    for (const candidate of candidates) if (candidate.sourceKeys?.includes(`${item.source}:${item.galleryId}`) || (includeOwned && candidate.source === item.source && candidate.galleryId === item.galleryId)) titleMatches.add(candidate);
+    const itemKey = `${item.source}:${item.galleryId}`;
+    const titleMatches = new Set<GalleryIdentity>();
+    for (const title of titleKeys(item)) {
+      const bucket = byTitle.get(title);
+      if (bucket) for (const candidate of bucket) titleMatches.add(candidate);
+    }
+    const directMatches = bySourceKey.get(itemKey);
+    if (directMatches) for (const candidate of directMatches) titleMatches.add(candidate);
     for (const candidate of titleMatches) {
-      const confirmed = candidates.includes(candidate) && (candidate.sourceKeys?.includes(`${item.source}:${item.galleryId}`) || (includeOwned && candidate.source === item.source && candidate.galleryId === item.galleryId));
+      const confirmed = candidateSet.has(candidate) && (candidate.sourceKeys?.includes(itemKey) || (includeOwned && candidate.source === item.source && candidate.galleryId === item.galleryId));
       if (!confirmed && candidate.source === item.source && candidate.galleryId === item.galleryId) continue;
       if (!confirmed && !candidate.path && candidate.source === item.source) continue;
       const reasons = confirmed ? ['Same source gallery'] : duplicateReasons(item, candidate);
-      if (!reasons.length || seen.has(storeKey(candidate)) || (candidate.path && !fs.existsSync(candidate.path))) continue;
+      if (!reasons.length || seen.has(storeKey(candidate)) || (candidate.path && !pathExists(candidate.path))) continue;
       seen.add(storeKey(candidate));
       const task = tasksByGallery.get(`${candidate.source}:${candidate.galleryId}`);
       matches.push({ title: candidate.title, source: candidate.source, galleryId: candidate.galleryId, artists: candidate.artists, language: candidate.language, pageCount: candidate.pageCount, path: candidate.path ?? task?.outputPath ?? undefined, taskId: task?.id, status: candidate.path ? 'In library' : task?.status ?? (owned.has(`${candidate.source}:${candidate.galleryId}`) ? 'Owned' : 'In selection'), reasons, confirmed: !!confirmed });

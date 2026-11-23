@@ -371,7 +371,7 @@ export function TabPanel({ value, tabOrder, className, ...props }: React.Compone
 }
 
 /** Mutually exclusive choices share one appearance and keyboard behavior. */
-export function SegmentedControl<T extends string | number>({ items, value, onChange, label, className, itemClassName }: { items: readonly { id: T; label: string; icon?: React.ReactNode }[]; value: T | null; onChange: (id: T) => void; label: string; className?: string; itemClassName?: string }) {
+export function SegmentedControl<T extends string | number>({ items, value, onChange, label, className, itemClassName }: { items: readonly { id: T; label: string; icon?: React.ReactNode; count?: number; alert?: boolean }[]; value: T | null; onChange: (id: T) => void; label: string; className?: string; itemClassName?: string }) {
   const selectedIndex = items.findIndex((item) => item.id === value);
   const { ref, indicatorStyle } = useSelectionIndicator(value, items);
   return (
@@ -397,7 +397,7 @@ export function SegmentedControl<T extends string | number>({ items, value, onCh
           }}
           className={cn('ui-choice relative z-10 flex min-h-8 shrink-0 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-medium transition-colors duration-150', item.id === value ? 'text-primary' : 'text-muted hover:bg-surface/60 hover:text-foreground', itemClassName)}
         >
-          {item.icon}{item.label}
+          {item.icon}{item.label}{item.count !== undefined && <span className={cn('rounded-full px-1.5 text-xs tabular-nums', item.alert ? 'bg-danger/15 text-danger' : item.id === value ? 'bg-primary/15 text-primary' : 'bg-surface text-muted')}><span className="sr-only"> </span>{item.count}</span>}
         </button>
       ))}
     </div>
@@ -414,6 +414,50 @@ export function Disclosure({ label, children, className, summaryClassName, ...pr
       </summary>
       {children}
     </details>
+  );
+}
+
+/** How long an inline destructive confirmation stays open before reverting. */
+export const INLINE_CONFIRM_MS = 6000;
+
+/**
+ * Destructive confirmation in place, where the action started: a danger-tinted
+ * group that says what is kept, focuses the safe choice, reverts on Escape, and
+ * reverts by itself after six seconds (the bottom bar shows the time left).
+ */
+export function InlineConfirm({ label, children, keepLabel, confirmLabel, icon, pending = false, onKeep, onConfirm, className, controlClassName }: { label: string; children: React.ReactNode; keepLabel: string; confirmLabel: string; icon?: React.ReactNode; pending?: boolean; onKeep: () => void; onConfirm: () => void; className?: string; controlClassName?: string }) {
+  const keepRef = React.useRef<HTMLButtonElement>(null);
+  const groupRef = React.useRef<HTMLDivElement>(null);
+  const keep = React.useRef(onKeep);
+  keep.current = onKeep;
+  React.useEffect(() => {
+    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    keepRef.current?.focus({ preventScroll: true });
+    const timer = window.setTimeout(() => keep.current(), INLINE_CONFIRM_MS);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      keep.current();
+    };
+    window.addEventListener('keydown', onKey, true);
+    const group = groupRef.current;
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('keydown', onKey, true);
+      // Hand keyboard focus back to the control that opened the confirmation.
+      const active = document.activeElement;
+      if (trigger?.isConnected && (!active || active === document.body || group?.contains(active))) trigger.focus({ preventScroll: true });
+    };
+  }, []);
+  return (
+    <div ref={groupRef} role="group" aria-label={label} className={cn('relative space-y-3 overflow-hidden rounded-lg border border-danger/35 bg-danger/5 p-3', className)}>
+      <p className="text-sm">{children}</p>
+      <div className="flex flex-wrap gap-2">
+        <Button ref={keepRef} variant="outline" size="sm" className={controlClassName} onClick={onKeep}>{keepLabel}</Button>
+        <Button variant="danger" size="sm" className={controlClassName} disabled={pending} onClick={onConfirm}>{pending ? <Spinner /> : icon} {confirmLabel}</Button>
+      </div>
+      <span aria-hidden="true" className="confirm-countdown absolute bottom-0 left-0 h-0.5 w-full bg-danger/70" />
+    </div>
   );
 }
 

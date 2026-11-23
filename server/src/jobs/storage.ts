@@ -12,9 +12,16 @@ function readObject(json: string): Record<string, unknown> {
 
 /** Historical rows stay inspectable, but a malformed command is never made executable by fallback. */
 export function readJobPayload(type: unknown, json: string, stateJson = '{}'): { payload: JobPayload; validationError?: string } {
-  const raw = readObject(json), persistedState = readObject(stateJson), state = { ...raw, ...persistedState };
+  let raw: Record<string, unknown> = {};
   let objectPayload = false;
-  try { objectPayload = record(JSON.parse(json)); } catch { /* Recorded as a validation failure below. */ }
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (record(parsed)) {
+      raw = parsed;
+      objectPayload = true;
+    }
+  } catch { /* Recorded as a validation failure below. */ }
+  const persistedState = readObject(stateJson), state = { ...raw, ...persistedState };
   let payload: JobPayload;
   let validationError: string | undefined;
   try {

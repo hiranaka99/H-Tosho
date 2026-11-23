@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router';
 import { Activity, AlertTriangle, ArrowDown, Ban, CheckCheck, CheckCircle2, Circle, Copy, Download, Eye, FilePen, ListChecks, Merge, RefreshCw, RotateCcw, ScanLine, Search, SlidersHorizontal, Trash2, X, XCircle, type LucideIcon } from 'lucide-react';
 import { api, type Job, type JobLog } from '../lib/api';
-import { Badge, Button, Card, CardContent, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle, EmptyState, ErrorState, Input, Label, PageHeader, ProgressBar, SegmentedTabs, Select, Skeleton, Spinner, Disclosure } from '../components/ui';
+import { Badge, Button, Card, CardContent, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle, EmptyState, ErrorState, InlineConfirm, Input, Label, PageHeader, ProgressBar, SegmentedTabs, Select, Skeleton, Spinner, Disclosure } from '../components/ui';
 import { cn, timeAgo, toIsoUtc, jobLabel } from '../lib/utils';
 import { isActive, hasWarnings, needsAttention } from '../lib/jobStatus';
 import { useMediaQuery } from '../lib/useMediaQuery';
@@ -28,7 +28,6 @@ const EMPTY_COPY: Record<JobFilter, { title: string; description: string }> = {
 const LOG_COLOR: Record<string, string> = { info: 'text-muted', warn: 'text-warning', warning: 'text-warning', error: 'text-danger', success: 'text-success' };
 const controlClass = 'max-lg:min-h-11 pointer-coarse:min-h-11';
 const INSPECTOR_QUERY = '(min-width: 1280px)';
-const STOP_CONFIRM_MS = 6000;
 
 const JOB_GLYPH: Record<string, LucideIcon> = {
   'scan-matchable': ScanLine,
@@ -64,8 +63,26 @@ function useNow(intervalMs: number, enabled = true): number {
   React.useEffect(() => {
     if (!enabled) return;
     setNow(Date.now());
-    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
-    return () => window.clearInterval(id);
+    let id: number | null = null;
+    const start = () => {
+      if (id !== null || document.hidden) return;
+      id = window.setInterval(() => setNow(Date.now()), intervalMs);
+    };
+    const stop = () => {
+      if (id === null) return;
+      window.clearInterval(id);
+      id = null;
+    };
+    const onVisibility = () => {
+      if (document.hidden) stop();
+      else { setNow(Date.now()); start(); }
+    };
+    start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [intervalMs, enabled]);
   return now;
 }
@@ -388,22 +405,15 @@ function FailureCard({ job, retry }: { job: Job; retry?: RetryControl }) {
 
 /** Two deliberate steps for an action the app itself says cannot be undone. */
 function StopConfirm({ job, pending, onKeep, onStop }: { job: Job; pending: boolean; onKeep: () => void; onStop: () => void }) {
-  const keepRef = React.useRef<HTMLButtonElement>(null);
-  React.useEffect(() => { keepRef.current?.focus({ preventScroll: true }); }, []);
   const consequence = job.status === 'queued'
     ? "It hasn't started yet, so nothing will change."
     : job.progressTotal > 0
       ? `The ${job.progressCurrent} of ${job.progressTotal} items already processed keep their changes.`
       : 'Work already performed is not undone.';
   return (
-    <div role="group" aria-label="Confirm stopping this task" className="relative mt-2 max-w-xl space-y-3 overflow-hidden rounded-lg border border-danger/35 bg-danger/5 p-3">
-      <p className="text-sm"><span className="font-semibold">Stop this task?</span> {consequence}</p>
-      <div className="flex flex-wrap gap-2">
-        <Button ref={keepRef} variant="outline" size="sm" className={controlClass} onClick={onKeep}>Keep running</Button>
-        <Button variant="danger" size="sm" className={controlClass} disabled={pending} onClick={onStop}>{pending ? <Spinner /> : <Ban className="h-4 w-4" />} Stop task</Button>
-      </div>
-      <span aria-hidden="true" className="confirm-countdown absolute bottom-0 left-0 h-0.5 w-full bg-danger/70" />
-    </div>
+    <InlineConfirm label="Confirm stopping this task" keepLabel="Keep running" confirmLabel="Stop task" icon={<Ban className="h-4 w-4" />} pending={pending} onKeep={onKeep} onConfirm={onStop} className="mt-2 max-w-xl" controlClassName={controlClass}>
+      <span className="font-semibold">Stop this task?</span> {consequence}
+    </InlineConfirm>
   );
 }
 
@@ -427,13 +437,19 @@ function RunningFacts({ job, now }: { job: Job; now: number }) {
   );
 }
 
-function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
+const LogConsole = React.memo(function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
   const ref = React.useRef<HTMLDivElement>(null);
   const nearBottom = React.useRef(true);
   const [follow, setFollow] = React.useState(true);
   const [severity, setSeverity] = React.useState('all');
-  const visible = logs.filter((log) => severity === 'all' || (log.level === 'warning' ? 'warn' : log.level) === severity);
-  const levels = Array.from(new Set(logs.map((log) => log.level === 'warning' ? 'warn' : log.level))).sort();
+  const visible = React.useMemo(
+    () => logs.filter((log) => severity === 'all' || (log.level === 'warning' ? 'warn' : log.level) === severity),
+    [logs, severity],
+  );
+  const levels = React.useMemo(
+    () => Array.from(new Set(logs.map((log) => log.level === 'warning' ? 'warn' : log.level))).sort(),
+    [logs],
+  );
   const latestId = logs[logs.length - 1]?.id;
   const jumpToLatest = () => {
     nearBottom.current = true;
@@ -445,9 +461,9 @@ function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
     const element = ref.current;
     if (element && follow && nearBottom.current) element.scrollTop = element.scrollHeight;
   }, [latestId, severity, follow]);
-  const logText = visible.map((log) => `${timestamp(log.createdAt)} [${log.level.toUpperCase()}] ${log.message}`).join('\n');
+  const formatLogs = () => visible.map((log) => `${timestamp(log.createdAt)} [${log.level.toUpperCase()}] ${log.message}`).join('\n');
   const downloadLogs = () => {
-    const url = URL.createObjectURL(new Blob([logText], { type: 'text/plain;charset=utf-8' }));
+    const url = URL.createObjectURL(new Blob([formatLogs()], { type: 'text/plain;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
     link.download = `job-${jobId}-logs.txt`;
@@ -461,7 +477,7 @@ function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
         <div className="flex flex-wrap items-center gap-2">
           <Label htmlFor={`severity-${jobId}`} className="sr-only">Severity</Label>
           <Select id={`severity-${jobId}`} aria-label="Severity" value={severity} onChange={(event) => setSeverity(event.target.value)} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-auto"><option value="all">All levels</option>{levels.map((level) => <option key={level} value={level}>{fieldLabel(level)}</option>)}</Select>
-          {navigator.clipboard && <Button variant="outline" size="sm" className={controlClass} disabled={!visible.length} onClick={() => copyText(logText, 'Logs copied')}><Copy className="h-4 w-4" /> Copy</Button>}
+          {navigator.clipboard && <Button variant="outline" size="sm" className={controlClass} disabled={!visible.length} onClick={() => copyText(formatLogs(), 'Logs copied')}><Copy className="h-4 w-4" /> Copy</Button>}
           <Button variant="outline" size="sm" className={controlClass} disabled={!visible.length} onClick={downloadLogs}><Download className="h-4 w-4" /> Download</Button>
         </div>
       </div>
@@ -485,7 +501,7 @@ function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
       {!follow && <Button className={cn(controlClass, 'w-full')} variant="secondary" onClick={jumpToLatest}><ArrowDown className="h-4 w-4" /> Jump to latest and follow</Button>}
     </section>
   );
-}
+});
 
 const PanelTitle = React.forwardRef<HTMLHeadingElement, { mode: PanelMode; children: React.ReactNode }>(({ mode, children }, ref) =>
   mode === 'dialog'
@@ -515,7 +531,13 @@ export function Jobs() {
   const titleRef = React.useRef<HTMLHeadingElement>(null);
   const inspector = useMediaQuery(INSPECTOR_QUERY);
   const qc = useQueryClient();
-  const jobsQuery = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, refetchInterval: 2500 });
+  const jobsQuery = useQuery({
+    queryKey: ['jobs'],
+    queryFn: api.jobs,
+    staleTime: 0,
+    refetchInterval: (query) =>
+      query.state.data?.some((j) => j.status === 'running' || j.status === 'queued') ? 2500 : 15_000,
+  });
   const jobs = jobsQuery.data ?? [];
   // Resolved once from the first load so tabs never jump while a task finishes.
   const autoFilter = React.useRef<JobFilter | null>(null);
@@ -539,7 +561,7 @@ export function Jobs() {
     enabled: selectedId !== null,
     refetchInterval: (query) => {
       const job = query.state.data?.job ?? selectedListJob;
-      return job ? isActive(job) || job.type === 'check-watched-searches' ? 1500 : false : query.state.status === 'error' ? false : 1500;
+      return job ? (isActive(job) ? 1500 : false) : query.state.status === 'error' ? false : 1500;
     },
   });
   const selectedJob = detailQuery.data?.job ?? selectedListJob;
@@ -589,18 +611,7 @@ export function Jobs() {
     onError: (error) => toast({ tone: 'danger', title: 'Could not remove failed tasks', description: error.message }),
   });
 
-  // Escape reverts an open stop confirmation, or clears the inline inspector; the confirmation times out on its own.
-  React.useEffect(() => {
-    if (stopConfirmId === null) return;
-    const timer = window.setTimeout(() => setStopConfirmId(null), STOP_CONFIRM_MS);
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.stopPropagation();
-      setStopConfirmId(null);
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => { window.clearTimeout(timer); window.removeEventListener('keydown', onKey, true); };
-  }, [stopConfirmId]);
+  // The open stop confirmation reverts on Escape and times out on its own (InlineConfirm).
   React.useEffect(() => {
     if (!inspector || selectedId === null || clearTarget !== null) return;
     const onKey = (event: KeyboardEvent) => {
@@ -614,32 +625,41 @@ export function Jobs() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inspector, selectedId, clearTarget]);
 
-  const types = Array.from(new Set(jobs.map((job) => job.type))).sort();
+  const types = React.useMemo(() => Array.from(new Set(jobs.map((job) => job.type))).sort(), [jobs]);
   const query = search.trim().toLowerCase();
   const searchActive = query !== '' || type !== 'all';
-  const sorted = jobs.filter((job) => {
+  const sorted = React.useMemo(() => jobs.filter((job) => {
     return matchesFilter(job, filter) && (type === 'all' || job.type === type) && (!query || `${job.id} ${jobLabel(job.type, job.payload)} ${job.type} ${jobTarget(job)} ${job.context?.series.map((series) => series.name).join(' ') ?? ''} ${job.context?.libraryName ?? ''} ${JOB_PURPOSE[job.type] ?? ''} ${jobOutcome(job)} ${job.errorMessage ?? ''} ${readableValue(job.result)}`.toLowerCase().includes(query));
   }).sort((a, b) => {
     const priority = (job: Job) => job.status === 'running' ? 0 : job.status === 'queued' ? 1 : needsAttention(job) ? 2 : 3;
     return priority(a) - priority(b) || b.id - a.id;
-  });
+  }), [jobs, filter, type, query]);
   // While the pointer is over the list, rows keep their place instead of re-sorting under it.
   const frozen = hovering ? frozenOrder.current : null;
-  const visibleJobs = frozen
+  const visibleJobs = React.useMemo(() => (frozen
     ? [...sorted].sort((a, b) => {
       const ia = frozen.indexOf(a.id);
       const ib = frozen.indexOf(b.id);
       return (ia < 0 ? Infinity : ia) - (ib < 0 ? Infinity : ib) || b.id - a.id;
     })
-    : sorted;
-  const statusCounts: Record<JobFilter, number> = {
-    all: jobs.length,
-    active: jobs.filter(isActive).length,
-    failed: jobs.filter(needsAttention).length,
-    done: jobs.filter((job) => matchesFilter(job, 'done')).length,
-  };
-  const failedCount = jobs.filter((job) => job.status === 'failed').length;
-  const warningCount = statusCounts.failed - failedCount;
+    : sorted), [sorted, frozen]);
+  const { statusCounts, failedCount, warningCount } = React.useMemo(() => {
+    let activeCount = 0;
+    let attentionCount = 0;
+    let doneCount = 0;
+    let failedOnly = 0;
+    for (const job of jobs) {
+      if (isActive(job)) activeCount++;
+      else if (needsAttention(job)) attentionCount++;
+      else doneCount++;
+      if (job.status === 'failed') failedOnly++;
+    }
+    return {
+      statusCounts: { all: jobs.length, active: activeCount, failed: attentionCount, done: doneCount } as Record<JobFilter, number>,
+      failedCount: failedOnly,
+      warningCount: attentionCount - failedOnly,
+    };
+  }, [jobs]);
   const countsReady = !jobsQuery.isPending && !(jobsQuery.isError && !jobsQuery.data);
   const openJob = (id: number, replace = false) => updateUrl({ job: id }, replace);
   const retryFor = (job: Job): RetryControl | undefined => job.type === 'restore-metadata' ? undefined : {

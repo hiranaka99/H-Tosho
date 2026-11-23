@@ -21,5 +21,16 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: 'react-vendor', test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/ },
+            { name: 'router-query', test: /node_modules[\\/](react-router|@tanstack[\\/]react-query)[\\/]/ },
+            { name: 'radix-ui', test: /node_modules[\\/]@radix-ui[\\/]/ },
+          ],
+        },
+      },
+    },
   },
 });
