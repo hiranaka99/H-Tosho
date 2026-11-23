@@ -448,10 +448,14 @@ test('unified E-Hentai queries preserve multi-word artists and group filters', (
   const parsed = parseCommonQuery('artist:"two words" group:"a circle" language:english');
   assert.ok(parsed.query);
   const compiled = compileEhentai(parsed.query!);
-  assert.equal(compiled.query, 'artist:"two words" group:"a circle"');
+  assert.equal(compiled.query, 'artist:"two words$" group:"a circle$"');
   assert.equal(compiled.language, 'english');
   const excluded = parseCommonQuery('-artist:"two words" "artist:mana"');
-  assert.equal(compileEhentai(excluded.query!).query, '-artist:"two words" "artist:mana"');
+  assert.equal(compileEhentai(excluded.query!).query, '-artist:"two words$" "artist:mana"');
+  // A shared artist filter is an exact tag match: artist:"mana" must not also
+  // match the E-Hentai artist tag "soguni mana".
+  assert.equal(compileEhentai(parseCommonQuery('artist:"mana"').query!).query, 'artist:"mana$"');
+  assert.equal(compileEhentai(parseCommonQuery('artist:mana -parody:fate').query!).query, 'artist:"mana$" -parody:"fate$"');
   assert.match(parseCommonQuery('unknown:"two words"').error!, /not available/);
 });
 

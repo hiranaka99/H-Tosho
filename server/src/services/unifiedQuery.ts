@@ -244,8 +244,17 @@ export function compileNhentai(q: CommonSearchQuery): CompiledLaneQuery {
   return { query: out.join(' '), unsupported };
 }
 
-/** E-Hentai: plain namespace:value pairs, quoted phrases, `-` exclusions.
- *  The language filter travels as a lane option, compiled by the provider. */
+/** E-Hentai: namespace:value pairs, quoted phrases, `-` exclusions.
+ *  The language filter travels as a lane option, compiled by the provider.
+ *
+ *  E-Hentai tag searches are partial by default: `artist:"mana"` also matches
+ *  `soguni mana` or `manatsu`. Shared filters mean the exact tag (as they do on
+ *  nHentai and Hitomi), so each value carries E-Hentai's `$` exact-match
+ *  suffix inside the quotes. */
+function exactTag(value: string): string {
+  return `"${value.replace(/["$]/g, '').trim()}$"`;
+}
+
 export function compileEhentai(q: CommonSearchQuery): CompiledLaneQuery {
   const out: string[] = [];
   let language: string | undefined;
@@ -255,12 +264,12 @@ export function compileEhentai(q: CommonSearchQuery): CompiledLaneQuery {
       language = f.value.toLowerCase().replace(/\s+/g, '');
       continue;
     }
-    out.push(`${f.namespace}:"${f.value.replace(/"/g, '')}"`);
+    out.push(`${f.namespace}:${exactTag(f.value)}`);
   }
   for (const ex of q.exclusions) {
     if (ex.namespace === 'language') continue; // language exclusions are not expressible; see unsupported note
     if (ex.namespace) {
-      out.push(`-${ex.namespace}:${ex.value.includes(' ') ? `"` + ex.value.replace(/"/g, '') + '"' : ex.value}`);
+      out.push(`-${ex.namespace}:${exactTag(ex.value)}`);
     } else {
       out.push(`-${ex.value.includes(' ') ? `"` + ex.value.replace(/"/g, '') + '"' : ex.value}`);
     }
