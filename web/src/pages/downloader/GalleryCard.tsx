@@ -95,6 +95,8 @@ interface GalleryCardProps {
   display?: 'full' | 'recommendation' | 'discovery';
   /** Render the download action as an outline button so a shelf of cards stays calm. */
   quietAction?: boolean;
+  /** Denser tile for shelves: always vertical, tighter padding, one-line Artist label. */
+  compact?: boolean;
   /** Extra sources this gallery was also found on (unified search grouping).
    *  Text labels — never color-only. */
   provenance?: { extraSources: DoujinSource[] };
@@ -130,7 +132,7 @@ function summarizeRecommendationReasons(reasons?: string[]): { summary: string; 
   return { summary: `Matches: ${topTags.join(', ')}`, full };
 }
 
-export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', quietAction = false, provenance, reasons }: GalleryCardProps) {
+export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', quietAction = false, compact = false, provenance, reasons }: GalleryCardProps) {
   const selectMode = selection?.mode === 'select', selected = selection?.selected ?? false;
   const onToggleSelect = selection?.onToggle, onReview = review?.onChange;
   const reviewed = review?.state === 'reviewed', reviewPending = review?.state === 'pending';
@@ -152,7 +154,7 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
         selected ? 'border-primary bg-primary/10 ring-2 ring-primary' : 'border-border bg-surface hover:border-border-2',
       )}
     >
-      <button type="button" onClick={() => (selectMode ? onToggleSelect?.(item) : onOpen(item))} className="grid min-w-0 grid-cols-[5rem_minmax(0,1fr)] text-left min-[420px]:block" aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
+      <button type="button" onClick={() => (selectMode ? onToggleSelect?.(item) : onOpen(item))} className={cn('min-w-0 text-left', compact ? 'block' : 'grid grid-cols-[5rem_minmax(0,1fr)] min-[420px]:block')} aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
         <div className="relative overflow-hidden">
           <Cover url={item.coverUrl} title={item.title} className="downloader-cover aspect-[3/4] w-full" />
           <PageCountPill pageCount={item.pageCount} className={cn('absolute right-2', selectMode || selected ? 'bottom-2' : 'top-2')} />
@@ -168,11 +170,11 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
             </span>
           </div>}
         </div>
-        <div className="flex min-w-0 flex-col gap-2 p-3 pb-0">
+        <div className={cn('flex min-w-0 flex-col', compact ? 'gap-1 p-2.5 pb-0' : 'gap-2 p-3 pb-0')}>
           <p className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]" title={item.title}>{item.title}</p>
           {item.artists.length > 0 && (
             <p className="truncate text-xs font-medium text-foreground" title={`Artists: ${item.artists.join(', ')}`}>
-              <span className="text-muted">Artist{item.artists.length > 1 ? 's' : ''} · </span>{item.artists.join(', ')}
+              {!compact && <span className="text-muted">Artist{item.artists.length > 1 ? 's' : ''} · </span>}{item.artists.join(', ')}
             </p>
           )}
           {reasonLine && (
@@ -183,7 +185,7 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
           {showTags && tags.length > 0 && <div className="flex max-h-12 flex-wrap gap-1 overflow-hidden" aria-label="Tags">{tags.map((tag, i) => <span key={i} className="max-w-full truncate rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{tag}</span>)}</div>}
         </div>
       </button>
-      <div className="mt-auto flex min-w-0 flex-col gap-2 p-3">
+      <div className={cn('mt-auto flex min-w-0 flex-col gap-2', compact ? 'p-2.5' : 'p-3')}>
         {(showSource || ownershipType || provenance) && (
           <div className="flex min-h-6 flex-wrap items-center gap-2">
             {ownershipType && <OwnershipChip type={ownershipType} className="min-[420px]:hidden" />}

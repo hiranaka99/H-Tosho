@@ -20,6 +20,9 @@ test-results/
 **/.impeccable/live/*
 !**/.impeccable/live/config.json
 
+# ---- Local critique comparison pages & screenshots ------------------------
+_cmp/
+
 # ---- Environment / local config & secrets ---------------------------------
 .env
 .env.*
