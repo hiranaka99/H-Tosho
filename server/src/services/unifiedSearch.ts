@@ -591,6 +591,9 @@ function finishPage(session: UnifiedSession, items: UnifiedSearchEntry[]): Unifi
     status: (lane.phase === 'idle' ? 'success' : lane.phase) as ProviderLaneStatus,
     ...(lane.message ? { message: lane.message } : {}),
     retryable: lane.retryable,
+    // Only lanes that actually ran can be followed; E-Hentai has no watch support.
+    ...((lane.phase === 'idle' || lane.phase === 'success' || lane.phase === 'exhausted') && lane.source !== 'ehentai' && session.compiled[lane.source].query.trim()
+      ? { watchQuery: session.compiled[lane.source].query.trim() } : {}),
   }));
 
   // A lane that never ran (unconfigured account, uncompilable query, input
@@ -683,7 +686,7 @@ export async function runUnifiedSearch(req: UnifiedSearchRequest, signal: AbortS
     if (!req.query?.trim()) throw new UnifiedQueryError('Enter a search query.');
     const classification = classifyRawQuery(req.query);
     if (classification.kind === 'ambiguous-id') {
-      throw new UnifiedQueryError('A bare numeric ID is ambiguous — every source uses numeric IDs. Open native Search and choose the source, or paste the full gallery URL.');
+      throw new UnifiedQueryError('A bare numeric ID is ambiguous — every source uses numeric IDs. Choose that source under Search in, or paste the full gallery URL.');
     }
     if (classification.kind === 'url') {
       return produceUrlPage(classification.source, classification.url, signal);

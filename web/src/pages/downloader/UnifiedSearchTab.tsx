@@ -1,19 +1,20 @@
 /**
- * Discover → "Unified search" tab (plan P2.5–P2.7).
+ * Discover → Search, scoped to every source.
  *
  * One query fans out to Hitomi.la, nHentai and E-Hentai/ExHentai; repeated
  * editions come back as a single card that keeps every source it was found
  * on. Pagination is a Load-more button over the loaded unique count — there
  * is no summed-total pager. Failed lanes stay visible with scoped retries;
- * successful results remain fully usable while a lane recovers.
+ * successful results remain fully usable while a lane recovers. The form,
+ * results header and selection share their shape with single-source search.
  */
 import * as React from 'react';
 import { Link } from 'react-router';
-import { Search, Loader2, CheckCircle2, AlertTriangle, XCircle, Minus, CheckSquare, RotateCcw } from 'lucide-react';
+import { Search, Loader2, CheckCircle2, AlertTriangle, XCircle, Minus, RotateCcw } from 'lucide-react';
 import { type DoujinSearchResult, type DoujinSource, type ProviderSearchStatus, type UnifiedSearchEntry } from '../../lib/api';
 import { cn } from '../../lib/utils';
-import { Button, Card, CardContent, EmptyState } from '../../components/ui';
-import { GallerySelectionBar } from '../../components/GallerySelectionBar';
+import { Button, Card, CardContent, EmptyState, ErrorState } from '../../components/ui';
+import { GallerySelectionBar, type GallerySelectionActions } from '../../components/GallerySelectionBar';
 import { GallerySearchInput } from '../../components/GallerySearchInput';
 
 import { DOWNLOADER_SETTINGS_URL, SOURCE_LABELS, type DownloadSetup } from './state';
@@ -21,15 +22,17 @@ import { GalleryCard } from './GalleryCard';
 import { toWebResult, type UnifiedSearchValue } from './useUnifiedSearch';
 import { SearchHint } from './SearchHint';
 import { GallerySkeletonGrid } from './GallerySkeletons';
+import { SearchResultsHeader, SelectModeButton } from './SearchResultsHeader';
 import type { GalleryOwnership } from './ownership';
 
-// ---------------- provider status chips ----------------
+// ---------------- provider status ----------------
+
+const isFailed = (p: ProviderSearchStatus) => p.status === 'failed' || p.status === 'unavailable' || p.status === 'rate-limited';
+const isOk = (p: ProviderSearchStatus) => p.status === 'success' || p.status === 'exhausted';
+const listNames = (providers: ProviderSearchStatus[]) => providers.map((p) => SOURCE_LABELS[p.source]).join(', ');
 
 function chipClass(status: ProviderSearchStatus['status']): string {
   switch (status) {
-    case 'success':
-    case 'exhausted':
-      return 'border-border bg-surface-2/50 text-foreground';
     case 'failed':
     case 'unavailable':
     case 'rate-limited':
@@ -41,39 +44,54 @@ function chipClass(status: ProviderSearchStatus['status']): string {
   }
 }
 
-function ProviderStatusChips({ providers, onRetry, busy, canRetry }: { providers: ProviderSearchStatus[]; onRetry: (source: string) => void; busy: string | null; canRetry: boolean }) {
+/**
+ * Sources that answered collapse into one quiet line; only a source that needs
+ * attention gets its own chip, with a full-size Retry beside it. Failures are
+ * announced once, together, instead of one alert per chip.
+ */
+function ProviderStatusSummary({ providers, onRetry, busy, canRetry }: { providers: ProviderSearchStatus[]; onRetry: (source: string) => void; busy: string | null; canRetry: boolean }) {
   if (!providers.length) return null;
+  const answered = providers.filter(isOk);
+  const attention = providers.filter((p) => !isOk(p));
+  const failed = providers.filter(isFailed);
   return (
-    <div className="flex min-w-0 flex-col gap-1.5" aria-label="Provider status for this search">
-      {providers.map((p) => {
+    <div role="group" aria-label="Provider status for this search" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+      {answered.length > 0 && (
+        <span className="inline-flex items-center gap-1.5 text-muted">
+          <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" aria-hidden="true" />Searched {listNames(answered)}
+        </span>
+      )}
+      {attention.map((p) => {
         const label = SOURCE_LABELS[p.source];
-        const icon =
-          p.status === 'success' || p.status === 'exhausted' ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            : p.status === 'unsupported-query' || p.status === 'not-applicable' ? <Minus className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              : p.status === 'not-configured' ? <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                : <XCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />;
-        const note = p.status === 'exhausted' ? 'complete'
-          : p.status === 'success' ? 'searched'
-            : p.status === 'not-applicable' ? 'not applicable'
-              : p.message;
+        const icon = p.status === 'unsupported-query' || p.status === 'not-applicable' ? <Minus className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          : p.status === 'not-configured' ? <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            : <XCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />;
+        const note = p.message ?? (p.status === 'not-applicable' ? 'not searched for this query' : undefined);
         return (
-          <span key={p.source} role={p.status === 'failed' || p.status === 'unavailable' || p.status === 'rate-limited' || p.status === 'not-configured' ? 'alert' : undefined} className={cn('inline-flex max-w-full items-start gap-1.5 self-start rounded-full border px-2.5 py-1 text-xs', chipClass(p.status))}>
-            {icon}
-            <span className="min-w-0 break-words">
-              <span className="font-medium">{label}</span>
-              {note ? <>: <span className="break-words">{note}</span></> : null}
-              {p.status === 'not-configured' && (
-                <Link to={DOWNLOADER_SETTINGS_URL} className="ml-1 underline underline-offset-2 hover:opacity-80">save the account</Link>
-              )}
+          <span key={p.source} className="inline-flex max-w-full flex-wrap items-center gap-x-1 gap-y-1">
+            <span className={cn('inline-flex max-w-full items-start gap-1.5 rounded-full border px-2.5 py-1', chipClass(p.status))}>
+              {icon}
+              <span className="min-w-0 break-words">
+                <span className="font-medium">{label}</span>
+                {note ? <>: {note}</> : null}
+                {p.status === 'not-configured' && (
+                  <Link to={DOWNLOADER_SETTINGS_URL} className="ml-1 underline underline-offset-2 hover:opacity-80">save the account</Link>
+                )}
+              </span>
             </span>
-            {(p.status === 'failed' || p.status === 'unavailable' || p.status === 'rate-limited') && p.retryable && (
-              <Button size="sm" variant="ghost" className="h-6 min-h-6 shrink-0 px-2 text-xs" disabled={busy !== null || !canRetry} onClick={() => onRetry(p.source)}>
-                {busy === p.source ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />} Retry
+            {isFailed(p) && p.retryable && (
+              <Button size="sm" variant="ghost" className="max-lg:min-h-11 pointer-coarse:min-h-11 shrink-0 px-2 text-xs" aria-label={`Retry ${label}`} disabled={busy !== null || !canRetry} onClick={() => onRetry(p.source)}>
+                {busy === p.source ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />} Retry
               </Button>
             )}
           </span>
         );
       })}
+      {failed.length > 0 && (
+        <p role="alert" className="sr-only">
+          {failed.map((p) => `${SOURCE_LABELS[p.source]} did not answer${p.message ? `: ${p.message}` : '.'}`).join(' ')}
+        </p>
+      )}
     </div>
   );
 }
@@ -94,30 +112,22 @@ function extraSources(entry: UnifiedSearchEntry): DoujinSource[] {
 
 // ---------------- tab ----------------
 
-export interface UnifiedSelectionActions {
-  items: DoujinSearchResult[];
-  onMerge: () => void;
-  onMergeInto: () => void;
-  onDownloadEach?: () => void;
-  onSelectAll?: () => void;
-  allSelected?: boolean;
-  onRemove: (item: DoujinSearchResult) => void;
-  onClear: () => void;
-  onCancel: () => void;
-}
-
 interface UnifiedSearchTabProps {
   unified: UnifiedSearchValue;
+  /** The "Search in" control, rendered inside the search card with the input it scopes. */
+  scopeControl: React.ReactNode;
+  /** Watch control for the results header; the parent owns watched-search state. */
+  watchControl?: React.ReactNode;
   onOpenEntry: (entry: UnifiedSearchEntry) => void;
   onDownload: (item: DoujinSearchResult, entryId: string) => void;
   downloadStatus: DownloadSetup['status'];
   startingKeys: ReadonlySet<string>;
   ownershipFor: (entry: UnifiedSearchEntry) => GalleryOwnership;
-  selectedEntryIds: Set<string>;
+  selectedEntryIds: ReadonlySet<string>;
   onToggleGroup: (entry: UnifiedSearchEntry) => void;
   selectMode: boolean;
   onToggleSelectMode: () => void;
-  selectionActions: UnifiedSelectionActions;
+  selectionActions: GallerySelectionActions;
   showSelection: boolean;
 }
 
@@ -164,11 +174,12 @@ const UnifiedEntryCard = React.memo(function UnifiedEntryCard({
       provenance={provenance}
       ownership={ownership}
       selection={selection}
+      quietAction
     />
   );
 });
 
-export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadStatus, startingKeys, ownershipFor, selectedEntryIds, onToggleGroup, selectMode, onToggleSelectMode, selectionActions, showSelection }: UnifiedSearchTabProps) {
+export function UnifiedSearchTab({ unified, scopeControl, watchControl, onOpenEntry, onDownload, downloadStatus, startingKeys, ownershipFor, selectedEntryIds, onToggleGroup, selectMode, onToggleSelectMode, selectionActions, showSelection }: UnifiedSearchTabProps) {
   const { draft, committed, status, entries, cursor, hasMore, loadedUniqueCount, totalUnique, providers, error, retrying } = unified;
   const [formDraft, setFormDraft] = React.useState(draft);
   const syncedDraftRef = React.useRef(draft);
@@ -187,8 +198,8 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
     return () => window.clearTimeout(timer);
   }, [formDraft, unified]);
   const busy = status === 'searching' || status === 'loading-more';
-  const failedProviders = providers.filter((p) => p.status === 'failed' || p.status === 'unavailable' || p.status === 'rate-limited');
-  const okProviders = providers.filter((p) => p.status === 'success' || p.status === 'exhausted');
+  const failedProviders = providers.filter(isFailed);
+  const okProviders = providers.filter(isOk);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -199,48 +210,52 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
     unified.startSearch(q);
   }
 
+  const galleries = (n: number) => `${n} ${n === 1 ? 'gallery' : 'galleries'}`;
+  const resultStatus = status === 'loading-more' ? 'Loading more…'
+    : totalUnique !== null ? `${galleries(totalUnique)} across sources`
+      : `Showing ${galleries(loadedUniqueCount)}${hasMore ? ' · more available' : ''}`;
+
   return (
     <div className="flex flex-col gap-4">
       <Card>
-        <CardContent className="flex flex-col gap-2">
-          <form onSubmit={submit} className="flex flex-col gap-2 sm:flex-row">
+        <CardContent className="flex flex-col gap-3">
+          {scopeControl}
+          <form onSubmit={submit} className="flex min-w-0 gap-2">
             <GallerySearchInput
               value={formDraft} source="unified"
               onChange={setFormDraft}
               label="Search galleries" describedBy="unified-search-hint"
-              placeholder="Search all sources, e.g. sister or artist:foo -bar"
+              placeholder="Keyword, tag, artist or gallery URL…"
               clearLabel="Clear search input" className="h-11"
             />
-            <Button className="shrink-0 sm:h-11" type="submit" disabled={busy || !formDraft.trim()}>
+            <Button className="h-11 shrink-0" type="submit" disabled={busy || !formDraft.trim()}>
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
             </Button>
           </form>
-          <SearchHint id="unified-search-hint" scope="all" />
+          <SearchHint id="unified-search-hint" />
         </CardContent>
       </Card>
+
+      {/* A shortlist carried over from another search stays reachable while this one has no cards. */}
+      {showSelection && (committed === null || entries.length === 0) && <GallerySelectionBar {...selectionActions} />}
 
       {committed === null && (
         <Card className="flex items-center justify-center">
           <EmptyState
             icon={<Search className="h-8 w-8" />}
             title="Search every source at once"
-            description="Every source a work was found on stays visible on its card. A bare numeric ID is ambiguous across sources, so paste the full gallery URL instead."
+            description="Each work gets one card that lists every source it was found on. To open one specific gallery, paste its full URL; bare IDs differ between sources."
           />
         </Card>
       )}
 
       {error && committed !== null && (
         <Card>
-          <div role="alert" className="flex flex-col items-center gap-3 py-8 text-center">
-            <XCircle className="h-8 w-8 text-danger" aria-hidden="true" />
-            <div className="flex flex-col gap-1">
-              <p className="text-sm font-medium">{error.kind === 'session' ? 'This search session can’t continue' : 'Search rejected'}</p>
-              <p className="max-w-lg break-words text-sm text-muted">{error.message}</p>
-            </div>
-            <Button onClick={() => unified.startSearch(committed ?? draft)}>
-              <Search className="h-4 w-4" /> Search again
-            </Button>
-          </div>
+          <ErrorState
+            title={error.kind === 'session' ? 'This search needs to start again' : 'This search couldn’t run'}
+            description={error.message}
+            onRetry={() => unified.startSearch(committed ?? draft)}
+          />
         </Card>
       )}
 
@@ -251,10 +266,10 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
       {committed !== null && !error && status !== 'searching' && entries.length === 0 && (
         okProviders.length === 0 && failedProviders.length > 0 ? (
           <Card>
-            <div role="alert" className="flex flex-col gap-3 py-8">
-              <p className="text-sm font-medium">Every source failed this search</p>
-              <ProviderStatusChips providers={providers} onRetry={(s) => unified.retrySource(s)} busy={retrying} canRetry={!!cursor} />
-              <p className="text-xs text-muted">Nothing was found — and no source answered successfully, so this isn’t a true zero-result.</p>
+            <div className="flex flex-col gap-3 px-4 py-8">
+              <p className="text-sm font-medium">No source answered this search</p>
+              <ProviderStatusSummary providers={providers} onRetry={(s) => unified.retrySource(s)} busy={retrying} canRetry={!!cursor} />
+              <p className="text-xs text-muted">There may still be matches. Retry a source, or search again in a minute.</p>
             </div>
           </Card>
         ) : (
@@ -273,21 +288,13 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
       )}
 
       {committed !== null && !error && entries.length > 0 && (
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
-            <div className="flex min-w-0 flex-col gap-2">
-              <p role="status" className="text-sm text-muted">
-                {busy ? 'Loading…' : `${loadedUniqueCount} unique ${loadedUniqueCount === 1 ? 'gallery' : 'galleries'} loaded`}
-                {totalUnique !== null && ` · ${totalUnique} total`}
-              </p>
-              <ProviderStatusChips providers={providers} onRetry={(s) => unified.retrySource(s)} busy={retrying} canRetry={!!cursor} />
-            </div>
-            <div className="ml-auto flex items-center gap-2">
-              <Button size="sm" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={onToggleSelectMode}>
-                <CheckSquare className="h-3.5 w-3.5" /> {selectMode ? 'Done selecting' : 'Select galleries'}
-              </Button>
-            </div>
-          </div>
+        <div className="flex flex-col">
+          <SearchResultsHeader
+            status={resultStatus}
+            actions={<>{watchControl}<SelectModeButton selectMode={selectMode} onToggle={onToggleSelectMode} /></>}
+          >
+            <ProviderStatusSummary providers={providers} onRetry={(s) => unified.retrySource(s)} busy={retrying} canRetry={!!cursor} />
+          </SearchResultsHeader>
           {showSelection && <GallerySelectionBar {...selectionActions} />}
           <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
             {entries.map((entry) => (
@@ -306,10 +313,10 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
             ))}
           </div>
           {hasMore && (
-            <div className="flex justify-center pt-1">
+            <div className="flex justify-center pt-4">
               <Button variant="outline" className="min-h-11" onClick={() => unified.loadMore()} disabled={status !== 'idle'}>
                 {status === 'loading-more' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                {status === 'loading-more' ? 'Loading more…' : `Load more — ${loadedUniqueCount} unique loaded`}
+                {status === 'loading-more' ? 'Loading more…' : 'Load more'}
               </Button>
             </div>
           )}

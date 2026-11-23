@@ -245,6 +245,10 @@ test('one failed lane does not erase the others; a scoped retry adds its results
   assert.equal(nh?.status, 'failed');
   assert.equal(nh?.retryable, true);
   assert.ok(nh?.message);
+  // Only lanes that ran can be watched, each with its own provider-native query.
+  assert.equal(first.providers.find((p) => p.source === 'hitomi')?.watchQuery, 'partial');
+  assert.equal(nh?.watchQuery, undefined, 'a failed lane offers nothing to watch');
+  assert.equal(first.providers.find((p) => p.source === 'ehentai')?.watchQuery, undefined, 'E-Hentai searches cannot be watched');
 
   nhentaiFail = false;
   const retried = await runUnifiedSearch({ cursor: first.nextCursor!, retry: 'nhentai', principal: PRINCIPAL }, new AbortController().signal);
@@ -254,6 +258,7 @@ test('one failed lane does not erase the others; a scoped retry adds its results
   assert.equal(retried.providers.find((p) => p.source === 'nhentai')?.status, 'exhausted');
   // The single retry budget is enforced: the chip no longer offers it.
   assert.equal(retried.providers.find((p) => p.source === 'nhentai')?.retryable, false);
+  assert.equal(retried.providers.find((p) => p.source === 'nhentai')?.watchQuery, 'partial', 'a recovered lane becomes watchable');
 
   // The other lanes keep their pending state: the next continuation delivers
   // the remaining hitomi items, and the exact unique total counts all lanes.

@@ -64,10 +64,10 @@ const HITOMI_SORTS: { value: DoujinSort; label: string }[] = [
   { value: 'default', label: 'Newest' },
   { value: 'date-published', label: 'Date published' },
   { value: 'random', label: 'Random' },
-  { value: 'popular-today', label: 'Popular Today' },
-  { value: 'popular-week', label: 'Popular Week' },
-  { value: 'popular-month', label: 'Popular Month' },
-  { value: 'popular-year', label: 'Popular Year' },
+  { value: 'popular-today', label: 'Popular — today' },
+  { value: 'popular-week', label: 'Popular — this week' },
+  { value: 'popular-month', label: 'Popular — this month' },
+  { value: 'popular-year', label: 'Popular — this year' },
 ];
 
 /** The sort options a source offers (sent as a separate field — the search box never shows the syntax). */

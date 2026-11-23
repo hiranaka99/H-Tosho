@@ -259,6 +259,10 @@ export interface ProviderSearchStatus {
    *  carrying credentials. */
   message?: string;
   retryable: boolean;
+  /** The provider-native query this lane ran, for lanes that searched and can
+   *  be followed (Hitomi.la, nHentai). Watching from unified search adds one
+   *  watched search per lane with this exact text. */
+  watchQuery?: string;
 }
 
 /** One visible card: a stable group of strongly matched gallery variants.

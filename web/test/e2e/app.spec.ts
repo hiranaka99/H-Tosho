@@ -406,7 +406,7 @@ test('Hitomi search preserves exclusions, scoped autocomplete and website sort c
   await sort.selectOption('default');
   const directive = 'cat orderby:popular orderbykey:';
   await search.fill(directive);
-  await expect(page.getByRole('option', { name: /month/ })).toBeVisible();
+  await expect(page.getByRole('listbox').getByRole('option', { name: /month/ })).toBeVisible();
   expect(suggestions.at(-1)).toMatchObject({ query: 'orderbykey:', context: directive });
   await search.press('ArrowDown');
   await search.press('ArrowDown');
@@ -441,7 +441,7 @@ test('Hitomi pages browse the full result count and preserve selections across p
   const search = page.getByRole('combobox', { name: 'Search galleries', exact: true });
   await search.fill('sample');
   await search.press('Enter');
-  await expect(page.getByText('1301 galleries found on Hitomi.la · 1–25', { exact: true })).toBeVisible();
+  await expect(page.getByText('Showing 1–25 of 1301 galleries on Hitomi.la', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Select galleries', exact: true }).click();
   const first = page.locator('[data-gallery-motion-id="hitomi:sample-1"]');
   await first.getByRole('button', { name: 'Select Sample gallery 1', exact: true }).click();
@@ -449,11 +449,11 @@ test('Hitomi pages browse the full result count and preserve selections across p
   await expect(pages.getByRole('spinbutton')).toHaveCount(0);
   await expect(pages.getByRole('button', { name: 'Go', exact: true })).toHaveCount(0);
   await pages.getByRole('button', { name: 'Next', exact: true }).click();
-  await expect(page.getByText('1301 galleries found on Hitomi.la · 26–50', { exact: true })).toBeVisible();
+  await expect(page.getByText('Showing 26–50 of 1301 galleries on Hitomi.la', { exact: true })).toBeVisible();
   await pages.getByRole('button', { name: 'Previous', exact: true }).click();
-  await expect(page.getByText('1301 galleries found on Hitomi.la · 1–25', { exact: true })).toBeVisible();
+  await expect(page.getByText('Showing 1–25 of 1301 galleries on Hitomi.la', { exact: true })).toBeVisible();
   await pages.getByRole('button', { name: '53', exact: true }).click();
-  await expect(page.getByText('1301 galleries found on Hitomi.la · 1301–1301', { exact: true })).toBeVisible();
+  await expect(page.getByText('Showing 1301–1301 of 1301 galleries on Hitomi.la', { exact: true })).toBeVisible();
   expect(requests.at(-1)).toMatchObject({ offset: 1300, limit: 25 });
   await expect(pages.getByRole('button', { name: 'Next', exact: true })).toBeDisabled();
   await pages.screenshot({ path: `.impeccable/review/pager-${testInfo.project.name}.png` });
@@ -463,7 +463,7 @@ test('Hitomi pages browse the full result count and preserve selections across p
   const later = page.locator('[data-gallery-motion-id="hitomi:sample-1301"]');
   await expect(later).toBeVisible();
   await later.getByRole('button', { name: 'Select Sample gallery 1301', exact: true }).click();
-  const selection = page.getByRole('region', { name: 'Merge selected galleries', exact: true }).filter({ visible: true });
+  const selection = page.getByRole('region', { name: 'Gallery selection', exact: true }).filter({ visible: true });
   // The phone tray keeps its title list collapsed until asked.
   if (await selection.getByRole('button', { name: 'Show list', exact: true }).count()) await selection.getByRole('button', { name: 'Show list', exact: true }).click();
   await expect(selection.getByRole('list', { name: 'Selected galleries', exact: true }).getByRole('listitem')).toHaveCount(2);
@@ -472,9 +472,9 @@ test('Hitomi pages browse the full result count and preserve selections across p
   await selection.getByRole('button', { name: 'Cancel', exact: true }).click();
   await search.fill('different');
   await search.press('Enter');
-  await expect(page.getByText('2 galleries found on Hitomi.la', { exact: true })).toBeVisible();
+  await expect(page.getByText('2 galleries on Hitomi.la', { exact: true })).toBeVisible();
   expect(requests.at(-1)).toMatchObject({ query: 'different', offset: 0, limit: 25 });
-  await expect(page.getByRole('region', { name: 'Merge selected galleries', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Gallery selection', exact: true })).toHaveCount(0);
   await page.locator('main').evaluate(element => element.scrollTo({ top: 0 }));
   await page.screenshot({ path: testInfo.outputPath('hitomi-paged-search.png'), fullPage: true });
 });
@@ -508,22 +508,22 @@ test('nHentai search keeps quoted exclusions, website sorts and selections acros
   await search.press('Enter');
   await expect(search).toHaveValue('"exact phrase" -artist:"Mizu Artist" pages:>20');
   await search.press('Enter');
-  await expect(page.getByText('701 galleries found on nHentai · 1–25', { exact: true })).toBeVisible();
+  await expect(page.getByText('Showing 1–25 of 701 galleries on nHentai', { exact: true })).toBeVisible();
   expect(searches.at(-1)).toMatchObject({ source: 'nhentai', query: '"exact phrase" -artist:"Mizu Artist" pages:>20', offset: 0, limit: 25 });
   const sort = page.getByRole('combobox', { name: 'Sort results', exact: true });
   for (const value of ['popular', 'popular-week', 'popular-today']) {
     await sort.selectOption(value);
     await expect.poll(() => searches.at(-1)?.sort).toBe(value);
   }
-  await expect(page.getByText('701 galleries found on nHentai · 1–25', { exact: true })).toBeVisible();
+  await expect(page.getByText('Showing 1–25 of 701 galleries on nHentai', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Select galleries', exact: true }).click();
   await page.locator('[data-gallery-motion-id="nhentai:native-1"]').getByRole('button', { name: 'Select Native gallery 1', exact: true }).click();
   const pages = page.getByRole('navigation', { name: 'Pages', exact: true });
   await pages.getByRole('button', { name: '29', exact: true }).click();
-  await expect(page.getByText('701 galleries found on nHentai · 701–701', { exact: true })).toBeVisible();
+  await expect(page.getByText('Showing 701–701 of 701 galleries on nHentai', { exact: true })).toBeVisible();
   expect(searches.at(-1)).toMatchObject({ source: 'nhentai', offset: 700, limit: 25 });
   await page.locator('[data-gallery-motion-id="nhentai:native-701"]').getByRole('button', { name: 'Select Native gallery 701', exact: true }).click();
-  const selected = page.getByRole('region', { name: 'Merge selected galleries', exact: true }).filter({ visible: true });
+  const selected = page.getByRole('region', { name: 'Gallery selection', exact: true }).filter({ visible: true });
   if (await selected.getByRole('button', { name: 'Show list', exact: true }).count()) await selected.getByRole('button', { name: 'Show list', exact: true }).click();
   await expect(selected.getByRole('listitem')).toHaveCount(2);
   await expect(selected.getByRole('button', { name: 'Remove Native gallery 1 from selection', exact: true })).toBeVisible();
@@ -532,7 +532,7 @@ test('nHentai search keeps quoted exclusions, website sorts and selections acros
   await search.press('Escape');
   await search.press('Enter');
   await expect.poll(() => searches.at(-1)?.query).toBe('language:japanese title:"exact phrase" favorites:>=100 uploaded:>1m');
-  await expect(page.getByText('701 galleries found on nHentai · 1–25', { exact: true })).toBeVisible();
+  await expect(page.getByText('Showing 1–25 of 701 galleries on nHentai', { exact: true })).toBeVisible();
   expect(searches.at(-1)?.offset).toBe(0);
   await page.locator('main').evaluate(element => element.scrollTo({ top: 0 }));
   await page.screenshot({ path: testInfo.outputPath('nhentai-search.png'), fullPage: true });
