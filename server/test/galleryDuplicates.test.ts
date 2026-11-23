@@ -7,7 +7,7 @@ import { after, afterEach, beforeEach, test } from 'node:test';
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-duplicates-'));
 process.env.HTOSHO_DATA_DIR = dataDir;
 const { initDb, getDb, schema } = await import('../src/db/index.js');
-const { duplicateReasons, recordGalleryIdentity, prepareDuplicateCheck, findDuplicateReports, invalidateDuplicateLibrary, resolveDuplicateGallery, rememberDuplicateLibraryRoots, lookupLibraryMatches } = await import('../src/services/galleryDuplicates.js');
+const { duplicateReasons, recordGalleryIdentity, prepareDuplicateCheck, findDuplicateReports, invalidateDuplicateLibrary, resolveDuplicateGallery, rememberDuplicateLibraryRoots, lookupLibraryMatches, findKnownLibraryDuplicateKeys } = await import('../src/services/galleryDuplicates.js');
 const { setDownloaderSettings, setKavitaConnection, DEFAULT_DOWNLOADER } = await import('../src/services/settings.js');
 const { doujinProviders } = await import('../src/downloader/providers.js');
 const { downloadQueue } = await import('../src/downloader/engine.js');
@@ -135,6 +135,30 @@ test('alternate titles match but missing language/page data stays possible metad
   const a = gallery('hitomi', '1', { title: '灯籠の守り人の物語', titleAlt: 'The Lantern Keeper' });
   const reasons = duplicateReasons(a, { ...gallery('nhentai'), language: null });
   assert.deepEqual(reasons, ['Same title', 'Same artist']);
+});
+test('renamed and re-annotated titles match only with the same artist and identical page count', () => {
+  const library = { source: 'library', galleryId: 'x', path: 'x', title: '(Mana) Ganyu', titleAlt: '(Mana) Ganyu', artists: ['mana'], pageCount: 20 };
+  const result = (title: string, patch: Partial<DoujinGallery & { pageCount: number }> = {}) => ({ ...gallery('hitomi', '9', { title, artists: ['mana'], language: undefined }), pageCount: 20, ...patch });
+  for (const title of ['Ganyu', '[mana] Ganyu (Genshin Impact) [English]', '(C99) [Circle (mana)] Ganyu (Genshin Impact) [Digital]', '【mana】 Ganyu', 'ガンユウ | Ganyu'])
+    assert.deepEqual(duplicateReasons(result(title), library), ['Same title', 'Same artist', 'Same page count'], title);
+  // Without an exact page count, a loose title is not evidence; nor is another artist's work.
+  for (const [title, patch] of [['Ganyu', { pageCount: undefined }], ['Ganyu', { pageCount: 21 }], ['Ganyu', { artists: ['someone'] }], ['Gan', {}]] as const)
+    assert.deepEqual(duplicateReasons(result(title, patch), library), [], `${title} ${JSON.stringify(patch)}`);
+  // Part, sequel and numbering annotations are never stripped, even with equal page counts.
+  for (const [a, b] of [['Lovemare (Jou)', 'Lovemare (Ge)'], ['Ganyu (2)', 'Ganyu'], ['Ganyu (Zenpen)', 'Ganyu (Kouhen)'], ['Ganyu (II)', 'Ganyu'], ['Ganyu (Part 2)', 'Ganyu'], ['Ganyu (Extra)', 'Ganyu'], ['ガンユウ (上)', 'ガンユウ (下)'], ['ガンユウ (後編)', 'ガンユウ'], ['Ganyu 2', 'Ganyu'], ['Ganyu After', 'Ganyu']])
+    assert.deepEqual(duplicateReasons(result(a), { ...library, title: b, titleAlt: b }), [], `${a} vs ${b}`);
+  // A translation-group tag that merely contains 中 is still an annotation.
+  assert.equal(duplicateReasons(result('ガンユウ [中国翻訳]'), { ...library, title: 'ガンユウ', titleAlt: undefined }).length, 3);
+});
+test('a renamed library archive is a possible duplicate and keeps the gallery out of recommendations', async () => {
+  archive('(Mana) Ganyu.cbz', '(Mana) Ganyu', 'en', 'mana');
+  const item = { source: 'hitomi' as const, galleryId: '2001', title: 'Ganyu', artists: ['mana'], language: 'English', pageCount: 2 };
+  const check = await lookupLibraryMatches([item, { ...item, galleryId: '2002', pageCount: 3 }, { ...item, galleryId: '2003', title: 'Ganyu 2' }]);
+  assert.equal(check.reports[0].matches.length, 1);
+  assert.equal(check.reports[0].matches[0].confirmed, false, 'Metadata evidence is never a confirmed copy');
+  assert.equal(check.reports[1].matches.length, 0);
+  assert.equal(check.reports[2].matches.length, 0);
+  assert.deepEqual([...findKnownLibraryDuplicateKeys([item, { ...item, galleryId: '2002', pageCount: 3 }])], ['hitomi:2001']);
 });
 test('preview metadata alone does not make a gallery owned; paused work does, failed work does not', async () => {
   recordGalleryIdentity(gallery('hitomi'));
