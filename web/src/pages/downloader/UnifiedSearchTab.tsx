@@ -16,7 +16,7 @@ import { Button, Card, CardContent, EmptyState } from '../../components/ui';
 import { GallerySelectionBar } from '../../components/GallerySelectionBar';
 import { GallerySearchInput } from '../../components/GallerySearchInput';
 
-import { DOWNLOADER_SETTINGS_URL, SOURCE_LABELS, type DownloadSetup } from './state';
+import { EHENTAI_ACCOUNT_SETTINGS_URL, SOURCE_LABELS, type DownloadSetup } from './state';
 import { GalleryCard } from './GalleryCard';
 import { toWebResult, type UnifiedSearchValue } from './useUnifiedSearch';
 import { SearchHint } from './SearchHint';
@@ -63,7 +63,7 @@ function ProviderStatusChips({ providers, onRetry, busy, canRetry }: { providers
               <span className="font-medium">{label}</span>
               {note ? <>: <span className="break-words">{note}</span></> : null}
               {p.status === 'not-configured' && (
-                <Link to={DOWNLOADER_SETTINGS_URL} className="ml-1 underline underline-offset-2 hover:opacity-80">save the account</Link>
+                <Link to={EHENTAI_ACCOUNT_SETTINGS_URL} className="ml-1 underline underline-offset-2 hover:opacity-80">save the account</Link>
               )}
             </span>
             {(p.status === 'failed' || p.status === 'unavailable' || p.status === 'rate-limited') && p.retryable && (

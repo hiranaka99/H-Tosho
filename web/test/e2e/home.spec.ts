@@ -171,8 +171,8 @@ test('download discovery updates Home automatically and explains its review-only
   await expect(dialog).toHaveCount(0);
   await page.route('**/api/settings/downloader', route => route.fulfill({ json: { downloadDirectory: 'C:/Downloads', format: 'cbz', maxConcurrentDownloads: 2, maxImageConcurrency: 4, requestDelayMs: 150, autoSyncKavita: false, nhentaiApiKey: '', nhentaiBannedTags: [], hitomiBannedTags: [], libraryPathMappings: [] } }));
   await navigate(page, 'Settings');
-  await page.getByRole('tab', { name: 'Downloader', exact: true }).click();
-  await expect(page.getByText('Completed downloads in a shared Kavita library are imported and checked for matches in the background. Review candidates on Home before applying metadata.', { exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Downloads', exact: true }).click();
+  await expect(page.getByText('Downloads saved into a shared Kavita library are imported and matched in the background. Review the matches on Home before applying metadata.', { exact: true })).toBeVisible();
   await expect(page.getByRole('switch', { name: 'Auto-sync Kavita after downloads', exact: true })).toHaveCount(0);
 });
 

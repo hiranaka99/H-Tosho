@@ -45,8 +45,9 @@ test('Following has no delivery log or digest settings while Discord and Task hi
   await expect(page.getByLabel('IANA timezone', { exact: true })).toHaveCount(0);
   await page.getByRole('switch', { name: 'Enable Discord notifications' }).check();
   await page.getByLabel('Discord webhook', { exact: true }).fill('https://discord.test/webhook/fixture');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Saved', exact: true })).toBeDisabled();
+  const saveBar = page.getByRole('region', { name: 'Unsaved settings' });
+  await saveBar.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(saveBar.getByText('All changes saved.', { exact: true })).toBeVisible();
   const saved = (await (await page.request.get('/api/settings')).json()).notifications as NotificationSettings;
   expect(saved.discord.enabled).toBe(true);
   expect(saved).not.toHaveProperty('digest');

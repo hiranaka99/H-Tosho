@@ -45,9 +45,9 @@ test('changing Kavita servers clears cached library series before returning to L
   await expect(page.getByText('Server A series', {exact: true})).toBeVisible();
   await navigate(page, 'Settings');
   await page.locator('#kavita-base-url').fill('https://b.test');
-  const saveConnection = page.getByRole('button', {name: 'Save connection', exact: true});
-  await saveConnection.click();
-  await expect(saveConnection).toBeDisabled();
+  const saveBar = page.getByRole('region', {name: 'Unsaved settings'});
+  await saveBar.getByRole('button', {name: 'Save changes', exact: true}).click();
+  await expect(saveBar.getByText('All changes saved.', {exact: true})).toBeVisible();
   await expect(page.locator('#kavita-base-url')).toBeEnabled();
   await navigate(page, 'Libraries');
   await expect(page.getByText('Server A series', {exact: true})).toHaveCount(0);
@@ -60,6 +60,7 @@ test('login, lazy page navigation, deep links, theme and logout work', async ({ 
   page.on('pageerror', error => errors.push(error.message));
   await navigate(page, 'Settings');
   await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Account', exact: true }).click();
   await page.getByRole('radio', { name: 'Dark', exact: true }).click();
   await expect(page.locator('html')).toHaveClass(/dark/);
   await page.reload();
@@ -115,6 +116,7 @@ test('watched Dismiss marks reviewed beside Download and retains reversible Hist
   page.on('pageerror', error => errors.push(error.message));
   await navigate(page, 'Settings');
   const theme = testInfo.project.name === 'desktop' ? 'Dark' : 'Light';
+  await page.getByRole('tab', { name: 'Account', exact: true }).click();
   await page.getByRole('radio', { name: theme, exact: true }).click();
   await navigate(page, 'Discover');
   await page.getByRole('tab', { name: /^Following/ }).click();
@@ -190,6 +192,7 @@ test('watched queries use full-height autocomplete shared with Search', async ({
     if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/watched-searches') watchRequests.push(request.postDataJSON());
   });
   await navigate(page, 'Settings');
+  await page.getByRole('tab', { name: 'Account', exact: true }).click();
   await page.getByRole('radio', { name: testInfo.project.name === 'desktop' ? 'Dark' : 'Light', exact: true }).click();
   await navigate(page, 'Discover');
   await page.getByRole('tab', { name: /^Following/ }).click();
@@ -252,6 +255,7 @@ test('Watched controls fit each viewport and failed removal can be retried', asy
   const created = await page.request.post('/api/watched-searches', { data: { source: 'hitomi', query: watchQuery } });
   expect(created.ok()).toBeTruthy();
   await navigate(page, 'Settings');
+  await page.getByRole('tab', { name: 'Account', exact: true }).click();
   await page.getByRole('radio', { name: testInfo.project.name === 'desktop' ? 'Dark' : 'Light', exact: true }).click();
   await navigate(page, 'Discover');
   await page.getByRole('tab', { name: /^Following/ }).click();
@@ -318,6 +322,7 @@ test('Watched motion preserves drafts, keyboard access and reduced-motion feedba
   });
   await page.route('**/api/doujin/suggestions', route => route.fulfill({ json: [] }));
   await navigate(page, 'Settings');
+  await page.getByRole('tab', { name: 'Account', exact: true }).click();
   await page.getByRole('radio', { name: testInfo.project.name === 'desktop' ? 'Dark' : 'Light', exact: true }).click();
   await navigate(page, 'Discover');
   await page.getByRole('tab', { name: /^Following/ }).click();
@@ -546,6 +551,7 @@ test('provider switching translates current queries, reports losses and preserve
     await route.fulfill({ json: { items: [], total: 0 } });
   });
   await navigate(page, 'Settings');
+  await page.getByRole('tab', { name: 'Account', exact: true }).click();
   await page.getByRole('radio', { name: testInfo.project.name === 'desktop' ? 'Dark' : 'Light', exact: true }).click();
   await navigate(page, 'Discover');
   const query = page.getByRole('combobox', { name: 'Search galleries', exact: true });
