@@ -1,6 +1,5 @@
 import { serve } from '@hono/node-server';
-import { eq } from 'drizzle-orm';
-import { getDb, initDb, schema } from './db/index.js';
+import { initDb } from './db/index.js';
 import { createApp } from './app.js';
 import { jobQueue } from './jobs/queue.js';
 import { runJob } from './jobs/executor.js';
@@ -17,6 +16,13 @@ const PORT = Number(process.env.PORT ?? 8787);
 // the login gate protects the HTTP surface in either mode.
 const HOST = process.env.HOST ?? '127.0.0.1';
 
+/** Epoch ms of a job's createdAt (SQLite UTC 'YYYY-MM-DD HH:MM:SS' or ISO), 0 when absent/invalid. */
+function jobCreatedAtMs(createdAt: string | undefined): number {
+  if (!createdAt) return 0;
+  const ms = Date.parse(createdAt.includes('T') ? createdAt : createdAt.replace(' ', 'T') + 'Z');
+  return Number.isFinite(ms) ? ms : 0;
+}
+
 function main(): void {
   initDb();
   interruptMetadataHistory();
@@ -24,14 +30,9 @@ function main(): void {
   // "recently added" feed (no-op on databases already up to date).
   const backfilled = backfillNewGalleries();
   if (backfilled > 0) console.log(`[h-tosho] migrated ${backfilled} pre-existing watch find(s) into the recently added feed`);
-  // Jobs still marked 'running' were orphaned by a crash or restart (no process
-  // is executing them). Mark them failed so the UI doesn't show ghosts that can
-  // never be cancelled or completed.
-  getDb()
-    .update(schema.jobs)
-    .set({ status: 'failed', errorMessage: 'Interrupted by server restart', finishedAt: new Date().toISOString() })
-    .where(eq(schema.jobs.status, 'running'))
-    .run();
+  // Orphaned 'running' jobs become failed; interrupted merges release their
+  // downloads before the download queue restarts them.
+  jobQueue.interruptRunningJobs();
   interruptMetadataRestore();
   jobQueue.registerHandler(runJob);
   downloadQueue.start();
@@ -42,9 +43,7 @@ function main(): void {
     const connection = getKavitaConnection();
     if (!connection.baseUrl || !connection.apiKey || !getCredentialMap().enabledProviders.length) return;
     if (jobQueue.active().some(job => job.type === 'scan-matchable')) return;
-    const latest = jobQueue.latest('scan-matchable');
-    const createdAt = latest?.createdAt;
-    const lastAttempt = createdAt ? Date.parse(createdAt.includes('T') ? createdAt : createdAt.replace(' ', 'T') + 'Z') : 0;
+    const lastAttempt = jobCreatedAtMs(jobQueue.latest('scan-matchable')?.createdAt);
     if (!lastAttempt || Date.now() - lastAttempt >= 86_400_000) jobQueue.enqueue('scan-matchable', {});
   };
   scanMatchableIfDue();
@@ -53,11 +52,16 @@ function main(): void {
 
 // Watched doujin searches run on a configurable cadence independent of the
 // series scan interval, so release detection stays responsive at long scan intervals.
+  // The deadline counts from the last scan-new job, not from process start,
+  // so frequent restarts (e.g. automatic updates) cannot postpone it forever.
   let pollTimer: NodeJS.Timeout | undefined;
   function scheduleScan(): void {
     clearTimeout(pollTimer);
     const intervalHours = getPollIntervalHours();
     if (intervalHours > 0) {
+      const intervalMs = intervalHours * 3_600_000;
+      const lastScan = jobCreatedAtMs(jobQueue.latest('scan-new')?.createdAt);
+      const delay = lastScan ? Math.min(intervalMs, Math.max(0, lastScan + intervalMs - Date.now())) : intervalMs;
       pollTimer = setTimeout(async () => {
         const conn = getKavitaConnection();
         if (conn.baseUrl && conn.apiKey) {
@@ -65,7 +69,7 @@ function main(): void {
           if (!active) jobQueue.enqueue('scan-new', {});
         }
         scheduleScan();
-      }, intervalHours * 3_600_000);
+      }, delay);
       pollTimer.unref?.();
     }
   }

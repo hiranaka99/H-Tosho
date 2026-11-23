@@ -10,6 +10,7 @@ import { resolveJobContext, errMsg, intParam } from './helpers.js';
 export const api = new Hono();
 api.post('/jobs', async (c) => {
   const body = await c.req.json();
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return c.json({ error: 'Provide a job command object' }, 400);
   let command;
   try { command = parseJobCommand(body?.type, body); validateMergeDownloads('downloads' in command.payload ? command.payload.downloads : undefined); }
   catch (error) { return c.json({ error: errMsg(error) }, 400); }

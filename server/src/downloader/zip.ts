@@ -5,7 +5,9 @@ import path from 'node:path';
 import { crc32 } from '../lib/crc.js';
 
 const deflateRawAsync = promisify(deflateRaw);
-const MAX_ZIP32_ENTRIES = 0xffff;
+// 0xffff in the EOCD entry count is the ZIP64 marker; readers (including
+// lib/cbz.ts) treat it as ZIP64, so a plain ZIP32 archive holds at most 0xfffe.
+const MAX_ZIP32_ENTRIES = 0xfffe;
 const MAX_ZIP32_OFFSET = 0xffffffff;
 
 /**
@@ -201,7 +203,7 @@ export async function buildZipFromFiles(
   signal?.throwIfAborted();
   const totalEntries = files.length + inlineEntries.length;
   if (totalEntries > MAX_ZIP32_ENTRIES) {
-    throw new Error('Archive exceeds the 65,535-entry CBZ limit; use Image folder format for galleries this large.');
+    throw new Error('Archive exceeds the 65,534-entry CBZ limit; use Image folder format for galleries this large.');
   }
   const stagingDir = await fs.promises.mkdtemp(path.join(path.dirname(destPath), '.htosho-zip-'));
   const stagingPath = path.join(stagingDir, 'archive.cbz');

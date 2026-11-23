@@ -20,8 +20,8 @@ import { downloadLibraryStates } from '../../services/downloadLibraryState.js';
 import { connectedClient, errMsg, intParam } from './helpers.js';
 export const api = new Hono();
 api.post('/downloads/library-matches', async (c) => {
-  const body = await c.req.json() as { items?: unknown[] };
-  if (!Array.isArray(body.items) || !body.items.length || body.items.length > 100) return c.json({ error: 'Provide 1–100 galleries to check.' }, 400);
+  const body = await c.req.json() as { items?: unknown[] } | null;
+  if (!body || !Array.isArray(body.items) || !body.items.length || body.items.length > 100) return c.json({ error: 'Provide 1–100 galleries to check.' }, 400);
   const items = [];
   for (const raw of body.items) {
     const item = raw as { source: DoujinSource; galleryId: string; title: string; artists: string[]; language?: string; pageCount?: number } | null;
@@ -33,8 +33,8 @@ api.post('/downloads/library-matches', async (c) => {
 });
 
 api.post('/downloads/duplicates', async (c) => {
-  const body = await c.req.json() as { items?: { source: DoujinSource; galleryId: string; url?: string }[]; refreshLibrary?: boolean };
-  if (!Array.isArray(body.items) || !body.items.length || body.items.length > 100 || body.items.some(item => !item || getDoujinProvider(item.source)?.id !== item.source || typeof item.galleryId !== 'string' || !item.galleryId.trim() || (item.url !== undefined && typeof item.url !== 'string'))) return c.json({ error: 'Provide 1–100 supported galleries to check.' }, 400);
+  const body = await c.req.json() as { items?: { source: DoujinSource; galleryId: string; url?: string }[]; refreshLibrary?: boolean } | null;
+  if (!body || !Array.isArray(body.items) || !body.items.length || body.items.length > 100 || body.items.some(item => !item || getDoujinProvider(item.source)?.id !== item.source || typeof item.galleryId !== 'string' || !item.galleryId.trim() || (item.url !== undefined && typeof item.url !== 'string'))) return c.json({ error: 'Provide 1–100 supported galleries to check.' }, 400);
   const items: { source: DoujinSource; galleryId: string; url?: string }[] = [];
   for (const item of body.items) {
     let validUrl: string | undefined;
@@ -143,8 +143,9 @@ async function prepareDownload(body: DownloadInput, group?: MergeDownloadGroup):
 
 /** Enqueue a gallery download. */
 api.post('/downloads', async (c) => {
-  const body: DownloadInput = await c.req.json();
-  if (body?.mergeFolder && (body.format ?? getDownloaderSettings().format) === 'folder') return c.json({error:'Merged downloads require CBZ output'},400);
+  const body = await c.req.json() as DownloadInput | null;
+  if (!body || typeof body !== 'object') return c.json({ error: 'source and galleryId are required' }, 400);
+  if (body.mergeFolder && (body.format ?? getDownloaderSettings().format) === 'folder') return c.json({error:'Merged downloads require CBZ output'},400);
   try {
     const group = typeof body?.mergeFolder === 'string' && body.mergeFolder.trim() ? await prepareMergeGroup(body.mergeFolder.trim()) : undefined;
     const prepared = await prepareDownload(body,group);
@@ -246,15 +247,19 @@ api.get('/downloads/gallery-files', (c) => {
  */
 api.get('/downloads/events', (c) =>
   streamSSE(c, async (sse) => {
-    // Push the current state immediately so a freshly-opened client is up to date.
-    await sse.write(`data: ${JSON.stringify({ type: 'snapshot', tasks: downloadQueue.listForManager() })}\n\n`);
-
+    // Snapshot and subscription happen in one synchronous step, so no
+    // broadcast can fall between them (the client merges by revision, so an
+    // event repeating snapshot state is harmless). Stream writes are queued in
+    // call order, so the snapshot still reaches the client first.
+    const snapshot = `data: ${JSON.stringify({ type: 'snapshot', tasks: downloadQueue.listForManager() })}\n\n`;
     const unsubscribe = downloadQueue.subscribe((task) => {
       void sse.write(`data: ${JSON.stringify({ type: 'task', task })}\n\n`).catch(() => {});
     });
     const unsubscribeRemovals = downloadQueue.subscribeRemovals((ids) => {
       void sse.write(`data: ${JSON.stringify({ type: 'removed', ids })}\n\n`).catch(() => {});
     });
+    // Push the current state immediately so a freshly-opened client is up to date.
+    await sse.write(snapshot);
 
     // Keep the connection alive so proxies/clients don't time out during idle.
     const heartbeat = setInterval(() => {
@@ -262,7 +267,9 @@ api.get('/downloads/events', (c) =>
     }, 15_000);
 
     await new Promise<void>((resolve) => {
-      c.req.raw.signal.addEventListener('abort', () => resolve(), { once: true });
+      const signal = c.req.raw.signal;
+      if (signal.aborted) return resolve();
+      signal.addEventListener('abort', () => resolve(), { once: true });
     });
 
     clearInterval(heartbeat);

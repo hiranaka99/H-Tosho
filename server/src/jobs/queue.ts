@@ -343,6 +343,27 @@ class JobQueue {
     });
   }
 
+  /**
+   * Startup recovery: jobs still marked 'running' were orphaned by a crash or
+   * restart (no process is executing them). Mark them failed so the UI shows
+   * no ghosts. Interrupted merges release their downloads exactly as a
+   * failing merge does at runtime; otherwise those downloads would finish and
+   * then fail at publication against the dead job. Retrying the merge
+   * re-adopts them and resumes from their saved pages.
+   */
+  interruptRunningJobs(): number {
+    const db = getDb();
+    const interrupted = db.update(schema.jobs)
+      .set({ status: 'failed', errorMessage: 'Interrupted by server restart', finishedAt: new Date().toISOString() })
+      .where(eq(schema.jobs.status, 'running'))
+      .returning({ id: schema.jobs.id, type: schema.jobs.type })
+      .all();
+    for (const job of interrupted) {
+      if (job.type === 'merge-series') this.mergeDownloadCanceller?.(job.id);
+    }
+    return interrupted.length;
+  }
+
   /** Whether cancellation has been requested for a running job. */
   isCancelRequested(id: number): boolean {
     return this.cancelRequested.has(id);

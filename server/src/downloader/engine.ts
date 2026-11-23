@@ -45,6 +45,8 @@ import { resolveMergeProtection, requireMergeProtection } from '../services/merg
 /** Progressive task-level auto-retry delays (ms) for transient failures. */
 const AUTO_RETRY_DELAYS_MS = [30_000, 60_000, 180_000];
 const MAX_AUTO_RETRY_DELAY_MS = 5 * 60_000;
+/** Age margin before a staging dir is treated as left by a previous process. */
+const STAGING_MTIME_MARGIN_MS = 10_000;
 
 /**
  * Replace a published file with a staged file without relying on POSIX rename
@@ -159,6 +161,8 @@ export class DownloadQueue {
   private listeners = new Set<(task: DownloadTask) => void>();
   private removalListeners = new Set<(ids: number[]) => void>();
   private started = false;
+  /** Process start (ms): staging dirs older than this belong to a dead process. */
+  private startedAt = 0;
   private settingsProvider: () => DownloaderSettings;
 
   constructor(settingsProvider: () => DownloaderSettings) {
@@ -168,6 +172,7 @@ export class DownloadQueue {
   start(): void {
     if (this.started) return;
     this.started = true;
+    this.startedAt = Date.now();
     this.shuttingDown = false;
     // A previous process may have died mid-download. Its partial page files are
     // still in the task's tmpDir, so re-queue instead of failing — the run
@@ -256,16 +261,23 @@ export class DownloadQueue {
         /* tmp dir may not exist yet */
       }
       const downloadDir = this.settingsProvider().downloadDirectory?.trim();
-      if (downloadDir && this.activeRuns.size === 0) {
+      if (downloadDir) {
         const base = path.resolve(downloadDir);
         try {
           const entries = await fs.promises.readdir(base, { withFileTypes: true });
           for (const entry of entries) {
             if (!entry.isDirectory()) continue;
             if (!entry.name.startsWith('.htosho-download-') && !entry.name.startsWith('.htosho-zip-')) continue;
-            // Re-check before deleting in case a download just started staging.
-            if (this.activeRuns.size > 0) break;
-            await fs.promises.rm(path.join(base, entry.name), { recursive: true, force: true }).catch(() => {});
+            // Downloads resumed at startup stage here concurrently. With no
+            // run active nothing can be live; otherwise only a directory last
+            // modified clearly before this process started (margin covers
+            // coarse filesystem timestamps, e.g. FAT's 2 s) is a dead one.
+            const full = path.join(base, entry.name);
+            if (this.activeRuns.size > 0) {
+              const st = await fs.promises.stat(full).catch(() => null);
+              if (!st || st.mtimeMs >= this.startedAt - STAGING_MTIME_MARGIN_MS) continue;
+            }
+            await fs.promises.rm(full, { recursive: true, force: true }).catch(() => {});
           }
         } catch {
           /* output dir may not exist yet */
@@ -761,8 +773,10 @@ export class DownloadQueue {
     const task = this.get(id);
     if (!task) return false;
     const retryTimer = this.retryTimers.get(id);
-    if (retryTimer && task.status === 'failed') {
-      clearTimeout(retryTimer);
+    // A durable retry deadline counts even before start() re-arms its timer
+    // (startup recovery cancels interrupted merge downloads that early).
+    if (task.status === 'failed' && (retryTimer || task.state.type === 'retry-wait')) {
+      if (retryTimer) clearTimeout(retryTimer);
       this.retryTimers.delete(id);
       getDb()
         .update(schema.downloadQueue)
