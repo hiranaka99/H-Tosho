@@ -32,8 +32,13 @@ export interface DownloadActionsApi {
   resume: (id: number) => void;
   cancel: (id: number) => void;
   retry: (id: number) => void;
+  prioritize: (id: number) => void;
+  pauseAll: () => void;
+  resumeAll: () => void;
+  retryFailed: () => void;
   removeTask: (id: number) => void;
   clearCompleted: () => void;
+  clearCancelled: () => void;
 }
 
 /** Churny surface: the task list itself, replaced on every SSE tick / poll. */
@@ -147,6 +152,29 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
     },
     onError: mutationError('Download action failed'),
   });
+  const prioritize = useMutation({
+    mutationFn: (id: number) => api.prioritizeDownload(id),
+    onSuccess: invalidate,
+    onError: mutationError('Could not prioritize download'),
+  });
+  const pauseAll = useMutation({
+    mutationFn: api.pauseAllDownloads,
+    onSuccess: invalidate,
+    onError: mutationError('Could not pause downloads'),
+  });
+  const resumeAll = useMutation({
+    mutationFn: api.resumeAllDownloads,
+    onSuccess: invalidate,
+    onError: mutationError('Could not resume downloads'),
+  });
+  const retryFailed = useMutation({
+    mutationFn: api.retryFailedDownloads,
+    onSuccess: () => {
+      void invalidate();
+      void invalidateCompleted();
+    },
+    onError: mutationError('Could not retry failed downloads'),
+  });
   const invalidateHistory = React.useCallback(() => qc.invalidateQueries({ queryKey: ['downloads-history'] }), [qc]);
   const remove = useMutation({ mutationFn: (id: number) => api.deleteDownload(id), onSuccess: () => { void invalidate(); void invalidateCompleted(); void invalidateHistory(); toast({ tone: 'info', title: 'Removed from download history', description: 'The downloaded files were not touched.' }); }, onError: mutationError('Could not remove download') });
   const clear = useMutation({
@@ -156,6 +184,14 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
       toast({ tone: 'info', title: removed === 1 ? 'Cleared 1 completed download' : `Cleared ${removed} completed downloads`, description: 'The downloaded files were not touched.' });
     },
     onError: mutationError('Could not clear completed downloads'),
+  });
+  const clearCancelled = useMutation({
+    mutationFn: api.clearCancelledDownloads,
+    onSuccess: ({ removed }) => {
+      void invalidate();
+      toast({ tone: 'info', title: removed === 1 ? 'Cleared 1 cancelled download' : `Cleared ${removed} cancelled downloads`, description: 'Saved partial pages were removed.' });
+    },
+    onError: mutationError('Could not clear cancelled downloads'),
   });
 
   // Toast on status transitions to completed/failed. A completion also makes
@@ -203,8 +239,13 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   // the SSE connection state flips.
   const { mutateAsync: startMutate } = start;
   const { mutate: actionMutate } = action;
+  const { mutate: prioritizeMutate } = prioritize;
+  const { mutate: pauseAllMutate } = pauseAll;
+  const { mutate: resumeAllMutate } = resumeAll;
+  const { mutate: retryFailedMutate } = retryFailed;
   const { mutate: removeMutate } = remove;
   const { mutate: clearMutate } = clear;
+  const { mutate: clearCancelledMutate } = clearCancelled;
   const actionsValue = React.useMemo<DownloadActionsApi>(
     () => ({
       liveConnected,
@@ -213,10 +254,15 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
       resume: (id) => actionMutate({ id, op: 'resume' }),
       cancel: (id) => actionMutate({ id, op: 'cancel' }),
       retry: (id) => actionMutate({ id, op: 'retry' }),
+      prioritize: (id) => prioritizeMutate(id),
+      pauseAll: () => pauseAllMutate(),
+      resumeAll: () => resumeAllMutate(),
+      retryFailed: () => retryFailedMutate(),
       removeTask: (id) => removeMutate(id),
       clearCompleted: () => clearMutate(),
+      clearCancelled: () => clearCancelledMutate(),
     }),
-    [liveConnected, startMutate, actionMutate, removeMutate, clearMutate],
+    [liveConnected, startMutate, actionMutate, prioritizeMutate, pauseAllMutate, resumeAllMutate, retryFailedMutate, removeMutate, clearMutate, clearCancelledMutate],
   );
 
   const tasksValue = React.useMemo<DownloadTasksApi>(

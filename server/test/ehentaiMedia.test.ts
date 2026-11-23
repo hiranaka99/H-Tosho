@@ -17,6 +17,8 @@ const { resetEhentaiGate } = await import('../src/downloader/ehentaiGate.js');
 const { mediaRouter, mediaProxyUrl } = await import('../src/routes/media.js');
 const { resolvePageCandidates } = await import('../src/downloader/requests.js');
 const { downloadPages } = await import('../src/downloader/transfer.js');
+const { ehentaiProvider } = await import('../src/downloader/ehentai.js');
+const { EhentaiUpstreamError } = await import('../src/downloader/ehentaiClient.js');
 import type { DoujinGallery } from '../src/downloader/types.js';
 
 initDb();
@@ -279,4 +281,141 @@ test('resumed runs reuse the persisted real names instead of the static URL exte
   // The sidecar now records the third page's real name too.
   const names = JSON.parse(fs.readFileSync(path.join(tmpDir, 'page-names.json'), 'utf8')) as Record<string, string>;
   assert.equal(names['2'], '03.png');
+});
+
+// ---------------- E-Hentai secure downloadPage pipeline ----------------
+
+const galleryHtml = (gid: string, refs: Array<{ token: string; page: number }>): string => `
+<html><body>
+  <h1 id="gn">E-Hentai Pipeline Test</h1>
+  <div id="gdd"><table>
+    <tr><td class="gdt1">Language:</td><td class="gdt2">English</td></tr>
+    <tr><td class="gdt1">Length:</td><td class="gdt2">${refs.length} pages</td></tr>
+  </table></div>
+  <div id="gdt">${refs.map((r) => `<a href="https://exhentai.org/s/${r.token}/${gid}-${r.page}">p${r.page}</a>`).join('')}</div>
+</body></html>`;
+
+test('E-Hentai downloads use pinned H@H transport with per-page approval isolation, real extensions, and ?nl= node switch', async () => {
+  requests.length = 0;
+  const gid = '5500001';
+  const gToken = 'a1b2c3d4e5';
+  const p1Token = '1111111111';
+  const p2Token = '2222222222';
+  let switched = false;
+
+  route = (hostname, reqPath) => {
+    if (hostname === 'exhentai.org' && reqPath === `/g/${gid}/${gToken}/`) {
+      return { status: 200, body: galleryHtml(gid, [{ token: p1Token, page: 1 }, { token: p2Token, page: 2 }]) };
+    }
+    if (hostname === 'exhentai.org' && reqPath === `/s/${p1Token}/${gid}-1`) {
+      return {
+        status: 200,
+        body: `<html><body><div id="i3"><img id="img" src="https://node1.hath.network:10101/h/p1.jpg"></div><a onclick="return nl('reload-tok-1')">reload</a></body></html>`,
+      };
+    }
+    if (hostname === 'exhentai.org' && reqPath === `/s/${p1Token}/${gid}-1?nl=reload-tok-1`) {
+      switched = true;
+      return {
+        status: 200,
+        body: `<html><body><div id="i3"><img id="img" src="https://node3.hath.network:10303/h/p1-fresh.jpg"></div></body></html>`,
+      };
+    }
+    if (hostname === 'exhentai.org' && reqPath === `/s/${p2Token}/${gid}-2`) {
+      return {
+        status: 200,
+        body: `<html><body><div id="i3"><img id="img" src="https://node2.hath.network:10202/h/p2.jpg"></div></body></html>`,
+      };
+    }
+    // Page 1 initially fails 404 on node1 -> forces ?nl=reload-tok-1 -> succeeds on node3 as PNG bytes despite .jpg URL!
+    if (hostname === 'node1.hath.network') return { status: 404, body: 'missing' };
+    if (hostname === 'node3.hath.network') return { status: 200, body: PNG, contentType: 'image/png' };
+    if (hostname === 'node2.hath.network') return { status: 200, body: JPEG, contentType: 'image/jpeg' };
+    return { status: 404, body: 'no route' };
+  };
+
+  // Ensure generic globalThis.fetch is NEVER used for E-Hentai pages!
+  globalThis.fetch = (async () => {
+    throw new Error('E-Hentai download must not bypass pinned client via globalThis.fetch');
+  }) as typeof fetch;
+
+  const gallery = await ehentaiProvider.getGallery(`https://exhentai.org/g/${gid}/${gToken}/`);
+  assert.equal(typeof gallery.downloadPage, 'function');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-eh-dl-'));
+  const ctx = {
+    cancelled: false,
+    stopped: false,
+    committing: false,
+    controller: new AbortController(),
+    pauseSignal: { paused: false, waiters: [] },
+  };
+  const settings = { ...getDownloaderSettings(), maxImageConcurrency: 2, requestDelayMs: 0 };
+  const t0 = Date.now();
+  const out = await downloadPages(gallery, 8801, settings, ctx, tmpDir, () => {});
+  assert.ok(Date.now() - t0 < 2000, 'H@H 404 ?nl= node switch should retry promptly');
+  assert.equal(switched, true, 'page 1 must reload viewer with ?nl= token');
+  assert.deepEqual(out.map((p) => p.name), ['01.png', '02.jpg'], 'real magic-byte extension must win over .jpg URL');
+
+  const node3Req = requests.find((r) => r.hostname === 'node3.hath.network')!;
+  const node2Req = requests.find((r) => r.hostname === 'node2.hath.network')!;
+  assert.equal(node3Req.headers.Cookie, undefined, 'no cookies on H@H node');
+  assert.equal(node2Req.headers.Cookie, undefined, 'no cookies on H@H node');
+  assert.equal(node3Req.headers.Referer, `https://exhentai.org/s/${p1Token}/${gid}-1?nl=reload-tok-1`);
+  assert.equal(node2Req.headers.Referer, `https://exhentai.org/s/${p2Token}/${gid}-2`);
+
+  const sidecar = JSON.parse(fs.readFileSync(path.join(tmpDir, 'page-names.json'), 'utf8')) as Record<string, string>;
+  assert.deepEqual(sidecar, { '0': '01.png', '1': '02.jpg' });
+});
+
+test('E-Hentai download rejects corrupt/HTML H@H body before atomic rename and fails immediately on HTTP 509 quota', async () => {
+  requests.length = 0;
+  const gid = '5500002';
+  const gToken = 'b1b2c3d4e5';
+  const p1Token = '3333333333';
+
+  // Case 1: H@H node returns HTML with 200 OK -> rejected on .part, destPath never created.
+  route = (hostname, reqPath) => {
+    if (hostname === 'exhentai.org' && reqPath === `/g/${gid}/${gToken}/`) {
+      return { status: 200, body: galleryHtml(gid, [{ token: p1Token, page: 1 }]) };
+    }
+    if (hostname === 'exhentai.org' && reqPath.startsWith(`/s/${p1Token}/`)) {
+      return { status: 200, body: viewerHtml('https://node-bad.hath.network:10404/h/bad.jpg') };
+    }
+    if (hostname === 'node-bad.hath.network') {
+      return { status: 200, body: HTML_PAGE, contentType: 'text/html' };
+    }
+    return { status: 404, body: 'no route' };
+  };
+
+  const gallery = await ehentaiProvider.getGallery(`https://exhentai.org/g/${gid}/${gToken}/`);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-eh-bad-'));
+  const destPath = path.join(tmpDir, '0');
+  await assert.rejects(
+    gallery.downloadPage!(0, destPath, { signal: new AbortController().signal }),
+    (err: unknown) => err instanceof EhentaiUpstreamError && (err.kind === 'denied' || err.kind === 'parse'),
+  );
+  assert.equal(fs.existsSync(destPath), false, 'rejected H@H payload must never be renamed to destPath');
+  assert.equal(fs.existsSync(`${destPath}.part`), false, 'rejected .part must be removed');
+
+  // Case 2: HTTP 509 quota fails on first attempt without retrying.
+  let viewerHits = 0;
+  route = (hostname, reqPath) => {
+    if (hostname === 'exhentai.org' && reqPath.startsWith(`/s/${p1Token}/`)) {
+      viewerHits++;
+      return { status: 200, body: viewerHtml('https://ehgt.org/g/509.gif') };
+    }
+    return { status: 404, body: 'no route' };
+  };
+  const ctx = {
+    cancelled: false,
+    stopped: false,
+    committing: false,
+    controller: new AbortController(),
+    pauseSignal: { paused: false, waiters: [] },
+  };
+  await assert.rejects(
+    downloadPages(gallery, 8802, { ...getDownloaderSettings(), maxImageConcurrency: 1, requestDelayMs: 0 }, ctx, fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-eh-509-')), () => {}),
+    (err: unknown) => err instanceof EhentaiUpstreamError && err.kind === 'quota',
+  );
+  assert.equal(viewerHits, 1, 'quota exhaustion must fail immediately without retrying');
 });

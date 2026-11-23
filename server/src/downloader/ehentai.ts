@@ -768,6 +768,43 @@ export const ehentaiProvider: DoujinProvider = {
     }
     info.pageRefs = refs;
 
+    const reloadTokens = new Map<number, string>();
+    const resolveViewerPage = async (index: number, opts?: { forceRefresh?: boolean; signal?: AbortSignal }): Promise<{ viewerUrl: string; imageUrl: string } | null> => {
+      const ref = info.pageRefs[index];
+      if (!ref) return null;
+      let viewerUrl = ref;
+      if (opts?.forceRefresh) {
+        const nl = reloadTokens.get(index);
+        if (nl) viewerUrl = `${ref}?nl=${encodeURIComponent(nl)}`;
+      }
+      let viewer: EhentaiTextResponse;
+      try {
+        viewer = await ehentaiFetchText(viewerUrl, 'html', {
+          site,
+          session,
+          signal: opts?.signal,
+          headers: { Referer: `https://${ehentaiHost(site)}/g/${identity.gid}/${identity.token}/` },
+        });
+      } catch (error) {
+        if (error instanceof EhentaiUpstreamError && error.status === 404) {
+          throw new EhentaiUpstreamError('The E-Hentai image page is unavailable (the gallery page no longer exists).', 'unavailable', 404);
+        }
+        throw error;
+      }
+      if (viewer.status === 401 || viewer.status === 403 || /login\.php/.test(viewer.finalUrl)) {
+        throw new EhentaiUpstreamError('The E-Hentai session was rejected. Re-test or re-save the account in Settings.', 'denied', viewer.status);
+      }
+      if (viewer.status === 509) {
+        throw new EhentaiUpstreamError('The E-Hentai image quota is exhausted for this account.', 'quota', 509);
+      }
+      if (viewer.status !== 200) throw new EhentaiUpstreamError('The E-Hentai image page is unavailable.', 'unavailable', viewer.status);
+      const imageUrl = parseEhentaiViewerImage(viewer.body, viewerUrl);
+      const nextNl = parseEhentaiReloadToken(viewer.body);
+      if (nextNl) reloadTokens.set(index, nextNl);
+      return { viewerUrl, imageUrl };
+    };
+
+    const galleryKey = `${site}/${identity.canonicalId}`;
     const gallery: DoujinGallery = {
       source: 'ehentai',
       site,
@@ -791,20 +828,25 @@ export const ehentaiProvider: DoujinProvider = {
       // Static pages are viewer HTML, never images: failures must propagate,
       // never fall back to the /s/ URL.
       strictPageResolver: true,
-      resolvePageUrl: async (index) => {
-        const ref = info.pageRefs[index];
-        if (!ref) return null;
-        let viewer: EhentaiTextResponse;
-        try {
-          viewer = await ehentaiFetchText(ref, 'html', { site, session, headers: { Referer: `https://${ehentaiHost(site)}/g/${identity.gid}/${identity.token}/` } });
-        } catch (error) {
-          if (error instanceof EhentaiUpstreamError && error.status === 404) {
-            throw new EhentaiUpstreamError('The E-Hentai image page is unavailable (the gallery page no longer exists).', 'unavailable', 404);
-          }
-          throw error;
-        }
-        if (viewer.status !== 200) throw new EhentaiUpstreamError('The E-Hentai image page is unavailable.', 'unavailable', viewer.status);
-        return { url: parseEhentaiViewerImage(viewer.body, ref) };
+      resolvePageUrl: async (index, opts) => {
+        const resolved = await resolveViewerPage(index, opts);
+        return resolved ? { url: resolved.imageUrl } : null;
+      },
+      downloadPage: async (index, destPath, opts) => {
+        const resolved = await resolveViewerPage(index, { forceRefresh: opts.forceRefresh, signal: opts.signal });
+        if (!resolved) throw new EhentaiUpstreamError(`Page ${index + 1} could not be resolved to a downloadable URL.`, 'parse');
+        const pageKey = `${galleryKey}/p${index}`;
+        approveGalleryImageRefs(pageKey, [resolved.imageUrl]);
+        const { format, bytes } = await fetchEhentaiImage(resolved.imageUrl, {
+          site,
+          galleryKey: pageKey,
+          destPath,
+          referer: resolved.viewerUrl,
+          signal: opts.signal,
+          onAttemptStart: opts.onAttemptStart,
+          onBytes: opts.onProgress,
+        });
+        return { bytes, ext: format };
       },
     };
     return gallery;
@@ -853,6 +895,12 @@ export function parseEhentaiViewerImage(html: string, viewerUrl: string): string
   throw new EhentaiUpstreamError('The E-Hentai viewer page did not expose its primary image (quota or error page?).', 'parse');
 }
 
+/** Extract the viewer's H@H node-switch token from `nl('<token>')`, if present. */
+export function parseEhentaiReloadToken(html: string): string | null {
+  const match = /\bnl\(\s*['"]([0-9a-zA-Z-]{1,64})['"]\s*\)/.exec(html);
+  return match ? match[1] : null;
+}
+
 /** Resolve one viewer reference to validated image bytes (media proxy only).
  *  Throws EhentaiUpstreamError with a user-safe message on any failure. */
 export async function ehentaiPreviewBytes(viewerUrl: string): Promise<{ buf: Buffer; type: string }> {
@@ -871,7 +919,7 @@ export async function ehentaiPreviewBytes(viewerUrl: string): Promise<{ buf: Buf
   approveGalleryImageRefs(galleryKey, [imageUrl]);
   const destPath = path.join(os.tmpdir(), `htosho-ehentai-preview-${randomUUID()}`);
   try {
-    const format = await fetchEhentaiImage(imageUrl, {
+    const { format } = await fetchEhentaiImage(imageUrl, {
       site,
       galleryKey,
       destPath,

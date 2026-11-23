@@ -21,9 +21,9 @@ export function useDuplicateReview() {
     setReview(check);
     return new Promise(resolve => { resolveRef.current = resolve; });
   }, []);
-  const checkDuplicates = React.useCallback(async (items: { source: DoujinSource; galleryId: string }[]) => {
+  const checkDuplicates = React.useCallback(async (items: { source: DoujinSource; galleryId: string; url?: string }[]) => {
     if (!items.length) return new Set<string>();
-    return reviewCheck(await api.checkDuplicates(items));
+    return reviewCheck(await api.checkDuplicates(items.map(({ source, galleryId, url }) => ({ source, galleryId, ...(url ? { url } : {}) }))));
   }, [reviewCheck]);
   const dialog = review && <Dialog open onOpenChange={open => { if (!open) finish(false); }}>
     <DialogContent className="max-w-xl">

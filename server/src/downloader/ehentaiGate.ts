@@ -29,6 +29,8 @@ export class RequestAbortedError extends Error {
 }
 
 export interface GateLane {
+  /** Minimum pacing gap between consecutive starts on this lane (ms). */
+  readonly minGapMs: number;
   /**
    * Wait for permission to start one request on this lane. Resolves with a
    * release function that MUST be called exactly once when the request
@@ -210,6 +212,7 @@ function createLane(minGapMs: number, maxConcurrent: number): GateLane {
   }
 
   return {
+    minGapMs,
     acquire(signal?: AbortSignal): Promise<() => void> {
       if (signal?.aborted) return Promise.reject(abortError());
       const waiter: HeadWaiter = { signal, settled: false, resolve: () => undefined, reject: () => undefined };

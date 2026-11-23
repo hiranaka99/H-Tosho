@@ -602,7 +602,7 @@ export const api = {
     request<{ id: number; status: string }>('/downloads', { method: 'POST', body: JSON.stringify(body) }),
   startMergedDownloads: (body: { mergeFolder: string; items: { source: DoujinSource; galleryId: string; url?: string; chapter?: number; allowDuplicate?: boolean }[] }) =>
     request<{ items: { source: DoujinSource; galleryId: string; id?: number; error?: string }[] }>('/downloads/merged', { method: 'POST', body: JSON.stringify(body) }),
-  checkDuplicates: (items: { source: DoujinSource; galleryId: string }[], refreshLibrary = false) => request<DuplicateCheck>('/downloads/duplicates', { method: 'POST', body: JSON.stringify({ items, refreshLibrary }) }),
+  checkDuplicates: (items: { source: DoujinSource; galleryId: string; url?: string }[], refreshLibrary = false) => request<DuplicateCheck>('/downloads/duplicates', { method: 'POST', body: JSON.stringify({ items, refreshLibrary }) }),
   libraryMatches: (items: DoujinSearchResult[]) => request<DuplicateCheck>('/downloads/library-matches', { method: 'POST', body: JSON.stringify({ items: items.map(({ source, galleryId, title, artists, language, pageCount }) => ({ source, galleryId, title, artists, language, pageCount })) }) }),
   downloads: () => request<DownloadTask[]>('/downloads'),
   /** Older completed downloads beyond the live list, newest finish first. */
@@ -617,8 +617,14 @@ export const api = {
   download: (id: number) => request<DownloadTask>(`/downloads/${id}`),
   downloadAction: (id: number, action: 'pause' | 'resume' | 'cancel' | 'retry') =>
     request<{ ok: boolean }>(`/downloads/${id}/${action}`, { method: 'POST' }),
+  prioritizeDownload: (id: number) =>
+    request<{ ok: boolean }>(`/downloads/${id}/prioritize`, { method: 'POST' }),
+  pauseAllDownloads: () => request<{ ok: boolean; count: number }>('/downloads/pause-all', { method: 'POST' }),
+  resumeAllDownloads: () => request<{ ok: boolean; count: number }>('/downloads/resume-all', { method: 'POST' }),
+  retryFailedDownloads: () => request<{ ok: boolean; count: number }>('/downloads/retry-failed', { method: 'POST' }),
   deleteDownload: (id: number) => request<{ ok: boolean }>(`/downloads/${id}`, { method: 'DELETE' }),
   clearCompletedDownloads: () => request<{ ok: boolean; removed: number }>('/downloads/clear-completed', { method: 'POST' }),
+  clearCancelledDownloads: () => request<{ ok: boolean; removed: number }>('/downloads/clear-cancelled', { method: 'POST' }),
 
   // ---------------- ComicInfo editor ----------------
   /** Browse roots for the file picker (download dir + Kavita library paths). */

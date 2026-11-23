@@ -6,11 +6,11 @@ import { and, eq, gte, inArray, lt } from 'drizzle-orm';
 import type { KavitaLibrary } from '../kavita/types.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery } from '../downloader/types.js';
-import type { DoujinSource } from '../contracts/doujin.js';
+import { parseEhentaiGalleryId, parseEhentaiGalleryUrl, type DoujinSource } from '../contracts/doujin.js';
 import { readComicInfoAndImageCount, mapKavitaPathToLocalPath } from '../lib/cbz.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
 import { mapLimit } from '../lib/http.js';
-import { onEhentaiAccountChange } from './ehentaiAccount.js';
+import { getEhentaiAccountSite, onEhentaiAccountChange } from './ehentaiAccount.js';
 
 // A preflight resolves metadata, never image bytes. Reuse that result at enqueue
 // and consume it in the worker so duplicate checking does not double provider traffic.
@@ -19,10 +19,41 @@ const prepared = new Map<string, { provider: unknown; at: number; gallery: Promi
 // An account/site cutover changes which galleries are even visible (ExHentai
 // vs public E-Hentai): stale preflights must not survive the change.
 onEhentaiAccountChange(() => { prepared.clear(); });
+
+/** Canonical cache key so preflight lookups by bare galleryId and worker lookups by frozen URL share one entry. */
+function duplicateCacheKey(source: DoujinSource, idOrUrl: string): string {
+  const trimmed = idOrUrl.trim();
+  if (source === 'hitomi') {
+    if (/^\d+$/.test(trimmed)) return `hitomi:${trimmed}`;
+    try {
+      const url = new URL(trimmed);
+      if (url.hostname === 'hitomi.la' && (url.protocol === 'https:' || url.protocol === 'http:')) {
+        const id = url.pathname.match(/^\/(?:reader|galleries)\/(\d+)\.html$/)?.[1]
+          ?? url.pathname.match(/^\/[^/]+\/[^/]+-(\d+)\.html$/)?.[1]
+          ?? url.pathname.match(/^\/(\d+)\/?$/)?.[1];
+        if (id) return `hitomi:${id}`;
+      }
+    } catch { /* fall through */ }
+  } else if (source === 'nhentai') {
+    const id = /^\d+$/.test(trimmed) ? trimmed : /\/(?:g|gallery)\/(\d+)/.exec(trimmed)?.[1];
+    if (id) return `nhentai:${id}`;
+  } else if (source === 'ehentai') {
+    const fromUrl = parseEhentaiGalleryUrl(trimmed);
+    if (fromUrl) return `ehentai:${fromUrl.site}:${fromUrl.canonicalId}`;
+    const fromId = parseEhentaiGalleryId(trimmed);
+    if (fromId) {
+      let site = 'e-hentai';
+      try { site = getEhentaiAccountSite(); } catch { /* default */ }
+      return `ehentai:${site}:${fromId.canonicalId}`;
+    }
+  }
+  return `${source}:${trimmed}`;
+}
+
 export async function resolveDuplicateGallery(source: DoujinSource, galleryId: string, consume = false): Promise<DoujinGallery> {
   const provider = getDoujinProvider(source);
   if (!provider) throw new Error(`Unknown source: ${source}`);
-  const key = `${source}:${galleryId}`;
+  const key = duplicateCacheKey(source, galleryId);
   let cached = prepared.get(key);
   if (!cached || cached.provider !== provider.getGallery || Date.now() - cached.at > 60_000) {
     cached = { provider: provider.getGallery, at: Date.now(), gallery: provider.getGallery(galleryId) };
@@ -65,6 +96,8 @@ const normalize = (value: string) => value.normalize('NFKC').toLowerCase().repla
 function sourceKeys(web: string): string[] {
   return [...web.matchAll(/https?:\/\/[^\s<>"',;]+/gi)].flatMap(([value]) => {
     try {
+      const eh = parseEhentaiGalleryUrl(value);
+      if (eh) return [`ehentai:${eh.canonicalId}`];
       const url = new URL(value);
       const host = url.hostname.toLowerCase().replace(/^www\./, '');
       const hitomi = host === 'hitomi.la' && (url.pathname.match(/^\/(?:reader\/|[^/]+\/)(?:[^/]*-)?(\d+)\.html$/) || url.pathname.match(/^\/(\d+)\/?$/));
@@ -182,17 +215,27 @@ async function scanLibrary(): Promise<void> {
     await mapLimit([...files], 6, async file => {
       try {
         const stat = await fs.promises.stat(file);
-        const stamp = `v3:${stat.mtimeMs}:${stat.size}`;
+        const stamp = `v4:${stat.mtimeMs}:${stat.size}`;
         if (previous.get(file)?.stamp === stamp) return;
         const { xml: raw, imageCount: count } = await readComicInfoAndImageCount(file);
         if (!raw) { missingMetadata++; files.delete(file); return; }
         const fields = parseComicInfo(raw).fields;
         const artists = `${fields.Artist ?? ''},${fields.Writer ?? ''}`.split(/[,;]/).map(artist => artist.trim()).filter(Boolean);
         const title = fields.Title?.trim() || fields.Series?.trim() || '';
-        const filenameKey = path.basename(file).match(/\[(hitomi|nhentai)-(\d+)\]\.cbz$/i);
-        const keys = [...new Set([...sourceKeys(fields.Web ?? ''), ...(filenameKey ? [`${filenameKey[1].toLowerCase()}:${filenameKey[2]}`] : [])])];
+        const baseName = path.basename(file);
+        const filenameKey = baseName.match(/\[(hitomi|nhentai)-(\d+)\]\.cbz$/i);
+        const ehFilenameKey = baseName.match(/\[ehentai-([1-9]\d{0,9}-[0-9a-f]{10,12})\]\.cbz$/i);
+        const parsedEhId = ehFilenameKey ? parseEhentaiGalleryId(ehFilenameKey[1]) : null;
+        const keys = [...new Set([
+          ...sourceKeys(fields.Web ?? ''),
+          ...(filenameKey ? [`${filenameKey[1].toLowerCase()}:${filenameKey[2]}`] : []),
+          ...(parsedEhId ? [`ehentai:${parsedEhId.canonicalId}`] : []),
+        ])];
         if ((!title || !artists.length) && !keys.length) { missingMetadata++; files.delete(file); return; }
-        const originalFilename = path.basename(file).replace(/\.cbz$/i, '').replace(/\s*\[(?:hitomi|nhentai)-\d+\]$/i, '').trim();
+        const originalFilename = baseName
+          .replace(/\.cbz$/i, '')
+          .replace(/\s*\[(?:(?:hitomi|nhentai)-\d+|ehentai-[1-9]\d{0,9}-[0-9a-f]{10,12})\]$/i, '')
+          .trim();
         updatedIdentities.push({ source: 'library', galleryId: file, path: file, title: title || originalFilename, titleAlt: originalFilename, artists, language: fields.LanguageISO || fields.Language, pageCount: count, stamp, sourceKeys: keys });
       } catch { files.delete(file); problems.push(`Could not read archive metadata: ${file}`); }
     });
@@ -210,10 +253,10 @@ async function scanLibrary(): Promise<void> {
   try { await scan; } finally { scan = null; }
 }
 
-export async function prepareDuplicateCheck(items: { source: DoujinSource; galleryId: string }[], refresh = false): Promise<GalleryIdentity[]> {
+export async function prepareDuplicateCheck(items: { source: DoujinSource; galleryId: string; url?: string }[], refresh = false): Promise<GalleryIdentity[]> {
   if (refresh) invalidateDuplicateLibrary();
   const identities = await mapLimit(items, 3, async item => {
-    const gallery = await resolveDuplicateGallery(item.source, item.galleryId);
+    const gallery = await resolveDuplicateGallery(item.source, item.url ?? item.galleryId);
     return recordGalleryIdentity(gallery);
   });
   await scanLibrary();

@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useNavigate } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Clock, Download, Pause, Play, XCircle, Ban } from 'lucide-react';
+import { Loader2, Clock, Download, Pause, Play, XCircle, Ban, RotateCcw } from 'lucide-react';
 import { api, type Job, type DownloadTask } from '../lib/api';
 import { toast } from '../lib/toast';
 import { useDownloads, needsAttention as downloadNeedsAttention } from '../lib/DownloadsContext';
@@ -52,24 +52,28 @@ const JobRow = React.memo(function JobRow({ job }: { job: Job }) {
   );
 });
 
-function TaskIcon({ status }: { status: DownloadTask['status'] }) {
-  if (status === 'downloading') return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" />;
-  if (status === 'queued') return <Clock className="h-3.5 w-3.5 shrink-0 text-muted" />;
-  if (status === 'failed') return <XCircle className="h-3.5 w-3.5 shrink-0 text-danger" />;
+function TaskIcon({ task }: { task: DownloadTask }) {
+  if (task.state?.type === 'retry-wait') return <RotateCcw className="h-3.5 w-3.5 shrink-0 text-warning" />;
+  if (task.status === 'downloading') return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" />;
+  if (task.status === 'queued') return <Clock className="h-3.5 w-3.5 shrink-0 text-muted" />;
+  if (task.status === 'failed') return <XCircle className="h-3.5 w-3.5 shrink-0 text-danger" />;
   return <Pause className="h-3.5 w-3.5 shrink-0 text-warning" />;
 }
 
 const DownloadRow = React.memo(function DownloadRow({ task, onAction }: { task: DownloadTask; onAction: (op: 'pause' | 'resume' | 'cancel', id: number) => void }) {
   const busy = task.status === 'downloading';
+  const packing = task.state?.type === 'packing';
+  const resolving = busy && task.phase === 'resolving';
+  const retryWait = task.state?.type === 'retry-wait';
   const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : null;
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-1.5">
-        <TaskIcon status={task.status} />
+        <TaskIcon task={task} />
         <span className="min-w-0 flex-1 truncate text-xs" title={task.title ?? ''}>
           {task.title ?? `Gallery ${task.galleryId}`}
         </span>
-        {busy && (
+        {busy && !packing && (
           <button type="button" onClick={() => onAction('pause', task.id)} aria-label={`Pause ${task.title ?? `Gallery ${task.galleryId}`}`} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground">
             <Pause className="h-3.5 w-3.5" />
           </button>
@@ -79,7 +83,7 @@ const DownloadRow = React.memo(function DownloadRow({ task, onAction }: { task: 
             <Play className="h-3.5 w-3.5" />
           </button>
         )}
-        {(busy || task.status === 'queued') && (
+        {(busy || task.status === 'queued' || retryWait) && !packing && (
           <button type="button" onClick={() => onAction('cancel', task.id)} aria-label={`Cancel ${task.title ?? `Gallery ${task.galleryId}`}`} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-danger">
             <XCircle className="h-3.5 w-3.5" />
           </button>
@@ -87,13 +91,20 @@ const DownloadRow = React.memo(function DownloadRow({ task, onAction }: { task: 
       </div>
       {busy && (
         <>
-          <ProgressBar value={task.progressCurrent} max={task.progressTotal} className="h-1.5" />
+          <ProgressBar value={packing ? 1 : task.progressCurrent} max={packing ? 1 : task.progressTotal} className="h-1.5" />
           <span className="text-xs leading-none text-muted">
-            {pct !== null ? `${pct}%` : ''}
-            {typeof task.bytesCurrent === 'number' && (task.bytesCurrent > 0 || (task.bytesTotal ?? 0) > 0) && ` · ${formatBytes(task.bytesCurrent)}`}
-            {formatSpeed(task.speed) && ` · ${formatSpeed(task.speed)}`}
+            {packing ? 'Packing…' : resolving || pct === null ? 'Resolving…' : (
+              <>
+                {`${pct}%`}
+                {typeof task.bytesCurrent === 'number' && (task.bytesCurrent > 0 || (task.bytesTotal ?? 0) > 0) && ` · ${formatBytes(task.bytesCurrent)}`}
+                {formatSpeed(task.speed) && ` · ${formatSpeed(task.speed)}`}
+              </>
+            )}
           </span>
         </>
+      )}
+      {retryWait && (
+        <span className="text-xs leading-none text-muted">Retrying…</span>
       )}
     </div>
   );
@@ -147,7 +158,7 @@ export function SidebarStatus() {
     }
     previousJobs.current = current;
   }, [jobs, qc]);
-  const shownTasks = React.useMemo(() => tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused'), [tasks]);
+  const shownTasks = React.useMemo(() => tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused' || t.state?.type === 'retry-wait'), [tasks]);
   const attentionJobs = React.useMemo(() => jobs.filter(needsAttention), [jobs]);
   const failedDownloads = React.useMemo(() => tasks.filter(downloadNeedsAttention), [tasks]);
   const onTaskAction = React.useCallback((op: 'pause' | 'resume' | 'cancel', id: number) => {

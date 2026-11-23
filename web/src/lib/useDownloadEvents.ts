@@ -1,4 +1,4 @@
-import { newerDownload } from './downloadPoll';
+import { mergeDownloadPoll, newerDownload } from './downloadPoll';
 import * as React from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { type DownloadEvent, type DownloadTask } from './api';
@@ -44,7 +44,7 @@ export function useDownloadEvents(): boolean {
       try {
         const msg = JSON.parse(ev.data) as DownloadEvent;
         if (msg.type === 'snapshot') {
-          qc.setQueryData<DownloadTask[]>(['downloads'], msg.tasks);
+          qc.setQueryData<DownloadTask[]>(['downloads'], (prev) => (prev ? mergeDownloadPoll(prev, msg.tasks) : msg.tasks));
         } else if (msg.type === 'task') {
           upsertTask(msg.task);
         } else if (msg.type === 'removed') {

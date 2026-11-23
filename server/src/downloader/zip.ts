@@ -1,7 +1,12 @@
-import { deflateRawSync } from 'node:zlib';
+import { deflateRaw, deflateRawSync } from 'node:zlib';
+import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 import { crc32 } from '../lib/crc.js';
+
+const deflateRawAsync = promisify(deflateRaw);
+const MAX_ZIP32_ENTRIES = 0xffff;
+const MAX_ZIP32_OFFSET = 0xffffffff;
 
 /**
  * Minimal, dependency-free ZIP (CBZ) writer.
@@ -41,26 +46,18 @@ interface EncodedEntry {
   central: Buffer;
 }
 
-function encodeEntry(
+function encodeEntryWithPayload(
   name: string,
   data: Buffer,
+  payload: Buffer,
+  method: number,
   offset: number,
   now: { time: number; date: number },
-  tryDeflate: boolean,
 ): EncodedEntry {
   const nameBuf = Buffer.from(name, 'utf8');
   const crc = crc32(data);
-  // Prefer deflate only when it actually saves space; otherwise store.
-  // Already-compressed payloads skip the deflate attempt entirely: it costs
-  // full-zlib CPU synchronously on the event loop and saves <2% on JPEG/WebP.
-  let method = 0;
-  let payload = data;
-  if (tryDeflate) {
-    const compressed = deflateRawSync(data);
-    if (compressed.length < data.length) {
-      method = 8;
-      payload = compressed;
-    }
+  if (offset > MAX_ZIP32_OFFSET || payload.length > MAX_ZIP32_OFFSET || data.length > MAX_ZIP32_OFFSET) {
+    throw new Error('Archive exceeds the 4 GiB CBZ limit; use Image folder format for galleries this large.');
   }
 
   // Local file header (30 bytes + name).
@@ -100,6 +97,47 @@ function encodeEntry(
   nameBuf.copy(central, 46);
 
   return { local, payload, central };
+}
+
+function encodeEntry(
+  name: string,
+  data: Buffer,
+  offset: number,
+  now: { time: number; date: number },
+  tryDeflate: boolean,
+): EncodedEntry {
+  // Prefer deflate only when it actually saves space; otherwise store.
+  // Already-compressed payloads skip the deflate attempt entirely: it costs
+  // full-zlib CPU synchronously on the event loop and saves <2% on JPEG/WebP.
+  let method = 0;
+  let payload = data;
+  if (tryDeflate) {
+    const compressed = deflateRawSync(data);
+    if (compressed.length < data.length) {
+      method = 8;
+      payload = compressed;
+    }
+  }
+  return encodeEntryWithPayload(name, data, payload, method, offset, now);
+}
+
+async function encodeEntryAsync(
+  name: string,
+  data: Buffer,
+  offset: number,
+  now: { time: number; date: number },
+  tryDeflate: boolean,
+): Promise<EncodedEntry> {
+  let method = 0;
+  let payload = data;
+  if (tryDeflate) {
+    const compressed = await deflateRawAsync(data);
+    if (compressed.length < data.length) {
+      method = 8;
+      payload = compressed;
+    }
+  }
+  return encodeEntryWithPayload(name, data, payload, method, offset, now);
 }
 
 /** File extensions whose payload is already compressed — stored, never deflated. */
@@ -158,7 +196,13 @@ export async function buildZipFromFiles(
   files: { name: string; path: string }[],
   destPath: string,
   inlineEntries: Entry[] = [],
+  signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
+  const totalEntries = files.length + inlineEntries.length;
+  if (totalEntries > MAX_ZIP32_ENTRIES) {
+    throw new Error('Archive exceeds the 65,535-entry CBZ limit; use Image folder format for galleries this large.');
+  }
   const stagingDir = await fs.promises.mkdtemp(path.join(path.dirname(destPath), '.htosho-zip-'));
   const stagingPath = path.join(stagingDir, 'archive.cbz');
   let out: fs.promises.FileHandle;
@@ -183,23 +227,29 @@ export async function buildZipFromFiles(
       offset += buf.length;
     };
     const append = async (name: string, data: Buffer, tryDeflate: boolean): Promise<void> => {
+      signal?.throwIfAborted();
       const entryOffset = offset;
-      const spec = encodeEntry(name, data, entryOffset, now, tryDeflate);
+      const spec = await encodeEntryAsync(name, data, entryOffset, now, tryDeflate);
       await write(spec.local);
       await write(spec.payload);
       central.push(spec.central);
     };
 
     for (const f of files) {
+      signal?.throwIfAborted();
       const ext = f.name.slice(f.name.lastIndexOf('.') + 1).toLowerCase();
       await append(f.name, await fs.promises.readFile(f.path), !STORE_EXTENSIONS[ext]);
     }
     for (const e of inlineEntries) await append(e.name, e.data, true);
 
+    signal?.throwIfAborted();
     const centralStart = offset;
     let centralSize = 0;
     for (const c of central) centralSize += c.length;
-    await write(Buffer.concat([...central, endOfCentralDirectory(files.length + inlineEntries.length, centralStart, centralSize)]));
+    if (centralStart > MAX_ZIP32_OFFSET || centralSize > MAX_ZIP32_OFFSET) {
+      throw new Error('Archive exceeds the 4 GiB CBZ limit; use Image folder format for galleries this large.');
+    }
+    await write(Buffer.concat([...central, endOfCentralDirectory(totalEntries, centralStart, centralSize)]));
   } catch (error) {
     failure = error;
   }
@@ -210,6 +260,7 @@ export async function buildZipFromFiles(
   }
   try {
     if (failure !== undefined) throw failure;
+    signal?.throwIfAborted();
     await fs.promises.rename(stagingPath, destPath);
   } finally {
     await fs.promises.rm(stagingDir, { recursive: true, force: true });

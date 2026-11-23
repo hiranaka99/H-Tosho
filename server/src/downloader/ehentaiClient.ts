@@ -23,6 +23,7 @@ import dns from 'node:dns';
 import https from 'node:https';
 import fs from 'node:fs/promises';
 import { getEhentaiGate, RequestAbortedError } from './ehentaiGate.js';
+import { parseRetryAfterMs } from '../lib/http.js';
 import { ehentaiHost, type EhentaiSite } from '../contracts/doujin.js';
 import { onEhentaiAccountChange, getAccountRevision } from '../services/ehentaiAccount.js';
 import type { EhentaiSessionInput } from '../contracts/ehentai.js';
@@ -49,7 +50,12 @@ export type EhentaiFailureKind =
 /** Typed upstream failure. The message is safe to surface to the user: no
  *  cookies, query strings, or upstream bodies. */
 export class EhentaiUpstreamError extends Error {
-  constructor(message: string, public readonly kind: EhentaiFailureKind, public readonly status: number | null = null) {
+  constructor(
+    message: string,
+    public readonly kind: EhentaiFailureKind,
+    public readonly status: number | null = null,
+    public readonly retryAfterMs: number | null = null,
+  ) {
     super(message);
     this.name = 'EhentaiUpstreamError';
   }
@@ -151,7 +157,10 @@ interface PinnedRequestOptions {
   allowNonStandardPort?: boolean;
   /** When set, the body streams straight to this file (.part + rename). */
   destPath?: string;
+  onAttemptStart?: () => void;
   onBytes?: (receivedBytes: number, totalBytes: number | null) => void;
+  /** Optional validator invoked on the `.part` file before atomic rename to `destPath`. */
+  validatePart?: (partPath: string, contentType: string | null) => Promise<void>;
 }
 
 interface PinnedResponse {
@@ -186,6 +195,7 @@ function pinnedGet(
     }
     return resolvePinnedAddress(parsed.hostname).then((pinnedIp) => new Promise<PinnedResponse>((resolve, reject) => {
       let settled = false;
+      let timeout: ReturnType<typeof setTimeout>;
       const fail = (error: Error): void => {
         if (settled) return;
         settled = true;
@@ -200,7 +210,15 @@ function pinnedGet(
       const onAbort = (): void => {
         fail(new RequestAbortedError());
       };
-      const timeout = setTimeout(() => {
+      const armTimeout = (): void => {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => {
+          try {
+            req.destroy(new EhentaiUpstreamError('E-Hentai request timed out.', 'timeout'));
+          } catch { /* already destroyed */ }
+        }, options.timeoutMs);
+      };
+      timeout = setTimeout(() => {
         try {
           req.destroy(new EhentaiUpstreamError('E-Hentai request timed out.', 'timeout'));
         } catch { /* already destroyed */ }
@@ -237,38 +255,66 @@ function pinnedGet(
           const contentType = res.headers['content-type'] ?? null;
           if (status < 200 || status >= 300) {
             res.resume();
-            fail(new EhentaiUpstreamError(`E-Hentai returned HTTP ${status}.`, status >= 500 && status <= 509 ? (status === 509 ? 'quota' : 'unavailable') : status === 429 ? 'rate-limited' : status === 401 || status === 403 ? 'denied' : 'unavailable', status));
+            const retryAfter = parseRetryAfterMs(res.headers, 60_000);
+            fail(new EhentaiUpstreamError(`E-Hentai returned HTTP ${status}.`, status >= 500 && status <= 509 ? (status === 509 ? 'quota' : 'unavailable') : status === 429 ? 'rate-limited' : status === 401 || status === 403 ? 'denied' : 'unavailable', status, retryAfter));
             return;
           }
           if (options.destPath) {
             const destPath = options.destPath;
             const partPath = `${destPath}.part`;
+            armTimeout(); // headers received — start the idle window for the body
+            options.onAttemptStart?.();
             void (async () => {
+              let fh: fs.FileHandle | null = null;
+              let published = false;
+              let writeError: Error | null = null;
+              let written = 0;
               try {
-                const fh = await fs.open(partPath, 'w');
+                fh = await fs.open(partPath, 'w');
                 let received = 0;
                 const totalHeader = res.headers['content-length'];
-                const totalBytes = totalHeader ? Number(totalHeader) || null : null;
+                const parsedTotal = totalHeader ? Number(totalHeader) : NaN;
+                const totalBytes = Number.isFinite(parsedTotal) && parsedTotal > 0 ? parsedTotal : null;
+                const hasEncoding = Boolean(res.headers['content-encoding']);
                 for await (const chunk of res) {
+                  if (settled || options.signal?.aborted) throw new RequestAbortedError();
+                  armTimeout(); // bytes arrived — reset idle timeout for slow large images
                   const buf = chunk as Buffer;
                   received += buf.byteLength;
                   if (received > options.maxBytes) {
-                    await fh.close();
-                    fail(new EhentaiUpstreamError('E-Hentai response exceeded the size limit.', 'unavailable'));
-                    return;
+                    throw new EhentaiUpstreamError('E-Hentai response exceeded the size limit.', 'unavailable');
                   }
                   await fh.write(buf);
                   options.onBytes?.(received, totalBytes);
                 }
                 await fh.close();
+                fh = null;
+                if (settled || options.signal?.aborted) throw new RequestAbortedError();
+                if (received === 0) {
+                  throw new EhentaiUpstreamError('E-Hentai returned an empty image body.', 'unavailable');
+                }
+                if (totalBytes !== null && !hasEncoding && received < totalBytes) {
+                  throw new EhentaiUpstreamError(`Incomplete download: received ${received} of ${totalBytes} bytes from E-Hentai.`, 'unavailable');
+                }
+                if (options.validatePart) {
+                  await options.validatePart(partPath, contentType);
+                }
                 await fs.rename(partPath, destPath);
-                if (settled) return;
+                published = true;
+                written = received;
+              } catch (error) {
+                writeError = error instanceof Error ? error : new EhentaiUpstreamError('E-Hentai image write failed.', 'unavailable');
+              } finally {
+                if (fh) await fh.close().catch(() => undefined);
+                if (!published) await fs.rm(partPath, { force: true }).catch(() => undefined);
+              }
+              if (writeError) {
+                fail(writeError);
+              } else if (!settled) {
                 settled = true;
                 clearTimeout(timeout);
                 cleanup();
-                resolve({ status, finalUrl: url, contentType, bytesWritten: received });
-              } catch (error) {
-                fail(error instanceof Error ? error : new EhentaiUpstreamError('E-Hentai image write failed.', 'unavailable'));
+                resolve({ status, finalUrl: url, contentType, bytesWritten: written });
               }
             })();
             return;
@@ -366,6 +412,12 @@ export async function ehentaiFetchText(
     );
     const body = res.body?.toString('utf8') ?? '';
     return { status: res.status, finalUrl: res.finalUrl, contentType: res.contentType, body };
+  } catch (error) {
+    if (error instanceof EhentaiUpstreamError && error.kind === 'rate-limited') {
+      const cooldownMs = error.retryAfterMs ?? gate[lane].minGapMs * 5;
+      if (cooldownMs > 0) gate[lane].setCooldown(Date.now() + cooldownMs);
+    }
+    throw error;
   } finally {
     release();
   }
@@ -386,6 +438,12 @@ export async function ehentaiApiPost(
       maxBytes: API_BODY_CAP,
     });
     return { status: res.status, finalUrl: res.finalUrl, contentType: res.contentType, body: res.body?.toString('utf8') ?? '' };
+  } catch (error) {
+    if (error instanceof EhentaiUpstreamError && error.kind === 'rate-limited') {
+      const cooldownMs = error.retryAfterMs ?? gate.api.minGapMs * 5;
+      if (cooldownMs > 0) gate.api.setCooldown(Date.now() + cooldownMs);
+    }
+    throw error;
   } finally {
     release();
   }
@@ -393,7 +451,8 @@ export async function ehentaiApiPost(
 
 /** Native tag completion stays on the selected family host, with scoped cookies. */
 export async function ehentaiTagSuggestions(text: string, options: EhentaiFetchOptions): Promise<EhentaiTextResponse> {
-  const release = await getEhentaiGate().api.acquire(options.signal);
+  const gate = getEhentaiGate();
+  const release = await gate.api.acquire(options.signal);
   try {
     const cookie = buildEhentaiCookies(options.session, options.site);
     const res = await pinnedGetPost(`https://${ehentaiHost(options.site)}/api.php`, JSON.stringify({ method: 'tagsuggest', text }), {
@@ -401,6 +460,12 @@ export async function ehentaiTagSuggestions(text: string, options: EhentaiFetchO
       signal: options.signal, timeoutMs: options.timeoutMs ?? 15_000, maxBytes: API_BODY_CAP,
     });
     return { status: res.status, finalUrl: res.finalUrl, contentType: res.contentType, body: res.body?.toString('utf8') ?? '' };
+  } catch (error) {
+    if (error instanceof EhentaiUpstreamError && error.kind === 'rate-limited') {
+      const cooldownMs = error.retryAfterMs ?? gate.api.minGapMs * 5;
+      if (cooldownMs > 0) gate.api.setCooldown(Date.now() + cooldownMs);
+    }
+    throw error;
   } finally { release(); }
 }
 
@@ -458,7 +523,8 @@ function pinnedGetPost(url: string, jsonBody: string, options: PinnedRequestOpti
         res.on('end', () => {
           if (settled) return;
           if (status < 200 || status >= 300) {
-            fail(new EhentaiUpstreamError(`E-Hentai API returned HTTP ${status}.`, status === 429 ? 'rate-limited' : 'unavailable', status));
+            const retryAfterMs = status === 429 ? parseRetryAfterMs(res.headers, 60_000) : null;
+            fail(new EhentaiUpstreamError(`E-Hentai API returned HTTP ${status}.`, status === 429 ? 'rate-limited' : 'unavailable', status, retryAfterMs));
             return;
           }
           settled = true;
@@ -587,7 +653,8 @@ export function validateImageFile(filePath: string, contentType: string | null):
 }
 
 /** Stream one approved viewer image to a file through the image pacing gate.
- *  Returns the detected image format (persisted for resume correctness). */
+ *  Validates magic bytes and size on `.part` BEFORE atomic rename to `destPath`,
+ *  returning the detected image format and written byte count. */
 export async function fetchEhentaiImage(
   url: string,
   options: {
@@ -596,15 +663,17 @@ export async function fetchEhentaiImage(
     destPath: string;
     referer: string;
     signal?: AbortSignal;
+    onAttemptStart?: () => void;
     onBytes?: (receivedBytes: number, totalBytes: number | null) => void;
   },
-): Promise<ImageFormat> {
+): Promise<{ format: ImageFormat; bytes: number }> {
   if (!isApprovedImageUrl(options.galleryKey, url)) {
     throw new EhentaiUpstreamError('Blocked: image target was not obtained from the authorized gallery page.', 'blocked');
   }
   const gate = getEhentaiGate();
   const release = await gate.image.acquire(options.signal);
   try {
+    let detectedFormat: ImageFormat | null = null;
     // No cookies for image hosts; the Referer identifies the gallery page.
     const res = await pinnedGet(
       url,
@@ -616,11 +685,23 @@ export async function fetchEhentaiImage(
         maxBytes: 64 * 1024 * 1024,
         allowNonStandardPort: true,
         destPath: options.destPath,
+        onAttemptStart: options.onAttemptStart,
         onBytes: options.onBytes,
+        validatePart: async (partPath, contentType) => {
+          detectedFormat = await validateImageFile(partPath, contentType);
+        },
       },
     );
-    const format = await validateImageFile(options.destPath, res.contentType);
-    return format;
+    return {
+      format: detectedFormat ?? await validateImageFile(options.destPath, res.contentType),
+      bytes: res.bytesWritten ?? 0,
+    };
+  } catch (error) {
+    if (error instanceof EhentaiUpstreamError && error.kind === 'rate-limited') {
+      const cooldownMs = error.retryAfterMs ?? gate.image.minGapMs * 5;
+      if (cooldownMs > 0) gate.image.setCooldown(Date.now() + cooldownMs);
+    }
+    throw error;
   } finally {
     release();
   }

@@ -54,7 +54,7 @@ export type DownloadLibraryState =
 /** One page of completed download history, newest finish first. */
 export interface DownloadHistoryPage { items: DownloadTask[]; total: number }
 
-export type DownloadErrorCode ='cancelled' | 'network' | 'rate-limit' | 'upstream' | 'access-denied' | 'output-missing' | 'permissions' | 'download-failed';
+export type DownloadErrorCode = 'cancelled' | 'network' | 'rate-limit' | 'upstream' | 'access-denied' | 'quota' | 'disk-full' | 'output-missing' | 'permissions' | 'download-failed';
 export type DownloadState = { type: 'retry-wait'; retryAt: string; retryCount: number }
   | { type: 'cancelled' }
   | { type: 'packing' }

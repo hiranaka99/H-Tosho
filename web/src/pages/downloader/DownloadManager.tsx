@@ -1,14 +1,14 @@
 import * as React from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { useInfiniteQuery, useQuery, keepPreviousData } from '@tanstack/react-query';
-import { Download as DownloadIcon, Pause, Play, XCircle, RotateCcw, Trash2, CheckCircle2, FileArchive, FolderOpen, FileText, Copy, AlertTriangle, Library, ImageOff } from 'lucide-react';
+import { Download as DownloadIcon, Pause, Play, XCircle, RotateCcw, Trash2, CheckCircle2, FileArchive, FolderOpen, FileText, Copy, AlertTriangle, Library, ImageOff, ArrowUpToLine } from 'lucide-react';
 import { MAX_AUTO_RETRIES } from '../../../../server/src/contracts/downloads';
 import { api, type DownloadTask, type DownloadLibraryState } from '../../lib/api';
 import { useDownloads, needsAttention } from '../../lib/DownloadsContext';
 import { retryWaitReason } from '../../lib/downloadErrors';
 import { toast } from '../../lib/toast';
 import { cn, timeAgo, toIsoUtc } from '../../lib/utils';
-import { formatBytes, formatSpeed } from '../../lib/format';
+import { formatBytes, formatEta, formatSpeed } from '../../lib/format';
 import { Button, Badge, EmptyState, ProgressBar, ErrorState, Skeleton, Spinner, SegmentedControl, InlineConfirm } from '../../components/ui';
 import { ComicInfoModal } from '../../components/ComicInfoModal';
 import { DownloadFailure } from './DownloadSetup';
@@ -22,7 +22,7 @@ const HISTORY_PAGE = 50;
 const touch = 'max-lg:min-h-11 pointer-coarse:min-h-11';
 
 type Filter = 'all' | 'active' | 'failed' | 'completed';
-type RowAction = 'pause' | 'resume' | 'cancel' | 'retry';
+type RowAction = 'pause' | 'resume' | 'cancel' | 'retry' | 'prioritize';
 type Confirmable = 'cancel' | 'remove';
 
 const titleOf = (task: DownloadTask) => task.title ?? `Gallery ${task.galleryId}`;
@@ -51,7 +51,7 @@ const coverClass = 'aspect-[3/4] w-12 shrink-0 self-start rounded-sm border bord
 /** A finished row always keeps its cover column, so titles in the list stay aligned. */
 function TaskCover({ id, folder }: { id: number; folder: boolean }) {
   const [failed, setFailed] = React.useState(false);
-  if (failed || folder) {
+  if (failed) {
     return <div aria-hidden="true" className={cn(coverClass, 'flex items-center justify-center bg-surface-2 text-muted')}>{folder ? <FolderOpen className="h-4 w-4" /> : <ImageOff className="h-4 w-4" />}</div>;
   }
   return (
@@ -131,6 +131,7 @@ interface RowProps {
   library?: DownloadLibraryState;
   /** "Next up" / "3rd in queue" for queued rows. */
   queueLabel?: string;
+  canPrioritize?: boolean;
   confirming: Confirmable | null;
   onAction: (id: number, action: RowAction) => void;
   onRequest: (id: number, action: Confirmable) => void;
@@ -139,13 +140,16 @@ interface RowProps {
   onEditComicInfo: (path: string) => void;
 }
 
-const DownloadRow = React.memo(function DownloadRow({ task, library, queueLabel, confirming, onAction, onRequest, onKeep, onConfirm, onEditComicInfo }: RowProps) {
+const DownloadRow = React.memo(function DownloadRow({ task, library, queueLabel, canPrioritize, confirming, onAction, onRequest, onKeep, onConfirm, onEditComicInfo }: RowProps) {
   const title = titleOf(task);
   const source = SOURCE_LABELS[task.source] ?? task.source;
   const state = task.state?.type ?? task.status;
   const resolving = isRunning(task) && task.phase === 'resolving';
   const packing = state === 'packing';
   const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : 0;
+  const eta = isRunning(task) && typeof task.bytesCurrent === 'number' && typeof task.bytesTotal === 'number' && task.bytesTotal > task.bytesCurrent
+    ? formatEta(task.bytesTotal - task.bytesCurrent, task.speed)
+    : '';
   const completed = task.status === 'completed' && !!task.outputPath;
   const cancelled = isCancelled(task);
   const retryWait = isRetryWait(task);
@@ -177,6 +181,7 @@ const DownloadRow = React.memo(function DownloadRow({ task, library, queueLabel,
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-1">
+            {task.status === 'queued' && canPrioritize && icon('Move to top of queue', () => onAction(task.id, 'prioritize'), <ArrowUpToLine className="h-4 w-4" />)}
             {(isRunning(task) || task.status === 'queued') && !packing && icon('Pause', () => onAction(task.id, 'pause'), <Pause className="h-4 w-4" />)}
             {task.status === 'paused' && icon('Resume', () => onAction(task.id, 'resume'), <Play className="h-4 w-4" />)}
             {retryWait && <Button size="sm" variant="outline" className={touch} onClick={() => onAction(task.id, 'retry')}><RotateCcw className="h-4 w-4" /> Retry now</Button>}
@@ -204,6 +209,7 @@ const DownloadRow = React.memo(function DownloadRow({ task, library, queueLabel,
                   {`${task.progressCurrent} of ${task.progressTotal} pages (${pct}%)`}
                   {typeof task.bytesCurrent === 'number' && (task.bytesCurrent > 0 || (task.bytesTotal ?? 0) > 0) && (` · ${formatBytes(task.bytesCurrent)}${(task.bytesTotal ?? 0) > 0 ? ` of ${formatBytes(task.bytesTotal)}` : ''}`)}
                   {formatSpeed(task.speed) && ` · ${formatSpeed(task.speed)}`}
+                  {eta && ` · ${eta}`}
                 </span>
               </div>
             )}
@@ -300,7 +306,7 @@ function ordinal(n: number): string {
 }
 
 export function ManagerTab() {
-  const { tasks, loading: downloadsLoading, error: downloadsError, refetch: refetchDownloads, pause, resume, cancel, retry, removeTask, clearCompleted } = useDownloads();
+  const { tasks, loading: downloadsLoading, error: downloadsError, refetch: refetchDownloads, pause, resume, cancel, retry, prioritize, pauseAll, resumeAll, retryFailed, removeTask, clearCompleted, clearCancelled } = useDownloads();
   const [searchParams, setSearchParams] = useSearchParams();
   const requested = searchParams.get('status');
   const filter: Filter = requested === 'failed' || requested === 'active' || requested === 'completed' ? requested : 'all';
@@ -316,6 +322,7 @@ export function ManagerTab() {
 
   const [confirm, setConfirm] = React.useState<{ id: number; action: Confirmable } | null>(null);
   const [confirmClear, setConfirmClear] = React.useState(false);
+  const [confirmClearCancelled, setConfirmClearCancelled] = React.useState(false);
   const [showAllHistory, setShowAllHistory] = React.useState(false);
   const [wantOlder, setWantOlder] = React.useState(false);
   const [comicInfo, setComicInfo] = React.useState<{ path?: string } | null>(null);
@@ -355,10 +362,14 @@ export function ManagerTab() {
   });
   const library = libraryQuery.data;
 
-  const queueLabels = React.useMemo(() => {
+  const { queueLabels, prioritizableIds } = React.useMemo(() => {
     const labels = new Map<number, string>();
-    active.filter((task) => task.status === 'queued').forEach((task, index) => labels.set(task.id, index === 0 ? 'Next up' : `${ordinal(index + 1)} in queue`));
-    return labels;
+    const prioritizable = new Set<number>();
+    active.filter((task) => task.status === 'queued').forEach((task, index) => {
+      labels.set(task.id, index === 0 ? 'Next up' : `${ordinal(index + 1)} in queue`);
+      if (index > 0) prioritizable.add(task.id);
+    });
+    return { queueLabels: labels, prioritizableIds: prioritizable };
   }, [active]);
 
   const queueMotionRef = useDownloaderTransitions(`${filter}:${fullHistory}:${completed.length}:${tasks.map((task) => `${task.id}:${task.status}:${task.state?.type}`).join(',')}`);
@@ -367,9 +378,10 @@ export function ManagerTab() {
     if (a === 'pause') pause(id);
     else if (a === 'resume') resume(id);
     else if (a === 'cancel') cancel(id);
+    else if (a === 'prioritize') prioritize(id);
     else retry(id);
-  }, [pause, resume, cancel, retry]);
-  const request = React.useCallback((id: number, action: Confirmable) => { setConfirmClear(false); setConfirm({ id, action }); }, []);
+  }, [pause, resume, cancel, retry, prioritize]);
+  const request = React.useCallback((id: number, action: Confirmable) => { setConfirmClear(false); setConfirmClearCancelled(false); setConfirm({ id, action }); }, []);
   const keep = React.useCallback(() => setConfirm(null), []);
   const confirmAction = React.useCallback((id: number, action: Confirmable) => {
     setConfirm(null);
@@ -378,11 +390,13 @@ export function ManagerTab() {
   }, [cancel, removeTask]);
   const openComicInfo = React.useCallback((path: string) => setComicInfo({ path }), []);
 
+  const downloadingTasks = active.filter(isRunning);
   const running = active.filter((task) => isRunning(task) || task.status === 'queued');
   const paused = active.filter((task) => task.status === 'paused');
   const retrying = active.filter(isRetryWait);
+  const totalSpeed = downloadingTasks.reduce((sum, task) => sum + (task.speed && task.speed > 0 ? task.speed : 0), 0);
   const activeSummary = [
-    active.filter(isRunning).length && `${active.filter(isRunning).length} downloading`,
+    downloadingTasks.length && `${downloadingTasks.length} downloading${totalSpeed > 0 ? ` (${formatSpeed(totalSpeed)})` : ''}`,
     retrying.length && `${retrying.length} retrying`,
     active.filter((task) => task.status === 'queued').length && `${active.filter((task) => task.status === 'queued').length} queued`,
     paused.length && `${paused.length} paused`,
@@ -394,6 +408,7 @@ export function ManagerTab() {
       task={task}
       library={library?.[task.id]}
       queueLabel={queueLabels.get(task.id)}
+      canPrioritize={prioritizableIds.has(task.id)}
       confirming={confirm?.id === task.id ? confirm.action : null}
       onAction={act}
       onRequest={request}
@@ -442,7 +457,7 @@ export function ManagerTab() {
                 count={attention.length}
                 countTone="danger"
                 description="These stopped and need you. Fix the cause, then retry."
-                actions={attention.length > 1 && <Button size="sm" variant="outline" className={touch} onClick={() => attention.forEach((task) => retry(task.id))}><RotateCcw className="h-4 w-4" /> Retry all {attention.length}</Button>}
+                actions={attention.length > 1 && <Button size="sm" variant="outline" className={touch} onClick={() => retryFailed()}><RotateCcw className="h-4 w-4" /> Retry all {attention.length}</Button>}
               >
                 <RowList>{attention.map(renderRow)}</RowList>
               </Section>
@@ -455,8 +470,8 @@ export function ManagerTab() {
                 count={active.length}
                 description={activeSummary}
                 actions={running.length > 0
-                  ? <Button size="sm" variant="outline" className={touch} onClick={() => running.forEach((task) => pause(task.id))}><Pause className="h-4 w-4" /> Pause all</Button>
-                  : paused.length > 0 && <Button size="sm" variant="outline" className={touch} onClick={() => paused.forEach((task) => resume(task.id))}><Play className="h-4 w-4" /> Resume all</Button>}
+                  ? <Button size="sm" variant="outline" className={touch} onClick={() => pauseAll()}><Pause className="h-4 w-4" /> Pause all</Button>
+                  : paused.length > 0 && <Button size="sm" variant="outline" className={touch} onClick={() => resumeAll()}><Play className="h-4 w-4" /> Resume all</Button>}
               >
                 <RowList>{active.map(renderRow)}</RowList>
               </Section>
@@ -468,7 +483,7 @@ export function ManagerTab() {
                 title="Completed"
                 count={completedTotal}
                 description="Newest first."
-                actions={!confirmClear && <Button size="sm" variant="ghost" className={touch} onClick={() => { setConfirm(null); setConfirmClear(true); }}><Trash2 className="h-4 w-4" /> Clear completed</Button>}
+                actions={!confirmClear && <Button size="sm" variant="ghost" className={touch} onClick={() => { setConfirm(null); setConfirmClearCancelled(false); setConfirmClear(true); }}><Trash2 className="h-4 w-4" /> Clear completed</Button>}
               >
                 {confirmClear && (
                   <InlineConfirm label="Confirm clearing completed downloads" keepLabel="Keep history" confirmLabel="Clear completed" icon={<Trash2 className="h-4 w-4" />} onKeep={() => setConfirmClear(false)} onConfirm={() => { clearCompleted(); setConfirmClear(false); }} controlClassName={touch}>
@@ -494,7 +509,19 @@ export function ManagerTab() {
             )}
 
             {filter === 'all' && cancelledTasks.length > 0 && (
-              <Section id="downloads-cancelled" title="Cancelled" count={cancelledTasks.length} description="You stopped these. Saved pages are kept until you remove them.">
+              <Section
+                id="downloads-cancelled"
+                title="Cancelled"
+                count={cancelledTasks.length}
+                description="You stopped these. Saved pages are kept until you remove them."
+                actions={!confirmClearCancelled && <Button size="sm" variant="ghost" className={touch} onClick={() => { setConfirm(null); setConfirmClear(false); setConfirmClearCancelled(true); }}><Trash2 className="h-4 w-4" /> Clear cancelled</Button>}
+              >
+                {confirmClearCancelled && (
+                  <InlineConfirm label="Confirm clearing cancelled downloads" keepLabel="Keep" confirmLabel="Clear cancelled" icon={<Trash2 className="h-4 w-4" />} onKeep={() => setConfirmClearCancelled(false)} onConfirm={() => { clearCancelled(); setConfirmClearCancelled(false); }} controlClassName={touch}>
+                    <span className="font-semibold">Clear {cancelledTasks.length === 1 ? 'the cancelled download' : `all ${cancelledTasks.length} cancelled downloads`}?</span>{' '}
+                    Any partly downloaded pages are deleted. Nothing in your library changes.
+                  </InlineConfirm>
+                )}
                 <RowList>{cancelledTasks.map(renderRow)}</RowList>
               </Section>
             )}

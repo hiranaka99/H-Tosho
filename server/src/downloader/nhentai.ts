@@ -858,19 +858,16 @@ export const nhentaiProvider: DoujinProvider = {
         if (!relPath) return null;
         const url2 = joinServer(cdnNow.imageServers[0], relPath);
         if (!url2) return null;
-        let fallback2: string | null = null;
+        const alts: string[] = [];
         for (let s = 1; s < cdnNow.imageServers.length; s++) {
           const alt = joinServer(cdnNow.imageServers[s], relPath);
-          if (alt && alt !== url2) {
-            fallback2 = alt;
-            break;
-          }
+          if (alt && alt !== url2 && !alts.includes(alt)) alts.push(alt);
         }
-        if (!fallback2) {
-          const thumbUrl = p?.thumbnail ? joinServer(cdnNow.thumbServers[0], p.thumbnail) : null;
-          if (thumbUrl && thumbUrl !== url2) fallback2 = thumbUrl;
-        }
-        return { url: url2, fallback: fallback2 };
+        const thumbUrl = p?.thumbnail ? joinServer(cdnNow.thumbServers[0], p.thumbnail) : null;
+        if (!alts.length && thumbUrl && thumbUrl !== url2) alts.push(thumbUrl);
+        return alts.length > 1
+          ? { url: url2, fallback: alts[0], fallbacks: alts }
+          : { url: url2, fallback: alts[0] ?? null };
       },
     };
   },

@@ -1,14 +1,14 @@
 import { pathContains } from '../lib/paths.js';
 import { archiveMutations, archiveResource, libraryMutations } from '../lib/mutations.js';
 import { downloadPages } from './transfer.js';
-import { wakePaused, type RunContext, type LiveFields } from './runtime.js';
-import { isTransientError, retryTransient, classifyDownloadError } from './requests.js';
+import { DownloadPausedError, DownloadShutdownError, wakePaused, type RunContext, type LiveFields } from './runtime.js';
+import { isTransientError, retryTransient, classifyDownloadError, errorRetryAfterMs } from './requests.js';
 export { isTransientError, retryTransient } from './requests.js';
 import { downloadState, MAX_AUTO_RETRIES, type DownloadTask, type DownloadStatus, type DownloadErrorCode } from '../contracts/downloads.js';
 export type { DownloadTask, DownloadStatus } from '../contracts/downloads.js';
 import { queueDownloadedMatchDiscovery } from '../services/downloadDiscovery.js';
 import { recordGalleryIdentity, invalidateDuplicateLibrary, resolveDuplicateGallery } from '../services/galleryDuplicates.js';
-import { and, asc, count, desc, eq, inArray, or, isNotNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -42,7 +42,9 @@ import { resolveMergeProtection, requireMergeProtection } from '../services/merg
  * polling clients stay fresh without hammering the database.
  */
 
-const AUTO_RETRY_DELAY_MS = 60_000;
+/** Progressive task-level auto-retry delays (ms) for transient failures. */
+const AUTO_RETRY_DELAYS_MS = [30_000, 60_000, 180_000];
+const MAX_AUTO_RETRY_DELAY_MS = 5 * 60_000;
 
 /**
  * Replace a published file with a staged file without relying on POSIX rename
@@ -141,15 +143,17 @@ function rowToTask(row: DownloadRow): DownloadTask {
 export class DownloadQueue {
   private running = 0;
   private pumping = false;
-  /** id -> live run context (used for cancel/pause of in-flight jobs). */
+  private shuttingDown = false;
+  /** id -> live run context (used for cancel/pause/shutdown of in-flight jobs). */
   private activeRuns = new Map<number, RunContext>();
+  /** In-flight process() promises tracked for graceful shutdown. */
+  private runPromises = new Set<Promise<void>>();
   /** id -> freshest in-memory task snapshot (source of truth while a run is active). */
   private live = new Map<number, DownloadTask>();
   /** id -> last SSE broadcast timestamp (ms) for throttling. */
   private lastBroadcast = new Map<number, number>();
   /** id -> last DB persist timestamp (ms) for throttling. */
   private lastWrite = new Map<number, number>();
-  /** id -> number of automatic retries scheduled for a transient failure. */
   /** id -> pending cooldown timer that will re-queue the task. */
   private retryTimers = new Map<number, NodeJS.Timeout>();
   private listeners = new Set<(task: DownloadTask) => void>();
@@ -160,23 +164,116 @@ export class DownloadQueue {
   constructor(settingsProvider: () => DownloaderSettings) {
     this.settingsProvider = settingsProvider;
   }
-  /** Recover persistent queue state after process startup, then run queued work. */
+  /** Recover persistent queue state after process startup, clean orphans, then run queued work. */
   start(): void {
     if (this.started) return;
     this.started = true;
+    this.shuttingDown = false;
     // A previous process may have died mid-download. Its partial page files are
     // still in the task's tmpDir, so re-queue instead of failing — the run
     // resumes from the first missing page file.
     getDb()
       .update(schema.downloadQueue)
-      .set({ status: 'queued', speed: null, currentFile: null, errorMessage: null, errorCode: null, retryAt: null, startedAt: null })
+      .set({
+        status: 'queued',
+        speed: null,
+        currentFile: null,
+        phase: null,
+        errorMessage: null,
+        errorCode: null,
+        retryAt: null,
+        startedAt: null,
+        revision: sql`${schema.downloadQueue.revision} + 1`,
+      })
       .where(eq(schema.downloadQueue.status, 'downloading'))
       .run();
     // Cooldowns are durable; restart does not strand retryable failures.
     for (const row of getDb().select().from(schema.downloadQueue).where(eq(schema.downloadQueue.status, 'failed')).all()) {
       if (row.retryAt) this.armRetry(row.id, Math.max(0, Date.parse(row.retryAt) - Date.now()));
     }
+    void this.cleanupOrphanedWork();
     void this.pump();
+  }
+
+  /** Respond to updated downloader settings (e.g. increased maxConcurrentDownloads). */
+  onSettingsChanged(): void {
+    if (this.shuttingDown) return;
+    void this.pump();
+  }
+
+  /**
+   * Gracefully wind down active downloads on process shutdown: stop claiming new
+   * work, cancel retry timers, and abort non-committing runs so partial page files
+   * and `page-names.json` flush cleanly while rows return to `queued` for the next boot.
+   */
+  async shutdown(timeoutMs = 1500): Promise<void> {
+    this.shuttingDown = true;
+    for (const timer of this.retryTimers.values()) clearTimeout(timer);
+    this.retryTimers.clear();
+    for (const run of this.activeRuns.values()) {
+      if (run.committing) continue;
+      run.shuttingDown = true;
+      run.stopped = true;
+      run.controller.abort(new DownloadShutdownError());
+      wakePaused(run);
+    }
+    if (this.runPromises.size === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled([...this.runPromises]),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** Best-effort startup sweep for leftover staging dirs and scratch folders from crashed runs. */
+  private async cleanupOrphanedWork(): Promise<void> {
+    try {
+      const db = getDb();
+      const keptIds = new Set(
+        db
+          .select({ id: schema.downloadQueue.id, status: schema.downloadQueue.status })
+          .from(schema.downloadQueue)
+          .all()
+          .filter((row) => row.status !== 'completed')
+          .map((row) => String(row.id)),
+      );
+      const downloadsTmp = path.join(getTmpDir(), 'downloads');
+      try {
+        const entries = await fs.promises.readdir(downloadsTmp, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+          if (keptIds.has(entry.name) || this.activeRuns.has(Number(entry.name))) continue;
+          await fs.promises.rm(path.join(downloadsTmp, entry.name), { recursive: true, force: true }).catch(() => {});
+        }
+      } catch {
+        /* tmp dir may not exist yet */
+      }
+      const downloadDir = this.settingsProvider().downloadDirectory?.trim();
+      if (downloadDir && this.activeRuns.size === 0) {
+        const base = path.resolve(downloadDir);
+        try {
+          const entries = await fs.promises.readdir(base, { withFileTypes: true });
+          for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            if (!entry.name.startsWith('.htosho-download-') && !entry.name.startsWith('.htosho-zip-')) continue;
+            // Re-check before deleting in case a download just started staging.
+            if (this.activeRuns.size > 0) break;
+            await fs.promises.rm(path.join(base, entry.name), { recursive: true, force: true }).catch(() => {});
+          }
+        } catch {
+          /* output dir may not exist yet */
+        }
+      }
+    } catch {
+      /* orphan cleanup is strictly best-effort */
+    }
   }
 
 
@@ -245,9 +342,12 @@ export class DownloadQueue {
         priority: priority ?? 0,
         mergeJobId: mergeJobId ?? null,
         sourceUrl: sourceUrl ?? null,
+        revision: 1,
       })
       .run();
     const id = Number(res.lastInsertRowid);
+    const created = this.readRow(id);
+    if (created) this.broadcast(created);
     void this.pump();
     return id;
   }
@@ -327,32 +427,98 @@ export class DownloadQueue {
     return this.activeRuns.has(id);
   }
 
-  private setStatus(id: number, status: DownloadStatus): void {
-    const db = getDb();
-    if (status === 'downloading') {
-      db.update(schema.downloadQueue).set({ status, startedAt: new Date().toISOString(), attempt: this.activeRuns.has(id) ? (this.get(id)?.attempt ?? 0) : (this.get(id)?.attempt ?? 0) + 1 }).where(eq(schema.downloadQueue.id, id)).run();
-    } else if (status === 'completed' || status === 'failed') {
-      db.update(schema.downloadQueue).set({ status, finishedAt: new Date().toISOString() }).where(eq(schema.downloadQueue.id, id)).run();
-    } else {
-      db.update(schema.downloadQueue).set({ status }).where(eq(schema.downloadQueue.id, id)).run();
-    }
-    this.syncLive(id);
+  /** Next monotonic revision for a task across both persisted DB and in-memory live snapshots. */
+  private nextRevision(id: number): number {
+    const row = this.readRow(id);
+    const liveRev = this.live.get(id)?.revision ?? 0;
+    return Math.max(row?.revision ?? 0, liveRev) + 1;
   }
 
-  /** Reload a task from the DB into the live snapshot and force-broadcast it. */
-  private syncLive(id: number): void {
+  /** Capture the freshest page/byte counts (without stale speed/phase) before leaving a live run. */
+  private snapshotProgress(id: number): {
+    progressCurrent: number;
+    progressTotal: number;
+    bytesCurrent: number;
+    bytesTotal: number;
+  } | null {
+    const live = this.live.get(id);
+    if (!live) return null;
+    return {
+      progressCurrent: live.progressCurrent,
+      progressTotal: live.progressTotal,
+      bytesCurrent: live.bytesCurrent,
+      bytesTotal: live.bytesTotal,
+    };
+  }
+
+  private setStatus(id: number, status: DownloadStatus): void {
+    const db = getDb();
+    const rev = this.nextRevision(id);
+    const progress = status !== 'downloading' ? this.snapshotProgress(id) : null;
+    if (status === 'downloading') {
+      const currentAttempt = this.get(id)?.attempt ?? 0;
+      db.update(schema.downloadQueue)
+        .set({
+          status,
+          startedAt: new Date().toISOString(),
+          attempt: this.activeRuns.has(id) ? currentAttempt : currentAttempt + 1,
+          revision: rev,
+        })
+        .where(eq(schema.downloadQueue.id, id))
+        .run();
+    } else if (status === 'completed' || status === 'failed') {
+      db.update(schema.downloadQueue)
+        .set({
+          status,
+          finishedAt: new Date().toISOString(),
+          speed: 0,
+          currentFile: null,
+          phase: null,
+          ...(progress ?? {}),
+          revision: rev,
+        })
+        .where(eq(schema.downloadQueue.id, id))
+        .run();
+    } else {
+      db.update(schema.downloadQueue)
+        .set({
+          status,
+          speed: status === 'paused' ? 0 : null,
+          currentFile: null,
+          phase: null,
+          ...(progress ?? {}),
+          revision: rev,
+        })
+        .where(eq(schema.downloadQueue.id, id))
+        .run();
+    }
+    this.syncLive(id, status === 'downloading');
+  }
+
+  /** Reload a task from the DB, update the in-memory cache only for active runs, and broadcast it. */
+  private syncLive(id: number, keepLive = false): void {
     const t = this.readRow(id);
     if (t) {
-      const previous = this.live.get(id);
-      if (previous) Object.assign(t, pickLiveFields(previous));
-      t.state = downloadState(t);
-      t.revision = Math.max(t.revision, previous?.revision ?? 0) + 1;
-      this.live.set(id, t);
-      this.persistProgress(id, t);
-      this.lastWrite.set(id, Date.now());
+      if (keepLive) {
+        const previous = this.live.get(id);
+        if (previous) {
+          Object.assign(t, pickLiveFields(previous), { revision: Math.max(t.revision, previous.revision + 1) });
+        }
+        t.state = downloadState(t);
+        this.live.set(id, t);
+        this.persistProgress(id, t);
+        this.lastWrite.set(id, Date.now());
+      } else {
+        this.live.delete(id);
+        this.lastBroadcast.delete(id);
+        this.lastWrite.delete(id);
+      }
+      this.broadcast(t);
+    } else {
+      this.live.delete(id);
+      this.lastBroadcast.delete(id);
+      this.lastWrite.delete(id);
     }
-    else this.live.delete(id);
-    if (t) this.broadcast(t);
   }
 
   /**
@@ -361,10 +527,12 @@ export class DownloadQueue {
    * byte-level updates stay smooth without overloading the database.
    */
   private updateProgress(id: number, patch: LiveFields, opts?: { force?: boolean; forceBroadcast?: boolean }): void {
+    const run = this.activeRuns.get(id);
+    if (run && (run.cancelled || run.paused || run.shuttingDown || run.stopped)) return;
     let snap = this.live.get(id);
     if (!snap) {
       const base = this.readRow(id);
-      if (!base) return;
+      if (!base || base.status !== 'downloading') return;
       snap = { ...base };
     }
     const merged = { ...snap, ...patch, revision: snap.revision + 1 };
@@ -401,37 +569,186 @@ export class DownloadQueue {
       .run();
   }
 
-  /** Pause an in-flight download (stops after the current page) or a queued one. */
+  /** Pause an in-flight download (aborts active transfer, preserves saved pages, frees concurrency slot) or a queued one. */
   pause(id: number): boolean {
     const task = this.get(id);
     if (!task) return false;
+    const run = this.activeRuns.get(id);
+    if (run?.committing) return false;
     if (task.status === 'queued' || task.status === 'downloading') {
+      if (run) {
+        run.paused = true;
+        run.stopped = true;
+        run.pauseSignal.paused = true;
+        run.controller.abort(new DownloadPausedError());
+        wakePaused(run);
+      }
       this.setStatus(id, 'paused');
-      const run = this.activeRuns.get(id);
-      if (run) run.pauseSignal.paused = true;
       return true;
     }
     return false;
   }
 
-  /** Resume a paused task, or retry a settled failed task. */
+  /** Resume a paused task (re-queues it for the next available slot), or retry a settled failed task. */
   resume(id: number): boolean {
     const task = this.get(id);
     if (!task) return false;
     if (task.status === 'paused') {
-      const run = this.activeRuns.get(id);
-      if (run) {
-        run.pauseSignal.paused = false;
-        wakePaused(run);
-        this.setStatus(id, 'downloading');
-        return true;
-      }
       this.setStatus(id, 'queued');
       void this.pump();
       return true;
     }
     if (task.status === 'failed') return this.retry(id);
     return false;
+  }
+
+  /** Pause all queued and non-committing active downloads atomically (queued first so no slot refills mid-sweep). */
+  pauseAll(): number {
+    const db = getDb();
+    const queuedRows = db
+      .select({ id: schema.downloadQueue.id })
+      .from(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.status, 'queued'))
+      .all();
+    let count = 0;
+    if (queuedRows.length > 0) {
+      const ids = queuedRows.map((row) => row.id);
+      db.update(schema.downloadQueue)
+        .set({
+          status: 'paused',
+          speed: 0,
+          currentFile: null,
+          phase: null,
+          revision: sql`${schema.downloadQueue.revision} + 1`,
+        })
+        .where(and(inArray(schema.downloadQueue.id, ids), eq(schema.downloadQueue.status, 'queued')))
+        .run();
+      for (const id of ids) {
+        this.live.delete(id);
+        this.lastBroadcast.delete(id);
+        this.lastWrite.delete(id);
+        const updated = this.readRow(id);
+        if (updated && updated.status === 'paused') {
+          this.broadcast(updated);
+          count++;
+        }
+      }
+    }
+    const downloadingRows = db
+      .select({ id: schema.downloadQueue.id })
+      .from(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.status, 'downloading'))
+      .all();
+    for (const { id } of downloadingRows) {
+      if (this.pause(id)) count++;
+    }
+    return count;
+  }
+
+  /** Resume every paused download and pump once. */
+  resumeAll(): number {
+    const db = getDb();
+    const pausedRows = db
+      .select({ id: schema.downloadQueue.id })
+      .from(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.status, 'paused'))
+      .all();
+    if (!pausedRows.length) return 0;
+    const ids = pausedRows.map((row) => row.id);
+    db.update(schema.downloadQueue)
+      .set({
+        status: 'queued',
+        speed: null,
+        currentFile: null,
+        phase: null,
+        revision: sql`${schema.downloadQueue.revision} + 1`,
+      })
+      .where(and(inArray(schema.downloadQueue.id, ids), eq(schema.downloadQueue.status, 'paused')))
+      .run();
+    let resumed = 0;
+    for (const id of ids) {
+      this.live.delete(id);
+      const updated = this.readRow(id);
+      if (updated && updated.status === 'queued') {
+        this.broadcast(updated);
+        resumed++;
+      }
+    }
+    if (resumed > 0) void this.pump();
+    return resumed;
+  }
+
+  /** Retry all permanently failed (non-cancelled, non-retry-wait) downloads and pump once. */
+  retryFailed(): number {
+    const db = getDb();
+    const rows = db
+      .select()
+      .from(schema.downloadQueue)
+      .where(
+        and(
+          eq(schema.downloadQueue.status, 'failed'),
+          isNull(schema.downloadQueue.retryAt),
+          or(isNull(schema.downloadQueue.errorCode), ne(schema.downloadQueue.errorCode, 'cancelled')),
+        ),
+      )
+      .all();
+    const eligible = rows.filter(
+      (row) => !this.activeRuns.has(row.id) && !(row.outputPath && archiveMutations.isBusy(archiveResource(row.outputPath))),
+    );
+    if (!eligible.length) return 0;
+    const ids = eligible.map((row) => row.id);
+    for (const id of ids) {
+      const pending = this.retryTimers.get(id);
+      if (pending) {
+        clearTimeout(pending);
+        this.retryTimers.delete(id);
+      }
+      this.live.delete(id);
+    }
+    db.update(schema.downloadQueue)
+      .set({
+        status: 'queued',
+        speed: null,
+        currentFile: null,
+        phase: null,
+        errorMessage: null,
+        errorCode: null,
+        retryAt: null,
+        retryCount: 0,
+        startedAt: null,
+        finishedAt: null,
+        revision: sql`${schema.downloadQueue.revision} + 1`,
+      })
+      .where(inArray(schema.downloadQueue.id, ids))
+      .run();
+    for (const id of ids) {
+      const updated = this.readRow(id);
+      if (updated) this.broadcast(updated);
+    }
+    void this.pump();
+    return ids.length;
+  }
+
+  /** Move a queued task ahead of every other queued download. */
+  prioritize(id: number): boolean {
+    const task = this.get(id);
+    if (!task || task.status !== 'queued') return false;
+    const db = getDb();
+    const top = db
+      .select({ priority: schema.downloadQueue.priority })
+      .from(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.status, 'queued'))
+      .orderBy(desc(schema.downloadQueue.priority))
+      .limit(1)
+      .get();
+    const nextPriority = Math.max((top?.priority ?? 0) + 1, (task.priority ?? 0) + 1);
+    db.update(schema.downloadQueue)
+      .set({ priority: nextPriority, revision: this.nextRevision(id) })
+      .where(and(eq(schema.downloadQueue.id, id), eq(schema.downloadQueue.status, 'queued')))
+      .run();
+    const updated = this.readRow(id);
+    if (updated) this.broadcast(updated);
+    return true;
   }
 
   /** A failed task may still be waiting for its automatic retry timer. */
@@ -447,8 +764,20 @@ export class DownloadQueue {
     if (retryTimer && task.status === 'failed') {
       clearTimeout(retryTimer);
       this.retryTimers.delete(id);
-      getDb().update(schema.downloadQueue).set({ errorMessage: 'Cancelled by user', errorCode: 'cancelled', retryAt: null }).where(eq(schema.downloadQueue.id, id)).run();
-      this.syncLive(id);
+      getDb()
+        .update(schema.downloadQueue)
+        .set({
+          errorMessage: 'Cancelled by user',
+          errorCode: 'cancelled',
+          retryAt: null,
+          speed: 0,
+          currentFile: null,
+          phase: null,
+          revision: this.nextRevision(id),
+        })
+        .where(eq(schema.downloadQueue.id, id))
+        .run();
+      this.syncLive(id, false);
       this.discoverCompletedDownload(id);
       return true;
     }
@@ -457,12 +786,30 @@ export class DownloadQueue {
       const run = this.activeRuns.get(id);
       if (run) {
         run.cancelled = true;
+        run.paused = false;
+        run.stopped = true;
         run.controller.abort(new Error('Cancelled by user'));
         // A worker parked on the pause gate must exit promptly.
         wakePaused(run);
       }
-      getDb().update(schema.downloadQueue).set({ errorMessage: 'Cancelled by user', errorCode: 'cancelled', retryAt: null }).where(eq(schema.downloadQueue.id, id)).run();
-      this.setStatus(id, 'failed');
+      const progress = this.snapshotProgress(id);
+      getDb()
+        .update(schema.downloadQueue)
+        .set({
+          status: 'failed',
+          finishedAt: new Date().toISOString(),
+          errorMessage: 'Cancelled by user',
+          errorCode: 'cancelled',
+          retryAt: null,
+          speed: 0,
+          currentFile: null,
+          phase: null,
+          ...(progress ?? {}),
+          revision: this.nextRevision(id),
+        })
+        .where(eq(schema.downloadQueue.id, id))
+        .run();
+      this.syncLive(id, false);
       if (!run) this.discoverCompletedDownload(id);
       return true;
     }
@@ -471,36 +818,64 @@ export class DownloadQueue {
 
   /**
    * Re-queue a task that failed on a transient error (CDN 503/timeout) after a
-   * cooldown, up to MAX_AUTO_RETRIES times. The row stays visible as "failed"
-   * with an explicit retry deadline until the timer flips it back to "queued"; a manual
-   * retry or delete supersedes the pending timer via status guards.
+   * progressive cooldown, up to MAX_AUTO_RETRIES times. The row stays visible as
+   * "failed" with an explicit retry deadline until the timer flips it back to
+   * "queued"; a manual retry or delete supersedes the pending timer via status guards.
    */
-  private scheduleAutoRetry(id: number, message: string): void {
+  private scheduleAutoRetry(id: number, message: string, retryAfterMs: number | null = null): void {
     const count = (this.get(id)?.retryCount ?? 0) + 1;
     if (count > MAX_AUTO_RETRIES) {
       this.setStatus(id, 'failed');
       return;
     }
+    const baseDelay = AUTO_RETRY_DELAYS_MS[count - 1] ?? AUTO_RETRY_DELAYS_MS[AUTO_RETRY_DELAYS_MS.length - 1];
+    const delayMs = retryAfterMs !== null ? Math.min(Math.max(baseDelay, retryAfterMs), MAX_AUTO_RETRY_DELAY_MS) : baseDelay;
+    const progress = this.snapshotProgress(id);
     getDb()
       .update(schema.downloadQueue)
-      .set({ status: 'failed', finishedAt: new Date().toISOString(), errorMessage: message, retryAt: new Date(Date.now() + AUTO_RETRY_DELAY_MS).toISOString(), retryCount: count })
+      .set({
+        status: 'failed',
+        finishedAt: new Date().toISOString(),
+        errorMessage: message,
+        retryAt: new Date(Date.now() + delayMs).toISOString(),
+        retryCount: count,
+        speed: 0,
+        currentFile: null,
+        phase: null,
+        ...(progress ?? {}),
+        revision: this.nextRevision(id),
+      })
       .where(eq(schema.downloadQueue.id, id))
       .run();
-    this.syncLive(id);
-    this.armRetry(id, AUTO_RETRY_DELAY_MS);
+    this.syncLive(id, false);
+    this.armRetry(id, delayMs);
   }
 
   private armRetry(id: number, delay: number): void {
+    const existing = this.retryTimers.get(id);
+    if (existing) clearTimeout(existing);
     const timer = setTimeout(() => {
       this.retryTimers.delete(id);
+      if (this.shuttingDown) return;
       const t = this.readRow(id);
       if (!t || t.state.type !== 'retry-wait') return; // user retried or deleted meanwhile
       getDb()
         .update(schema.downloadQueue)
-        .set({ status: 'queued', speed: null, currentFile: null, errorMessage: null, errorCode: null, retryAt: null, startedAt: null, finishedAt: null })
+        .set({
+          status: 'queued',
+          speed: null,
+          currentFile: null,
+          phase: null,
+          errorMessage: null,
+          errorCode: null,
+          retryAt: null,
+          startedAt: null,
+          finishedAt: null,
+          revision: this.nextRevision(id),
+        })
         .where(eq(schema.downloadQueue.id, id))
         .run();
-      this.syncLive(id);
+      this.syncLive(id, false);
       void this.pump();
     }, delay);
     timer.unref();
@@ -520,12 +895,27 @@ export class DownloadQueue {
       clearTimeout(pending);
       this.retryTimers.delete(id);
     }
+    const rev = this.nextRevision(id);
     this.live.delete(id);
     getDb()
       .update(schema.downloadQueue)
-      .set({ status: 'queued', speed: null, currentFile: null, errorMessage: null, errorCode: null, retryAt: null, retryCount: 0, startedAt: null, finishedAt: null })
+      .set({
+        status: 'queued',
+        speed: null,
+        currentFile: null,
+        phase: null,
+        errorMessage: null,
+        errorCode: null,
+        retryAt: null,
+        retryCount: 0,
+        startedAt: null,
+        finishedAt: null,
+        revision: rev,
+      })
       .where(eq(schema.downloadQueue.id, id))
       .run();
+    const updated = this.readRow(id);
+    if (updated) this.broadcast(updated);
     void this.pump();
     return true;
   }
@@ -536,6 +926,8 @@ export class DownloadQueue {
     if (!task || this.isRunning(id) || ['queued', 'downloading', 'paused'].includes(task.status)) return false;
     getDb().delete(schema.downloadQueue).where(eq(schema.downloadQueue.id, id)).run();
     this.live.delete(id);
+    this.lastBroadcast.delete(id);
+    this.lastWrite.delete(id);
     const pending = this.retryTimers.get(id);
     if (pending) {
       clearTimeout(pending);
@@ -553,7 +945,44 @@ export class DownloadQueue {
     const db = getDb();
     const removed = db.delete(schema.downloadQueue).where(eq(schema.downloadQueue.status, 'completed'))
       .returning({ id: schema.downloadQueue.id }).all();
-    for (const { id } of removed) this.live.delete(id);
+    for (const { id } of removed) {
+      this.live.delete(id);
+      this.lastBroadcast.delete(id);
+      this.lastWrite.delete(id);
+    }
+    this.broadcastRemovals(removed.map((row) => row.id));
+    return removed.length;
+  }
+
+  /** Delete all settled cancelled tasks and clean their leftover partial scratch dirs. */
+  clearCancelled(): number {
+    const db = getDb();
+    const candidates = db
+      .select({ id: schema.downloadQueue.id })
+      .from(schema.downloadQueue)
+      .where(and(eq(schema.downloadQueue.status, 'failed'), eq(schema.downloadQueue.errorCode, 'cancelled')))
+      .all()
+      .filter((row) => !this.activeRuns.has(row.id));
+    if (!candidates.length) return 0;
+    const ids = candidates.map((row) => row.id);
+    const removed = db
+      .delete(schema.downloadQueue)
+      .where(inArray(schema.downloadQueue.id, ids))
+      .returning({ id: schema.downloadQueue.id })
+      .all();
+    for (const { id } of removed) {
+      this.live.delete(id);
+      this.lastBroadcast.delete(id);
+      this.lastWrite.delete(id);
+      const pending = this.retryTimers.get(id);
+      if (pending) {
+        clearTimeout(pending);
+        this.retryTimers.delete(id);
+      }
+      void fs.promises
+        .rm(path.join(getTmpDir(), 'downloads', String(id)), { recursive: true, force: true })
+        .catch((err) => console.warn('[h-tosho] failed to remove download scratch dir:', err));
+    }
     this.broadcastRemovals(removed.map((row) => row.id));
     return removed.length;
   }
@@ -608,41 +1037,44 @@ export class DownloadQueue {
   // ---------------- Pump / concurrency ----------------
 
   private claimNext(): DownloadRow | null {
+    if (this.shuttingDown) return null;
     const db = getDb();
-    for (;;) {
-      const row = db
-        .select()
-        .from(schema.downloadQueue)
-        .where(eq(schema.downloadQueue.status, 'queued'))
-        .orderBy(desc(schema.downloadQueue.priority), asc(schema.downloadQueue.id))
-        .limit(1)
-        .get();
-      if (!row) return null;
-      if (this.activeRuns.has(row.id)) {
-        // A live run already owns this task (a pause/resume race re-queued it);
-        // restore its status and claim the next queued row instead of starting
-        // a second process for the same gallery.
-        this.setStatus(row.id, 'downloading');
-        continue;
-      }
-      this.setStatus(row.id, 'downloading');
-      return row;
-    }
+    const activeIds = [...this.activeRuns.keys()];
+    const row = db
+      .select()
+      .from(schema.downloadQueue)
+      .where(
+        activeIds.length > 0
+          ? and(eq(schema.downloadQueue.status, 'queued'), notInArray(schema.downloadQueue.id, activeIds))
+          : eq(schema.downloadQueue.status, 'queued'),
+      )
+      .orderBy(desc(schema.downloadQueue.priority), asc(schema.downloadQueue.id))
+      .limit(1)
+      .get();
+    if (!row) return null;
+    this.setStatus(row.id, 'downloading');
+    return row;
   }
 
   private async pump(): Promise<void> {
-    if (this.pumping) return;
+    if (this.pumping || this.shuttingDown) return;
     this.pumping = true;
     try {
       const maxConcurrent = Math.max(1, this.settingsProvider().maxConcurrentDownloads || 1);
-      while (this.running < maxConcurrent) {
+      while (!this.shuttingDown && this.running < maxConcurrent) {
         const next = this.claimNext();
         if (!next) break;
         this.running++;
-        void this.process(next).finally(() => {
-          this.running--;
-          void this.pump();
-        });
+        const runPromise = this.process(next)
+          .catch((error) => {
+            console.warn(`[h-tosho] unexpected error in download worker #${next.id}:`, error);
+          })
+          .finally(() => {
+            this.runPromises.delete(runPromise);
+            this.running--;
+            void this.pump();
+          });
+        this.runPromises.add(runPromise);
       }
     } finally {
       this.pumping = false;
@@ -668,14 +1100,28 @@ export class DownloadQueue {
   }
 
   private async process(row: DownloadRow): Promise<void> {
-    const ctx: RunContext = { cancelled: false, controller: new AbortController(), stopped: false, committing: false, pauseSignal: { paused: false, waiters: [] } };
+    const ctx: RunContext = {
+      cancelled: false,
+      paused: false,
+      shuttingDown: false,
+      controller: new AbortController(),
+      stopped: false,
+      committing: false,
+      pauseSignal: { paused: false, waiters: [] },
+    };
     this.activeRuns.set(row.id, ctx);
     // Per-task scratch space: pages stream to disk here so only the in-flight
     // images (bounded by maxImageConcurrency) live in RAM.
     const tmpDir = path.join(getTmpDir(), 'downloads', String(row.id));
     let discoverySeriesName: string | undefined;
+    const checkRunStop = (): void => {
+      if (ctx.cancelled) throw new Error('Cancelled by user');
+      if (ctx.paused) throw new DownloadPausedError();
+      if (ctx.shuttingDown) throw new DownloadShutdownError();
+    };
     const perform = async () => {
       try {
+        checkRunStop();
         const settings = this.settingsProvider();
         if (!settings.downloadDirectory) {
           throw new Error('No download directory configured. Set an output folder in Settings first.');
@@ -689,9 +1135,9 @@ export class DownloadQueue {
         // the current account/site settings: a site cutover must not rewrite
         // queued work.
         const idOrUrl = row.sourceUrl ?? row.galleryId;
-        const gallery = await retryTransient(() => resolveDuplicateGallery(row.source as DoujinSource, idOrUrl, true), 4, [2000, 10000, 30000]);
+        const gallery = await retryTransient(() => resolveDuplicateGallery(row.source as DoujinSource, idOrUrl, true), 4, [2000, 10000, 30000], ctx.controller.signal);
         discoverySeriesName = gallery.series ?? gallery.title;
-        if (ctx.cancelled) throw new Error('Cancelled by user');
+        checkRunStop();
         recordGalleryIdentity(gallery);
         const total = gallery.pages.length;
         if (!total) throw new Error('Gallery has no downloadable pages.');
@@ -699,26 +1145,47 @@ export class DownloadQueue {
 
         const destination = this.outputDestination(row, gallery, settings);
         const publish = async () => {
+          checkRunStop();
           // Download all pages with bounded concurrency + rate limiting (streamed for live progress).
           const images = await downloadPages(gallery, row.id, settings, ctx, tmpDir, (id, patch, options) => this.updateProgress(id, patch, options));
+          checkRunStop();
 
           // Write to disk (cbz or folder) and record the output path.
           this.updateProgress(row.id, { phase: 'packing', currentFile: 'Packing archive…' }, { force: true });
           const outputPath = await this.writeOutput(row, gallery, images, settings, ctx);
-          getDb().update(schema.downloadQueue).set({ outputPath }).where(eq(schema.downloadQueue.id, row.id)).run();
 
           // The output is final: the scratch pages are no longer needed. On failure
-          // the tmpDir is deliberately kept so a retry can resume from partial data.
+          // or pause the tmpDir is deliberately kept so a retry/resume continues from partial data.
           // Cleanup completes before the 'completed' status is published so nothing
           // observes a completed task whose scratch dir is still on disk.
           await fs.promises.rm(tmpDir, { recursive: true, force: true });
 
           invalidateDuplicateLibrary();
-          this.setStatus(row.id, 'completed');
+          const finalBytes = this.live.get(row.id)?.bytesCurrent ?? 0;
+          getDb()
+            .update(schema.downloadQueue)
+            .set({
+              outputPath,
+              status: 'completed',
+              finishedAt: new Date().toISOString(),
+              progressCurrent: total,
+              progressTotal: total,
+              bytesCurrent: finalBytes,
+              bytesTotal: finalBytes,
+              speed: 0,
+              currentFile: null,
+              phase: null,
+              errorMessage: null,
+              errorCode: null,
+              retryAt: null,
+              revision: this.nextRevision(row.id),
+            })
+            .where(eq(schema.downloadQueue.id, row.id))
+            .run();
+          this.syncLive(row.id, false);
           // Only completed downloads are taste signals. Failed or cancelled work
           // must not permanently bias the recommendation profile.
           recordGalleryTags(row.source as DoujinSource, gallery);
-          this.updateProgress(row.id, { progressCurrent: total, progressTotal: total, speed: 0, currentFile: null }, { force: true });
         };
         const old = row.outputPath ? archiveResource(row.outputPath) : null;
         const next = archiveResource(destination);
@@ -729,14 +1196,54 @@ export class DownloadQueue {
       } catch (e) {
         ctx.stopped = true;
         wakePaused(ctx);
-        const message = ctx.cancelled ? 'Cancelled by user' : e instanceof Error ? e.message : String(e);
-        getDb().update(schema.downloadQueue).set({ errorMessage: message, errorCode: classifyDownloadError(e, ctx.cancelled), retryAt: null, speed: 0 }).where(eq(schema.downloadQueue.id, row.id)).run();
-        if (!ctx.cancelled) {
-          if (isTransientError(e)) this.scheduleAutoRetry(row.id, message);
+        if (ctx.paused || e instanceof DownloadPausedError) {
+          // Pause already set DB status to 'paused' (or a rapid resume flipped it to 'queued').
+          // Persist any final progress counts while preserving partial files for resume.
+          const progress = this.snapshotProgress(row.id);
+          if (progress) {
+            getDb()
+              .update(schema.downloadQueue)
+              .set({ ...progress, speed: 0, currentFile: null, phase: null, revision: this.nextRevision(row.id) })
+              .where(eq(schema.downloadQueue.id, row.id))
+              .run();
+          }
+        } else if (ctx.shuttingDown || e instanceof DownloadShutdownError) {
+          // Server shutdown: return to 'queued' so the next startup resumes from saved pages.
+          const progress = this.snapshotProgress(row.id);
+          getDb()
+            .update(schema.downloadQueue)
+            .set({
+              status: 'queued',
+              speed: null,
+              currentFile: null,
+              phase: null,
+              startedAt: null,
+              ...(progress ?? {}),
+              revision: this.nextRevision(row.id),
+            })
+            .where(eq(schema.downloadQueue.id, row.id))
+            .run();
+        } else if (!ctx.cancelled) {
+          const message = e instanceof Error ? e.message : String(e);
+          const progress = this.snapshotProgress(row.id);
+          getDb()
+            .update(schema.downloadQueue)
+            .set({
+              errorMessage: message,
+              errorCode: classifyDownloadError(e, false),
+              retryAt: null,
+              speed: 0,
+              currentFile: null,
+              phase: null,
+              ...(progress ?? {}),
+            })
+            .where(eq(schema.downloadQueue.id, row.id))
+            .run();
+          if (isTransientError(e)) this.scheduleAutoRetry(row.id, message, errorRetryAfterMs(e));
           else this.setStatus(row.id, 'failed');
         }
       } finally {
-        // NOTE: the tmpDir intentionally survives a failed run (resume-from-partial);
+        // NOTE: the tmpDir intentionally survives a failed/paused run (resume-from-partial);
         // it is removed here only implicitly by success above or by an explicit remove().
         // Drop the in-memory snapshot so subsequent reads reflect the authoritative DB state.
         this.live.delete(row.id);
@@ -745,7 +1252,7 @@ export class DownloadQueue {
         // Defensive: no worker may stay parked on the pause gate after the run ends.
         wakePaused(ctx);
         this.activeRuns.delete(row.id);
-        this.discoverCompletedDownload(row.id, discoverySeriesName);
+        if (!ctx.paused && !ctx.shuttingDown) this.discoverCompletedDownload(row.id, discoverySeriesName);
         const final = this.readRow(row.id);
         if (final) this.broadcast(final);
       }
@@ -755,10 +1262,15 @@ export class DownloadQueue {
       if (previous && !row.mergeFolder) await archiveMutations.run([previous], perform, ctx.controller.signal);
       else await perform();
     } catch (error) {
-      // Cancellation can reject a reservation before perform() enters its cleanup block.
-      this.activeRuns.delete(row.id);
+      // Cancellation/pause/shutdown can reject a reservation before perform() enters its cleanup block.
       this.live.delete(row.id);
-      if (!ctx.cancelled) throw error;
+      this.lastBroadcast.delete(row.id);
+      this.lastWrite.delete(row.id);
+      wakePaused(ctx);
+      this.activeRuns.delete(row.id);
+      const final = this.readRow(row.id);
+      if (final) this.broadcast(final);
+      if (!ctx.cancelled && !ctx.paused && !ctx.shuttingDown) throw error;
     }
   }
 
@@ -795,17 +1307,26 @@ export class DownloadQueue {
     const destination = this.outputDestination(row, gallery, settings);
     const dir = row.outputFormat === 'folder' ? destination : path.dirname(destination);
     if (ctx.cancelled) throw new Error('Cancelled by user');
-    fs.mkdirSync(base, { recursive: true });
+    if (ctx.paused) throw new DownloadPausedError();
+    if (ctx.shuttingDown) throw new DownloadShutdownError();
+    await fs.promises.mkdir(base, { recursive: true });
     // Stage on the destination volume; cancellation never touches published files.
     const stagingDir = await fs.promises.mkdtemp(path.join(base, '.htosho-download-'));
     const comicInfo = generateComicInfoXml(gallery, this.mergeOptions(row));
     try {
       if (row.outputFormat === 'folder') {
-        await mapLimit(images, 4, (img) => fs.promises.copyFile(img.path, path.join(stagingDir, img.name)));
+        await mapLimit(images, 4, (img) => {
+          if (ctx.cancelled) throw new Error('Cancelled by user');
+          if (ctx.paused) throw new DownloadPausedError();
+          if (ctx.shuttingDown) throw new DownloadShutdownError();
+          return fs.promises.copyFile(img.path, path.join(stagingDir, img.name));
+        });
         await fs.promises.writeFile(path.join(stagingDir, 'ComicInfo.xml'), comicInfo);
         if (ctx.cancelled) throw new Error('Cancelled by user');
+        if (ctx.paused) throw new DownloadPausedError();
+        if (ctx.shuttingDown) throw new DownloadShutdownError();
         ctx.committing = true;
-        fs.mkdirSync(dir, { recursive: true });
+        await fs.promises.mkdir(dir, { recursive: true });
         // Preserve unrelated files in an existing gallery folder.
         for (const name of [...images.map((img) => img.name), 'ComicInfo.xml']) {
           await replacePublishedFile(path.join(stagingDir, name), path.join(dir, name));
@@ -815,8 +1336,10 @@ export class DownloadQueue {
 
       const file = destination;
       const stagedFile = path.join(stagingDir, 'archive.cbz');
-      await buildZipFromFiles(images, stagedFile, [{ name: 'ComicInfo.xml', data: Buffer.from(comicInfo, 'utf8') }]);
+      await buildZipFromFiles(images, stagedFile, [{ name: 'ComicInfo.xml', data: Buffer.from(comicInfo, 'utf8') }], ctx.controller.signal);
       if (ctx.cancelled) throw new Error('Cancelled by user');
+      if (ctx.paused) throw new DownloadPausedError();
+      if (ctx.shuttingDown) throw new DownloadShutdownError();
       const publish = async () => {
         const current = this.readRow(row.id);
         const mergeJob = current?.mergeJobId != null ? jobQueue.get(current.mergeJobId) : null;
@@ -832,8 +1355,10 @@ export class DownloadQueue {
           if (mergeJob) jobQueue.updateMergeState(mergeJob.id,{mergeProtection:checked.state});
         }
         if (ctx.cancelled) throw new Error('Cancelled by user');
+        if (ctx.paused) throw new DownloadPausedError();
+        if (ctx.shuttingDown) throw new DownloadShutdownError();
         ctx.committing = true;
-        fs.mkdirSync(dir, { recursive: true });
+        await fs.promises.mkdir(dir, { recursive: true });
         await replacePublishedFile(stagedFile, file);
         return file;
       };

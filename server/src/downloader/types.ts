@@ -108,7 +108,27 @@ export interface DoujinGallery extends DoujinSearchResult {
    * `forceRefresh`), so long downloads survive CDN base-path rotation that would
    * otherwise 404 stale pre-built URLs. Returns null if the index is unknown.
    */
-  resolvePageUrl?: (index: number, opts?: { forceRefresh?: boolean }) => Promise<{ url: string; fallback?: string | null } | null>;
+  resolvePageUrl?: (
+    index: number,
+    opts?: { forceRefresh?: boolean; signal?: AbortSignal },
+  ) => Promise<{ url: string; fallback?: string | null; fallbacks?: string[] } | null>;
+  /**
+   * Optional provider-managed page transfer. Used by sources that enforce their
+   * own security/pacing/validation transport (e.g. E-Hentai DNS-pinned H@H
+   * transfers with per-lane pacing and magic-byte image validation).
+   * Writes the verified image atomically to `destPath` and returns byte count
+   * plus the detected file extension (without leading dot).
+   */
+  downloadPage?: (
+    index: number,
+    destPath: string,
+    opts: {
+      forceRefresh?: boolean;
+      signal?: AbortSignal;
+      onAttemptStart?: () => void;
+      onProgress?: (receivedBytes: number, totalBytes: number | null) => void;
+    },
+  ) => Promise<{ bytes: number; ext: string }>;
   /**
    * When true, a resolver failure (thrown error, or a null for a known index)
    * is a hard page failure instead of falling back to the static URL. Required

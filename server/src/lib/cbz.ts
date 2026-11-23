@@ -575,7 +575,7 @@ export async function readCoverImage(outputPath: string): Promise<{ data: Buffer
     } catch {
       return null;
     }
-    const image = [...names].sort().find((n) => imageMime(n) !== null);
+    const image = [...names].sort(comparePageNames).find((n) => imageMime(n) !== null);
     if (!image) return null;
     try {
       const data = await fs.promises.readFile(path.join(outputPath, image));
@@ -589,10 +589,11 @@ export async function readCoverImage(outputPath: string): Promise<{ data: Buffer
   const fh = await fs.promises.open(outputPath, 'r');
   try {
     const entries = await readZipEntriesFromDisk(fh, st.size);
-    for (const e of entries) {
-      const mime = imageMime(e.name);
-      if (!mime || (e.method !== 0 && e.method !== 8)) continue;
-      if (e.uncompressedSize === 0 || e.uncompressedSize > COVER_MAX_BYTES) continue;
+    const imageEntries = entries
+      .filter((e) => imageMime(e.name) !== null && (e.method === 0 || e.method === 8) && e.uncompressedSize > 0 && e.uncompressedSize <= COVER_MAX_BYTES)
+      .sort((a, b) => comparePageNames(a.name, b.name));
+    for (const e of imageEntries) {
+      const mime = imageMime(e.name)!;
       const start = await payloadStartFromDisk(fh, e);
       const raw = Buffer.allocUnsafe(e.compressedSize);
       await readFull(fh, raw, start);

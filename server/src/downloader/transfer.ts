@@ -4,8 +4,15 @@ import type { DoujinGallery } from './types.js';
 import type { DownloaderSettings } from '../services/settings.js';
 import { sleep } from '../lib/http.js';
 import { extFromUrl, padPage } from './util.js';
-import { fetchPageToFileWithRetry, resolvePageCandidates } from './requests.js';
-import { wakePaused, type RunContext, type LiveFields } from './runtime.js';
+import {
+  errorRetryAfterMs,
+  fetchPageToFileWithRetry,
+  isRouteRefreshableError,
+  isTransientError,
+  jitterDelay,
+  resolvePageCandidates,
+} from './requests.js';
+import { DownloadPausedError, DownloadShutdownError, wakePaused, type RunContext, type LiveFields } from './runtime.js';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0';
 export async function downloadPages(
   gallery: DoujinGallery,
@@ -193,60 +200,125 @@ export async function downloadPages(
     report(true);
   };
 
+  // Emit resumed progress immediately so the UI shows already-saved pages/bytes
+  // right away instead of flashing 0 of N until the next page finishes.
+  if (resumedSizes.size > 0) {
+    lastFileName = resumedSizes.size < total ? `Page ${resumedSizes.size}/${total}` : null;
+    report(true);
+  }
+
+  const checkStop = (): void => {
+    if (ctx.cancelled) throw new Error('Cancelled by user');
+    if (ctx.paused) throw new DownloadPausedError();
+    if (ctx.shuttingDown) throw new DownloadShutdownError();
+  };
+
   let nextIndex = resumedSizes.size;
   const worker = async (): Promise<void> => {
     while (true) {
-      if (ctx.cancelled) throw new Error('Cancelled by user');
+      checkStop();
       if (ctx.stopped) return;
       if (ctx.pauseSignal.paused) {
         // Park until resume()/cancel() settles the pause gate — event-driven,
         // so a paused run costs no polling timers and wakes the instant it
         // is resumed or cancelled.
         await new Promise<void>((resolve) => ctx.pauseSignal.waiters.push(resolve));
-        if (ctx.cancelled) throw new Error('Cancelled by user');
+        checkStop();
         if (ctx.stopped) return;
         continue;
       }
       const i = nextIndex++;
       if (i >= total) break;
-      // Re-resolve the page URL against the provider's *current* CDN routing
-      // state right before fetching, so long downloads survive base-path
-      // rotation. If both primary and fallback fail, force a routing-table
-      // refresh (the CDN may have rotated) and try once more before giving up.
-      // Each candidate streams straight to the page's final temp name via
-      // `.part` + atomic rename, so only `concurrency` images transit RAM and
-      // the resume scan never sees a truncated page.
       const filePath = path.join(tmpDir, String(i));
       let size: number | null = null;
-      let usedUrl: string | null = null;
+      let ext: string | null = null;
       let lastErr: unknown = null;
-      for (const force of [false, true]) {
-        if (ctx.cancelled) throw new Error('Cancelled by user');
-        if (ctx.stopped) return;
-        if (force) await sleep(30_000, ctx.controller.signal); // let a CDN storm clear before re-resolving URLs
-        if (ctx.cancelled) throw new Error('Cancelled by user');
-        if (ctx.stopped) return;
-        const candidates = await resolvePageCandidates(gallery, i, force);
-        for (const url of candidates) {
-          if (ctx.cancelled) throw new Error('Cancelled by user');
+
+      if (gallery.downloadPage) {
+        // Provider-managed secure/paced transfer (e.g. E-Hentai H@H with DNS pinning,
+        // per-lane pacing, magic-byte validation, and `?nl=` node switching).
+        const maxAttempts = 4;
+        const backoff = [2000, 6000, 15000];
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          checkStop();
           if (ctx.stopped) return;
           try {
-            size = await fetchPageToFileWithRetry(url, pageHeaders, filePath, {
+            const result = await gallery.downloadPage(i, filePath, {
+              forceRefresh: attempt > 0,
+              signal: ctx.controller.signal,
               onAttemptStart: () => {
                 bs.inflight.set(i, 0);
               },
               onProgress: (received, totalBytes) => onChunk(i, received, totalBytes),
-            }, ctx.controller.signal);
-            usedUrl = url;
+            });
+            size = result.bytes;
+            ext = result.ext;
             break;
           } catch (err) {
+            bs.inflight.delete(i);
             lastErr = err;
+            checkStop();
+            if (ctx.stopped) return;
+            const refreshable = isRouteRefreshableError(err);
+            const transient = isTransientError(err);
+            if ((!refreshable && !transient) || attempt >= maxAttempts - 1) break;
+            if (refreshable && !transient) {
+              // Stale H@H node (404/410): switch nodes via `?nl=` promptly without a long wait.
+              continue;
+            }
+            const advised = errorRetryAfterMs(err);
+            const waitMs = advised !== null ? Math.max(advised, 250) : jitterDelay(backoff[attempt] ?? backoff[backoff.length - 1]);
+            await sleep(waitMs, ctx.controller.signal);
           }
         }
-        if (size != null) break;
+      } else {
+        // Re-resolve the page URL against the provider's *current* CDN routing
+        // state right before fetching, so long downloads survive base-path
+        // rotation. On a stale route (404/410) with a live resolver, refresh
+        // immediately; on a transient storm, back off briefly before refreshing;
+        // on permanent errors (401/403/static 404), fail without wasting 30s.
+        let usedUrl: string | null = null;
+        for (const force of [false, true]) {
+          checkStop();
+          if (ctx.stopped) return;
+          if (force) {
+            if (!gallery.resolvePageUrl) break;
+            const refreshable = isRouteRefreshableError(lastErr);
+            const transient = isTransientError(lastErr);
+            if (!refreshable && !transient) break;
+            if (!refreshable) {
+              const advised = errorRetryAfterMs(lastErr);
+              const waitMs = advised !== null ? Math.max(advised, 250) : jitterDelay(15_000);
+              await sleep(waitMs, ctx.controller.signal);
+            }
+            checkStop();
+            if (ctx.stopped) return;
+          }
+          const candidates = await resolvePageCandidates(gallery, i, force, ctx.controller.signal);
+          for (const url of candidates) {
+            checkStop();
+            if (ctx.stopped) return;
+            try {
+              size = await fetchPageToFileWithRetry(url, pageHeaders, filePath, {
+                onAttemptStart: () => {
+                  bs.inflight.set(i, 0);
+                },
+                onProgress: (received, totalBytes) => onChunk(i, received, totalBytes),
+              }, ctx.controller.signal);
+              usedUrl = url;
+              break;
+            } catch (err) {
+              bs.inflight.delete(i);
+              lastErr = err;
+            }
+          }
+          if (size != null) break;
+        }
+        if (size != null) ext = extFromUrl(usedUrl ?? pages[i]);
       }
+
       if (size == null) throw lastErr instanceof Error ? lastErr : new Error(`Failed to download page ${i + 1}`);
-      const name = `${padPage(i + 1, total)}.${extFromUrl(usedUrl ?? pages[i])}`;
+      const name = `${padPage(i + 1, total)}.${ext || extFromUrl(pages[i])}`;
       out[i] = { name, path: filePath };
       recordPageName(i, name);
       onPageDone(i, size);

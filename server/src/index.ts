@@ -83,6 +83,9 @@ function main(): void {
     rescheduleWatchedSearches();
     sweepWatchedSearches();
   });
+  const unsubscribeDownloaderSettings = onSettingChange('downloader', () => {
+    downloadQueue.onSettingsChanged();
+  });
   scheduleScan();
   sweepWatchedSearches();
   const app = createApp();
@@ -90,16 +93,22 @@ function main(): void {
   console.log(`[h-tosho] listening on http://${HOST}:${PORT} (api at /api)`);
   const stopRecommendationPreloading = startRecommendationPreloading(prefetchMedia);
 
+  let shuttingDown = false;
   const shutdown = (): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log('[h-tosho] shutting down');
     unsubscribePollInterval();
     unsubscribeWatchedSearchInterval();
+    unsubscribeDownloaderSettings();
     clearTimeout(pollTimer);
     clearInterval(watchedTimer);
     clearInterval(matchableTimer);
     stopRecommendationPreloading();
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 2000).unref();
+    void downloadQueue.shutdown(1500).finally(() => {
+      server.close(() => process.exit(0));
+    });
+    setTimeout(() => process.exit(0), 2500).unref();
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

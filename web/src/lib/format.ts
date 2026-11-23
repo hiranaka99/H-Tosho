@@ -15,3 +15,21 @@ export function formatBytes(bytes: number | null | undefined): string {
   }
   return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
+
+export function formatEta(remainingBytes: number, bps: number | null): string {
+  if (!bps || bps <= 0 || !Number.isFinite(remainingBytes) || remainingBytes <= 0) return '';
+  const seconds = Math.ceil(remainingBytes / bps);
+  if (seconds < 60) return `~${seconds}s left`;
+  if (seconds < 3600) {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return secs > 0 ? `~${mins}m ${secs}s left` : `~${mins}m left`;
+  }
+  let hours = Math.floor(seconds / 3600);
+  let mins = Math.round((seconds % 3600) / 60);
+  if (mins === 60) {
+    hours += 1;
+    mins = 0;
+  }
+  return mins > 0 ? `~${hours}h ${mins}m left` : `~${hours}h left`;
+}

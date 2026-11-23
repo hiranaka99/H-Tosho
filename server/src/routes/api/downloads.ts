@@ -33,9 +33,23 @@ api.post('/downloads/library-matches', async (c) => {
 });
 
 api.post('/downloads/duplicates', async (c) => {
-  const body = await c.req.json() as { items?: { source: DoujinSource; galleryId: string }[]; refreshLibrary?: boolean };
-  if (!Array.isArray(body.items) || !body.items.length || body.items.length > 100 || body.items.some(item => !item || getDoujinProvider(item.source)?.id !== item.source || typeof item.galleryId !== 'string' || !item.galleryId.trim())) return c.json({ error: 'Provide 1–100 supported galleries to check.' }, 400);
-  try { return c.json(findDuplicateReports(await prepareDuplicateCheck(body.items, body.refreshLibrary === true))); }
+  const body = await c.req.json() as { items?: { source: DoujinSource; galleryId: string; url?: string }[]; refreshLibrary?: boolean };
+  if (!Array.isArray(body.items) || !body.items.length || body.items.length > 100 || body.items.some(item => !item || getDoujinProvider(item.source)?.id !== item.source || typeof item.galleryId !== 'string' || !item.galleryId.trim() || (item.url !== undefined && typeof item.url !== 'string'))) return c.json({ error: 'Provide 1–100 supported galleries to check.' }, 400);
+  const items: { source: DoujinSource; galleryId: string; url?: string }[] = [];
+  for (const item of body.items) {
+    let validUrl: string | undefined;
+    if (item.url !== undefined) {
+      try {
+        const parsed = new URL(item.url);
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('bad protocol');
+        validUrl = parsed.toString();
+      } catch {
+        return c.json({ error: 'url must be an absolute http(s) URL' }, 400);
+      }
+    }
+    items.push({ source: item.source, galleryId: item.galleryId, ...(validUrl ? { url: validUrl } : {}) });
+  }
+  try { return c.json(findDuplicateReports(await prepareDuplicateCheck(items, body.refreshLibrary === true))); }
   catch (error) { return c.json({ error: 'Could not check for duplicates', message: errMsg(error) }, 502); }
 });
 
@@ -109,7 +123,7 @@ async function prepareDownload(body: DownloadInput, group?: MergeDownloadGroup):
   // Queue priority: higher runs first; ties keep FIFO order. Defaults to 0.
   const priority = typeof body.priority === 'number' && Number.isFinite(body.priority) ? Math.trunc(body.priority) : 0;
   try {
-    const identities = await prepareDuplicateCheck([{ source: body.source as DoujinSource, galleryId: body.galleryId }]);
+    const identities = await prepareDuplicateCheck([{ source: body.source as DoujinSource, galleryId: body.galleryId, ...(sourceUrl ? { url: sourceUrl } : {}) }]);
     return () => {
       // Another request can finish its preflight while the batch is resolving.
       if (downloadQueue.findCompleted(body.source as DoujinSource, body.galleryId)
@@ -278,10 +292,10 @@ api.get('/downloads/:id/cover', async (c) => {
   const img = await readCoverImage(task.outputPath);
   if (!img) return c.json({ error: 'No cover available' }, 404);
   return new Response(img.data, {
-    headers: { 'Content-Type': img.mime, 'Cache-Control': 'private, max-age=86400' } });
+    headers: { 'Content-Type': img.mime, 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff' } });
 });
 
-const DOWNLOAD_ACTIONS = ['pause', 'resume', 'cancel', 'retry'] as const;
+const DOWNLOAD_ACTIONS = ['pause', 'resume', 'cancel', 'retry', 'prioritize'] as const;
 for (const action of DOWNLOAD_ACTIONS) {
   api.post(`/downloads/:id/${action}`, (c) => {
     const id = intParam(c.req.param('id'));
@@ -304,8 +318,28 @@ api.delete('/downloads/:id', (c) => {
   return c.json({ ok: true });
 });
 
+api.post('/downloads/pause-all', (c) => {
+  const count = downloadQueue.pauseAll();
+  return c.json({ ok: true, count });
+});
+
+api.post('/downloads/resume-all', (c) => {
+  const count = downloadQueue.resumeAll();
+  return c.json({ ok: true, count });
+});
+
+api.post('/downloads/retry-failed', (c) => {
+  const count = downloadQueue.retryFailed();
+  return c.json({ ok: true, count });
+});
+
 api.post('/downloads/clear-completed', (c) => {
   const removed = downloadQueue.clearCompleted();
+  return c.json({ ok: true, removed });
+});
+
+api.post('/downloads/clear-cancelled', (c) => {
+  const removed = downloadQueue.clearCancelled();
   return c.json({ ok: true, removed });
 });
 
