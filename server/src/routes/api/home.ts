@@ -41,11 +41,23 @@ api.delete('/home/matches/:id/reject', async c => {
 
 api.get('/home/activity', c => {
   const db = getDb();
-  const history = db.select().from(schema.syncHistory).orderBy(desc(schema.syncHistory.id)).limit(20).all().map(row => ({
+  const history = db.select({
+    id: schema.syncHistory.id,
+    kavitaSeriesId: schema.syncHistory.kavitaSeriesId,
+    seriesTitle: schema.syncHistory.seriesTitle,
+    action: schema.syncHistory.action,
+    createdAt: schema.syncHistory.createdAt,
+  }).from(schema.syncHistory).orderBy(desc(schema.syncHistory.id)).limit(20).all().map(row => ({
     id: `series-${row.id}`, title: row.seriesTitle || `Series #${row.kavitaSeriesId}`, action: row.action,
     createdAt: row.createdAt, href: `/libraries?series=${row.kavitaSeriesId}`,
   }));
-  const downloads = db.select().from(schema.downloadQueue).where(eq(schema.downloadQueue.status, 'completed')).orderBy(desc(schema.downloadQueue.finishedAt)).limit(20).all().map(row => ({
+  const downloads = db.select({
+    id: schema.downloadQueue.id,
+    galleryId: schema.downloadQueue.galleryId,
+    title: schema.downloadQueue.title,
+    finishedAt: schema.downloadQueue.finishedAt,
+    createdAt: schema.downloadQueue.createdAt,
+  }).from(schema.downloadQueue).where(eq(schema.downloadQueue.status, 'completed')).orderBy(desc(schema.downloadQueue.finishedAt)).limit(20).all().map(row => ({
     id: `download-${row.id}`, title: row.title || `Gallery #${row.galleryId}`, action: 'downloaded',
     createdAt: row.finishedAt ?? row.createdAt, href: '/downloader?tab=downloads',
   }));

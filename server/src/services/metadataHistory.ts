@@ -12,8 +12,8 @@ import { RESTORABLE_METADATA_FIELDS, getMetadataRestoreFieldAvailability, metada
 import { getKavitaConnection } from './settings.js';
 import { kavitaConnectionKey } from './kavitaState.js';
 import { getFieldPolicy } from './fieldPolicies.js';
-import { coverJournal, coverHistory, interruptCoverHistory } from './metadataCovers.js';
-import type { CoverTarget } from '../contracts/metadataCovers.js';
+import { coverJournal, coverHistoryBatch, interruptCoverHistory } from './metadataCovers.js';
+import type { CoverHistory, CoverTarget } from '../contracts/metadataCovers.js';
 
 const connection = () => kavitaConnectionKey(getKavitaConnection().baseUrl);
 export function describeMetadataPatch(payload:object):Record<string,unknown> {
@@ -135,15 +135,17 @@ export async function withMetadataHistory<T>(client: KavitaClient, seriesId: num
 }
 
 type Row=typeof schema.metadataOperations.$inferSelect;
-function summary(row:Row):MetadataHistoryEntry {
-  const before:MetadataSnapshot=JSON.parse(row.beforeJson), after:MetadataSnapshot|null=row.afterJson?JSON.parse(row.afterJson):null;
-  const cover=coverHistory(row.id);
+function summary(row:Row, cover?: CoverHistory, parsedBefore?: MetadataSnapshot, parsedAfter?: MetadataSnapshot | null):MetadataHistoryEntry {
+  const before:MetadataSnapshot=parsedBefore ?? JSON.parse(row.beforeJson);
+  const after:MetadataSnapshot|null=parsedAfter !== undefined ? parsedAfter : (row.afterJson?JSON.parse(row.afterJson):null);
   return {id:row.id,sequence:row.sequence,origin:row.origin,status:row.status,createdAt:row.createdAt,finishedAt:row.finishedAt,
     fields:JSON.parse(row.fieldsJson),changedFields:[...(after?Object.keys(before.fields).filter(field=>metadataValueKey(before.fields[field])!==metadataValueKey(after.fields[field])):[]),...((cover?.series?.changed || cover?.volumes.some(volume => volume.changed))?['cover']:[])],message:row.message,jobId:row.jobId,restoredFromOperationId:row.restoredFromOperationId};
 }
 export function listMetadataHistory(seriesId:number,cursor?:number) {
   const rows=getDb().select().from(schema.metadataOperations).where(and(eq(schema.metadataOperations.connectionKey,connection()),eq(schema.metadataOperations.seriesId,seriesId),cursor?lt(schema.metadataOperations.sequence,cursor):undefined)).orderBy(desc(schema.metadataOperations.sequence)).limit(21).all();
-  const items=rows.slice(0,20).map(summary);
+  const page = rows.slice(0,20);
+  const coversByOp = coverHistoryBatch(page);
+  const items=page.map(row => summary(row, coversByOp.get(row.id)));
   return {items,nextCursor:rows.length>20?items.at(-1)!.sequence:null};
 }
 export function metadataHistoryDetail(seriesId:number,id:string):MetadataHistoryDetail|null {
@@ -152,7 +154,7 @@ export function metadataHistoryDetail(seriesId:number,id:string):MetadataHistory
   const before = JSON.parse(row.beforeJson) as MetadataSnapshot;
   const after = row.afterJson ? JSON.parse(row.afterJson) as MetadataSnapshot : null;
   const policy = getFieldPolicy(seriesId);
-  const covers=coverHistory(id);
+  const covers=coverHistoryBatch([row]).get(id);
   const availability = (value: MetadataSnapshot | null, side: 'before' | 'after') => RESTORABLE_METADATA_FIELDS.map(field => {
     const result = getMetadataRestoreFieldAvailability(field, value?.fields[field]);
     if (row.status === 'running' || (side === 'after' && row.status === 'unverified')) {
@@ -162,7 +164,7 @@ export function metadataHistoryDetail(seriesId:number,id:string):MetadataHistory
     return policy.lockedFields.includes(field as typeof policy.lockedFields[number])
       ? {...result, available:false, reason:'Protected by H-Tosho field policy', nativeLockAvailable:false} : result;
   });
-  return {...summary(row),before:publicSnapshot(before),after:after?publicSnapshot(after):null,...(covers?{covers}:{}),
+  return {...summary(row, covers, before, after),before:publicSnapshot(before),after:after?publicSnapshot(after):null,...(covers?{covers}:{}),
     archives:getDb().select().from(schema.metadataOperationSteps).where(eq(schema.metadataOperationSteps.operationId,id)).all().map(archiveDetail),
     restoreAvailability:{before:availability(before,'before'),after:availability(after,'after')},
     availability:{metadata:row.afterJson?'captured':'unverified',archives:'Captured files only; current identity and fingerprints must pass preview. Moves are not reversible.',covers:covers?'Retained series/volume images; API restoration requires current identity/protection checks and explicit conversion review':'No cover mutation was captured; earlier history has no image backup',restore:'Selected metadata, paired titles, ComicInfo XML and retained covers; preview and approval required'}};

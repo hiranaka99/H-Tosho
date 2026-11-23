@@ -10,7 +10,7 @@ import { jobLabel } from '../lib/utils';
 import { needsAttention } from '../lib/jobStatus';
 import { ProgressBar } from './ui';
 
-function JobRow({ job }: { job: Job }) {
+const JobRow = React.memo(function JobRow({ job }: { job: Job }) {
   const qc = useQueryClient();
   const running = job.status === 'running';
   return (
@@ -50,7 +50,7 @@ function JobRow({ job }: { job: Job }) {
         ))}
     </div>
   );
-}
+});
 
 function TaskIcon({ status }: { status: DownloadTask['status'] }) {
   if (status === 'downloading') return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" />;
@@ -59,7 +59,7 @@ function TaskIcon({ status }: { status: DownloadTask['status'] }) {
   return <Pause className="h-3.5 w-3.5 shrink-0 text-warning" />;
 }
 
-function DownloadRow({ task, onAction }: { task: DownloadTask; onAction: (op: 'pause' | 'resume' | 'cancel', id: number) => void }) {
+const DownloadRow = React.memo(function DownloadRow({ task, onAction }: { task: DownloadTask; onAction: (op: 'pause' | 'resume' | 'cancel', id: number) => void }) {
   const busy = task.status === 'downloading';
   const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : null;
   return (
@@ -97,46 +97,65 @@ function DownloadRow({ task, onAction }: { task: DownloadTask; onAction: (op: 'p
       )}
     </div>
   );
-}
+});
 
 /** Sidebar footer tracker for active background jobs and download controls. */
 export function SidebarStatus() {
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { data: jobs = [] } = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, refetchInterval: 2500 });
+  const { data: jobs = [] } = useQuery({
+    queryKey: ['jobs'],
+    queryFn: api.jobs,
+    refetchInterval: (query) =>
+      query.state.data?.some((j) => j.status === 'running' || j.status === 'queued') ? 2500 : 15_000,
+  });
   const { tasks, pause, resume, cancel } = useDownloads();
-  const activeJobs = jobs.filter((j) => j.status === 'running' || j.status === 'queued');
-  const previousJobs = React.useRef<Map<number, string> | null>(null);
+  const activeJobs = React.useMemo(() => jobs.filter((j) => j.status === 'running' || j.status === 'queued'), [jobs]);
+  const previousJobs = React.useRef<Map<number, { status: string; type: string }> | null>(null);
   React.useEffect(() => {
     // A short apply can finish between polls without ever appearing as active.
-    // Refresh on newly observed terminal states too, so its approval is visible.
+    // Refresh only the queries affected by the settled job types.
     const previous = previousJobs.current;
-    const current = new Map(jobs.map((j) => [j.id, j.status]));
-    if (previous && (jobs.some((j) =>
-      ['completed', 'failed', 'cancelled'].includes(j.status) && previous.get(j.id) !== j.status,
-    ) || [...previous].some(([id, status]) =>
-      (status === 'running' || status === 'queued') && !current.has(id),
-    ))) {
-      void qc.invalidateQueries({ queryKey: ['library-series'] });
-      void qc.invalidateQueries({ queryKey: ['libraries'] });
-      void qc.invalidateQueries({ queryKey: ['low-confidence'] });
-      void qc.invalidateQueries({ queryKey: ['home-matches'] });
-      void qc.invalidateQueries({ queryKey: ['home-activity'] });
-      void qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
-      void qc.invalidateQueries({ queryKey: ['downloads-library'] });
+    const current = new Map(jobs.map((j) => [j.id, { status: j.status, type: j.type }]));
+    if (previous) {
+      const settledTypes = new Set<string>();
+      for (const j of jobs) {
+        if (['completed', 'failed', 'cancelled'].includes(j.status) && previous.get(j.id)?.status !== j.status) {
+          settledTypes.add(j.type);
+        }
+      }
+      for (const [id, prev] of previous) {
+        if ((prev.status === 'running' || prev.status === 'queued') && !current.has(id)) {
+          settledTypes.add(prev.type);
+        }
+      }
+      if (settledTypes.size > 0) {
+        const onlyWatched = settledTypes.size === 1 && settledTypes.has('check-watched-searches');
+        if (settledTypes.has('check-watched-searches')) {
+          void qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
+          void qc.invalidateQueries({ queryKey: ['watched-searches'] });
+        }
+        if (!onlyWatched) {
+          void qc.invalidateQueries({ queryKey: ['library-series'] });
+          void qc.invalidateQueries({ queryKey: ['libraries'] });
+          void qc.invalidateQueries({ queryKey: ['low-confidence'] });
+          void qc.invalidateQueries({ queryKey: ['home-matches'] });
+          void qc.invalidateQueries({ queryKey: ['home-activity'] });
+          void qc.invalidateQueries({ queryKey: ['downloads-library'] });
+        }
+      }
     }
     previousJobs.current = current;
   }, [jobs, qc]);
-  const shownTasks = tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
-  const attentionJobs = jobs.filter(needsAttention);
-  const failedDownloads = tasks.filter(downloadNeedsAttention);
-  if (activeJobs.length === 0 && shownTasks.length === 0 && attentionJobs.length === 0 && failedDownloads.length === 0) return null;
-
-  const onTaskAction = (op: 'pause' | 'resume' | 'cancel', id: number) => {
+  const shownTasks = React.useMemo(() => tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused'), [tasks]);
+  const attentionJobs = React.useMemo(() => jobs.filter(needsAttention), [jobs]);
+  const failedDownloads = React.useMemo(() => tasks.filter(downloadNeedsAttention), [tasks]);
+  const onTaskAction = React.useCallback((op: 'pause' | 'resume' | 'cancel', id: number) => {
     if (op === 'pause') pause(id);
     else if (op === 'resume') resume(id);
     else cancel(id);
-  };
+  }, [pause, resume, cancel]);
+  if (activeJobs.length === 0 && shownTasks.length === 0 && attentionJobs.length === 0 && failedDownloads.length === 0) return null;
 
   return (
     <div className="flex max-h-1/2 min-h-0 flex-col gap-3 overflow-y-auto border-t border-border p-3">

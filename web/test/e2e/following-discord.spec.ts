@@ -52,7 +52,7 @@ test('Following has no delivery log or digest settings while Discord and Task hi
   expect(saved).not.toHaveProperty('digest');
   // Keep draft testing in the UI without contacting an external webhook.
   await page.route('**/api/settings/notifications/test', route => route.fulfill({ json: { discord: 'ok' } }));
-  await page.getByRole('button', { name: 'Test draft', exact: true }).click();
+  await page.getByRole('button', { name: 'Send test notification', exact: true }).click();
   await expect(page.getByText('Test notification sent to Discord.', { exact: true })).toBeVisible();
   expect((await (await page.request.get('/api/settings')).json()).notifications).toEqual(saved);
   const settingsCard = page.getByRole('heading', { name: 'Notifications', exact: true }).locator('..').locator('..');
@@ -81,7 +81,7 @@ test('Following has no delivery log or digest settings while Discord and Task hi
   expect(checked.result.notified).toBe(1);
   expect((await (await page.request.get(`/api/__test/discord/${project}/posts`)).json()).length).toBe(1);
   await page.getByRole('link', { name: 'View check', exact: true }).click();
-  const task = page.getByRole('dialog');
+  const task = page.getByRole('dialog').or(page.getByRole('complementary', { name: 'Task details' }));
   await expect(task).toContainText('1 Discord notifications sent');
   await expect(task).toContainText('Discord notification sent for');
   await expect(task.getByLabel('Following delivery status')).toHaveCount(0);

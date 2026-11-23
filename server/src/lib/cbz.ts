@@ -2,11 +2,15 @@ export { lastSegment, pathContains } from './paths.js';
 export { mapKavitaPathToLocalPath, resolveSeriesHostDir, type LibraryPathMapping } from '../kavita/libraryPaths.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { archiveMutations, archiveResource } from './mutations.js';
-import { deflateRawSync, inflateRawSync } from 'node:zlib';
+import { deflateRaw, inflateRaw, inflateRawSync } from 'node:zlib';
+import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 import { crc32 } from './crc.js';
 import { parseComicInfo, renderComicInfoXml } from '../downloader/comicinfo.js';
+
+const deflateRawAsync = promisify(deflateRaw);
+const inflateRawAsync = promisify(inflateRaw);
 
 /**
  * Dependency-free ZIP (CBZ) reader + single-entry rewriter.
@@ -264,7 +268,7 @@ export function rewriteZipEntry(srcPath: string, entryName: string, data: Buffer
 
 async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data: Buffer | null, beforePublish?: () => Promise<void>): Promise<void> {
   // Encode the replacement entry up front (deflate only when it saves space).
-  const compressed = data === null ? Buffer.alloc(0) : deflateRawSync(data);
+  const compressed = data === null ? Buffer.alloc(0) : await deflateRawAsync(data);
   const useDeflate = data !== null && compressed.length < data.length;
   const repMethod = useDeflate ? 8 : 0;
   const repCrc = data === null ? 0 : crc32(data);
@@ -282,37 +286,46 @@ async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data:
     let offset = 0;
     let centralSize = 0;
     const centrals: Buffer[] = [];
+    const writeChunk = async (buf: Buffer, len = buf.length): Promise<void> => {
+      let off = 0;
+      while (off < len) {
+        const { bytesWritten } = await out.write(buf, off, len - off, offset + off);
+        if (bytesWritten <= 0) throw new Error(`Could not write ZIP archive ${srcPath}`);
+        off += bytesWritten;
+      }
+      offset += len;
+    };
+    let scratch: Buffer | null = null;
 
     for (const e of entries) {
       if (e.name === entryName) continue; // replaced by the new entry below
+      const entryOffset = offset;
       const start = await payloadStartFromDisk(src, e);
       // Keep names, flags, extra fields, attributes and entry comments verbatim.
       // Only the central record's local-header offset changes.
-      const local=Buffer.alloc(start-e.localOffset);
+      const local=Buffer.allocUnsafe(start-e.localOffset);
       await readFull(src,local,e.localOffset);
       const central=Buffer.from(e.centralRecord);
-      central.writeUInt32LE(offset,42);
-      await out.appendFile(local);
-      // Stream the compressed payload in chunks.
+      central.writeUInt32LE(entryOffset,42);
+      await writeChunk(local);
+      // Stream the compressed payload in chunks reusing one scratch buffer.
       let pos = start;
       while (pos < start + e.compressedSize) {
         const len = Math.min(CHUNK, start + e.compressedSize - pos);
-        const chunk = Buffer.allocUnsafe(len);
-        const { bytesRead } = await src.read(chunk, 0, len, pos);
+        if (!scratch || scratch.length < len) scratch = Buffer.allocUnsafe(Math.min(CHUNK, Math.max(len, 256 * 1024)));
+        const { bytesRead } = await src.read(scratch, 0, len, pos);
         if (bytesRead <= 0) throw new Error(`Unexpected EOF in ${srcPath} while copying "${e.name}"`);
-        await out.appendFile(chunk);
+        await writeChunk(scratch, bytesRead);
         pos += bytesRead;
       }
-      let descriptor=Buffer.alloc(0);
       if(e.flags & 8) {
-        const prefix=Buffer.alloc(4);await readFull(src,prefix,start+e.compressedSize);
+        const prefix=Buffer.allocUnsafe(4);await readFull(src,prefix,start+e.compressedSize);
         const signed=prefix.readUInt32LE(0)===0x08074b50;
-        descriptor=Buffer.alloc(signed?16:12);await readFull(src,descriptor,start+e.compressedSize);
+        const descriptor=Buffer.allocUnsafe(signed?16:12);await readFull(src,descriptor,start+e.compressedSize);
         const base=signed?4:0;
         if(descriptor.readUInt32LE(base)!==e.crc || descriptor.readUInt32LE(base+4)!==e.compressedSize || descriptor.readUInt32LE(base+8)!==e.uncompressedSize)throw new Error('Corrupt ZIP (unsupported data descriptor)');
-        await out.appendFile(descriptor);
+        await writeChunk(descriptor);
       }
-      offset += local.length + e.compressedSize + descriptor.length;
       centrals.push(central);
       centralSize += central.length;
     }
@@ -333,19 +346,16 @@ async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data:
     };
     const repPayload = useDeflate ? compressed : data;
     const { local: repLocal, central: repCentral } = encodeHeaders(repSpec);
-    await out.appendFile(repLocal);
-    await out.appendFile(repPayload);
-    offset += repLocal.length + repPayload.length;
+    await writeChunk(repLocal);
+    await writeChunk(repPayload);
     centrals.push(repCentral);
     centralSize += repCentral.length;
     }
 
     const centralStart = offset;
-    for (const c of centrals) await out.appendFile(c);
     const end=endOfCentralDirectory(centrals.length,centralStart,centralSize);
     end.writeUInt16LE(comment.length,20);
-    await out.appendFile(end);
-    await out.appendFile(comment);
+    await writeChunk(Buffer.concat([...centrals, end, comment]));
     written = true;
   } finally {
     await src.close();
@@ -369,6 +379,23 @@ export interface ArchiveSnapshot {
   inode: number;
 }
 
+async function readComicInfoFromHandle(fh: fs.promises.FileHandle, entries: ZipEntryInfo[]): Promise<string | null> {
+  const e = entries.find((x) => x.name === 'ComicInfo.xml');
+  if (!e) return null;
+  if (e.compressedSize > 16*1024*1024 || e.uncompressedSize > 16*1024*1024) throw new Error('ComicInfo.xml exceeds the 16 MiB snapshot limit');
+  const start = await payloadStartFromDisk(fh, e);
+  const raw = Buffer.allocUnsafe(e.compressedSize);
+  await readFull(fh, raw, start);
+  switch (e.method) {
+    case 0:
+      return raw.toString('utf8');
+    case 8:
+      return (await inflateRawAsync(raw, { maxOutputLength: 16 * 1024 * 1024 })).toString('utf8');
+    default:
+      throw new Error(`Unsupported compression method ${e.method} for entry "ComicInfo.xml"`);
+  }
+}
+
 export async function captureArchiveSnapshot(file: string): Promise<ArchiveSnapshot> {
   const fh = await fs.promises.open(file, 'r');
   try {
@@ -379,15 +406,18 @@ export async function captureArchiveSnapshot(file: string): Promise<ArchiveSnaps
     const content = createHash('sha256');
     const entries = await readZipEntriesFromDisk(fh,before.size);
     if (entries.filter(entry => entry.name === 'ComicInfo.xml').length > 1) throw new Error('Duplicate ComicInfo.xml ZIP entries are ambiguous');
+    let scratch: Buffer | null = null;
     for (const entry of entries.filter(entry => entry.name !== 'ComicInfo.xml').sort((a,b) => a.name.localeCompare(b.name))) {
       content.update(JSON.stringify([entry.name,entry.method,entry.crc,entry.uncompressedSize,entry.compressedSize]));
       const start = await payloadStartFromDisk(fh,entry);
       for (let position=start;position<start+entry.compressedSize;) {
-        const chunk = Buffer.alloc(Math.min(CHUNK,start+entry.compressedSize-position));
-        await readFull(fh,chunk,position); content.update(chunk); position+=chunk.length;
+        const len = Math.min(CHUNK,start+entry.compressedSize-position);
+        if (!scratch || scratch.length < len) scratch = Buffer.allocUnsafe(Math.min(CHUNK, Math.max(len, 256 * 1024)));
+        const view = scratch.subarray(0, len);
+        await readFull(fh,view,position); content.update(view); position+=len;
       }
     }
-    const xml = await readComicInfo(file);
+    const xml = await readComicInfoFromHandle(fh, entries);
     const after = await fs.promises.stat(file);
     if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
       throw new Error('Archive changed while its fingerprint was being read; review required');
@@ -424,20 +454,22 @@ export async function readComicInfo(p: string): Promise<string | null> {
   try {
     const stat = await fh.stat();
     const entries = await readZipEntriesFromDisk(fh, stat.size);
-    const e = entries.find((x) => x.name === 'ComicInfo.xml');
-    if (!e) return null;
-    if (e.compressedSize > 16*1024*1024 || e.uncompressedSize > 16*1024*1024) throw new Error('ComicInfo.xml exceeds the 16 MiB snapshot limit');
-    const start = await payloadStartFromDisk(fh, e);
-    const raw = Buffer.alloc(e.compressedSize);
-    await readFull(fh, raw, start);
-    switch (e.method) {
-      case 0:
-        return raw.toString('utf8');
-      case 8:
-        return inflateRawSync(raw,{maxOutputLength:16*1024*1024}).toString('utf8');
-      default:
-        throw new Error(`Unsupported compression method ${e.method} for entry "ComicInfo.xml"`);
-    }
+    return await readComicInfoFromHandle(fh, entries);
+  } finally {
+    await fh.close();
+  }
+}
+
+/** Single-open helper for duplicate scanning: reads ComicInfo.xml and counts image entries in one central-directory parse. */
+export async function readComicInfoAndImageCount(p: string): Promise<{ xml: string | null; imageCount: number }> {
+  const fh = await fs.promises.open(p, 'r');
+  try {
+    const stat = await fh.stat();
+    const entries = await readZipEntriesFromDisk(fh, stat.size);
+    const xml = await readComicInfoFromHandle(fh, entries);
+    let imageCount = 0;
+    for (const e of entries) if (imageMime(e.name) !== null) imageCount++;
+    return { xml, imageCount };
   } finally {
     await fh.close();
   }
@@ -510,7 +542,7 @@ export async function readZipEntryFromDisk(p: string, entryName: string): Promis
       case 0:
         return raw;
       case 8:
-        return inflateRawSync(raw);
+        return await inflateRawAsync(raw);
       default:
         throw new Error(`Unsupported compression method ${e.method} for entry "${entryName}"`);
     }
@@ -562,9 +594,9 @@ export async function readCoverImage(outputPath: string): Promise<{ data: Buffer
       if (!mime || (e.method !== 0 && e.method !== 8)) continue;
       if (e.uncompressedSize === 0 || e.uncompressedSize > COVER_MAX_BYTES) continue;
       const start = await payloadStartFromDisk(fh, e);
-      const raw = Buffer.alloc(e.compressedSize);
+      const raw = Buffer.allocUnsafe(e.compressedSize);
       await readFull(fh, raw, start);
-      const data = e.method === 0 ? raw : inflateRawSync(raw);
+      const data = e.method === 0 ? raw : await inflateRawAsync(raw);
       if (data.length === 0) continue;
       return { data, mime };
     }
@@ -720,16 +752,16 @@ function removeEmptiedSourceDir(file: string, targetDir: string): void {
 /** rename with a copy+delete fallback for cross-device moves. */
 async function moveFileAcross(src: string, dest: string): Promise<void> {
   try {
-    fs.renameSync(src, dest);
+    await fs.promises.rename(src, dest);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
     const staging = path.join(path.dirname(dest),`.cbzmerge-${randomUUID()}.tmp`);
     try {
-      fs.copyFileSync(src, staging);
-      fs.renameSync(staging, dest);
-      fs.unlinkSync(src);
+      await fs.promises.copyFile(src, staging);
+      await fs.promises.rename(staging, dest);
+      await fs.promises.unlink(src);
     } finally {
-      try { fs.unlinkSync(staging); } catch(error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      try { await fs.promises.unlink(staging); } catch(error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     }
   }
 }

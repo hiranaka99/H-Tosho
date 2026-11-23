@@ -45,7 +45,9 @@ test('changing Kavita servers clears cached library series before returning to L
   await expect(page.getByText('Server A series', {exact: true})).toBeVisible();
   await navigate(page, 'Settings');
   await page.locator('#kavita-base-url').fill('https://b.test');
-  await page.getByRole('button', {name: 'Save & test connection', exact: true}).click();
+  const saveConnection = page.getByRole('button', {name: 'Save connection', exact: true});
+  await saveConnection.click();
+  await expect(saveConnection).toBeDisabled();
   await expect(page.locator('#kavita-base-url')).toBeEnabled();
   await navigate(page, 'Libraries');
   await expect(page.getByText('Server A series', {exact: true})).toHaveCount(0);
@@ -651,10 +653,11 @@ test('Libraries searches saved tags across pages alongside titles and artists', 
   await pages.getByRole('button', { name: '2', exact: true }).click();
   await expect(cards).toHaveCount(20);
   await expect(cards.first()).toContainText('Tags · Romance');
-  await page.getByRole('combobox', { name: 'Filter by match status' }).selectOption('matched');
+  const matchFilter = page.getByRole('group', { name: 'Filter by match status' });
+  await matchFilter.getByRole('button', { name: /^Matched\b/ }).click();
   await expect(page.getByText('30 of 85 series', { exact: true })).toBeVisible();
   await expect(cards).toHaveCount(30);
-  await page.getByRole('combobox', { name: 'Filter by match status' }).selectOption('all');
+  await matchFilter.getByRole('button', { name: /^All\b/ }).click();
   await query.fill('tag:"slice of life"');
   await expect(cards).toHaveCount(1);
   await expect(cards.first()).toContainText('Library book 01');

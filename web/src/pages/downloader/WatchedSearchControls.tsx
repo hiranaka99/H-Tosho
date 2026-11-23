@@ -30,6 +30,54 @@ const WATCH_INTERVAL_OPTIONS = [
 
 /** Unsent add-watch draft, kept across closing and reopening the side sheet. */
 let watchDraft: { source: DoujinSource; query: string } = { source: 'hitomi', query: '' };
+const DATE_TIME_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'medium' });
+const TIME_SHORT_FMT = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+
+function AddWatchForm({ onAdded }: { onAdded: () => void }) {
+  const [source, setSource] = React.useState<DoujinSource>(watchDraft.source);
+  const [query, setQuery] = React.useState(watchDraft.query);
+  // The side sheet unmounts when closed; an unsent watch draft survives that.
+  React.useEffect(() => { watchDraft = { source, query }; }, [source, query]);
+  const watchTranslation = React.useRef<TranslationLink | null>(null);
+  const [watchTranslationNotice, setWatchTranslationNotice] = React.useState<{ query: string; issues: string[] } | null>(null);
+  const [adding, setAdding] = React.useState(false);
+  const watchQueryId = React.useId();
+
+  function switchWatchSource(next: DoujinSource) {
+    if (next === source) return;
+    const translated = switchProviderSearch({ query, searchKey: null, sort: 'default' }, source, next, watchTranslation.current);
+    watchTranslation.current = translated.link;
+    setQuery(translated.search.query);
+    setWatchTranslationNotice({ query: translated.search.query, issues: translated.issues });
+    setSource(next);
+  }
+
+  async function add() {
+    const q = query.trim();
+    if (!q || adding) return;
+    setAdding(true);
+    try {
+      await api.addWatchedSearch(source, q);
+      setQuery('');
+      onAdded();
+    } catch (e) {
+      toast({ tone: 'danger', title: 'Could not add watch', description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  return (
+    <>
+      <form className="grid grid-cols-1 gap-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-end" aria-label="Add a watched search" onSubmit={(e) => { e.preventDefault(); void add(); }}>
+        <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Source<Select aria-label="Watched search source" value={source} onChange={(e) => switchWatchSource(e.target.value as DoujinSource)} disabled={adding} className="h-11 sm:w-32 sm:shrink-0"><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select></label>
+        <div className="flex min-w-0 flex-col gap-1"><label htmlFor={watchQueryId} className="text-xs text-muted">Query</label><GallerySearchInput id={watchQueryId} value={query} onChange={setQuery} source={source} label="Watched search query" placeholder="Artist, tag, or search query" clearLabel="Clear watched search query" disabled={adding} className="h-11" /></div>
+        <Button size="sm" className="h-11" type="submit" disabled={adding || !query.trim()}>{adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add watch</Button>
+      </form>
+      {watchTranslationNotice?.query === query && watchTranslationNotice.issues.length > 0 && <p role="status" aria-label="Watch query translation" className="break-words text-sm text-muted">{watchTranslationNotice.issues.join(' ')} Review the query before adding the watch.</p>}
+    </>
+  );
+}
 
 export function WatchedTab({ onOpenSearch, inDrawer = false }: { onOpenSearch: (source: DoujinSource, query: string) => void; inDrawer?: boolean }) {
   const qc = useQueryClient();
@@ -57,22 +105,6 @@ export function WatchedTab({ onOpenSearch, inDrawer = false }: { onOpenSearch: (
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const intervalMinutes = settingsQuery.data?.watchedSearchIntervalMinutes ?? 15;
   const [savingInterval, setSavingInterval] = React.useState(false);
-  const [source, setSource] = React.useState<DoujinSource>(watchDraft.source);
-  const [query, setQuery] = React.useState(watchDraft.query);
-  // The side sheet unmounts when closed; an unsent watch draft survives that.
-  React.useEffect(() => { watchDraft = { source, query }; }, [source, query]);
-  const watchTranslation = React.useRef<TranslationLink | null>(null);
-  const [watchTranslationNotice, setWatchTranslationNotice] = React.useState<{ query: string; issues: string[] } | null>(null);
-  function switchWatchSource(next: DoujinSource) {
-    if (next === source) return;
-    const translated = switchProviderSearch({ query, searchKey: null, sort: 'default' }, source, next, watchTranslation.current);
-    watchTranslation.current = translated.link;
-    setQuery(translated.search.query);
-    setWatchTranslationNotice({ query: translated.search.query, issues: translated.issues });
-    setSource(next);
-  }
-  const [adding, setAdding] = React.useState(false);
-  const watchQueryId = React.useId();
   const [removeTarget, setRemoveTarget] = React.useState<WatchedSearch | null>(null);
   const [removing, setRemoving] = React.useState(false);
   const [checking, setChecking] = React.useState(false);
@@ -103,21 +135,13 @@ export function WatchedTab({ onOpenSearch, inDrawer = false }: { onOpenSearch: (
       return next;
     });
   };
-
-  async function add() {
-    const q = query.trim();
-    if (!q || adding) return;
-    setAdding(true);
-    try {
-      await api.addWatchedSearch(source, q);
-      setQuery('');
-      qc.invalidateQueries({ queryKey: ['watched-searches'] });
-    } catch (e) {
-      toast({ tone: 'danger', title: 'Could not add watch', description: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setAdding(false);
-    }
-  }
+  const onWatchAdded = React.useCallback(() => {
+    void qc.invalidateQueries({ queryKey: ['watched-searches'] });
+  }, [qc]);
+  const folderNameById = React.useMemo(
+    () => new Map(folders.map((folder) => [folder.id, folder.name])),
+    [folders],
+  );
 
   async function remove(target: WatchedSearch): Promise<boolean> {
     setRemoving(true);
@@ -243,7 +267,7 @@ export function WatchedTab({ onOpenSearch, inDrawer = false }: { onOpenSearch: (
         </div>
         <div className="ml-[3.25rem] flex min-w-0 flex-col gap-1">
           {w.displayName && <p className="break-words text-muted">{w.query}</p>}
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><Badge tone="muted">{SOURCE_LABELS[w.source] ?? w.source}</Badge><Badge tone={w.pausedAt ? 'warning' : 'muted'}>{w.pausedAt ? 'Paused' : 'Active'}</Badge><span className="text-muted">{folders.find(folder => folder.id === w.folderId)?.name ?? 'Unfiled'}</span>{movingWatch === w.id && <span role="status" className="inline-flex items-center gap-1 text-muted"><Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />Moving…</span>}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><Badge tone="muted">{SOURCE_LABELS[w.source] ?? w.source}</Badge><Badge tone={w.pausedAt ? 'warning' : 'muted'}>{w.pausedAt ? 'Paused' : 'Active'}</Badge><span className="text-muted">{(w.folderId != null ? folderNameById.get(w.folderId) : undefined) ?? 'Unfiled'}</span>{movingWatch === w.id && <span role="status" className="inline-flex items-center gap-1 text-muted"><Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />Moving…</span>}
             {w.lastResults.length > 0 && (
               <Button size="sm" variant="ghost" className="ml-auto h-11" aria-expanded={expanded.has(w.id)} aria-controls={`watched-results-${w.id}`} aria-label={`${expanded.has(w.id) ? 'Hide' : 'Show'} ${w.lastResults.length} latest finds for ${w.query}`} onClick={() => toggleExpanded(w.id)}>
                 {w.lastResults.length} {w.lastResults.length === 1 ? 'find' : 'finds'}
@@ -252,9 +276,9 @@ export function WatchedTab({ onOpenSearch, inDrawer = false }: { onOpenSearch: (
             )}
           </div>
           <p className="text-muted">
-            {w.lastCheckedAt ? <>Checked <time dateTime={w.lastCheckedAt} title={new Date(w.lastCheckedAt).toLocaleString()}>{timeAgo(w.lastCheckedAt)}</time></> : 'Not checked yet'}
+            {w.lastCheckedAt ? <>Checked <time dateTime={w.lastCheckedAt} title={DATE_TIME_FMT.format(new Date(w.lastCheckedAt))}>{timeAgo(w.lastCheckedAt)}</time></> : 'Not checked yet'}
             {' · '}{w.effectiveIntervalMinutes === 0 ? w.pausedAt ? 'Off · paused' : 'Off globally' : `Every ${cadenceLabel(w.effectiveIntervalMinutes)} · ${w.intervalMinutes === null ? 'inherited' : 'custom'}`}
-            {w.nextCheckAt && !w.pausedAt && w.effectiveIntervalMinutes > 0 && <>{' · next '}<time dateTime={w.nextCheckAt} title={new Date(w.nextCheckAt).toLocaleString()}>{new Date(w.nextCheckAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time></>}
+            {w.nextCheckAt && !w.pausedAt && w.effectiveIntervalMinutes > 0 && <>{' · next '}<time dateTime={w.nextCheckAt} title={DATE_TIME_FMT.format(new Date(w.nextCheckAt))}>{TIME_SHORT_FMT.format(new Date(w.nextCheckAt))}</time></>}
           </p>
           {w.lastError ? <p className="break-words text-warning">{w.lastFailedAt ? `Last attempt failed ${timeAgo(w.lastFailedAt)}: ` : ''}{w.lastError}</p> : w.lastNewCount !== null && w.lastNewCount !== undefined ? <p className="text-muted">{w.lastNewCount ? `${w.lastNewCount} new ${w.lastNewCount === 1 ? 'find' : 'finds'}` : 'No new finds'}</p> : null}
         </div>
@@ -278,12 +302,7 @@ export function WatchedTab({ onOpenSearch, inDrawer = false }: { onOpenSearch: (
 
   const manageBody = () => (
         <div className="flex flex-col gap-4 pt-3">
-        <form className="grid grid-cols-1 gap-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-end" aria-label="Add a watched search" onSubmit={(e) => { e.preventDefault(); void add(); }}>
-          <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Source<Select aria-label="Watched search source" value={source} onChange={(e) => switchWatchSource(e.target.value as DoujinSource)} disabled={adding} className="h-11 sm:w-32 sm:shrink-0"><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select></label>
-          <div className="flex min-w-0 flex-col gap-1"><label htmlFor={watchQueryId} className="text-xs text-muted">Query</label><GallerySearchInput id={watchQueryId} value={query} onChange={setQuery} source={source} label="Watched search query" placeholder="Artist, tag, or search query" clearLabel="Clear watched search query" disabled={adding} className="h-11" /></div>
-          <Button size="sm" className="h-11" type="submit" disabled={adding || !query.trim()}>{adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add watch</Button>
-        </form>
-        {watchTranslationNotice?.query === query && watchTranslationNotice.issues.length > 0 && <p role="status" aria-label="Watch query translation" className="break-words text-sm text-muted">{watchTranslationNotice.issues.join(' ')} Review the query before adding the watch.</p>}
+        <AddWatchForm onAdded={onWatchAdded} />
         {foldersQuery.isError && <ErrorState title="Could not load watch folders" description={foldersQuery.error.message} onRetry={() => void foldersQuery.refetch()} />}
         {foldersQuery.isPending ? <Skeleton className="h-20 w-full" /> : foldersQuery.data && <FollowingFolders folders={folders} watches={watches ?? []} watchesReady={watches !== undefined} renderWatch={renderWatch} onRefresh={() => foldersQuery.refetch()} draggedWatch={draggedWatch} movePending={movingWatch !== null || foldersQuery.isError} onMoveWatch={(watch, folderId) => void moveWatch(watch, folderId)} />}
         {watchesQuery.isPending ? (

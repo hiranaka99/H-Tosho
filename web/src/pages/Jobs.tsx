@@ -63,8 +63,26 @@ function useNow(intervalMs: number, enabled = true): number {
   React.useEffect(() => {
     if (!enabled) return;
     setNow(Date.now());
-    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
-    return () => window.clearInterval(id);
+    let id: number | null = null;
+    const start = () => {
+      if (id !== null || document.hidden) return;
+      id = window.setInterval(() => setNow(Date.now()), intervalMs);
+    };
+    const stop = () => {
+      if (id === null) return;
+      window.clearInterval(id);
+      id = null;
+    };
+    const onVisibility = () => {
+      if (document.hidden) stop();
+      else { setNow(Date.now()); start(); }
+    };
+    start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [intervalMs, enabled]);
   return now;
 }
@@ -419,13 +437,19 @@ function RunningFacts({ job, now }: { job: Job; now: number }) {
   );
 }
 
-function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
+const LogConsole = React.memo(function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
   const ref = React.useRef<HTMLDivElement>(null);
   const nearBottom = React.useRef(true);
   const [follow, setFollow] = React.useState(true);
   const [severity, setSeverity] = React.useState('all');
-  const visible = logs.filter((log) => severity === 'all' || (log.level === 'warning' ? 'warn' : log.level) === severity);
-  const levels = Array.from(new Set(logs.map((log) => log.level === 'warning' ? 'warn' : log.level))).sort();
+  const visible = React.useMemo(
+    () => logs.filter((log) => severity === 'all' || (log.level === 'warning' ? 'warn' : log.level) === severity),
+    [logs, severity],
+  );
+  const levels = React.useMemo(
+    () => Array.from(new Set(logs.map((log) => log.level === 'warning' ? 'warn' : log.level))).sort(),
+    [logs],
+  );
   const latestId = logs[logs.length - 1]?.id;
   const jumpToLatest = () => {
     nearBottom.current = true;
@@ -437,9 +461,9 @@ function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
     const element = ref.current;
     if (element && follow && nearBottom.current) element.scrollTop = element.scrollHeight;
   }, [latestId, severity, follow]);
-  const logText = visible.map((log) => `${timestamp(log.createdAt)} [${log.level.toUpperCase()}] ${log.message}`).join('\n');
+  const formatLogs = () => visible.map((log) => `${timestamp(log.createdAt)} [${log.level.toUpperCase()}] ${log.message}`).join('\n');
   const downloadLogs = () => {
-    const url = URL.createObjectURL(new Blob([logText], { type: 'text/plain;charset=utf-8' }));
+    const url = URL.createObjectURL(new Blob([formatLogs()], { type: 'text/plain;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
     link.download = `job-${jobId}-logs.txt`;
@@ -453,7 +477,7 @@ function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
         <div className="flex flex-wrap items-center gap-2">
           <Label htmlFor={`severity-${jobId}`} className="sr-only">Severity</Label>
           <Select id={`severity-${jobId}`} aria-label="Severity" value={severity} onChange={(event) => setSeverity(event.target.value)} className="max-lg:min-h-11 pointer-coarse:min-h-11 w-auto"><option value="all">All levels</option>{levels.map((level) => <option key={level} value={level}>{fieldLabel(level)}</option>)}</Select>
-          {navigator.clipboard && <Button variant="outline" size="sm" className={controlClass} disabled={!visible.length} onClick={() => copyText(logText, 'Logs copied')}><Copy className="h-4 w-4" /> Copy</Button>}
+          {navigator.clipboard && <Button variant="outline" size="sm" className={controlClass} disabled={!visible.length} onClick={() => copyText(formatLogs(), 'Logs copied')}><Copy className="h-4 w-4" /> Copy</Button>}
           <Button variant="outline" size="sm" className={controlClass} disabled={!visible.length} onClick={downloadLogs}><Download className="h-4 w-4" /> Download</Button>
         </div>
       </div>
@@ -477,7 +501,7 @@ function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
       {!follow && <Button className={cn(controlClass, 'w-full')} variant="secondary" onClick={jumpToLatest}><ArrowDown className="h-4 w-4" /> Jump to latest and follow</Button>}
     </section>
   );
-}
+});
 
 const PanelTitle = React.forwardRef<HTMLHeadingElement, { mode: PanelMode; children: React.ReactNode }>(({ mode, children }, ref) =>
   mode === 'dialog'
@@ -507,7 +531,13 @@ export function Jobs() {
   const titleRef = React.useRef<HTMLHeadingElement>(null);
   const inspector = useMediaQuery(INSPECTOR_QUERY);
   const qc = useQueryClient();
-  const jobsQuery = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, refetchInterval: 2500 });
+  const jobsQuery = useQuery({
+    queryKey: ['jobs'],
+    queryFn: api.jobs,
+    staleTime: 0,
+    refetchInterval: (query) =>
+      query.state.data?.some((j) => j.status === 'running' || j.status === 'queued') ? 2500 : 15_000,
+  });
   const jobs = jobsQuery.data ?? [];
   // Resolved once from the first load so tabs never jump while a task finishes.
   const autoFilter = React.useRef<JobFilter | null>(null);
@@ -531,7 +561,7 @@ export function Jobs() {
     enabled: selectedId !== null,
     refetchInterval: (query) => {
       const job = query.state.data?.job ?? selectedListJob;
-      return job ? isActive(job) || job.type === 'check-watched-searches' ? 1500 : false : query.state.status === 'error' ? false : 1500;
+      return job ? (isActive(job) ? 1500 : false) : query.state.status === 'error' ? false : 1500;
     },
   });
   const selectedJob = detailQuery.data?.job ?? selectedListJob;
@@ -595,32 +625,41 @@ export function Jobs() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inspector, selectedId, clearTarget]);
 
-  const types = Array.from(new Set(jobs.map((job) => job.type))).sort();
+  const types = React.useMemo(() => Array.from(new Set(jobs.map((job) => job.type))).sort(), [jobs]);
   const query = search.trim().toLowerCase();
   const searchActive = query !== '' || type !== 'all';
-  const sorted = jobs.filter((job) => {
+  const sorted = React.useMemo(() => jobs.filter((job) => {
     return matchesFilter(job, filter) && (type === 'all' || job.type === type) && (!query || `${job.id} ${jobLabel(job.type, job.payload)} ${job.type} ${jobTarget(job)} ${job.context?.series.map((series) => series.name).join(' ') ?? ''} ${job.context?.libraryName ?? ''} ${JOB_PURPOSE[job.type] ?? ''} ${jobOutcome(job)} ${job.errorMessage ?? ''} ${readableValue(job.result)}`.toLowerCase().includes(query));
   }).sort((a, b) => {
     const priority = (job: Job) => job.status === 'running' ? 0 : job.status === 'queued' ? 1 : needsAttention(job) ? 2 : 3;
     return priority(a) - priority(b) || b.id - a.id;
-  });
+  }), [jobs, filter, type, query]);
   // While the pointer is over the list, rows keep their place instead of re-sorting under it.
   const frozen = hovering ? frozenOrder.current : null;
-  const visibleJobs = frozen
+  const visibleJobs = React.useMemo(() => (frozen
     ? [...sorted].sort((a, b) => {
       const ia = frozen.indexOf(a.id);
       const ib = frozen.indexOf(b.id);
       return (ia < 0 ? Infinity : ia) - (ib < 0 ? Infinity : ib) || b.id - a.id;
     })
-    : sorted;
-  const statusCounts: Record<JobFilter, number> = {
-    all: jobs.length,
-    active: jobs.filter(isActive).length,
-    failed: jobs.filter(needsAttention).length,
-    done: jobs.filter((job) => matchesFilter(job, 'done')).length,
-  };
-  const failedCount = jobs.filter((job) => job.status === 'failed').length;
-  const warningCount = statusCounts.failed - failedCount;
+    : sorted), [sorted, frozen]);
+  const { statusCounts, failedCount, warningCount } = React.useMemo(() => {
+    let activeCount = 0;
+    let attentionCount = 0;
+    let doneCount = 0;
+    let failedOnly = 0;
+    for (const job of jobs) {
+      if (isActive(job)) activeCount++;
+      else if (needsAttention(job)) attentionCount++;
+      else doneCount++;
+      if (job.status === 'failed') failedOnly++;
+    }
+    return {
+      statusCounts: { all: jobs.length, active: activeCount, failed: attentionCount, done: doneCount } as Record<JobFilter, number>,
+      failedCount: failedOnly,
+      warningCount: attentionCount - failedOnly,
+    };
+  }, [jobs]);
   const countsReady = !jobsQuery.isPending && !(jobsQuery.isError && !jobsQuery.data);
   const openJob = (id: number, replace = false) => updateUrl({ job: id }, replace);
   const retryFor = (job: Job): RetryControl | undefined => job.type === 'restore-metadata' ? undefined : {

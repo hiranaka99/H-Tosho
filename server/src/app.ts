@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { compress } from 'hono/compress';
 import { serveStatic } from '@hono/node-server/serve-static';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -31,6 +32,11 @@ export function createApp(options: { webDist?: string | null } = {}): Hono {
     return c.json({ error: 'Internal server error' }, 500);
   });
 
+  const apiCompress = compress();
+  app.use('/api/*', (c, next) => {
+    if (c.req.path === '/api/downloads/events') return next();
+    return apiCompress(c, next);
+  });
   app.get('/api/auth/status', authStatus);
   app.post('/api/auth/setup', setup);
   app.post('/api/auth/login', login);
@@ -48,9 +54,10 @@ export function createApp(options: { webDist?: string | null } = {}): Hono {
       precompressed: true,
       onFound: (_path, c) => {
         // Vite's content hashes change whenever an asset changes. Cache those
-        // files across visits, but always revalidate the shell and public files.
+        // files across visits, cache stable fonts, and revalidate the shell.
         const hashedAsset = /^\/assets\/[^/]+-[\w-]{8,}\.(?:js|css)$/.test(c.req.path);
-        c.header('Cache-Control', hashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache');
+        const fontAsset = /^\/fonts\/[^/]+\.woff2$/.test(c.req.path);
+        c.header('Cache-Control', hashedAsset ? 'public, max-age=31536000, immutable' : fontAsset ? 'public, max-age=604800' : 'no-cache');
       },
     }));
     // SPA shell for unmatched routes (client-side navigation). The file is
@@ -59,12 +66,12 @@ export function createApp(options: { webDist?: string | null } = {}): Hono {
     // as vite swaps the hashed assets it references).
     const indexPath = path.join(webDist, 'index.html');
     let shellCache: { mtimeMs: number; html: string } | null = null;
-    app.get('*', (c) => {
+    app.get('*', async (c) => {
       if (c.req.path.startsWith('/api/') || c.req.path.startsWith('/assets/')) return c.notFound();
       try {
-        const st = fs.statSync(indexPath);
+        const st = await fs.promises.stat(indexPath);
         if (!shellCache || shellCache.mtimeMs !== st.mtimeMs) {
-          shellCache = { mtimeMs: st.mtimeMs, html: fs.readFileSync(indexPath, 'utf-8') };
+          shellCache = { mtimeMs: st.mtimeMs, html: await fs.promises.readFile(indexPath, 'utf-8') };
         }
       } catch {
         return c.text('Frontend build not found — run npm start', 503);

@@ -349,20 +349,32 @@ export async function checkWatchedSearches(
         // No await occurs between the final ownership/revision check and commit.
         if (ids.length) tx.insert(schema.watchedSearchSeen).values(ids.map(galleryId => ({ searchId: id, source: latest.source, galleryId }))).onConflictDoNothing().run();
         pruneSeen(id, tx);
-        if (freshIds.length) tx.insert(schema.watchedSearchNew).values(freshIds.map(galleryId => {
-          const gallery = byId.get(galleryId)!;
-          const reviewed = tx.select({ reviewedAt: schema.watchedSearchNew.reviewedAt }).from(schema.watchedSearchNew)
-            .where(and(eq(schema.watchedSearchNew.source, latest.source), eq(schema.watchedSearchNew.galleryId, galleryId), sql`${schema.watchedSearchNew.reviewedAt} IS NOT NULL`)).get();
-          return { searchId: id, source: latest.source, query: latest.query, watchLabel: latest.displayName ?? latest.query,
-            galleryId, title: gallery.title || galleryId, url: gallery.url ?? null, coverUrl: gallery.coverUrl ?? null,
-            ...pageCountMetadata(gallery.pageCount), artistsJson: JSON.stringify(gallery.artists ?? []), language: gallery.language ?? null,
-            reviewedAt: reviewed?.reviewedAt ?? null, foundAt: checkedAt };
-        })).onConflictDoNothing().run();
+        if (freshIds.length) {
+          const reviewedRows = tx.select({ galleryId: schema.watchedSearchNew.galleryId, reviewedAt: schema.watchedSearchNew.reviewedAt })
+            .from(schema.watchedSearchNew)
+            .where(and(eq(schema.watchedSearchNew.source, latest.source), inArray(schema.watchedSearchNew.galleryId, freshIds), sql`${schema.watchedSearchNew.reviewedAt} IS NOT NULL`))
+            .all();
+          const reviewedByGallery = new Map(reviewedRows.map(row => [row.galleryId, row.reviewedAt]));
+          tx.insert(schema.watchedSearchNew).values(freshIds.map(galleryId => {
+            const gallery = byId.get(galleryId)!;
+            return { searchId: id, source: latest.source, query: latest.query, watchLabel: latest.displayName ?? latest.query,
+              galleryId, title: gallery.title || galleryId, url: gallery.url ?? null, coverUrl: gallery.coverUrl ?? null,
+              ...pageCountMetadata(gallery.pageCount), artistsJson: JSON.stringify(gallery.artists ?? []), language: gallery.language ?? null,
+              reviewedAt: reviewedByGallery.get(galleryId) ?? null, foundAt: checkedAt };
+          })).onConflictDoNothing().run();
+        }
         // Only metadata already present in search results is used; never hydrate galleries.
-        for (const gallery of byId.values()) {
-          if (!gallery.artists?.length && !gallery.language) continue;
-          tx.update(schema.watchedSearchNew).set({ ...(gallery.artists?.length ? { artistsJson: JSON.stringify(gallery.artists) } : {}), ...(gallery.language ? { language: gallery.language } : {}) })
-            .where(and(eq(schema.watchedSearchNew.source, latest.source), eq(schema.watchedSearchNew.galleryId, gallery.galleryId))).run();
+        const enrichableIds = [...byId.values()].filter(g => g.artists?.length || g.language).map(g => g.galleryId);
+        if (enrichableIds.length) {
+          const existingIds = new Set(tx.select({ galleryId: schema.watchedSearchNew.galleryId }).from(schema.watchedSearchNew)
+            .where(and(eq(schema.watchedSearchNew.source, latest.source), inArray(schema.watchedSearchNew.galleryId, enrichableIds)))
+            .all().map(row => row.galleryId));
+          for (const galleryId of existingIds) {
+            const gallery = byId.get(galleryId);
+            if (!gallery || (!gallery.artists?.length && !gallery.language)) continue;
+            tx.update(schema.watchedSearchNew).set({ ...(gallery.artists?.length ? { artistsJson: JSON.stringify(gallery.artists) } : {}), ...(gallery.language ? { language: gallery.language } : {}) })
+              .where(and(eq(schema.watchedSearchNew.source, latest.source), eq(schema.watchedSearchNew.galleryId, gallery.galleryId))).run();
+          }
         }
         tx.update(table).set({ lastCheckedAt: checkedAt, lastAttemptedAt: checkedAt, lastError: null,
           lastNewCount: freshIds.length, lastResultCount: ids.length,

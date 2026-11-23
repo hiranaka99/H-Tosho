@@ -82,44 +82,54 @@ export async function autoMatch(
   const searchedProviders: string[] = [];
   const errors: Record<string, string> = {};
 
-  const searchProviders = async (searchQuery: string): Promise<void> => {
-    for (const providerId of order) {
-      options.signal?.throwIfAborted();
-      const provider = getProvider(providerId);
-      if (!provider) continue;
-      if (options.type && !provider.supportedTypes.includes(options.type)) continue;
-      try {
-        provider.setCredentials(options.credentials[providerId] ?? {});
-        const results = await provider.search(searchQuery, options.type, options.signal);
-        if (!searchedProviders.includes(providerId)) searchedProviders.push(providerId);
-        for (const r of results) {
-          if (!r.title) continue;
-          // Score against every known title variant: folder names often match
-          // a romanized or alternate title the display title misses. The best
-          // scoring variant becomes the candidate's displayed title.
-          const { score, title } = bestVariant(seriesCanonical, r);
-          candidates.push({
-            providerId: provider.id,
-            providerSeriesId: r.providerSeriesId,
-            title,
-            type: r.type,
-            year: r.year,
-            coverUrl: r.coverUrl,
-            summary: r.summary,
-            score,
-          });
-        }
-        // Early exit: a confident exact/near-exact match from the top provider.
-        // Skipped for interactive identify (searchAll), where every enabled
-        // provider must surface its own candidates.
-        const top = candidates
-          .filter((c) => c.providerId === providerId)
-          .sort((a, b) => b.score - a.score)[0];
-        if (!options.searchAll && top && top.score >= 0.97) break;
-      } catch (err) {
-        options.signal?.throwIfAborted();
-        errors[providerId] = err instanceof Error ? err.message : String(err);
+  const searchOneProvider = async (providerId: string, searchQuery: string): Promise<CandidateMatch[]> => {
+    options.signal?.throwIfAborted();
+    const provider = getProvider(providerId);
+    if (!provider) return [];
+    if (options.type && !provider.supportedTypes.includes(options.type)) return [];
+    try {
+      provider.setCredentials(options.credentials[providerId] ?? {});
+      const results = await provider.search(searchQuery, options.type, options.signal);
+      if (!searchedProviders.includes(providerId)) searchedProviders.push(providerId);
+      const out: CandidateMatch[] = [];
+      for (const r of results) {
+        if (!r.title) continue;
+        // Score against every known title variant: folder names often match
+        // a romanized or alternate title the display title misses. The best
+        // scoring variant becomes the candidate's displayed title.
+        const { score, title } = bestVariant(seriesCanonical, r);
+        out.push({
+          providerId: provider.id,
+          providerSeriesId: r.providerSeriesId,
+          title,
+          type: r.type,
+          year: r.year,
+          coverUrl: r.coverUrl,
+          summary: r.summary,
+          score,
+        });
       }
+      return out;
+    } catch (err) {
+      options.signal?.throwIfAborted();
+      errors[providerId] = err instanceof Error ? err.message : String(err);
+      return [];
+    }
+  };
+
+  const searchProviders = async (searchQuery: string): Promise<void> => {
+    if (options.searchAll) {
+      const perProvider = await Promise.all(order.map((providerId) => searchOneProvider(providerId, searchQuery)));
+      options.signal?.throwIfAborted();
+      for (const list of perProvider) candidates.push(...list);
+      return;
+    }
+    for (const providerId of order) {
+      const found = await searchOneProvider(providerId, searchQuery);
+      candidates.push(...found);
+      // Early exit: a confident exact/near-exact match from the top provider.
+      const top = found.sort((a, b) => b.score - a.score)[0];
+      if (top && top.score >= 0.97) break;
     }
   };
 

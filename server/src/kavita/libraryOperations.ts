@@ -9,7 +9,7 @@ import { lastSegment, pathContains, safeRealpath } from '../lib/paths.js';
 import { mapKavitaPathToLocalPath } from './libraryPaths.js';
 import { getDb, schema } from '../db/index.js';
 import { inArray } from 'drizzle-orm';
-import { sleep } from '../lib/http.js';
+import { mapLimit, sleep } from '../lib/http.js';
 import { JobCancelled, type Job, type LogFn } from '../jobs/queue.js';
 import { rememberTargets, rememberLibraries, throwIfJobCancelled } from '../jobs/context.js';
 /** Best-effort Kavita refresh after a local ComicInfo edit. */
@@ -322,10 +322,10 @@ export async function rescanAndVerifyMerge(
       const mappings = getDownloaderSettings().libraryPathMappings ?? [];
       const expected = new Set(movedFiles.map(archiveResource));
       const candidates: {id:number;name:string}[] = [];
-      for (const item of series) {
+      await mapLimit(series, 8, async (item) => {
         const chapters = await client.getChaptersBySeries(item.id);
         if (chapters.some(chapter => (chapter.files ?? []).some(file => file.filePath && expected.has(archiveResource(mapKavitaPathToLocalPath(file.filePath,mappings) ?? file.filePath))))) candidates.push(item);
-      }
+      });
       if (candidates.length > 1) throw new Error('Moved archives are indexed under multiple series');
       const found = candidates[0];
       if (found) rememberTargets(opts.job, [{id:found.id,name:found.name,libraryId:library.id}]);
