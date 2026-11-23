@@ -1,15 +1,21 @@
 import type Database from 'better-sqlite3';
 
 /** Both history checkpoints and durable preview/approval evidence own image assets. */
-export const PRUNE_UNUSED_COVER_ASSETS_SQL = `DELETE FROM metadata_assets AS asset
-  WHERE NOT EXISTS (SELECT 1 FROM metadata_series_covers cover WHERE cover.before_asset_id = asset.id OR cover.after_asset_id = asset.id)
-    AND NOT EXISTS (SELECT 1 FROM metadata_volume_covers cover WHERE cover.before_asset_id = asset.id OR cover.after_asset_id = asset.id)
-    AND NOT EXISTS (SELECT 1 FROM metadata_restore_previews preview, json_each(preview.preview_json, '$.covers') cover WHERE json_extract(cover.value, '$.current.assetId') = asset.id)
-    AND NOT EXISTS (SELECT 1 FROM metadata_restore_plans plan, json_each(plan.covers_json) cover WHERE json_extract(cover.value, '$.expected.assetId') = asset.id OR json_extract(cover.value, '$.sourceAssetId') = asset.id)`;
+export const PRUNE_UNUSED_COVER_ASSETS_SQL = `DELETE FROM metadata_assets
+  WHERE id NOT IN (
+    SELECT before_asset_id FROM metadata_series_covers WHERE before_asset_id IS NOT NULL
+    UNION SELECT after_asset_id FROM metadata_series_covers WHERE after_asset_id IS NOT NULL
+    UNION SELECT before_asset_id FROM metadata_volume_covers WHERE before_asset_id IS NOT NULL
+    UNION SELECT after_asset_id FROM metadata_volume_covers WHERE after_asset_id IS NOT NULL
+    UNION SELECT json_extract(cover.value, '$.current.assetId') FROM metadata_restore_previews preview, json_each(preview.preview_json, '$.covers') cover WHERE json_extract(cover.value, '$.current.assetId') IS NOT NULL
+    UNION SELECT json_extract(cover.value, '$.expected.assetId') FROM metadata_restore_plans plan, json_each(plan.covers_json) cover WHERE json_extract(cover.value, '$.expected.assetId') IS NOT NULL
+    UNION SELECT json_extract(cover.value, '$.sourceAssetId') FROM metadata_restore_plans plan, json_each(plan.covers_json) cover WHERE json_extract(cover.value, '$.sourceAssetId') IS NOT NULL
+  )`;
 /** Independent of activity/job retention. Keep active work and the latest 20 revisions. */
 export function pruneMetadataHistory(sqlite: Database.Database, now = Date.now()): void {
+  const nowIso = new Date(now).toISOString();
   const cutoff = new Date(now - 180 * 86_400_000).toISOString();
-  const expired = `SELECT old.id FROM metadata_operations old
+  const expiredQuery = `SELECT old.id FROM metadata_operations old
     WHERE old.status <> 'running' AND julianday(old.finished_at) < julianday(?)
     AND (SELECT count(*) FROM metadata_operations newer
       WHERE newer.connection_key = old.connection_key AND newer.series_id = old.series_id
@@ -19,11 +25,16 @@ export function pruneMetadataHistory(sqlite: Database.Database, now = Date.now()
     AND NOT EXISTS (SELECT 1 FROM metadata_restore_previews preview
       WHERE preview.source_operation_id = old.id AND preview.consumed_at IS NULL AND julianday(preview.expires_at) > julianday(?))`;
   sqlite.transaction(() => {
-    sqlite.prepare('DELETE FROM metadata_restore_previews WHERE julianday(expires_at) <= julianday(?)').run(new Date(now).toISOString());
-    sqlite.prepare(`DELETE FROM metadata_operation_steps WHERE operation_id IN (${expired})`).run(cutoff, new Date(now).toISOString());
-    sqlite.prepare(`DELETE FROM metadata_series_covers WHERE operation_id IN (${expired})`).run(cutoff, new Date(now).toISOString());
-    sqlite.prepare(`DELETE FROM metadata_volume_covers WHERE operation_id IN (${expired})`).run(cutoff, new Date(now).toISOString());
-    sqlite.prepare(`DELETE FROM metadata_operations WHERE id IN (${expired})`).run(cutoff, new Date(now).toISOString());
+    sqlite.prepare('DELETE FROM metadata_restore_previews WHERE julianday(expires_at) <= julianday(?)').run(nowIso);
+    const expiredIds = (sqlite.prepare(expiredQuery).all(cutoff, nowIso) as { id: string }[]).map((row) => row.id);
+    for (let i = 0; i < expiredIds.length; i += 400) {
+      const batch = expiredIds.slice(i, i + 400);
+      const placeholders = batch.map(() => '?').join(',');
+      sqlite.prepare(`DELETE FROM metadata_operation_steps WHERE operation_id IN (${placeholders})`).run(...batch);
+      sqlite.prepare(`DELETE FROM metadata_series_covers WHERE operation_id IN (${placeholders})`).run(...batch);
+      sqlite.prepare(`DELETE FROM metadata_volume_covers WHERE operation_id IN (${placeholders})`).run(...batch);
+      sqlite.prepare(`DELETE FROM metadata_operations WHERE id IN (${placeholders})`).run(...batch);
+    }
     // Retain the idempotency receipt, not duplicate XML after both journal sides
     // have aged out. Active plans remain fully pinned through queue/restart delays.
     sqlite.prepare(`UPDATE metadata_restore_plans AS plan

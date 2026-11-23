@@ -20,6 +20,7 @@ import { getCredentialMap, providerOrderFor } from '../../services/settings.js';
 import { jobQueue, type JobPayload } from '../../jobs/queue.js';
 import { autoMatch, fetchProviderMetadata } from '../../match/autoMatcher.js';
 import { rewriteMangaDexCoverUrl } from '../media.js';
+import { mapLimit } from '../../lib/http.js';
 
 import { connectedClient, resolveJobContext, errMsg, intParam, stringsFromMatchMetadata, kavitaCoverUrl } from './helpers.js';
 export const api = new Hono();
@@ -158,7 +159,11 @@ api.get('/series/:id', async (c) => {
   try {
     const seriesId = intParam(c.req.param('id'));
     if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
-    const series = await client.getSeriesById(seriesId);
+    // Fetch live series DTO and Kavita metadata concurrently.
+    const [series, kavita] = await Promise.all([
+      client.getSeriesById(seriesId),
+      client.getSeriesMetadata(seriesId).catch(() => null),
+    ]);
     const row = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
     let metadata = null;
     if (row?.metadataJson) {
@@ -167,13 +172,6 @@ api.get('/series/:id', async (c) => {
       } catch {
         metadata = null;
       }
-    }
-    // Live Kavita metadata for the identify diff ("current" column).
-    let kavita = null;
-    try {
-      kavita = await client.getSeriesMetadata(seriesId);
-    } catch {
-      /* series may not have a metadata row yet */
     }
     return c.json({ series, match: row ?? null, metadata, kavita });
   } catch (e) {
@@ -204,12 +202,13 @@ api.get('/series/:id/identify', async (c) => {
     // MangaDex search thumbnails resolve the main cover_art, but Apply & Sync
     // pushes the Volume 1 cover when one exists — swap the thumbnail so the
     // dialog previews exactly what will land in Kavita.
-    await Promise.all(
-      outcome.candidates.map(async (cand) => {
-        if (cand.providerId !== 'mangadex') return;
+    await mapLimit(
+      outcome.candidates.filter((cand) => cand.providerId === 'mangadex'),
+      4,
+      async (cand) => {
         const preferred = await mangaDexProvider.preferredSeriesCoverUrl(cand.providerSeriesId);
         if (preferred) cand.coverUrl = preferred;
-      }),
+      },
     );
     // MangaDex's cover CDN serves a placeholder card to third-party browser
     // Referers (anything but mangadex.org / "localhost"), so route candidate

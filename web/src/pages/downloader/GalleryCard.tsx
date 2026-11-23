@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Search, Loader2, Download as DownloadIcon, Pause, XCircle, CheckCircle2, RotateCcw, Check, Circle, ImageOff, Bookmark, AlertTriangle, EllipsisVertical } from 'lucide-react';
 import { type DoujinSource, type DoujinSearchResult } from '../../lib/api';
-import { useGalleryDownloadTask } from '../../lib/DownloadsContext';
+import { useGalleryDownloadStatus } from '../../lib/DownloadsContext';
 import { cn, toIsoUtc } from '../../lib/utils';
 import { Button, Badge } from '../../components/ui';
 import { PageCountPill } from '../../components/PageCountPill';
@@ -35,7 +35,7 @@ export function OwnershipChip({ type, className }: { type: Exclude<GalleryOwners
   );
 }
 
-export function Cover({ url, title, className }: { url?: string | null; title: string; className?: string }) {
+export const Cover = React.memo(function Cover({ url, title, className, priority = false }: { url?: string | null; title: string; className?: string; priority?: boolean }) {
   const [failed, setFailed] = React.useState(false);
   React.useEffect(() => setFailed(false), [url]);
   const size = className ?? 'h-40 w-full';
@@ -51,12 +51,14 @@ export function Cover({ url, title, className }: { url?: string | null; title: s
       src={url}
       alt={title}
       referrerPolicy="no-referrer"
-      loading="lazy"
+      loading={priority ? 'eager' : 'lazy'}
+      decoding="async"
+      fetchPriority={priority ? 'high' : undefined}
       onError={() => setFailed(true)}
       className={cn('object-cover', size)}
     />
   );
-}
+});
 
 /** Galleries per page, matching both official search APIs. */
 export function formatDate(iso?: string | null): string | undefined {
@@ -104,6 +106,40 @@ interface GalleryCardProps {
   reasons?: string[];
 }
 
+function sameGalleryCardProps(prev: GalleryCardProps, next: GalleryCardProps): boolean {
+  if (
+    prev.item !== next.item
+    || prev.downloadSetup !== next.downloadSetup
+    || prev.starting !== next.starting
+    || prev.display !== next.display
+    || prev.quietAction !== next.quietAction
+    || prev.compact !== next.compact
+    || prev.ownership.type !== next.ownership.type
+    || prev.selection?.mode !== next.selection?.mode
+    || prev.selection?.selected !== next.selection?.selected
+    || prev.review?.state !== next.review?.state
+    || prev.feedback?.pending !== next.feedback?.pending
+    || Boolean(prev.feedback) !== Boolean(next.feedback)
+    || Boolean(prev.review) !== Boolean(next.review)
+    || prev.onOpen !== next.onOpen
+    || prev.onDownload !== next.onDownload
+    || prev.selection?.onToggle !== next.selection?.onToggle
+    || prev.review?.onChange !== next.review?.onChange
+    || prev.feedback?.onOpen !== next.feedback?.onOpen
+  ) return false;
+  const prevReasons = prev.reasons;
+  const nextReasons = next.reasons;
+  if (prevReasons !== nextReasons) {
+    if (!prevReasons || !nextReasons || prevReasons.length !== nextReasons.length) return false;
+    if (!prevReasons.every((reason, i) => reason === nextReasons[i])) return false;
+  }
+  const prevExtra = prev.provenance?.extraSources;
+  const nextExtra = next.provenance?.extraSources;
+  if (prevExtra === nextExtra) return true;
+  if (!prevExtra || !nextExtra || prevExtra.length !== nextExtra.length) return false;
+  return prevExtra.every((source, i) => source === nextExtra[i]);
+}
+
 function summarizeRecommendationReasons(reasons?: string[]): { summary: string; full: string } | null {
   if (!reasons?.length) return null;
   const parsed = reasons
@@ -144,8 +180,8 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
   const tags = item.tags.slice(0, 4);
   const inLibrary = libraryMatch === 'owned';
   const alreadyOwned = ownership.type === 'downloaded' || inLibrary;
-  const task = useGalleryDownloadTask(item.source, item.galleryId);
-  const active = starting || task?.state?.type === 'retry-wait' || task?.status === 'queued' || task?.status === 'downloading' || task?.status === 'paused';
+  const taskStatus = useGalleryDownloadStatus(item.source, item.galleryId);
+  const active = starting || taskStatus !== undefined;
   return (
     <article
       data-gallery-motion-id={`${item.source}:${item.galleryId}`}
@@ -201,9 +237,9 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
         <div className="flex min-w-0 items-stretch gap-2">
           {selectMode ? <>
             <Button size="sm" variant="outline" className="min-w-0 flex-1 px-2" onClick={() => onOpen(item)} aria-label={`View details for ${item.title}`}>Details</Button>
-          </> : <Button size="sm" variant={quietAction || alreadyOwned || libraryMatch === 'possible' ? 'outline' : 'default'} className={cn('max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 px-2', onReview && 'h-auto min-h-11 px-1.5')} onClick={() => onDownload(item)} disabled={active || alreadyOwned || downloadSetup === 'loading' || downloadSetup === 'error'} aria-label={starting && !task ? `Checking duplicates for ${item.title}` : active ? `${item.title} is ${task?.status ?? 'starting'}` : alreadyOwned ? `${item.title} already in library` : libraryMatch === 'possible' ? `Review possible duplicate of ${item.title}` : downloadSetup === 'missing' ? `Set output folder before downloading ${item.title}` : `Download ${item.title}`}>
-            {!onReview && (task?.status === 'paused' ? <Pause className="h-3.5 w-3.5 shrink-0" /> : task?.status === 'queued' ? <Circle className="h-3.5 w-3.5 shrink-0" /> : active ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : alreadyOwned ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <DownloadIcon className="h-3.5 w-3.5 shrink-0" />)}
-            <span>{task?.state?.type === 'retry-wait' ? 'Retry scheduled' : task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : starting && !task ? 'Checking…' : active ? 'Downloading' : inLibrary ? 'In library' : alreadyOwned ? 'Downloaded' : libraryMatch === 'possible' ? 'Review duplicate' : downloadSetup === 'missing' ? 'Set folder' : 'Download'}</span>
+          </> : <Button size="sm" variant={quietAction || alreadyOwned || libraryMatch === 'possible' ? 'outline' : 'default'} className={cn('max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 px-2', onReview && 'h-auto min-h-11 px-1.5')} onClick={() => onDownload(item)} disabled={active || alreadyOwned || downloadSetup === 'loading' || downloadSetup === 'error'} aria-label={starting && !taskStatus ? `Checking duplicates for ${item.title}` : active ? `${item.title} is ${taskStatus ?? 'starting'}` : alreadyOwned ? `${item.title} already in library` : libraryMatch === 'possible' ? `Review possible duplicate of ${item.title}` : downloadSetup === 'missing' ? `Set output folder before downloading ${item.title}` : `Download ${item.title}`}>
+            {!onReview && (taskStatus === 'paused' ? <Pause className="h-3.5 w-3.5 shrink-0" /> : taskStatus === 'queued' ? <Circle className="h-3.5 w-3.5 shrink-0" /> : active ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : alreadyOwned ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <DownloadIcon className="h-3.5 w-3.5 shrink-0" />)}
+            <span>{taskStatus === 'retry-wait' ? 'Retry scheduled' : taskStatus === 'queued' ? 'Queued' : taskStatus === 'paused' ? 'Paused' : starting && !taskStatus ? 'Checking…' : active ? 'Downloading' : inLibrary ? 'In library' : alreadyOwned ? 'Downloaded' : libraryMatch === 'possible' ? 'Review duplicate' : downloadSetup === 'missing' ? 'Set folder' : 'Download'}</span>
           </Button>}
           {!selectMode && onReview && <Button size="sm" variant="outline" className="relative h-auto min-h-11 shrink-0 px-1.5" disabled={reviewPending || reviewed} onClick={() => onReview(item, true)} aria-label={reviewed ? `${item.title} dismissed from inbox` : `Dismiss ${item.title}`} title={reviewed ? 'Kept in History' : 'Remove from Inbox and keep in History'}><span className={reviewPending ? 'invisible' : undefined}>{reviewed ? 'Dismissed' : 'Dismiss'}</span>{reviewPending && <Loader2 aria-hidden="true" className="absolute h-3.5 w-3.5 animate-spin" />}</Button>}
           {onFeedback && <Button size="icon" variant="outline" className="max-lg:min-h-11 max-lg:min-w-11 pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 text-muted" disabled={dismissing} onClick={() => onFeedback(item)} aria-label={`Tune recommendations for ${item.title}`} title="Tune recommendations"><EllipsisVertical className="h-4 w-4" /></Button>}
@@ -211,4 +247,4 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
       </div>
     </article>
   );
-});
+}, sameGalleryCardProps);

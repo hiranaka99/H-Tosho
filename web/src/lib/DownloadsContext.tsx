@@ -58,8 +58,48 @@ function downloadsQueryFn(qc: QueryClient) {
   };
 }
 
+export type GalleryDownloadStatus = 'queued' | 'downloading' | 'paused' | 'retry-wait';
+
+interface GalleryStatusStore {
+  subscribe: (key: string, listener: () => void) => () => void;
+  get: (key: string) => GalleryDownloadStatus | undefined;
+  sync: (tasks: DownloadTask[]) => void;
+}
+
 const ActionsCtx = React.createContext<DownloadActionsApi | null>(null);
 const TasksCtx = React.createContext<DownloadTasksApi | null>(null);
+const GalleryStatusCtx = React.createContext<GalleryStatusStore | null>(null);
+
+function createGalleryStatusStore(): GalleryStatusStore {
+  let statuses = new Map<string, GalleryDownloadStatus>();
+  const listeners = new Map<string, Set<() => void>>();
+  return {
+    subscribe: (key, listener) => {
+      let set = listeners.get(key);
+      if (!set) { set = new Set(); listeners.set(key, set); }
+      set.add(listener);
+      return () => {
+        set!.delete(listener);
+        if (set!.size === 0) listeners.delete(key);
+      };
+    },
+    get: (key) => statuses.get(key),
+    sync: (tasks) => {
+      const next = new Map<string, GalleryDownloadStatus>();
+      for (const task of tasks) {
+        const key = `${task.source}:${task.galleryId}`;
+        if (next.has(key)) continue;
+        if (task.state?.type === 'retry-wait') next.set(key, 'retry-wait');
+        else if (task.status === 'queued' || task.status === 'downloading' || task.status === 'paused') next.set(key, task.status);
+      }
+      const changed = new Set<string>();
+      for (const [key, val] of next) if (statuses.get(key) !== val) changed.add(key);
+      for (const key of statuses.keys()) if (!next.has(key)) changed.add(key);
+      statuses = next;
+      for (const key of changed) listeners.get(key)?.forEach((listener) => listener());
+    },
+  };
+}
 
 /**
  * App-wide download state. Lifts the downloads query + SSE subscription out of
@@ -74,17 +114,20 @@ const TasksCtx = React.createContext<DownloadTasksApi | null>(null);
 export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   const qc = useQueryClient();
   const liveConnected = useDownloadEvents();
+  const [statusStore] = React.useState(createGalleryStatusStore);
+  const queryFn = React.useMemo(() => downloadsQueryFn(qc), [qc]);
 
   // Polling is a lightweight fallback for when the SSE stream is down; while
   // the stream is connected it already folds every snapshot/task event into
   // this same cache, so a concurrent poll would only double the traffic.
   const downloadsQuery = useQuery({
     queryKey: ['downloads'],
-    queryFn: downloadsQueryFn(qc),
+    queryFn,
     refetchInterval: liveConnected ? false : 5000,
   });
   const data = downloadsQuery.data;
   const tasks = React.useMemo(() => (Array.isArray(data) ? data : []), [data]);
+  React.useEffect(() => { statusStore.sync(tasks); }, [statusStore, tasks]);
   const active = React.useMemo(
     () => tasks.filter((t) => t.status === 'downloading' || t.status === 'queued'),
     [tasks],
@@ -118,7 +161,9 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     let completed = false;
+    const currentIds = new Set<number>();
     for (const t of tasks) {
+      currentIds.add(t.id);
       const prev = prevStatuses.current.get(t.id);
       prevStatuses.current.set(t.id, t.status);
       if (prev === undefined || prev === t.status) continue;
@@ -130,6 +175,9 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
         // Surface genuine failures; a user cancel also lands as "failed" but carries a distinct message.
         toast({ tone: 'danger', title: 'Download failed', description: t.errorMessage ? downloadErrorHelp(t.errorMessage, t.errorCode).message : title });
       }
+    }
+    for (const id of prevStatuses.current.keys()) {
+      if (!currentIds.has(id)) prevStatuses.current.delete(id);
     }
     if (completed) {
       void qc.invalidateQueries({ queryKey: ['downloads-completed'] });
@@ -171,9 +219,11 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <ActionsCtx.Provider value={actionsValue}>
-      <TasksCtx.Provider value={tasksValue}>{children}</TasksCtx.Provider>
-    </ActionsCtx.Provider>
+    <GalleryStatusCtx.Provider value={statusStore}>
+      <ActionsCtx.Provider value={actionsValue}>
+        <TasksCtx.Provider value={tasksValue}>{children}</TasksCtx.Provider>
+      </ActionsCtx.Provider>
+    </GalleryStatusCtx.Provider>
   );
 }
 
@@ -199,11 +249,20 @@ export function useDownloads(): DownloadsApi {
   return { ...useDownloadActions(), ...useDownloadTasks() };
 }
 
+/** O(1) coarse status subscription: gallery cards never re-render on byte/speed SSE ticks. */
+export function useGalleryDownloadStatus(source: DoujinSource, galleryId: string): GalleryDownloadStatus | undefined {
+  const store = React.useContext(GalleryStatusCtx);
+  const key = `${source}:${galleryId}`;
+  const subscribe = React.useCallback((listener: () => void) => store ? store.subscribe(key, listener) : () => {}, [store, key]);
+  const getSnapshot = React.useCallback(() => store?.get(key), [store, key]);
+  return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
 
 /** Observe only this gallery; unrelated SSE ticks retain the selected task reference. */
 export function useGalleryDownloadTask(source: DoujinSource, galleryId: string): DownloadTask | undefined {
   const select = React.useCallback((tasks: DownloadTask[]) => tasks.find(task => task.source === source && task.galleryId === galleryId &&
-    (['queued', 'downloading', 'paused'].includes(task.status) || task.state?.type === 'retry-wait')), [source, galleryId]);
+    (task.status === 'queued' || task.status === 'downloading' || task.status === 'paused' || task.state?.type === 'retry-wait')), [source, galleryId]);
   const qc = useQueryClient();
-  return useQuery({ queryKey: ['downloads'], queryFn: downloadsQueryFn(qc), enabled: false, select }).data;
+  const queryFn = React.useMemo(() => downloadsQueryFn(qc), [qc]);
+  return useQuery({ queryKey: ['downloads'], queryFn, enabled: false, select }).data;
 }

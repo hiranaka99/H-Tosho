@@ -67,7 +67,10 @@ export const metadataSeriesCovers = sqliteTable('metadata_series_covers', {
   requestedLock: integer('requested_lock', { mode: 'boolean' }),
   writeAcknowledged: integer('write_acknowledged', { mode: 'boolean' }).notNull().default(false),
   reservedBytes: integer('reserved_bytes').notNull().default(0),
-});
+}, table => [
+  index('idx_metadata_series_covers_before').on(table.beforeAssetId),
+  index('idx_metadata_series_covers_after').on(table.afterAssetId),
+]);
 
 export const metadataVolumeCovers = sqliteTable('metadata_volume_covers', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -88,7 +91,11 @@ export const metadataVolumeCovers = sqliteTable('metadata_volume_covers', {
   requestedLock: integer('requested_lock', { mode: 'boolean' }),
   writeAcknowledged: integer('write_acknowledged', { mode: 'boolean' }).notNull().default(false),
   reservedBytes: integer('reserved_bytes').notNull().default(0),
-}, table => [uniqueIndex('idx_metadata_volume_cover_operation').on(table.operationId, table.volumeId)]);
+}, table => [
+  uniqueIndex('idx_metadata_volume_cover_operation').on(table.operationId, table.volumeId),
+  index('idx_metadata_volume_covers_before').on(table.beforeAssetId),
+  index('idx_metadata_volume_covers_after').on(table.afterAssetId),
+]);
 
 /** Unconsumed previews expire; approved plans copy all write authority durably. */
 export const metadataRestorePreviews = sqliteTable('metadata_restore_previews', {
@@ -104,7 +111,10 @@ export const metadataRestorePreviews = sqliteTable('metadata_restore_previews', 
   createdAt: text('created_at').notNull(),
   expiresAt: text('expires_at').notNull(),
   consumedAt: text('consumed_at'),
-}, table => [index('idx_metadata_restore_preview_expiry').on(table.expiresAt)]);
+}, table => [
+  index('idx_metadata_restore_preview_expiry').on(table.expiresAt),
+  index('idx_metadata_restore_preview_source').on(table.sourceOperationId),
+]);
 
 export const metadataRestorePlans = sqliteTable('metadata_restore_plans', {
   id: text('id').primaryKey(),
@@ -129,6 +139,8 @@ export const metadataRestorePlans = sqliteTable('metadata_restore_plans', {
   uniqueIndex('idx_metadata_restore_idempotency').on(table.connectionKey, table.idempotencyKey),
   uniqueIndex('idx_metadata_restore_plan_preview').on(table.previewId),
   index('idx_metadata_restore_plan_job').on(table.jobId),
+  index('idx_metadata_restore_plan_source').on(table.sourceOperationId),
+  index('idx_metadata_restore_plan_operation').on(table.operationId),
 ]);
 
 export const seriesFieldPolicies = sqliteTable('series_field_policies', {
@@ -170,7 +182,9 @@ export const seriesMatches = sqliteTable('series_matches', {
   updatedAt: text('updated_at')
     .notNull()
     .default(sql`(current_timestamp)`),
-});
+}, table => [
+  index('idx_series_matches_status_review').on(table.status, table.confirmed, table.matchScore),
+]);
 
 /** Read-only discovery results, separate from accepted matches and Kavita metadata. */
 export const matchSuggestions = sqliteTable('match_suggestions', {
@@ -214,6 +228,7 @@ export const jobs = sqliteTable('jobs', {
 }, (table) => [
   index('idx_jobs_status').on(table.status),
   index('idx_jobs_finished_at').on(table.finishedAt),
+  index('idx_jobs_type_id').on(table.type, table.id),
 ]);
 
 export const jobLogs = sqliteTable('job_logs', {
@@ -292,6 +307,10 @@ export const downloadQueue = sqliteTable('download_queue', {
 }, (table) => [
   index('idx_download_queue_gallery').on(table.source, table.galleryId),
   index('idx_download_queue_claim').on(table.status, table.priority),
+  index('idx_download_queue_status_finished').on(table.status, table.finishedAt),
+  index('idx_download_queue_status_id').on(table.status, table.id),
+  index('idx_download_queue_merge_folder').on(table.mergeFolder),
+  index('idx_download_queue_output_path').on(table.outputPath),
 ]);
 
 export const watchedSearchFolders = sqliteTable('watched_search_folders', {
@@ -379,6 +398,7 @@ export const watchedSearchNew = sqliteTable('watched_search_new', {
   uniqueIndex('idx_watched_search_new_unique').on(table.searchId, table.source, table.galleryId),
   index('idx_watched_search_new_found').on(table.foundAt, table.id),
   index('idx_watched_search_new_gallery').on(table.source, table.galleryId),
+  index('idx_watched_search_new_dedupe').on(table.source, table.galleryId, table.foundAt, table.id),
 ]);
 
 /**
@@ -444,5 +464,6 @@ export const recommendationHistory = sqliteTable('recommendation_history', {
 }, (table) => [
   uniqueIndex('idx_recommendation_history_unique').on(table.source, table.galleryId),
   index('idx_recommendation_history_served').on(table.servedAt),
+  index('idx_recommendation_history_served_date').on(table.servedDate),
 ]);
 

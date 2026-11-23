@@ -199,8 +199,7 @@ export async function buildZipFromFiles(
     const centralStart = offset;
     let centralSize = 0;
     for (const c of central) centralSize += c.length;
-    for (const c of central) await write(c);
-    await write(endOfCentralDirectory(files.length + inlineEntries.length, centralStart, centralSize));
+    await write(Buffer.concat([...central, endOfCentralDirectory(files.length + inlineEntries.length, centralStart, centralSize)]));
   } catch (error) {
     failure = error;
   }

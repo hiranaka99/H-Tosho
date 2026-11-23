@@ -18,6 +18,12 @@ import { useTheme } from './lib/theme';
 import { useMediaQuery } from './lib/useMediaQuery';
 import { recommendationQuery } from './lib/recommendationQuery';
 
+/** Owns the single startup recommendation fetch without re-rendering App on settle. */
+function RecommendationLoader() {
+  useQuery(recommendationQuery);
+  return null;
+}
+
 function LowConfidenceBadge() {
   const { data } = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, refetchInterval: 60_000 });
   if (!data || data.count === 0) return null;
@@ -106,9 +112,6 @@ const NAV = [
 ];
 
 export default function App() {
-  // AuthProvider mounts App only after login. No timer or navigation rotates
-  // picks; the server persists the day's initial set across app openings.
-  useQuery(recommendationQuery);
   const location = useLocation();
   const { username, logout } = useAuth();
   // Library IDs select content within one page; keep its controls mounted.
@@ -174,8 +177,9 @@ export default function App() {
   };
   return (
     <div className="flex min-h-0 h-full flex-col overflow-hidden lg:flex-row">
+      <RecommendationLoader />
       <header aria-hidden={navOpen && !isDesktop ? true : undefined} className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-sidebar px-3 pt-[env(safe-area-inset-top)] sm:px-4 lg:hidden">
-        <Brand />
+        {!isDesktop && <Brand />}
         <Button ref={navToggleRef} size="icon" variant="ghost" aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="app-navigation" tabIndex={navOpen ? -1 : 0} onClick={() => setNavOpen((v) => !v)}>
           {navOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </Button>
@@ -194,7 +198,7 @@ export default function App() {
           <Button size="icon" variant="ghost" aria-label="Close navigation" onClick={() => setNavOpen(false)}><X className="h-5 w-5" /></Button>
         </div>
         <div className="hidden h-14 items-center border-b border-border px-4 lg:flex">
-          <Brand />
+          {isDesktop && <Brand />}
         </div>
         <nav ref={navigationRef} aria-label="Primary navigation" className="relative isolate flex flex-1 flex-col gap-1 p-3">
           <span aria-hidden="true" className="app-nav-indicator pointer-events-none absolute inset-x-3 top-0 rounded-lg bg-primary/10" style={{ height: navIndicator.height, transform: `translateY(${navIndicator.top}px)`, opacity: navIndicator.height ? 1 : 0 }} />

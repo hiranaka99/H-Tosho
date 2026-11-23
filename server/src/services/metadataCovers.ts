@@ -1,4 +1,4 @@
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import type { KavitaClient } from '../kavita/client.js';
 import type { MetadataSnapshot } from '../contracts/metadataHistory.js';
@@ -136,19 +136,25 @@ export function coverJournal(client: KavitaClient, operationId: string, seriesId
   };
 }
 
-export function recordedCover(row: CoverCheckpointRow, side: 'before' | 'after'): RecordedCover {
+type AssetMeta = { id: string; mediaType: string; byteSize: number };
+
+export function recordedCover(row: CoverCheckpointRow, side: 'before' | 'after', assetsById?: Map<string, AssetMeta>): RecordedCover {
   const rawState = side === 'before' ? row.beforeState : row.afterState;
   const state = rawState === 'captured' || rawState === 'absent' ? rawState : 'unavailable';
   const id = side === 'before' ? row.beforeAssetId : row.afterAssetId;
-  const asset = id ? getDb().select({ id: schema.metadataAssets.id, mediaType: schema.metadataAssets.mediaType, byteSize: schema.metadataAssets.byteSize }).from(schema.metadataAssets).where(eq(schema.metadataAssets.id, id)).get() : undefined;
+  const asset = !id
+    ? undefined
+    : assetsById
+      ? assetsById.get(id)
+      : getDb().select({ id: schema.metadataAssets.id, mediaType: schema.metadataAssets.mediaType, byteSize: schema.metadataAssets.byteSize }).from(schema.metadataAssets).where(eq(schema.metadataAssets.id, id)).get();
   const nativeLocked = side === 'before' ? row.beforeLocked : row.afterLocked;
   return { state: state === 'captured' && !asset ? 'unavailable' : state, assetId: asset?.id ?? null, mediaType: asset?.mediaType ?? null, byteSize: asset?.byteSize ?? null, nativeLocked,
     nativeLockReason: nativeLocked === null && state !== 'unavailable' ? 'This server did not expose the native cover lock; its value was not inferred.' : null,
     reason: state === 'captured' && !asset ? 'Retained cover asset is no longer available' : side === 'before' ? row.beforeReason : row.afterReason };
 }
 
-function checkpointHistory(row: CoverCheckpointRow, target: CoverTarget, running: boolean): CoverCheckpoint {
-  const before = recordedCover(row, 'before'), after = recordedCover(row, 'after');
+function checkpointHistory(row: CoverCheckpointRow, target: CoverTarget, running: boolean, assetsById?: Map<string, AssetMeta>): CoverCheckpoint {
+  const before = recordedCover(row, 'before', assetsById), after = recordedCover(row, 'after', assetsById);
   let budgetReason: string | null = process.env.HTOSHO_COVER_HISTORY_LIMIT_MIB === undefined ? 'Configure a cover-history budget before restoring images' : null;
   try { coverStorageBudget(); } catch (error) { budgetReason = error instanceof Error ? error.message : 'Cover-history budget is invalid'; }
   const availability = (cover: RecordedCover, side: 'before' | 'after') => {
@@ -161,14 +167,55 @@ function checkpointHistory(row: CoverCheckpointRow, target: CoverTarget, running
     restoreAvailability: { before: availability(before, 'before'), after: availability(after, 'after') } };
 }
 
+/** Batch-load cover history for multiple operations in 3 queries instead of N+1. */
+export function coverHistoryBatch(operations: { id: string; status: string }[]): Map<string, CoverHistory> {
+  const result = new Map<string, CoverHistory>();
+  if (!operations.length) return result;
+  const db = getDb();
+  const ids = operations.map((op) => op.id);
+  const seriesRows = db.select().from(schema.metadataSeriesCovers).where(inArray(schema.metadataSeriesCovers.operationId, ids)).all();
+  const volumeRows = db.select().from(schema.metadataVolumeCovers).where(inArray(schema.metadataVolumeCovers.operationId, ids)).all();
+  const assetIds = new Set<string>();
+  const seriesByOp = new Map<string, typeof schema.metadataSeriesCovers.$inferSelect>();
+  for (const row of seriesRows) {
+    seriesByOp.set(row.operationId, row);
+    if (row.beforeAssetId) assetIds.add(row.beforeAssetId);
+    if (row.afterAssetId) assetIds.add(row.afterAssetId);
+  }
+  const volumesByOp = new Map<string, (typeof schema.metadataVolumeCovers.$inferSelect)[]>();
+  for (const row of volumeRows) {
+    const list = volumesByOp.get(row.operationId);
+    if (list) list.push(row);
+    else volumesByOp.set(row.operationId, [row]);
+    if (row.beforeAssetId) assetIds.add(row.beforeAssetId);
+    if (row.afterAssetId) assetIds.add(row.afterAssetId);
+  }
+  const assetsById = new Map<string, AssetMeta>();
+  const assetIdList = [...assetIds];
+  for (let i = 0; i < assetIdList.length; i += 400) {
+    const batch = assetIdList.slice(i, i + 400);
+    for (const asset of db.select({ id: schema.metadataAssets.id, mediaType: schema.metadataAssets.mediaType, byteSize: schema.metadataAssets.byteSize }).from(schema.metadataAssets).where(inArray(schema.metadataAssets.id, batch)).all()) {
+      assetsById.set(asset.id, asset);
+    }
+  }
+  for (const op of operations) {
+    const series = seriesByOp.get(op.id);
+    const volumes = volumesByOp.get(op.id) ?? [];
+    if (!series && !volumes.length) continue;
+    const running = op.status === 'running';
+    result.set(op.id, {
+      ...(series ? { series: checkpointHistory(series, { kind: 'series' }, running, assetsById) } : {}),
+      volumes: volumes.map((row) => checkpointHistory(row, { kind: 'volume', volumeId: row.volumeId }, running, assetsById)),
+    });
+  }
+  return result;
+}
+
 export function coverHistory(operationId: string): CoverHistory | undefined {
   const db = getDb();
-  const operation = db.select({ status: schema.metadataOperations.status }).from(schema.metadataOperations).where(eq(schema.metadataOperations.id, operationId)).get();
+  const operation = db.select({ id: schema.metadataOperations.id, status: schema.metadataOperations.status }).from(schema.metadataOperations).where(eq(schema.metadataOperations.id, operationId)).get();
   if (!operation) return undefined;
-  const series = getCoverCheckpoint(operationId, { kind: 'series' });
-  const volumes = db.select().from(schema.metadataVolumeCovers).where(eq(schema.metadataVolumeCovers.operationId, operationId)).all();
-  if (!series && !volumes.length) return undefined;
-  return { ...(series ? { series: checkpointHistory(series, { kind: 'series' }, operation.status === 'running') } : {}), volumes: volumes.map(row => checkpointHistory(row, { kind: 'volume', volumeId: row.volumeId }, operation.status === 'running')) };
+  return coverHistoryBatch([operation]).get(operationId);
 }
 
 /** A content hash is not authority: the active operation must reference the image. */

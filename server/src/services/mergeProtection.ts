@@ -15,6 +15,7 @@ import { getDb, schema } from '../db/index.js';
 import { eq } from 'drizzle-orm';
 import { readJobPayload, persistMergeState } from '../jobs/storage.js';
 import { inheritFieldPoliciesOwned } from './fieldPolicies.js';
+import { mapLimit } from '../lib/http.js';
 
 export class MergeProtectionError extends Error {
   constructor(message: string, readonly status: 400 | 409 | 502 = 409) { super(message); }
@@ -74,15 +75,33 @@ export async function resolveMergeProtection(client: KavitaClient, request: Merg
     return candidates[0] ?? null;
   };
   const indexed = new Map<string, number>();
-  for (const series of all) {
-    for (const chapter of await client.getChaptersBySeries(series.id)) for (const file of chapter.files ?? []) {
+  const resourceCache = new Map<string, string>();
+  const cachedResource = (file: string): string => {
+    let hit = resourceCache.get(file);
+    if (hit === undefined) { hit = archiveResource(file); resourceCache.set(file, hit); }
+    return hit;
+  };
+  const xmlCache = new Map<string, string | null>();
+  const cachedReadComicInfo = async (file: string): Promise<string | null> => {
+    const key = cachedResource(file);
+    if (xmlCache.has(key)) return xmlCache.get(key)!;
+    const xml = await readComicInfo(file);
+    xmlCache.set(key, xml);
+    return xml;
+  };
+  const chapterBatches = await mapLimit(all, 8, async (series) => ({
+    seriesId: series.id,
+    chapters: await client.getChaptersBySeries(series.id),
+  }));
+  for (const { seriesId, chapters } of chapterBatches) {
+    for (const chapter of chapters) for (const file of chapter.files ?? []) {
       if (!file.filePath) throw new MergeProtectionError('Kavita returned an archive without a path; review cannot establish protection');
       const local = map(file.filePath);
       if (!local) throw new MergeProtectionError('Map Kavita library paths before reviewing this merge');
-      const identity = archiveResource(local);
+      const identity = cachedResource(local);
       const owner = indexed.get(identity);
-      if (owner !== undefined && owner !== series.id) throw new MergeProtectionError('An archive is indexed under multiple series; rescan Kavita before merging');
-      indexed.set(identity, series.id);
+      if (owner !== undefined && owner !== seriesId) throw new MergeProtectionError('An archive is indexed under multiple series; rescan Kavita before merging');
+      indexed.set(identity, seriesId);
     }
   }
   let target = request.seriesId === undefined ? undefined : all.find(series => series.id === request.seriesId);
@@ -124,12 +143,12 @@ export async function resolveMergeProtection(client: KavitaClient, request: Merg
   }
   for (const id of request.sourceSeriesIds ?? []) if (!archives.some(file => file.seriesId === id) && !(previous?.sourceSeriesIds.includes(id))) throw new MergeProtectionError('Selected source series does not own an incoming indexed archive; refresh the file list');
   const targetValues = new Set<string>();
-  const incoming=new Set([...sourceFiles,...(previous?.archives.map(archive=>archive.path) ?? []),...(previous?.moves?.map(move=>move.destination) ?? [])].map(archiveResource));
-  for (const file of targetFiles.filter(file => !incoming.has(archiveResource(file)))) {
-    const xml = await readComicInfo(file);
+  const incoming=new Set([...sourceFiles,...(previous?.archives.map(archive=>archive.path) ?? []),...(previous?.moves?.map(move=>move.destination) ?? [])].map(cachedResource));
+  await mapLimit(targetFiles.filter(file => !incoming.has(cachedResource(file))), 6, async (file) => {
+    const xml = await cachedReadComicInfo(file);
     const value = comicInfoSeries(xml);
     if (value) targetValues.add(value);
-  }
+  });
   if (!request.seriesName && targetValues.size > 1) throw new MergeProtectionError('Target archives disagree on ComicInfo.Series; choose a name after reviewing their protection');
   const seriesName = request.seriesName ?? [...targetValues][0] ?? previous?.seriesName ?? target?.name ?? lastSegment(targetDir);
   const series: MergeProtectionSeries[] = [];
@@ -154,7 +173,7 @@ export async function resolveMergeProtection(client: KavitaClient, request: Merg
     const affected = archives.filter(file => file.seriesId === id).map(file => file.path);
     if (role === 'target' && request.seriesName) affected.push(...targetFiles);
     for (const file of new Set(affected)) {
-      const xml = await readComicInfo(file);
+      const xml = await cachedReadComicInfo(file);
       if (comicInfoSeries(xml) !== seriesName) titleChange = true;
     }
     series.push({seriesId:id, libraryId:live?.libraryId ?? previous?.libraryId ?? 0, name:live?.name ?? `Previous source series #${id}`, role, titleChange, lockedFields, revision:policy.revision});

@@ -18,6 +18,9 @@ function decodeText(value:string):string {
 }
 
 /** Reject ambiguous/unsupported XML rather than reserializing it and losing attributes or nested data. */
+const TAG_TOKEN_RE = /<(\/?)([A-Za-z_][\w.:-]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/y;
+const ATTR_TOKEN_RE = /\s+([A-Za-z_][\w.:-]*)\s*=\s*("[^"<]*"|'[^'<]*')/y;
+
 function spans(xml: string): DocumentSpans {
   const fields = new Map<string, ElementSpan>();
   const stack: { name: string; start: number }[] = [];
@@ -40,7 +43,8 @@ function spans(xml: string): DocumentSpans {
     if (xml.startsWith('<?', start)) {
       const end = xml.indexOf('?>', start + 2); if (end < 0) invalid(); position = end + 2; continue;
     }
-    const token = /^<(\/?)([A-Za-z_][\w.:-]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/.exec(xml.slice(start));
+    TAG_TOKEN_RE.lastIndex = start;
+    const token = TAG_TOKEN_RE.exec(xml);
     if (!token) invalid();
     const end = start + token![0].length, name = token![2], closing = !!token![1];
     const selfClosing = /\/$/.test(token![3]);
@@ -55,11 +59,15 @@ function spans(xml: string): DocumentSpans {
     } else {
       const attributes = selfClosing ? token![3].slice(0,-1) : token![3];
       const attributeNames=new Set<string>();
-      let rest=attributes;
-      while(rest.trim()) {
-        const attribute=/^\s+([A-Za-z_][\w.:-]*)\s*=\s*("[^"<]*"|'[^'<]*')/.exec(rest);
-        if(!attribute || attributeNames.has(attribute[1]))invalid();
-        attributeNames.add(attribute![1]);decodeText(attribute![2].slice(1,-1));rest=rest.slice(attribute![0].length);
+      let attrPos = 0;
+      while (attrPos < attributes.length) {
+        if (!attributes.slice(attrPos).trim()) break;
+        ATTR_TOKEN_RE.lastIndex = attrPos;
+        const attribute = ATTR_TOKEN_RE.exec(attributes);
+        if (!attribute || attributeNames.has(attribute[1])) invalid();
+        attributeNames.add(attribute![1]);
+        decodeText(attribute![2].slice(1, -1));
+        attrPos = ATTR_TOKEN_RE.lastIndex;
       }
       if (!stack.length) {
         if (root || finished || name !== 'ComicInfo') invalid();
@@ -81,9 +89,8 @@ function spans(xml: string): DocumentSpans {
 
 export function validateRestoreXml(xml: string | null): void { if (xml !== null) spans(xml); }
 
-export function comicInfoFieldValue(xml: string | null,name:string): string | null {
-  if (xml === null) return null;
-  const field = spans(xml).fields.get(name);
+function fieldValueFromSpans(xml: string, doc: DocumentSpans, name: string): string | null {
+  const field = doc.fields.get(name);
   if (!field) return null;
   const element = xml.slice(field.start,field.end);
   if (/\/\s*>$/.test(element)) return '';
@@ -101,6 +108,11 @@ export function comicInfoFieldValue(xml: string | null,name:string): string | nu
     }
   }
   return value;
+}
+
+export function comicInfoFieldValue(xml: string | null,name:string): string | null {
+  if (xml === null) return null;
+  return fieldValueFromSpans(xml, spans(xml), name);
 }
 export const comicInfoSeries = (xml:string|null) => comicInfoFieldValue(xml,'Series');
 
@@ -121,7 +133,8 @@ export function restoreComicInfoFields(current: string | null, historical: strin
   const replacements: {start:number;end:number;text:string}[] = [];
   const append: string[] = [];
   for (const field of fields) {
-    comicInfoFieldValue(current,field);comicInfoFieldValue(historical,field);
+    if (current !== null) fieldValueFromSpans(document, live, field);
+    if (historical !== null && source) fieldValueFromSpans(historical, source, field);
     const saved = source?.fields.get(field), existing = live.fields.get(field);
     if(saved && source!.namespace!==live.namespace)throw new Error('ComicInfo default namespaces differ; use complete XML replacement');
     const text = saved ? historical!.slice(saved.start,saved.end) : '';

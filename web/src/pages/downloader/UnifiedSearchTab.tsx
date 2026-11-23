@@ -21,7 +21,7 @@ import { GalleryCard } from './GalleryCard';
 import { toWebResult, type UnifiedSearchValue } from './useUnifiedSearch';
 import { SearchHint } from './SearchHint';
 import { GallerySkeletonGrid } from './GallerySkeletons';
-import { galleryKey, type GalleryOwnership } from './ownership';
+import type { GalleryOwnership } from './ownership';
 
 // ---------------- provider status chips ----------------
 
@@ -121,10 +121,71 @@ interface UnifiedSearchTabProps {
   showSelection: boolean;
 }
 
+const UnifiedEntryCard = React.memo(function UnifiedEntryCard({
+  entry,
+  onOpenEntry,
+  onDownload,
+  downloadStatus,
+  starting,
+  ownership,
+  selectMode,
+  selected,
+  onToggleGroup,
+}: {
+  entry: UnifiedSearchEntry;
+  onOpenEntry: (entry: UnifiedSearchEntry) => void;
+  onDownload: (item: DoujinSearchResult, entryId: string) => void;
+  downloadStatus: DownloadSetup['status'];
+  starting: boolean;
+  ownership: GalleryOwnership;
+  selectMode: boolean;
+  selected: boolean;
+  onToggleGroup: (entry: UnifiedSearchEntry) => void;
+}) {
+  const primary = React.useMemo(() => toWebResult(entry.primary), [entry.primary]);
+  const provenance = React.useMemo(
+    () => (entry.variants.length > 1 ? { extraSources: extraSources(entry) } : undefined),
+    [entry],
+  );
+  const handleOpen = React.useCallback(() => onOpenEntry(entry), [onOpenEntry, entry]);
+  const handleDownload = React.useCallback(() => onDownload(primary, entry.entryId), [onDownload, primary, entry.entryId]);
+  const handleToggle = React.useCallback(() => onToggleGroup(entry), [onToggleGroup, entry]);
+  const selection = React.useMemo(
+    () => ({ mode: (selectMode ? 'select' : 'browse') as 'select' | 'browse', selected, onToggle: handleToggle }),
+    [selectMode, selected, handleToggle],
+  );
+  return (
+    <GalleryCard
+      item={primary}
+      onOpen={handleOpen}
+      onDownload={handleDownload}
+      downloadSetup={downloadStatus}
+      starting={starting}
+      provenance={provenance}
+      ownership={ownership}
+      selection={selection}
+    />
+  );
+});
+
 export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadStatus, startingKeys, ownershipFor, selectedEntryIds, onToggleGroup, selectMode, onToggleSelectMode, selectionActions, showSelection }: UnifiedSearchTabProps) {
   const { draft, committed, status, entries, cursor, hasMore, loadedUniqueCount, totalUnique, providers, error, retrying } = unified;
   const [formDraft, setFormDraft] = React.useState(draft);
-  React.useEffect(() => setFormDraft(draft), [draft]);
+  const syncedDraftRef = React.useRef(draft);
+  React.useEffect(() => {
+    if (draft !== syncedDraftRef.current) {
+      syncedDraftRef.current = draft;
+      setFormDraft(draft);
+    }
+  }, [draft]);
+  React.useEffect(() => {
+    if (formDraft === syncedDraftRef.current) return;
+    const timer = window.setTimeout(() => {
+      syncedDraftRef.current = formDraft;
+      unified.setDraft(formDraft);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [formDraft, unified]);
   const busy = status === 'searching' || status === 'loading-more';
   const failedProviders = providers.filter((p) => p.status === 'failed' || p.status === 'unavailable' || p.status === 'rate-limited');
   const okProviders = providers.filter((p) => p.status === 'success' || p.status === 'exhausted');
@@ -133,6 +194,7 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
     e.preventDefault();
     const q = formDraft.trim();
     if (!q) return;
+    syncedDraftRef.current = q;
     unified.setDraft(q);
     unified.startSearch(q);
   }
@@ -144,7 +206,7 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
           <form onSubmit={submit} className="flex flex-col gap-2 sm:flex-row">
             <GallerySearchInput
               value={formDraft} source="unified"
-              onChange={(value) => { setFormDraft(value); unified.setDraft(value); }}
+              onChange={setFormDraft}
               label="Search galleries" describedBy="unified-search-hint"
               placeholder="Search all sources, e.g. sister or artist:foo -bar"
               clearLabel="Clear search input" className="h-11"
@@ -228,24 +290,20 @@ export function UnifiedSearchTab({ unified, onOpenEntry, onDownload, downloadSta
           </div>
           {showSelection && <GallerySelectionBar {...selectionActions} />}
           <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-            {entries.map((entry) => {
-              const primary = toWebResult(entry.primary);
-              const key = galleryKey(primary);
-              const provenance = entry.variants.length > 1 ? { extraSources: extraSources(entry) } : undefined;
-              return (
-                <GalleryCard
-                  key={entry.entryId}
-                  item={primary}
-                  onOpen={() => onOpenEntry(entry)}
-                  onDownload={() => onDownload(primary, entry.entryId)}
-                  downloadSetup={downloadStatus}
-                  starting={startingKeys.has(key)}
-                  provenance={provenance}
-                  ownership={ownershipFor(entry)}
-                  selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedEntryIds.has(entry.entryId), onToggle: () => onToggleGroup(entry) }}
-                />
-              );
-            })}
+            {entries.map((entry) => (
+              <UnifiedEntryCard
+                key={entry.entryId}
+                entry={entry}
+                onOpenEntry={onOpenEntry}
+                onDownload={onDownload}
+                downloadStatus={downloadStatus}
+                starting={startingKeys.has(`${entry.primary.source}:${entry.primary.galleryId}`)}
+                ownership={ownershipFor(entry)}
+                selectMode={selectMode}
+                selected={selectedEntryIds.has(entry.entryId)}
+                onToggleGroup={onToggleGroup}
+              />
+            ))}
           </div>
           {hasMore && (
             <div className="flex justify-center pt-1">

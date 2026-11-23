@@ -1,7 +1,7 @@
 import { buildProfile, backfillMissingTags, isBoilerplateTag, type ProfileTerm, type TasteProfile } from './recommendationProfile.js';
 import { MutationCoordinator } from '../lib/mutations.js';
 const recommendationMutations = new MutationCoordinator();
-import { and, asc, desc, eq, inArray, isNull, like, lt, ne } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery, DoujinSearchResult, DoujinSort } from '../downloader/types.js';
@@ -672,27 +672,55 @@ function readHistory(): HistoryEntry[] {
   }
 }
 
-function pruneHistory(): HistoryEntry[] {
+function readHistoryItem(source: string, galleryId: string): RecommendationItem | undefined {
+  const db = getDb();
+  const row = db.select().from(schema.recommendationHistory)
+    .where(and(eq(schema.recommendationHistory.source, source), eq(schema.recommendationHistory.galleryId, galleryId)))
+    .get();
+  if (row) {
+    try {
+      return parseHistoryEntry({ key: `${row.source}:${row.galleryId}`, date: row.servedDate, servedAt: row.servedAt, item: JSON.parse(row.itemJson) })?.item;
+    } catch {
+      return undefined;
+    }
+  }
+  // Legacy migration fallback only when the normalized table is completely empty.
+  const anyRow = db.select({ source: schema.recommendationHistory.source }).from(schema.recommendationHistory).limit(1).get();
+  if (!anyRow) return readHistory().find((entry) => entry.key === `${source}:${galleryId}`)?.item;
+  return undefined;
+}
+
+function pruneHistoryRows(): void {
   const cutoff = localDate(new Date(Date.now() - HISTORY_DAYS * 86_400_000));
   const db = getDb();
   db.delete(schema.recommendationHistory).where(lt(schema.recommendationHistory.servedDate, cutoff)).run();
-  const history = readHistory().slice(-MAX_HISTORY);
-  const keep = new Set(history.map((entry) => entry.key));
-  for (const row of db.select().from(schema.recommendationHistory).all()) {
-    if (!keep.has(`${row.source}:${row.galleryId}`)) {
-      db.delete(schema.recommendationHistory).where(and(eq(schema.recommendationHistory.source, row.source), eq(schema.recommendationHistory.galleryId, row.galleryId))).run();
-    }
-  }
-  return history;
+  db.run(sql`DELETE FROM recommendation_history WHERE rowid NOT IN (SELECT rowid FROM recommendation_history ORDER BY served_at DESC LIMIT ${MAX_HISTORY})`);
 }
 
-function addHistory(date: string, items: RecommendationItem[], history: HistoryEntry[]): void {
-  const entries = new Map(history.map((entry) => [entry.key, entry]));
+function pruneHistory(): HistoryEntry[] {
+  pruneHistoryRows();
+  return readHistory().slice(-MAX_HISTORY);
+}
+
+function addHistory(date: string, items: RecommendationItem[]): void {
+  const db = getDb();
+  // Ensure any legacy blob is migrated once before incremental upserts.
+  const anyRow = db.select({ source: schema.recommendationHistory.source }).from(schema.recommendationHistory).limit(1).get();
+  if (!anyRow) readHistory();
+  const seen = readSeenItems(date);
   const now = new Date().toISOString();
-  for (const it of readSeenItems(date)) entries.set(keyOf(it), { key: keyOf(it), date, servedAt: now, item: it });
-  for (const it of items) entries.set(keyOf(it), { key: keyOf(it), date, servedAt: now, item: it });
-  writeHistory([...entries.values()].sort((a, b) => a.servedAt.localeCompare(b.servedAt)).slice(-MAX_HISTORY));
-  getDb().delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, seenKey(date))).run();
+  const byKey = new Map<string, RecommendationItem>();
+  for (const it of seen) byKey.set(keyOf(it), it);
+  for (const it of items) byKey.set(keyOf(it), it);
+  for (const it of byKey.values()) {
+    const itemJson = JSON.stringify(it);
+    db.insert(schema.recommendationHistory)
+      .values({ source: it.source, galleryId: it.galleryId, servedDate: date, servedAt: now, itemJson })
+      .onConflictDoUpdate({ target: [schema.recommendationHistory.source, schema.recommendationHistory.galleryId], set: { servedDate: date, servedAt: now, itemJson } })
+      .run();
+  }
+  pruneHistoryRows();
+  db.delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, seenKey(date))).run();
 }
 
 const seenKey = (date: string) => `recommendations-seen:${date}`;
@@ -875,7 +903,8 @@ function readCached(date: string): CachedRecommendationSet | null {
 /** Feedback after midnight edits the displayed set, without starting a new day. */
 function readDisplayedSet(): CachedRecommendationSet | null {
   const row = getDb().select({ key: schema.keyValueStore.key }).from(schema.keyValueStore)
-    .where(like(schema.keyValueStore.key, 'recommendations-v2:%')).orderBy(desc(schema.keyValueStore.key)).get();
+    .where(and(gte(schema.keyValueStore.key, 'recommendations-v2:'), lt(schema.keyValueStore.key, 'recommendations-v2;')))
+    .orderBy(desc(schema.keyValueStore.key)).get();
   return row ? readCached(row.key.slice('recommendations-v2:'.length)) : null;
 }
 
@@ -889,10 +918,10 @@ function writeCached(set: CachedRecommendationSet): void {
   // Keep only today's cached set (the rolling history row prunes itself), and
   // drop legacy per-day seen rows superseded by the history.
   db.delete(schema.keyValueStore)
-    .where(and(like(schema.keyValueStore.key, 'recommendations-v2:%'), ne(schema.keyValueStore.key, cacheKey(set.date))))
+    .where(and(gte(schema.keyValueStore.key, 'recommendations-v2:'), lt(schema.keyValueStore.key, 'recommendations-v2;'), ne(schema.keyValueStore.key, cacheKey(set.date))))
     .run();
   db.delete(schema.keyValueStore)
-    .where(like(schema.keyValueStore.key, 'recommendations-seen:%'))
+    .where(and(gte(schema.keyValueStore.key, 'recommendations-seen:'), lt(schema.keyValueStore.key, 'recommendations-seen;')))
     .run();
 }
 
@@ -1031,7 +1060,7 @@ export async function dismissAndReplace(source: DoujinSource, galleryId: string)
     const targetKey = `${source}:${galleryId}`;
     const known = cached?.items.find((item) => keyOf(item) === targetKey)
       ?? cached?.reserve.find((item) => keyOf(item) === targetKey)
-      ?? readHistory().find((entry) => entry.key === targetKey)?.item;
+      ?? readHistoryItem(source, galleryId);
     getDb()
       .insert(schema.dismissedGalleries)
       .values({
@@ -1081,7 +1110,7 @@ async function reconcileDisplayedSet(cached: CachedRecommendationSet, restore?: 
 /** Commit the displayed snapshot and its serve history as one local transaction. */
 function commitDisplayedSet(set: CachedRecommendationSet, served: RecommendationItem[] = []): void {
   getDb().transaction(() => {
-    if (served.length) addHistory(set.date, served, pruneHistory());
+    if (served.length) addHistory(set.date, served);
     writeCached(set);
   });
 }
@@ -1097,7 +1126,7 @@ export async function undoDismiss(source: DoujinSource, galleryId: string): Prom
 
 async function restoreHistoryItem(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
   const cached = readDisplayedSet();
-  const original = readHistory().find((entry) => entry.key === `${source}:${galleryId}`)?.item;
+  const original = readHistoryItem(source, galleryId);
   if (cached && original) return withOwned(await reconcileDisplayedSet(cached, original));
   return displayedRecommendations();
 }
@@ -1113,7 +1142,7 @@ export async function applyRecommendationFeedback(
       const targetKey = `${target.source}:${target.galleryId}`;
       const cached = readDisplayedSet();
       item = cached?.items.find((entry) => keyOf(entry) === targetKey)
-        ?? readHistory().find((entry) => entry.key === targetKey)?.item;
+        ?? readHistoryItem(target.source, target.galleryId);
       if (!item) {
         const provider = getDoujinProvider(target.source);
         if (!provider?.getGallery) throw new Error('Gallery metadata is unavailable');

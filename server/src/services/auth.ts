@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Context, MiddlewareHandler } from 'hono';
@@ -7,6 +7,7 @@ import { getDb, schema } from '../db/index.js';
 const AUTH_KEY = 'app-auth';
 const COOKIE_NAME = 'htosho_session';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60_000;
+const MAX_SESSIONS = 1000;
 const PASSWORD_MIN_LENGTH = 8;
 
 interface StoredCredentials {
@@ -44,16 +45,22 @@ function credentials(): StoredCredentials | null {
   }
 }
 
-function hashPassword(password: string, salt: Buffer): Buffer {
-  return scryptSync(password, salt, 64, { N: 16_384, r: 8, p: 1 });
+function hashPassword(password: string, salt: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, 64, { N: 16_384, r: 8, p: 1 }, (err, derived) => {
+      if (err) reject(err);
+      else resolve(derived);
+    });
+  });
 }
 
-function storeCredentials(username: string, password: string): void {
+async function storeCredentials(username: string, password: string): Promise<void> {
   const salt = randomBytes(16);
+  const passwordHash = (await hashPassword(password, salt)).toString('base64');
   const value: StoredCredentials = {
     username,
     salt: salt.toString('base64'),
-    passwordHash: hashPassword(password, salt).toString('base64'),
+    passwordHash,
   };
   getDb().insert(schema.keyValueStore)
     .values({ key: AUTH_KEY, valueJson: JSON.stringify(value) })
@@ -62,9 +69,9 @@ function storeCredentials(username: string, password: string): void {
   cachedCredentials = value;
 }
 
-function validPassword(password: string, stored: StoredCredentials): boolean {
+async function validPassword(password: string, stored: StoredCredentials): Promise<boolean> {
   const expected = Buffer.from(stored.passwordHash, 'base64');
-  const actual = hashPassword(password, Buffer.from(stored.salt, 'base64'));
+  const actual = await hashPassword(password, Buffer.from(stored.salt, 'base64'));
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
@@ -81,8 +88,19 @@ function authenticatedUsername(c: Context): string | null {
 }
 
 function setSession(c: Context, username: string): void {
+  const now = Date.now();
+  if (sessions.size >= MAX_SESSIONS) {
+    for (const [key, value] of sessions) {
+      if (value.expiresAt <= now) sessions.delete(key);
+    }
+    while (sessions.size >= MAX_SESSIONS) {
+      const oldest = sessions.keys().next().value;
+      if (oldest === undefined) break;
+      sessions.delete(oldest);
+    }
+  }
   const token = randomBytes(32).toString('base64url');
-  sessions.set(token, { username, expiresAt: Date.now() + SESSION_TTL_MS });
+  sessions.set(token, { username, expiresAt: now + SESSION_TTL_MS });
   const forwardedProto = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim();
   setCookie(c, COOKIE_NAME, token, {
     httpOnly: true,
@@ -135,7 +153,7 @@ export async function setup(c: Context) {
   const error = validateCredentialsInput(body?.username, body?.password);
   if (error) return c.json({ error }, 400);
   const username = (body!.username as string).trim();
-  storeCredentials(username, body!.password as string);
+  await storeCredentials(username, body!.password as string);
   setSession(c, username);
   return c.json({ authenticated: true, username }, 201);
 }
@@ -144,7 +162,7 @@ export async function login(c: Context) {
   const stored = credentials();
   if (!stored) return c.json({ error: 'Setup required' }, 403);
   const body = await c.req.json().catch(() => null) as { username?: unknown; password?: unknown } | null;
-  if (typeof body?.username !== 'string' || typeof body.password !== 'string' || body.username.trim() !== stored.username || !validPassword(body.password, stored)) {
+  if (typeof body?.username !== 'string' || typeof body.password !== 'string' || body.username.trim() !== stored.username || !(await validPassword(body.password, stored))) {
     return c.json({ error: 'Invalid username or password' }, 401);
   }
   setSession(c, stored.username);
@@ -160,7 +178,7 @@ export async function changeCredentials(c: Context) {
   const stored = credentials();
   if (!stored) return c.json({ error: 'Setup required' }, 403);
   const body = await c.req.json().catch(() => null) as { currentPassword?: unknown; username?: unknown; password?: unknown } | null;
-  if (typeof body?.currentPassword !== 'string' || !validPassword(body.currentPassword, stored)) {
+  if (typeof body?.currentPassword !== 'string' || !(await validPassword(body.currentPassword, stored))) {
     return c.json({ error: 'Current password is incorrect' }, 401);
   }
   const username = body.username === undefined ? stored.username : body.username;
@@ -168,7 +186,7 @@ export async function changeCredentials(c: Context) {
   const error = validateCredentialsInput(username, password);
   if (error) return c.json({ error }, 400);
   const nextUsername = (username as string).trim();
-  storeCredentials(nextUsername, password as string);
+  await storeCredentials(nextUsername, password as string);
   sessions.clear();
   setSession(c, nextUsername);
   return c.json({ authenticated: true, username: nextUsername });
