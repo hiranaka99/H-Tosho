@@ -8,6 +8,16 @@ import { rewriteMangaDexCoverUrl } from '../media.js';
 
 export const api = new Hono();
 
+/** The first recorded error of a failed sync, so Home can say why without opening the series. */
+function firstHistoryError(detailsJson: string | null): string | null {
+  if (!detailsJson) return null;
+  try {
+    const errors = (JSON.parse(detailsJson) as { errors?: unknown }).errors;
+    const first = Array.isArray(errors) ? errors.find(error => typeof error === 'string' && error.trim()) : undefined;
+    return typeof first === 'string' ? first.trim() : null;
+  } catch { return null; }
+}
+
 api.get('/home/matches', c => {
   const items = listMatchSuggestions().map(item => ({ ...item,
     cover: item.cover ? kavitaCoverUrl(item.seriesId, item.cover) : null,
@@ -47,9 +57,11 @@ api.get('/home/activity', c => {
     seriesTitle: schema.syncHistory.seriesTitle,
     action: schema.syncHistory.action,
     createdAt: schema.syncHistory.createdAt,
+    detailsJson: schema.syncHistory.detailsJson,
   }).from(schema.syncHistory).orderBy(desc(schema.syncHistory.id)).limit(20).all().map(row => ({
     id: `series-${row.id}`, title: row.seriesTitle || `Series #${row.kavitaSeriesId}`, action: row.action,
     createdAt: row.createdAt, href: `/libraries?series=${row.kavitaSeriesId}`,
+    ...(row.action === 'failed' ? { detail: firstHistoryError(row.detailsJson) } : {}),
   }));
   const downloads = db.select({
     id: schema.downloadQueue.id,

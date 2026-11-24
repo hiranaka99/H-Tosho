@@ -168,12 +168,13 @@ function summarizeRecommendationReasons(reasons?: string[]): { summary: string; 
       if (sep <= 0) return null;
       const kind = reason.slice(0, sep);
       const value = reason.slice(sep + 1).trim();
-      return value ? { kind, value } : null;
+      // Only the reason kinds the ranking produces; anything else would render an empty line.
+      return value && (kind === 'artist' || kind === 'series' || kind === 'tag') ? { kind, value } : null;
     })
     .filter((entry): entry is { kind: string; value: string } => entry !== null);
   if (!parsed.length) return null;
   const priority: Record<string, number> = { artist: 0, series: 1, tag: 2 };
-  parsed.sort((a, b) => (priority[a.kind] ?? 3) - (priority[b.kind] ?? 3));
+  parsed.sort((a, b) => priority[a.kind] - priority[b.kind]);
   const full = parsed.map((entry) => `${entry.kind === 'artist' ? 'Artist' : entry.kind === 'series' ? 'Series' : 'Tag'}: ${entry.value}`).join(' · ');
   const lead = parsed[0];
   if (lead.kind === 'artist') {
@@ -185,7 +186,7 @@ function summarizeRecommendationReasons(reasons?: string[]): { summary: string; 
     return { summary: extraTag ? `Series: ${lead.value} · ${extraTag.value}` : `Series: ${lead.value}`, full };
   }
   const topTags = parsed.filter((entry) => entry.kind === 'tag').slice(0, 2).map((entry) => entry.value);
-  return { summary: `Matches: ${topTags.join(', ')}`, full };
+  return { summary: `Because you like ${topTags.join(', ')}`, full };
 }
 
 export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', quietAction = false, compact = false, provenance, reasons, origin, onOriginSelect }: GalleryCardProps) {
