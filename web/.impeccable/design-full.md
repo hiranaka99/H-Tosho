@@ -44,45 +44,45 @@
   "provider-myanimelist": "#3b82f6"
 "typography":
   "headline":
-    "fontFamily": "\"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": "\"Montserrat\", \"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
     "fontSize": "1.5rem"
     "lineHeight": "2rem"
     "fontWeight": 600
     "letterSpacing": "-0.025em"
   "title":
-    "fontFamily": "\"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": "\"Montserrat\", \"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
     "fontSize": "0.875rem"
     "lineHeight": "1.25rem"
     "fontWeight": 600
     "letterSpacing": "-0.025em"
   "dialog-title":
-    "fontFamily": "\"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": "\"Montserrat\", \"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
     "fontSize": "1rem"
     "lineHeight": "1.5rem"
     "fontWeight": 600
     "letterSpacing": "-0.025em"
   "body":
-    "fontFamily": "\"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
     "fontSize": "0.875rem"
     "lineHeight": "1.25rem"
     "fontWeight": 400
   "label":
-    "fontFamily": "\"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
     "fontSize": "0.75rem"
     "lineHeight": "1rem"
     "fontWeight": 500
   "micro-label":
-    "fontFamily": "\"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
     "fontSize": "0.625rem"
     "lineHeight": "0.875rem"
     "fontWeight": 500
   "button":
-    "fontFamily": "\"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
     "fontSize": "0.875rem"
     "lineHeight": 1.25
     "fontWeight": 500
   "metric":
-    "fontFamily": "\"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
     "fontSize": "1.875rem"
     "lineHeight": "2.25rem"
     "fontWeight": 600
@@ -211,7 +211,7 @@ The document follows the [DESIGN.md format](https://raw.githubusercontent.com/go
 
 **Key Characteristics:**
 - Sakura Rose accents, Blush Paper surfaces, and Plum Ink neutrals.
-- Compact Inter typography with JetBrains Mono for technical output.
+- Montserrat headings, compact Roboto interface typography, and JetBrains Mono for technical output.
 - Tonal layering, fine borders, and subtle structural shadows.
 - Softly rounded controls with brief, local interaction feedback.
 - Light, dark, and system themes; desktop and touch layouts.
@@ -246,10 +246,11 @@ The frontmatter preserves the source token names. Unprefixed semantic colors des
 
 ## Typography
 
-**Body and interface font:** Inter, with Segoe UI and system sans-serif fallbacks.
+**Heading font:** Montserrat for page, section, and dialog headings, with Roboto and system sans-serif fallbacks.
+**Body and interface font:** Roboto for navigation, prose, controls, and item titles, with Segoe UI and system sans-serif fallbacks.
 **Technical font:** JetBrains Mono, with Cascadia Code and monospace fallbacks.
 
-Both fonts are self-hosted variable WOFF2 assets. Inter carries the full interface hierarchy; mono is reserved for logs and technical output. The hierarchy is compact and mostly sentence case, using weight and spacing rather than a separate display face. The base body is 14px; explicit utility roles below establish their own line heights.
+The fonts are self-hosted variable WOFF2 assets. Montserrat and Roboto load Latin Extended subsets on demand and use system fallbacks for other scripts. The hierarchy is compact and mostly sentence case. The base body is 14px, and the roles below establish their own line heights.
 
 ### Hierarchy
 
@@ -365,6 +366,6 @@ Toasts sit above dialogs in the upper-right corner, use 8px corners, 12px paddin
 - **Don't** use the pale dark-theme primary color as a white-text filled-button background.
 - **Don't** add a second focus ring on top of the global keyboard focus outline.
 - **Don't** hard-code light-theme surface or text colors into app components.
-- **Don't** replace the installed Inter and JetBrains Mono fonts with a runtime CDN dependency.
+- **Don't** load application fonts from a runtime CDN.
 - **Don't** apply pointer hover lift to touch controls or retain transforms under reduced motion.
 - **Don't** treat external cover art or the screenshot sample counts as product-owned assets or measured results.

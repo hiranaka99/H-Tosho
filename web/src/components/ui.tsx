@@ -123,7 +123,7 @@ export function Switch({
   );
 }
 
-const badgeVariants = cva('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium', {
+const badgeVariants = cva('inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-sans text-xs font-medium', {
   variants: {
     tone: {
       default: 'bg-surface-2 text-foreground',
