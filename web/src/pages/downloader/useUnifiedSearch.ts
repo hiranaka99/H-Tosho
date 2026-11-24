@@ -6,7 +6,8 @@
  * only non-sensitive text. A restored committed query starts a fresh server
  * session — dead cursors and stale restricted results are never restored.
  * Responses carry their request sequence; a superseded or aborted response
- * can never replace a newer search.
+ * can never replace a newer search. A new search streams: each provider's
+ * cards are appended as it answers, and the final page fills in the rest.
  */
 import * as React from 'react';
 import { api, ApiError, type DoujinSearchResult, type ProviderSearchStatus, type PublicDoujinSearchResult, type UnifiedSearchEntry } from '../../lib/api';
@@ -69,6 +70,7 @@ type Action =
   | { type: 'start'; query: string }
   | { type: 'clear' }
   | { type: 'busy-more' }
+  | { type: 'progress'; items: UnifiedSearchEntry[]; updates: UnifiedSearchEntry[]; loadedUniqueCount: number; providers: ProviderSearchStatus[] }
   | { type: 'page'; items: UnifiedSearchEntry[]; updates: UnifiedSearchEntry[]; cursor: string | null; hasMore: boolean; loadedUniqueCount: number; totalUnique: number | null; providers: ProviderSearchStatus[] }
   | { type: 'retry'; source: string }
   | { type: 'cancel' }
@@ -80,6 +82,28 @@ function mergeEntry(existing: UnifiedSearchEntry, update: UnifiedSearchEntry): U
   const seen = new Set(existing.variants.map(variantKey));
   const extra = update.variants.filter((v) => !seen.has(variantKey(v)));
   return extra.length ? { ...existing, variants: [...existing.variants, ...extra] } : existing;
+}
+
+/** Append new cards and merge updates. A card already shown (sent by a
+ *  progress event, then repeated by the final page) keeps its position and
+ *  only gains variants it lacks. */
+function applyEntries(current: UnifiedSearchEntry[], items: UnifiedSearchEntry[], updates: UnifiedSearchEntry[]): UnifiedSearchEntry[] {
+  const index = new Map(current.map((e, i) => [e.entryId, i]));
+  const entries = [...current];
+  for (const item of items) {
+    const idx = index.get(item.entryId);
+    if (idx === undefined) {
+      index.set(item.entryId, entries.length);
+      entries.push(item);
+    } else {
+      entries[idx] = mergeEntry(entries[idx], item);
+    }
+  }
+  for (const update of updates) {
+    const idx = index.get(update.entryId);
+    if (idx !== undefined) entries[idx] = mergeEntry(entries[idx], update);
+  }
+  return entries;
 }
 
 export function reducer(state: UnifiedState, action: Action): UnifiedState {
@@ -98,17 +122,19 @@ export function reducer(state: UnifiedState, action: Action): UnifiedState {
       return { ...INITIAL, draft: state.draft };
     case 'busy-more':
       return { ...state, status: 'loading-more' };
-    case 'page': {
-      const entries = [...state.entries, ...action.items];
-      if (action.updates.length) {
-        for (const update of action.updates) {
-          const idx = entries.findIndex((e) => e.entryId === update.entryId);
-          if (idx !== -1) entries[idx] = mergeEntry(entries[idx], update);
-        }
-      }
+    case 'progress':
+      // Only a search still in flight takes partial results.
+      if (state.status !== 'searching') return state;
       return {
         ...state,
-        entries,
+        entries: applyEntries(state.entries, action.items, action.updates),
+        loadedUniqueCount: action.loadedUniqueCount,
+        providers: action.providers,
+      };
+    case 'page': {
+      return {
+        ...state,
+        entries: applyEntries(state.entries, action.items, action.updates),
         cursor: action.cursor,
         hasMore: action.hasMore,
         loadedUniqueCount: action.loadedUniqueCount,
@@ -187,7 +213,12 @@ export function useUnifiedSearch(visible: boolean) {
     if (busy === 'start') dispatch({ type: 'start', query: body.query!.trim() });
     else if (busy === 'retry') dispatch({ type: 'retry', source: body.retry! });
     else dispatch({ type: 'busy-more' });
-    void api.unifiedSearch(body, controller.signal)
+    const request = busy === 'start'
+      ? api.unifiedSearchStream(body.query!.trim(), (progress) => {
+        if (seq === seqRef.current) dispatch({ type: 'progress', ...progress });
+      }, controller.signal)
+      : api.unifiedSearch(body, controller.signal);
+    void request
       .then((page) => {
         if (seq !== seqRef.current) return;
         dispatch({

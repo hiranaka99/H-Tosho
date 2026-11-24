@@ -7,7 +7,7 @@ import { unifiedSuggestions } from '../../services/unifiedSuggestions.js';
 import { runUnifiedSearch, UnifiedQueryError, UnifiedSessionError } from '../../services/unifiedSearch.js';
 import { rewriteDoujinCover, rewriteDoujinPages } from '../media.js';
 import { DOUJIN_SORTS, type DoujinSort } from '../../downloader/types.js';
-import type { DoujinSource } from '../../contracts/doujin.js';
+import type { DoujinSource, UnifiedSearchStreamEvent } from '../../contracts/doujin.js';
 
 import { errMsg } from './helpers.js';
 export const api = new Hono();
@@ -51,13 +51,28 @@ api.post('/doujin/search', async (c) => {
   }
 });
 
+/** Status and body for a unified-search failure. */
+function unifiedError(e: unknown): { status: 400 | 409 | 410 | 502; body: { error: string; kind?: string } } {
+  if (e instanceof UnifiedQueryError) return { status: 400, body: { error: e.message } };
+  if (e instanceof UnifiedSessionError) {
+    return { status: e.kind === 'expired' || e.kind === 'stale' ? 410 : 409, body: { error: e.message, kind: e.kind } };
+  }
+  return { status: 502, body: { error: errMsg(e) } };
+}
+
 /** Unified search across all doujinshi sources with bounded per-source lanes.
  *  Body: { query } to start, or { cursor, retry? } to continue a session.
  *  Responses are cached per cursor server-side; repeat the last cursor to
- *  replay its page. */
+ *  replay its page.
+ *
+ *  `stream: true` on a new query answers with NDJSON UnifiedSearchStreamEvent
+ *  lines, so each provider's results show as soon as it answers. The status
+ *  line waits for the first event: errors raised before any progress (bad
+ *  query, URL lookups) keep their plain JSON error response, and a search
+ *  that never reports progress is answered as a plain JSON page. */
 api.post('/doujin/search/unified', async (c) => {
   const body = (await c.req.json().catch(() => null)) as
-    | { query?: string; cursor?: string; retry?: string; limit?: number }
+    | { query?: string; cursor?: string; retry?: string; limit?: number; stream?: boolean }
     | null;
   if (!body || typeof body !== 'object') return c.json({ error: 'Invalid request body' }, 400);
   const limit = body.limit === undefined ? undefined : body.limit;
@@ -68,24 +83,73 @@ api.post('/doujin/search/unified', async (c) => {
   if (!body.cursor && !body.query?.trim()) return c.json({ error: 'query is required' }, 400);
   const controller = new AbortController();
   c.req.raw.signal.addEventListener('abort', () => controller.abort(), { once: true });
-  try {
-    const page = await runUnifiedSearch(
-      {
-        query: body.query,
-        cursor: body.cursor,
-        retry: typeof body.retry === 'string' ? body.retry : undefined,
-        limit,
-        principal: currentPrincipal(c),
+  const req = {
+    query: body.query,
+    cursor: body.cursor,
+    retry: typeof body.retry === 'string' ? body.retry : undefined,
+    limit,
+    principal: currentPrincipal(c),
+  };
+
+  if (body.stream === true && !body.cursor) {
+    const encoder = new TextEncoder();
+    const pending: Uint8Array[] = [];
+    let sink: ReadableStreamDefaultController<Uint8Array> | null = null;
+    let closed = false;
+    const write = (event: UnifiedSearchStreamEvent) => {
+      if (closed) return;
+      const chunk = encoder.encode(`${JSON.stringify(event)}\n`);
+      if (sink) sink.enqueue(chunk);
+      else pending.push(chunk);
+    };
+    let progressed!: () => void;
+    const firstProgress = new Promise<'progress'>((resolve) => { progressed = () => resolve('progress'); });
+    const work = runUnifiedSearch(req, controller.signal, (progress) => {
+      write({ type: 'progress', ...progress });
+      progressed();
+    });
+    const first = await Promise.race([firstProgress, work.then(() => 'settled' as const, () => 'settled' as const)]);
+    if (first === 'settled' && !pending.length) {
+      try {
+        return c.json(await work, 200, { 'Cache-Control': 'private, no-store' });
+      } catch (e) {
+        const { status, body: errorBody } = unifiedError(e);
+        return c.json(errorBody, status);
+      }
+    }
+    const stream = new ReadableStream<Uint8Array>({
+      start(controllerRef) {
+        sink = controllerRef;
+        for (const chunk of pending.splice(0)) controllerRef.enqueue(chunk);
+        void work.then(
+          (page) => write({ type: 'page', page }),
+          (e) => {
+            const { status, body: errorBody } = unifiedError(e);
+            write({ type: 'error', error: errorBody.error, status, ...(errorBody.kind ? { kind: errorBody.kind } : {}) });
+          },
+        ).finally(() => {
+          closed = true;
+          try { controllerRef.close(); } catch { /* reader already gone */ }
+        });
       },
-      controller.signal,
-    );
+      cancel() {
+        closed = true;
+        controller.abort();
+      },
+    });
+    // no-transform keeps compression and proxies from buffering the events.
+    return new Response(stream, {
+      status: 200,
+      headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'private, no-store, no-transform' },
+    });
+  }
+
+  try {
+    const page = await runUnifiedSearch(req, controller.signal);
     return c.json(page, 200, { 'Cache-Control': 'private, no-store' });
   } catch (e) {
-    if (e instanceof UnifiedQueryError) return c.json({ error: e.message }, 400);
-    if (e instanceof UnifiedSessionError) {
-      return c.json({ error: e.message, kind: e.kind }, e.kind === 'expired' || e.kind === 'stale' ? 410 : 409);
-    }
-    return c.json({ error: errMsg(e) }, 502);
+    const { status, body: errorBody } = unifiedError(e);
+    return c.json(errorBody, status);
   }
 });
 

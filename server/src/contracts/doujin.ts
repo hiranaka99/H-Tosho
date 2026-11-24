@@ -238,6 +238,7 @@ export interface GalleryVariant {
 }
 
 export type ProviderLaneStatus =
+  | 'searching' // still running (only in streamed progress events)
   | 'success' // results delivered; more may follow
   | 'exhausted' // provider returned all of its results
   | 'failed' // provider error (sanitized message)
@@ -285,3 +286,21 @@ export interface UnifiedSearchPage {
    *  exhausted and deduplication covered their returned results. */
   totalUnique?: number;
 }
+
+/** One provider finished while the first page is still being assembled.
+ *  `items` are new cards to append; `updates` add variants to cards sent
+ *  earlier in the same stream. Lanes still running report `searching`. */
+export interface UnifiedSearchProgress {
+  items: UnifiedSearchEntry[];
+  updates: UnifiedSearchEntry[];
+  loadedUniqueCount: number;
+  providers: ProviderSearchStatus[];
+}
+
+/** Newline-delimited events of a streamed first page (`stream: true`):
+ *  any number of `progress`, then exactly one `page` or `error`. The final
+ *  page repeats every item of the request, so it alone is complete. */
+export type UnifiedSearchStreamEvent =
+  | ({ type: 'progress' } & UnifiedSearchProgress)
+  | { type: 'page'; page: UnifiedSearchPage }
+  | { type: 'error'; error: string; status: number; kind?: string };

@@ -4,7 +4,8 @@
  * One query is parsed into a provider-agnostic form once, compiled to each
  * provider's real syntax, and fetched through bounded lanes that run
  * concurrently with explicit per-lane failure states (plan P2.2). Results are
- * interleaved in deterministic source order, grouped conservatively by exact
+ * interleaved in deterministic source order (a streamed first page instead
+ * appends each lane's share as it answers), grouped conservatively by exact
  * identity and strict metadata fingerprints, and paged through a small
  * in-memory session store with opaque cursors (plan P2.4).
  *
@@ -36,6 +37,7 @@ import {
   type SearchCursor,
   type UnifiedSearchEntry,
   type UnifiedSearchPage,
+  type UnifiedSearchProgress,
 } from '../contracts/doujin.js';
 import { getAccountRevision, getEhentaiAccountSite, isAccountConfigured, onEhentaiAccountChange } from './ehentaiAccount.js';
 import { getDownloaderSettings, onSettingChange } from './settings.js';
@@ -362,28 +364,27 @@ function withDeadline<T>(promise: Promise<T>, ms: number, signal: AbortSignal): 
 const hasContinuation = (lane: LaneState): boolean =>
   lane.continuation.offset !== undefined || lane.continuation.cursor !== undefined;
 
-/**
- * Fetch one bounded chunk into a lane. Terminal applicability checks run
- * before any network work: unconfigured accounts and uncompilable queries
- * never reach the provider.
- */
-async function fetchLane(session: UnifiedSession, lane: LaneState, signal: AbortSignal): Promise<void> {
+/** Why a lane cannot reach its provider for this query (null = it can run).
+ *  Unconfigured accounts and uncompilable queries never touch the network. */
+function laneSkip(session: UnifiedSession, lane: LaneState): { phase: LanePhase; message: string } | null {
   const compiled = session.compiled[lane.source];
-  if (compiled.unsupported) {
-    lane.phase = 'unsupported-query';
-    lane.message = compiled.unsupported;
-    lane.retryable = false;
-    return;
-  }
+  if (compiled.unsupported) return { phase: 'unsupported-query', message: compiled.unsupported };
   if (lane.source === 'ehentai' && !isAccountConfigured()) {
-    lane.phase = 'not-configured';
-    lane.message = 'Save your E-Hentai/ExHentai account under Settings → Downloader to search it here.';
-    lane.retryable = false;
-    return;
+    return { phase: 'not-configured', message: 'Save your E-Hentai/ExHentai account under Settings → Downloader to search it here.' };
   }
   if (lane.source === 'ehentai' && compiled.language && !EHENTAI_LANGUAGES.has(compiled.language)) {
-    lane.phase = 'unsupported-query';
-    lane.message = `E-Hentai/ExHentai does not support the language “${compiled.language}”.`;
+    return { phase: 'unsupported-query', message: `E-Hentai/ExHentai does not support the language “${compiled.language}”.` };
+  }
+  return null;
+}
+
+/** Fetch one bounded chunk into a lane, after the applicability checks. */
+async function fetchLane(session: UnifiedSession, lane: LaneState, signal: AbortSignal): Promise<void> {
+  const compiled = session.compiled[lane.source];
+  const skip = laneSkip(session, lane);
+  if (skip) {
+    lane.phase = skip.phase;
+    lane.message = skip.message;
     lane.retryable = false;
     return;
   }
@@ -497,7 +498,78 @@ function allLanesSettled(session: UnifiedSession): boolean {
   );
 }
 
-async function producePage(session: UnifiedSession, limit: number, signal: AbortSignal, retrySource?: DoujinSource): Promise<UnifiedSearchPage> {
+/** Receives each provider's first results while the page is still running. */
+export type UnifiedProgressListener = (progress: UnifiedSearchProgress) => void;
+
+/** Take up to `quota` fresh cards from the front of one lane's buffer. */
+function takeFromLane(session: UnifiedSession, lane: LaneState, quota: number, items: UnifiedSearchEntry[]): UnifiedSearchEntry[] {
+  const taken: UnifiedSearchEntry[] = [];
+  while (taken.length < quota && lane.buffer.length) {
+    const { entry, fresh } = placeCandidate(session, lane.buffer.shift()!);
+    if (fresh && !session.delivered.has(entry.entryId)) {
+      session.delivered.add(entry.entryId);
+      taken.push(entry);
+      items.push(entry);
+    }
+  }
+  return taken;
+}
+
+/** Updates for cards already delivered, excluding cards sent alongside them. */
+function drainUpdates(session: UnifiedSession, items: UnifiedSearchEntry[]): UnifiedSearchEntry[] {
+  const updates: UnifiedSearchEntry[] = [];
+  for (const entryId of session.pendingUpdates) {
+    const entry = session.entries.get(entryId);
+    if (!entry) continue;
+    // Variants of entries delivered in this same message are already
+    // reflected in `items`; only announce updates for earlier deliveries.
+    if (items.some((e) => e.entryId === entryId)) continue;
+    updates.push(entry);
+  }
+  session.pendingUpdates.clear();
+  return updates;
+}
+
+/**
+ * First chunks for all idle lanes, concurrently. Without a listener the
+ * caller interleaves them in source order once every lane settles. With one,
+ * each lane's share of the page (an even split across the lanes that run) is
+ * placed and reported the moment that lane answers, so a slow provider never
+ * holds back a fast one; the page loop then tops up from the leftovers.
+ */
+async function fetchIdleLanes(session: UnifiedSession, limit: number, signal: AbortSignal, items: UnifiedSearchEntry[], onProgress?: UnifiedProgressListener): Promise<void> {
+  const idle = session.lanes.filter((l) => l.phase === 'idle');
+  if (!idle.length) return;
+  if (!onProgress) {
+    await Promise.all(idle.map((lane) => fetchLane(session, lane, signal)));
+    return;
+  }
+  const running = new Set(idle.filter((lane) => !laneSkip(session, lane)));
+  const share = Math.ceil(limit / Math.max(1, running.size));
+  const report = (fresh: UnifiedSearchEntry[]) => {
+    if (signal.aborted) return;
+    onProgress({
+      items: fresh,
+      updates: drainUpdates(session, fresh),
+      loadedUniqueCount: session.entries.size,
+      providers: laneStatuses(session, running),
+    });
+  };
+  // Skipped lanes settle without network work; announce them with the
+  // lanes still searching so the client can show both straight away.
+  await Promise.all(idle.filter((lane) => !running.has(lane)).map((lane) => fetchLane(session, lane, signal)));
+  report([]);
+  await Promise.all([...running].map(async (lane) => {
+    await fetchLane(session, lane, signal);
+    running.delete(lane);
+    const fresh = lane.phase === 'success' || lane.phase === 'exhausted'
+      ? takeFromLane(session, lane, Math.min(share, limit - items.length), items)
+      : [];
+    report(fresh);
+  }));
+}
+
+async function producePage(session: UnifiedSession, limit: number, signal: AbortSignal, retrySource?: DoujinSource, onProgress?: UnifiedProgressListener): Promise<UnifiedSearchPage> {
   session.lastUsedAt = Date.now();
   assertSessionLive(session, session.context.principal);
 
@@ -535,14 +607,10 @@ async function producePage(session: UnifiedSession, limit: number, signal: Abort
     return finishPage(session, items);
   }
 
-  // First chunks for all idle lanes, concurrently (settled-result handling:
-  // each lane's outcome is recorded independently).
-  const idle = session.lanes.filter((l) => l.phase === 'idle');
-  if (idle.length) {
-    await Promise.all(idle.map((lane) => fetchLane(session, lane, signal)));
-  }
-
+  // Settled-result handling: each lane's outcome is recorded independently.
   const items: UnifiedSearchEntry[] = [];
+  await fetchIdleLanes(session, limit, signal, items, onProgress);
+
   let extraChunks = 0;
   for (;;) {
     let consumed = 0;
@@ -574,27 +642,25 @@ async function producePage(session: UnifiedSession, limit: number, signal: Abort
   return finishPage(session, items);
 }
 
-function finishPage(session: UnifiedSession, items: UnifiedSearchEntry[]): UnifiedSearchPage {
-  const updates: UnifiedSearchEntry[] = [];
-  for (const entryId of session.pendingUpdates) {
-    const entry = session.entries.get(entryId);
-    if (!entry) continue;
-    // Variants of entries delivered in this same response are already
-    // reflected in `items`; only announce updates for earlier deliveries.
-    if (items.some((e) => e.entryId === entryId)) continue;
-    updates.push(entry);
-  }
-  session.pendingUpdates.clear();
+/** Public lane states; lanes in `searching` are still waiting on their provider. */
+function laneStatuses(session: UnifiedSession, searching: ReadonlySet<LaneState> = new Set()): ProviderSearchStatus[] {
+  return session.lanes.map((lane): ProviderSearchStatus => {
+    if (searching.has(lane)) return { source: lane.source, status: 'searching', retryable: false };
+    return {
+      source: lane.source,
+      status: (lane.phase === 'idle' ? 'success' : lane.phase) as ProviderLaneStatus,
+      ...(lane.message ? { message: lane.message } : {}),
+      retryable: lane.retryable,
+      // Only lanes that actually ran can be followed; E-Hentai has no watch support.
+      ...((lane.phase === 'idle' || lane.phase === 'success' || lane.phase === 'exhausted') && lane.source !== 'ehentai' && session.compiled[lane.source].query.trim()
+        ? { watchQuery: session.compiled[lane.source].query.trim() } : {}),
+    };
+  });
+}
 
-  const providers = session.lanes.map((lane): ProviderSearchStatus => ({
-    source: lane.source,
-    status: (lane.phase === 'idle' ? 'success' : lane.phase) as ProviderLaneStatus,
-    ...(lane.message ? { message: lane.message } : {}),
-    retryable: lane.retryable,
-    // Only lanes that actually ran can be followed; E-Hentai has no watch support.
-    ...((lane.phase === 'idle' || lane.phase === 'success' || lane.phase === 'exhausted') && lane.source !== 'ehentai' && session.compiled[lane.source].query.trim()
-      ? { watchQuery: session.compiled[lane.source].query.trim() } : {}),
-  }));
+function finishPage(session: UnifiedSession, items: UnifiedSearchEntry[]): UnifiedSearchPage {
+  const updates = drainUpdates(session, items);
+  const providers = laneStatuses(session);
 
   // A lane that never ran (unconfigured account, uncompilable query, input
   // that does not apply) cannot block an exact total; failed lanes can.
@@ -679,7 +745,11 @@ export interface UnifiedSearchRequest {
   principal: string | null;
 }
 
-export async function runUnifiedSearch(req: UnifiedSearchRequest, signal: AbortSignal): Promise<UnifiedSearchPage> {
+/**
+ * `onProgress` streams a new search's first page per provider (see
+ * fetchIdleLanes); continuations and URL lookups never report progress.
+ */
+export async function runUnifiedSearch(req: UnifiedSearchRequest, signal: AbortSignal, onProgress?: UnifiedProgressListener): Promise<UnifiedSearchPage> {
   evictExpired();
 
   if (!req.cursor) {
@@ -694,7 +764,7 @@ export async function runUnifiedSearch(req: UnifiedSearchRequest, signal: AbortS
     const parsed = parseCommonQuery(req.query);
     if (parsed.error || !parsed.query) throw new UnifiedQueryError(parsed.error ?? 'Enter a search query.');
     const session = newSession(req.query, req.principal, compileLanes(parsed.query));
-    return producePage(session, req.limit ?? DEFAULT_LIMIT, signal);
+    return producePage(session, req.limit ?? DEFAULT_LIMIT, signal, undefined, onProgress);
   }
 
   const session = sessions.get(req.cursor);

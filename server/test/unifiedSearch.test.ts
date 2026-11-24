@@ -13,7 +13,7 @@ const { doujinProviders } = await import('../src/downloader/providers.js');
 const { getDownloaderSettings, setDownloaderSettings } = await import('../src/services/settings.js');
 const { saveEhentaiAccount, removeEhentaiAccount, getAccountRevision } = await import('../src/services/ehentaiAccount.js');
 import type { DoujinSearchResult, DoujinSource } from '../src/downloader/types.js';
-import type { UnifiedSearchPage } from '../src/contracts/doujin.js';
+import type { UnifiedSearchPage, UnifiedSearchProgress, UnifiedSearchStreamEvent } from '../src/contracts/doujin.js';
 
 initDb();
 
@@ -41,12 +41,15 @@ function item(source: DoujinSource, galleryId: string, overrides: Partial<Doujin
 let hitomiItems: DoujinSearchResult[] = [];
 let nhentaiItems: DoujinSearchResult[] = [];
 let nhentaiFail = false;
+/** When set, the nHentai lane waits for it: a provider slower than Hitomi. */
+let nhentaiGate: Promise<void> | null = null;
 
 hitomi.searchPage = async (query: string, offset: number, limit: number) => ({
   items: hitomiItems.slice(offset, offset + limit),
   total: hitomiItems.length,
 });
 nhentai.searchPage = async (query: string, offset: number, limit: number) => {
+  if (nhentaiGate) await nhentaiGate;
   if (nhentaiFail) throw new Error('upstream down');
   return { items: nhentaiItems.slice(offset, offset + limit), total: nhentaiItems.length };
 };
@@ -353,4 +356,89 @@ test('true zero results report an exact unique total', async () => {
   const ok = page.providers.filter((p) => p.status === 'success' || p.status === 'exhausted');
   assert.ok(ok.some((p) => p.source === 'hitomi'));
   assert.ok(ok.some((p) => p.source === 'nhentai'));
+});
+
+// ---------------- streamed first page ----------------
+
+function slowNhentai(): () => void {
+  let release!: () => void;
+  nhentaiGate = new Promise<void>((resolve) => { release = resolve; });
+  return () => { nhentaiGate = null; release(); };
+}
+
+test('a streamed search reports each provider as it answers, without waiting for the slowest', async () => {
+  if (getAccountRevision() > 0) removeEhentaiAccount(getAccountRevision());
+  hitomiItems = Array.from({ length: 30 }, (_, i) => item('hitomi', String(3000 + i)));
+  nhentaiItems = [
+    item('nhentai', '3500', { title: 'Title 3000' }), // same work as hitomi 3000
+    ...Array.from({ length: 29 }, (_, i) => item('nhentai', String(3501 + i), { title: `Only nh ${i}` })),
+  ];
+  const release = slowNhentai();
+  const progress: UnifiedSearchProgress[] = [];
+  let hitomiSeen!: () => void;
+  const hitomiArrived = new Promise<void>((resolve) => { hitomiSeen = resolve; });
+  const work = runUnifiedSearch({ query: 'streamed', principal: PRINCIPAL }, new AbortController().signal, (p) => {
+    progress.push(p);
+    if (p.items.some((e) => e.primary.source === 'hitomi')) hitomiSeen();
+  });
+
+  await hitomiArrived;
+  // Hitomi's cards are out while nHentai is still searching.
+  const status = (p: UnifiedSearchProgress, source: string) => p.providers.find((x) => x.source === source)?.status;
+  assert.equal(status(progress[0], 'hitomi'), 'searching', 'the first event lists the running lanes');
+  assert.equal(status(progress[0], 'ehentai'), 'not-configured', 'skipped lanes settle straight away');
+  const hitomiEvent = progress.at(-1)!;
+  assert.equal(status(hitomiEvent, 'hitomi'), 'success');
+  assert.equal(status(hitomiEvent, 'nhentai'), 'searching');
+  assert.equal(hitomiEvent.items.length, 13, 'an even share of the page per running lane');
+  assert.ok(hitomiEvent.items.every((e) => e.primary.source === 'hitomi'));
+
+  release();
+  const page = await work;
+  const nhEvent = progress.at(-1)!;
+  assert.equal(status(nhEvent, 'nhentai'), 'success');
+  assert.ok(nhEvent.items.every((e) => e.primary.source === 'nhentai'));
+  assert.deepEqual(nhEvent.updates.map((e) => e.entryId), [hitomiEvent.items[0].entryId], 'the matching edition joins the card already shown');
+  assert.ok(!nhEvent.providers.some((p) => p.status === 'searching'));
+
+  // The final page repeats every streamed card in arrival order, then tops up.
+  assert.equal(page.items.length, 25);
+  const streamed = progress.flatMap((p) => p.items.map((e) => e.entryId));
+  assert.deepEqual(page.items.slice(0, streamed.length).map((e) => e.entryId), streamed);
+  assert.equal(new Set(page.items.map((e) => e.entryId)).size, 25, 'no card is delivered twice');
+  assert.equal(page.items[0].variants.length, 2);
+  assert.ok(page.hasMore);
+  // The streamed page continues like any other.
+  const next = await runUnifiedSearch({ cursor: page.nextCursor!, principal: PRINCIPAL }, new AbortController().signal);
+  assert.ok(next.items.length > 0);
+  assert.ok(next.items.every((e) => !page.items.some((p) => p.entryId === e.entryId)));
+});
+
+test('the unified route streams NDJSON events and keeps JSON errors for bad queries', async () => {
+  if (getAccountRevision() > 0) removeEhentaiAccount(getAccountRevision());
+  hitomiItems = Array.from({ length: 5 }, (_, i) => item('hitomi', String(4000 + i)));
+  nhentaiItems = [item('nhentai', '4500', { title: 'nh only' })];
+  const { api } = await import('../src/routes/api/doujin.js');
+  const post = (body: unknown) => api.request('/doujin/search/unified', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  const res = await post({ query: 'route stream', stream: true });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type') ?? '', /ndjson/);
+  const events = (await res.text()).trim().split('\n').map((line) => JSON.parse(line) as UnifiedSearchStreamEvent);
+  assert.equal(events.at(-1)!.type, 'page');
+  assert.ok(events.slice(0, -1).every((e) => e.type === 'progress'));
+  const final = events.at(-1) as Extract<UnifiedSearchStreamEvent, { type: 'page' }>;
+  assert.equal(final.page.items.length, 6);
+
+  const bad = await post({ query: '12345', stream: true });
+  assert.equal(bad.status, 400, 'errors before any progress keep their status');
+  assert.match(((await bad.json()) as { error: string }).error, /ambiguous/);
+
+  const plain = await post({ query: 'route plain' });
+  assert.match(plain.headers.get('content-type') ?? '', /json/);
+  assert.doesNotMatch(plain.headers.get('content-type') ?? '', /ndjson/, 'without stream the route answers one JSON page');
 });
