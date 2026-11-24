@@ -31,27 +31,28 @@ function SectionLabel({ icon, children }: { icon?: React.ReactNode; children: Re
   return <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">{icon} {children}</p>;
 }
 
-/** One neutral chip style: the section label names the kind, so hue carries no meaning. */
-function TagChip({ value, onClick, title }: { value: string; onClick?: () => void; title?: string }) {
+function TagChip({ value, namespace, onClick, title }: { value: string; namespace: string | null; onClick: () => void; title?: string }) {
   return (
     <button
       type="button"
+      data-namespace={namespace ?? undefined}
       onClick={onClick}
       title={title}
-      className={cn('max-lg:min-h-11 pointer-coarse:min-h-11 rounded-full bg-surface-2 px-2.5 py-1 text-xs text-foreground transition-colors', onClick && 'cursor-pointer hover:bg-border')}
+      className="gallery-tag-chip max-lg:min-h-11 pointer-coarse:min-h-11 cursor-pointer rounded-full px-2.5 py-1 text-xs transition-colors hover:[--tag-tint:26%]"
     >
       {value}
     </button>
   );
 }
 
-function TagList({ label, items, icon, onSearch, titleFor }: {
+function TagList({ label, namespace, items, icon, onSearch, titleFor }: {
   label: string;
+  namespace: 'artist' | 'group' | 'character' | 'series';
   items?: string[];
   icon?: React.ReactNode;
-  onSearch?: (value: string) => void;
+  onSearch: (value: string, namespace: string) => void;
   /** Tooltip for a searchable item — show the exact query it will run. */
-  titleFor?: (value: string) => string | undefined;
+  titleFor: (value: string, namespace: string) => string | undefined;
 }) {
   if (!items?.length) return null;
   return (
@@ -59,7 +60,7 @@ function TagList({ label, items, icon, onSearch, titleFor }: {
       <SectionLabel icon={icon}>{label}</SectionLabel>
       <div className="flex flex-wrap gap-1.5">
         {items.map((t, i) => (
-          <TagChip key={i} value={t} onClick={onSearch ? () => onSearch(t) : undefined} title={titleFor ? titleFor(t) : onSearch ? `Search for “${t}”` : undefined} />
+          <TagChip key={i} value={t} namespace={namespace} onClick={() => onSearch(t, namespace)} title={titleFor(t, namespace)} />
         ))}
       </div>
     </div>
@@ -92,11 +93,10 @@ function TagGroups({ tags, onSearch, titleFor }: {
   if (!ordered.length) return null;
   const collapsible = ordered.length > TAG_PREVIEW_LIMIT + 2;
   const visible = collapsible && !expanded ? ordered.slice(0, TAG_PREVIEW_LIMIT) : ordered;
-  const groupLabels = new Set(ordered.map((tag) => tag.label));
-  const showLabels = groupLabels.size > 1;
+  const showLabels = ordered.some((tag) => tag.label !== GENERAL_LABEL);
   const visibleGroups = [...new Set(visible.map((tag) => tag.label))].map((label) => ({ label, items: visible.filter((tag) => tag.label === label) }));
   const chips = (items: typeof visible) => items.map((tag, i) => (
-    <TagChip key={`${tag.ns}:${tag.value}:${i}`} value={tag.value} onClick={() => onSearch(tag.value, tag.ns)} title={titleFor(tag.value, tag.ns)} />
+    <TagChip key={`${tag.ns}:${tag.value}:${i}`} value={tag.value} namespace={tag.ns} onClick={() => onSearch(tag.value, tag.ns)} title={titleFor(tag.value, tag.ns)} />
   ));
   return (
     <div className="flex flex-col gap-1.5">
@@ -323,10 +323,10 @@ export function GalleryDetailModal({ item, onClose, onDownload, checking, downlo
                   </div>
                 )}
 
-                <TagList label="Artists" items={g.artists ?? item.artists} icon={<Users className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'artist')} titleFor={(v) => searchTitle(v, 'artist')} />
-                <TagList label="Groups / circles" items={g.groups} icon={<Layers className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'group')} titleFor={(v) => searchTitle(v, 'group')} />
-                <TagList label="Characters" items={g.characters ?? g.genres} icon={<Star className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'character')} titleFor={(v) => searchTitle(v, 'character')} />
-                {g.series && <TagList label="Series" items={[g.series]} icon={<BookOpen className="h-3 w-3" />} onSearch={(v) => searchFor(v, 'series')} titleFor={(v) => searchTitle(v, 'series')} />}
+                <TagList label="Artists" namespace="artist" items={g.artists ?? item.artists} icon={<Users className="h-3 w-3" />} onSearch={searchFor} titleFor={searchTitle} />
+                <TagList label="Groups / circles" namespace="group" items={g.groups} icon={<Layers className="h-3 w-3" />} onSearch={searchFor} titleFor={searchTitle} />
+                <TagList label="Characters" namespace="character" items={g.characters ?? g.genres} icon={<Star className="h-3 w-3" />} onSearch={searchFor} titleFor={searchTitle} />
+                {g.series && <TagList label="Series" namespace="series" items={[g.series]} icon={<BookOpen className="h-3 w-3" />} onSearch={searchFor} titleFor={searchTitle} />}
                 <TagGroups key={`${item.source}:${item.galleryId}`} tags={tags} onSearch={(v, ns) => searchFor(v, ns)} titleFor={(v, ns) => searchTitle(v, ns)} />
               </>
             )}
