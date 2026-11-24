@@ -196,7 +196,7 @@ export interface MatchSuggestion {
   candidate: MatchCandidate;
 }
 export interface HomeMatches { items: MatchSuggestion[]; configured: boolean; scan: Job | null }
-export interface HomeActivity { id: string; title: string; action: string; createdAt: string; href: string }
+export interface HomeActivity { id: string; title: string; action: string; createdAt: string; href: string; /** First error of a failed sync. */ detail?: string | null }
 
 // ---------------- Doujinshi downloader types ----------------
 // DoujinSource (the registered gallery sources) is imported from the shared

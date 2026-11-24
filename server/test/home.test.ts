@@ -135,13 +135,18 @@ test('suggestions and rejections stay isolated when switching Kavita servers', a
 
 test('recent activity combines completed downloads with match history in UTC time order', async () => {
   const db = getDb();
-  db.insert(schema.syncHistory).values({ kavitaSeriesId: 1, seriesTitle: 'Matched title', action: 'matched', createdAt: '2026-11-15 10:00:00' }).run();
+  db.insert(schema.syncHistory).values([
+    { kavitaSeriesId: 1, seriesTitle: 'Matched title', action: 'matched', createdAt: '2026-11-15 10:00:00' },
+    { kavitaSeriesId: 2, seriesTitle: 'Failed title', action: 'failed', detailsJson: JSON.stringify({ errors: ['', 'Kavita rejected the cover upload'] }), createdAt: '2026-11-15 09:00:00' },
+  ]).run();
   db.insert(schema.downloadQueue).values([
     { source: 'hitomi', galleryId: 'completed', title: 'Downloaded title', status: 'completed', finishedAt: '2026-11-15T10:01:00Z' },
     { source: 'hitomi', galleryId: 'pending', title: 'Pending title', status: 'queued' },
   ]).run();
   const rows = await (await api.request('/home/activity')).json();
-  assert.deepEqual(rows.map((item: { action: string }) => item.action), ['downloaded', 'matched']);
+  assert.deepEqual(rows.map((item: { action: string }) => item.action), ['downloaded', 'matched', 'failed']);
+  assert.equal(rows[2].detail, 'Kavita rejected the cover upload', 'a failed sync carries its first error');
+  assert.equal('detail' in rows[1], false, 'other actions carry no detail');
 });
 
 test('scan requests deduplicate active jobs and reject invalid or stale dismissals', async () => {
