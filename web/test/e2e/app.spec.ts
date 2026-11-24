@@ -157,14 +157,16 @@ test('watched Dismiss marks reviewed beside Download and retains reversible Hist
   await dismiss.click();
   await expect(page.getByRole('radio', { name: 'Inbox (5)', exact: true })).toBeVisible();
   await expect(card).toHaveCount(0);
-  await page.getByRole('radio', { name: 'History (13)', exact: true }).click();
-  const dismissed = page.getByRole('button', { name: 'History gallery 12 dismissed from inbox', exact: true });
-  await expect(dismissed).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeVisible();
+  await page.getByRole('radio', { name: 'All finds (13)', exact: true }).click();
+  const dismissedCard = page.locator('[data-gallery-motion-id="hitomi:history-12"]');
+  const restore = dismissedCard.getByRole('button', { name: 'Return History gallery 12 to inbox', exact: true });
+  await expect(restore).toBeEnabled();
+  await expect(dismissedCard).toContainText('Dismissed');
   await page.reload();
-  await page.getByRole('radio', { name: 'History (13)', exact: true }).click();
-  await expect(dismissed).toBeDisabled();
-  const restoredCard = page.locator('[data-gallery-motion-id="hitomi:history-12"]').locator('..');
-  await restoredCard.getByRole('button', { name: 'Return to inbox', exact: true }).click();
+  await page.getByRole('radio', { name: 'All finds (13)', exact: true }).click();
+  await expect(dismissedCard).toContainText('Dismissed');
+  await restore.click();
   await expect(page.getByRole('radio', { name: 'Inbox (6)', exact: true })).toBeVisible();
   await page.getByRole('radio', { name: 'Inbox (6)', exact: true }).click();
   await expect(dismiss).toBeEnabled();
@@ -264,6 +266,7 @@ test('Watched controls fit each viewport and failed removal can be retried', asy
     page.getByLabel('Filter discoveries by watch'),
     page.getByLabel('Filter discoveries by source'),
     page.getByRole('button', { name: 'Select galleries', exact: true }),
+    page.getByRole('button', { name: 'Check now', exact: true }),
   ]) expect(Math.round((await control.boundingBox())!.height)).toBeGreaterThanOrEqual(44);
   await page.locator('main').evaluate(element => element.scrollTo({ top: 0 }));
   await page.mouse.move(0, 0);
@@ -281,7 +284,7 @@ test('Watched controls fit each viewport and failed removal can be retried', asy
   }
   await page.getByRole('button', { name: /^Manage watches/ }).click();
   const drawer = page.getByRole('dialog', { name: 'Manage watches', exact: true });
-  for (const control of [page.getByLabel('Watched search check interval'), page.getByRole('button', { name: 'Check now', exact: true })]) expect(Math.round((await control.boundingBox())!.height)).toBeGreaterThanOrEqual(44);
+  for (const control of [page.getByLabel('Watched search check interval')]) expect(Math.round((await control.boundingBox())!.height)).toBeGreaterThanOrEqual(44);
   const remove = page.getByRole('button', { name: `Remove watch ${watchQuery}`, exact: true });
   await expect(remove).toBeVisible();
   expect(await drawer.evaluate(element => element.scrollWidth <= element.clientWidth)).toBeTruthy();
@@ -310,7 +313,7 @@ test('Watched controls fit each viewport and failed removal can be retried', asy
   await expect(dialog).toHaveCount(0);
   await expect(remove).toHaveCount(0);
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
-  await expect(page.getByRole('radio', { name: 'History (13)', exact: true })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'All finds (13)', exact: true })).toBeVisible();
 });
 
 test('Watched motion preserves drafts, keyboard access and reduced-motion feedback', async ({ page }, testInfo) => {

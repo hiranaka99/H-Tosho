@@ -88,7 +88,7 @@ function FollowingRow({ item, label, ownership, starting, reviewing, setupStatus
         <Button size="sm" variant="outline" disabled={active || owned || setupStatus === 'loading' || setupStatus === 'error'} onClick={() => onDownload(item)} aria-label={`${actionLabel}: ${item.title}`}>
           {active ? <Spinner /> : owned ? <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5" /> : <Download aria-hidden="true" className="h-3.5 w-3.5" />}{actionLabel}
         </Button>
-        <Button size="sm" variant="ghost" disabled={reviewing} onClick={() => onDismiss(item)} aria-label={`Dismiss ${item.title}`} title="Remove from the Following inbox and keep it in History">{reviewing ? <Spinner /> : <Check aria-hidden="true" className="h-3.5 w-3.5" />}Dismiss</Button>
+        <Button size="sm" variant="ghost" disabled={reviewing} onClick={() => onDismiss(item)} aria-label={`Dismiss ${item.title}`} title="Remove from the Following inbox; it stays in All finds">{reviewing ? <Spinner /> : <Check aria-hidden="true" className="h-3.5 w-3.5" />}Dismiss</Button>
       </div>
     </div>
   </li>;

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { CheckSquare, ChevronDown, Combine, Download, ImageOff, Merge, X } from 'lucide-react';
+import { CheckSquare, ChevronDown, Combine, Download, EyeOff, ImageOff, Merge, X } from 'lucide-react';
 import type { DoujinSearchResult } from '../lib/api';
 import { cn, sourceDisplayName } from '../lib/utils';
 import { Button } from './ui';
@@ -21,6 +21,8 @@ export interface GallerySelectionActions {
   selectAllLabel?: string;
   /** Where downloads land, shown beside the actions that start them. */
   destination?: React.ReactNode;
+  /** Inbox triage: dismiss the selected finds that are still in Inbox. */
+  dismiss?: { label: string; count: number; pending: boolean; onDismiss: () => void };
 }
 
 interface GallerySelectionBarProps extends GallerySelectionActions {
@@ -29,7 +31,7 @@ interface GallerySelectionBarProps extends GallerySelectionActions {
 }
 
 /** Both results grids share a shortlist; mobile keeps its actions within reach. */
-export const GallerySelectionBar = React.memo(function GallerySelectionBar({ items, onMerge, onMergeInto, onDownloadEach, onSelectAll, allSelected = false, onRemove, onClear, onCancel, selectAllLabel = 'Select all on page', destination, mobile = false, onHeightChange }: GallerySelectionBarProps) {
+export const GallerySelectionBar = React.memo(function GallerySelectionBar({ items, onMerge, onMergeInto, onDownloadEach, onSelectAll, allSelected = false, onRemove, onClear, onCancel, selectAllLabel = 'Select all on page', destination, dismiss, mobile = false, onHeightChange }: GallerySelectionBarProps) {
   const ref = React.useRef<HTMLDivElement>(null);
   const listId = React.useId();
   // The phone tray keeps the count and actions in reach; the title list is one tap away.
@@ -88,6 +90,9 @@ export const GallerySelectionBar = React.memo(function GallerySelectionBar({ ite
       <div className="grid grid-cols-2 gap-2 lg:ml-auto lg:flex lg:flex-wrap lg:justify-end">
         {onDownloadEach && <Button size="sm" className="col-span-2 h-auto min-h-11 py-2" disabled={!items.length} onClick={onDownloadEach}>
           <Download className="h-3.5 w-3.5 shrink-0" /><span>{items.length > 1 ? `Download each (${items.length})` : 'Download'}</span>
+        </Button>}
+        {dismiss && <Button size="sm" variant="outline" className="col-span-2 h-auto min-h-11 py-2" disabled={!dismiss.count || dismiss.pending} onClick={dismiss.onDismiss}>
+          <EyeOff className="h-3.5 w-3.5 shrink-0" /><span>{dismiss.label}</span>
         </Button>}
         <Button size="sm" variant="outline" className="h-auto min-h-11 py-2" disabled={!items.length} onClick={onMerge}>
           <Combine className="h-3.5 w-3.5 shrink-0" /><span>Merge into new series</span>

@@ -2,7 +2,8 @@ import type { DoujinSource } from './doujin.js';
 export const NOTIFICATION_MODES = ['in-app', 'immediate'] as const;
 export type NotificationMode = typeof NOTIFICATION_MODES[number];
 
-export const FOLLOWING_INTERVAL_MINUTES = [15, 60, 360, 1440] as const;
+/** One cadence list for the global default and per-watch overrides. */
+export const FOLLOWING_INTERVAL_MINUTES = [5, 15, 30, 60, 180, 360, 720, 1440] as const;
 export type FollowingInterval = (typeof FOLLOWING_INTERVAL_MINUTES)[number];
 export const FOLLOWING_SEARCH_LIMIT = 50;
 export const FOLLOWING_TARGET_LIMIT = 100;

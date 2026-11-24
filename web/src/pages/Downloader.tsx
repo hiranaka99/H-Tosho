@@ -7,10 +7,10 @@ import { useGalleryDownload } from './downloader/useGalleryDownload';
 import * as React from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
-import { Search, Loader2, RotateCcw, CheckCircle2, Check, Compass, Star, Sparkles, CheckSquare, Settings2 } from 'lucide-react';
+import { Search, Loader2, RotateCcw, CheckCircle2, Compass, Sparkles, CheckSquare, Settings2, Inbox, CheckCheck, FunnelX, Plus } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult } from '../lib/api';
 import type { WatchedSearch } from '../../../server/src/contracts/following';
-import { cn, timeAgo } from '../lib/utils';
+import { cn } from '../lib/utils';
 import { downloadErrorHelp } from '../lib/downloadErrors';
 import { toast } from '../lib/toast';
 import { useDownloadSummary } from '../lib/DownloadsContext';
@@ -28,7 +28,7 @@ const ManagerTab = React.lazy(() => import('./downloader/DownloadManager').then(
 import { UnifiedSearchTab } from './downloader/UnifiedSearchTab';
 import { SearchResultsHeader, SelectModeButton, WatchSearchButton } from './downloader/SearchResultsHeader';
 import { useUnifiedSearch, toWebResult } from './downloader/useUnifiedSearch';
-import { WatchedManagerDrawer } from './downloader/WatchedSearchControls';
+import { WatchedManagerDrawer, FollowingCheckStatus, nextScheduledCheck, formatCheckTime } from './downloader/WatchedSearchControls';
 import { SearchHint } from './downloader/SearchHint';
 import { SearchFailure } from './downloader/SearchFailure';
 import { GallerySkeletonGrid } from './downloader/GallerySkeletons';
@@ -267,7 +267,7 @@ export function Downloader() {
   const manageWatchesTrigger = React.useRef<HTMLElement | null>(null);
   const openManageWatches = () => { manageWatchesTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setManageWatchesOpen(true); };
   const selection = useGallerySelection();
-  const { feedView, setFeedView, feedSource, setFeedSource, feedWatch, setFeedWatch, feedFolder, setFeedFolder, foldersQuery, setFeedPage, galleryFeed, feedWatches, feedLoading, feedFailed, feedError, retryFeed, feedItems, knownDiscoveries, feedMetaByKey, feedPageCount, feedCurPage, feedPageItems, reviewingKeys, reviewDiscoveries, reviewGallery } = useWatchedFeed(tab, selection.remove);
+  const { filtersActive, clearFilters, feedView, setFeedView, feedSource, setFeedSource, feedWatch, setFeedWatch, feedFolder, setFeedFolder, foldersQuery, setFeedPage, galleryFeed, feedWatches, feedLoading, feedFailed, feedError, retryFeed, feedItems, knownDiscoveries, feedMetaByKey, feedPageCount, feedCurPage, feedPageItems, reviewingKeys, reviewDiscoveries, reviewGallery } = useWatchedFeed(tab, selection.remove);
   const selectionView = React.useMemo(() => resolveGallerySelection(selection.chosen, results ?? EMPTY_GALLERIES, feedItems, knownDiscoveries.current), [selection.chosen, results, feedItems, knownDiscoveries]);
   const selectedGalleries = selection.keys, selectedItems = selectionView.items, reviewableSelectedItems = selectionView.reviewable;
   const toggleGallerySelect = selection.toggle;
@@ -353,6 +353,13 @@ export function Downloader() {
     onRemove: toggleGallerySelect,
     onClear: clearSelection,
     onCancel: cancelSelection,
+    // Following is a triage queue: dismissing a batch sits with the other batch actions.
+    dismiss: tab === 'watched' ? {
+      label: reviewableSelectedItems.length === selectedItems.length ? 'Dismiss selected' : `Dismiss ${reviewableSelectedItems.length} in Inbox`,
+      count: reviewableSelectedItems.length,
+      pending: reviewingKeys.size > 0,
+      onDismiss: () => void reviewDiscoveries(reviewableSelectedItems, true),
+    } : undefined,
   };
 
   /** Queue only unfinished entries, keeping failed items and all merge inputs. */
@@ -513,6 +520,52 @@ export function Downloader() {
   // Filters appear once there is something to choose between, and stay put while narrowing.
   const showWatchFilter = (watches?.length ?? 0) > 1 || feedWatch !== '';
   const showSourceFilter = new Set((watches ?? []).map(watch => watch.source)).size > 1 || feedSource !== '';
+  // ---------------- Following triage ----------------
+  // After a dismissal removes a card from Inbox, focus moves to the next find's
+  // Dismiss so keyboard triage continues where it was.
+  const feedGridRef = React.useRef<HTMLDivElement>(null);
+  const feedTriageState = React.useRef({ items: feedPageItems, view: feedView });
+  feedTriageState.current = { items: feedPageItems, view: feedView };
+  const refocusAfterDismiss = React.useRef<{ index: number; key: string } | null>(null);
+  const triageGallery = React.useCallback((item: DoujinSearchResult, reviewed: boolean) => {
+    const key = galleryKey(item);
+    const { items, view } = feedTriageState.current;
+    if (reviewed && view === 'inbox') refocusAfterDismiss.current = { index: items.findIndex(entry => galleryKey(entry) === key), key };
+    reviewGallery(item, reviewed);
+  }, [reviewGallery]);
+  React.useLayoutEffect(() => {
+    const pending = refocusAfterDismiss.current;
+    if (!pending || feedPageItems.some(item => galleryKey(item) === pending.key)) return;
+    refocusAfterDismiss.current = null;
+    // Respect a user who has already moved focus somewhere else.
+    if (document.activeElement && document.activeElement !== document.body) return;
+    const actions = [...(feedGridRef.current?.querySelectorAll<HTMLElement>('[data-review-action]') ?? [])];
+    const target = actions[Math.min(Math.max(pending.index, 0), actions.length - 1)] ?? document.querySelector<HTMLElement>('[data-feed-empty-action]');
+    target?.focus();
+  }, [feedPageItems]);
+  const filterByWatch = React.useCallback((searchId: number) => { setFeedWatch(String(searchId)); setFeedPage(1); }, [setFeedWatch, setFeedPage]);
+  /** j/k move between finds, d dismisses, u restores: the inbox works without a pointer. */
+  const onFeedKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.altKey || event.ctrlKey || event.metaKey || selectMode) return;
+    const card = (event.target as Element).closest<HTMLElement>('[data-feed-card]');
+    if (!card || (event.target as Element).closest('input, select, textarea')) return;
+    const key = event.key.toLowerCase();
+    if (key === 'j' || key === 'k') {
+      const cards = [...(feedGridRef.current?.querySelectorAll<HTMLElement>('[data-feed-card]') ?? [])];
+      const next = cards[cards.indexOf(card) + (key === 'j' ? 1 : -1)];
+      if (!next) return;
+      event.preventDefault();
+      const onAction = (event.target as Element).closest('[data-review-action]') !== null;
+      (onAction ? next.querySelector<HTMLElement>('[data-review-action]') : next.querySelector<HTMLElement>('article > button'))?.focus();
+    } else if (key === 'd' || key === 'u') {
+      const action = card.querySelector<HTMLButtonElement>(`[data-review-action="${key === 'd' ? 'dismiss' : 'restore'}"]`);
+      if (!action || action.disabled) return;
+      event.preventDefault();
+      action.click();
+    }
+  };
+  const nextCheck = nextScheduledCheck(watches ?? []);
+
   const galleryMotionKey = React.useMemo(
     () => `${tab}:${pageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${visibleRecs.map(item => `${item.source}:${item.galleryId}`).join(',')}:${feedPageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${unified.entries.map(entry => entry.entryId).join(',')}:${selectMode}`,
     [tab, pageItems, visibleRecs, feedPageItems, unified.entries, selectMode],
@@ -538,7 +591,7 @@ export function Downloader() {
       <PageHeader icon={<Compass className="h-5 w-5" />} title="Discover galleries" subtitle={tab === 'manager' ? 'Follow each download from the queue into your Kavita library.' : undefined} />
       {/* The folder is shown where downloads start (selection bar, gallery details);
           up here it only appears when it needs fixing before anything can download. */}
-      {tab !== 'manager' && (downloadStatus === 'missing' || downloadStatus === 'error') && <DownloadDestination setup={setup} compact={tab === 'watched'} />}
+      {tab !== 'manager' && (downloadStatus === 'missing' || downloadStatus === 'error') && <DownloadDestination setup={setup} />}
 
       <SegmentedTabs
         items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'For you' }, { id: 'watched' as const, label: inboxCount ? `Following (${inboxCount})` : 'Following' }, { id: 'manager' as const, label: 'Downloads', count: downloadSummary.failed || downloadSummary.active || undefined, alert: downloadSummary.failed > 0 }]}
@@ -793,59 +846,67 @@ export function Downloader() {
       {tab === 'watched' && (
         <div className="flex flex-col gap-4">
           <section aria-label="Watched discoveries" className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <SegmentedControl items={[{ id: 'inbox' as const, label: `Inbox${galleryFeed ? ` (${galleryFeed.inboxCount})` : ''}` }, { id: 'history' as const, label: `History${galleryFeed ? ` (${galleryFeed.historyCount})` : ''}` }]} value={feedView} onChange={view => { setFeedView(view); setFeedPage(1); }} label="Discovery view" itemClassName="min-h-11" />
-                <Button size="sm" className="h-11" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode(current => !current)} disabled={!feedItems.length && !selectedGalleries.size}><CheckSquare className="h-3.5 w-3.5" />{selectMode ? 'Done selecting' : 'Select galleries'}</Button>
+            <div className="flex flex-col gap-1">
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <SegmentedControl items={[{ id: 'inbox' as const, label: `Inbox${galleryFeed ? ` (${galleryFeed.inboxCount})` : ''}` }, { id: 'history' as const, label: `All finds${galleryFeed ? ` (${galleryFeed.historyCount})` : ''}` }]} value={feedView} onChange={view => { setFeedView(view); setFeedPage(1); }} label="Discovery view" itemClassName="min-h-11" />
+                  <Button size="sm" className="h-11" variant={selectMode ? 'default' : 'outline'} aria-pressed={selectMode} onClick={() => setSelectMode(current => !current)} disabled={!feedItems.length && !selectedGalleries.size}><CheckSquare className="h-3.5 w-3.5" />{selectMode ? 'Done selecting' : 'Select galleries'}</Button>
+                </div>
+                <Button size="sm" className="h-11" variant="outline" onClick={openManageWatches}><Settings2 className="h-3.5 w-3.5" />Manage watches{watches ? ` (${watches.length})` : ''}</Button>
               </div>
-              <Button size="sm" className="h-11" variant="outline" onClick={openManageWatches}><Settings2 className="h-3.5 w-3.5" />Manage watches{watches ? ` (${watches.length})` : ''}</Button>
+              {watches && watches.length > 0 && <FollowingCheckStatus watches={watches} />}
             </div>
-            {(showFolderFilter || showWatchFilter || showSourceFilter) && <div className="flex min-w-0 flex-wrap gap-3">
-              {showFolderFilter && <label className="flex min-w-[10rem] flex-1 flex-col gap-1 text-xs font-medium text-muted lg:max-w-xs">Folder
+            {(showFolderFilter || showWatchFilter || showSourceFilter) && <div className="flex min-w-0 flex-wrap items-end gap-3">
+              {showFolderFilter && <label className="flex min-w-[9rem] flex-1 flex-col gap-1 text-xs font-medium text-muted lg:max-w-xs">Folder
                 <Select className="h-11" aria-label="Filter discoveries by folder" value={feedFolder} onChange={event => { setFeedFolder(event.target.value); setFeedWatch(''); setFeedPage(1); }} disabled={!foldersQuery.isSuccess}>
                   <option value="">All folders</option><option value="unfiled">Unfiled</option>
                   {(foldersQuery.data ?? []).map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
                 </Select>
               </label>}
-              {showWatchFilter && <label className="flex min-w-[10rem] flex-1 flex-col gap-1 text-xs font-medium text-muted lg:max-w-xs">Watch
+              {showWatchFilter && <label className="flex min-w-[9rem] flex-1 flex-col gap-1 text-xs font-medium text-muted lg:max-w-xs">Watch
                 <Select className="h-11" aria-label="Filter discoveries by watch" value={feedWatch} onChange={event => { setFeedWatch(event.target.value); setFeedPage(1); }}>
                   <option value="">All watches</option>
                   {feedWatches?.map(watch => <option key={watch.id} value={watch.id}>{SOURCE_LABELS[watch.source]} · {watch.watchLabel}{watch.removed ? ' (removed watch)' : ''}</option>)}
                 </Select>
               </label>}
-              {showSourceFilter && <label className="flex min-w-[10rem] flex-1 flex-col gap-1 text-xs font-medium text-muted lg:max-w-[12rem]">Source
+              {showSourceFilter && <label className="flex min-w-[9rem] flex-1 flex-col gap-1 text-xs font-medium text-muted lg:max-w-[12rem]">Source
                 <Select className="h-11" aria-label="Filter discoveries by source" value={feedSource} onChange={event => { setFeedSource(event.target.value); setFeedPage(1); }}><option value="">All sources</option><option value="hitomi">Hitomi.la</option><option value="nhentai">nHentai</option></Select>
               </label>}
+              {filtersActive && <Button size="sm" variant="ghost" className="h-11" onClick={clearFilters}><FunnelX aria-hidden="true" className="h-3.5 w-3.5" />Clear filters</Button>}
             </div>}
             {foldersQuery.isError && <ErrorState title="Could not load folder filters" description={foldersQuery.error.message} onRetry={() => void foldersQuery.refetch()} />}
-            {reviewableSelectedItems.length > 0 && <div className="flex justify-end">
-              <Button size="sm" variant="outline" disabled={reviewingKeys.size > 0} onClick={() => void reviewDiscoveries(reviewableSelectedItems, true)}><Check className="h-3.5 w-3.5" />{reviewableSelectedItems.length === selectedItems.length ? 'Dismiss selected' : `Dismiss ${reviewableSelectedItems.length} finds`}</Button>
-            </div>}
             {showSelection && <GallerySelectionBar {...selectionActions} />}
             {feedFailed ? <SearchFailure title="Could not load discoveries" subject="Your discoveries" error={feedError} onRetry={() => void retryFeed()} /> : !galleryFeed && feedLoading ? (
               <GallerySkeletonGrid label="Loading discoveries" count={6} />
             ) : feedItems.length ? (
               <>
-                <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+                <div ref={feedGridRef} onKeyDown={onFeedKeyDown} className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                   {feedPageItems.map(item => {
                     const key = `${item.source}:${item.galleryId}`, meta = feedMetaByKey.get(key);
-                    return <div key={key} data-review-pending={reviewingKeys.has(key)} className="watched-discovery flex min-w-0 flex-col gap-1 [&>article]:flex-1">
-                      <GalleryCard item={item} onOpen={setSelected} starting={pendingKeys.has(key)} onDownload={doStartDownload} downloadSetup={downloadStatus} ownership={ownershipFor(item)} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(key), onToggle: toggleGallerySelect }} display="discovery" review={{ state: reviewingKeys.has(key) ? 'pending' : meta?.reviewedAt ? 'reviewed' : 'unreviewed', onChange: reviewGallery }} />
-                      {meta && <div className="flex min-w-0 flex-col gap-1 px-1 text-xs">
-                        <button className="min-h-11 break-words text-left text-muted underline-offset-4 hover:text-primary hover:underline line-clamp-2" onClick={() => { setFeedWatch(String(meta.searchId)); setFeedPage(1); }} title={`Filter by ${meta.watchLabel} · ${meta.query}`}>via {meta.watchLabel}{meta.watchRemoved ? ' · removed watch' : ''} · {timeAgo(meta.foundAt)}</button>
-                        {meta.reviewedAt && <Button size="sm" variant="ghost" className="min-h-11 justify-start px-1" disabled={reviewingKeys.has(key)} onClick={() => reviewGallery(item, false)}><RotateCcw className="h-3.5 w-3.5" />Return to inbox</Button>}
-                      </div>}
+                    return <div key={key} data-feed-card data-review-pending={reviewingKeys.has(key)} className="watched-discovery flex min-w-0 flex-col [&>article]:flex-1">
+                      <GalleryCard item={item} onOpen={setSelected} starting={pendingKeys.has(key)} onDownload={doStartDownload} downloadSetup={downloadStatus} ownership={ownershipFor(item)} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(key), onToggle: toggleGallerySelect }} display="discovery" review={{ state: reviewingKeys.has(key) ? 'pending' : meta?.reviewedAt ? 'reviewed' : 'unreviewed', onChange: triageGallery }}
+                        origin={meta ? { searchId: meta.searchId, label: meta.watchLabel, query: meta.query, foundAt: meta.foundAt, removed: meta.watchRemoved } : undefined} onOriginSelect={filterByWatch} />
                     </div>;
                   })}
                 </div>
+                <p className="hidden text-center text-xs text-muted pointer-fine:lg:block">
+                  Keyboard: <kbd className="rounded border border-border-2 bg-surface-2 px-1 font-mono text-foreground">j</kbd> / <kbd className="rounded border border-border-2 bg-surface-2 px-1 font-mono text-foreground">k</kbd> move between finds · <kbd className="rounded border border-border-2 bg-surface-2 px-1 font-mono text-foreground">d</kbd> dismiss · <kbd className="rounded border border-border-2 bg-surface-2 px-1 font-mono text-foreground">u</kbd> return to Inbox
+                </p>
                 <Pager page={feedCurPage} count={feedPageCount} onPageChange={page => { setFeedPage(page); document.querySelector('main')?.scrollTo({ top: 0 }); }} />
               </>
             ) : (
               <div className="flex flex-col items-center">
-                <EmptyState icon={<Star className="h-8 w-8" />}
-                  title={feedWatch || feedSource || feedFolder ? 'No matching discoveries' : watches?.length === 0 ? 'Nothing followed yet' : feedView === 'inbox' ? 'Inbox is clear' : 'No discoveries yet'}
-                  description={feedWatch || feedSource || feedFolder ? 'Clear a filter to see the rest.' : watches?.length === 0 ? 'Choose Watch on any search, or add a search to follow. New finds land here for review.' : feedView === 'inbox' ? 'New finds from your watched searches will appear here.' : 'Dismissed finds are kept here.'} />
-                {!feedWatch && !feedSource && !feedFolder && <Button variant="outline" className="-mt-6 mb-10 min-h-11" onClick={openManageWatches}><Settings2 className="h-3.5 w-3.5" />{watches?.length === 0 ? 'Add a watched search' : 'Manage watches'}</Button>}
+                {filtersActive ? <>
+                  <EmptyState icon={<FunnelX className="h-8 w-8" />} title="No matching finds" description={feedView === 'inbox' ? 'Nothing in Inbox matches these filters.' : 'No finds match these filters.'} />
+                  <Button data-feed-empty-action variant="outline" className="-mt-6 mb-10 min-h-11" onClick={clearFilters}><FunnelX className="h-3.5 w-3.5" />Clear filters</Button>
+                </> : watches?.length === 0 ? <>
+                  <EmptyState icon={<Inbox className="h-8 w-8" />} title="Nothing followed yet" description="Choose Watch on any search, or add a search to follow here. New finds land in Inbox for review." />
+                  <Button data-feed-empty-action variant="outline" className="-mt-6 mb-10 min-h-11" onClick={openManageWatches}><Plus className="h-3.5 w-3.5" />Add a watched search</Button>
+                </> : feedView === 'inbox' ? <>
+                  <EmptyState icon={<CheckCheck className="h-8 w-8" />} title="All caught up"
+                    description={nextCheck ? <>Next check at <time dateTime={nextCheck}>{formatCheckTime(nextCheck)}</time>. New finds will land here.</> : 'Automatic checks are off. Use Check now above to look for new finds.'} />
+                  {(galleryFeed?.historyCount ?? 0) > 0 && <Button data-feed-empty-action variant="outline" className="-mt-6 mb-10 min-h-11" onClick={() => { setFeedView('history'); setFeedPage(1); }}>Browse all finds</Button>}
+                </> : <EmptyState icon={<Inbox className="h-8 w-8" />} title="No finds yet" description="Every find from your watched searches is kept here, including the ones you dismiss." />}
               </div>
             )}
           </section>

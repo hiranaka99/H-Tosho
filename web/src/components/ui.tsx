@@ -65,7 +65,7 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
     <input
       ref={ref}
       className={cn(
-        'ui-field flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-base placeholder:text-muted focus:border-primary focus:bg-surface aria-[invalid=true]:border-danger sm:text-sm',
+        'ui-field flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-base text-foreground placeholder:text-muted focus:border-primary focus:bg-surface aria-[invalid=true]:border-danger sm:text-sm',
         'transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
@@ -84,7 +84,7 @@ export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttrib
     <select
       ref={ref}
       className={cn(
-        'ui-field flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-base focus:border-primary focus:bg-surface sm:text-sm',
+        'ui-field flex h-9 w-full rounded-lg border border-border-2 bg-surface-2 px-3 text-base text-foreground focus:border-primary focus:bg-surface sm:text-sm',
         'transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
