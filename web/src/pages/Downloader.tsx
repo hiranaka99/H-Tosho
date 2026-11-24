@@ -613,7 +613,7 @@ export function Downloader() {
             <WatchSearchButton
               watching={unifiedWatching}
               pending={watchPending || unified.status !== 'idle'}
-              disabledReason={unified.providers.length > 0 && unifiedWatchTargets.length === 0 ? 'Only Hitomi.la and nHentai searches can be watched.' : undefined}
+              disabledReason={unified.status === 'idle' && unified.providers.length > 0 && unifiedWatchTargets.length === 0 ? 'Only Hitomi.la and nHentai searches can be watched.' : undefined}
               title={unifiedWatching ? `Stop watching “${unified.committed}” on ${unifiedWatchNames}` : `Watch “${unified.committed}” on ${unifiedWatchNames}; new finds land in Following`}
               onToggle={() => void toggleWatches(unifiedWatchTargets, unified.committed ?? '')}
             />

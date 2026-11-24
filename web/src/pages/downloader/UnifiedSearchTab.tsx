@@ -5,8 +5,10 @@
  * editions come back as a single card that keeps every source it was found
  * on. Pagination is a Load-more button over the loaded unique count — there
  * is no summed-total pager. Failed lanes stay visible with scoped retries;
- * successful results remain fully usable while a lane recovers. The form,
- * results header and selection share their shape with single-source search.
+ * successful results remain fully usable while a lane recovers. A new search
+ * shows each source's cards as soon as that source answers, with a Searching
+ * chip for the ones still running. The form, results header and selection
+ * share their shape with single-source search.
  */
 import * as React from 'react';
 import { Link } from 'react-router';
@@ -21,7 +23,7 @@ import { EHENTAI_ACCOUNT_SETTINGS_URL, SOURCE_LABELS, type DownloadSetup } from 
 import { GalleryCard } from './GalleryCard';
 import { toWebResult, type UnifiedSearchValue } from './useUnifiedSearch';
 import { SearchHint } from './SearchHint';
-import { GallerySkeletonGrid } from './GallerySkeletons';
+import { GallerySkeletonCard, GallerySkeletonGrid } from './GallerySkeletons';
 import { SearchResultsHeader, SelectModeButton } from './SearchResultsHeader';
 import type { GalleryOwnership } from './ownership';
 
@@ -29,6 +31,7 @@ import type { GalleryOwnership } from './ownership';
 
 const isFailed = (p: ProviderSearchStatus) => p.status === 'failed' || p.status === 'unavailable' || p.status === 'rate-limited';
 const isOk = (p: ProviderSearchStatus) => p.status === 'success' || p.status === 'exhausted';
+const isSearching = (p: ProviderSearchStatus) => p.status === 'searching';
 const listNames = (providers: ProviderSearchStatus[]) => providers.map((p) => SOURCE_LABELS[p.source]).join(', ');
 
 function chipClass(status: ProviderSearchStatus['status']): string {
@@ -63,10 +66,11 @@ function ProviderStatusSummary({ providers, onRetry, busy, canRetry }: { provide
       )}
       {attention.map((p) => {
         const label = SOURCE_LABELS[p.source];
-        const icon = p.status === 'unsupported-query' || p.status === 'not-applicable' ? <Minus className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          : p.status === 'not-configured' ? <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            : <XCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />;
-        const note = p.message ?? (p.status === 'not-applicable' ? 'not searched for this query' : undefined);
+        const icon = isSearching(p) ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
+          : p.status === 'unsupported-query' || p.status === 'not-applicable' ? <Minus className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            : p.status === 'not-configured' ? <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              : <XCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />;
+        const note = p.message ?? (isSearching(p) ? 'searching…' : p.status === 'not-applicable' ? 'not searched for this query' : undefined);
         return (
           <span key={p.source} className="inline-flex max-w-full flex-wrap items-center gap-x-1 gap-y-1">
             <span className={cn('inline-flex max-w-full items-start gap-1.5 rounded-full border px-2.5 py-1', chipClass(p.status))}>
@@ -200,6 +204,7 @@ export function UnifiedSearchTab({ unified, scopeControl, watchControl, onOpenEn
   const busy = status === 'searching' || status === 'loading-more';
   const failedProviders = providers.filter(isFailed);
   const okProviders = providers.filter(isOk);
+  const searchingProviders = status === 'searching' ? providers.filter(isSearching) : [];
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -212,6 +217,7 @@ export function UnifiedSearchTab({ unified, scopeControl, watchControl, onOpenEn
 
   const galleries = (n: number) => `${n} ${n === 1 ? 'gallery' : 'galleries'}`;
   const resultStatus = status === 'loading-more' ? 'Loading more…'
+    : status === 'searching' ? `Showing ${galleries(loadedUniqueCount)} · still searching ${listNames(searchingProviders) || 'sources'}`
     : totalUnique !== null ? `${galleries(totalUnique)} across sources`
       : `Showing ${galleries(loadedUniqueCount)}${hasMore ? ' · more available' : ''}`;
 
@@ -259,8 +265,11 @@ export function UnifiedSearchTab({ unified, scopeControl, watchControl, onOpenEn
         </Card>
       )}
 
-      {committed !== null && !error && status === 'searching' && (
-        <GallerySkeletonGrid label="Searching all sources" />
+      {committed !== null && !error && status === 'searching' && entries.length === 0 && (
+        <div className="flex flex-col gap-3">
+          <ProviderStatusSummary providers={providers} onRetry={(s) => unified.retrySource(s)} busy={retrying} canRetry={false} />
+          <GallerySkeletonGrid label="Searching all sources" />
+        </div>
       )}
 
       {committed !== null && !error && status !== 'searching' && entries.length === 0 && (
@@ -311,6 +320,8 @@ export function UnifiedSearchTab({ unified, scopeControl, watchControl, onOpenEn
                 onToggleGroup={onToggleGroup}
               />
             ))}
+            {/* Room for the sources still answering; their cards land here. */}
+            {searchingProviders.length > 0 && Array.from({ length: 4 }, (_, i) => <GallerySkeletonCard key={`pending-${i}`} />)}
           </div>
           {hasMore && (
             <div className="flex justify-center pt-4">
