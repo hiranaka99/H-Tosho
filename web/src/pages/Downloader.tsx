@@ -515,6 +515,9 @@ export function Downloader() {
     report.matches.some(match => match.confirmed && ['In library', 'Owned', 'completed'].includes(match.status)) ? 'owned' as const : report.matches.length ? 'possible' as const : undefined,
   ])), [matchQuery.data]);
   const ownershipFor = (item: DoujinSearchResult) => galleryOwnership([galleryKey(item)], libraryMatches, downloadedAt, ownedKeys);
+  /** The confirmed library copy behind an "In library" gallery, for the detail modal. */
+  const libraryCopyFor = (key: string) => matchQuery.data?.reports.find(report => `${report.source}:${report.galleryId}` === key)
+    ?.matches.find(match => match.confirmed && match.status === 'In library');
   const folderCount = foldersQuery.data?.length ?? 0;
   const showFolderFilter = folderCount > 0 || feedFolder !== '';
   // Filters appear once there is something to choose between, and stay put while narrowing.
@@ -951,6 +954,7 @@ export function Downloader() {
 
           downloaded={downloadedAt.has(`${selected.source}:${selected.galleryId}`) || libraryMatches.get(`${selected.source}:${selected.galleryId}`) === 'owned' || ownedKeys.has(`${selected.source}:${selected.galleryId}`)}
           inLibrary={libraryMatches.get(`${selected.source}:${selected.galleryId}`) === 'owned'}
+          libraryMatch={libraryCopyFor(`${selected.source}:${selected.galleryId}`)}
           setup={setup}
           onDownload={() => doStartDownload(selected)}
           onSearchTag={searchTagFragment}
@@ -978,6 +982,7 @@ export function Downloader() {
             checking={pendingKeys.has(key)}
             downloaded={downloadedAt.has(key) || libraryMatches.get(key) === 'owned' || ownedKeys.has(key)}
             inLibrary={libraryMatches.get(key) === 'owned'}
+            libraryMatch={libraryCopyFor(key)}
             setup={setup}
             onDownload={() => doStartDownload(item)}
             onSearchTag={searchTagFragment}

@@ -73,6 +73,10 @@
   --card-shadow: rgb(92 35 64 / 0.045);
   /* Dark backing for labels laid over cover art; covers are not themed, so it is the same in both modes. */
   --cover-scrim: rgb(0 0 0 / 0.75);
+  /* Page reader stage: artwork is never themed, so it sits on a plum near-black in both modes. */
+  --reader-stage: #1c141b;
+  --reader-ink: #f6e9f0;
+  --reader-ink-muted: #c9b2c0;
   /* Metadata provider identity accents: the same in both themes (mirrors backend provider.color). */
   --provider-anilist: #02b968;
   --provider-mangadex: #f4c145;
@@ -101,6 +105,7 @@
   --skeleton-hi: #48324b;
   --control-shadow: rgb(0 0 0 / 0.28);
   --card-shadow: rgb(0 0 0 / 0.12);
+  --reader-stage: #0f0a10;
 }
 
 @theme {
@@ -176,6 +181,9 @@
   --color-warning: var(--warning);
   --color-danger: var(--danger);
   --color-info: var(--info);
+  --color-reader-stage: var(--reader-stage);
+  --color-reader-ink: var(--reader-ink);
+  --color-reader-ink-muted: var(--reader-ink-muted);
 }
 
 html,
