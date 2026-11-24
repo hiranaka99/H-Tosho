@@ -270,7 +270,7 @@ export function DialogContent({ children, className, ...props }: React.Component
         {...props}
       >
         {children}
-        <DialogPrimitive.Close aria-label="Close dialog" className="ui-button ui-button-icon absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground">
+        <DialogPrimitive.Close aria-label="Close dialog" className="ui-button ui-button-icon absolute right-3 top-3 z-10 flex h-9 w-9 items-center justify-center rounded-lg bg-surface text-muted hover:bg-surface-2 hover:text-foreground">
           <X className="h-4 w-4" />
         </DialogPrimitive.Close>
       </DialogPrimitive.Content>
