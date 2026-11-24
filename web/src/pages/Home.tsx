@@ -173,7 +173,7 @@ export function Home() {
     try {
       await api.reviewWatchedGalleries(refs, true);
       await qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
-      toast({ tone: 'info', title: targets.length === 1 ? 'Dismissed' : `${targets.length} finds dismissed`, description: targets.length === 1 ? targets[0].title : 'They moved from the Following inbox to History.',
+      toast({ tone: 'info', title: targets.length === 1 ? 'Dismissed' : `${targets.length} finds dismissed`, description: targets.length === 1 ? targets[0].title : 'They left the Following inbox and stay in All finds.',
         action: { label: 'Undo', onClick: () => { void api.reviewWatchedGalleries(refs, false).then(() => qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] })).catch(notifyError('Could not undo')); } } });
     } catch (error) { notifyError('Could not dismiss')(error as Error); }
     finally { setReviewingKeys(current => new Set([...current].filter(value => !keys.includes(value)))); }
@@ -276,7 +276,7 @@ export function Home() {
     </section>}
 
     <section aria-labelledby="home-inbox" className="min-w-0 rounded-xl border border-border bg-surface p-4 sm:p-5">
-      <SectionHeading id="home-inbox" title="New in Following" count={feed.data?.inboxCount} countLabel="unreviewed" description="New finds from searches you follow. Dismissed finds move to History.">
+      <SectionHeading id="home-inbox" title="New in Following" count={feed.data?.inboxCount} countLabel="unreviewed" description="New finds from searches you follow. Dismissed finds stay in All finds.">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           {discoveryItems.length > 1 && <Button size="sm" variant="ghost" disabled={discoveryItems.every(item => reviewingKeys.has(`${item.source}:${item.galleryId}`))} onClick={() => void dismissFinds(discoveryItems)}><Check aria-hidden="true" className="h-3.5 w-3.5" />{inboxCount > discoveryItems.length ? `Dismiss these ${discoveryItems.length}` : 'Dismiss all'}</Button>}
           <SectionLink to="/downloader?tab=watched">Open Following</SectionLink>

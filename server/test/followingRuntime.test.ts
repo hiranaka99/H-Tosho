@@ -345,7 +345,7 @@ test('folder membership filters before deduplication/paging and retained removed
 test('watch/folder HTTP mutations validate shape and reject stale revisions and missing identities', async () => {
   const watch = addWatchedSearch('hitomi', 'artist:api');
   const request = (url: string, method: string, body: unknown) => api.request(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  for (const body of [null, {}, { expectedRevision: -1 }, { expectedRevision: 0, source: 'nhentai' }, { expectedRevision: 0, query: 'changed' }, { expectedRevision: 0, displayName: 'x'.repeat(121) }, { expectedRevision: 0, intervalMinutes: 30 }, { expectedRevision: 0, paused: 'yes' }, { expectedRevision: 0, folderId: 0 }]) {
+  for (const body of [null, {}, { expectedRevision: -1 }, { expectedRevision: 0, source: 'nhentai' }, { expectedRevision: 0, query: 'changed' }, { expectedRevision: 0, displayName: 'x'.repeat(121) }, { expectedRevision: 0, intervalMinutes: 45 }, { expectedRevision: 0, paused: 'yes' }, { expectedRevision: 0, folderId: 0 }]) {
     assert.equal((await request(`/watched-searches/${watch.id}`, 'PATCH', body)).status, 400);
   }
   assert.equal((await request(`/watched-searches/${watch.id}`, 'PATCH', { expectedRevision: 0, folderId: 999999 })).status, 404);

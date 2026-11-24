@@ -81,6 +81,8 @@ test('Following has no delivery log or digest settings while Discord and Task hi
   expect(checked.result.newGalleries).toBe(1);
   expect(checked.result.notified).toBe(1);
   expect((await (await page.request.get(`/api/__test/discord/${project}/posts`)).json()).length).toBe(1);
+  // Check status and its Task link live on the Following page, beside the inbox.
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await page.getByRole('link', { name: 'View check', exact: true }).click();
   const task = page.getByRole('dialog').or(page.getByRole('complementary', { name: 'Task details' }));
   await expect(task).toContainText('1 Discord notifications sent');
