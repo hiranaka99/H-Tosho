@@ -1,5 +1,34 @@
 # Changelog
 
+## v4.2.0
+
+- Rework the Download Manager with separate queue and paginated history views, counts by
+  status, and Kavita import status for completed downloads. Pause or resume the whole queue,
+  retry failed downloads in bulk, and prioritize individual items.
+- Make downloads more resilient with progressive retries, provider cooldowns, clearer
+  quota and disk-full errors, and refreshed E-Hentai viewer links on retry. Validate
+  downloaded images before creating archives and improve cleanup and recovery after shutdown.
+- Improve For You recommendations using tag combinations, groups, parodies, and Kavita
+  reading and rating signals. Mute tags, dismiss suggestions, and browse pages that wrap
+  around. Picks skip active downloads, unreviewed Following galleries, and known library
+  duplicates. Prefetch covers for each day's picks.
+- Share gallery selection across Discover search and For You, keep the download destination
+  next to selection actions, and let users follow supported providers from an All sources
+  search using each provider's query. Recover cleanly when searches are canceled, and match
+  E-Hentai tag filters and exclusions exactly.
+- Improve library duplicate detection for renamed or re-annotated titles. Keep part and
+  sequel markers distinct and require matching page counts for looser title matches.
+- Load Kavita series when a library opens and refresh cached artist metadata in the
+  background. Add database indexes, batch retention cleanup, compress larger responses,
+  and reduce filesystem work and progress polling.
+- Organize Settings into Kavita, Sources, Downloads, Notifications, and Account. Keep
+  drafts across tabs and show save actions in a sticky bar with clearer validation.
+  Preview fonts before choosing one. Montserrat and Roboto are served locally.
+- Strengthen API and settings validation, bound archive and media reads, and rate-limit
+  failed sign-ins. Expand server test coverage for redirects, media, and download recovery.
+- Fix shared auth and download state during development hot reloads. Clean up local design
+  review artifacts and update the design reference.
+
 ## v4.1.0
 
 - Refine the Settings tab. Account and downloader tabs show a marker when they hold unsaved
