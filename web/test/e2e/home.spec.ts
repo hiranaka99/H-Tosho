@@ -82,11 +82,11 @@ test('Not a match persists the displayed candidate identity and can be undone; d
     await route.fulfill({ json: { ok: true } });
   });
   await page.reload();
-  await page.getByRole('button', { name: 'Not a match', exact: true }).click();
+  await page.getByRole('button', { name: 'Not a match: Summer anthology', exact: true }).click();
   await expect(page.getByText('No candidates waiting.', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Undo', exact: true }).last().click();
-  await expect(page.getByRole('button', { name: 'Not a match', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Not a match', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Not a match: Summer anthology', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Not a match: Summer anthology', exact: true }).click();
   await expect(page.getByText('No candidates waiting.', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Dismiss A new chapter', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'You’re all caught up', exact: true })).toBeVisible();
@@ -158,7 +158,7 @@ test('download discovery updates Home automatically and explains its review-only
   await expect(page.getByText('Checking 0 of 1 galleries', { exact: true })).toBeVisible();
   await expect(page.getByText('Looking for candidates', { exact: false })).toBeVisible();
   done = true;
-  await expect(page.getByRole('button', { name: 'Review match', exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole('button', { name: 'Review match: Summer anthology', exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText('Checking 0 of 1 galleries', { exact: true })).toHaveCount(0);
   await page.locator('section[aria-labelledby="home-matches"]').screenshot({ path: `.impeccable/review/download-discovery-home-${testInfo.project.name}.png` });
   await navigate(page, 'Tasks');

@@ -124,7 +124,7 @@ test('search rows carry tag/artist/series/group/character/language metadata reso
   assert.equal(row.galleryId, '123');
   assert.equal(row.title, 'Some Title');
   assert.equal(row.pageCount, 12);
-  assert.equal(row.coverUrl, 'https://t1.nhentai.net/galleries/m123/thumb.webp');
+  assert.equal(row.coverUrl, 'https://t1.nhentai.net/galleries/m123/cover.webp', 'search cards use the larger dedicated cover');
   assert.equal(row.url, 'https://nhentai.net/g/123/');
 
   // Tags in tag_ids order, with the parallel namespace array.

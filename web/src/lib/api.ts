@@ -13,9 +13,10 @@ export type {
   ProviderLaneStatus,
   UnifiedSearchEntry,
   UnifiedSearchPage,
+  UnifiedSearchProgress,
 } from '../../../server/src/contracts/doujin';
 import type { DoujinSource, EhentaiSite } from '../../../server/src/contracts/doujin';
-import type { UnifiedSearchPage } from '../../../server/src/contracts/doujin';
+import type { UnifiedSearchPage, UnifiedSearchProgress, UnifiedSearchStreamEvent } from '../../../server/src/contracts/doujin';
 import type { EhentaiAccountView, EhentaiSessionInput, EhentaiSiteAccess } from '../../../server/src/contracts/ehentai';
 export type { EhentaiAccountView, EhentaiSessionInput, EhentaiSiteAccess };
 // Typed client for the H-Tosho REST API.
@@ -196,7 +197,7 @@ export interface MatchSuggestion {
   candidate: MatchCandidate;
 }
 export interface HomeMatches { items: MatchSuggestion[]; configured: boolean; scan: Job | null }
-export interface HomeActivity { id: string; title: string; action: string; createdAt: string; href: string }
+export interface HomeActivity { id: string; title: string; action: string; createdAt: string; href: string; /** First error of a failed sync. */ detail?: string | null }
 
 // ---------------- Doujinshi downloader types ----------------
 // DoujinSource (the registered gallery sources) is imported from the shared
@@ -367,6 +368,51 @@ export interface AuthStatus {
 export class ApiError extends Error {
   constructor(message: string, public readonly details: Record<string, unknown>, public readonly status: number) { super(message); }
 }
+async function apiError(res: Response): Promise<ApiError> {
+  let message = `HTTP ${res.status}`;
+  let details: Record<string, unknown> = {};
+  try {
+    const body = await res.json();
+    if (body && typeof body === 'object') details = body;
+    if (body && body.error) message = body.error;
+  } catch {
+    /* ignore */
+  }
+  return new ApiError(message, details, res.status);
+}
+
+/** Start a unified search that reports each provider as it answers. Resolves
+ *  with the complete first page; `onProgress` sees the partial cards first.
+ *  The server may answer with a plain JSON page when nothing streamed. */
+async function unifiedSearchStream(query: string, onProgress: (progress: UnifiedSearchProgress) => void, signal?: AbortSignal): Promise<UnifiedSearchPage> {
+  const res = await fetch('/api/doujin/search/unified', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, stream: true }),
+    signal,
+  });
+  if (res.status === 401) window.dispatchEvent(new Event('htosho:unauthorized'));
+  if (!res.ok) throw await apiError(res);
+  if (!res.headers.get('content-type')?.includes('ndjson') || !res.body) return res.json() as Promise<UnifiedSearchPage>;
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffered = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    buffered += value ?? '';
+    const lines = buffered.split('\n');
+    buffered = done ? '' : lines.pop()!;
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line) as UnifiedSearchStreamEvent;
+      if (event.type === 'progress') onProgress(event);
+      else if (event.type === 'page') return event.page;
+      else throw new ApiError(event.error, { error: event.error, ...(event.kind ? { kind: event.kind } : {}) }, event.status);
+    }
+    if (done) throw new ApiError('The search ended before every source answered. Try again.', {}, 502);
+  }
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch('/api' + path, {
     ...init,
@@ -377,18 +423,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     },
   });
   if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event('htosho:unauthorized'));
-  if (!res.ok) {
-    let message = `HTTP ${res.status}`;
-    let details: Record<string, unknown> = {};
-    try {
-      const body = await res.json();
-      if (body && typeof body === 'object') details = body;
-      if (body && body.error) message = body.error;
-    } catch {
-      /* ignore */
-    }
-    throw new ApiError(message, details, res.status);
-  }
+  if (!res.ok) throw await apiError(res);
   return res.json() as Promise<T>;
 }
 
@@ -593,6 +628,7 @@ export const api = {
       body: JSON.stringify(body),
       signal,
     }),
+  unifiedSearchStream,
   doujinGallery: (source: DoujinSource, idOrUrl: string) =>
     request<DoujinGallery>('/doujin/gallery', {
       method: 'POST',

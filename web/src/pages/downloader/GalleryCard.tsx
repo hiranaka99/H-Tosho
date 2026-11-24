@@ -1,8 +1,8 @@
 import * as React from 'react';
-import { Search, Loader2, Download as DownloadIcon, Pause, XCircle, CheckCircle2, RotateCcw, Check, Circle, ImageOff, Bookmark, AlertTriangle, EllipsisVertical } from 'lucide-react';
+import { Search, Loader2, Download as DownloadIcon, Pause, XCircle, CheckCircle2, RotateCcw, Check, Circle, Bookmark, AlertTriangle, EllipsisVertical, EyeOff } from 'lucide-react';
 import { type DoujinSource, type DoujinSearchResult } from '../../lib/api';
 import { useGalleryDownloadStatus } from '../../lib/DownloadsContext';
-import { cn, toIsoUtc } from '../../lib/utils';
+import { cn, timeAgo, toIsoUtc } from '../../lib/utils';
 import { Button, Badge } from '../../components/ui';
 import { PageCountPill } from '../../components/PageCountPill';
 
@@ -40,9 +40,11 @@ export const Cover = React.memo(function Cover({ url, title, className, priority
   React.useEffect(() => setFailed(false), [url]);
   const size = className ?? 'h-40 w-full';
   if (!url || failed) {
+    // No preview is a quiet absence, not an error: the title's initial stands in for the cover.
+    const initial = Array.from(title.trim())[0]?.toLocaleUpperCase() ?? '';
     return (
-      <div className={cn('flex items-center justify-center bg-surface-2 text-muted', size)}>
-        <ImageOff className="h-6 w-6" />
+      <div aria-hidden="true" className={cn('@container flex select-none items-center justify-center bg-surface-2 text-primary/25', size)}>
+        <span className="text-[clamp(0.75rem,38cqi,5rem)] font-semibold leading-none">{initial}</span>
       </div>
     );
   }
@@ -111,6 +113,17 @@ interface GalleryCardProps {
   reasons?: string[];
   /** First cards of the initially visible grid: load the cover eagerly at high priority. */
   priority?: boolean;
+  /** The watched search that found this gallery (Following); selecting it filters by that watch. */
+  origin?: WatchOrigin;
+  onOriginSelect?: (searchId: number) => void;
+}
+
+export interface WatchOrigin { searchId: number; label: string; query: string; foundAt: string; removed: boolean }
+
+/** A single namespaced term (`artist:some_name`, `artist:"some name"`) reads as its value; anything else stays verbatim. */
+export function readableWatchLabel(label: string): string {
+  const match = /^[a-z]+:(?:"([^"]+)"|([^\s"]+))$/i.exec(label.trim());
+  return match ? (match[1] ?? match[2]).replace(/_/g, ' ') : label;
 }
 
 function sameGalleryCardProps(prev: GalleryCardProps, next: GalleryCardProps): boolean {
@@ -134,6 +147,11 @@ function sameGalleryCardProps(prev: GalleryCardProps, next: GalleryCardProps): b
     || prev.selection?.onToggle !== next.selection?.onToggle
     || prev.review?.onChange !== next.review?.onChange
     || prev.feedback?.onOpen !== next.feedback?.onOpen
+    || prev.onOriginSelect !== next.onOriginSelect
+    || prev.origin?.searchId !== next.origin?.searchId
+    || prev.origin?.label !== next.origin?.label
+    || prev.origin?.foundAt !== next.origin?.foundAt
+    || prev.origin?.removed !== next.origin?.removed
   ) return false;
   const prevReasons = prev.reasons;
   const nextReasons = next.reasons;
@@ -156,12 +174,13 @@ function summarizeRecommendationReasons(reasons?: string[]): { summary: string; 
       if (sep <= 0) return null;
       const kind = reason.slice(0, sep);
       const value = reason.slice(sep + 1).trim();
-      return value ? { kind, value } : null;
+      // Only the reason kinds the ranking produces; anything else would render an empty line.
+      return value && (kind === 'artist' || kind === 'series' || kind === 'tag') ? { kind, value } : null;
     })
     .filter((entry): entry is { kind: string; value: string } => entry !== null);
   if (!parsed.length) return null;
   const priority: Record<string, number> = { artist: 0, series: 1, tag: 2 };
-  parsed.sort((a, b) => (priority[a.kind] ?? 3) - (priority[b.kind] ?? 3));
+  parsed.sort((a, b) => priority[a.kind] - priority[b.kind]);
   const full = parsed.map((entry) => `${entry.kind === 'artist' ? 'Artist' : entry.kind === 'series' ? 'Series' : 'Tag'}: ${entry.value}`).join(' · ');
   const lead = parsed[0];
   if (lead.kind === 'artist') {
@@ -173,10 +192,10 @@ function summarizeRecommendationReasons(reasons?: string[]): { summary: string; 
     return { summary: extraTag ? `Series: ${lead.value} · ${extraTag.value}` : `Series: ${lead.value}`, full };
   }
   const topTags = parsed.filter((entry) => entry.kind === 'tag').slice(0, 2).map((entry) => entry.value);
-  return { summary: `Matches: ${topTags.join(', ')}`, full };
+  return { summary: `Because you like ${topTags.join(', ')}`, full };
 }
 
-export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', quietAction = false, compact = false, provenance, reasons, priority = false }: GalleryCardProps) {
+export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', quietAction = false, compact = false, provenance, reasons, priority = false, origin, onOriginSelect }: GalleryCardProps) {
   const selectMode = selection?.mode === 'select', selected = selection?.selected ?? false;
   const onToggleSelect = selection?.onToggle, onReview = review?.onChange;
   const reviewed = review?.state === 'reviewed', reviewPending = review?.state === 'pending';
@@ -190,6 +209,9 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
   const alreadyOwned = ownership.type === 'downloaded' || inLibrary;
   const taskStatus = useGalleryDownloadStatus(item.source, item.galleryId);
   const active = starting || taskStatus !== undefined;
+  // In an inbox, Download and Dismiss are the two triage verbs and carry equal weight.
+  const triage = Boolean(onReview);
+  const originText = origin ? `via ${origin.label}${origin.removed ? ' · removed watch' : ''} · ${timeAgo(origin.foundAt)}` : '';
   return (
     <article
       data-gallery-motion-id={`${item.source}:${item.galleryId}`}
@@ -230,8 +252,9 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
         </div>
       </button>
       <div className={cn('mt-auto flex min-w-0 flex-col gap-2', compact ? 'p-2.5' : 'p-3')}>
-        {(showSource || ownershipType || provenance) && (
+        {(showSource || ownershipType || provenance || reviewed) && (
           <div className="flex min-h-6 flex-wrap items-center gap-2">
+            {reviewed && <span className="inline-flex items-center gap-1 rounded-full border border-border-2 px-2 py-0.5 text-xs font-medium text-muted"><EyeOff aria-hidden="true" className="h-3 w-3" />Dismissed</span>}
             {/* Select mode moves the chip off the cover so it never hides behind the checkbox. */}
             {ownershipType && <OwnershipChip type={ownershipType} className={selectMode || selected ? undefined : 'min-[420px]:hidden'} />}
             {showSource && <SourceBadge source={item.source} />}
@@ -243,14 +266,22 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
             )}
           </div>
         )}
+        {origin && (
+          <button type="button" data-watch-origin
+            className="-my-1 flex min-h-8 min-w-0 items-center text-left text-xs text-muted underline-offset-4 hover:text-primary hover:underline max-lg:min-h-11 pointer-coarse:min-h-11"
+            onClick={() => onOriginSelect?.(origin.searchId)} aria-label={`${originText}. Show only finds from this watch`} title={`Show only finds from ${origin.label} · ${origin.query}`}>
+            <span className="truncate">via <span className="font-medium text-foreground">{readableWatchLabel(origin.label)}</span>{origin.removed ? ' · removed watch' : ''} · <time dateTime={origin.foundAt}>{timeAgo(origin.foundAt)}</time></span>
+          </button>
+        )}
         <div className="flex min-w-0 items-stretch gap-2">
           {selectMode ? <>
             <Button size="sm" variant="outline" className="min-w-0 flex-1 px-2" onClick={() => onOpen(item)} aria-label={`View details for ${item.title}`}>Details</Button>
-          </> : <Button size="sm" variant={quietAction || alreadyOwned || libraryMatch === 'possible' ? 'outline' : 'default'} className={cn('max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 px-2', onReview && 'h-auto min-h-11 px-1.5')} onClick={() => onDownload(item)} disabled={active || alreadyOwned || downloadSetup === 'loading' || downloadSetup === 'error'} aria-label={starting && !taskStatus ? `Checking duplicates for ${item.title}` : active ? `${item.title} is ${taskStatus ?? 'starting'}` : alreadyOwned ? `${item.title} already in library` : libraryMatch === 'possible' ? `Review possible duplicate of ${item.title}` : downloadSetup === 'missing' ? `Set output folder before downloading ${item.title}` : `Download ${item.title}`}>
+          </> : <Button size="sm" variant={quietAction || triage || alreadyOwned || libraryMatch === 'possible' ? 'outline' : 'default'} className={cn('max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 px-2', triage && 'h-auto min-h-11 basis-0 px-1.5')} onClick={() => onDownload(item)} disabled={active || alreadyOwned || downloadSetup === 'loading' || downloadSetup === 'error'} aria-label={starting && !taskStatus ? `Checking duplicates for ${item.title}` : active ? `${item.title} is ${taskStatus ?? 'starting'}` : alreadyOwned ? `${item.title} already in library` : libraryMatch === 'possible' ? `Review possible duplicate of ${item.title}` : downloadSetup === 'missing' ? `Set output folder before downloading ${item.title}` : `Download ${item.title}`}>
             {!onReview && (taskStatus === 'paused' ? <Pause className="h-3.5 w-3.5 shrink-0" /> : taskStatus === 'queued' ? <Circle className="h-3.5 w-3.5 shrink-0" /> : active ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : alreadyOwned ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <DownloadIcon className="h-3.5 w-3.5 shrink-0" />)}
-            <span>{taskStatus === 'retry-wait' ? 'Retry scheduled' : taskStatus === 'queued' ? 'Queued' : taskStatus === 'paused' ? 'Paused' : starting && !taskStatus ? 'Checking…' : active ? 'Downloading' : inLibrary ? 'In library' : alreadyOwned ? 'Downloaded' : libraryMatch === 'possible' ? 'Review duplicate' : downloadSetup === 'missing' ? 'Set folder' : 'Download'}</span>
+            <span>{taskStatus === 'retry-wait' ? 'Retry scheduled' : taskStatus === 'queued' ? 'Queued' : taskStatus === 'paused' ? 'Paused' : starting && !taskStatus ? 'Checking…' : active ? 'Downloading' : inLibrary ? 'In library' : alreadyOwned ? 'Downloaded' : libraryMatch === 'possible' ? 'Review duplicate' : downloadSetup === 'missing' && !triage ? 'Set folder' : 'Download'}</span>
           </Button>}
-          {!selectMode && onReview && <Button size="sm" variant="outline" className="relative h-auto min-h-11 shrink-0 px-1.5" disabled={reviewPending || reviewed} onClick={() => onReview(item, true)} aria-label={reviewed ? `${item.title} dismissed from inbox` : `Dismiss ${item.title}`} title={reviewed ? 'Kept in History' : 'Remove from Inbox and keep in History'}><span className={reviewPending ? 'invisible' : undefined}>{reviewed ? 'Dismissed' : 'Dismiss'}</span>{reviewPending && <Loader2 aria-hidden="true" className="absolute h-3.5 w-3.5 animate-spin" />}</Button>}
+          {/* One button flips between Dismiss and Restore so keyboard focus stays put across the change. */}
+          {!selectMode && onReview && <Button size="sm" variant="outline" data-review-action={reviewed ? 'restore' : 'dismiss'} className="relative h-auto min-h-11 min-w-0 flex-1 basis-0 px-1.5" disabled={reviewPending} onClick={() => onReview(item, !reviewed)} aria-label={reviewed ? `Return ${item.title} to inbox` : `Dismiss ${item.title}`} title={reviewed ? 'Return to Inbox' : 'Remove from Inbox; it stays in All finds'}><span className={cn('inline-flex items-center gap-1.5', reviewPending && 'invisible')}>{reviewed && <RotateCcw aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}{reviewed ? 'Restore' : 'Dismiss'}</span>{reviewPending && <Loader2 aria-hidden="true" className="absolute h-3.5 w-3.5 animate-spin" />}</Button>}
           {onFeedback && <Button size="icon" variant="outline" className="max-lg:min-h-11 max-lg:min-w-11 pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 text-muted" disabled={dismissing} onClick={() => onFeedback(item)} aria-label={`Tune recommendations for ${item.title}`} title="Tune recommendations"><EllipsisVertical className="h-4 w-4" /></Button>}
         </div>
       </div>

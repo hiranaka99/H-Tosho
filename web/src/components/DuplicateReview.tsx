@@ -35,7 +35,7 @@ export function useDuplicateReview() {
         </div>
         <div className="min-h-0 space-y-5 overflow-y-auto p-4 sm:p-5">
           {review.reports.filter(report => report.matches.length).map(report => <section key={`${report.source}:${report.galleryId}`} className="space-y-2">
-            <h3 className="break-words text-sm font-semibold">{report.title}</h3>
+            <h3 className="break-words font-sans text-sm font-semibold">{report.title}</h3>
             <ul className="divide-y divide-border rounded-lg border border-border">
               {report.matches.map(match => <li key={`${match.source}:${match.galleryId}`} className="space-y-1.5 p-3 text-sm">
                 <div className="flex flex-wrap items-center gap-2"><span className="min-w-0 flex-1 break-words font-medium">{match.title}</span><Badge tone="muted">{sourceDisplayName(match.source)} · {match.status}</Badge></div>

@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { Link } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { ArrowUp, ArrowDown, Folder, FolderOpen, FolderPlus, Inbox, Loader2, Pencil, Trash2, X } from 'lucide-react';
 import { FOLLOWING_INTERVAL_MINUTES, type FollowingInterval, type WatchedSearch, type WatchedSearchFolder } from '../../../../server/src/contracts/following';
@@ -21,7 +22,7 @@ function WatchFolderDropTarget({ folderId, folderName, draggedWatch, disabled, o
   return <li
     data-watch-folder-id={folderId ?? 'unfiled'}
     aria-label={folderName}
-    className={cn('rounded-lg border border-transparent px-3 py-2', acceptsWatch && 'border-dashed border-primary/40', active && 'border-primary bg-primary/10')}
+    className={cn('rounded-lg border border-transparent px-2 py-2 sm:px-3', acceptsWatch && 'border-dashed border-primary/40', active && 'border-primary bg-primary/10')}
     onDragOver={event => {
       if (!acceptsWatch || !event.dataTransfer.types.includes(WATCH_DRAG_TYPE)) return;
       event.preventDefault();
@@ -53,8 +54,8 @@ export function cadenceLabel(minutes: number): string {
   return `${minutes / 60} ${minutes === 60 ? 'hour' : 'hours'}`;
 }
 
-export function WatchEditor({ watch, folders, foldersReady, globalInterval, onClose, onSaved, onRefresh }: {
-  watch: WatchedSearch; folders: WatchedSearchFolder[]; foldersReady: boolean; globalInterval: number;
+export function WatchEditor({ watch, folders, foldersReady, globalInterval, onClose, onSaved, onRefresh, initialFocus = 'name' }: {
+  watch: WatchedSearch; folders: WatchedSearchFolder[]; foldersReady: boolean; globalInterval: number; initialFocus?: 'name' | 'folder';
   onClose: () => void; onSaved: () => void; onRefresh: () => Promise<unknown>;
 }) {
   const qc = useQueryClient();
@@ -96,20 +97,20 @@ export function WatchEditor({ watch, folders, foldersReady, globalInterval, onCl
   return <form aria-label={`Edit watch ${watch.displayName ?? watch.query}`} onSubmit={event => { event.preventDefault(); void save(); }} className="mt-3 flex flex-col gap-3 border-t border-border pt-3">
     <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_12rem]">
       <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Watch name
-        <Input autoFocus aria-label="Watch name" className="h-11" value={name} onChange={event => setName(event.target.value)} disabled={pending} maxLength={120} placeholder={watch.query} aria-describedby={`${id}-name-hint`} aria-invalid={nameInvalid} />
+        <Input autoFocus={initialFocus === 'name'} aria-label="Watch name" className="h-11" value={name} onChange={event => setName(event.target.value)} disabled={pending} maxLength={120} placeholder={watch.query} aria-describedby={`${id}-name-hint`} aria-invalid={nameInvalid} />
         <span id={`${id}-name-hint`}>Defaults to query.</span>
       </label>
       <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Folder
-        <Select aria-label="Folder" className="h-11" value={folder} onChange={event => setFolder(event.target.value)} disabled={pending || !foldersReady}>
+        <Select autoFocus={initialFocus === 'folder'} aria-label="Folder" className="h-11" value={folder} onChange={event => setFolder(event.target.value)} disabled={pending || !foldersReady}>
           <option value="">Unfiled</option>
           {!selectedFolderExists && <option value={folder}>Folder removed — choose another</option>}
           {folders.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
         </Select>
       </label>
-      <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Check cadence
-        <Select aria-label="Check cadence" className="h-11" value={interval} onChange={event => setInterval(event.target.value)} disabled={pending}>
-          <option value="">Inherit default ({cadenceLabel(globalInterval)})</option>
-          {FOLLOWING_INTERVAL_MINUTES.map(minutes => <option key={minutes} value={minutes}>{cadenceLabel(minutes)}</option>)}
+      <label className="flex min-w-0 flex-col gap-1 text-xs text-muted">Check interval
+        <Select aria-label="Check interval" className="h-11" value={interval} onChange={event => setInterval(event.target.value)} disabled={pending}>
+          <option value="">{globalInterval === 0 ? 'Default (off)' : `Default (every ${cadenceLabel(globalInterval)})`}</option>
+          {FOLLOWING_INTERVAL_MINUTES.map(minutes => <option key={minutes} value={minutes}>Every {cadenceLabel(minutes)}</option>)}
         </Select>
       </label>
     </div>
@@ -117,11 +118,11 @@ export function WatchEditor({ watch, folders, foldersReady, globalInterval, onCl
       <Select aria-label="Notification delivery" className="min-h-11 sm:max-w-xs" value={notificationMode} onChange={event => setNotificationMode(event.target.value as NotificationMode)} disabled={pending}>
         <option value="in-app">In-app only</option><option value="immediate">Immediate Discord</option>
       </Select>
-      <span>Discord requires setup in Settings.</span>
     </label>
-    {globalInterval === 0 && <p className="text-xs text-muted">Automatic checks are off in Settings.</p>}
+    <p className="-mt-2 text-xs text-muted">Discord delivery uses the webhook in <Link className="font-medium text-primary underline underline-offset-4" to="/settings?tab=notifications">Settings → Notifications</Link>.</p>
+    {globalInterval === 0 && <p className="text-xs text-muted">Automatic checks are off for every watch while the default interval is Off. Change it at the bottom of this panel.</p>}
     {error && <div role="alert" className="flex flex-col gap-1 text-sm text-danger"><p>{error}</p>
-      {conflictRevision !== null && <p className="break-words text-xs text-muted">Latest saved: {watch.displayName ?? watch.query} · {folders.find(item => item.id === watch.folderId)?.name ?? 'Unfiled'} · {watch.intervalMinutes === null ? 'Inherited cadence' : cadenceLabel(watch.intervalMinutes)} · {watch.pausedAt ? 'Paused' : 'Active'}</p>}
+      {conflictRevision !== null && <p className="break-words text-xs text-muted">Latest saved: {watch.displayName ?? watch.query} · {folders.find(item => item.id === watch.folderId)?.name ?? 'Unfiled'} · {watch.intervalMinutes === null ? 'Default interval' : `Every ${cadenceLabel(watch.intervalMinutes)}`} · {watch.pausedAt ? 'Paused' : 'Active'}</p>}
       {stale && <Button type="button" size="sm" variant="outline" className="min-h-11 self-start" onClick={() => void onRefresh()}>Reload latest watch</Button>}
     </div>}
     {!selectedFolderExists && <p role="alert" className="text-xs text-danger">The selected folder no longer exists. Choose a folder or Unfiled before saving.</p>}
@@ -165,7 +166,7 @@ export function FollowingFolders({ folders, watches, watchesReady, renderWatch, 
   function renderContents(folderId: number | null) {
     if (!watchesReady) return null;
     const items = groups.get(folderId) ?? [];
-    return <div data-watch-folder-content={folderId ?? 'unfiled'} className="ml-2 mt-1 border-l border-border pl-3 sm:ml-3 sm:pl-4">
+    return <div data-watch-folder-content={folderId ?? 'unfiled'} className="mt-1 border-l border-border pl-2 sm:ml-3 sm:pl-4">
       {items.length ? items.map(renderWatch) : <p className="py-3 text-xs text-muted">Empty</p>}
     </div>;
   }
@@ -216,7 +217,7 @@ export function FollowingFolders({ folders, watches, watchesReady, renderWatch, 
           <label className="min-w-0 flex-1 text-xs text-muted">Folder name<Input autoFocus className="mt-1 h-11" maxLength={120} value={editName} onChange={event => setEditName(event.target.value)} disabled={pending} /></label>
           <div className="flex gap-2"><Button size="sm" className="min-h-11" type="submit" disabled={pending || stale || !editName.trim()}>Save folder</Button><Button size="sm" variant="ghost" className="min-h-11" type="button" disabled={pending} onClick={() => setEditing(null)}>Cancel rename</Button></div>
         </form> : <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <div className="flex min-w-0 flex-1 items-center gap-2"><h4 className="min-w-0 break-words text-sm font-medium">{folder.name}</h4>{watchesReady && <span className="shrink-0 text-xs tabular-nums text-muted" aria-label={`${groups.get(folder.id)!.length} watches`}>{groups.get(folder.id)!.length}</span>}</div>
+          <div className="flex min-w-0 flex-1 items-center gap-2"><h4 className="min-w-0 break-words font-sans text-sm font-medium">{folder.name}</h4>{watchesReady && <span className="shrink-0 text-xs tabular-nums text-muted" aria-label={`${groups.get(folder.id)!.length} watches`}>{groups.get(folder.id)!.length}</span>}</div>
           <div className="flex shrink-0 gap-1">
             <Button size="icon" variant="ghost" className="h-11 w-11" disabled={pending || stale || index === 0} aria-label={`Move folder ${folder.name} up`} onClick={() => void move(folder, -1)}><ArrowUp className="h-4 w-4" /></Button>
             <Button size="icon" variant="ghost" className="h-11 w-11" disabled={pending || stale || index === folders.length - 1} aria-label={`Move folder ${folder.name} down`} onClick={() => void move(folder, 1)}><ArrowDown className="h-4 w-4" /></Button>

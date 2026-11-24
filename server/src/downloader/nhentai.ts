@@ -691,6 +691,16 @@ async function filterArtistRows(all: readonly ApiGalleryListItem[], language: Ap
   return rows;
 }
 
+/**
+ * Search rows only carry `thumbnail` (galleries/{media}/thumb.{ext}, about
+ * 500px wide). Every gallery also serves the detail endpoint's dedicated
+ * cover beside it (cover.{ext}, about 700px wide) under the same extension,
+ * so cards use that instead of a blurry upscaled thumbnail.
+ */
+function searchCoverPath(thumbnail: string): string {
+  return thumbnail.replace(/(^|\/)thumb(\.[^/]+)$/, '$1cover$2');
+}
+
 async function mapSearchRows(items: ApiGalleryListItem[]): Promise<NhentaiSearchRow[]> {
   if (!items.length) return [];
   const tagIds = items.flatMap(item => Array.isArray(item?.tag_ids) ? item.tag_ids : []);
@@ -702,7 +712,7 @@ async function mapSearchRows(items: ApiGalleryListItem[]): Promise<NhentaiSearch
     const split = splitTags(resolved);
     return {
       source: 'nhentai', galleryId: id, title,
-      coverUrl: item.thumbnail ? joinServer(cdn.thumbServers[0], item.thumbnail) : undefined,
+      coverUrl: item.thumbnail ? joinServer(cdn.thumbServers[0], searchCoverPath(item.thumbnail)) : undefined,
       tags: split.tags, tagNamespaces: split.tagNamespaces, artists: split.artists,
       series: split.parodies[0], parodies: split.parodies, groups: split.groups,
       characters: split.characters, language: detectLanguage(split.langTags, title),

@@ -533,7 +533,7 @@ const JobListRow = React.memo(function JobListRow({ job, selected, confirmingSto
     >
       <JobCover job={job} />
       <div className="min-w-0">
-        <h2 className="text-sm leading-snug [overflow-wrap:anywhere]">
+        <h2 className="font-sans text-sm leading-snug [overflow-wrap:anywhere]">
           <button type="button" id={`task-open-${job.id}`} data-task-open={job.id} aria-current={selected ? 'true' : undefined} aria-label={`View details for task #${job.id}: ${jobTarget(job)}`} onClick={() => actions.open(job.id)} className="rounded text-left font-semibold underline-offset-4 hover:underline">{jobLabel(job.type, job.payload)}</button>{' '}
           <span className="text-muted">{jobTarget(job)}</span>
         </h2>

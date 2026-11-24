@@ -47,6 +47,8 @@ test('Watched keeps large saved lists cheap and follows checks promptly', async 
   const manage = page.getByRole('button', { name: 'Manage watches (52)', exact: true });
   await expect(manage).toBeVisible();
   await expect(page.getByRole('radio', { name: /^Inbox \(/ })).toBeVisible();
+  // The status line's first request lands with the page; only later polling counts as idle work.
+  await expect.poll(() => statusRequests).toBeGreaterThan(0);
   const closed = await page.evaluate(() => ({
     nodes: document.querySelectorAll('*').length,
     savedRows: document.querySelectorAll('[data-watched-search-id]').length,
@@ -80,12 +82,10 @@ test('Watched keeps large saved lists cheap and follows checks promptly', async 
   await page.getByRole('dialog', { name: 'Manage watches', exact: true }).screenshot({ path: testInfo.outputPath('watched-large-list.png') });
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await expect(page.locator('[data-watched-search-id]')).toHaveCount(0);
-  await manage.click();
   await page.getByRole('button', { name: 'Check now', exact: true }).click();
   await expect(page.getByText(/Checking \d+ of 52 watches/)).toBeVisible();
-  await expect(page.getByText(/^3 new finds/)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/^Checked .+ · 3 new/)).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole('button', { name: 'Check now', exact: true })).toBeEnabled();
-  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await page.getByRole('tab', { name: 'Search', exact: true }).click();
   const requestsAfterLeaving = statusRequests;
   await page.waitForTimeout(3000);

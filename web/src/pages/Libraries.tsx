@@ -832,7 +832,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
               {!review && !selectMode && checked.size === 0 && <Button variant="outline" aria-label="Select to merge" className="max-lg:min-h-11 pointer-coarse:min-h-11 shrink-0 sm:min-h-9" onClick={() => setSelectMode(true)}><CheckSquare className="h-4 w-4" /> <span>Select<span className="hidden sm:inline"> to merge</span></span></Button>}
             </div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-              <h2 aria-live="polite" aria-atomic="true" className="text-sm font-semibold tabular-nums">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h2>
+              <h2 aria-live="polite" aria-atomic="true" className="font-sans text-sm font-semibold tabular-nums">{series.data ? (isFiltering ? `${filtered.length} of ${rows.length} series` : `${rows.length} series`) : 'Loading…'}</h2>
               {review && series.data && <p className="text-xs text-muted">Matches below {thresholdPercent}% confidence · All libraries</p>}
               {!review && series.data && rows.length > 0 && (
                 <div role="group" aria-label="Filter by match status" className="flex min-w-0 flex-wrap items-center gap-1.5">

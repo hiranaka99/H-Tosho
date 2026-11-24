@@ -299,7 +299,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
             <div className="flex items-center gap-3">
               <TargetCover option={target} className="w-12 shrink-0" />
               <div className="min-w-0 flex-1">
-                <h3 className="break-words text-sm font-semibold">{target.name}</h3>
+                <h3 className="break-words font-sans text-sm font-semibold">{target.name}</h3>
                 <p className="break-words text-xs text-muted">{target.library}</p>
               </div>
             </div>
