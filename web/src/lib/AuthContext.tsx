@@ -30,7 +30,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
   React.useEffect(() => { void refresh(); }, [refresh]);
 
-  if (!status) {
+  const logout = React.useCallback(async () => {
+    await api.logout();
+    setStatus({ setupRequired: false, authenticated: false, username: null });
+  }, []);
+  const value = React.useMemo<AuthContextValue | null>(() => status ? { ...status, refresh, logout } : null, [status, refresh, logout]);
+
+  if (!status || !value) {
     return (
       <div className="flex h-full items-center justify-center p-4">
         <div className="flex items-center gap-2 text-muted"><Loader2 className="h-4 w-4 animate-spin" /> {error || 'Loading…'}</div>
@@ -43,7 +49,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ ...status, refresh, logout: async () => { await api.logout(); setStatus({ setupRequired: false, authenticated: false, username: null }); } }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );
@@ -84,7 +90,7 @@ function AuthScreen({ setupRequired, onAuthenticated }: { setupRequired: boolean
     <main className="flex h-full min-h-0 items-center justify-center overflow-y-auto p-3 sm:p-4">
       <Card className="w-full max-w-md overflow-hidden shadow-lg">
         <div className="flex flex-col items-center gap-3 border-b border-border bg-surface-2/50 px-6 py-7 text-center">
-          <img src="/h-tosho-icon.png?v=199908e7" alt="H-Tosho" width={64} height={64} className="h-16 w-16 rounded-xl object-contain" />
+          <img src="/h-tosho-icon.png?v=26b1c759" alt="H-Tosho" width={64} height={64} className="h-16 w-16 rounded-xl object-contain" />
           <div>
             <h1 className="text-xl font-semibold tracking-tight">{setupRequired ? 'Set up H-Tosho' : 'Welcome back'}</h1>
             <p className="mt-1 text-sm text-muted">{setupRequired ? 'Create the account used to protect this installation.' : 'Sign in to manage your library.'}</p>

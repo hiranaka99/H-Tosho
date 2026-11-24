@@ -3,10 +3,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router';
 import { Activity, AlertTriangle, ArrowDown, Ban, CheckCheck, CheckCircle2, Circle, Copy, Download, Eye, FilePen, ListChecks, Merge, RefreshCw, RotateCcw, ScanLine, Search, SlidersHorizontal, Trash2, X, XCircle, type LucideIcon } from 'lucide-react';
 import { api, type Job, type JobLog } from '../lib/api';
-import { Badge, Button, Card, CardContent, ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle, EmptyState, ErrorState, InlineConfirm, Input, Label, PageHeader, ProgressBar, SegmentedTabs, Select, Skeleton, Spinner, Disclosure } from '../components/ui';
+import { Badge, Button, Card, CardContent, EmptyState, ErrorState, InlineConfirm, Input, Label, PageHeader, ProgressBar, SegmentedTabs, Select, Skeleton, Spinner, Disclosure } from '../components/ui';
+import { ConfirmDialog, Dialog, DialogContent, DialogDescription, DialogTitle } from '../components/dialog';
 import { cn, timeAgo, toIsoUtc, jobLabel } from '../lib/utils';
 import { isActive, hasWarnings, needsAttention } from '../lib/jobStatus';
 import { useMediaQuery } from '../lib/useMediaQuery';
+import { useNow } from '../lib/useNow';
 import { toast } from '../lib/toast';
 
 type JobFilter = 'active' | 'failed' | 'done' | 'all';
@@ -56,35 +58,6 @@ function matchesFilter(job: Job, filter: JobFilter): boolean {
 /** First visit: land on what needs a decision, else what is running, else everything. */
 function defaultFilter(jobs: Job[]): JobFilter {
   return jobs.some(needsAttention) ? 'failed' : jobs.some(isActive) ? 'active' : 'all';
-}
-
-function useNow(intervalMs: number, enabled = true): number {
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    if (!enabled) return;
-    setNow(Date.now());
-    let id: number | null = null;
-    const start = () => {
-      if (id !== null || document.hidden) return;
-      id = window.setInterval(() => setNow(Date.now()), intervalMs);
-    };
-    const stop = () => {
-      if (id === null) return;
-      window.clearInterval(id);
-      id = null;
-    };
-    const onVisibility = () => {
-      if (document.hidden) stop();
-      else { setNow(Date.now()); start(); }
-    };
-    start();
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      stop();
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [intervalMs, enabled]);
-  return now;
 }
 
 function fieldLabel(key: string): string {
@@ -279,8 +252,27 @@ function duration(job: Job): string {
   return isActive(job) ? `${text} elapsed` : text;
 }
 
+// Built once: same output as Date#toLocaleString() / #toLocaleTimeString() with
+// no arguments, without constructing a formatter for every rendered row.
+const DATE_TIME_FORMAT = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: 'numeric', second: 'numeric' });
+
 function timestamp(value: string | null | undefined): string {
-  return value ? new Date(toIsoUtc(value)).toLocaleString() : '—';
+  return value ? DATE_TIME_FORMAT.format(new Date(toIsoUtc(value))) : '—';
+}
+
+/** Relative creation time on a shared coarse clock, so memoized rows stay current without re-rendering. */
+function CreatedAgo({ job }: { job: Job }) {
+  useNow(10_000);
+  return <time className="text-xs tabular-nums text-muted" dateTime={toIsoUtc(job.createdAt)} title={`${timestamp(job.createdAt)}${job.startedAt ? ` · ${duration(job)}` : ''}`}>{timeAgo(job.createdAt)}</time>;
+}
+
+/** "Updated …s ago" for the open running task; ticks on its own. */
+function UpdatedAgo({ updatedAt }: { updatedAt: number }) {
+  const now = useNow(1000);
+  if (!updatedAt) return <span aria-live="off">Updating…</span>;
+  const seconds = Math.floor((now - updatedAt) / 1000);
+  return <span aria-live="off">{`Updated ${Math.max(0, seconds) < 2 ? 'just now' : `${seconds}s ago`}`}</span>;
 }
 function JobStatus({ job }: { job: Job }) {
   if (job.status === 'running') return <Badge tone="info"><Activity className="h-3 w-3 animate-pulse-soft" /> Running</Badge>;
@@ -417,7 +409,8 @@ function StopConfirm({ job, pending, onKeep, onStop }: { job: Job; pending: bool
   );
 }
 
-function RunningFacts({ job, now }: { job: Job; now: number }) {
+function RunningFacts({ job }: { job: Job }) {
+  const now = useNow(1000);
   const { progressCurrent: current, progressTotal: total } = job;
   const percent = total > 0 ? Math.round((current / total) * 100) : null;
   const started = job.startedAt ? new Date(toIsoUtc(job.startedAt)).getTime() : NaN;
@@ -436,6 +429,9 @@ function RunningFacts({ job, now }: { job: Job; now: number }) {
     </section>
   );
 }
+
+/** Rendered log lines are capped (newest kept); copy/download still include every entry. */
+const LOG_RENDER_LIMIT = 1000;
 
 const LogConsole = React.memo(function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
   const ref = React.useRef<HTMLDivElement>(null);
@@ -487,11 +483,12 @@ const LogConsole = React.memo(function LogConsole({ logs, jobId }: { logs: JobLo
         nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 36;
         if (!nearBottom.current) setFollow(false);
       }} className="h-64 overflow-y-auto overscroll-contain rounded-lg border border-border bg-background p-2 font-mono text-xs leading-relaxed">
-        {!visible.length ? <p className="p-1 text-muted">{logs.length ? 'No logs match this severity.' : 'No logs yet.'}</p> : visible.map((log) => {
+        {visible.length > LOG_RENDER_LIMIT && <p className="p-1 text-muted">Showing the latest {LOG_RENDER_LIMIT.toLocaleString()} of {visible.length.toLocaleString()} entries. Copy or download for the full log.</p>}
+        {!visible.length ? <p className="p-1 text-muted">{logs.length ? 'No logs match this severity.' : 'No logs yet.'}</p> : (visible.length > LOG_RENDER_LIMIT ? visible.slice(-LOG_RENDER_LIMIT) : visible).map((log) => {
           const level = log.level === 'warning' ? 'warn' : log.level;
           return (
             <div key={log.id} className={cn('flex min-w-0 gap-2 rounded px-1', level === 'error' && 'bg-danger/10', level === 'warn' && 'bg-warning/10')}>
-              <time className="shrink-0 text-muted" dateTime={toIsoUtc(log.createdAt)}>{new Date(toIsoUtc(log.createdAt)).toLocaleTimeString()}</time>
+              <time className="shrink-0 text-muted" dateTime={toIsoUtc(log.createdAt)}>{TIME_FORMAT.format(new Date(toIsoUtc(log.createdAt)))}</time>
               <span className={cn('w-12 shrink-0 uppercase', LOG_COLOR[log.level] ?? 'text-muted')}>{log.level}</span>
               <span className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{log.message}</span>
             </div>
@@ -515,6 +512,47 @@ function PanelDescription({ mode, children }: { mode: PanelMode; children: React
     : <p className="mt-1 break-words text-sm text-muted">{children}</p>;
 }
 
+interface JobRowActions {
+  open: (id: number) => void;
+  retry: (id: number) => void;
+  requestStop: (id: number) => void;
+  keep: () => void;
+  stop: (id: number) => void;
+}
+
+/** One task in the list. Memoized: a poll re-renders only the rows whose job (or row state) changed. */
+const JobListRow = React.memo(function JobListRow({ job, selected, confirmingStop, stopPending, retryPending, retryDisabled, actions }: {
+  job: Job; selected: boolean; confirmingStop: boolean; stopPending: boolean; retryPending: boolean; retryDisabled: boolean; actions: JobRowActions;
+}) {
+  const summary = jobSummary(job);
+  const retryable = job.status === 'failed' && job.type !== 'restore-metadata';
+  return (
+    <article
+      className={cn('grid min-w-0 cursor-pointer grid-cols-[2rem_minmax(0,1fr)] gap-x-3 gap-y-2 px-3 py-3 transition-colors duration-150 sm:grid-cols-[2.5rem_minmax(0,1fr)_auto] sm:gap-y-0 sm:px-4', confirmingStop ? 'sm:items-start' : 'sm:items-center', selected ? 'bg-primary/10 ring-1 ring-inset ring-primary/50' : job.status === 'failed' ? 'bg-danger/5 hover:bg-danger/10' : 'hover:bg-surface-2/50')}
+      onClick={(event) => { if (!(event.target as HTMLElement).closest('button, a, input, select, summary')) actions.open(job.id); }}
+    >
+      <JobCover job={job} />
+      <div className="min-w-0">
+        <h2 className="text-sm leading-snug [overflow-wrap:anywhere]">
+          <button type="button" id={`task-open-${job.id}`} data-task-open={job.id} aria-current={selected ? 'true' : undefined} aria-label={`View details for task #${job.id}: ${jobTarget(job)}`} onClick={() => actions.open(job.id)} className="rounded text-left font-semibold underline-offset-4 hover:underline">{jobLabel(job.type, job.payload)}</button>{' '}
+          <span className="text-muted">{jobTarget(job)}</span>
+        </h2>
+        {summary && <p className={cn('mt-0.5 text-sm', job.status === 'failed' ? 'line-clamp-2 text-danger' : 'text-muted')} title={job.status === 'failed' ? job.errorMessage ?? undefined : undefined}>{summary}</p>}
+        {job.status === 'running' && <div className="mt-2 flex items-center gap-2"><ProgressBar value={job.progressCurrent} max={job.progressTotal} active label={`Progress for ${jobTarget(job)}`} className="h-1.5 max-w-xs" />{job.progressTotal > 0 && <span className="shrink-0 text-xs tabular-nums text-muted">{job.progressCurrent} / {job.progressTotal}</span>}</div>}
+        {confirmingStop && isActive(job) && <StopConfirm job={job} pending={stopPending} onKeep={actions.keep} onStop={() => actions.stop(job.id)} />}
+      </div>
+      <div className="col-start-2 flex min-w-0 items-center justify-between gap-3 sm:col-start-auto sm:justify-end">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 sm:min-w-24 sm:flex-col sm:items-end sm:gap-y-0.5">
+          <RowStatus job={job} />
+          <CreatedAgo job={job} />
+        </div>
+        {retryable && <Button className={controlClass} size="sm" variant="outline" disabled={retryDisabled || retryPending} onClick={() => actions.retry(job.id)}>{retryPending ? <Spinner /> : <RotateCcw className="h-4 w-4" />}{retryPending ? 'Retrying…' : 'Retry'}</Button>}
+        {isActive(job) && !confirmingStop && <Button className={cn(controlClass, 'hover:bg-danger/10 hover:text-danger')} size="sm" variant="ghost" aria-label={`Stop task #${job.id}: ${jobTarget(job)}`} onClick={() => actions.requestStop(job.id)}>Stop</Button>}
+      </div>
+    </article>
+  );
+});
+
 export function Jobs() {
   const [searchParams, setSearchParams] = useSearchParams();
   const rawFilter = searchParams.get('filter');
@@ -535,8 +573,8 @@ export function Jobs() {
     queryKey: ['jobs'],
     queryFn: api.jobs,
     staleTime: 0,
-    refetchInterval: (query) =>
-      query.state.data?.some((j) => j.status === 'running' || j.status === 'queued') ? 2500 : 15_000,
+    // Polled by the always-mounted SidebarStatus (jobsPollInterval); a second
+    // interval here would run its own timer and double the requests.
   });
   const jobs = jobsQuery.data ?? [];
   // Resolved once from the first load so tabs never jump while a task finishes.
@@ -565,8 +603,6 @@ export function Jobs() {
     },
   });
   const selectedJob = detailQuery.data?.job ?? selectedListJob;
-  const selectedActive = selectedJob !== undefined && isActive(selectedJob);
-  const now = useNow(1000, selectedActive);
   const updateUrl = (updates: { filter?: JobFilter; job?: number | null }, replace = false) => {
     setSearchParams((previous) => {
       const next = new URLSearchParams(previous);
@@ -626,23 +662,25 @@ export function Jobs() {
   }, [inspector, selectedId, clearTarget]);
 
   const types = React.useMemo(() => Array.from(new Set(jobs.map((job) => job.type))).sort(), [jobs]);
-  const query = search.trim().toLowerCase();
+  // Typing stays responsive: the list filters against the deferred value, and
+  // each job's search text is built once per jobs update, not per keystroke.
+  const deferredSearch = React.useDeferredValue(search);
+  const query = deferredSearch.trim().toLowerCase();
   const searchActive = query !== '' || type !== 'all';
+  const haystacks = React.useMemo(() => new Map(jobs.map((job) => [job.id, `${job.id} ${jobLabel(job.type, job.payload)} ${job.type} ${jobTarget(job)} ${job.context?.series.map((series) => series.name).join(' ') ?? ''} ${job.context?.libraryName ?? ''} ${JOB_PURPOSE[job.type] ?? ''} ${jobOutcome(job)} ${job.errorMessage ?? ''} ${readableValue(job.result)}`.toLowerCase()])), [jobs]);
   const sorted = React.useMemo(() => jobs.filter((job) => {
-    return matchesFilter(job, filter) && (type === 'all' || job.type === type) && (!query || `${job.id} ${jobLabel(job.type, job.payload)} ${job.type} ${jobTarget(job)} ${job.context?.series.map((series) => series.name).join(' ') ?? ''} ${job.context?.libraryName ?? ''} ${JOB_PURPOSE[job.type] ?? ''} ${jobOutcome(job)} ${job.errorMessage ?? ''} ${readableValue(job.result)}`.toLowerCase().includes(query));
+    return matchesFilter(job, filter) && (type === 'all' || job.type === type) && (!query || (haystacks.get(job.id) ?? '').includes(query));
   }).sort((a, b) => {
     const priority = (job: Job) => job.status === 'running' ? 0 : job.status === 'queued' ? 1 : needsAttention(job) ? 2 : 3;
     return priority(a) - priority(b) || b.id - a.id;
-  }), [jobs, filter, type, query]);
+  }), [jobs, filter, type, query, haystacks]);
   // While the pointer is over the list, rows keep their place instead of re-sorting under it.
   const frozen = hovering ? frozenOrder.current : null;
-  const visibleJobs = React.useMemo(() => (frozen
-    ? [...sorted].sort((a, b) => {
-      const ia = frozen.indexOf(a.id);
-      const ib = frozen.indexOf(b.id);
-      return (ia < 0 ? Infinity : ia) - (ib < 0 ? Infinity : ib) || b.id - a.id;
-    })
-    : sorted), [sorted, frozen]);
+  const visibleJobs = React.useMemo(() => {
+    if (!frozen) return sorted;
+    const position = new Map(frozen.map((id, index) => [id, index]));
+    return [...sorted].sort((a, b) => (position.get(a.id) ?? Infinity) - (position.get(b.id) ?? Infinity) || b.id - a.id);
+  }, [sorted, frozen]);
   const { statusCounts, failedCount, warningCount } = React.useMemo(() => {
     let activeCount = 0;
     let attentionCount = 0;
@@ -670,6 +708,16 @@ export function Jobs() {
   const stopConfirm = (job: Job) => stopConfirmId === job.id && isActive(job) && (
     <StopConfirm job={job} pending={cancelMutation.isPending && cancelMutation.variables === job.id} onKeep={() => setStopConfirmId(null)} onStop={() => cancelMutation.mutate(job.id)} />
   );
+  // Rows are memoized, so their callbacks must be stable; they read the latest render through a ref.
+  const latestRowHandlers = React.useRef({ openJob, retry: (id: number) => retryMutation.mutate(id), stop: (id: number) => cancelMutation.mutate(id) });
+  React.useLayoutEffect(() => { latestRowHandlers.current = { openJob, retry: (id: number) => retryMutation.mutate(id), stop: (id: number) => cancelMutation.mutate(id) }; });
+  const rowActions = React.useMemo<JobRowActions>(() => ({
+    open: (id) => latestRowHandlers.current.openJob(id),
+    retry: (id) => latestRowHandlers.current.retry(id),
+    requestStop: (id) => setStopConfirmId(id),
+    keep: () => setStopConfirmId(null),
+    stop: (id) => latestRowHandlers.current.stop(id),
+  }), []);
   const onListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     const current = (event.target as HTMLElement).closest<HTMLElement>('[data-task-open]');
@@ -680,38 +728,6 @@ export function Jobs() {
     event.preventDefault();
     next.focus();
     if (inspector && selectedId !== null) openJob(Number(next.dataset.taskOpen), true);
-  };
-
-  const row = (job: Job) => {
-    const summary = jobSummary(job);
-    const selected = job.id === selectedId;
-    const retry = job.status === 'failed' ? retryFor(job) : undefined;
-    return (
-      <article
-        key={job.id}
-        className={cn('grid min-w-0 cursor-pointer grid-cols-[2rem_minmax(0,1fr)] gap-x-3 gap-y-2 px-3 py-3 transition-colors duration-150 sm:grid-cols-[2.5rem_minmax(0,1fr)_auto] sm:gap-y-0 sm:px-4', stopConfirmId === job.id ? 'sm:items-start' : 'sm:items-center', selected ? 'bg-primary/10 ring-1 ring-inset ring-primary/50' : job.status === 'failed' ? 'bg-danger/5 hover:bg-danger/10' : 'hover:bg-surface-2/50')}
-        onClick={(event) => { if (!(event.target as HTMLElement).closest('button, a, input, select, summary')) openJob(job.id); }}
-      >
-        <JobCover job={job} />
-        <div className="min-w-0">
-          <h2 className="text-sm leading-snug [overflow-wrap:anywhere]">
-            <button type="button" id={`task-open-${job.id}`} data-task-open={job.id} aria-current={selected ? 'true' : undefined} aria-label={`View details for task #${job.id}: ${jobTarget(job)}`} onClick={() => openJob(job.id)} className="rounded text-left font-semibold underline-offset-4 hover:underline">{jobLabel(job.type, job.payload)}</button>{' '}
-            <span className="text-muted">{jobTarget(job)}</span>
-          </h2>
-          {summary && <p className={cn('mt-0.5 text-sm', job.status === 'failed' ? 'line-clamp-2 text-danger' : 'text-muted')} title={job.status === 'failed' ? job.errorMessage ?? undefined : undefined}>{summary}</p>}
-          {job.status === 'running' && <div className="mt-2 flex items-center gap-2"><ProgressBar value={job.progressCurrent} max={job.progressTotal} active label={`Progress for ${jobTarget(job)}`} className="h-1.5 max-w-xs" />{job.progressTotal > 0 && <span className="shrink-0 text-xs tabular-nums text-muted">{job.progressCurrent} / {job.progressTotal}</span>}</div>}
-          {stopConfirm(job)}
-        </div>
-        <div className="col-start-2 flex min-w-0 items-center justify-between gap-3 sm:col-start-auto sm:justify-end">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 sm:min-w-24 sm:flex-col sm:items-end sm:gap-y-0.5">
-            <RowStatus job={job} />
-            <time className="text-xs tabular-nums text-muted" dateTime={toIsoUtc(job.createdAt)} title={`${timestamp(job.createdAt)}${job.startedAt ? ` · ${duration(job)}` : ''}`}>{timeAgo(job.createdAt)}</time>
-          </div>
-          {retry && <Button className={controlClass} size="sm" variant="outline" disabled={retry.disabled || retry.pending} onClick={retry.onClick}>{retry.pending ? <Spinner /> : <RotateCcw className="h-4 w-4" />}{retry.pending ? 'Retrying…' : 'Retry'}</Button>}
-          {isActive(job) && stopConfirmId !== job.id && <Button className={cn(controlClass, 'hover:bg-danger/10 hover:text-danger')} size="sm" variant="ghost" aria-label={`Stop task #${job.id}: ${jobTarget(job)}`} onClick={() => setStopConfirmId(job.id)}>Stop</Button>}
-        </div>
-      </article>
-    );
   };
 
   const renderDetails = (mode: PanelMode) => {
@@ -735,7 +751,7 @@ export function Jobs() {
           {job && <>
             {active ? <>
               {stopConfirm(job)}
-              <RunningFacts job={job} now={now} />
+              <RunningFacts job={job} />
               <p className="text-sm text-muted">{JOB_PURPOSE[job.type] ?? jobOutcome(job)}.</p>
             </> : failed ? <>
               <FailureCard job={job} retry={retryFor(job)} />
@@ -763,7 +779,7 @@ export function Jobs() {
               <span>Remove this failed task and its logs from history.</span>
               <Button variant="ghost" size="sm" className={controlClass} disabled={retryMutation.isPending || clearMutation.isPending} onClick={() => setClearTarget(job.id)}><Trash2 className="h-4 w-4" /> Remove from history</Button>
             </> : <>
-              <span aria-live="off">{detailQuery.dataUpdatedAt ? `Updated ${Math.max(0, Math.floor((now - detailQuery.dataUpdatedAt) / 1000)) < 2 ? 'just now' : `${Math.floor((now - detailQuery.dataUpdatedAt) / 1000)}s ago`}` : 'Updating…'}</span>
+              <UpdatedAgo updatedAt={detailQuery.dataUpdatedAt} />
               {stopConfirmId !== job.id && <Button variant="ghost" size="sm" className={cn(controlClass, 'hover:bg-danger/10 hover:text-danger')} onClick={() => setStopConfirmId(job.id)}>Stop task</Button>}
             </>}
           </div>
@@ -807,7 +823,16 @@ export function Jobs() {
               ? <EmptyState icon={<Search className="h-8 w-8" />} title="No matching tasks" description="Try another search or task type." />
               : <EmptyState icon={filter === 'failed' ? <CheckCircle2 className="h-8 w-8" /> : <ListChecks className="h-8 w-8" />} title={EMPTY_COPY[filter].title} description={EMPTY_COPY[filter].description} />}
               {searchActive && <div className="flex justify-center pb-6"><Button variant="outline" className={controlClass} onClick={() => { setSearch(''); setType('all'); }}>Clear search and type</Button></div>}
-            </div> : visibleJobs.map(row)}
+            </div> : visibleJobs.map((job) => <JobListRow
+              key={job.id}
+              job={job}
+              selected={job.id === selectedId}
+              confirmingStop={stopConfirmId === job.id}
+              stopPending={cancelMutation.isPending && cancelMutation.variables === job.id}
+              retryPending={retryMutation.isPending && retryMutation.variables === job.id}
+              retryDisabled={retryMutation.isPending || clearMutation.isPending}
+              actions={rowActions}
+            />)}
           </CardContent>
         </Card>
         {showInspector && (
@@ -818,7 +843,8 @@ export function Jobs() {
       </div>
       <Dialog open={selectedId !== null && !inspector} onOpenChange={(open) => { if (!open) updateUrl({ job: null }); }}>
         <DialogContent onOpenAutoFocus={(event) => { event.preventDefault(); titleRef.current?.focus({ preventScroll: true }); }} className="!left-auto !right-0 !top-0 !h-dvh !max-h-dvh !w-full !max-w-none !translate-x-0 !translate-y-0 !animate-none !rounded-none border-y-0 border-r-0 sm:!w-full lg:!w-[min(640px,55vw)]">
-          {renderDetails('dialog')}
+          {/* Only build the details tree while the drawer is actually open. */}
+          {selectedId !== null && !inspector && renderDetails('dialog')}
         </DialogContent>
       </Dialog>
       <ConfirmDialog

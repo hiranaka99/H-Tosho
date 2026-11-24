@@ -2,10 +2,10 @@ import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router';
 import { AlertTriangle, ArrowRight, Check, CheckCircle2, Download, Eraser, History, House, Image as ImageIcon, Inbox, Link2, PenLine, RefreshCw, Search, Sparkles, Unlink, X, XCircle, type LucideIcon } from 'lucide-react';
-import { api, type DoujinSearchResult, type MatchSuggestion } from '../lib/api';
+import { api, type DoujinSearchResult, type DownloadTask, type MatchSuggestion } from '../lib/api';
 import { cn, PROVIDER_NAMES, sourceDisplayName, timeAgo, toIsoUtc } from '../lib/utils';
 import { toast } from '../lib/toast';
-import { useDownloadTasks, useGalleryDownloadTask } from '../lib/DownloadsContext';
+import { useDownloadsSelector, useGalleryDownloadStatus } from '../lib/DownloadsContext';
 import { Badge, Button, EmptyState, ErrorState, PageHeader, Pager, ProgressBar, Skeleton, Spinner } from '../components/ui';
 import { Cover, GalleryCard, OwnershipChip } from './downloader/GalleryCard';
 import type { DownloadSetup } from './downloader/state';
@@ -68,15 +68,25 @@ function CandidateReview({ item, onClose }: { item: MatchSuggestion; onClose: ()
     onRetryCurrent={() => { void current.refetch(); }} match={current.data?.match ?? null} currentCover={item.cover} onClose={onClose} />;
 }
 
+const NO_DOWNLOAD_COUNTS = { active: 0, failed: 0 };
+/** Header chip counts; numbers are structurally shared, so progress ticks never re-render Home. */
+function selectHomeDownloadCounts(tasks: DownloadTask[]) {
+  return {
+    active: tasks.filter(task => task.status === 'downloading' || task.status === 'queued').length,
+    failed: tasks.filter(task => task.status === 'failed' && !task.retryAt).length,
+  };
+}
+
 /** One Following find: the same download, ownership and dismiss decisions as a Discover card, in a list row. */
 function FollowingRow({ item, label, ownership, starting, reviewing, setupStatus, onOpen, onDownload, onDismiss }: {
   item: DoujinSearchResult; label?: string; ownership: GalleryOwnership; starting: boolean; reviewing: boolean; setupStatus: DownloadSetup['status'];
   onOpen: (item: DoujinSearchResult) => void; onDownload: (item: DoujinSearchResult) => void; onDismiss: (item: DoujinSearchResult) => void;
 }) {
-  const task = useGalleryDownloadTask(item.source, item.galleryId);
-  const active = starting || !!task;
+  // Coarse status only, so the row never re-renders on byte/speed ticks.
+  const taskStatus = useGalleryDownloadStatus(item.source, item.galleryId);
+  const active = starting || !!taskStatus;
   const inLibrary = ownership.type === 'in-library', owned = inLibrary || ownership.type === 'downloaded', possible = ownership.type === 'possible-duplicate';
-  const actionLabel = task?.state?.type === 'retry-wait' ? 'Retry scheduled' : task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : starting && !task ? 'Checking…' : active ? 'Downloading'
+  const actionLabel = taskStatus === 'retry-wait' ? 'Retry scheduled' : taskStatus === 'queued' ? 'Queued' : taskStatus === 'paused' ? 'Paused' : starting && !taskStatus ? 'Checking…' : active ? 'Downloading'
     : inLibrary ? 'In library' : owned ? 'Downloaded' : possible ? 'Review duplicate' : setupStatus === 'missing' ? 'Set folder' : 'Download';
   return <li className="flex min-w-0 gap-3 py-4">
     <button type="button" onClick={() => onOpen(item)} className="h-20 w-14 shrink-0 self-start overflow-hidden rounded-md" tabIndex={-1} aria-hidden="true"><Cover url={item.coverUrl} title={item.title} className="h-full w-full" /></button>
@@ -98,7 +108,7 @@ export function Home() {
   const qc = useQueryClient(), navigate = useNavigate();
   const { recs, recsLoading, recsFailed, recsError, refetchRecs, recsRefreshing, doRefreshRecs, visibleRecs, ownedKeys } = useRecommendations('search');
   const { setup, pendingKeys, doStartDownload, duplicateDialog } = useGalleryDownload();
-  const { tasks: downloadTasks, active: activeDownloads } = useDownloadTasks();
+  const { active: activeDownloads, failed: failedDownloads } = useDownloadsSelector(selectHomeDownloadCounts) ?? NO_DOWNLOAD_COUNTS;
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
   const [review, setReview] = React.useState<MatchSuggestion | null>(null);
   const [openedIds, setOpenedIds] = React.useState(new Set<number>());
@@ -172,7 +182,6 @@ export function Home() {
     matches.data?.configured && matchItems.length > 0 && { id: 'home-matches', label: `${matchItems.length} ${matchItems.length === 1 ? 'match' : 'matches'} to review` },
     inboxCount > 0 && { id: 'home-inbox', label: `${inboxCount} new in Following` },
   ].filter(Boolean) as { id: string; label: string }[];
-  const failedDownloads = downloadTasks.filter(task => task.status === 'failed' && !task.retryAt).length;
   const kavitaMissing = matches.data?.configured === false;
   const caughtUp = !!matches.data?.configured && !feed.isPending && !feed.isError && !matchItems.length && !discoveryItems.length && !scanning && !scanFailed && !scanStale && !scanPartial;
   const chipClass = 'inline-flex min-h-9 items-center gap-1.5 rounded-full border bg-surface px-3 text-sm font-medium transition-colors hover:bg-surface-2 max-lg:min-h-11 pointer-coarse:min-h-11';
@@ -188,8 +197,8 @@ export function Home() {
   return <div className="flex min-w-0 flex-col gap-8">
     <PageHeader icon={<House className="h-5 w-5" />} title="Home">
       {waiting.length > 0 && <nav aria-label="Waiting for you" className="flex flex-wrap gap-2">{waiting.map(item => <a key={item.id} href={`#${item.id}`} onClick={event => { event.preventDefault(); jumpTo(item.id); }} className={cn(chipClass, 'border-border-2 lg:sr-only lg:focus:not-sr-only')}>{item.label}</a>)}</nav>}
-      {(activeDownloads.length > 0 || failedDownloads > 0) && <nav aria-label="Downloads" className="flex flex-wrap gap-2">
-        {activeDownloads.length > 0 && <Link to="/downloader?tab=downloads" className={cn(chipClass, 'border-border-2')}><Spinner />{activeDownloads.length} downloading</Link>}
+      {(activeDownloads > 0 || failedDownloads > 0) && <nav aria-label="Downloads" className="flex flex-wrap gap-2">
+        {activeDownloads > 0 && <Link to="/downloader?tab=downloads" className={cn(chipClass, 'border-border-2')}><Spinner />{activeDownloads} downloading</Link>}
         {failedDownloads > 0 && <Link to="/downloader?tab=downloads" className={cn(chipClass, 'border-danger/50 text-danger')}><AlertTriangle aria-hidden="true" className="h-3.5 w-3.5" />{failedDownloads} failed {failedDownloads === 1 ? 'download' : 'downloads'}</Link>}
       </nav>}
     </PageHeader>

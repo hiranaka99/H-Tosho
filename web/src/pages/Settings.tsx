@@ -3,7 +3,9 @@ import { useLocation, useSearchParams } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { GripVertical, Plug, FolderTree, ListOrdered, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, AlertTriangle, Loader2, Download, X, Plus, ArrowUp, ArrowDown, LockKeyhole, Monitor, Moon, Sun, Palette, KeyRound, Key, RotateCcw, Save } from 'lucide-react';
 import { api, ApiError, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type LibraryPathMapping, type EhentaiSite, type EhentaiSessionInput, type EhentaiSiteAccess } from '../lib/api';
-import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Switch, Badge, PageHeader, ErrorState, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, ConfirmDialog } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Badge, PageHeader, ErrorState, SegmentedTabs, SegmentedControl, TabPanel, Disclosure } from '../components/ui';
+import { Switch } from '../components/switch';
+import { ConfirmDialog } from '../components/dialog';
 import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { useAuth } from '../lib/AuthContext';
@@ -237,10 +239,11 @@ function AccountSettingsCard() {
   const auth = useAuth();
   const { touched, onBlur } = useFieldTouched();
   const revealed = useRevealed('account');
+  const accountSource = React.useMemo(() => ({ currentPassword: '', username: auth.username ?? '', password: '', confirmPassword: '' }), [auth.username]);
   const account = useSettingsDraft({
     id: 'account', label: 'Account security',
-    initial: { currentPassword: '', username: auth.username ?? '', password: '', confirmPassword: '' },
-    source: { currentPassword: '', username: auth.username ?? '', password: '', confirmPassword: '' },
+    initial: accountSource,
+    source: accountSource,
     valid: (value) => Boolean(value.currentPassword && value.username.trim() && value.username.length <= 100 && value.password.length >= 8 && value.password === value.confirmPassword),
     save: async (value) => {
       await api.changeCredentials(value.currentPassword, value.username, value.password);
@@ -279,9 +282,11 @@ function KavitaConnectionCard() {
   const qc = useQueryClient();
   const kavita = useQuery({ queryKey: ['kavita-status'], queryFn: api.kavitaStatus });
   const [notice, setNotice] = React.useState<Notice | null>(null);
+  const savedBaseUrl = kavita.data ? kavita.data.baseUrl ?? '' : undefined;
+  const connectionSource = React.useMemo(() => (savedBaseUrl === undefined ? undefined : { baseUrl: savedBaseUrl, apiKey: '' }), [savedBaseUrl]);
   const connection = useSettingsDraft({
     id: 'connection', label: 'Kavita connection', initial: { baseUrl: '', apiKey: '' },
-    source: kavita.data ? { baseUrl: kavita.data.baseUrl ?? '', apiKey: '' } : undefined,
+    source: connectionSource,
     valid: (value) => !httpUrlError(value.baseUrl) && Boolean(value.apiKey.trim() || kavita.data?.hasApiKey),
     save: async (value) => {
       const result = await api.saveConnection(value);
@@ -378,8 +383,9 @@ function KavitaLibraryFoldersCard({ connected }: { connected: boolean }) {
   const libs = useQuery({ queryKey: ['libraries'], queryFn: api.libraries, enabled: connected });
   const dl = useQuery({ queryKey: ['downloader-settings'], queryFn: api.downloaderSettings });
   const revealed = useRevealed('library-folders');
+  const foldersSource = React.useMemo(() => dl.data?.libraryPathMappings ?? (dl.data ? [] : undefined), [dl.data]);
   const folders = useSettingsDraft<LibraryPathMapping[]>({
-    id: 'library-folders', label: 'Kavita library folders', initial: [], source: dl.data?.libraryPathMappings ?? (dl.data ? [] : undefined),
+    id: 'library-folders', label: 'Kavita library folders', initial: [], source: foldersSource,
     valid: (value) => value.every((mapping) => !folderError(mapping.kavitaPath) && !folderError(mapping.localPath)),
     save: async (value) => {
       const { libraryPathMappings } = await api.saveLibraryPathMappings(value);
@@ -532,8 +538,9 @@ function ProviderRow({ provider, index, count, onMove, toggling, onToggle, dragP
   const { touched, onBlur } = useFieldTouched();
   const draftId = `provider:${provider.id}`;
   const revealed = useRevealed(draftId);
+  const credentialsSource = React.useMemo(() => provider.credentials ?? {}, [provider.credentials]);
   const credentials = useSettingsDraft<Record<string, string>>({
-    id: draftId, label: `${provider.name} credentials`, initial: {}, source: provider.credentials ?? {},
+    id: draftId, label: `${provider.name} credentials`, initial: {}, source: credentialsSource,
     valid: (value) => !provider.requiresCredentials || provider.credentialFields.every(field => Boolean(value[field.key]?.trim())),
     save: async (value) => { await api.saveProvider(provider.id, { credentials: value }); void qc.invalidateQueries({ queryKey: ['providers'] }); },
   });
@@ -543,7 +550,7 @@ function ProviderRow({ provider, index, count, onMove, toggling, onToggle, dragP
   React.useEffect(() => { if (revealed && !credentials.valid) setOpen(true); }, [revealed, credentials.valid]);
   const [testMsg, setTestMsg] = React.useState<{ ok: boolean; error?: string } | null>(null);
   const test = useMutation({ mutationFn: () => api.testProvider(provider.id), onSuccess: (r) => setTestMsg(r), onError: (error) => setTestMsg({ ok: false, error: `Could not run the test. ${sentence(error instanceof Error ? error.message : String(error))} Try again.` }) });
-  const credentialsKey = JSON.stringify(creds);
+  const credentialsKey = React.useMemo(() => JSON.stringify(creds), [creds]);
   React.useEffect(() => setTestMsg(null), [credentialsKey, provider.enabled]);
   const hasFields = provider.credentialFields.length > 0;
   const testBlocked = credentials.dirty ? 'Save changes first to test the new credentials.' : needsSaved ? 'Add and save credentials first.' : '';
@@ -1026,6 +1033,11 @@ export function Settings() {
   const requestedTab = searchParams.get('tab') ?? '';
   const legacyTab = LEGACY_TABS[requestedTab];
   const tab: SettingsTab = legacyTab ?? (SETTINGS_TABS.some(item => item.id === requestedTab) ? requestedTab as SettingsTab : 'kavita');
+  // Tabs mount on first visit and then stay mounted: a section's draft can only
+  // be saved by the page save bar while that section is mounted.
+  const [visitedTabs, setVisitedTabs] = React.useState<ReadonlySet<SettingsTab>>(() => new Set([tab]));
+  React.useEffect(() => { setVisitedTabs((current) => (current.has(tab) ? current : new Set([...current, tab]))); }, [tab]);
+  const mounted = (id: SettingsTab) => id === tab || visitedTabs.has(id);
   const setTab = React.useCallback((next: SettingsTab) => setSearchParams(previous => { const params = new URLSearchParams(previous); params.set('tab', next); return params; }), [setSearchParams]);
   React.useEffect(() => {
     if (legacyTab) setSearchParams(previous => { const params = new URLSearchParams(previous); params.set('tab', legacyTab); return params; }, { replace: true });
@@ -1075,26 +1087,26 @@ export function Settings() {
         <SegmentedTabs items={SETTINGS_TABS.map(item => ({ ...item, dirty: dirtyIds.some(id => draftLocation(id).tab === item.id) }))} value={tab} onChange={setTab} label="Settings sections" panelId="settings-panel" className="sticky top-0 z-10 self-start bg-background" />
 
         <TabPanel value={tab} tabOrder={SETTINGS_TAB_ORDER} id="settings-panel" role="tabpanel" aria-labelledby={`settings-panel-tab-${tab}`}>
-          <div hidden={tab !== 'kavita'} className="flex flex-col gap-4">
+          {mounted('kavita') && <div hidden={tab !== 'kavita'} className="flex flex-col gap-4">
             <KavitaConnectionCard />
             <KavitaLibraryFoldersCard connected={kavitaConnected} />
             <AutoScanCard hours={s.pollIntervalHours} />
-          </div>
-          <div hidden={tab !== 'sources'} className="flex flex-col gap-4">
+          </div>}
+          {mounted('sources') && <div hidden={tab !== 'sources'} className="flex flex-col gap-4">
             <MetadataProvidersCard savedOrder={s.priorities} />
             <EhentaiAccountCard />
             <NhentaiCard />
-          </div>
-          <div hidden={tab !== 'downloads'} className="flex flex-col gap-4">
+          </div>}
+          {mounted('downloads') && <div hidden={tab !== 'downloads'} className="flex flex-col gap-4">
             <DownloaderSettingsCard />
-          </div>
-          <div hidden={tab !== 'notifications'} className="flex flex-col gap-4">
+          </div>}
+          {mounted('notifications') && <div hidden={tab !== 'notifications'} className="flex flex-col gap-4">
             <NotificationsCard saved={s.notifications} refetch={settings.refetch} />
-          </div>
-          <div hidden={tab !== 'account'} className="flex flex-col gap-4">
+          </div>}
+          {mounted('account') && <div hidden={tab !== 'account'} className="flex flex-col gap-4">
             <AppearanceCard />
             <AccountSettingsCard />
-          </div>
+          </div>}
         </TabPanel>
         <SettingsSaveBar onShow={showSections} />
       </div>

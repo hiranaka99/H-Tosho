@@ -4,9 +4,10 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router';
 import { Loader2, Download as DownloadIcon, RotateCcw, CheckCircle2, Languages, X, ExternalLink, BookOpen, Users, Layers, Star, Tags } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSearchResult } from '../../lib/api';
-import { useGalleryDownloadTask } from '../../lib/DownloadsContext';
+import { useGalleryDownloadStatus } from '../../lib/DownloadsContext';
 import { buildTagSearchFragment, cn } from '../../lib/utils';
-import { Button, Badge, Spinner, Dialog, DialogContent, DialogTitle } from '../../components/ui';
+import { Button, Badge, Spinner } from '../../components/ui';
+import { Dialog, DialogContent, DialogTitle } from '../../components/dialog';
 import { PagePreview } from '../../components/PagePreview';
 
 import { SOURCE_LABELS, type DownloadSetup } from './state';
@@ -66,7 +67,7 @@ function MetaItem({ label, value }: { label: string; value?: string | number | n
 }
 
 export function GalleryDetailModal({ item, onClose, onDownload, checking, downloaded, inLibrary, setup, onSearchTag, searchAcrossSources = false, variants, selectedVariantKey, onSelectVariant }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; checking: boolean; downloaded: boolean; inLibrary: boolean; setup: DownloadSetup; onSearchTag: (fragment: string, source?: DoujinSource | 'all') => void; /** Opened from All sources: shared filters search every source again. */ searchAcrossSources?: boolean; variants?: { item: DoujinSearchResult; position?: number }[]; selectedVariantKey?: string; onSelectVariant?: (item: DoujinSearchResult) => void }) {
-  const downloading = !!useGalleryDownloadTask(item.source, item.galleryId);
+  const downloading = !!useGalleryDownloadStatus(item.source, item.galleryId);
   const { data: gallery, isPending, isFetching, isError, error, refetch } = useQuery({
     queryKey: ['doujin-gallery', item.source, item.galleryId],
     queryFn: () => api.doujinGallery(item.source, item.galleryId),

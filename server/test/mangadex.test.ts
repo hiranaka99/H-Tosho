@@ -631,3 +631,38 @@ describe('MangaDexProvider description tag merging', () => {
     assert.deepEqual(meta.tags, ['Loli', 'Magic', 'Harem', 'Isekai', 'Doujinshi', 'Fantasy']);
   });
 });
+
+describe('MangaDexProvider inlined cover_art', () => {
+  it('uses cover_art fileNames from search and detail relationships without /cover round-trips', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.startsWith('https://api.mangadex.org/manga?')) {
+        return Response.json({ result: 'ok', data: [{ id: 'manga-9', attributes: { title: { en: 'Inline' } }, relationships: [{ id: 'cover-9', type: 'cover_art', attributes: { fileName: 'inline.jpg' } }] }] });
+      }
+      if (url.startsWith('https://api.mangadex.org/manga/manga-9?')) {
+        return Response.json({ result: 'ok', data: { id: 'manga-9', attributes: { title: { en: 'Inline' } }, relationships: [{ id: 'cover-9', type: 'cover_art', attributes: { fileName: 'inline.jpg' } }] } });
+      }
+      if (url.startsWith('https://api.mangadex.org/cover?manga%5B%5D=manga-9&limit=100&offset=')) {
+        return Response.json({ result: 'ok', data: [] }); // volume covers only
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+    const [result] = await mangaDexProvider.search('inline');
+    assert.equal(result.coverUrl, 'https://uploads.mangadex.org/covers/manga-9/inline.jpg');
+    assert.ok(new URL(urls[0]).searchParams.getAll('includes[]').includes('cover_art'));
+    const meta = await mangaDexProvider.getSeriesMetadata('manga-9');
+    assert.equal(meta.coverUrl, 'https://uploads.mangadex.org/covers/manga-9/inline.jpg');
+    const detail = urls.find((url) => url.startsWith('https://api.mangadex.org/manga/manga-9?'))!;
+    assert.ok(new URL(detail).searchParams.getAll('includes[]').includes('cover_art'));
+    assert.ok(!urls.some((url) => url.startsWith('https://api.mangadex.org/cover/')), 'no per-id cover lookup');
+  });
+
+  it('honors an aborted signal', async () => {
+    globalThis.fetch = async () => { throw new Error('fetch must not run'); };
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(mangaDexProvider.search('anything', undefined, controller.signal));
+  });
+});

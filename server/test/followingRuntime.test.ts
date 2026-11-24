@@ -431,3 +431,30 @@ test('legacy last-results replay preserves shared gallery review and the origina
   assert.equal(listGalleryFeed({ searchId: legacyWatch.id, view: 'inbox' }).total, 0);
   assert.equal(backfillNewGalleries(), 0);
 });
+
+test('providers check as concurrent lanes while each provider stays serial', async t => {
+  const originalNhentai = doujinProviders.nhentai;
+  t.after(() => { doujinProviders.nhentai = originalNhentai; });
+  const first = addWatchedSearch('hitomi', 'artist:lane-one');
+  const second = addWatchedSearch('hitomi', 'artist:lane-two');
+  const nh = addWatchedSearch('nhentai', 'artist:lane-nh');
+  const gate = Promise.withResolvers<DoujinSearchResult[]>();
+  const order: string[] = [];
+  respond = async query => {
+    order.push(query);
+    return query === first.query ? gate.promise : [];
+  };
+  doujinProviders.nhentai = {
+    id: 'nhentai', name: 'nhentai', color: '#000',
+    async getGallery() { throw new Error('Following must not hydrate or download galleries'); },
+    async search(query) {
+      order.push(query);
+      // The nHentai lane runs while Hitomi's first search is still pending.
+      gate.resolve([]);
+      return [];
+    },
+  };
+  const result = await checkWatchedSearches(log, undefined, undefined, { watchIds: [first.id, second.id, nh.id] });
+  assert.equal(result.checked, 3);
+  assert.deepEqual(order, [first.query, nh.query, second.query]);
+});

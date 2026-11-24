@@ -4,7 +4,7 @@ import { api, type DownloadTask, type DoujinSource } from './api';
 import { useDownloadEvents } from './useDownloadEvents';
 import { toast } from './toast';
 import { downloadErrorHelp } from './downloadErrors';
-import { mergeDownloadPoll } from './downloadPoll';
+import { mergeDownloadSnapshot } from './downloadEventBuffer';
 import { SOURCE_LABELS } from '../pages/downloader/state';
 import { DownloadActionsContext as ActionsCtx, DownloadTasksContext as TasksCtx, GalleryStatusContext as GalleryStatusCtx } from './appContexts';
 
@@ -24,10 +24,10 @@ export interface StartDownloadInput {
 
 type StartResult = { id: number; status: string };
 
-/** Stable surface: mutations + connection state. Changes rarely, so components
- * that only *start* downloads don't re-render on every progress tick. */
+/** Stable surface: mutations only. Never changes after mount, so components
+ * that only *start* downloads (and memoized gallery cards) don't re-render on
+ * progress ticks or SSE reconnects. */
 export interface DownloadActionsApi {
-  liveConnected: boolean;
   startDownload: (input: StartDownloadInput) => Promise<StartResult>;
   pause: (id: number) => void;
   resume: (id: number) => void;
@@ -59,9 +59,7 @@ export interface DownloadsApi extends DownloadActionsApi, DownloadTasksApi {}
 function downloadsQueryFn(qc: QueryClient) {
   return async () => {
     const fresh = await api.downloads();
-    const prev = qc.getQueryData<DownloadTask[]>(['downloads']);
-    if (!prev) return fresh;
-    return mergeDownloadPoll(prev, fresh);
+    return mergeDownloadSnapshot(qc.getQueryData<DownloadTask[]>(['downloads']), fresh);
   };
 }
 
@@ -117,16 +115,21 @@ function createGalleryStatusStore(): GalleryStatusStore {
  */
 export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   const qc = useQueryClient();
-  const liveConnected = useDownloadEvents();
+  const stream = useDownloadEvents();
+  const liveConnected = stream === 'live';
+  // Mutation callbacks read this ref so they stay stable across reconnects.
+  const liveRef = React.useRef(liveConnected);
+  liveRef.current = liveConnected;
   const [statusStore] = React.useState(createGalleryStatusStore);
   const queryFn = React.useMemo(() => downloadsQueryFn(qc), [qc]);
 
-  // Polling is a lightweight fallback for when the SSE stream is down; while
-  // the stream is connected it already folds every snapshot/task event into
-  // this same cache, so a concurrent poll would only double the traffic.
+  // The SSE stream opens with a full snapshot and then folds every task change
+  // into this cache, so REST is only the fallback: no initial GET while the
+  // stream is connecting, and polling only while it is down.
   const downloadsQuery = useQuery({
     queryKey: ['downloads'],
     queryFn,
+    enabled: stream !== 'connecting',
     refetchInterval: liveConnected ? false : 5000,
   });
   const data = downloadsQuery.data;
@@ -137,7 +140,9 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
     [tasks],
   );
 
-  const invalidate = React.useCallback(() => qc.invalidateQueries({ queryKey: ['downloads'] }), [qc]);
+  // Every queue mutation is broadcast on the stream, so refetching the list
+  // after one is only needed while the stream is down.
+  const invalidate = React.useCallback(() => liveRef.current ? Promise.resolve() : qc.invalidateQueries({ queryKey: ['downloads'] }), [qc]);
   const invalidateCompleted = React.useCallback(() => qc.invalidateQueries({ queryKey: ['downloads-completed'] }), [qc]);
 
   const mutationError = (title: string) => (error: unknown) => toast({ tone: 'danger', title, description: error instanceof Error ? error.message : String(error) });
@@ -233,8 +238,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
     }
   }, [tasks, qc]);
 
-  // mutate/mutateAsync are stable references, so this value only changes when
-  // the SSE connection state flips.
+  // mutate/mutateAsync are stable references, so this value never changes.
   const { mutateAsync: startMutate } = start;
   const { mutate: actionMutate } = action;
   const { mutate: prioritizeMutate } = prioritize;
@@ -246,7 +250,6 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   const { mutate: clearCancelledMutate } = clearCancelled;
   const actionsValue = React.useMemo<DownloadActionsApi>(
     () => ({
-      liveConnected,
       startDownload: (input) => startMutate(input),
       pause: (id) => actionMutate({ id, op: 'pause' }),
       resume: (id) => actionMutate({ id, op: 'resume' }),
@@ -260,7 +263,7 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
       clearCompleted: () => clearMutate(),
       clearCancelled: () => clearCancelledMutate(),
     }),
-    [liveConnected, startMutate, actionMutate, prioritizeMutate, pauseAllMutate, resumeAllMutate, retryFailedMutate, removeMutate, clearMutate, clearCancelledMutate],
+    [startMutate, actionMutate, prioritizeMutate, pauseAllMutate, resumeAllMutate, retryFailedMutate, removeMutate, clearMutate, clearCancelledMutate],
   );
 
   const tasksValue = React.useMemo<DownloadTasksApi>(
@@ -333,12 +336,24 @@ export function isActiveDownload(task: DownloadTask): boolean {
   return task.status === 'downloading' || task.status === 'queued' || task.state?.type === 'retry-wait';
 }
 
+/**
+ * Targeted read of the task list: the component re-renders only when the
+ * selected value changes (react-query structurally shares `select` output),
+ * not on every progress tick. Keep `select` referentially stable
+ * (module-level or useCallback). Returns undefined until the first list arrives.
+ */
+export function useDownloadsSelector<T>(select: (tasks: DownloadTask[]) => T): T | undefined {
+  const qc = useQueryClient();
+  const queryFn = React.useMemo(() => downloadsQueryFn(qc), [qc]);
+  return useQuery({ queryKey: ['downloads'], queryFn, enabled: false, select }).data;
+}
+
+const selectDownloadSummary = (tasks: DownloadTask[]) => ({
+  active: tasks.filter(isActiveDownload).length,
+  failed: tasks.filter(needsAttention).length,
+});
+
 /** Two counts for tab labels; the selected numbers are stable, so progress ticks never re-render. */
 export function useDownloadSummary(): { active: number; failed: number } {
-  const select = React.useCallback((tasks: DownloadTask[]) => ({
-    active: tasks.filter(isActiveDownload).length,
-    failed: tasks.filter(needsAttention).length,
-  }), []);
-  const qc = useQueryClient();
-  return useQuery({ queryKey: ['downloads'], queryFn: downloadsQueryFn(qc), enabled: false, select }).data ?? { active: 0, failed: 0 };
+  return useDownloadsSelector(selectDownloadSummary) ?? { active: 0, failed: 0 };
 }

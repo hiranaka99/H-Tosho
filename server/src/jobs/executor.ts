@@ -1,6 +1,6 @@
 import { archiveMutations, archiveResource } from '../lib/mutations.js';
 import { inheritFieldPoliciesOwned } from '../services/fieldPolicies.js';
-import { resolveMergeProtection, requireMergeProtection } from '../services/mergeProtection.js';
+import { resolveMergeProtection, requireMergeProtection, MergeChapterCache } from '../services/mergeProtection.js';
 import { withMetadataHistory, type MetadataJournal } from '../services/metadataHistory.js';
 import { executeMetadataRestore } from '../services/metadataRestore.js';
 import { parseJobCommand, type JobPayloads, type JobExecutionState, type JobType } from '../contracts/jobs.js';
@@ -29,7 +29,7 @@ import { applyResolvedSeriesMatch, applySeriesMatch, type ApplySeriesResult } fr
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { scanMatchSuggestions } from '../services/matchSuggestions.js';
 import { queueDownloadedMatchDiscovery, runDownloadedMatchDiscovery } from '../services/downloadDiscovery.js';
-import { notify, formatPushedFields, providerName } from '../notify/dispatcher.js';
+import { notifyInBackground, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
 import { listCbzFiles, mapKavitaPathToLocalPath, mergeCbzFiles, pathContains, editComicInfo, readComicInfo, resolveExistingFile, resolveSeriesHostDir, setComicInfoFields, hashArchiveFile } from '../lib/cbz.js';
 import { mapLimit } from '../lib/http.js';
@@ -117,22 +117,19 @@ async function matchAndApply(
     base.coverUrl = meta.coverUrl ?? best.coverUrl;
 
     // Notification failures must not flip an already-applied match to failed —
-    // the metadata push succeeded by the time we get here.
-    try {
-      const name = providerName(best.providerId);
-      await notify({
-        title: result.errors.length ? `Sync failed — ${series.name}` : series.name,
-        description: `${force ? 'Re-synced' : 'Matched'} to ${meta.url ? `[${name}](${meta.url})` : name} · ${Math.round(best.score * 100)}% confidence`,
-        fields: [
-          ...(result.pushed.length ? [{ name: 'Updated', value: formatPushedFields(result.pushed) }] : []),
-          ...(result.errors.length ? [{ name: 'Errors', value: result.errors.join('\n') }] : []),
-        ],
-        coverUrl: meta.coverUrl ?? best.coverUrl,
-        success: result.errors.length === 0,
-      });
-    } catch (e) {
-      log?.('warn', `Notification failed for ${series.name}: ${e instanceof Error ? e.message : String(e)}`);
-    }
+    // the metadata push succeeded by the time we get here. Delivery runs in
+    // the background so a slow webhook never holds this job's library lock.
+    const name = providerName(best.providerId);
+    notifyInBackground({
+      title: result.errors.length ? `Sync failed — ${series.name}` : series.name,
+      description: `${force ? 'Re-synced' : 'Matched'} to ${meta.url ? `[${name}](${meta.url})` : name} · ${Math.round(best.score * 100)}% confidence`,
+      fields: [
+        ...(result.pushed.length ? [{ name: 'Updated', value: formatPushedFields(result.pushed) }] : []),
+        ...(result.errors.length ? [{ name: 'Errors', value: result.errors.join('\n') }] : []),
+      ],
+      coverUrl: meta.coverUrl ?? best.coverUrl,
+      success: result.errors.length === 0,
+    }, (e) => log?.('warn', `Notification failed for ${series.name}: ${e instanceof Error ? e.message : String(e)}`));
     log?.(result.errors.length ? 'warn' : 'success', `${series.name} -> ${best.providerId} (${Math.round(best.score * 100)}%)`);
   } catch (e) {
     if (e instanceof JobCancelled) throw e;
@@ -220,10 +217,23 @@ export function runJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<JobR
   }, signal);
 }
 
+/**
+ * Job types that never write archives or library folders. Every other type can
+ * (title stamping, ComicInfo edits/restores, merges, deletes), so the 5-minute
+ * duplicate scan is dropped before and after those runs instead of on every job.
+ */
+const ARCHIVE_READ_ONLY_JOBS: ReadonlySet<JobType> = new Set<JobType>(['check-watched-searches', 'scan-matchable', 'clear-overrides']);
+
 async function executeJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<JobResult> {
   const command = parseJobCommand(job.type, job.payload);
   const typed = { ...job, type: command.type, payload: { ...job.payload, ...command.payload } } as ExecutableJob;
+  if (ARCHIVE_READ_ONLY_JOBS.has(typed.type)) return executeTypedJob(typed, job, log, signal);
   invalidateDuplicateLibrary();
+  try { return await executeTypedJob(typed, job, log, signal); }
+  finally { invalidateDuplicateLibrary(); }
+}
+
+async function executeTypedJob(typed: ExecutableJob, job: Job, log: LogFn, signal?: AbortSignal): Promise<JobResult> {
   switch (typed.type) {
     case 'scan-downloaded': return runDownloadedMatchDiscovery(typed, log, signal);
     case 'scan-matchable': return scanMatchSuggestions({
@@ -245,7 +255,9 @@ async function executeJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<J
       typed.payload.mergeProtection=current.state;
       jobQueue.updateMergeState(typed.id,{mergeProtection:current.state});
       const targetId=current.state.targetSeriesId;
-      return targetId && client ? withMetadataHistory(client,targetId,'merge-metadata',typed.payload.seriesName ? {title:typed.payload.seriesName} : {},journal=>runMergeSeriesJob(typed,log,signal,journal),typed.id) : runMergeSeriesJob(typed,log,signal);
+      // The review just resolved is handed to the merge so it does not repeat
+      // the same full Kavita resolution; the merge rechecks before any move.
+      return targetId && client ? withMetadataHistory(client,targetId,'merge-metadata',typed.payload.seriesName ? {title:typed.payload.seriesName} : {},journal=>runMergeSeriesJob(typed,log,signal,journal,current),typed.id) : runMergeSeriesJob(typed,log,signal,undefined,current);
     }
     case 'delete-series': return runDeleteSeriesJob(typed, log, signal);
     case 'restore-metadata': {
@@ -573,7 +585,7 @@ function validateExistingMergeChapters(edits:Record<string,string>|undefined,tar
   return entries;
 }
 
-async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal?: AbortSignal, journal?: MetadataJournal): Promise<JobResult> {
+async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal?: AbortSignal, journal?: MetadataJournal, review?: Awaited<ReturnType<typeof resolveMergeProtection>>): Promise<JobResult> {
   let sourceFiles = job.payload.sourceFiles ?? [];
   validateMergeDownloads(job.payload.downloads);
   if (!sourceFiles.length && !job.payload.downloads?.length) throw new Error('At least one .cbz file or gallery is required');
@@ -584,7 +596,7 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
   if (!client) throw new Error('Kavita is not configured; protection cannot be verified');
   const renamedSeries = job.payload.seriesName?.trim();
   const reviewRequest = () => ({seriesId:job.payload.seriesId,sourceSeriesIds:job.payload.sourceSeriesIds,sourceFiles:job.payload.sourceFiles ?? sourceFiles,targetDir:job.payload.targetDir,seriesName:renamedSeries});
-  const checked = await resolveMergeProtection(client, reviewRequest(), job.payload.mergeProtection);
+  const checked = review ?? await resolveMergeProtection(client, reviewRequest(), job.payload.mergeProtection);
   requireMergeProtection(checked.preview);
   const targetDir = checked.targetDir;
   const stampName = checked.state.seriesName;
@@ -593,14 +605,20 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
   job.payload.sourceFiles = sourceFiles;
   jobQueue.updateMergeState(job.id, {mergeProtection:checked.state,sourceFiles});
   rememberTargets(job, checked.preview.series.map(series => ({id:series.seriesId,name:series.name,libraryId:series.libraryId})));
-  const recheck = async () => {
+  // Per-archive guards inside one publication/edit loop may reuse Kavita's
+  // chapter listings for a few seconds; everything local is re-read each time.
+  // Rechecks around Kavita deletes, scans and renames always read Kavita fresh.
+  const chapterCache = new MergeChapterCache();
+  const recheck = async (reuseChapters = false) => {
     throwIfJobCancelled(job.id);
-    const current = await resolveMergeProtection(client, reviewRequest(), job.payload.mergeProtection);
+    if (!reuseChapters) chapterCache.clear();
+    const current = await resolveMergeProtection(client, reviewRequest(), job.payload.mergeProtection, reuseChapters ? {chapterCache} : undefined);
     requireMergeProtection(current.preview);
     if (current.state.seriesName !== stampName) throw new Error('Effective series name changed; refresh merge review');
     job.payload.mergeProtection = current.state;
     jobQueue.updateMergeState(job.id, {mergeProtection:current.state});
   };
+  const loopRecheck = () => recheck(true);
   if (!targetDir) throw new Error('targetDir required');
   // The merge and existing chapter edits share one queue commitment. Check
   // every target edit before moving anything; incoming paths cannot expand
@@ -629,7 +647,7 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
     }
     jobQueue.updateMergeState(job.id, { sourceFiles: job.payload.sourceFiles, chapters: job.payload.chapters, mergeProtection:job.payload.mergeProtection });
   }, signal, async (source,destination)=>{
-    await recheck();
+    await loopRecheck();
     if (source===destination) return;
     const sha256=await hashArchiveFile(source,signal);
     if (job.payload.mergeProtection!.connectionKey!==kavitaConnectionKey(getKavitaConnection().baseUrl)) throw new Error('Kavita connection changed before archive publication');
@@ -647,7 +665,7 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
     try {
       const fields: Record<string, string> = { Number: number.trim() };
       if (renamedSeries) fields.Series = renamedSeries;
-      await setComicInfoFields(resolved, fields, recheck);
+      await setComicInfoFields(resolved, fields, loopRecheck);
       editedPaths.add(archiveResource(resolved));
       log('success', `Updated existing chapter number: ${path.basename(file)}`);
     } catch (error) {
@@ -663,14 +681,16 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
       throwIfJobCancelled(job.id);
       if (editedPaths.has(archiveResource(file))) continue;
       const xml = await readComicInfo(file);
-      if (!xml || parseComicInfo(xml).fields.Series !== renamedSeries) await setComicInfoFields(file, { Series: renamedSeries }, recheck);
+      if (!xml || parseComicInfo(xml).fields.Series !== renamedSeries) await setComicInfoFields(file, { Series: renamedSeries }, loopRecheck);
     }
     throwIfJobCancelled(job.id);
     await recheck();
     log('success', `Set merged series name to "${renamedSeries}" in all target archives`);
   }
   log('success', `Moved ${r.moved.length} file(s) into one folder as "${stampName ?? lastSegment(targetDir)}"; stamped chapter numbers on ${r.chaptered.length}`);
-  await recheck();
+  // A rename already rechecked just above, and source cleanup rechecks before
+  // its first Kavita call; only otherwise is a fresh check needed here.
+  if (!renamedSeries && !sourceSeriesIds.length) await recheck();
   await removeSourceSeriesFromKavita(sourceSeriesIds, log, targetDir, async id=>{
     await recheck();
     return job.payload.mergeProtection!.targetSeriesId!==id;

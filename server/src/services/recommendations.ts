@@ -1,7 +1,7 @@
 import { buildProfile, backfillMissingTags, isBoilerplateTag, type ProfileTerm, type TasteProfile } from './recommendationProfile.js';
 import { MutationCoordinator } from '../lib/mutations.js';
 const recommendationMutations = new MutationCoordinator();
-import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, lt, ne, sql } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery, DoujinSearchResult, DoujinSort } from '../downloader/types.js';
@@ -9,7 +9,7 @@ import type { DoujinSource } from '../contracts/doujin.js';
 import { mapLimit } from '../lib/http.js';
 import { getDownloaderSettings, onSettingChange, setRecommendationSettings } from './settings.js';
 import { buildKavitaSignals, clearRecommendationSignals, onRecommendationSeriesChange } from './recommendationSignals.js';
-import { eligibleRecommendations } from './recommendationEligibility.js';
+import { buildEligibilityContext, eligibleRecommendations, type EligibilityContext } from './recommendationEligibility.js';
 import type { DoujinProvider } from '../downloader/types.js';
 import { rankCandidates, selectBalancedRecommendations, selectRecommendations } from './recommendationRanking.js';
 import type { Candidate } from './recommendationRanking.js';
@@ -570,33 +570,6 @@ function localDate(d = new Date()): string {
 // Generation + daily cache
 // ---------------------------------------------------------------------------
 
-function activeOrCompletedDownloadKeys(): Set<string> {
-  const rows = getDb()
-    .select({ source: schema.downloadQueue.source, galleryId: schema.downloadQueue.galleryId })
-    .from(schema.downloadQueue)
-    .where(inArray(schema.downloadQueue.status, ['completed', 'queued', 'downloading', 'paused']))
-    .all();
-  return new Set(rows.map((r) => `${r.source}:${r.galleryId}`));
-}
-
-function unreviewedFollowingKeys(): Set<string> {
-  const rows = getDb()
-    .select({ source: schema.watchedSearchNew.source, galleryId: schema.watchedSearchNew.galleryId })
-    .from(schema.watchedSearchNew)
-    .where(isNull(schema.watchedSearchNew.reviewedAt))
-    .all();
-  return new Set(rows.map((r) => `${r.source}:${r.galleryId}`));
-}
-
-/** Galleries the user has marked as owned — they are never recommended. */
-function ownedGalleryKeys(): Set<string> {
-  const rows = getDb()
-    .select({ source: schema.ownedGalleries.source, galleryId: schema.ownedGalleries.galleryId })
-    .from(schema.ownedGalleries)
-    .all();
-  return new Set(rows.map((r) => `${r.source}:${r.galleryId}`));
-}
-
 const HISTORY_KEY = 'recommendations-history';
 const HISTORY_DAYS = 30;
 const MAX_HISTORY = 1200;
@@ -760,11 +733,15 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
   // hard exclusions. History is initially a freshness exclusion, then becomes
   // the least-recent fallback pool.
   const history = pruneHistory();
+  // One exclusion snapshot serves every eligibility pass of this roll. Mid-roll
+  // taste/feedback changes bump profileRevision and re-run the roll, and the
+  // response path (withOwned) revalidates against fresh state.
+  const eligibility = buildEligibilityContext();
   const hardExcluded = new Set([
-    ...activeOrCompletedDownloadKeys(),
-    ...ownedGalleryKeys(),
-    ...unreviewedFollowingKeys(),
-    ...getDb().select().from(schema.dismissedGalleries).all().map(keyOf),
+    ...eligibility.activeDownloads,
+    ...eligibility.owned,
+    ...eligibility.unreviewedFollowing,
+    ...eligibility.dismissed,
   ]);
   const freshExcluded = new Set([...hardExcluded, ...history.map((h) => h.key)]);
   const excludeIds = numericHitomiIds(freshExcluded);
@@ -781,10 +758,10 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
   const pool = candidatePool;
   const asCandidate = (item: RecommendationItem): Candidate => ({ result: item, score: 1, reasons: item.reasons, matched: new Set() });
   const readFreshPool = async () => {
-    const eligible = await eligibleRecommendations([...pool.candidates.values()].map((candidate) => candidate.result));
+    const eligible = await eligibleRecommendations([...pool.candidates.values()].map((candidate) => candidate.result), eligibility);
     const eligibleKeys = new Set(eligible.map(keyOf));
     const candidates = new Map([...pool.candidates].filter(([key]) => eligibleKeys.has(key) && !freshExcluded.has(key)));
-    const popular = (await eligibleRecommendations(pool.popular)).filter((item) => !freshExcluded.has(keyOf(item)));
+    const popular = (await eligibleRecommendations(pool.popular, eligibility)).filter((item) => !freshExcluded.has(keyOf(item)));
     return { candidates, popular };
   };
   let { candidates, popular } = await readFreshPool();
@@ -835,7 +812,7 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
   let repeatedCount = 0;
   let repeatedToday = false;
   if (items.length < TOTAL_PICKS) {
-    const eligibleHistory = await eligibleRecommendations(history.map((entry) => entry.item));
+    const eligibleHistory = await eligibleRecommendations(history.map((entry) => entry.item), eligibility);
     for (const item of eligibleHistory) {
       // Preserve least-recent ordering while enforcing artist/work exclusions.
       const selected = selectRecommendations([asCandidate(item)], 1, rng, items);
@@ -956,14 +933,15 @@ export interface RecommendationResponse extends RecommendationSet {
   dismissedKeys: string[];
 }
 
-async function withOwned(set: RecommendationSet): Promise<RecommendationResponse> {
-  const owned = ownedGalleryKeys();
-  const dismissed = getDb().select().from(schema.dismissedGalleries).all().map(keyOf);
+async function withOwned(set: RecommendationSet, context?: EligibilityContext): Promise<RecommendationResponse> {
+  // Ownership keys stay complete: the UI badges arbitrary search results with
+  // them, not just these picks. Other exclusions are looked up per pick.
+  const eligibility = context ?? buildEligibilityContext(set.items);
   const { date, generatedAt, mode, profile, repeatedCount, degradedReason } = set;
-  const eligible = await eligibleRecommendations(set.items);
+  const eligible = await eligibleRecommendations(set.items, eligibility);
   // These picks were already ranked. Filtering ownership must preserve their order.
   const items = eligible.slice(0, TOTAL_PICKS);
-  return { date, generatedAt, mode, profile, items, repeatedCount, degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' : degradedReason, ownedKeys: [...owned], dismissedKeys: dismissed };
+  return { date, generatedAt, mode, profile, items, repeatedCount, degradedReason: items.length < TOTAL_PICKS ? 'insufficient-eligible' : degradedReason, ownedKeys: [...eligibility.owned], dismissedKeys: [...eligibility.dismissed] };
 }
 
 function displayedRecommendations(): Promise<RecommendationResponse> {
@@ -1081,14 +1059,19 @@ export async function dismissAndReplace(source: DoujinSource, galleryId: string)
       .run();
     profileRevision += 1;
     if (!cached) return displayedRecommendations();
-    const updated = await reconcileDisplayedSet(cached);
-    return withOwned(updated);
+    return reconcileAndRespond(cached);
   });
 }
 
+/** Reconcile the displayed set and answer from the same exclusion snapshot. */
+async function reconcileAndRespond(cached: CachedRecommendationSet, restore?: RecommendationItem): Promise<RecommendationResponse> {
+  const eligibility = buildEligibilityContext([...cached.items, ...cached.reserve, ...(restore ? [restore] : [])]);
+  return withOwned(await reconcileDisplayedSet(cached, restore, eligibility), eligibility);
+}
+
 /** Revalidate visible cards and promote spares using one policy for every feedback action. */
-async function reconcileDisplayedSet(cached: CachedRecommendationSet, restore?: RecommendationItem): Promise<CachedRecommendationSet> {
-  const eligible = await eligibleRecommendations([...cached.items, ...cached.reserve, ...(restore ? [restore] : [])]);
+async function reconcileDisplayedSet(cached: CachedRecommendationSet, restore?: RecommendationItem, context?: EligibilityContext): Promise<CachedRecommendationSet> {
+  const eligible = await eligibleRecommendations([...cached.items, ...cached.reserve, ...(restore ? [restore] : [])], context);
   const eligibleKeys = new Set(eligible.map(keyOf));
   let items = cached.items.filter(item => eligibleKeys.has(keyOf(item)));
   if (restore && eligibleKeys.has(keyOf(restore))) {
@@ -1127,7 +1110,7 @@ export async function undoDismiss(source: DoujinSource, galleryId: string): Prom
 async function restoreHistoryItem(source: DoujinSource, galleryId: string): Promise<RecommendationResponse> {
   const cached = readDisplayedSet();
   const original = readHistoryItem(source, galleryId);
-  if (cached && original) return withOwned(await reconcileDisplayedSet(cached, original));
+  if (cached && original) return reconcileAndRespond(cached, original);
   return displayedRecommendations();
 }
 
@@ -1153,7 +1136,7 @@ export async function applyRecommendationFeedback(
     profileRevision++;
     candidatePool = null;
     const cached = readDisplayedSet();
-    const recommendations = cached ? await withOwned(await reconcileDisplayedSet(cached)) : await displayedRecommendations();
+    const recommendations = cached ? await reconcileAndRespond(cached) : await displayedRecommendations();
     return { feedback, recommendations };
   });
 }

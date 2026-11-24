@@ -4,7 +4,8 @@ import { ArrowUp, ArrowDown, Folder, FolderOpen, FolderPlus, Inbox, Loader2, Pen
 import { FOLLOWING_INTERVAL_MINUTES, type FollowingInterval, type WatchedSearch, type WatchedSearchFolder } from '../../../../server/src/contracts/following';
 import type { NotificationMode } from '../../../../server/src/contracts/following';
 import { api, ApiError } from '../../lib/api';
-import { Button, ConfirmDialog, Input, Select } from '../../components/ui';
+import { Button, Input, Select } from '../../components/ui';
+import { ConfirmDialog } from '../../components/dialog';
 import { cn } from '../../lib/utils';
 
 export const WATCH_DRAG_TYPE = 'application/x-h-tosho-watch';
@@ -155,9 +156,12 @@ export function FollowingFolders({ folders, watches, watchesReady, renderWatch, 
     setError('');
     requestAnimationFrame(() => createTrigger.current?.focus());
   }
-  const groups = new Map<number | null, WatchedSearch[]>(folders.map(folder => [folder.id, []]));
-  groups.set(null, []);
-  for (const watch of watches) (groups.get(watch.folderId) ?? groups.get(null)!).push(watch);
+  const groups = React.useMemo(() => {
+    const next = new Map<number | null, WatchedSearch[]>(folders.map(folder => [folder.id, []]));
+    next.set(null, []);
+    for (const watch of watches) (next.get(watch.folderId) ?? next.get(null)!).push(watch);
+    return next;
+  }, [folders, watches]);
   function renderContents(folderId: number | null) {
     if (!watchesReady) return null;
     const items = groups.get(folderId) ?? [];

@@ -49,7 +49,8 @@ interface MangaListItem {
     altTitles?: Array<Record<string, unknown>>;
     description?: { en?: string };
   };
-  relationships?: Array<{ id?: string; type?: string }>;
+  /** With `includes[]=cover_art`, cover_art relationships carry their fileName. */
+  relationships?: Array<{ id?: string; type?: string; attributes?: { fileName?: string } }>;
 }
 /** Namespaces whose description lines carry tag lists (MangaDex's tag taxonomy). */
 const DESCRIPTION_TAG_NAMESPACES = new Set(['MALE', 'FEMALE', 'MIXED', 'OTHER', 'PARODY', 'CHARACTER']);
@@ -230,16 +231,17 @@ class MangaDexProvider extends BaseProvider {
    * the cover's fileName (served by /cover/{id}), not the relationship id —
    * using the id as the file name 404s on uploads.mangadex.org.
    */
-  private async resolveCoverUrl(coverId: string | undefined, mangaId: string): Promise<string | undefined> {
+  private async resolveCoverUrl(coverId: string | undefined, mangaId: string, signal?: AbortSignal): Promise<string | undefined> {
     if (!coverId) return undefined;
     try {
       const res = await this.get<{ data?: { attributes?: { fileName?: string } } }>(
         `/cover/${coverId}`,
-        { headers: this.headers() },
+        this.init(signal),
       );
       const fileName = res?.data?.attributes?.fileName;
       if (fileName) return `${this.imageBaseUrl}/covers/${mangaId}/${fileName}`;
     } catch {
+      signal?.throwIfAborted();
       /* fall through to no cover */
     }
     return undefined;
@@ -256,15 +258,14 @@ class MangaDexProvider extends BaseProvider {
    */
   private async bulkCoverFileNames(
     entries: ReadonlyArray<{ mangaId: string; coverId?: string }>,
+    signal?: AbortSignal,
   ): Promise<Map<string, string>> {
     const byManga = new Map<string, string>();
     for (let i = 0; i < entries.length; i += 100) {
       const chunk = entries.slice(i, i + 100);
       const query = chunk.map((entry) => `manga%5B%5D=${encodeURIComponent(entry.mangaId)}`).join('&');
       try {
-        const res = await this.get<{ data?: CoverListItem[] }>(`/cover?${query}&limit=100`, {
-          headers: this.headers(),
-        });
+        const res = await this.get<{ data?: CoverListItem[] }>(`/cover?${query}&limit=100`, this.init(signal));
         const preferred = new Set(chunk.map((entry) => entry.coverId).filter((id): id is string => Boolean(id)));
         for (const item of res?.data ?? []) {
           const fileName = item.attributes?.fileName;
@@ -273,6 +274,7 @@ class MangaDexProvider extends BaseProvider {
           if (preferred.has(item.id) || !byManga.has(mangaId)) byManga.set(mangaId, fileName);
         }
       } catch {
+        signal?.throwIfAborted();
         /* candidates in this chunk keep no thumbnail */
       }
     }
@@ -285,14 +287,14 @@ class MangaDexProvider extends BaseProvider {
    * then Japanese, then anything else; within a locale the most recently
    * updated upload wins (MangaDex re-uploads bump `updatedAt`).
    */
-  private async fetchVolumeCovers(mangaId: string, opts?: { stopAtVolume1?: boolean }): Promise<VolumeCover[]> {
+  private async fetchVolumeCovers(mangaId: string, opts?: { stopAtVolume1?: boolean; signal?: AbortSignal }): Promise<VolumeCover[]> {
     const byVolume = new Map<number, { rank: number; updatedAt: string; fileName: string }>();
     // Page through the collection (100/page); cap at 5 pages so a runaway
     // catalogue can't stall metadata fetches.
     for (let offset = 0; offset < 500; offset += 100) {
       const res = await this.get<{ response?: string; data?: CoverListItem[] }>(
         `/cover?manga%5B%5D=${mangaId}&limit=100&offset=${offset}&order%5Bvolume%5D=asc`,
-        { headers: this.headers() },
+        this.init(opts?.signal),
       );
       const items = res?.data ?? [];
       for (const item of items) {
@@ -350,7 +352,12 @@ class MangaDexProvider extends BaseProvider {
     }
   }
 
-  async search(query: string, _type?: string): Promise<SearchResult[]> {
+  /** Request init with the client headers and an optional cancellation signal. */
+  private init(signal?: AbortSignal): RequestInit {
+    return signal ? { headers: this.headers(), signal } : { headers: this.headers() };
+  }
+
+  async search(query: string, _type?: string, signal?: AbortSignal): Promise<SearchResult[]> {
     const search = async (title: string): Promise<MangaListItem[]> => {
       const params = new URLSearchParams({
         title,
@@ -358,9 +365,9 @@ class MangaDexProvider extends BaseProvider {
         'order[relevance]': 'desc',
       });
       for (const rating of CONTENT_RATINGS) params.append('contentRating[]', rating);
-      const data = await this.get<{ data?: MangaListItem[] }>(`/manga?${params.toString()}`, {
-        headers: this.headers(),
-      });
+      // Inline each main cover's fileName so thumbnails need no /cover round-trip.
+      params.append('includes[]', 'cover_art');
+      const data = await this.get<{ data?: MangaListItem[] }>(`/manga?${params.toString()}`, this.init(signal));
       return data.data ?? [];
     };
 
@@ -368,10 +375,10 @@ class MangaDexProvider extends BaseProvider {
     const fallback = found.length === 0 ? fallbackTitleQuery(query) : null;
     if (fallback) found = await search(fallback);
 
-    return this.mapSearchResults(found);
+    return this.mapSearchResults(found, signal);
   }
 
-  private async mapSearchResults(found: MangaListItem[]): Promise<SearchResult[]> {
+  private async mapSearchResults(found: MangaListItem[], signal?: AbortSignal): Promise<SearchResult[]> {
 
     // List items only carry cover_art relationship stubs ({id, type}), so the
     // fileNames the CDN actually serves must be resolved through the /cover
@@ -380,23 +387,31 @@ class MangaDexProvider extends BaseProvider {
     const items = found.map((m) => {
       const attrs = m.attributes ?? {};
       const title = this.pickTitle(attrs);
+      const cover = (m.relationships ?? []).find((r) => r.type === 'cover_art');
+      const inlineFileName = cover?.attributes?.fileName;
       return {
         mangaId: m.id,
         title,
         altTitles: this.titleVariants(attrs).filter((v) => v !== title),
         year: attrs.year ? Number(attrs.year) : undefined,
         summary: typeof attrs.description?.en === 'string' ? attrs.description.en : undefined,
-        coverId: (m.relationships ?? []).find((r) => r.type === 'cover_art')?.id,
-        coverUrl: undefined as string | undefined,
+        coverId: cover?.id,
+        coverUrl: inlineFileName ? `${this.imageBaseUrl}/covers/${m.id}/${inlineFileName}` : undefined as string | undefined,
       };
     });
 
-    const coverFileNames = await this.bulkCoverFileNames(
-      items.map((item) => ({ mangaId: item.mangaId, coverId: item.coverId })),
-    );
-    for (const item of items) {
-      const fileName = coverFileNames.get(item.mangaId);
-      if (fileName) item.coverUrl = `${this.imageBaseUrl}/covers/${item.mangaId}/${fileName}`;
+    // Only candidates whose cover was not inlined fall back to the batched
+    // /cover collection lookup.
+    const unresolved = items.filter((item) => !item.coverUrl);
+    if (unresolved.length) {
+      const coverFileNames = await this.bulkCoverFileNames(
+        unresolved.map((item) => ({ mangaId: item.mangaId, coverId: item.coverId })),
+        signal,
+      );
+      for (const item of unresolved) {
+        const fileName = coverFileNames.get(item.mangaId);
+        if (fileName) item.coverUrl = `${this.imageBaseUrl}/covers/${item.mangaId}/${fileName}`;
+      }
     }
 
     return items.map((item) => ({
@@ -433,18 +448,21 @@ class MangaDexProvider extends BaseProvider {
     // would omit works where this person filled only one of those roles.
     const params = new URLSearchParams({ authorOrArtist: artistId, limit: '25', offset: String((page - 1) * 25), 'order[title]': 'asc' });
     for (const rating of CONTENT_RATINGS) params.append('contentRating[]', rating);
+    params.append('includes[]', 'cover_art');
     const data = await this.get<{ data: MangaListItem[]; total: number; offset: number; limit: number }>(`/manga?${params}`, { headers: this.headers() });
     return { items: await this.mapSearchResults(data.data), page, hasNextPage: data.offset + data.limit < data.total };
   }
 
-  async getSeriesMetadata(providerSeriesId: string): Promise<SeriesMetadata> {
+  async getSeriesMetadata(providerSeriesId: string, signal?: AbortSignal): Promise<SeriesMetadata> {
     // Per-volume covers only need the series id and are independent of the
     // detail fetch — start both together; a cover-collection failure must not
     // sink the whole metadata fetch (series-level data is still usable).
-    const volumeCoversPromise = this.fetchVolumeCovers(providerSeriesId).catch(() => undefined);
+    const volumeCoversPromise = this.fetchVolumeCovers(providerSeriesId, { signal }).catch(() => undefined);
+    // MangaDex v5's relationship type is `cover_art` (not `cover`); including
+    // it inlines the main cover's fileName, so no /cover/{id} lookup is needed.
     const data = await this.get<{ data: any }>(
-      `/manga/${providerSeriesId}?${this.includesParam(['cover', 'author', 'artist'])}`,
-      { headers: this.headers() },
+      `/manga/${providerSeriesId}?${this.includesParam(['cover_art', 'author', 'artist'])}`,
+      this.init(signal),
     );
     const m = data.data;
     if (!m) throw new Error(`MangaDex: manga ${providerSeriesId} not found`);
@@ -502,26 +520,30 @@ class MangaDexProvider extends BaseProvider {
     const summaryText = (cleanedDescription ?? rawDescription)?.trim() || (rawDescription ? '' : undefined);
 
     // In the detail response, author/artist relationships are inlined with
-    // attributes ({ id, type, attributes: { name } }); cover_art stays a stub,
-    // so its fileName is resolved separately via /cover/{id}.
+    // attributes ({ id, type, attributes: { name } }), and cover_art carries
+    // { fileName }; only a stub without one falls back to /cover/{id}.
     const people: string[] = [];
     let coverId: string | undefined;
+    let coverFileName: string | undefined;
     for (const rel of m.relationships ?? []) {
       const rt = rel.type;
       if (rt === 'cover_art') {
         coverId = rel.id ?? coverId;
+        if (typeof rel.attributes?.fileName === 'string' && rel.attributes.fileName) coverFileName = rel.attributes.fileName;
       } else if (rt === 'author' || rt === 'artist') {
         const name = rel.attributes?.name;
         if (name && !people.includes(name)) people.push(name);
       }
     }
     const volumeCovers = await volumeCoversPromise;
+    signal?.throwIfAborted();
 
     // The series cover is always the Volume 1 cover when one exists; otherwise
     // fall back to the manga's main cover_art (which also skips the extra
     // /cover/{id} lookup, since the collection already yielded the fileName).
     const vol1Cover = volumeCovers?.find((v) => v.number === 1);
-    const coverUrl = vol1Cover?.url ?? (await this.resolveCoverUrl(coverId, providerSeriesId));
+    const coverUrl = vol1Cover?.url
+      ?? (coverFileName ? `${this.imageBaseUrl}/covers/${providerSeriesId}/${coverFileName}` : await this.resolveCoverUrl(coverId, providerSeriesId, signal));
 
     const statusUpper = (a.status ?? '').toUpperCase();
     const status =

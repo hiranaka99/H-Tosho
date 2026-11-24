@@ -94,6 +94,8 @@ export interface UpdateMetadataOptions {
 export class KavitaClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
+  /** Set once the bare is-task-running call answered where no scoped call did. */
+  private legacyTaskStatus = false;
 
   constructor(baseUrl: string, apiKey: string) {
     this.baseUrl = baseUrl.trim().replace(/\/+$/, '').replace(/\/api$/i, '');
@@ -206,20 +208,39 @@ export class KavitaClient {
    */
   async isTaskRunning(): Promise<boolean> {
     const parse = (data: unknown): boolean => data === true || data === 'true';
-    const scoped = await Promise.allSettled(
-      SCAN_TASK_METHODS.flatMap((method) =>
-        SCAN_TASK_QUEUES.map((queue) =>
-          this.getJson<boolean | string>(
-            `/Server/is-task-running?methodName=${encodeURIComponent(method)}&queue=${queue}`,
-            'Kavita task status',
-          ),
+    const legacy = async () => parse(await this.getJson<boolean | string>('/Server/is-task-running', 'Kavita task status'));
+    // A server already seen answering only the bare call is pre-0.9.1; skip
+    // the six scoped calls it rejects. 0.9.1+ rejects the bare call, so a
+    // failure there (e.g. after an upgrade) returns to the scoped calls.
+    if (this.legacyTaskStatus) {
+      try { return await legacy(); }
+      catch { this.legacyTaskStatus = false; }
+    }
+    const scoped = SCAN_TASK_METHODS.flatMap((method) =>
+      SCAN_TASK_QUEUES.map((queue) =>
+        this.getJson<boolean | string>(
+          `/Server/is-task-running?methodName=${encodeURIComponent(method)}&queue=${queue}`,
+          'Kavita task status',
         ),
       ),
     );
-    const answered = scoped.filter((result): result is PromiseFulfilledResult<boolean | string> => result.status === 'fulfilled');
-    if (answered.length > 0) return answered.some((result) => parse(result.value));
-    const data = await this.getJson<boolean | string>('/Server/is-task-running', 'Kavita task status');
-    return parse(data);
+    // The answer is an OR: settle as soon as one call reports a running task
+    // rather than waiting for the slowest of the six.
+    const answered = await new Promise<boolean | null>((resolve) => {
+      let pending = scoped.length, any = false;
+      for (const request of scoped) {
+        request.then((value) => {
+          any = true;
+          if (parse(value)) resolve(true);
+        }, () => { /* unanswered; the legacy call covers the all-failed case */ }).finally(() => {
+          if (--pending === 0) resolve(any ? false : null);
+        });
+      }
+    });
+    if (answered !== null) return answered;
+    const running = await legacy();
+    this.legacyTaskStatus = true;
+    return running;
   }
 
   /** GET /api/Library/libraries */

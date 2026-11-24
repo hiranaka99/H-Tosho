@@ -306,11 +306,14 @@ export const downloadQueue = sqliteTable('download_queue', {
   finishedAt: text('finished_at'),
 }, (table) => [
   index('idx_download_queue_gallery').on(table.source, table.galleryId),
-  index('idx_download_queue_claim').on(table.status, table.priority),
+  // Matches claimNext's `status = 'queued' ORDER BY priority DESC, id ASC`
+  // exactly, so the next task is read from the index without a temp sort.
+  index('idx_download_queue_claim').on(table.status, sql`"priority" DESC`, table.id),
   index('idx_download_queue_status_finished').on(table.status, table.finishedAt),
   index('idx_download_queue_status_id').on(table.status, table.id),
   index('idx_download_queue_merge_folder').on(table.mergeFolder),
   index('idx_download_queue_output_path').on(table.outputPath),
+  index('idx_download_queue_merge_job').on(table.mergeJobId),
 ]);
 
 export const watchedSearchFolders = sqliteTable('watched_search_folders', {
@@ -399,6 +402,8 @@ export const watchedSearchNew = sqliteTable('watched_search_new', {
   index('idx_watched_search_new_found').on(table.foundAt, table.id),
   index('idx_watched_search_new_gallery').on(table.source, table.galleryId),
   index('idx_watched_search_new_dedupe').on(table.source, table.galleryId, table.foundAt, table.id),
+  // Inbox (unreviewed) lookups stay proportional to the inbox, not the whole feed.
+  index('idx_watched_search_new_unreviewed').on(table.source, table.galleryId).where(sql`"reviewed_at" IS NULL`),
 ]);
 
 /**

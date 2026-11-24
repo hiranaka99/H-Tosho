@@ -112,8 +112,10 @@ export function getProviderSettings(): Record<string, ProviderSetting> {
   return cachedSetting('provider-settings', (v) => structuredClone(v), () => {
     const db = getDb();
     const out: Record<string, ProviderSetting> = {};
+    // One read for every provider instead of one query per provider.
+    const rows = new Map(db.select().from(schema.providerCredentials).all().map((row) => [row.providerId, row] as const));
     for (const p of allProviderIds()) {
-      const row = db.select().from(schema.providerCredentials).where(eq(schema.providerCredentials.providerId, p)).get();
+      const row = rows.get(p);
       out[p] = {
         providerId: p,
         enabled: row?.enabled ?? true,

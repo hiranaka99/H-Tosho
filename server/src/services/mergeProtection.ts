@@ -1,18 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { KavitaClient } from '../kavita/client.js';
+import type { KavitaChapterDto } from '../kavita/types.js';
 import type { MergeProtectionRequest, MergeProtectionPreview, MergeProtectionState, MergeProtectionSeries } from '../contracts/mergeProtection.js';
 import { PROTECTABLE_FIELDS } from '../contracts/metadata.js';
 import { getDownloaderSettings, getKavitaConnection } from './settings.js';
 import { kavitaConnectionKey } from './kavitaState.js';
 import { getFieldPolicy } from './fieldPolicies.js';
-import { archiveResource } from '../lib/mutations.js';
+import { archiveResource, archiveResourceAsync } from '../lib/mutations.js';
 import { listCbzFiles, readComicInfo, resolveExistingFile, hashArchiveFile } from '../lib/cbz.js';
 import { pathContains, safeRealpath, lastSegment } from '../lib/paths.js';
 import { mapKavitaPathToLocalPath } from '../kavita/libraryPaths.js';
 import { comicInfoSeries } from '../lib/comicInfoRestore.js';
 import { getDb, schema } from '../db/index.js';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { readJobPayload, persistMergeState } from '../jobs/storage.js';
 import { inheritFieldPoliciesOwned } from './fieldPolicies.js';
 import { mapLimit } from '../lib/http.js';
@@ -47,8 +48,31 @@ export function parseMergeProtectionRequest(value: unknown): MergeProtectionRequ
   return { ...body, ...(typeof body.seriesName === 'string' ? {seriesName:body.seriesName.trim()} : {}) } as MergeProtectionRequest;
 }
 
+/**
+ * Short-lived reuse of Kavita chapter listings across back-to-back rechecks of
+ * one merge step (for example the per-archive publication guard). Only the
+ * Kavita chapter responses are reused; libraries, series identities, local
+ * files, ComicInfo and field policies are re-read on every resolution. The TTL
+ * keeps reuse within the staleness a single full-library fetch already has.
+ * Callers clear it wherever Kavita is expected to change (scans, deletes).
+ */
+export class MergeChapterCache {
+  private entries = new Map<number, { at: number; connection: string; chapters: Promise<KavitaChapterDto[]> }>();
+  constructor(readonly ttlMs = 5_000) {}
+  clear(): void { this.entries.clear(); }
+  load(connection: string, seriesId: number, fetch: () => Promise<KavitaChapterDto[]>): Promise<KavitaChapterDto[]> {
+    const hit = this.entries.get(seriesId);
+    if (hit && hit.connection === connection && Date.now() - hit.at <= this.ttlMs) return hit.chapters;
+    const entry = { at: Date.now(), connection, chapters: fetch() };
+    this.entries.set(seriesId, entry);
+    // Never retain a failed lookup; the next recheck asks Kavita again.
+    entry.chapters.catch(() => { if (this.entries.get(seriesId) === entry) this.entries.delete(seriesId); });
+    return entry.chapters;
+  }
+}
+
 /** Read-only authority resolution. Folder/name hints alone never establish archive ownership. */
-export async function resolveMergeProtection(client: KavitaClient, request: MergeProtectionRequest, previous?: MergeProtectionState): Promise<{ preview: MergeProtectionPreview; state: MergeProtectionState; targetDir: string; libraryId?: number }> {
+export async function resolveMergeProtection(client: KavitaClient, request: MergeProtectionRequest, previous?: MergeProtectionState, options?: { chapterCache?: MergeChapterCache }): Promise<{ preview: MergeProtectionPreview; state: MergeProtectionState; targetDir: string; libraryId?: number }> {
   const key = kavitaConnectionKey(getKavitaConnection().baseUrl);
   if (!key || previous && previous.connectionKey !== key) throw new MergeProtectionError('Kavita connection changed; reload the merge review');
   const dl = getDownloaderSettings();
@@ -89,20 +113,30 @@ export async function resolveMergeProtection(client: KavitaClient, request: Merg
     xmlCache.set(key, xml);
     return xml;
   };
+  const chapterCache = options?.chapterCache;
   const chapterBatches = await mapLimit(all, 8, async (series) => ({
     seriesId: series.id,
-    chapters: await client.getChaptersBySeries(series.id),
+    chapters: await (chapterCache ? chapterCache.load(key, series.id, () => client.getChaptersBySeries(series.id)) : client.getChaptersBySeries(series.id)),
   }));
+  const indexedFiles: { seriesId: number; local: string }[] = [];
   for (const { seriesId, chapters } of chapterBatches) {
     for (const chapter of chapters) for (const file of chapter.files ?? []) {
       if (!file.filePath) throw new MergeProtectionError('Kavita returned an archive without a path; review cannot establish protection');
       const local = map(file.filePath);
       if (!local) throw new MergeProtectionError('Map Kavita library paths before reviewing this merge');
-      const identity = cachedResource(local);
-      const owner = indexed.get(identity);
-      if (owner !== undefined && owner !== seriesId) throw new MergeProtectionError('An archive is indexed under multiple series; rescan Kavita before merging');
-      indexed.set(identity, seriesId);
+      indexedFiles.push({ seriesId, local });
     }
+  }
+  // Resolve every indexed archive identity without blocking the event loop;
+  // the results seed the same per-call cache the synchronous lookups use.
+  await mapLimit([...new Set(indexedFiles.map(item => item.local))].filter(file => !resourceCache.has(file)), 16, async (file) => {
+    resourceCache.set(file, await archiveResourceAsync(file));
+  });
+  for (const { seriesId, local } of indexedFiles) {
+    const identity = cachedResource(local);
+    const owner = indexed.get(identity);
+    if (owner !== undefined && owner !== seriesId) throw new MergeProtectionError('An archive is indexed under multiple series; rescan Kavita before merging');
+    indexed.set(identity, seriesId);
   }
   let target = request.seriesId === undefined ? undefined : all.find(series => series.id === request.seriesId);
   if (request.seriesId !== undefined && !target && previous?.targetSeriesId !== request.seriesId && !previous?.identities.some(identity=>identity.seriesId===request.seriesId)) throw new MergeProtectionError('Target series no longer exists; refresh the merge review');
@@ -201,15 +235,32 @@ export function requireMergeProtection(preview: MergeProtectionPreview): void {
 export async function recoverMergeProtectionForSeriesOwned(client: KavitaClient, seriesId: number): Promise<void> {
   const key = kavitaConnectionKey(getKavitaConnection().baseUrl);
   const mappings = getDownloaderSettings().libraryPathMappings ?? [];
-  const rows = getDb().select().from(schema.jobs).where(eq(schema.jobs.type,'merge-series')).all();
+  // A job that itself completed moved every archive and inherited protection
+  // onto its verified target; nothing is left to finish. Failed, cancelled and
+  // active retry-family members stay eligible even when a sibling completed.
+  // The JSON prefilter is a strict superset of the decoded checks below.
+  const stateColumn = schema.jobs.stateJson;
+  const retained = (field: string) => sql`(case when json_valid(${stateColumn}) then json_extract(${stateColumn}, ${`$.mergeProtection.${field}`}) end)`;
+  const rows = getDb().select().from(schema.jobs).where(and(
+    eq(schema.jobs.type,'merge-series'),
+    sql`${retained('connectionKey')} = ${key}`,
+    sql`not (${schema.jobs.status} = 'completed' and ${retained('completedTargetSeriesId')} is not null)`,
+  )).all();
   const intents = rows.map(row => ({row,decoded:readJobPayload(row.type,row.payloadJson,row.stateJson)}))
-    .filter(item => item.decoded.payload.mergeProtection?.connectionKey === key);
+    .filter(item => item.decoded.payload.mergeProtection?.connectionKey === key && item.decoded.payload.mergeProtection.completedTargetSeriesId !== seriesId)
+    // Only an archive that exists in its target folder, or a recorded move
+    // destination that exists, can be indexed under this series. Without one
+    // the loop below always skips the intent, so Kavita need not be asked.
+    .filter(({decoded}) => {
+      const retainedState = decoded.payload.mergeProtection!;
+      return retainedState.archives.some(archive => pathContains(archiveResource(retainedState.targetDir),archiveResource(archive.path)) && fs.existsSync(archive.path))
+        || (retainedState.moves ?? []).some(move => fs.existsSync(move.destination));
+    });
   if (!intents.length) return;
   const chapters = await client.getChaptersBySeries(seriesId);
   const indexed = new Set(chapters.flatMap(chapter => (chapter.files ?? []).flatMap(file => file.filePath ? [archiveResource(mapKavitaPathToLocalPath(file.filePath,mappings) ?? file.filePath)] : [])));
   for (const {row,decoded} of intents) {
     const state = decoded.payload.mergeProtection!;
-    if (state.completedTargetSeriesId === seriesId) continue;
     const published = state.archives.filter(archive => pathContains(archiveResource(state.targetDir),archiveResource(archive.path)) && fs.existsSync(archive.path));
     const proposedArchives=[...state.archives];
     for (const move of state.moves ?? []) {

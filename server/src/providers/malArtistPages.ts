@@ -1,24 +1,51 @@
-import { fetchJson, sleep } from '../lib/http.js';
+import { sleep } from '../lib/http.js';
 import { decodeHtmlEntities, stripTags as stripHtml } from '../downloader/util.js';
 import { parseProviderArtistUrl, type ProviderArtist, type ArtistSearchPage, type ArtistWorksPage } from '../contracts/artists.js';
 import type { SearchResult } from './types.js';
 
 const origin = 'https://myanimelist.net';
-const cache = new Map<string, { expires: number; html: string }>();
+const CACHE_TTL_MS = 5 * 60_000;
+/**
+ * Fetched pages, with each parser's result memoized next to the HTML: page
+ * flips and profile/works lookups of one artist re-use the parse instead of
+ * re-scanning ~200 KB of markup. Parsed values are keyed by parser kind, so
+ * one page parsed two ways never confuses the result types.
+ */
+const cache = new Map<string, { expires: number; html: string; parsed: Map<string, unknown> }>();
 let tail: Promise<unknown> = Promise.resolve();
 let nextAt = 0;
 
+/** A fresh cache hit for `path`, parsed (and memoized) as `kind`; undefined on a miss. */
+function fromCache<T>(path: string, kind: string, parse: (html: string) => T): { value: T } | undefined {
+  const hit = cache.get(path);
+  if (!hit || hit.expires <= Date.now()) return undefined;
+  if (hit.parsed.has(kind)) return { value: hit.parsed.get(kind) as T };
+  const value = parse(hit.html); // a parse failure is not memoized
+  hit.parsed.set(kind, value);
+  return { value };
+}
+
+/** GET a public MAL page as text (never JSON-decoded). */
+async function fetchPage(url: string): Promise<{ status: number; headers: Headers; body: string }> {
+  const res = await fetch(url, { headers: { Accept: 'text/html' }, signal: AbortSignal.timeout(12_000), redirect: 'follow' });
+  return { status: res.status, headers: res.headers, body: await res.text() };
+}
+
 /** Read public MAL pages only; never send API credentials or fetch user URLs. */
-async function get<T>(path: string, parse: (html: string) => T): Promise<T> {
+async function get<T>(path: string, kind: string, parse: (html: string) => T): Promise<T> {
+  // Cache hits never wait behind the rate-limit queue (or a 429 cooldown).
+  const early = fromCache(path, kind, parse);
+  if (early) return early.value;
   const run = tail.then(async () => {
-    const hit = cache.get(path);
-    if (hit && hit.expires > Date.now()) return parse(hit.html);
+    // Another queued request may have fetched this page meanwhile.
+    const queued = fromCache(path, kind, parse);
+    if (queued) return queued.value;
     for (let attempt = 0; ; attempt++) {
       while (nextAt > Date.now()) await sleep(Math.min(60_000, nextAt - Date.now()));
       nextAt = Date.now() + 1_050;
       let response;
       try {
-        response = await fetchJson<string>(origin + path, { headers: { Accept: 'text/html' } }, 12_000, { raw: true });
+        response = await fetchPage(origin + path);
       } catch (error) {
         if (attempt < 2) continue;
         const cause = (error as { cause?: { code?: string } })?.cause?.code;
@@ -26,7 +53,7 @@ async function get<T>(path: string, parse: (html: string) => T): Promise<T> {
         throw new Error(`Could not connect to MyAnimeList${code}. Check the H-Tosho server's DNS and outbound HTTPS connection, then retry.`, { cause: error });
       }
       if (response.status === 429) {
-        const raw = response.headers?.get('retry-after') ?? '';
+        const raw = response.headers.get('retry-after') ?? '';
         const retry = Number(raw) * 1000;
         const delay = raw && Number.isFinite(retry) ? retry : Date.parse(raw) - Date.now();
         nextAt = Date.now() + Math.max(60_000, Number.isFinite(delay) ? delay : 0);
@@ -34,10 +61,10 @@ async function get<T>(path: string, parse: (html: string) => T): Promise<T> {
       }
       if ([502, 503, 504].includes(response.status) && attempt < 2) continue;
       if (response.status >= 400) throw new Error(`MyAnimeList artist browsing failed (HTTP ${response.status}). ${response.status === 403 ? 'MAL blocked this request from the H-Tosho server.' : 'Retry later or open the artist page on MyAnimeList.'}`);
-      if (typeof response.data !== 'string') throw new Error('MyAnimeList returned an unexpected artist page. Please retry later.');
-      const data = parse(response.data);
+      if (!response.body) throw new Error('MyAnimeList returned an unexpected artist page. Please retry later.');
+      const data = parse(response.body);
       if (cache.size >= 128) cache.delete(cache.keys().next().value!);
-      cache.set(path, { expires: Date.now() + 5 * 60_000, html: response.data });
+      cache.set(path, { expires: Date.now() + CACHE_TTL_MS, html: response.body, parsed: new Map([[kind, data]]) });
       return data;
     }
   });
@@ -45,8 +72,14 @@ async function get<T>(path: string, parse: (html: string) => T): Promise<T> {
   return run;
 }
 
+const attributePatterns = new Map<string, RegExp>();
 function attribute(tag: string, name: string): string {
-  return decodeHtmlEntities(tag.match(new RegExp(`(?:^|\\s)${name}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, 'i'))?.[2] ?? '');
+  let pattern = attributePatterns.get(name);
+  if (!pattern) {
+    pattern = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, 'i');
+    attributePatterns.set(name, pattern);
+  }
+  return decodeHtmlEntities(tag.match(pattern)?.[2] ?? '');
 }
 function artist(id: string, name: string, aliases: string[] = []): ProviderArtist {
   return { providerId: 'myanimelist', artistId: id, name, aliases, url: `${origin}/people/${id}` };
@@ -125,12 +158,12 @@ export function parseMalArtistWorks(html: string): SearchResult[] {
 }
 
 export function searchMalArtists(query: string, page = 1): Promise<ArtistSearchPage> {
-  return get(`/people.php?${new URLSearchParams({ q: query, show: String((page - 1) * 50) })}`, html => parseMalArtistSearch(html, page));
+  return get(`/people.php?${new URLSearchParams({ q: query, show: String((page - 1) * 50) })}`, `search:${page}`, html => parseMalArtistSearch(html, page));
 }
 export function getMalArtist(id: string): Promise<ProviderArtist> {
-  return get(`/people/${id}`, html => parseMalArtist(html, id));
+  return get(`/people/${id}`, 'artist', html => parseMalArtist(html, id));
 }
 export async function getMalArtistWorks(id: string, page = 1): Promise<ArtistWorksPage> {
-  const items = await get(`/people/${id}`, parseMalArtistWorks), offset = (page - 1) * 25;
+  const items = await get(`/people/${id}`, 'works', parseMalArtistWorks), offset = (page - 1) * 25;
   return { items: items.slice(offset, offset + 25), page, hasNextPage: offset + 25 < items.length };
 }

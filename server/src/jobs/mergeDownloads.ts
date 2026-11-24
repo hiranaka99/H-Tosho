@@ -8,6 +8,9 @@ import { and,eq } from 'drizzle-orm';
 
 export { validMergeChapter, validateMergeDownloads } from '../contracts/jobs.js';
 
+/** Safety-net re-check while waiting on downloads; events normally wake the wait first. */
+const FALLBACK_POLL_MS = 30_000;
+
 /** All galleries must finish before any archives move or existing chapter drafts commit. */
 export async function prepareMergeDownloads(job: Job, log: LogFn, signal?:AbortSignal): Promise<{ files: string[]; chapters: Record<string, string> }> {
   const plans = job.payload.downloads ?? [];
@@ -123,7 +126,9 @@ export async function prepareMergeDownloads(job: Job, log: LogFn, signal?:AbortS
         const unsubRemovals = queue.subscribeRemovals((ids) => {
           if (ids.some((id) => watchedIds.has(id))) done();
         });
-        const timer = setTimeout(done, 1000);
+        // Task updates, removals and cancellation wake this wait directly; the
+        // timer is only a fallback for an update that never broadcasts.
+        const timer = setTimeout(done, FALLBACK_POLL_MS);
         signal?.addEventListener('abort', done, { once: true });
       });
     }

@@ -14,12 +14,14 @@ export function useGalleryDownload() {
   const { startDownload } = useDownloadActions();
   const { checkDuplicates, reviewCheck, dialog: duplicateDialog } = useDuplicateReview();
   const settings = useQuery({ queryKey: ['downloader-settings'], queryFn: api.downloaderSettings });
-  const setup: DownloadSetup = {
-    status: settings.isError ? 'error' : !settings.data ? 'loading' : settings.data.downloadDirectory.trim() ? 'ready' : 'missing',
-    directory: settings.data?.downloadDirectory,
-    format: settings.data?.format,
-    onRetry: () => { void settings.refetch(); },
-  };
+  const { isError: settingsFailed, data: settingsData, refetch: refetchSettings } = settings;
+  // Stable between renders so memoized consumers (selection bar destination) can skip work.
+  const setup = React.useMemo<DownloadSetup>(() => ({
+    status: settingsFailed ? 'error' : !settingsData ? 'loading' : settingsData.downloadDirectory.trim() ? 'ready' : 'missing',
+    directory: settingsData?.downloadDirectory,
+    format: settingsData?.format,
+    onRetry: () => { void refetchSettings(); },
+  }), [settingsFailed, settingsData, refetchSettings]);
   const status = setup.status;
   const ensureDownloadReady = React.useCallback(() => {
     if (status === 'ready') return true;

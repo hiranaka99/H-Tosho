@@ -151,9 +151,30 @@ function setCached(key: string, type: string, buf: Buffer): void {
   cacheBytes += buf.length;
 }
 
+/** Hitomi image CDN hosts (`a1.`, `w2.`, `3.`, …) — not thumbnail hosts like `tn.`. */
+const HITOMI_IMAGE_HOST = /^[aw]?\d*\.gold-usergeneratedcontent\.net$/i;
+const HITOMI_IMAGE_PATH = /\/([0-9a-f]{64})\.([a-z0-9]{2,5})$/i;
+
+/**
+ * Cache identity for a proxy target. Hitomi image URLs embed gg.js's rotating
+ * base-path prefix (and a routing subdomain), so the same `<hash>.<ext>` image
+ * appears under many URLs over a day; keying on the content hash keeps the
+ * L1/L2 caches effective across rotations. Everything else keys on the URL.
+ */
+function mediaCacheKey(target: string, parsed: URL): string {
+  if (HITOMI_IMAGE_HOST.test(parsed.hostname)) {
+    const match = HITOMI_IMAGE_PATH.exec(parsed.pathname);
+    if (match) return `hitomi:${match[1].toLowerCase()}.${match[2].toLowerCase()}`;
+  }
+  return target;
+}
+
 function diskFile(key: string): string {
   return path.join(MEDIA_CACHE_DIR, createHash('sha256').update(key, 'utf8').digest('hex'));
 }
+
+/** Skip access-time bumps for entries touched within this window. */
+const DISK_TOUCH_INTERVAL_MS = 60_000;
 
 /** L2 lookup: read a cached cover from disk (missing/expired → null). */
 async function getFromDisk(key: string): Promise<{ type: string; buf: Buffer } | null> {
@@ -169,6 +190,13 @@ async function getFromDisk(key: string): Promise<{ type: string; buf: Buffer } |
       fs.readFile(file),
       fs.readFile(file + '.type', 'utf8').catch(() => ''),
     ]);
+    // Record the access (atime only: mtime stays the write time that drives
+    // the TTL) so eviction drops the least recently used entries, not merely
+    // the oldest written. Fire-and-forget; explicit utimes works even on
+    // noatime mounts.
+    if (Date.now() - st.atimeMs > DISK_TOUCH_INTERVAL_MS) {
+      void fs.utimes(file, new Date(), st.mtime).catch(() => undefined);
+    }
     return { type: typeRaw.trim() || 'image/jpeg', buf };
   } catch {
     return null;
@@ -185,7 +213,8 @@ async function evictDiskCache(): Promise<void> {
       const stamped = (await mapLimit(dataFiles, 16, async (name) => {
         try {
           const st = await fs.stat(path.join(MEDIA_CACHE_DIR, name));
-          return { name, mtime: st.mtimeMs };
+          // Last access (bumped on L2 hits) or write, whichever is newer.
+          return { name, mtime: Math.max(st.atimeMs, st.mtimeMs) };
         } catch {
           return null;
         }
@@ -278,6 +307,7 @@ async function fetchWithValidatedRedirects(start: URL): Promise<Response> {
   for (let hop = 0; ; hop++) {
     const res = await fetch(current, { headers: hopHeaders(current.hostname), redirect: 'manual', signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
     if (res.status >= 300 && res.status < 400) {
+      discardBody(res);
       const loc = res.headers.get('location');
       if (!loc || hop >= MAX_REDIRECTS) throw new Error('Too many redirects');
       const next = new URL(loc, current);
@@ -290,9 +320,14 @@ async function fetchWithValidatedRedirects(start: URL): Promise<Response> {
   }
 }
 
+/** Release an unread response body so undici can reuse the connection. */
+function discardBody(res: Response): void {
+  void res.body?.cancel().catch(() => undefined);
+}
+
 /** Read a response body into a Buffer, throwing once the byte cap is exceeded. */
 async function readBodyWithCap(res: Response, maxBytes: number): Promise<Buffer> {
-  const body = res.body as unknown as { getReader?: () => { read(): Promise<{ done: boolean; value?: Uint8Array }> } } | null;
+  const body = res.body as unknown as { getReader?: () => { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel?: () => Promise<unknown> } } | null;
   if (body && typeof body.getReader === 'function') {
     const reader = body.getReader();
     const chunks: Buffer[] = [];
@@ -301,13 +336,18 @@ async function readBodyWithCap(res: Response, maxBytes: number): Promise<Buffer>
       const { done, value } = await reader.read();
       if (done) break;
       if (value) {
-        const buf = Buffer.from(value);
-        received += buf.length;
-        if (received > maxBytes) throw new Error('Response exceeds size cap');
-        chunks.push(buf);
+        received += value.byteLength;
+        if (received > maxBytes) {
+          void reader.cancel?.().catch(() => undefined);
+          throw new Error('Response exceeds size cap');
+        }
+        // Zero-copy view; the single concat below is the only copy.
+        chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
       }
     }
-    return Buffer.concat(chunks);
+    // Always concat (even a single chunk) so a cached entry never pins a
+    // larger pooled upstream ArrayBuffer.
+    return Buffer.concat(chunks, received);
   }
   const buf = Buffer.from(await res.arrayBuffer());
   if (buf.length > maxBytes) throw new Error('Response exceeds size cap');
@@ -334,23 +374,24 @@ function validTarget(target: string | null): URL | null {
 
 /** Resolve one proxy target through the memory → disk → upstream layers. */
 async function loadMedia(target: string, parsed: URL): Promise<MediaResult> {
-  const cached = getCached(target);
+  const key = mediaCacheKey(target, parsed);
+  const cached = getCached(key);
   if (cached) return { ok: true, ...cached };
 
-  const existing = inflight.get(target);
+  const existing = inflight.get(key);
   if (existing) return existing;
 
-  const promise = loadMediaUncached(target, parsed).finally(() => {
-    if (inflight.get(target) === promise) inflight.delete(target);
+  const promise = loadMediaUncached(key, target, parsed).finally(() => {
+    if (inflight.get(key) === promise) inflight.delete(key);
   });
-  inflight.set(target, promise);
+  inflight.set(key, promise);
   return promise;
 }
 
-async function loadMediaUncached(target: string, parsed: URL): Promise<MediaResult> {
-  const onDisk = await getFromDisk(target);
+async function loadMediaUncached(key: string, target: string, parsed: URL): Promise<MediaResult> {
+  const onDisk = await getFromDisk(key);
   if (onDisk) {
-    setCached(target, onDisk.type, onDisk.buf); // promote to L1
+    setCached(key, onDisk.type, onDisk.buf); // promote to L1
     return { ok: true, ...onDisk };
   }
 
@@ -366,8 +407,8 @@ async function loadMediaUncached(target: string, parsed: URL): Promise<MediaResu
       return { ok: false, status: 502, error: error instanceof Error ? error.message : 'E-Hentai preview unavailable' };
     }
     if (out.buf.length > MAX_DOWNLOAD_BYTES) return { ok: false, status: 502, error: 'Response too large' };
-    setCached(target, out.type, out.buf);
-    void setDisk(target, out.type, out.buf);
+    setCached(key, out.type, out.buf);
+    void setDisk(key, out.type, out.buf);
     return { ok: true, ...out };
   }
 
@@ -381,14 +422,20 @@ async function loadMediaUncached(target: string, parsed: URL): Promise<MediaResu
       const refreshed = await refreshHitomiImageUrl(parsed.href);
       if (refreshed && refreshed !== parsed.href) {
         const next = new URL(refreshed);
-        if (isAllowedHost(next.hostname)) res = await fetchWithValidatedRedirects(next);
+        if (isAllowedHost(next.hostname)) {
+          discardBody(res);
+          res = await fetchWithValidatedRedirects(next);
+        }
       }
     }
   } catch {
     return { ok: false, status: 502, error: 'Upstream fetch failed' };
   }
 
-  if (!res.ok) return { ok: false, status: 502, error: `Upstream returned HTTP ${res.status}` };
+  if (!res.ok) {
+    discardBody(res);
+    return { ok: false, status: 502, error: `Upstream returned HTTP ${res.status}` };
+  }
 
   let buf: Buffer;
   try {
@@ -402,9 +449,31 @@ async function loadMediaUncached(target: string, parsed: URL): Promise<MediaResu
   // type; non-image types are sniffed or rejected (see safeMediaType).
   const type = isEhentaiCoverHost(parsed.hostname) ? sniffImageType(buf) : safeMediaType(res.headers.get('content-type'), buf);
   if (!type) return { ok: false, status: 502, error: 'Upstream did not return an image' };
-  setCached(target, type, buf);
-  void setDisk(target, type, buf);
+  setCached(key, type, buf);
+  void setDisk(key, type, buf);
   return { ok: true, type, buf };
+}
+
+/** Weak validators per served buffer (L1 hits return the same Buffer object). */
+const etags = new WeakMap<Buffer, string>();
+
+function weakEtag(buf: Buffer): string {
+  let tag = etags.get(buf);
+  if (!tag) {
+    tag = `W/"${buf.length.toString(36)}-${createHash('sha1').update(buf).digest('base64url').slice(0, 22)}"`;
+    etags.set(buf, tag);
+  }
+  return tag;
+}
+
+/** If-None-Match comparison (weak, per RFC 9110 §13.1.2). */
+function etagMatches(header: string | undefined, tag: string): boolean {
+  if (!header) return false;
+  const bare = tag.replace(/^W\//, '');
+  return header.split(',').some((candidate) => {
+    const value = candidate.trim();
+    return value === '*' || value.replace(/^W\//, '') === bare;
+  });
 }
 
 /**
@@ -433,16 +502,19 @@ export function mediaRouter(): Hono {
     // builds may carry an unvalidated upstream type.
     const type = safeMediaType(result.type, result.buf);
     if (!type) return c.json({ error: 'Upstream did not return an image' }, 502);
+    const etag = weakEtag(result.buf);
+    const headers = {
+      'Cache-Control': 'private, max-age=3600',
+      ETag: etag,
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "default-src 'none'; sandbox",
+    };
+    if (etagMatches(c.req.header('if-none-match'), etag)) return c.body(null, 304, headers);
     const buffer = result.buf.buffer;
     const bytes = buffer instanceof ArrayBuffer
       ? new Uint8Array(buffer, result.buf.byteOffset, result.buf.byteLength)
       : Uint8Array.from(result.buf);
-    return c.body(bytes, 200, {
-      'Content-Type': type,
-      'Cache-Control': 'private, max-age=3600',
-      'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'none'; sandbox",
-    });
+    return c.body(bytes, 200, { 'Content-Type': type, ...headers });
   });
 
   return r;

@@ -3,7 +3,7 @@ import { jobQueue } from '../../jobs/queue.js';
 import { getDoujinProvider } from '../../downloader/providers.js';
 import { rewriteDoujinCover } from '../media.js';
 import {
-  addWatchedSearch, listNewGalleries, listWatchedSearches, getWatchedSearch, updateWatchedSearch,
+  addWatchedSearch, listNewGalleries, listWatchedSearches, getWatchedSearch, watchedSearchesExist, updateWatchedSearch,
   removeWatchedSearch, listGalleryFeed, setGalleriesReviewed, FollowingError,
   listWatchedSearchFolders, addWatchedSearchFolder, patchWatchedSearchFolder, removeWatchedSearchFolder,
 } from '../../services/watchedSearches.js';
@@ -74,7 +74,7 @@ api.post('/watched-searches/check', async (c) => {
   if (ids !== undefined && (!Array.isArray(ids) || ids.length < 1 || ids.length > FOLLOWING_TARGET_LIMIT
     || ids.some(id => !Number.isSafeInteger(id) || id < 1))) return c.json({ error: `Provide 1–${FOLLOWING_TARGET_LIMIT} positive watch IDs.` }, 400);
   const watchIds = ids === undefined ? undefined : [...new Set(ids as number[])].sort((a, b) => a - b);
-  if (watchIds?.some(id => !getWatchedSearch(id))) return c.json({ error: 'Watched search not found. Refresh and try again.' }, 404);
+  if (watchIds && !watchedSearchesExist(watchIds)) return c.json({ error: 'Watched search not found. Refresh and try again.' }, 404);
   const active = jobQueue.active();
   const same = active.find(job => {
     if (job.type !== 'check-watched-searches') return false;

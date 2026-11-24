@@ -227,6 +227,20 @@ export function getAccountRevision(): number {
   return loadRecord().revision;
 }
 
+/**
+ * Site, revision, and session from a single record read. `readSession`
+ * decrypts lazily (throwing EhentaiAccountCryptoError like getStoredSession),
+ * so callers can map record and decryption failures separately.
+ */
+export function getEhentaiAccountSnapshot(): { site: EhentaiSite; revision: number; readSession: () => EhentaiSessionInput | null } {
+  const record = loadRecord();
+  return {
+    site: record.site,
+    revision: record.revision,
+    readSession: () => (record.envelope ? decrypt(loadKey(), record.envelope) : null),
+  };
+}
+
 function viewFrom(record: StoredRecord): EhentaiAccountView {
   let hasIgneous = false;
   let sessionError: string | null = null;

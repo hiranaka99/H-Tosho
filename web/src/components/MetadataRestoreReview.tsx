@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { Button, Spinner } from './ui';
+import { LazyDetails } from './LazyDetails';
 import type { MetadataHistoryDetail, RecordedValue } from '../../../server/src/contracts/metadataHistory';
 import { isRestorableMetadataField, type ArchiveRestoreSelection, type MetadataRestorePreview, type RestorableMetadataField, type RestoreSnapshotSide } from '../../../server/src/contracts/metadataRestore';
 import { RESTORABLE_COMICINFO_FIELDS } from '../../../server/src/lib/comicInfoRestore';
@@ -128,8 +129,8 @@ export function MetadataRestoreReview({ seriesId, detail }: { seriesId: number; 
         const replace = selected?.mode === 'document';
         const available = Number.isSafeInteger(file.id) && (side === 'before' || (file.afterPresent !== null && file.status === 'observed'));
         const setSelection = (selection:ArchiveRestoreSelection|null) => { invalidate(); setArchives([...archives.filter(item => item.id !== file.id),...(selection?[selection]:[])]); };
-        return <details key={file.id ?? file.target} className="min-w-0 border-t border-border">
-          <summary className="min-h-11 cursor-pointer py-3 text-sm [overflow-wrap:anywhere]">{file.target}{selected ? ' · selected' : ''}</summary>
+        return <LazyDetails key={file.id ?? file.target} className="min-w-0 border-t border-border" summary={
+          <summary className="min-h-11 cursor-pointer py-3 text-sm [overflow-wrap:anywhere]">{file.target}{selected ? ' · selected' : ''}</summary>}>
           {!available && <p className="text-xs text-muted">This archive snapshot is unavailable for the selected side.</p>}
           <label className="flex min-h-11 items-center gap-2 text-sm"><input className="accent-primary" aria-label={`Replace complete ComicInfo.xml in ${file.target}`} type="checkbox" disabled={!available} checked={replace} onChange={() => setSelection(replace?null:{id:file.id,mode:'document'})}/>Replace complete ComicInfo.xml</label>
           {replace && <p className="max-w-prose text-xs text-foreground dark:text-warning">This replaces all current XML with the saved document, including nested and unknown metadata. If the saved entry was absent, it removes ComicInfo.xml. A grouping conflict blocks restoration.</p>}
@@ -137,7 +138,7 @@ export function MetadataRestoreReview({ seriesId, detail }: { seriesId: number; 
             const chosen = selected?.fields ?? [], next = chosen.includes(change.field)?chosen.filter(field => field!==change.field):[...chosen,change.field];
             setSelection(next.length?{id:file.id,mode:'fields',fields:next}:null);
           }}/>Restore {change.field}</label>)}
-        </details>;
+        </LazyDetails>;
       })}
     </fieldset>}
     <p className="text-xs text-muted">Restores do not download galleries or reverse file moves and merges. Retained cover uploads use Kavita's API with explicit conversion review.</p>

@@ -22,7 +22,7 @@ import { autoMatch, fetchProviderMetadata } from '../../match/autoMatcher.js';
 import { rewriteMangaDexCoverUrl } from '../media.js';
 import { mapLimit } from '../../lib/http.js';
 
-import { connectedClient, resolveJobContext, errMsg, intParam, stringsFromMatchMetadata, kavitaCoverUrl } from './helpers.js';
+import { connectedClient, resolveJobContext, errMsg, intParam, kavitaCoverUrl } from './helpers.js';
 export const api = new Hono();
 api.get('/series/:id/metadata-history/:operationId/assets/:assetId',c=>{
   const id=intParam(c.req.param('id'));
@@ -120,6 +120,20 @@ api.get('/series/low-confidence', (c) => {
   return c.json({ count: Number(row?.n ?? 0), threshold: LOW_CONFIDENCE_THRESHOLD });
 });
 
+/** Artists and tags of one match from a single metadata parse. */
+function matchArtistsAndTags(metadataJson: string | null): { artists: string[]; tags: string[] } {
+  if (!metadataJson) return { artists: [], tags: [] };
+  let meta: unknown;
+  try { meta = JSON.parse(metadataJson); } catch { return { artists: [], tags: [] }; }
+  // Same rules as stringsFromMatchMetadata: trimmed non-empty strings from an array.
+  const read = (field: 'artists' | 'tags'): string[] => {
+    if (!meta || typeof meta !== 'object' || !(field in meta)) return [];
+    const values = (meta as Record<string, unknown>)[field];
+    return Array.isArray(values) ? values.filter((value): value is string => typeof value === 'string' && value.trim().length > 0).map(value => value.trim()) : [];
+  };
+  return { artists: read('artists'), tags: read('tags') };
+}
+
 /** Review only uncertain matches, using live names and library membership. */
 api.get('/series/needs-review', async (c) => {
   const client = connectedClient();
@@ -143,8 +157,7 @@ api.get('/series/needs-review', async (c) => {
           status: match.status, providerId: match.providerId, matchScore: match.matchScore,
           confirmed: match.confirmed,
           lastSyncedAt: match.lastSyncedAt,
-          artists: stringsFromMatchMetadata(match.metadataJson),
-          tags: stringsFromMatchMetadata(match.metadataJson, 'tags') };
+          ...matchArtistsAndTags(match.metadataJson) };
       });
     }));
     return c.json(results.flat().sort((a, b) => a.matchScore! - b.matchScore! || a.name.localeCompare(b.name)));

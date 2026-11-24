@@ -7,7 +7,7 @@ import { after, afterEach, beforeEach, test } from 'node:test';
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-duplicates-'));
 process.env.HTOSHO_DATA_DIR = dataDir;
 const { initDb, getDb, schema } = await import('../src/db/index.js');
-const { duplicateReasons, recordGalleryIdentity, prepareDuplicateCheck, findDuplicateReports, invalidateDuplicateLibrary, resolveDuplicateGallery, rememberDuplicateLibraryRoots, lookupLibraryMatches, findKnownLibraryDuplicateKeys } = await import('../src/services/galleryDuplicates.js');
+const { duplicateReasons, recordGalleryIdentity, prepareDuplicateCheck, findDuplicateReports, createDuplicateChecker, invalidateDuplicateLibrary, resolveDuplicateGallery, rememberDuplicateLibraryRoots, lookupLibraryMatches, findKnownLibraryDuplicateKeys } = await import('../src/services/galleryDuplicates.js');
 const { setDownloaderSettings, setKavitaConnection, DEFAULT_DOWNLOADER } = await import('../src/services/settings.js');
 const { doujinProviders } = await import('../src/downloader/providers.js');
 const { downloadQueue } = await import('../src/downloader/engine.js');
@@ -272,4 +272,33 @@ test('normal library browsing supplies persistent local roots without querying K
   const other = findDuplicateReports(await prepareDuplicateCheck([{ source: 'nhentai', galleryId: '2' }]));
   assert.equal(other.reports[0].matches.length, 0);
   assert.ok(other.warnings.some(warning => warning.includes('not indexed yet')));
+});
+
+test('a shared batch checker sees each enqueued item exactly like a fresh per-item check', async () => {
+  const [first, second] = await prepareDuplicateCheck([{ source: 'hitomi', galleryId: '1' }, { source: 'nhentai', galleryId: '2' }]);
+  const checker = createDuplicateChecker();
+  assert.equal(checker.check([first]).reports[0].matches.length, 0);
+  const id = Number(getDb().insert(schema.downloadQueue).values({ source: 'hitomi', galleryId: '1', status: 'queued' }).run().lastInsertRowid);
+  checker.noteQueued(first, id);
+  const shared = checker.check([second]);
+  assert.deepEqual(shared, findDuplicateReports([second]));
+  assert.equal(shared.reports[0].matches[0].taskId, id);
+  assert.equal(shared.reports[0].matches[0].status, 'queued');
+});
+test('library scans prune identities for deleted archives and untracked galleries', async () => {
+  const kept = archive('Kept.cbz');
+  const removed = archive('Removed.cbz');
+  await prepareDuplicateCheck([{ source: 'nhentai', galleryId: '2' }]);
+  const keys = () => getDb().select({ key: schema.keyValueStore.key }).from(schema.keyValueStore).all().map(row => row.key);
+  assert.ok(keys().includes(`duplicate-file:${removed}`));
+  fs.unlinkSync(removed);
+  for (const id of ['orphan', 'tracked']) getDb().insert(schema.keyValueStore).values({ key: `duplicate-gallery:hitomi:${id}`, valueJson: JSON.stringify({ source: 'hitomi', galleryId: id, title: 'Another Work', artists: ['Sample Artist'] }) }).run();
+  getDb().insert(schema.ownedGalleries).values({ source: 'hitomi', galleryId: 'tracked' }).run();
+  await prepareDuplicateCheck([{ source: 'nhentai', galleryId: '2' }], true);
+  const after = keys();
+  assert.ok(after.includes(`duplicate-file:${kept}`));
+  assert.ok(!after.includes(`duplicate-file:${removed}`));
+  assert.ok(!after.includes('duplicate-gallery:hitomi:orphan'), 'untracked preview identities are pruned');
+  assert.ok(after.includes('duplicate-gallery:hitomi:tracked'));
+  assert.ok(after.includes('duplicate-gallery:nhentai:2'), 'an identity recorded for the pending enqueue survives');
 });

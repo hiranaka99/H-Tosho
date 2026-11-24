@@ -3,10 +3,12 @@ import * as React from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ImageOff, Merge, RotateCcw, Search } from 'lucide-react';
 import { Link } from 'react-router';
-import { api, ApiError, type DuplicateCheck, type DoujinSearchResult, type DoujinSource } from '../lib/api';
+import { api, ApiError, type DuplicateCheck, type DoujinSearchResult, type DoujinSource, type DownloadTask } from '../lib/api';
 import { chapterErrors, chapterNumber } from '../lib/chapterNumbers';
-import { useDownloads } from '../lib/DownloadsContext';
-import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, Switch } from './ui';
+import { useDownloadsSelector } from '../lib/DownloadsContext';
+import { Button, Input, Label, Spinner } from './ui';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from './dialog';
+import { Switch } from './switch';
 import { toast } from '../lib/toast';
 import { useMergeProtectionReview } from './MergeProtectionReview';
 
@@ -39,20 +41,35 @@ interface MergeSubmission {
 }
 
 const galleryKey = (item: DoujinSearchResult) => `${item.source}:${item.galleryId}`;
+const NO_GALLERY_TASKS: readonly ({ status: DownloadTask['status']; outputPath: string | null } | undefined)[] = [];
+/** Targets rendered per "Show more" step; the grid is not virtualized. */
+const TARGET_PAGE_SIZE = 60;
+/** Same ordering as `localeCompare()` with no arguments, built once. */
+const NAME_COLLATOR = new Intl.Collator();
 const filename = (file: string) => file.split(/[\\/]/).pop() ?? file;
 const normalizeArtist = (name: string) => name.normalize('NFKC').replace(/_/g, ' ').trim().replace(/\s+/g, ' ').toLowerCase();
 
 function TargetCover({ option, className = '' }: { option: TargetOption; className?: string }) {
   return <div className={`relative flex aspect-[3/4] items-center justify-center overflow-hidden rounded-md bg-surface-2 ${className}`}>
     <span className="flex flex-col items-center gap-1 text-xs text-muted" aria-hidden="true"><ImageOff className="h-5 w-5" /> No cover</span>
-    {option.cover && <img key={option.cover} src={option.cover} alt="" loading="lazy" onError={event => { event.currentTarget.hidden = true; }} className="absolute inset-0 h-full w-full object-cover" />}
+    {option.cover && <img key={option.cover} src={option.cover} alt="" loading="lazy" decoding="async" onError={event => { event.currentTarget.hidden = true; }} className="absolute inset-0 h-full w-full object-cover" />}
   </div>;
 }
 
 /** All chapter edits are drafts. One merge job commits incoming and existing changes. */
 export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: MergeIntoSeriesDialogProps) {
   const qc = useQueryClient();
-  const { tasks } = useDownloads();
+  // Only status/outputPath of these galleries' tasks: structurally shared, so
+  // byte-level progress ticks don't re-render the dialog.
+  const itemsKey = items.map(galleryKey).join('\0');
+  const selectGalleryTasks = React.useCallback((tasks: DownloadTask[]) => itemsKey.split('\0').map((key) => {
+    const forGallery = tasks.filter((task) => `${task.source}:${task.galleryId}` === key);
+    const task = forGallery.find(task => ['queued', 'downloading', 'paused'].includes(task.status))
+      ?? forGallery.find(task => task.status === 'completed')
+      ?? forGallery[0];
+    return task ? { status: task.status, outputPath: task.outputPath } : undefined;
+  }), [itemsKey]);
+  const galleryTasks = useDownloadsSelector(selectGalleryTasks) ?? NO_GALLERY_TASKS;
   const id = React.useId();
   const [filter, setFilter] = React.useState('');
   const [targetId, setTargetId] = React.useState<number | null>(null);
@@ -62,9 +79,6 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
   const [drafts, setDrafts] = React.useState<Record<string, string>>({});
   const submitting = React.useRef(false);
 
-  const galleryTasks = items.map(item => tasks.find(task => task.source === item.source && task.galleryId === item.galleryId && ['queued', 'downloading', 'paused'].includes(task.status))
-    ?? tasks.find(task => task.source === item.source && task.galleryId === item.galleryId && task.status === 'completed')
-    ?? tasks.find(task => task.source === item.source && task.galleryId === item.galleryId));
   // Query observers survive StrictMode effect replay and support per-gallery retries.
   const fileQueries = useQueries({
     queries: items.map((item, index) => ({
@@ -98,18 +112,20 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
     queryKey: ['merge-into-series-options', 'artist-covers'],
     staleTime: 5 * 60_000,
     retry: false,
+    // Same keys and fetchers as the Libraries page, so recently loaded shelves
+    // come from the cache instead of a full Kavita fan-out on every open.
     queryFn: async () => {
-      const libraries = await api.libraries();
+      const libraries = await qc.fetchQuery({ queryKey: ['libraries'], queryFn: api.libraries });
       const results = await Promise.all(libraries.map(async library => {
         try {
-          const rows = await api.librarySeries(library.id);
+          const rows = await qc.fetchQuery({ queryKey: ['library-series', library.id], queryFn: () => api.librarySeries(library.id) });
           return { options: rows.map(row => ({ id: row.id, name: row.name, library: library.name, artists: row.artists ?? [], cover: row.cover ?? null } satisfies TargetOption)), failed: null };
         } catch {
           return { options: [] as TargetOption[], failed: library.name };
         }
       }));
       return {
-        options: results.flatMap(result => result.options).sort((a, b) => a.name.localeCompare(b.name)),
+        options: results.flatMap(result => result.options).sort((a, b) => NAME_COLLATOR.compare(a.name, b.name)),
         failedLibraries: results.flatMap(result => result.failed ? [result.failed] : []),
       };
     },
@@ -209,12 +225,23 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
   };
 
   const setChapter = (file: string, value: string) => setDrafts(current => ({ ...current, [file]: value }));
-  const selectedArtists = [...new Map(items.flatMap(item => item.artists ?? []).filter(artist => normalizeArtist(artist)).map(artist => [normalizeArtist(artist), artist.trim()])).values()];
-  const artistNames = new Set(selectedArtists.map(normalizeArtist));
-  const search = normalizeArtist(filter);
-  const visible = (options.data?.options ?? []).filter(option => search
-    ? normalizeArtist(`${option.name} ${option.library} ${option.artists.join(' ')}`).includes(search)
-    : !artistNames.size || option.artists.some(artist => artistNames.has(normalizeArtist(artist))));
+  const selectedArtists = React.useMemo(() => [...new Map(items.flatMap(item => item.artists ?? []).filter(artist => normalizeArtist(artist)).map(artist => [normalizeArtist(artist), artist.trim()])).values()], [items]);
+  const artistNames = React.useMemo(() => new Set(selectedArtists.map(normalizeArtist)), [selectedArtists]);
+  // Normalize every option once per dataset, not once per keystroke.
+  const searchIndex = React.useMemo(() => (options.data?.options ?? []).map(option => ({
+    option,
+    haystack: normalizeArtist(`${option.name} ${option.library} ${option.artists.join(' ')}`),
+    artists: option.artists.map(normalizeArtist),
+  })), [options.data]);
+  const deferredFilter = React.useDeferredValue(filter);
+  const search = normalizeArtist(deferredFilter);
+  const visible = React.useMemo(() => searchIndex.filter(entry => search
+    ? entry.haystack.includes(search)
+    : !artistNames.size || entry.artists.some(artist => artistNames.has(artist))).map(entry => entry.option), [searchIndex, search, artistNames]);
+  // The grid is not virtualized: render a page of targets at a time.
+  const [visibleLimit, setVisibleLimit] = React.useState(TARGET_PAGE_SIZE);
+  React.useEffect(() => setVisibleLimit(TARGET_PAGE_SIZE), [search]);
+  const shownTargets = visible.length > visibleLimit ? visible.slice(0, visibleLimit) : visible;
   const busy = save.isPending;
   const dismiss = () => { if (!submitting.current) onClose(); };
 
@@ -244,7 +271,7 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
                 <p id={`${id}-target-help`} className="break-words text-xs text-muted">{search ? 'All series' : selectedArtists.length ? `By ${selectedArtists.join(', ')}` : 'All series · no artist listed'}</p>
                 {!visible.length && <p role="status" className="py-2 text-sm text-muted">{search ? 'No matches. Try another search.' : selectedArtists.length ? 'No series by this artist. Search for another target.' : 'No series available. Check your Kavita libraries.'}</p>}
                 <div className="grid max-h-[min(26rem,45dvh)] min-w-0 grid-cols-2 gap-3 overflow-y-auto p-1 sm:grid-cols-4" aria-label="Choose a merge target">
-                  {visible.map(option => <button
+                  {shownTargets.map(option => <button
                     key={option.id}
                     type="button"
                     disabled={busy}
@@ -261,6 +288,9 @@ export function MergeIntoSeriesDialog({ items, onClose, onQueued, setup }: Merge
                     {!!option.artists.length && <span className="w-full break-words text-muted">{option.artists.join(', ')}</span>}
                     <span className="w-full break-words text-muted">{option.library}</span>
                   </button>)}
+                  {visible.length > shownTargets.length && <div className="col-span-full flex justify-center pt-1">
+                    <Button size="sm" variant="outline" disabled={busy} onClick={() => setVisibleLimit(limit => limit + TARGET_PAGE_SIZE)}>Show more ({visible.length - shownTargets.length} more)</Button>
+                  </div>}
                 </div>
               </>}
           </section>

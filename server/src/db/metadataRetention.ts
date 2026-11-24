@@ -25,7 +25,9 @@ export function pruneMetadataHistory(sqlite: Database.Database, now = Date.now()
     AND NOT EXISTS (SELECT 1 FROM metadata_restore_previews preview
       WHERE preview.source_operation_id = old.id AND preview.consumed_at IS NULL AND julianday(preview.expires_at) > julianday(?))`;
   sqlite.transaction(() => {
-    sqlite.prepare('DELETE FROM metadata_restore_previews WHERE julianday(expires_at) <= julianday(?)').run(nowIso);
+    // expires_at is always written as ISO-8601 UTC (toISOString), which orders
+    // lexically; a bare comparison lets idx_metadata_restore_preview_expiry serve it.
+    sqlite.prepare('DELETE FROM metadata_restore_previews WHERE expires_at <= ?').run(nowIso);
     const expiredIds = (sqlite.prepare(expiredQuery).all(cutoff, nowIso) as { id: string }[]).map((row) => row.id);
     for (let i = 0; i < expiredIds.length; i += 400) {
       const batch = expiredIds.slice(i, i + 400);

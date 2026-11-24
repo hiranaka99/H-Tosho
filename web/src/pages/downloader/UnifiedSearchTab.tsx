@@ -18,7 +18,7 @@ import { GallerySelectionBar, type GallerySelectionActions } from '../../compone
 import { GallerySearchInput } from '../../components/GallerySearchInput';
 
 import { EHENTAI_ACCOUNT_SETTINGS_URL, SOURCE_LABELS, type DownloadSetup } from './state';
-import { GalleryCard } from './GalleryCard';
+import { GalleryCard, PRIORITY_COVERS } from './GalleryCard';
 import { toWebResult, type UnifiedSearchValue } from './useUnifiedSearch';
 import { SearchHint } from './SearchHint';
 import { GallerySkeletonGrid } from './GallerySkeletons';
@@ -131,6 +131,33 @@ interface UnifiedSearchTabProps {
   showSelection: boolean;
 }
 
+interface UnifiedEntryCardProps {
+  entry: UnifiedSearchEntry;
+  onOpenEntry: (entry: UnifiedSearchEntry) => void;
+  onDownload: (item: DoujinSearchResult, entryId: string) => void;
+  downloadStatus: DownloadSetup['status'];
+  starting: boolean;
+  ownership: GalleryOwnership;
+  selectMode: boolean;
+  selected: boolean;
+  onToggleGroup: (entry: UnifiedSearchEntry) => void;
+  priority: boolean;
+}
+
+/** Ownership is rebuilt per render; the card (like GalleryCard) only reads its type. */
+function sameEntryCardProps(prev: UnifiedEntryCardProps, next: UnifiedEntryCardProps): boolean {
+  return prev.entry === next.entry
+    && prev.onOpenEntry === next.onOpenEntry
+    && prev.onDownload === next.onDownload
+    && prev.downloadStatus === next.downloadStatus
+    && prev.starting === next.starting
+    && prev.ownership.type === next.ownership.type
+    && prev.selectMode === next.selectMode
+    && prev.selected === next.selected
+    && prev.onToggleGroup === next.onToggleGroup
+    && prev.priority === next.priority;
+}
+
 const UnifiedEntryCard = React.memo(function UnifiedEntryCard({
   entry,
   onOpenEntry,
@@ -141,17 +168,8 @@ const UnifiedEntryCard = React.memo(function UnifiedEntryCard({
   selectMode,
   selected,
   onToggleGroup,
-}: {
-  entry: UnifiedSearchEntry;
-  onOpenEntry: (entry: UnifiedSearchEntry) => void;
-  onDownload: (item: DoujinSearchResult, entryId: string) => void;
-  downloadStatus: DownloadSetup['status'];
-  starting: boolean;
-  ownership: GalleryOwnership;
-  selectMode: boolean;
-  selected: boolean;
-  onToggleGroup: (entry: UnifiedSearchEntry) => void;
-}) {
+  priority,
+}: UnifiedEntryCardProps) {
   const primary = React.useMemo(() => toWebResult(entry.primary), [entry.primary]);
   const provenance = React.useMemo(
     () => (entry.variants.length > 1 ? { extraSources: extraSources(entry) } : undefined),
@@ -175,12 +193,13 @@ const UnifiedEntryCard = React.memo(function UnifiedEntryCard({
       ownership={ownership}
       selection={selection}
       quietAction
+      priority={priority}
     />
   );
-});
+}, sameEntryCardProps);
 
 export function UnifiedSearchTab({ unified, scopeControl, watchControl, onOpenEntry, onDownload, downloadStatus, startingKeys, ownershipFor, selectedEntryIds, onToggleGroup, selectMode, onToggleSelectMode, selectionActions, showSelection }: UnifiedSearchTabProps) {
-  const { draft, committed, status, entries, cursor, hasMore, loadedUniqueCount, totalUnique, providers, error, retrying } = unified;
+  const { draft, committed, status, entries, cursor, hasMore, loadedUniqueCount, totalUnique, providers, error, retrying, setDraft } = unified;
   const [formDraft, setFormDraft] = React.useState(draft);
   const syncedDraftRef = React.useRef(draft);
   React.useEffect(() => {
@@ -193,10 +212,10 @@ export function UnifiedSearchTab({ unified, scopeControl, watchControl, onOpenEn
     if (formDraft === syncedDraftRef.current) return;
     const timer = window.setTimeout(() => {
       syncedDraftRef.current = formDraft;
-      unified.setDraft(formDraft);
+      setDraft(formDraft);
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [formDraft, unified]);
+  }, [formDraft, setDraft]);
   const busy = status === 'searching' || status === 'loading-more';
   const failedProviders = providers.filter(isFailed);
   const okProviders = providers.filter(isOk);
@@ -297,7 +316,7 @@ export function UnifiedSearchTab({ unified, scopeControl, watchControl, onOpenEn
           </SearchResultsHeader>
           {showSelection && <GallerySelectionBar {...selectionActions} />}
           <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-            {entries.map((entry) => (
+            {entries.map((entry, index) => (
               <UnifiedEntryCard
                 key={entry.entryId}
                 entry={entry}
@@ -309,6 +328,7 @@ export function UnifiedSearchTab({ unified, scopeControl, watchControl, onOpenEn
                 selectMode={selectMode}
                 selected={selectedEntryIds.has(entry.entryId)}
                 onToggleGroup={onToggleGroup}
+                priority={index < PRIORITY_COVERS}
               />
             ))}
           </div>

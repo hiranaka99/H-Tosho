@@ -172,17 +172,16 @@ function evictExpired(): void {
     session.keys.clear();
   }
   if (sessions.size < MAX_SESSIONS * 2) return;
-  // Cap: drop the oldest still-alive session (its keys leave with it).
-  let oldest: UnifiedSession | null = null;
-  const seen = new Set<UnifiedSession>();
-  for (const session of sessions.values()) {
-    if (session.dead || seen.has(session)) continue;
-    seen.add(session);
-    if (!oldest || session.lastUsedAt < oldest.lastUsedAt) oldest = session;
-  }
-  if (oldest) {
-    for (const key of oldest.keys) sessions.delete(key);
-    oldest.keys.clear();
+  // Cap: drop least-recently-used sessions (their keys leave with them) until
+  // back under the cap. Dead sessions only hold a replay error, so they go
+  // first; dropping only alive ones let a burst of invalidated sessions keep
+  // the map over the cap until the idle TTL.
+  const byAge = [...new Set(sessions.values())]
+    .sort((a, b) => Number(!a.dead) - Number(!b.dead) || a.lastUsedAt - b.lastUsedAt);
+  for (const session of byAge) {
+    if (sessions.size < MAX_SESSIONS * 2) break;
+    for (const key of session.keys) sessions.delete(key);
+    session.keys.clear();
   }
 }
 

@@ -84,6 +84,9 @@ export function DownloadStatusBadge({ status }: { status: string }) {
 }
 
 // ---------------- Gallery card ----------------
+/** Cards whose covers load eagerly: roughly the first visible row of a grid. */
+export const PRIORITY_COVERS = 6;
+
 // Handlers take the item they act on (instead of per-card closures) so the
 // memoized card only re-renders when its own data changes.
 interface GalleryCardProps {
@@ -106,6 +109,8 @@ interface GalleryCardProps {
   provenance?: { extraSources: DoujinSource[] };
   /** Profile reasons explaining why a recommendation card was picked. */
   reasons?: string[];
+  /** First cards of the initially visible grid: load the cover eagerly at high priority. */
+  priority?: boolean;
 }
 
 function sameGalleryCardProps(prev: GalleryCardProps, next: GalleryCardProps): boolean {
@@ -116,6 +121,7 @@ function sameGalleryCardProps(prev: GalleryCardProps, next: GalleryCardProps): b
     || prev.display !== next.display
     || prev.quietAction !== next.quietAction
     || prev.compact !== next.compact
+    || prev.priority !== next.priority
     || prev.ownership.type !== next.ownership.type
     || prev.selection?.mode !== next.selection?.mode
     || prev.selection?.selected !== next.selection?.selected
@@ -170,7 +176,7 @@ function summarizeRecommendationReasons(reasons?: string[]): { summary: string; 
   return { summary: `Matches: ${topTags.join(', ')}`, full };
 }
 
-export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', quietAction = false, compact = false, provenance, reasons }: GalleryCardProps) {
+export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', quietAction = false, compact = false, provenance, reasons, priority = false }: GalleryCardProps) {
   const selectMode = selection?.mode === 'select', selected = selection?.selected ?? false;
   const onToggleSelect = selection?.onToggle, onReview = review?.onChange;
   const reviewed = review?.state === 'reviewed', reviewPending = review?.state === 'pending';
@@ -194,7 +200,7 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
     >
       <button type="button" onClick={() => (selectMode ? onToggleSelect?.(item) : onOpen(item))} className={cn('min-w-0 text-left', compact ? 'block' : 'grid grid-cols-[5rem_minmax(0,1fr)] min-[420px]:block')} aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
         <div className="relative overflow-hidden">
-          <Cover url={item.coverUrl} title={item.title} className="downloader-cover aspect-[3/4] w-full" />
+          <Cover url={item.coverUrl} title={item.title} className="downloader-cover aspect-[3/4] w-full" priority={priority} />
           <PageCountPill pageCount={item.pageCount} className={cn('absolute right-2', selectMode || selected ? 'bottom-2' : 'top-2')} />
           {ownershipType && !selectMode && !selected && <OwnershipChip type={ownershipType} className="pointer-events-none absolute bottom-2 left-2 max-w-[calc(100%-1rem)] max-[419px]:hidden" />}
           {(selectMode || selected) && (

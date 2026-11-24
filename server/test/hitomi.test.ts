@@ -388,7 +388,7 @@ test('random search pages share one ranking snapshot without duplicates or gaps'
   assert.deepEqual([...first.items, ...second.items].map(item => Number(item.galleryId)).sort((a, b) => a - b), [101, 103, 104, 105, 107, 108]);
 });
 
-test('search filters excludeIds before hydration, wraps skip on small pools, and honors opts.language', async () => {
+test('search filters excludeIds before hydration, wraps skip on small pools, and honors opts.language', async t => {
   const excluded = await hitomiProvider.search('cat', 3, undefined, { excludeIds: new Set([101, 103]) });
   assert.deepEqual(excluded.map(r => r.galleryId), ['104', '105', '107']);
   assert.ok(!fetchedUrls.some(u => u.endsWith('/galleries/101.js') || u.endsWith('/galleries/103.js')), 'excluded IDs must not be hydrated');
@@ -398,7 +398,33 @@ test('search filters excludeIds before hydration, wraps skip on small pools, and
   assert.ok(wrapped.length >= 3, 'wrapSkip must keep small pools populated instead of returning empty');
 
   fetchedUrls = [];
+  // Step past the short ranking-index cache so the language index is refetched.
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now + 5 * 60_000);
   const jp = await hitomiProvider.search('moon', 10, undefined, { language: 'japanese' });
   assert.deepEqual(jp.map(r => r.galleryId), ['301']);
   assert.ok(fetchedUrls.includes(`${API_BASE}/n/index-japanese.nozomi`));
+});
+
+test('ranking indexes are cached briefly and reordering never mutates the cached copy', async () => {
+  const first = await hitomiProvider.search('cat', 24);
+  fetchedUrls = [];
+  const ascending = await hitomiProvider.search('cat orderbydirection:ascending', 24);
+  const shuffled = await hitomiProvider.search('cat orderby:random', 24);
+  const again = await hitomiProvider.search('cat', 24);
+  assert.ok(!fetchedUrls.some(url => url.endsWith('/n/index-english.nozomi')), 'a fresh ranking index is served from the cache');
+  assert.deepEqual(ascending.map(r => r.galleryId), [...first.map(r => r.galleryId)].reverse());
+  assert.deepEqual(shuffled.map(r => r.galleryId).sort(), first.map(r => r.galleryId).sort());
+  assert.deepEqual(again.map(r => r.galleryId), first.map(r => r.galleryId));
+});
+
+test('merged ban sets are reused across searches without re-resolving entries', async () => {
+  setDownloaderSettings({ ...DEFAULT_DOWNLOADER, hitomiBannedTags: ['artist:evil', 'loli'] });
+  const first = await hitomiProvider.search('cat', 24);
+  fetchedUrls = [];
+  const second = await hitomiProvider.search('cat', 24);
+  assert.deepEqual(second.map(r => r.galleryId), first.map(r => r.galleryId));
+  assert.ok(!second.some(r => r.galleryId === '104'), 'the namespaced ban still applies');
+  assert.ok(!fetchedUrls.some(url => url.includes('/n/artist/evil-all.nozomi')), 'cached bans are not re-resolved');
+  assert.equal(fetchedUrls.filter(url => url.endsWith('.data')).length, 1, 'only the searched keyword reads the data file');
 });

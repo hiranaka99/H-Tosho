@@ -5,7 +5,7 @@ import { gallerySearchReducer } from './downloader/searchState';
 import { GallerySearchInput } from '../components/GallerySearchInput';
 import { useGalleryDownload } from './downloader/useGalleryDownload';
 import * as React from 'react';
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import { Search, Loader2, RotateCcw, CheckCircle2, Check, Compass, Star, Sparkles, CheckSquare, Settings2 } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult } from '../lib/api';
@@ -16,19 +16,20 @@ import { toast } from '../lib/toast';
 import { useDownloadSummary } from '../lib/DownloadsContext';
 import { Button, Card, CardContent, Badge, Select, EmptyState, Spinner, PageHeader, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, ErrorState, Pager } from '../components/ui';
 const MergeIntoSeriesDialog = React.lazy(() => import('../components/MergeIntoSeriesDialog').then((m) => ({ default: m.MergeIntoSeriesDialog })));
-import { GalleryFeedbackDialog, RecommendationFeedbackManager } from '../components/RecommendationFeedback';
+const GalleryFeedbackDialog = React.lazy(() => import('../components/RecommendationFeedback').then((m) => ({ default: m.GalleryFeedbackDialog })));
+const RecommendationFeedbackManager = React.lazy(() => import('../components/RecommendationFeedback').then((m) => ({ default: m.RecommendationFeedbackManager })));
 import { GallerySelectionBar, type GallerySelectionActions } from '../components/GallerySelectionBar';
 import { switchProviderSearch, type TranslationLink } from '../lib/searchTranslation';
 
 import { FALLBACK_SOURCES, SOURCE_COLORS, SOURCE_LABELS, sortsFor, readDownloaderState, writeDownloaderState, type DownloaderTab, type DownloaderStateCache, type SearchScope } from './downloader/state';
 import { DownloadDestination } from './downloader/DownloadSetup';
-import { GalleryCard } from './downloader/GalleryCard';
+import { GalleryCard, PRIORITY_COVERS } from './downloader/GalleryCard';
 const GalleryDetailModal = React.lazy(() => import('./downloader/GalleryDetailModal').then((m) => ({ default: m.GalleryDetailModal })));
 const ManagerTab = React.lazy(() => import('./downloader/DownloadManager').then((m) => ({ default: m.ManagerTab })));
 import { UnifiedSearchTab } from './downloader/UnifiedSearchTab';
 import { SearchResultsHeader, SelectModeButton, WatchSearchButton } from './downloader/SearchResultsHeader';
 import { useUnifiedSearch, toWebResult } from './downloader/useUnifiedSearch';
-import { WatchedManagerDrawer } from './downloader/WatchedSearchControls';
+const WatchedManagerDrawer = React.lazy(() => import('./downloader/WatchedSearchControls').then((m) => ({ default: m.WatchedManagerDrawer })));
 import { SearchHint } from './downloader/SearchHint';
 import { SearchFailure } from './downloader/SearchFailure';
 import { GallerySkeletonGrid } from './downloader/GallerySkeletons';
@@ -40,6 +41,15 @@ import { useDownloaderTransitions } from './downloader/motion';
 import type { UnifiedSearchEntry } from '../lib/api';
 const RESULTS_PAGE_SIZE = 25;
 const EMPTY_GALLERIES: DoujinSearchResult[] = [];
+/** POST /api/downloads/library-matches accepts at most this many galleries per request. */
+const LIBRARY_MATCH_CHUNK = 100;
+
+/** A handler whose identity never changes but always runs the latest closure. */
+function useStableHandler<A extends unknown[], R>(handler: (...args: A) => R): (...args: A) => R {
+  const ref = React.useRef(handler);
+  React.useLayoutEffect(() => { ref.current = handler; });
+  return React.useCallback((...args: A) => ref.current(...args), []);
+}
 
 /** One edition group's selectable variant (the stable primary unless `key` names another). */
 function webVariant(entry: UnifiedSearchEntry, key: string | null): DoujinSearchResult {
@@ -239,11 +249,17 @@ export function Downloader() {
     const where = targets.map((t) => SOURCE_LABELS[t.source]).join(' and ');
     setWatchPending(true);
     try {
+      // One request per source (at most a handful), so they run side by side;
+      // every request settles before the lists refetch, and the first failure is reported.
+      const settleAll = async (requests: Promise<unknown>[]) => {
+        const failed = (await Promise.allSettled(requests)).find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+        if (failed) throw failed.reason;
+      };
       if (watchingAll) {
-        for (const watch of existing) if (watch) await api.removeWatchedSearch(watch.id, watch.revision);
+        await settleAll(existing.flatMap((watch) => (watch ? [api.removeWatchedSearch(watch.id, watch.revision)] : [])));
         toast({ tone: 'info', title: 'Unwatched', description: `“${label}” on ${where} will no longer be checked.` });
       } else {
-        for (const [i, target] of targets.entries()) if (!existing[i]) await api.addWatchedSearch(target.source, target.query);
+        await settleAll(targets.flatMap((target, i) => (existing[i] ? [] : [api.addWatchedSearch(target.source, target.query)])));
         toast({ tone: 'success', title: 'Watching search', description: `New finds for “${label}” on ${where} appear in Following. Discord notifications depend on your settings.`, action: { label: 'Open Following', onClick: () => setTab('watched') } });
       }
     } catch (e) {
@@ -310,6 +326,11 @@ export function Downloader() {
     () => new Set(unified.entries.filter((e) => entryKeys(e).some((k) => selection.keys.has(k))).map((e) => e.entryId)),
     [unified.entries, selection.keys],
   );
+  const openUnifiedEntry = React.useCallback((entry: UnifiedSearchEntry) => {
+    setUnifiedSelectedEntry(entry);
+    setUnifiedVariantKey(`${entry.primary.source}:${entry.primary.galleryId}`);
+    setSelected(null);
+  }, []);
   const unifiedCommittedRef = React.useRef(unified.committed);
   React.useEffect(() => {
     if (unifiedCommittedRef.current === unified.committed) return;
@@ -341,19 +362,29 @@ export function Downloader() {
   // All sources selects whole edition groups; a group counts once whichever variant was picked.
   const pageSelectable: DoujinSearchResult[] = searchAll ? unified.entries.filter((e) => !unifiedSelectedIds.has(e.entryId)).map((e) => webVariant(e, null))
     : tab === 'search' ? pageItems : tab === 'recommend' ? visibleRecs : tab === 'watched' ? feedPageItems : EMPTY_GALLERIES;
-  const selectionActions: GallerySelectionActions = {
+  // Stable handlers + a memoized actions object keep the (memoized) selection
+  // bars from re-rendering their shortlist on every keystroke or poll.
+  const downloadSelected = useStableHandler(() => void downloadEach(selectedItems));
+  const selectAllOnPage = useStableHandler(() => selection.addMany(pageSelectable));
+  const mergeSelected = useStableHandler(() => openMergedDownload(selectedItems));
+  const mergeSelectedInto = useStableHandler(() => openMergeInto(selectedItems));
+  const hasPageSelectable = pageSelectable.length > 0;
+  const allPageSelected = searchAll ? unified.entries.length > 0 && pageSelectable.length === 0 : pageSelectable.length > 0 && pageSelectable.every(item => selectedGalleries.has(galleryKey(item)));
+  const selectAllLabel = searchAll ? 'Select all loaded' : tab === 'recommend' ? 'Select all shown' : 'Select all on page';
+  const selectionDestination = React.useMemo(() => <DownloadDestination setup={setup} />, [setup]);
+  const selectionActions = React.useMemo<GallerySelectionActions>(() => ({
     items: selectedItems,
-    onDownloadEach: () => void downloadEach(selectedItems),
-    onSelectAll: pageSelectable.length ? () => selection.addMany(pageSelectable) : undefined,
-    allSelected: searchAll ? unified.entries.length > 0 && pageSelectable.length === 0 : pageSelectable.length > 0 && pageSelectable.every(item => selectedGalleries.has(galleryKey(item))),
-    selectAllLabel: searchAll ? 'Select all loaded' : tab === 'recommend' ? 'Select all shown' : 'Select all on page',
-    destination: <DownloadDestination setup={setup} />,
-    onMerge: () => openMergedDownload(selectedItems),
-    onMergeInto: () => openMergeInto(selectedItems),
+    onDownloadEach: downloadSelected,
+    onSelectAll: hasPageSelectable ? selectAllOnPage : undefined,
+    allSelected: allPageSelected,
+    selectAllLabel,
+    destination: selectionDestination,
+    onMerge: mergeSelected,
+    onMergeInto: mergeSelectedInto,
     onRemove: toggleGallerySelect,
     onClear: clearSelection,
     onCancel: cancelSelection,
-  };
+  }), [selectedItems, downloadSelected, hasPageSelectable, selectAllOnPage, allPageSelected, selectAllLabel, selectionDestination, mergeSelected, mergeSelectedInto, toggleGallerySelect, clearSelection, cancelSelection]);
 
   /** Queue only unfinished entries, keeping failed items and all merge inputs. */
   async function doMergedDownload(folder: string, numbers: (number | null)[]) {
@@ -493,29 +524,47 @@ export function Downloader() {
       : []),
     [searchAll, unified.entries, tab, pageItems, visibleRecs, feedPageItems],
   );
-  const matchItemsKey = React.useMemo(
-    () => matchItems.map((item) => `${item.source}:${item.galleryId}`).join(','),
-    [matchItems],
-  );
-  const matchQuery = useQuery({
-    queryKey: ['gallery-library-matches', matchItemsKey],
-    queryFn: () => api.libraryMatches(matchItems),
-    enabled: matchItems.length > 0,
-    staleTime: 60_000,
+  // Fixed-size chunks in list order: "Load more" only appends, so earlier chunks
+  // keep their query keys (cache hits) and only the tail and new variants are
+  // sent. Each request also stays within the endpoint's 100-gallery limit.
+  const matchChunks = React.useMemo(() => {
+    const unique = [...new Map(matchItems.map((item) => [galleryKey(item), item])).values()];
+    const chunks: { key: string; items: DoujinSearchResult[] }[] = [];
+    for (let i = 0; i < unique.length; i += LIBRARY_MATCH_CHUNK) {
+      const items = unique.slice(i, i + LIBRARY_MATCH_CHUNK);
+      chunks.push({ key: items.map(galleryKey).join(','), items });
+    }
+    return chunks;
+  }, [matchItems]);
+  const matchResults = useQueries({
+    queries: matchChunks.map((chunk) => ({
+      queryKey: ['gallery-library-matches', chunk.key],
+      queryFn: () => api.libraryMatches(chunk.items),
+      staleTime: 60_000,
+    })),
   });
-  const libraryMatches = React.useMemo(() => new Map((matchQuery.data?.reports ?? []).map(report => [
+  const matchReports = matchResults.map((result) => result.data);
+  const matchReportsRef = React.useRef(matchReports);
+  if (matchReports.length !== matchReportsRef.current.length || matchReports.some((data, i) => data !== matchReportsRef.current[i])) matchReportsRef.current = matchReports;
+  const stableMatchReports = matchReportsRef.current;
+  const libraryMatches = React.useMemo(() => new Map(stableMatchReports.flatMap((data) => data?.reports ?? []).map(report => [
     `${report.source}:${report.galleryId}`,
     report.matches.some(match => match.confirmed && ['In library', 'Owned', 'completed'].includes(match.status)) ? 'owned' as const : report.matches.length ? 'possible' as const : undefined,
-  ])), [matchQuery.data]);
+  ])), [stableMatchReports]);
   const ownershipFor = (item: DoujinSearchResult) => galleryOwnership([galleryKey(item)], libraryMatches, downloadedAt, ownedKeys);
   const folderCount = foldersQuery.data?.length ?? 0;
   const showFolderFilter = folderCount > 0 || feedFolder !== '';
   // Filters appear once there is something to choose between, and stay put while narrowing.
   const showWatchFilter = (watches?.length ?? 0) > 1 || feedWatch !== '';
   const showSourceFilter = new Set((watches ?? []).map(watch => watch.source)).size > 1 || feedSource !== '';
+  // Only the visible tab's grid drives the FLIP pass, so background polls of
+  // another tab (Following refreshes every minute) never trigger a layout scan.
+  // The Downloads tab animates its own rows through its own queue motion hook.
+  const motionGalleries = tab === 'search' ? (searchAll ? null : pageItems) : tab === 'recommend' ? visibleRecs : tab === 'watched' ? feedPageItems : EMPTY_GALLERIES;
+  const motionEntries = searchAll ? unified.entries : null;
   const galleryMotionKey = React.useMemo(
-    () => `${tab}:${pageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${visibleRecs.map(item => `${item.source}:${item.galleryId}`).join(',')}:${feedPageItems.map(item => `${item.source}:${item.galleryId}`).join(',')}:${unified.entries.map(entry => entry.entryId).join(',')}:${selectMode}`,
-    [tab, pageItems, visibleRecs, feedPageItems, unified.entries, selectMode],
+    () => `${tab}:${searchAll}:${motionEntries ? motionEntries.map(entry => entry.entryId).join(',') : (motionGalleries ?? EMPTY_GALLERIES).map(item => `${item.source}:${item.galleryId}`).join(',')}:${selectMode}`,
+    [tab, searchAll, motionGalleries, motionEntries, selectMode],
   );
   const galleryMotionRef = useDownloaderTransitions(galleryMotionKey);
 
@@ -565,12 +614,8 @@ export function Downloader() {
               onToggle={() => void toggleWatches(unifiedWatchTargets, unified.committed ?? '')}
             />
           }
-          onOpenEntry={(entry) => {
-            setUnifiedSelectedEntry(entry);
-            setUnifiedVariantKey(`${entry.primary.source}:${entry.primary.galleryId}`);
-            setSelected(null);
-          }}
-          onDownload={(item) => doStartDownload(item)}
+          onOpenEntry={openUnifiedEntry}
+          onDownload={doStartDownload}
           downloadStatus={downloadStatus}
           startingKeys={pendingKeys}
           ownershipFor={unifiedOwnership}
@@ -653,10 +698,11 @@ export function Downloader() {
           ) : results && results.length > 0 ? (
             <>
               <div aria-busy={showingStaleResults} inert={showingStaleResults} className={cn('grid grid-cols-1 gap-3 transition-opacity duration-150 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6', showingStaleResults && 'opacity-50')}>
-                {pageItems.map(item => (
+                {pageItems.map((item, index) => (
                   <GalleryCard
                     key={item.source + item.galleryId}
                     item={item}
+                    priority={index < PRIORITY_COVERS}
                     onOpen={setSelected}
                     starting={pendingKeys.has(`${item.source}:${item.galleryId}`)}
                     onDownload={doStartDownload}
@@ -712,7 +758,11 @@ export function Downloader() {
                 <Button size="sm" variant={selectMode ? 'default' : 'outline'} className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 w-full sm:w-auto" aria-pressed={selectMode} onClick={() => setSelectMode(current => !current)} disabled={!visibleRecs.length && !selectedGalleries.size}>
                   <CheckSquare className="h-3.5 w-3.5 shrink-0" />{selectMode ? 'Done selecting' : 'Select galleries'}
                 </Button>
-                <RecommendationFeedbackManager feedback={feedbackQuery.data} pending={feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading} onAction={request => void updateFeedback(request)} />
+                {feedbackQuery.data && (
+                  <React.Suspense fallback={null}>
+                    <RecommendationFeedbackManager feedback={feedbackQuery.data} pending={feedbackPending !== null || recsRefreshing || recLibraryPending !== null || recsLoading} onAction={request => void updateFeedback(request)} />
+                  </React.Suspense>
+                )}
                 <Button size="sm" variant="outline" className="min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 w-full sm:w-auto" onClick={() => void doRefreshRecs()} disabled={recsRefreshing || recLibraryPending !== null || feedbackPending !== null || recsLoading} title="Get a fresh selection of recommendations">
                   <RotateCcw className={cn('h-3.5 w-3.5 shrink-0', recsRefreshing && 'animate-spin')} /> {recsRefreshing ? 'Refreshing…' : 'Refresh picks'}
                 </Button>
@@ -768,10 +818,11 @@ export function Downloader() {
             <>
             {showSelection && <GallerySelectionBar {...selectionActions} />}
             <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-              {visibleRecs.map(item => (
+              {visibleRecs.map((item, index) => (
                 <div key={item.source + item.galleryId} className="flex flex-col gap-1 [&>article]:flex-1">
                   <GalleryCard
                     item={item}
+                    priority={index < PRIORITY_COVERS}
                     onOpen={setSelected}
                     starting={pendingKeys.has(`${item.source}:${item.galleryId}`)}
                     onDownload={doStartDownload}
@@ -827,10 +878,10 @@ export function Downloader() {
             ) : feedItems.length ? (
               <>
                 <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-                  {feedPageItems.map(item => {
+                  {feedPageItems.map((item, index) => {
                     const key = `${item.source}:${item.galleryId}`, meta = feedMetaByKey.get(key);
                     return <div key={key} data-review-pending={reviewingKeys.has(key)} className="watched-discovery flex min-w-0 flex-col gap-1 [&>article]:flex-1">
-                      <GalleryCard item={item} onOpen={setSelected} starting={pendingKeys.has(key)} onDownload={doStartDownload} downloadSetup={downloadStatus} ownership={ownershipFor(item)} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(key), onToggle: toggleGallerySelect }} display="discovery" review={{ state: reviewingKeys.has(key) ? 'pending' : meta?.reviewedAt ? 'reviewed' : 'unreviewed', onChange: reviewGallery }} />
+                      <GalleryCard item={item} priority={index < PRIORITY_COVERS} onOpen={setSelected} starting={pendingKeys.has(key)} onDownload={doStartDownload} downloadSetup={downloadStatus} ownership={ownershipFor(item)} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(key), onToggle: toggleGallerySelect }} display="discovery" review={{ state: reviewingKeys.has(key) ? 'pending' : meta?.reviewedAt ? 'reviewed' : 'unreviewed', onChange: reviewGallery }} />
                       {meta && <div className="flex min-w-0 flex-col gap-1 px-1 text-xs">
                         <button className="min-h-11 break-words text-left text-muted underline-offset-4 hover:text-primary hover:underline line-clamp-2" onClick={() => { setFeedWatch(String(meta.searchId)); setFeedPage(1); }} title={`Filter by ${meta.watchLabel} · ${meta.query}`}>via {meta.watchLabel}{meta.watchRemoved ? ' · removed watch' : ''} · {timeAgo(meta.foundAt)}</button>
                         {meta.reviewedAt && <Button size="sm" variant="ghost" className="min-h-11 justify-start px-1" disabled={reviewingKeys.has(key)} onClick={() => reviewGallery(item, false)}><RotateCcw className="h-3.5 w-3.5" />Return to inbox</Button>}
@@ -849,7 +900,11 @@ export function Downloader() {
               </div>
             )}
           </section>
-          <WatchedManagerDrawer open={manageWatchesOpen} onOpenChange={setManageWatchesOpen} returnFocusTo={manageWatchesTrigger} onOpenSearch={(src, q) => searchTagFragment(q, src)} />
+          {/* A separate chunk that loads after the page; it stays mounted because it tracks
+              watch-check completions even while closed. */}
+          <React.Suspense fallback={null}>
+            <WatchedManagerDrawer open={manageWatchesOpen} onOpenChange={setManageWatchesOpen} returnFocusTo={manageWatchesTrigger} onOpenSearch={(src, q) => searchTagFragment(q, src)} />
+          </React.Suspense>
         </div>
       )}
       <React.Suspense fallback={null}>

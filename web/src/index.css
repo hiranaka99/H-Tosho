@@ -534,12 +534,20 @@ html[data-motion-paused] :is(.skeleton::after, .progress-stripes::after, .animat
   transition: transform 240ms var(--ease-out-soft);
 }
 
-/* A shelf book whose status just changed (e.g. after a match run) glows once. */
+/* A shelf book whose status just changed (e.g. after a match run) glows once.
+   The ring lives on a pseudo-element and only its opacity animates, so the
+   fade composites instead of repainting the card's shadow every frame. */
 @keyframes library-card-changed {
-  from { box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 60%, transparent); }
-  to { box-shadow: 0 0 0 3px transparent; }
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
-.library-card-changed {
+.library-card-changed::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 60%, transparent);
+  pointer-events: none;
   animation: library-card-changed 2400ms var(--ease-out-soft) both;
 }
 

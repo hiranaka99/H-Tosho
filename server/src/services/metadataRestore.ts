@@ -14,7 +14,7 @@ import { getKavitaConnection } from './settings.js';
 import { kavitaConnectionKey } from './kavitaState.js';
 import { RESTORABLE_COMICINFO_FIELDS } from '../lib/comicInfoRestore.js';
 import { libraryMutations, archiveMutations, archiveResource } from '../lib/mutations.js';
-import { captureArchiveSnapshot, restoreComicInfoArchive } from '../lib/cbz.js';
+import { captureArchiveSnapshot, restoreComicInfoArchive, verifyArchiveSnapshot, type ArchiveSnapshot } from '../lib/cbz.js';
 import { prepareArchiveRestores, recheckArchiveRestores, archiveProtectedFields, type ApprovedArchiveRestore, type PreparedArchiveRestores } from './metadataArchiveRestore.js';
 import { prepareCoverRestores, recheckCoverRestores, parseApprovedCoverRestores, type PreparedCoverRestores } from './metadataCoverRestore.js';
 import { coverJournal, retainedCoverAsset, pruneUnusedCoverAssets, type CoverJournal, type CoverJournalResult } from './metadataCovers.js';
@@ -248,6 +248,8 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
   const problems: string[] = [];
   const warnings: string[] = [];
   let coverCapture: CoverJournal | undefined;
+  /** Snapshots restoreComicInfoArchive verified; final readback reuses one while the file is still byte-identical. */
+  const restoredSnapshots = new Map<string, ArchiveSnapshot>();
   let coverResult: CoverJournalResult = { problems: [], warnings: [], changed: false, unverifiedNativeLocks: 0 };
   try {
     checkCancelled();
@@ -290,6 +292,7 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
       if (!fields.includes('title')) checkCancelled();
       db.update(schema.metadataOperationSteps).set({status:'applying'}).where(and(eq(schema.metadataOperationSteps.operationId,operationId),eq(schema.metadataOperationSteps.target,archive.target))).run();
       const observed = await restoreComicInfoArchive(archive.target,archive.desiredXml,archive.expected);
+      restoredSnapshots.set(archive.target,observed);
       db.update(schema.metadataOperationSteps).set({afterJson:JSON.stringify(observed),status:'observed'}).where(and(eq(schema.metadataOperationSteps.operationId,operationId),eq(schema.metadataOperationSteps.target,archive.target))).run();
     }
     if (fields.length) await client.restoreSeriesMetadataExact(plan.seriesId,desired,{expected,nativeLockFields,
@@ -334,11 +337,14 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
     }
   }
   let archiveChanged = false;
+  const stepsByTarget = new Map(archives.length ? db.select().from(schema.metadataOperationSteps)
+    .where(eq(schema.metadataOperationSteps.operationId,operationId)).all().map(step => [step.target,step]) : []);
   for (const archive of archives) {
-    const step = db.select().from(schema.metadataOperationSteps).where(and(eq(schema.metadataOperationSteps.operationId,operationId),eq(schema.metadataOperationSteps.target,archive.target))).get();
+    const step = stepsByTarget.get(archive.target);
     if (!step) continue;
     try {
-      const observed = await captureArchiveSnapshot(archive.target);
+      const restored = restoredSnapshots.get(archive.target);
+      const observed = restored && await verifyArchiveSnapshot(archive.target,restored) ? restored : await captureArchiveSnapshot(archive.target);
       archiveChanged ||= observed.xml !== archive.expected.xml;
       const verified = observed.xml === archive.desiredXml && observed.contentHash === archive.expected.contentHash;
       if (!verified && startedWrite) problems.push(`Archive restore was not confirmed: ${archive.target.split(/[\\/]/).at(-1)}`);

@@ -101,45 +101,79 @@ export async function downloadPages(
   }
 
   // Per-run byte-level accounting used to derive a live bytes-current/total.
+  // Running sums are maintained incrementally so every progress tick is O(1)
+  // instead of re-summing per-page maps (O(pages) on each chunk).
   const bs = {
     actual: new Map<number, number>(), // index -> final page size
     inflight: new Map<number, number>(), // index -> partial bytes received
+    inflightCounted: new Map<number, number>(), // index -> its (capped) share of inflightSum
     known: new Map<number, number>(), // index -> content-length (when the server reports it)
     completed: new Set<number>(),
+    actualSum: 0,
+    inflightSum: 0,
+    knownPendingSum: 0, // content-lengths of pages not yet completed
+    knownPendingCount: 0,
     lastT: Date.now(),
     lastBytes: 0,
     ema: 0,
   };
+  const recountInflight = (i: number): void => {
+    const received = bs.inflight.get(i);
+    const before = bs.inflightCounted.get(i) ?? 0;
+    if (received === undefined) {
+      bs.inflightSum -= before;
+      bs.inflightCounted.delete(i);
+      return;
+    }
+    const cap = bs.known.get(i);
+    const counted = cap ? Math.min(received, cap) : received;
+    bs.inflightSum += counted - before;
+    bs.inflightCounted.set(i, counted);
+  };
+  const setInflight = (i: number, received: number): void => {
+    bs.inflight.set(i, received);
+    recountInflight(i);
+  };
+  const clearInflight = (i: number): void => {
+    bs.inflight.delete(i);
+    recountInflight(i);
+  };
+  const setKnown = (i: number, length: number): void => {
+    const previous = bs.known.get(i);
+    if (previous === length) return;
+    bs.known.set(i, length);
+    if (!bs.completed.has(i)) {
+      if (previous === undefined) bs.knownPendingCount++;
+      bs.knownPendingSum += length - (previous ?? 0);
+    }
+    recountInflight(i);
+  };
+  const markCompleted = (i: number, size: number): void => {
+    bs.actualSum += size - (bs.actual.get(i) ?? 0);
+    bs.actual.set(i, size);
+    if (!bs.completed.has(i)) {
+      bs.completed.add(i);
+      const length = bs.known.get(i);
+      if (length !== undefined) {
+        bs.knownPendingCount--;
+        bs.knownPendingSum -= length;
+      }
+    }
+    clearInflight(i);
+  };
   // Seed the byte accounting with the resumed pages so speed/bytes never
   // report a spurious re-download of data already on disk.
-  for (const [i, size] of resumedSizes) {
-    bs.actual.set(i, size);
-    bs.completed.add(i);
-  }
-  const currentBytes = (): number => {
-    let sum = 0;
-    for (const v of bs.actual.values()) sum += v;
-    for (const [i, v] of bs.inflight) {
-      const cap = bs.known.get(i);
-      sum += cap ? Math.min(v, cap) : v;
-    }
-    return sum;
-  };
+  for (const [i, size] of resumedSizes) markCompleted(i, size);
+  const currentBytes = (): number => bs.actualSum + bs.inflightSum;
   // Baseline the speed window at the resumed byte total so the EMA does not
   // spike on the first tick after a resume.
   bs.lastBytes = currentBytes();
 
   const estimateTotal = (): number => {
     const completedCount = bs.completed.size;
-    let completedBytes = 0;
-    for (const v of bs.actual.values()) completedBytes += v;
-    const avg = completedCount > 0 ? completedBytes / completedCount : 0;
-    let est = 0;
-    for (let i = 0; i < total; i++) {
-      if (bs.completed.has(i)) est += bs.actual.get(i) ?? 0;
-      else if (bs.known.has(i)) est += bs.known.get(i) ?? 0;
-      else est += avg;
-    }
+    const avg = completedCount > 0 ? bs.actualSum / completedCount : 0;
+    const unknownCount = Math.max(0, total - completedCount - bs.knownPendingCount);
+    const est = bs.actualSum + bs.knownPendingSum + unknownCount * avg;
     return Math.max(Math.round(est), Math.round(currentBytes()));
   };
 
@@ -167,9 +201,23 @@ export async function downloadPages(
     if (i + 1 > frontier) frontier = i + 1;
     lastFileName = `Page ${frontier}/${total}`;
   };
+  // A throttled tick schedules one trailing report, so the latest state (e.g.
+  // a page that completed just after a tick) is never stranded until the next
+  // chunk arrives.
+  let trailingReport: ReturnType<typeof setTimeout> | null = null;
   const report = (forceBroadcast: boolean): void => {
     const now = Date.now();
-    if (!forceBroadcast && now - lastReport < 100) return;
+    if (!forceBroadcast && now - lastReport < 100) {
+      trailingReport ??= setTimeout(() => {
+        trailingReport = null;
+        report(false);
+      }, 100 - (now - lastReport));
+      return;
+    }
+    if (trailingReport) {
+      clearTimeout(trailingReport);
+      trailingReport = null;
+    }
     lastReport = now;
     updateProgress(
       taskId,
@@ -186,18 +234,18 @@ export async function downloadPages(
   };
 
   const onChunk = (i: number, received: number, totalBytes: number | null): void => {
-    if (totalBytes && totalBytes > 0) bs.known.set(i, totalBytes);
-    bs.inflight.set(i, received);
+    if (totalBytes && totalBytes > 0) setKnown(i, totalBytes);
+    setInflight(i, received);
     touchPage(i);
     report(false);
   };
 
   const onPageDone = (i: number, size: number): void => {
-    bs.actual.set(i, size);
-    bs.completed.add(i);
-    bs.inflight.delete(i);
+    markCompleted(i, size);
     touchPage(i);
-    report(true);
+    // Throttled like byte ticks: intermediate pages need no forced SSE frame
+    // (the final page is followed by the forced completion update below).
+    report(bs.completed.size >= total);
   };
 
   // Emit resumed progress immediately so the UI shows already-saved pages/bytes
@@ -247,7 +295,7 @@ export async function downloadPages(
               forceRefresh: attempt > 0,
               signal: ctx.controller.signal,
               onAttemptStart: () => {
-                bs.inflight.set(i, 0);
+                setInflight(i, 0);
               },
               onProgress: (received, totalBytes) => onChunk(i, received, totalBytes),
             });
@@ -255,7 +303,7 @@ export async function downloadPages(
             ext = result.ext;
             break;
           } catch (err) {
-            bs.inflight.delete(i);
+            clearInflight(i);
             lastErr = err;
             checkStop();
             if (ctx.stopped) return;
@@ -301,14 +349,14 @@ export async function downloadPages(
             try {
               size = await fetchPageToFileWithRetry(url, pageHeaders, filePath, {
                 onAttemptStart: () => {
-                  bs.inflight.set(i, 0);
+                  setInflight(i, 0);
                 },
                 onProgress: (received, totalBytes) => onChunk(i, received, totalBytes),
               }, ctx.controller.signal);
               usedUrl = url;
               break;
             } catch (err) {
-              bs.inflight.delete(i);
+              clearInflight(i);
               lastErr = err;
             }
           }
@@ -333,6 +381,10 @@ export async function downloadPages(
     throw error;
   }));
   const settled = await Promise.allSettled(workers);
+  if (trailingReport) {
+    clearTimeout(trailingReport);
+    trailingReport = null;
+  }
   await flushPageNames();
   const failed = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
   if (failed) throw failed.reason;

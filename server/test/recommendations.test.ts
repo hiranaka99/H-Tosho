@@ -865,3 +865,22 @@ test('active downloads, unreviewed Following finds, and known library duplicates
   ]);
   assert.deepEqual(filtered.map(i => i.galleryId), ['clean-1']);
 });
+
+test('unreachable galleries back off instead of being re-requested on every refresh', async () => {
+  const db = getDb();
+  db.delete(schema.downloadQueue).run();
+  db.insert(schema.downloadQueue).values({ source: 'nhentai', galleryId: 'deleted-gallery', title: 'Gone', status: 'completed' }).run();
+  let requests = 0;
+  doujinProviders.nhentai = {
+    ...originals.nhentai,
+    async getGallery() {
+      requests++;
+      throw new Error('HTTP 404');
+    },
+  };
+  doujinProviders.hitomi = stubProvider('hitomi', () => []);
+  await recs.refreshRecommendations();
+  await recs.refreshRecommendations();
+  assert.equal(requests, 1);
+  doujinProviders.nhentai = originals.nhentai;
+});

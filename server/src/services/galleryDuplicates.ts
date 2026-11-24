@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, schema } from '../db/index.js';
 import { getDownloaderSettings, getKavitaConnection } from './settings.js';
-import { and, eq, gte, inArray, lt } from 'drizzle-orm';
+import { and, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import type { KavitaLibrary } from '../kavita/types.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery } from '../downloader/types.js';
@@ -149,9 +149,25 @@ function coreTitleKeys(identity: GalleryIdentity): Set<string> {
   }).filter(key => key.length >= 3));
 }
 
+/**
+ * NFKC normalization and annotation stripping dominate a duplicate check, so
+ * each identity's keys are derived once. Cached identities keep their object
+ * across checks; the stored title guards against an identity being edited.
+ */
+interface TitleKeySets { title: string; titleAlt: string | undefined; exact: Set<string>; core: Set<string>; index: Set<string> }
+const titleKeyMemo = new WeakMap<GalleryIdentity, TitleKeySets>();
+function keySets(identity: GalleryIdentity): TitleKeySets {
+  const hit = titleKeyMemo.get(identity);
+  if (hit && hit.title === identity.title && hit.titleAlt === identity.titleAlt) return hit;
+  const exact = titleKeys(identity), core = coreTitleKeys(identity);
+  const sets = { title: identity.title, titleAlt: identity.titleAlt, exact, core, index: new Set([...exact, ...core]) };
+  titleKeyMemo.set(identity, sets);
+  return sets;
+}
+
 /** Every key a candidate may be found by; duplicateReasons decides which ones count. */
 function indexTitleKeys(identity: GalleryIdentity): Set<string> {
-  return new Set([...titleKeys(identity), ...coreTitleKeys(identity)]);
+  return keySets(identity).index;
 }
 
 const intersects = (a: Set<string>, b: Set<string>) => [...a].some(key => b.has(key));
@@ -171,29 +187,129 @@ export function duplicateReasons(a: GalleryIdentity, b: GalleryIdentity): string
   const samePageCount = Boolean(a.pageCount && b.pageCount);
   // Exact titles stand on their own; a renamed or re-annotated title
   // ("(Mana) Ganyu" vs "Ganyu") also needs the identical page count.
-  if (!intersects(titleKeys(a), titleKeys(b)) && !(samePageCount && intersects(coreTitleKeys(a), coreTitleKeys(b)))) return [];
+  const keysA = keySets(a), keysB = keySets(b);
+  if (!intersects(keysA.exact, keysB.exact) && !(samePageCount && intersects(keysA.core, keysB.core))) return [];
   return ['Same title', 'Same artist', ...(languageA && languageB ? ['Same language'] : []), ...(samePageCount ? ['Same page count'] : [])];
 }
 
 const storeKey = (identity: GalleryIdentity) => identity.path ? `duplicate-file:${identity.path}` : `duplicate-gallery:${identity.source}:${identity.galleryId}`;
+const galleryKey = (identity: { source: string; galleryId: string }) => `${identity.source}:${identity.galleryId}`;
+const ACTIVE_TASK_STATUSES = ['completed', 'queued', 'downloading', 'paused'];
+
 export function recordGalleryIdentity(gallery: DoujinGallery): GalleryIdentity {
   const identity: GalleryIdentity = { source: gallery.source, galleryId: gallery.galleryId, title: gallery.title, titleAlt: gallery.titleAlt, artists: gallery.artists ?? [], language: gallery.language, pageCount: gallery.pages.length || gallery.pageCount };
   saveIdentity(identity);
   return identity;
 }
-function saveIdentity(identity: GalleryIdentity): void {
-  const valueJson = JSON.stringify(identity);
-  getDb().insert(schema.keyValueStore).values({ key: storeKey(identity), valueJson }).onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson } }).run();
+
+/* ---------------------------------------------------------------------------
+ * In-memory index of the stored `duplicate-*` identities.
+ *
+ * Every write in this module (saveIdentity, scan pruning) updates the index in
+ * place. A cheap index-only row count catches inserts and deletes made outside
+ * this module, and invalidateDuplicateLibrary() forces a reload. A reload
+ * reuses the previous object for every unchanged row, so JSON parsing and
+ * title-key normalization only run for rows that actually changed.
+ * ------------------------------------------------------------------------- */
+const DUPLICATE_KEY_RANGE = and(gte(schema.keyValueStore.key, 'duplicate-'), lt(schema.keyValueStore.key, 'duplicate.'));
+interface StoredEntry { json: string; identity: GalleryIdentity }
+interface StoredIndex {
+  rowCount: number;
+  entries: Map<string, StoredEntry>;
+  rowKeys: WeakMap<GalleryIdentity, string>;
+  byTitle: Map<string, Set<GalleryIdentity>>;
+  bySourceKey: Map<string, Set<GalleryIdentity>>;
+  byGallery: Map<string, Set<GalleryIdentity>>;
+  byStoreKey: Map<string, Set<GalleryIdentity>>;
 }
-function storedIdentities(): GalleryIdentity[] {
-  return getDb()
-    .select({ valueJson: schema.keyValueStore.valueJson })
-    .from(schema.keyValueStore)
-    .where(and(gte(schema.keyValueStore.key, 'duplicate-'), lt(schema.keyValueStore.key, 'duplicate.')))
-    .all()
-    .flatMap(row => {
-      try { return [JSON.parse(row.valueJson) as GalleryIdentity]; } catch { return []; }
-    });
+let storedIndex: StoredIndex | null = null;
+let storedStale = true;
+
+function bucketAdd(map: Map<string, Set<GalleryIdentity>>, key: string, identity: GalleryIdentity): void {
+  const bucket = map.get(key);
+  if (bucket) bucket.add(identity);
+  else map.set(key, new Set([identity]));
+}
+function bucketDelete(map: Map<string, Set<GalleryIdentity>>, key: string, identity: GalleryIdentity): void {
+  const bucket = map.get(key);
+  if (bucket?.delete(identity) && !bucket.size) map.delete(key);
+}
+function indexEntry(index: StoredIndex, rowKey: string, entry: StoredEntry, add: boolean): void {
+  const { identity } = entry;
+  const apply = add ? bucketAdd : bucketDelete;
+  for (const title of indexTitleKeys(identity)) apply(index.byTitle, title, identity);
+  for (const key of identity.sourceKeys ?? []) apply(index.bySourceKey, key, identity);
+  apply(index.byGallery, galleryKey(identity), identity);
+  apply(index.byStoreKey, storeKey(identity), identity);
+  if (add) { index.entries.set(rowKey, entry); index.rowKeys.set(identity, rowKey); }
+  else index.entries.delete(rowKey);
+}
+const storedRowCount = (): number => getDb().select({ n: sql<number>`count(*)` }).from(schema.keyValueStore).where(DUPLICATE_KEY_RANGE).get()?.n ?? 0;
+function loadStoredIndex(previous: StoredIndex | null): StoredIndex {
+  const rows = getDb().select({ key: schema.keyValueStore.key, valueJson: schema.keyValueStore.valueJson })
+    .from(schema.keyValueStore).where(DUPLICATE_KEY_RANGE).all();
+  const index: StoredIndex = { rowCount: rows.length, entries: new Map(), rowKeys: new WeakMap(), byTitle: new Map(), bySourceKey: new Map(), byGallery: new Map(), byStoreKey: new Map() };
+  for (const row of rows) {
+    const reused = previous?.entries.get(row.key);
+    if (reused && reused.json === row.valueJson) { indexEntry(index, row.key, reused, true); continue; }
+    try { indexEntry(index, row.key, { json: row.valueJson, identity: JSON.parse(row.valueJson) as GalleryIdentity }, true); }
+    catch { /* an unreadable row never matches */ }
+  }
+  return index;
+}
+/** The current stored identities, refreshed only when they may have changed. */
+function getStoredIndex(): StoredIndex {
+  if (!storedIndex || storedStale || storedIndex.rowCount !== storedRowCount()) {
+    storedIndex = loadStoredIndex(storedIndex);
+    storedStale = false;
+  }
+  return storedIndex;
+}
+/** Stored identities in SQLite key order, which is the order matches are reported in. */
+function inKeyOrder(index: StoredIndex, identities: Iterable<GalleryIdentity>): GalleryIdentity[] {
+  return [...identities].sort((a, b) => {
+    const ka = index.rowKeys.get(a) ?? '', kb = index.rowKeys.get(b) ?? '';
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+}
+
+/** Gallery identities recorded recently; orphan pruning leaves them for the enqueue that follows. */
+const recentlyRecorded = new Map<string, number>();
+const RECENT_IDENTITY_MS = 60 * 60_000;
+function noteRecorded(key: string): void {
+  recentlyRecorded.delete(key);
+  recentlyRecorded.set(key, Date.now());
+  while (recentlyRecorded.size > 5000) recentlyRecorded.delete(recentlyRecorded.keys().next().value!);
+}
+
+function saveIdentity(identity: GalleryIdentity): void {
+  const key = storeKey(identity);
+  const valueJson = JSON.stringify(identity);
+  if (!identity.path) noteRecorded(key);
+  // A loaded index is current for this module's own writes; skipping the row
+  // count here keeps a large library scan from re-counting once per archive.
+  const index = storedIndex && !storedStale ? storedIndex : getStoredIndex();
+  const previous = index.entries.get(key);
+  // Re-previewing a gallery usually yields identical metadata: skip the write.
+  if (previous?.json === valueJson) return;
+  getDb().insert(schema.keyValueStore).values({ key, valueJson }).onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson } }).run();
+  if (previous) indexEntry(index, key, previous, false);
+  // A row that existed but could not be parsed is not in `entries`; the next
+  // count check then disagrees and reloads, which is always safe.
+  else index.rowCount++;
+  indexEntry(index, key, { json: valueJson, identity: JSON.parse(valueJson) as GalleryIdentity }, true);
+}
+function deleteStoredRows(keys: string[]): void {
+  if (!keys.length) return;
+  const index = getStoredIndex();
+  const db = getDb();
+  db.transaction(() => {
+    for (let i = 0; i < keys.length; i += 500) db.delete(schema.keyValueStore).where(inArray(schema.keyValueStore.key, keys.slice(i, i + 500))).run();
+  });
+  for (const key of keys) {
+    const entry = index.entries.get(key);
+    if (entry) { indexEntry(index, key, entry, false); index.rowCount--; }
+  }
 }
 
 let scan: Promise<void> | null = null;
@@ -201,7 +317,8 @@ let scannedAt = 0;
 let rootsKey = '';
 let availableFiles = new Set<string>();
 let warnings: string[] = [];
-export function invalidateDuplicateLibrary(): void { scannedAt = 0; }
+/** Library contents or stored identities changed: rescan (within the cache window) and reload. */
+export function invalidateDuplicateLibrary(): void { scannedAt = 0; storedStale = true; }
 
 /** Learn folders from normal library browsing; downloading never waits for Kavita. */
 export function rememberDuplicateLibraryRoots(libraries: KavitaLibrary[]): void {
@@ -234,6 +351,9 @@ async function scanLibrary(): Promise<void> {
     if (conn.baseUrl && conn.apiKey && !rootsKnown && !settings.libraryPathMappings?.length) problems.push('Library folders are not indexed yet. Open Libraries or configure folder mappings.');
     const files = new Set<string>();
     const visited = new Set<string>();
+    // Folders that could not be listed: their archives may still exist, so
+    // their cached identities are kept rather than pruned.
+    const unreadable: string[] = [];
     async function walk(dir: string): Promise<void> {
       const absolute = path.resolve(dir);
       if (visited.has(absolute)) return;
@@ -247,12 +367,15 @@ async function scanLibrary(): Promise<void> {
         }
       } catch (error) {
         // A new output directory may not exist until the first download.
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') problems.push(`Could not check folder: ${absolute}`);
-        else if (absolute !== path.resolve(settings.downloadDirectory || '.')) problems.push(`Library folder unavailable: ${absolute}`);
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { problems.push(`Could not check folder: ${absolute}`); unreadable.push(absolute); }
+        else if (absolute !== path.resolve(settings.downloadDirectory || '.')) { problems.push(`Library folder unavailable: ${absolute}`); unreadable.push(absolute); }
       }
     }
     for (const root of new Set(roots)) await walk(root);
-    const previous = new Map(storedIdentities().filter(identity => identity.path).map(identity => [identity.path!, identity]));
+    // Pick up rows written outside this module since the last check.
+    storedStale = true;
+    const previous = new Map<string, GalleryIdentity>();
+    for (const { identity } of getStoredIndex().entries.values()) if (identity.path) previous.set(identity.path, identity);
     const updatedIdentities: GalleryIdentity[] = [];
     await mapLimit([...files], 6, async file => {
       try {
@@ -286,6 +409,7 @@ async function scanLibrary(): Promise<void> {
         for (const identity of updatedIdentities) saveIdentity(identity);
       });
     }
+    pruneStoredIdentities(files, unreadable);
     availableFiles = files;
     if (missingMetadata) problems.push(`${missingMetadata} archive${missingMetadata === 1 ? '' : 's'} missing title or artist metadata could not be compared.`);
     warnings = problems.length > 10 ? [...problems.slice(0, 10), `${problems.length - 10} additional archive or folder warnings.`] : problems;
@@ -293,6 +417,30 @@ async function scanLibrary(): Promise<void> {
     scannedAt = Date.now();
   })();
   try { await scan; } finally { scan = null; }
+}
+
+/**
+ * Drop identities that can never match again: archives that are gone (or no
+ * longer comparable) from every folder that could be listed, and gallery
+ * identities no download task or ownership refers to. Those are re-recorded
+ * whenever the gallery is previewed or checked again.
+ */
+function pruneStoredIdentities(comparableFiles: Set<string>, unreadable: string[]): void {
+  const db = getDb();
+  const referenced = new Set(db.selectDistinct({ source: schema.downloadQueue.source, galleryId: schema.downloadQueue.galleryId }).from(schema.downloadQueue).all().map(galleryKey));
+  for (const row of db.select({ source: schema.ownedGalleries.source, galleryId: schema.ownedGalleries.galleryId }).from(schema.ownedGalleries).all()) referenced.add(galleryKey(row));
+  const now = Date.now();
+  for (const [key, at] of recentlyRecorded) { if (now - at <= RECENT_IDENTITY_MS) break; recentlyRecorded.delete(key); }
+  const insideUnreadable = (file: string) => unreadable.some(dir => file === dir || file.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep));
+  const stale: string[] = [];
+  for (const [rowKey, { identity }] of getStoredIndex().entries) {
+    if (identity.path) {
+      if (rowKey === storeKey(identity) && !comparableFiles.has(identity.path) && !insideUnreadable(identity.path)) stale.push(rowKey);
+    } else if (rowKey === storeKey(identity) && !referenced.has(galleryKey(identity)) && !recentlyRecorded.has(rowKey)) {
+      stale.push(rowKey);
+    }
+  }
+  deleteStoredRows(stale);
 }
 
 export async function prepareDuplicateCheck(items: { source: DoujinSource; galleryId: string; url?: string }[], refresh = false): Promise<GalleryIdentity[]> {
@@ -311,58 +459,87 @@ export async function lookupLibraryMatches(items: GalleryIdentity[]) {
   return findDuplicateReports(items, [], true);
 }
 
-/** Synchronous check immediately before enqueue closes races with other requests. */
-export function findDuplicateReports(incoming: GalleryIdentity[], excludedPaths: string[] = [], includeOwned = false): { reports: DuplicateReport[]; warnings: string[] } {
-  const db = getDb();
-  const tasks = db.select({
-    id: schema.downloadQueue.id,
-    source: schema.downloadQueue.source,
-    galleryId: schema.downloadQueue.galleryId,
-    status: schema.downloadQueue.status,
-    outputPath: schema.downloadQueue.outputPath,
-  }).from(schema.downloadQueue).where(inArray(schema.downloadQueue.status, ['completed', 'queued', 'downloading', 'paused'])).all();
-  const owned = new Set(db.select({ source: schema.ownedGalleries.source, galleryId: schema.ownedGalleries.galleryId }).from(schema.ownedGalleries).all().map(row => `${row.source}:${row.galleryId}`));
-  const tasksByGallery = new Map(tasks.map(task => [`${task.source}:${task.galleryId}`, task]));
-  const excluded = new Set(excludedPaths.map(file => path.resolve(file)));
-  const candidates = storedIdentities().filter(identity => identity.path ? availableFiles.has(identity.path) && !excluded.has(identity.path) : owned.has(`${identity.source}:${identity.galleryId}`) || tasksByGallery.has(`${identity.source}:${identity.galleryId}`));
-  // Older downloads already have title/artist/language profiles; no provider backfill is needed.
-  const known = new Set(candidates.map(storeKey));
-  if (includeOwned) for (const item of incoming) {
-    const key = `${item.source}:${item.galleryId}`;
-    if ((owned.has(key) || tasksByGallery.has(key)) && !known.has(storeKey(item))) candidates.push({ ...item });
-  }
-  for (const row of db.select({
+/** Older galleries' tag profiles, reused across checks while their row is unchanged. */
+interface TagProfile { title: string | null; artistsJson: string; language: string | null; identity: GalleryIdentity | null }
+let tagProfiles = new Map<string, TagProfile>();
+function tagIdentities(): { key: string; identity: GalleryIdentity }[] {
+  const next = new Map<string, TagProfile>();
+  const out: { key: string; identity: GalleryIdentity }[] = [];
+  for (const row of getDb().select({
     source: schema.galleryTags.source,
     galleryId: schema.galleryTags.galleryId,
     title: schema.galleryTags.title,
     artistsJson: schema.galleryTags.artistsJson,
     language: schema.galleryTags.language,
   }).from(schema.galleryTags).all()) {
-    const key = `${row.source}:${row.galleryId}`;
-    if (!owned.has(key) && !tasksByGallery.has(key)) continue;
-    const identity: GalleryIdentity = { source: row.source, galleryId: row.galleryId, title: row.title ?? '', artists: [], language: row.language };
-    if (known.has(storeKey(identity))) continue;
-    try { identity.artists = JSON.parse(row.artistsJson); } catch { continue; }
-    candidates.push(identity);
-  }
-  const candidateSet = new Set(candidates);
-  const bySourceKey = new Map<string, GalleryIdentity[]>();
-  const addSourceKey = (key: string, candidate: GalleryIdentity) => {
-    const list = bySourceKey.get(key);
-    if (list) list.push(candidate);
-    else bySourceKey.set(key, [candidate]);
-  };
-  for (const candidate of candidates) {
-    if (candidate.sourceKeys) for (const sk of candidate.sourceKeys) addSourceKey(sk, candidate);
-    if (includeOwned) addSourceKey(`${candidate.source}:${candidate.galleryId}`, candidate);
-  }
-  const byTitle = new Map<string, Set<GalleryIdentity>>();
-  for (const candidate of includeOwned ? candidates : [...candidates, ...incoming]) {
-    for (const title of indexTitleKeys(candidate)) {
-      let bucket = byTitle.get(title);
-      if (!bucket) { bucket = new Set(); byTitle.set(title, bucket); }
-      bucket.add(candidate);
+    const key = galleryKey(row);
+    let profile = tagProfiles.get(key);
+    if (!profile || profile.title !== row.title || profile.artistsJson !== row.artistsJson || profile.language !== row.language) {
+      let identity: GalleryIdentity | null = { source: row.source, galleryId: row.galleryId, title: row.title ?? '', artists: [], language: row.language };
+      try { identity.artists = JSON.parse(row.artistsJson); } catch { identity = null; }
+      profile = { title: row.title, artistsJson: row.artistsJson, language: row.language, identity };
     }
+    next.set(key, profile);
+    if (profile.identity) out.push({ key, identity: profile.identity });
+  }
+  tagProfiles = next;
+  return out;
+}
+
+interface TaskRef { id: number; status: string; outputPath: string | null }
+export interface DuplicateChecker {
+  /** Same result as findDuplicateReports(incoming, excludedPaths) against the checker's snapshot. */
+  check(incoming: GalleryIdentity[]): { reports: DuplicateReport[]; warnings: string[] };
+  /** Record a task enqueued after the snapshot (by id), so later checks see it as a fresh check would. */
+  noteQueued(identity: GalleryIdentity, taskId: number): void;
+}
+
+/**
+ * Build the candidate set (stored identities, ownership, active tasks and tag
+ * profiles) once. A batch that checks and enqueues items one at a time shares
+ * one checker instead of reloading everything per item.
+ */
+export function createDuplicateChecker(excludedPaths: string[] = []): DuplicateChecker {
+  return buildChecker(excludedPaths, false, []);
+}
+
+function buildChecker(excludedPaths: string[], includeOwned: boolean, ownedIncoming: GalleryIdentity[]): DuplicateChecker {
+  const db = getDb();
+  const tasksByGallery = new Map<string, TaskRef>(db.select({
+    id: schema.downloadQueue.id,
+    source: schema.downloadQueue.source,
+    galleryId: schema.downloadQueue.galleryId,
+    status: schema.downloadQueue.status,
+    outputPath: schema.downloadQueue.outputPath,
+  }).from(schema.downloadQueue).where(inArray(schema.downloadQueue.status, ACTIVE_TASK_STATUSES)).all().map(task => [galleryKey(task), task]));
+  const owned = new Set(db.select({ source: schema.ownedGalleries.source, galleryId: schema.ownedGalleries.galleryId }).from(schema.ownedGalleries).all().map(galleryKey));
+  const excluded = new Set(excludedPaths.map(file => path.resolve(file)));
+  const index = getStoredIndex();
+  const tracked = (key: string) => owned.has(key) || tasksByGallery.has(key);
+  const eligible = (candidate: GalleryIdentity) => candidate.path ? availableFiles.has(candidate.path) && !excluded.has(candidate.path) : tracked(galleryKey(candidate));
+  const known = (key: string) => [...index.byStoreKey.get(key) ?? []].some(eligible);
+  // Older downloads already have title/artist/language profiles; no provider backfill is needed.
+  const extras: GalleryIdentity[] = [];
+  if (includeOwned) for (const item of ownedIncoming) {
+    if (tracked(galleryKey(item)) && !known(storeKey(item))) extras.push({ ...item });
+  }
+  const tags: GalleryIdentity[] = [];
+  for (const { key, identity } of tagIdentities()) {
+    if (tracked(key) && !known(`duplicate-gallery:${key}`)) tags.push(identity);
+  }
+  // Extras and tag profiles are few or cheap to index per check; stored
+  // identities use the shared index and are filtered by eligibility on read.
+  const local = new Map<string, GalleryIdentity[]>();
+  const localDirect = new Map<string, GalleryIdentity[]>();
+  const push = (map: Map<string, GalleryIdentity[]>, key: string, identity: GalleryIdentity) => {
+    const list = map.get(key);
+    if (list) list.push(identity);
+    else map.set(key, [identity]);
+  };
+  for (const candidate of [...extras, ...tags]) {
+    for (const title of indexTitleKeys(candidate)) push(local, title, candidate);
+    for (const key of candidate.sourceKeys ?? []) push(localDirect, key, candidate);
+    if (includeOwned) push(localDirect, galleryKey(candidate), candidate);
   }
   const existsCache = new Map<string, boolean>();
   const pathExists = (filePath: string): boolean => {
@@ -370,29 +547,57 @@ export function findDuplicateReports(incoming: GalleryIdentity[], excludedPaths:
     if (hit === undefined) { hit = fs.existsSync(filePath); existsCache.set(filePath, hit); }
     return hit;
   };
-  return { reports: incoming.map(item => {
-    const matches: DuplicateMatch[] = [];
-    const seen = new Set<string>();
-    const itemKey = `${item.source}:${item.galleryId}`;
-    const titleMatches = new Set<GalleryIdentity>();
-    for (const title of indexTitleKeys(item)) {
-      const bucket = byTitle.get(title);
-      if (bucket) for (const candidate of bucket) titleMatches.add(candidate);
-    }
-    const directMatches = bySourceKey.get(itemKey);
-    if (directMatches) for (const candidate of directMatches) titleMatches.add(candidate);
-    for (const candidate of titleMatches) {
-      const confirmed = candidateSet.has(candidate) && (candidate.sourceKeys?.includes(itemKey) || (includeOwned && candidate.source === item.source && candidate.galleryId === item.galleryId));
-      if (!confirmed && candidate.source === item.source && candidate.galleryId === item.galleryId) continue;
-      if (!confirmed && !candidate.path && candidate.source === item.source) continue;
-      const reasons = confirmed ? ['Same source gallery'] : duplicateReasons(item, candidate);
-      if (!reasons.length || seen.has(storeKey(candidate)) || (candidate.path && !pathExists(candidate.path))) continue;
-      seen.add(storeKey(candidate));
-      const task = tasksByGallery.get(`${candidate.source}:${candidate.galleryId}`);
-      matches.push({ title: candidate.title, source: candidate.source, galleryId: candidate.galleryId, artists: candidate.artists, language: candidate.language, pageCount: candidate.pageCount, path: candidate.path ?? task?.outputPath ?? undefined, taskId: task?.id, status: candidate.path ? 'In library' : task?.status ?? (owned.has(`${candidate.source}:${candidate.galleryId}`) ? 'Owned' : 'In selection'), reasons, confirmed: !!confirmed });
-    }
-    return { source: item.source as DoujinSource, galleryId: item.galleryId, title: item.title, matches };
-  }), warnings: [...warnings] };
+
+  const check = (incoming: GalleryIdentity[]) => {
+    const incomingSet = new Set(incoming);
+    const incomingByTitle = new Map<string, GalleryIdentity[]>();
+    if (!includeOwned) for (const item of incoming) for (const title of indexTitleKeys(item)) push(incomingByTitle, title, item);
+    return { reports: incoming.map(item => {
+      const matches: DuplicateMatch[] = [];
+      const seen = new Set<string>();
+      const itemKey = galleryKey(item);
+      // Candidate order matches a full scan: stored rows by key, then the
+      // checked items' own owned profiles, tag profiles, and the selection.
+      const titleMatches = new Set<GalleryIdentity>();
+      for (const title of indexTitleKeys(item)) {
+        const bucket = index.byTitle.get(title);
+        if (bucket) for (const candidate of inKeyOrder(index, [...bucket].filter(eligible))) titleMatches.add(candidate);
+        for (const candidate of local.get(title) ?? []) titleMatches.add(candidate);
+        for (const candidate of incomingByTitle.get(title) ?? []) titleMatches.add(candidate);
+      }
+      const direct = new Set([...index.bySourceKey.get(itemKey) ?? [], ...(includeOwned ? index.byGallery.get(itemKey) ?? [] : [])]);
+      for (const candidate of inKeyOrder(index, [...direct].filter(eligible))) titleMatches.add(candidate);
+      for (const candidate of localDirect.get(itemKey) ?? []) titleMatches.add(candidate);
+      for (const candidate of titleMatches) {
+        const confirmed = !incomingSet.has(candidate) && (candidate.sourceKeys?.includes(itemKey) || (includeOwned && candidate.source === item.source && candidate.galleryId === item.galleryId));
+        if (!confirmed && candidate.source === item.source && candidate.galleryId === item.galleryId) continue;
+        if (!confirmed && !candidate.path && candidate.source === item.source) continue;
+        const reasons = confirmed ? ['Same source gallery'] : duplicateReasons(item, candidate);
+        if (!reasons.length || seen.has(storeKey(candidate)) || (candidate.path && !pathExists(candidate.path))) continue;
+        seen.add(storeKey(candidate));
+        const task = tasksByGallery.get(galleryKey(candidate));
+        matches.push({ title: candidate.title, source: candidate.source, galleryId: candidate.galleryId, artists: candidate.artists, language: candidate.language, pageCount: candidate.pageCount, path: candidate.path ?? task?.outputPath ?? undefined, taskId: task?.id, status: candidate.path ? 'In library' : task?.status ?? (owned.has(galleryKey(candidate)) ? 'Owned' : 'In selection'), reasons, confirmed: !!confirmed });
+      }
+      return { source: item.source as DoujinSource, galleryId: item.galleryId, title: item.title, matches };
+    }), warnings: [...warnings] };
+  };
+
+  return {
+    check,
+    noteQueued(identity, taskId) {
+      // The enqueued gallery's identity is already stored (prepareDuplicateCheck
+      // recorded it); its task is what makes it a candidate. Enqueueing may
+      // already have claimed the task, so read its current status.
+      const task = db.select({ id: schema.downloadQueue.id, status: schema.downloadQueue.status, outputPath: schema.downloadQueue.outputPath })
+        .from(schema.downloadQueue).where(eq(schema.downloadQueue.id, taskId)).get();
+      if (task && ACTIVE_TASK_STATUSES.includes(task.status)) tasksByGallery.set(galleryKey(identity), task);
+    },
+  };
+}
+
+/** Synchronous check immediately before enqueue closes races with other requests. */
+export function findDuplicateReports(incoming: GalleryIdentity[], excludedPaths: string[] = [], includeOwned = false): { reports: DuplicateReport[]; warnings: string[] } {
+  return buildChecker(excludedPaths, includeOwned, incoming).check(incoming);
 }
 
 /**
@@ -402,43 +607,35 @@ export function findDuplicateReports(incoming: GalleryIdentity[], excludedPaths:
 export function findKnownLibraryDuplicateKeys(incoming: GalleryIdentity[]): Set<string> {
   if (!incoming.length) return new Set();
   const db = getDb();
-  const owned = new Set(db.select().from(schema.ownedGalleries).all().map(row => `${row.source}:${row.galleryId}`));
+  const index = getStoredIndex();
+  if (!index.entries.size) return new Set();
+  const owned = new Set(db.select({ source: schema.ownedGalleries.source, galleryId: schema.ownedGalleries.galleryId }).from(schema.ownedGalleries).all().map(galleryKey));
   const tasks = new Set(
-    db.select({ source: schema.downloadQueue.source, galleryId: schema.downloadQueue.galleryId, status: schema.downloadQueue.status })
-      .from(schema.downloadQueue).all()
-      .filter(task => ['completed', 'queued', 'downloading', 'paused'].includes(task.status))
-      .map(task => `${task.source}:${task.galleryId}`),
+    db.select({ source: schema.downloadQueue.source, galleryId: schema.downloadQueue.galleryId })
+      .from(schema.downloadQueue).where(inArray(schema.downloadQueue.status, ACTIVE_TASK_STATUSES)).all()
+      .map(galleryKey),
   );
-  const candidates = storedIdentities().filter(identity =>
-    identity.path ? true : owned.has(`${identity.source}:${identity.galleryId}`) || tasks.has(`${identity.source}:${identity.galleryId}`),
-  );
-  if (!candidates.length) return new Set();
-  const byTitle = new Map<string, Set<GalleryIdentity>>();
-  const bySourceKey = new Map<string, GalleryIdentity[]>();
-  for (const candidate of candidates) {
-    for (const title of indexTitleKeys(candidate)) {
-      if (!byTitle.has(title)) byTitle.set(title, new Set());
-      byTitle.get(title)!.add(candidate);
-    }
-    for (const key of candidate.sourceKeys ?? []) {
-      const list = bySourceKey.get(key);
-      if (list) list.push(candidate);
-      else bySourceKey.set(key, [candidate]);
-    }
-  }
+  const eligible = (candidate: GalleryIdentity) => candidate.path ? true : owned.has(galleryKey(candidate)) || tasks.has(galleryKey(candidate));
+  const existsCache = new Map<string, boolean>();
+  const pathExists = (filePath: string): boolean => {
+    let hit = existsCache.get(filePath);
+    if (hit === undefined) { hit = fs.existsSync(filePath); existsCache.set(filePath, hit); }
+    return hit;
+  };
   const duplicates = new Set<string>();
   for (const item of incoming) {
-    const key = `${item.source}:${item.galleryId}`;
-    const direct = bySourceKey.get(key) ?? [];
-    if (direct.some(candidate => !candidate.path || fs.existsSync(candidate.path))) {
+    const key = galleryKey(item);
+    const direct = [...index.bySourceKey.get(key) ?? []].filter(eligible);
+    if (direct.some(candidate => !candidate.path || pathExists(candidate.path))) {
       duplicates.add(key);
       continue;
     }
-    const titleCandidates = new Set([...indexTitleKeys(item)].flatMap(title => [...(byTitle.get(title) ?? [])]));
+    const titleCandidates = new Set<GalleryIdentity>();
+    for (const title of indexTitleKeys(item)) for (const candidate of index.byTitle.get(title) ?? []) if (eligible(candidate)) titleCandidates.add(candidate);
     for (const candidate of titleCandidates) {
       if (!candidate.path && candidate.source === item.source && candidate.galleryId === item.galleryId) continue;
-      if (candidate.path && !fs.existsSync(candidate.path)) continue;
-      if (duplicateReasons(item, candidate).length > 0) {
+      // The metadata comparison is cheap in memory; only a real match costs a filesystem check.
+      if (duplicateReasons(item, candidate).length > 0 && (!candidate.path || pathExists(candidate.path))) {
         duplicates.add(key);
         break;
       }

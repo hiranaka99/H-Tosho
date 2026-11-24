@@ -216,3 +216,36 @@ describe('rewriteDoujinPages', () => {
     });
   });
 });
+
+describe('media proxy caching', () => {
+  it('serves one Hitomi image across rotated CDN prefixes from a single upstream fetch', async () => {
+    const hash = 'cd'.repeat(32);
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      return new Response(new Uint8Array([7, 7, 7]), { status: 200, headers: { 'Content-Type': 'image/webp' } });
+    };
+    const app = mediaRouter();
+    const first = await app.request(proxyRequest(`https://w1.gold-usergeneratedcontent.net/1700000000/12/${hash}.webp`));
+    const rotated = await app.request(proxyRequest(`https://w2.gold-usergeneratedcontent.net/1700000300/12/${hash}.webp`));
+    assert.equal(first.status, 200);
+    assert.equal(rotated.status, 200);
+    assert.deepEqual(new Uint8Array(await rotated.arrayBuffer()), new Uint8Array([7, 7, 7]));
+    assert.equal(calls, 1);
+  });
+
+  it('answers a matching If-None-Match with 304 and no body', async () => {
+    globalThis.fetch = async () => new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+    const app = mediaRouter();
+    const url = proxyRequest('https://uploads.mangadex.org/covers/manga-etag/cover.jpg');
+    const first = await app.request(url);
+    const etag = first.headers.get('etag');
+    assert.ok(etag?.startsWith('W/'));
+    const revalidated = await app.request(url, { headers: { 'If-None-Match': etag! } });
+    assert.equal(revalidated.status, 304);
+    assert.equal(revalidated.headers.get('etag'), etag);
+    assert.equal((await revalidated.arrayBuffer()).byteLength, 0);
+    const changed = await app.request(url, { headers: { 'If-None-Match': 'W/"other"' } });
+    assert.equal(changed.status, 200);
+  });
+});

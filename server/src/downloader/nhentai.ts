@@ -80,10 +80,14 @@ export const nhentaiRateLimits = {
 
 type RateClass = 'search' | 'listing' | 'gallery' | 'tags' | 'suggest';
 
-// Shared throttle state: one serialization queue across every call the
-// provider makes, so a burst of watched-search/recommendation lookups cannot
-// fire concurrently and trip an IP ban.
-let throttleTail: Promise<void> = Promise.resolve();
+// Shared throttle state. Calls are serialized per lane so a burst of
+// watched-search/recommendation lookups cannot fire concurrently and trip an
+// IP ban. Autocomplete has its own lane (its endpoint has its own documented
+// cap and its own class interval) so a long search/listing backoff never
+// blocks interactive suggestions; the global minimum gap and the adaptive
+// multiplier still apply across both lanes.
+type ThrottleLane = 'main' | 'suggest';
+const throttleTails = new Map<ThrottleLane, Promise<void>>();
 let lastAnyAt = 0;
 const lastByClass = new Map<RateClass, number>();
 let throttleMultiplier = 1;
@@ -94,28 +98,37 @@ const THROTTLE_MULTIPLIER_MAX = 6;
 /** Minimum gap between any two requests, regardless of endpoint class. */
 const MIN_ANY_GAP_MS = 250;
 
-async function acquireSlot(cls: RateClass): Promise<void> {
-  const run = throttleTail.then(async () => {
-    if (throttleMultiplier > 1 && Date.now() - last429At > THROTTLE_DECAY_MS) {
-      throttleMultiplier = 1;
+async function acquireSlot(cls: RateClass, signal?: AbortSignal): Promise<void> {
+  const lane: ThrottleLane = cls === 'suggest' ? 'suggest' : 'main';
+  const run = (throttleTails.get(lane) ?? Promise.resolve()).then(async () => {
+    // A caller that gave up while queued must not consume a slot.
+    signal?.throwIfAborted();
+    // Re-check after every sleep: the other lane may have fired meanwhile,
+    // and the global gap must hold across lanes. The final check and the
+    // timestamp update run synchronously, so the lanes cannot interleave.
+    for (;;) {
+      if (throttleMultiplier > 1 && Date.now() - last429At > THROTTLE_DECAY_MS) {
+        throttleMultiplier = 1;
+      }
+      const now = Date.now();
+      const intervalMs = getApiKey()
+        ? nhentaiRateLimits.intervalMs[cls]
+        : Math.max(nhentaiRateLimits.intervalMs[cls], nhentaiRateLimits.anonIntervalMs[cls]);
+      const waitMs = Math.max(
+        lastAnyAt + MIN_ANY_GAP_MS - now,
+        (lastByClass.get(cls) ?? 0) + intervalMs * throttleMultiplier - now,
+      );
+      if (waitMs <= 0) break;
+      await sleep(waitMs, signal);
     }
-    const now = Date.now();
-    const intervalMs = getApiKey()
-      ? nhentaiRateLimits.intervalMs[cls]
-      : Math.max(nhentaiRateLimits.intervalMs[cls], nhentaiRateLimits.anonIntervalMs[cls]);
-    const waitMs = Math.max(
-      lastAnyAt + MIN_ANY_GAP_MS - now,
-      (lastByClass.get(cls) ?? 0) + intervalMs * throttleMultiplier - now,
-    );
-    if (waitMs > 0) await sleep(waitMs);
     const at = Date.now();
     lastAnyAt = at;
     lastByClass.set(cls, at);
   });
-  throttleTail = run.then(
+  throttleTails.set(lane, run.then(
     () => undefined,
     () => undefined,
-  );
+  ));
   await run;
 }
 
@@ -131,8 +144,9 @@ async function throttledFetchJson<T>(
   init: RequestInit = {},
   timeoutMs = 15_000,
 ): Promise<{ status: number; data: T | null }> {
+  const signal = init.signal ?? undefined;
   for (let attempt = 0; ; attempt++) {
-    await acquireSlot(cls);
+    await acquireSlot(cls, signal);
     const res = await fetchJson<T>(url, init, timeoutMs, { raw: true });
     if ((res.status !== 429 && res.status < 500) || attempt >= nhentaiRateLimits.maxRetries) {
       return { status: res.status, data: (res.data ?? null) as T | null };
@@ -141,7 +155,7 @@ async function throttledFetchJson<T>(
       last429At = Date.now();
       throttleMultiplier = Math.min(throttleMultiplier * 1.5, THROTTLE_MULTIPLIER_MAX);
     }
-    await sleep(nhentaiRateLimits.backoffBaseMs * 2 ** attempt);
+    await sleep(nhentaiRateLimits.backoffBaseMs * 2 ** attempt, signal);
   }
 }
 
@@ -280,6 +294,22 @@ interface NhentaiSearchRow extends DoujinSearchResult {
 const tagCache = new Map<number, ApiTag>();
 const TAG_CACHE_MAX = 100_000;
 
+/** Insert into a bounded cache, evicting only the oldest entry when full
+ *  (never the whole cache, which would stampede the tag endpoints). */
+function boundedSet<K, V>(cache: Map<K, V>, max: number, key: K, value: V): void {
+  cache.delete(key);
+  while (cache.size >= max) {
+    const oldest = cache.keys().next();
+    if (oldest.done) break;
+    cache.delete(oldest.value);
+  }
+  cache.set(key, value);
+}
+
+function rememberTag(id: number, tag: ApiTag): void {
+  boundedSet(tagCache, TAG_CACHE_MAX, id, tag);
+}
+
 async function resolveTags(ids: number[]): Promise<Map<number, ApiTag>> {
   const out = new Map<number, ApiTag>();
   const missing: number[] = [];
@@ -304,8 +334,7 @@ async function resolveTags(ids: number[]): Promise<Map<number, ApiTag>> {
     if (res.status !== 200 || !Array.isArray(res.data)) continue;
     for (const t of res.data) {
       if (typeof t?.id !== 'number' || !t.name) continue;
-      if (tagCache.size >= TAG_CACHE_MAX) tagCache.clear();
-      tagCache.set(t.id, t);
+      rememberTag(t.id, t);
       out.set(t.id, t);
     }
   }
@@ -398,12 +427,12 @@ function detectLanguage(langTags: string[], title: string): string | undefined {
  * on POST endpoints ("Just a moment…" 403) but lets `curl` through. Run curl
  * directly to fetch tag autocomplete; returns a parsed tag array or null.
  */
-async function fetchTagsViaCurl(body: string): Promise<ApiTag[] | null> {
+async function fetchTagsViaCurl(body: string, signal?: AbortSignal): Promise<ApiTag[] | null> {
   const bin = process.platform === 'win32' ? 'curl.exe' : 'curl';
   for (let attempt = 0; attempt < 2; attempt++) {
     // The server counts subprocess requests the same as in-process ones, so
     // the curl path goes through the shared throttle too.
-    await acquireSlot('suggest');
+    await acquireSlot('suggest', signal);
     try {
       const { stdout } = await execFileAsync(
         bin,
@@ -415,14 +444,17 @@ async function fetchTagsViaCurl(body: string): Promise<ApiTag[] | null> {
           ...curlAuthArgs(),
           '--data', body,
         ],
-        { timeout: 8_000 },
+        // `signal` kills the subprocess when the caller (a superseded
+        // keystroke) gives up.
+        { timeout: 8_000, signal },
       );
       const parsed: unknown = JSON.parse(stdout);
       if (Array.isArray(parsed)) return parsed as ApiTag[];
     } catch {
       // curl missing / non-zero exit / non-JSON (Cloudflare challenge) -> retry.
+      signal?.throwIfAborted();
     }
-    await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+    await sleep(300 * (attempt + 1), signal);
   }
   return null;
 }
@@ -432,7 +464,7 @@ async function fetchTagsViaCurl(body: string): Promise<ApiTag[] | null> {
  * authenticated requests through). Returns the parsed tag array, or null when
  * the endpoint is unreachable/challenged — callers fall back to curl.
  */
-async function postTagSearch(body: string): Promise<ApiTag[] | null> {
+async function postTagSearch(body: string, signal?: AbortSignal): Promise<ApiTag[] | null> {
   const res = await throttledFetchJson<ApiTag[]>(
     'suggest',
     `${BASE}/api/v2/tags/search`,
@@ -440,9 +472,38 @@ async function postTagSearch(body: string): Promise<ApiTag[] | null> {
       method: 'POST',
       headers: { ...headers(), 'Content-Type': 'application/json' },
       body,
+      ...(signal ? { signal } : {}),
     },
   );
   return res.status === 200 && Array.isArray(res.data) ? res.data : null;
+}
+
+/**
+ * Short-lived autocomplete cache keyed by the exact request body: typing,
+ * deleting, and retyping a prefix (or several open tabs) must not each cost a
+ * rate-limited request or curl subprocess. Only successful lookups are cached.
+ */
+const SUGGEST_CACHE_TTL_MS = 5 * 60_000;
+const SUGGEST_CACHE_MAX = 256;
+const suggestCache = new Map<string, { at: number; tags: ApiTag[] }>();
+
+async function searchTagsCached(body: string, signal?: AbortSignal): Promise<ApiTag[] | null> {
+  const hit = suggestCache.get(body);
+  if (hit && Date.now() - hit.at < SUGGEST_CACHE_TTL_MS) {
+    suggestCache.delete(body);
+    suggestCache.set(body, hit);
+    return hit.tags;
+  }
+  // With an API key, go straight through the official POST endpoint
+  // (authenticated requests are usually waved through Cloudflare); without
+  // one, Node's fetch() on POST endpoints gets challenged, so curl goes
+  // first and the in-process POST is only the last resort.
+  const tags: ApiTag[] | null = getApiKey()
+    ? (await postTagSearch(body, signal)) ?? (await fetchTagsViaCurl(body, signal))
+    : (await fetchTagsViaCurl(body, signal)) ?? (await postTagSearch(body, signal));
+  if (tags) boundedSet(suggestCache, SUGGEST_CACHE_MAX, body, { at: Date.now(), tags });
+  else suggestCache.delete(body);
+  return tags;
 }
 
 // ---- API shapes -------------------------------------------------------------
@@ -525,52 +586,94 @@ async function tagBySlug(type: string, slug: string): Promise<ApiTag | null> {
   if (res.status !== 200 || !Number.isSafeInteger(res.data?.id) || res.data!.id! < 1 || mapTagType(res.data!.type) !== type || res.data!.slug !== slug) {
     throw new Error(`nHentai ${type} lookup failed (HTTP ${res.status})`);
   }
-  if (slugTags.size >= 2048) slugTags.clear();
-  slugTags.set(key, res.data!);
-  tagCache.set(res.data!.id!, res.data!);
+  boundedSet(slugTags, 2048, key, res.data!);
+  rememberTag(res.data!.id!, res.data!);
   return res.data!;
 }
 
 // Artist pages have no language/exclusion parameters. Cache their native rows
 // briefly, then filter before slicing so page offsets and totals stay exact.
-const artistListings = new Map<string, { until: number; rows: Promise<ApiGalleryListItem[]> }>();
-async function artistRows(artist: ApiTag, sort?: DoujinSort): Promise<ApiGalleryListItem[]> {
-  const order = sort && ['popular', 'popular-week', 'popular-today', 'popular-month'].includes(sort) ? sort : 'date';
-  const key = JSON.stringify([artist.id, order, getApiKey()]);
-  const cached = artistListings.get(key);
-  if (cached && cached.until > Date.now()) return cached.rows;
-  const entry = { until: Infinity, rows: Promise.resolve([] as ApiGalleryListItem[]) };
-  entry.rows = (async () => {
-    const rows: ApiGalleryListItem[] = [];
-    const seen = new Set<number>();
-    for (let page = 1; ; page++) {
-      const params = new URLSearchParams({ tag_id: String(artist.id), sort: order, page: String(page), per_page: '100' });
-      const res = await throttledFetchJson<ApiSearchResponse>('listing', `${BASE}/api/v2/galleries/tagged?${params}`, { headers: headers() });
-      if (res.status !== 200 || !Array.isArray(res.data?.result) || !Number.isSafeInteger(res.data.num_pages) || res.data.num_pages! < 0) {
-        throw new Error(`nHentai artist listing failed (HTTP ${res.status})`);
-      }
-      for (const row of res.data.result) {
-        if (!Number.isSafeInteger(row.id) || !Array.isArray(row.tag_ids)) throw new Error('nHentai artist listing contained invalid metadata.');
-        if (row.tag_ids.includes(artist.id!) && !seen.has(row.id)) { rows.push(row); seen.add(row.id); }
-      }
-      if (page >= res.data.num_pages!) break;
-      if (!res.data.result.length) throw new Error('nHentai artist listing was incomplete. Please retry.');
-    }
-    entry.until = Date.now() + 60_000;
-    return rows;
-  })();
-  artistListings.set(key, entry);
-  while (artistListings.size > 8) artistListings.delete(artistListings.keys().next().value!);
-  try { return await entry.rows; }
-  catch (error) { if (artistListings.get(key) === entry) artistListings.delete(key); throw error; }
+// Pages are fetched lazily: a capped search() stops as soon as it has enough
+// rows, while searchPage() (which reports an exact total) reads to the end.
+interface ArtistListing {
+  until: number;
+  rows: ApiGalleryListItem[];
+  seen: Set<number>;
+  nextPage: number;
+  done: boolean;
+  loading: Promise<void> | null;
+}
+const artistListings = new Map<string, ArtistListing>();
+
+async function fetchArtistListingPage(entry: ArtistListing, artist: ApiTag, order: string): Promise<void> {
+  const page = entry.nextPage;
+  const params = new URLSearchParams({ tag_id: String(artist.id), sort: order, page: String(page), per_page: '100' });
+  const res = await throttledFetchJson<ApiSearchResponse>('listing', `${BASE}/api/v2/galleries/tagged?${params}`, { headers: headers() });
+  if (res.status !== 200 || !Array.isArray(res.data?.result) || !Number.isSafeInteger(res.data.num_pages) || res.data.num_pages! < 0) {
+    throw new Error(`nHentai artist listing failed (HTTP ${res.status})`);
+  }
+  const fresh: ApiGalleryListItem[] = [];
+  for (const row of res.data.result) {
+    if (!Number.isSafeInteger(row.id) || !Array.isArray(row.tag_ids)) throw new Error('nHentai artist listing contained invalid metadata.');
+    if (row.tag_ids.includes(artist.id!) && !entry.seen.has(row.id)) { fresh.push(row); entry.seen.add(row.id); }
+  }
+  const done = page >= res.data.num_pages!;
+  if (!done && !res.data.result.length) throw new Error('nHentai artist listing was incomplete. Please retry.');
+  // Commit only after the whole page validated, so a failure never leaves a
+  // half-applied page behind.
+  entry.rows.push(...fresh);
+  entry.nextPage = page + 1;
+  entry.done = done;
 }
 
-async function exactArtistRows(lookup: NonNullable<ReturnType<typeof nhentaiArtistSearch>>, sort?: DoujinSort): Promise<ApiGalleryListItem[]> {
+/** The artist's native rows, read until `enough(rows)` holds or the listing ends. */
+async function artistRows(
+  artist: ApiTag,
+  sort?: DoujinSort,
+  enough?: (rows: readonly ApiGalleryListItem[]) => boolean,
+): Promise<{ rows: ApiGalleryListItem[]; done: boolean }> {
+  const order = sort && ['popular', 'popular-week', 'popular-today', 'popular-month'].includes(sort) ? sort : 'date';
+  const key = JSON.stringify([artist.id, order, getApiKey()]);
+  let entry = artistListings.get(key);
+  if (!entry || entry.until <= Date.now()) {
+    entry = { until: Date.now() + 60_000, rows: [], seen: new Set(), nextPage: 1, done: false, loading: null };
+    artistListings.set(key, entry);
+    while (artistListings.size > 8) artistListings.delete(artistListings.keys().next().value!);
+  }
+  const current = entry;
+  try {
+    while (!current.done && !enough?.(current.rows)) {
+      current.loading ??= fetchArtistListingPage(current, artist, order).finally(() => { current.loading = null; });
+      await current.loading;
+    }
+  } catch (error) {
+    if (artistListings.get(key) === current) artistListings.delete(key);
+    throw error;
+  }
+  return { rows: current.rows, done: current.done };
+}
+
+/**
+ * The artist's rows after language and ban filtering. With `need`, listing
+ * pages are only fetched until at least that many rows survive the filters
+ * (or the listing ends); without it, the whole catalog is read.
+ */
+async function exactArtistRows(lookup: NonNullable<ReturnType<typeof nhentaiArtistSearch>>, sort?: DoujinSort, need = Infinity): Promise<ApiGalleryListItem[]> {
   const artist = await tagBySlug('artist', lookup.slug);
   if (!artist) return [];
   const language = lookup.language === 'all' ? null : await tagBySlug('language', lookup.language);
   if (lookup.language !== 'all' && !language) return [];
-  let rows = (await artistRows(artist, sort)).filter((row) => !language || row.tag_ids!.includes(language.id!));
+  let minRows = Number.isFinite(need) ? need : Infinity;
+  for (;;) {
+    const listing = await artistRows(artist, sort, Number.isFinite(minRows) ? (rows) => rows.length >= minRows : undefined);
+    const rows = await filterArtistRows(listing.rows, language);
+    if (listing.done || rows.length >= need) return rows;
+    minRows = listing.rows.length + 1; // filters dropped rows: read one more page
+  }
+}
+
+async function filterArtistRows(all: readonly ApiGalleryListItem[], language: ApiTag | null): Promise<ApiGalleryListItem[]> {
+  let rows = all.filter((row) => !language || row.tag_ids!.includes(language.id!));
   const exclusions = buildBannedExclusions().match(/-([a-z]+:)?"[^"]*"/g) ?? [];
   if (exclusions.length && rows.length) {
     const tags = await resolveTags(rows.flatMap((row) => row.tag_ids!));
@@ -623,7 +726,10 @@ export const nhentaiProvider: DoujinProvider = {
     const id = directGalleryId(q);
     if (id) return [await this.getGallery(id)];
     const artist = nhentaiArtistSearch(q);
-    if (artist) return mapSearchRows((await exactArtistRows(artist, sort)).slice(0, Math.min(Math.max(1, limit), 250)));
+    if (artist) {
+      const cap = Math.min(Math.max(1, limit), 250);
+      return mapSearchRows((await exactArtistRows(artist, sort, cap)).slice(0, cap));
+    }
 
     // Append configured banned-tag exclusions so galleries carrying any of them
     // never show up in keyword/tag searches. (A bare gallery-ID lookup above is
@@ -712,17 +818,11 @@ export const nhentaiProvider: DoujinProvider = {
    * Backed by `POST /api/v2/tags/search` (name-prefix search across all tag
    * types). Results are returned most-popular-first with their gallery count.
    */
-  async suggest(query: string, limit = 10): Promise<DoujinSuggestion[]> {
+  async suggest(query: string, limit = 10, _context?: string, signal?: AbortSignal): Promise<DoujinSuggestion[]> {
     const lookup = nhentaiAutocompleteQuery(query);
     if (!lookup) return [];
     const body = JSON.stringify({ ...lookup, limit: Math.min(Math.max(limit, 1), 50) });
-    // With an API key, go straight through the official POST endpoint
-    // (authenticated requests are usually waved through Cloudflare); without
-    // one, Node's fetch() on POST endpoints gets challenged, so curl goes
-    // first and the in-process POST is only the last resort.
-    const data: ApiTag[] | null = getApiKey()
-      ? (await postTagSearch(body)) ?? (await fetchTagsViaCurl(body))
-      : (await fetchTagsViaCurl(body)) ?? (await postTagSearch(body));
+    const data = await searchTagsCached(body, signal);
     if (!data) return [];
 
     const out: DoujinSuggestion[] = [];

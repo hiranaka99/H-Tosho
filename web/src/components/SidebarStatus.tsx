@@ -4,7 +4,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Clock, Download, Pause, Play, XCircle, Ban, RotateCcw } from 'lucide-react';
 import { api, type Job, type DownloadTask } from '../lib/api';
 import { toast } from '../lib/toast';
-import { useDownloads, needsAttention as downloadNeedsAttention } from '../lib/DownloadsContext';
+import { useDownloadActions, useDownloadTasks, useDownloadsSelector, needsAttention as downloadNeedsAttention } from '../lib/DownloadsContext';
+import { jobsPollInterval } from '../lib/jobsQuery';
 import { formatBytes, formatSpeed } from '../lib/format';
 import { jobLabel } from '../lib/utils';
 import { needsAttention } from '../lib/jobStatus';
@@ -110,17 +111,45 @@ const DownloadRow = React.memo(function DownloadRow({ task, onAction }: { task: 
   );
 });
 
-/** Sidebar footer tracker for active background jobs and download controls. */
-export function SidebarStatus() {
+const isShownTask = (t: DownloadTask) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused' || t.state?.type === 'retry-wait';
+
+/** Counts only: structurally shared, so progress ticks never re-render the sidebar shell. */
+const selectDownloadCounts = (tasks: DownloadTask[]) => {
+  const shown = tasks.filter(isShownTask);
+  return { shown: shown.length, downloading: shown.some((t) => t.status === 'downloading'), failed: tasks.filter(downloadNeedsAttention).length };
+};
+const NO_DOWNLOAD_COUNTS = { shown: 0, downloading: false, failed: 0 };
+
+/** The live progress rows: the only part that re-renders on download ticks. */
+function SidebarDownloadRows() {
+  const { tasks } = useDownloadTasks();
+  const { pause, resume, cancel } = useDownloadActions();
+  const shownTasks = React.useMemo(() => tasks.filter(isShownTask).slice(0, 6), [tasks]);
+  const onTaskAction = React.useCallback((op: 'pause' | 'resume' | 'cancel', id: number) => {
+    if (op === 'pause') pause(id);
+    else if (op === 'resume') resume(id);
+    else cancel(id);
+  }, [pause, resume, cancel]);
+  return <>{shownTasks.map((task) => <DownloadRow key={task.id} task={task} onAction={onTaskAction} />)}</>;
+}
+
+/**
+ * Sidebar footer tracker for active background jobs and download controls.
+ * `live` is false while the mobile drawer is closed: the job poll and its
+ * settle-time invalidations keep running, but live download progress rows are
+ * not rendered while nobody can see them.
+ */
+export function SidebarStatus({ live = true }: { live?: boolean }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { data: jobs = [] } = useQuery({
     queryKey: ['jobs'],
     queryFn: api.jobs,
-    refetchInterval: (query) =>
-      query.state.data?.some((j) => j.status === 'running' || j.status === 'queued') ? 2500 : 15_000,
+    // The app-wide ['jobs'] poller (always mounted). Other observers of this key
+    // must not set their own interval: each observer runs its own timer.
+    refetchInterval: jobsPollInterval,
   });
-  const { tasks, pause, resume, cancel } = useDownloads();
+  const downloads = useDownloadsSelector(selectDownloadCounts) ?? NO_DOWNLOAD_COUNTS;
   const activeJobs = React.useMemo(() => jobs.filter((j) => j.status === 'running' || j.status === 'queued'), [jobs]);
   const previousJobs = React.useRef<Map<number, { status: string; type: string }> | null>(null);
   React.useEffect(() => {
@@ -158,22 +187,15 @@ export function SidebarStatus() {
     }
     previousJobs.current = current;
   }, [jobs, qc]);
-  const shownTasks = React.useMemo(() => tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused' || t.state?.type === 'retry-wait'), [tasks]);
   const attentionJobs = React.useMemo(() => jobs.filter(needsAttention), [jobs]);
-  const failedDownloads = React.useMemo(() => tasks.filter(downloadNeedsAttention), [tasks]);
-  const onTaskAction = React.useCallback((op: 'pause' | 'resume' | 'cancel', id: number) => {
-    if (op === 'pause') pause(id);
-    else if (op === 'resume') resume(id);
-    else cancel(id);
-  }, [pause, resume, cancel]);
-  if (activeJobs.length === 0 && shownTasks.length === 0 && attentionJobs.length === 0 && failedDownloads.length === 0) return null;
+  if (activeJobs.length === 0 && downloads.shown === 0 && attentionJobs.length === 0 && downloads.failed === 0) return null;
 
   return (
     <div className="flex max-h-1/2 min-h-0 flex-col gap-3 overflow-y-auto border-t border-border p-3">
       <nav aria-label="Activity shortcuts" className="flex flex-col gap-1">
         {activeJobs.length > 0 && <button type="button" onClick={() => navigate('/jobs?filter=active')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-primary hover:bg-surface-2">Active tasks · {activeJobs.length}</button>}
         {attentionJobs.length > 0 && <button type="button" onClick={() => navigate('/jobs?filter=failed')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Needs attention · {attentionJobs.length}</button>}
-        {failedDownloads.length > 0 && <button type="button" onClick={() => navigate('/downloader?tab=downloads&status=failed')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Failed downloads · {failedDownloads.length}</button>}
+        {downloads.failed > 0 && <button type="button" onClick={() => navigate('/downloader?tab=downloads&status=failed')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Failed downloads · {downloads.failed}</button>}
       </nav>
       {activeJobs.length > 0 && (
         <div className="flex flex-col gap-2">
@@ -183,21 +205,19 @@ export function SidebarStatus() {
           ))}
         </div>
       )}
-      {shownTasks.length > 0 && (
+      {downloads.shown > 0 && (
         <div className="flex flex-col gap-2">
           <button type="button" onClick={() => navigate('/downloader?tab=downloads&status=active')} title="Open active downloads" className="group flex items-center gap-1.5 text-left">
-            {shownTasks.some((t) => t.status === 'downloading') ? (
+            {downloads.downloading ? (
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" />
             ) : (
               <Download className="h-3.5 w-3.5 shrink-0 text-muted" />
             )}
             <span className="min-w-0 flex-1 truncate text-xs font-medium uppercase tracking-wide text-muted group-hover:text-foreground">
-              Downloads{shownTasks.length > 1 ? ` · ${shownTasks.length}` : ''}
+              Downloads{downloads.shown > 1 ? ` · ${downloads.shown}` : ''}
             </span>
           </button>
-          {shownTasks.slice(0, 6).map((task) => (
-            <DownloadRow key={task.id} task={task} onAction={onTaskAction} />
-          ))}
+          {live && <SidebarDownloadRows />}
         </div>
       )}
     </div>

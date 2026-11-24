@@ -49,7 +49,7 @@ class MyAnimeListProvider extends BaseProvider {
     );
   }
 
-  async search(query: string, _type?: string): Promise<SearchResult[]> {
+  async search(query: string, _type?: string, signal?: AbortSignal): Promise<SearchResult[]> {
     const characters = Array.from(query.replace(/\s+/gu, ' ').trim());
     if (characters.length < MIN_SEARCH_LENGTH) return [];
     const keyword = characters.slice(0, MAX_SEARCH_LENGTH).join('').trimEnd();
@@ -57,6 +57,7 @@ class MyAnimeListProvider extends BaseProvider {
       fields: 'alternative_titles,media_type,start_date,synopsis' });
     const data = await this.get<{ data: any[] }>(`/manga?${params.toString()}`, {
       headers: this.headers(),
+      ...(signal ? { signal } : {}),
     });
     return (data.data ?? []).map((m) => {
       const a = m.node ?? {};
@@ -82,13 +83,14 @@ class MyAnimeListProvider extends BaseProvider {
     });
   }
 
-  async getSeriesMetadata(providerSeriesId: string): Promise<SeriesMetadata> {
+  async getSeriesMetadata(providerSeriesId: string, signal?: AbortSignal): Promise<SeriesMetadata> {
     // MAL omits most fields unless `fields=` is requested; ask for exactly
     // what the mapping below consumes so the payload stays small.
     const fields =
       'id,title,main_picture,alternative_titles,start_date,synopsis,genres,authors{first_name,last_name},status,media_type';
     const data = await this.get<{ data: any }>(`/manga/${providerSeriesId}?fields=${encodeURIComponent(fields)}`, {
       headers: this.headers(),
+      ...(signal ? { signal } : {}),
     });
     // Approved clients wrap the node in `data`; the public stub returns it directly.
     const node = data?.data ?? data;

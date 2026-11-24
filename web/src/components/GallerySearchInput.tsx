@@ -61,7 +61,8 @@ export function GallerySearchInput({ id, value, onChange, source, label, placeho
   const context = source === 'hitomi' && /^(?:sort|order)by(?:key|direction)?:/i.test(lookup) ? value : undefined;
 
   React.useEffect(() => {
-    setSuggestions([]);
+    // Keep the same empty array so a keystroke with no open list costs no extra render.
+    setSuggestions(current => (current.length ? [] : current));
     setHighlight(-1);
     if (!focused || closed || disabled || (source === 'hitomi' ? !lookup : seed.length < 2 && !lookup.includes(':'))) {
       setLoading(false);
