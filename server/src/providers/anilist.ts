@@ -29,6 +29,10 @@ interface AniListStaff {
   name: { full?: string; native?: string; alternative?: string[] };
 }
 
+/** Short-lived response cache bounds (per provider instance). */
+const GQL_CACHE_TTL_MS = 10 * 60_000;
+const GQL_CACHE_MAX = 256;
+
 
 /**
  * AniList (GraphQL) — primary source for manga & light novel metadata:
@@ -48,7 +52,25 @@ export class AniListProvider extends BaseProvider {
   ];
   protected baseUrl = ANILIST_API_URL;
 
-  private async gql<TData>(query: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<GqlEnvelope<TData>> {
+  /**
+   * Successful responses for identical queries, kept briefly. AniList allows
+   * one request per ~2.1 s through a single FIFO, so repeat lookups (reopening
+   * an identify dialog, re-running a match, paging back) would otherwise wait
+   * in line behind every queued request for data fetched moments ago. Errors
+   * and rate-limited responses are never cached. Entries are read-only.
+   */
+  private readonly responseCache = new Map<string, { at: number; value: GqlEnvelope<unknown> }>();
+
+  private async gql<TData>(query: string, variables: Record<string, unknown>, signal?: AbortSignal, cache = true): Promise<GqlEnvelope<TData>> {
+    const key = JSON.stringify([query, variables]);
+    const hit = cache ? this.responseCache.get(key) : undefined;
+    if (hit && Date.now() - hit.at < GQL_CACHE_TTL_MS) {
+      signal?.throwIfAborted();
+      this.responseCache.delete(key);
+      this.responseCache.set(key, hit);
+      return hit.value as GqlEnvelope<TData>;
+    }
+    if (hit) this.responseCache.delete(key);
     const response = await this.client.post<GqlEnvelope<TData>>({ query, variables }, signal);
     if (response.status >= 400) throw new Error(this.describeError(response.status, response.data));
     const result = response.data;
@@ -56,11 +78,18 @@ export class AniListProvider extends BaseProvider {
     // instead of silently treating the response as an empty result.
     const err = result.errors?.[0]?.message;
     if (err) throw new Error(`AniList GraphQL error: ${String(err).slice(0, 240)}`);
+    while (this.responseCache.size >= GQL_CACHE_MAX) {
+      const oldest = this.responseCache.keys().next();
+      if (oldest.done) break;
+      this.responseCache.delete(oldest.value);
+    }
+    this.responseCache.set(key, { at: Date.now(), value: result });
     return result;
   }
 
   async testConnection(): Promise<void> {
-    await this.gql<{ Media?: { id: number } | null }>('{ Media(id: 1) { id } }', {});
+    // Always a live round-trip: a cached answer would not prove connectivity.
+    await this.gql<{ Media?: { id: number } | null }>('{ Media(id: 1) { id } }', {}, undefined, false);
   }
 
   async search(query: string, type?: string, signal?: AbortSignal): Promise<SearchResult[]> {

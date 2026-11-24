@@ -2,7 +2,8 @@ import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ImageOff } from 'lucide-react';
 import { api } from '../lib/api';
-import { Dialog, DialogContent, DialogTitle, Select, Spinner, EmptyState, ErrorState } from './ui';
+import { Select, Spinner, EmptyState, ErrorState } from './ui';
+import { Dialog, DialogContent, DialogTitle } from './dialog';
 
 import { PagePreview } from './PagePreview';
 

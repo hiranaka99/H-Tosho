@@ -37,6 +37,9 @@ function confidence(row: SeriesRow): number {
 }
 
 /** Prepare once per library update or sort change, rather than on every keystroke. */
+/** Same ordering as `String#localeCompare()` with no arguments, built once instead of per comparison. */
+const NAME_COLLATOR = new Intl.Collator();
+
 export function prepareLibraryRows(rows: readonly SeriesRow[], sortBy: LibrarySort, threshold = DEFAULT_REVIEW_THRESHOLD) {
   const ids = new Set<number>();
   const counts = { matched: 0, review: 0, unmatched: 0, failed: 0 };
@@ -54,7 +57,7 @@ export function prepareLibraryRows(rows: readonly SeriesRow[], sortBy: LibrarySo
     };
   });
   // Unknown dates stay last; name ordering resolves equal dates consistently.
-  const byName = (a: (typeof entries)[number], b: (typeof entries)[number]) => a.row.name.localeCompare(b.row.name);
+  const byName = (a: (typeof entries)[number], b: (typeof entries)[number]) => NAME_COLLATOR.compare(a.row.name, b.row.name);
   entries.sort(sortBy === 'date-added'
     ? (a, b) => b.dateAdded - a.dateAdded || byName(a, b)
     : sortBy === 'confidence'

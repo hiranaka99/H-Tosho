@@ -77,10 +77,14 @@ export async function withMetadataHistory<T>(client: KavitaClient, seriesId: num
   const files=new Set<string>();
   const covers=coverJournal(client,id,seriesId,before,key);
   let capturedBytes=0;
+  // Only this journal edits its operation's fieldsJson, so once 'cover' is recorded it stays recorded.
+  let coverFieldRecorded=false;
   const recordCoverField = () => {
+    if (coverFieldRecorded) return;
     const row = db.select({ fieldsJson: schema.metadataOperations.fieldsJson }).from(schema.metadataOperations).where(eq(schema.metadataOperations.id, id)).get()!;
     const fields: string[] = JSON.parse(row.fieldsJson);
     if (!fields.includes('cover')) db.update(schema.metadataOperations).set({ fieldsJson: JSON.stringify([...fields, 'cover']) }).where(eq(schema.metadataOperations.id, id)).run();
+    coverFieldRecorded=true;
   };
   const journal: MetadataJournal = {
     captureSeriesCover: async () => { recordCoverField(); await covers.capture({ kind: 'series' }); },

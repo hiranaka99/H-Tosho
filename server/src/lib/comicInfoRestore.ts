@@ -21,7 +21,25 @@ function decodeText(value:string):string {
 const TAG_TOKEN_RE = /<(\/?)([A-Za-z_][\w.:-]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/y;
 const ATTR_TOKEN_RE = /\s+([A-Za-z_][\w.:-]*)\s*=\s*("[^"<]*"|'[^'<]*')/y;
 
+/**
+ * Previews ask the same few documents for many fields; parse each once. Spans
+ * are read-only and a pure function of the text, so sharing them is exact.
+ * Bounded by count and document size; failed parses are never cached.
+ */
+const SPAN_CACHE_ENTRIES = 32;
+const SPAN_CACHE_MAX_LENGTH = 256 * 1024;
+const spanCache = new Map<string, DocumentSpans>();
 function spans(xml: string): DocumentSpans {
+  if (xml.length > SPAN_CACHE_MAX_LENGTH) return parseSpans(xml);
+  const hit = spanCache.get(xml);
+  if (hit) { spanCache.delete(xml); spanCache.set(xml, hit); return hit; }
+  const parsed = parseSpans(xml);
+  spanCache.set(xml, parsed);
+  if (spanCache.size > SPAN_CACHE_ENTRIES) spanCache.delete(spanCache.keys().next().value!);
+  return parsed;
+}
+
+function parseSpans(xml: string): DocumentSpans {
   const fields = new Map<string, ElementSpan>();
   const stack: { name: string; start: number }[] = [];
   let position = 0, root = false, finished = false, close = -1;

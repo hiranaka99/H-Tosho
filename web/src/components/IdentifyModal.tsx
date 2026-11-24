@@ -13,10 +13,12 @@ import {
   type KavitaTag,
   type KavitaPerson,
   type SeriesMatch,
+  type SeriesRow,
 } from '../lib/api';
 import { PROVIDER_NAMES, cn } from '../lib/utils';
 import { toast } from '../lib/toast';
-import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, ProviderBadge, Spinner, ConfirmDialog } from './ui';
+import { Button, Input, Label, ProviderBadge, Spinner } from './ui';
+import { Dialog, DialogContent, DialogTitle, DialogDescription, ConfirmDialog } from './dialog';
 import { ArtistWorksBrowser } from './ArtistWorksBrowser';
 import { MetadataHistory } from './MetadataHistory';
 
@@ -282,7 +284,7 @@ function CoverThumb({ src, alt, onZoom }: { src?: string | null; alt: string; on
   const size = 'aspect-[2/3] h-32 sm:h-40';
   if (!src || failed) return <span className={cn(size, 'flex items-center justify-center rounded bg-surface-2 text-xs text-muted')}>No cover</span>;
   const img = (
-    <img src={src} alt={alt} loading="lazy" onError={() => setFailed(true)} className={cn(size, 'rounded object-cover')} />
+    <img src={src} alt={alt} loading="lazy" decoding="async" onError={() => setFailed(true)} className={cn(size, 'rounded object-cover')} />
   );
   if (!onZoom) return img;
   return (
@@ -299,7 +301,7 @@ function CandidateCover({ src }: { src?: string }) {
     setFailed(false);
   }, [src]);
   if (!src || failed) return <Search className="h-4 text-muted" />;
-  return <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} className="h-full w-full object-cover" />;
+  return <img src={src} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} className="h-full w-full object-cover" />;
 }
 export function IdentifyModal({ seriesId, current, currentLoading, currentError, onRetryCurrent, match, currentCover, onClose, reviewPosition, onNext, autoReview = false, initialCandidate }: IdentifyModalProps) {
   const qc = useQueryClient();
@@ -342,8 +344,9 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const protection = useQuery({ queryKey: ['field-policy', seriesId], queryFn: () => api.fieldPolicy(seriesId) });
   // Shares the sidebar badge's query, so the review threshold costs no extra request.
   const threshold = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, staleTime: 60_000 }).data?.threshold;
-  const protectedKeys = new Set<string>(protection.data?.lockedFields ?? []);
-  const effectiveExcluded = new Set([...excluded, ...protectedKeys]);
+  const lockedFields = protection.data?.lockedFields;
+  const protectedKeys = React.useMemo(() => new Set<string>(lockedFields ?? []), [lockedFields]);
+  const effectiveExcluded = React.useMemo(() => new Set([...excluded, ...protectedKeys]), [excluded, protectedKeys]);
   const protect = useMutation({
     mutationFn: (field: ProtectedField) => api.saveFieldPolicy(seriesId, {
       lockedFields: protectedKeys.has(field) ? (protection.data?.lockedFields ?? []).filter(key => key !== field) : [...(protection.data?.lockedFields ?? []), field],
@@ -393,13 +396,32 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
     staleTime: 60_000,
   });
 
-  // Identification can update the saved confidence score even before applying.
+  // Identification can update the saved confidence score even before applying:
+  // the server rewrites the stored match's score when that match reappears in
+  // the results with a different score. Mirror exactly that change into the
+  // cached rows instead of refetching every library shelf and this series.
+  const identifyOutcome = identify.data;
   React.useEffect(() => {
-    if (!identify.dataUpdatedAt) return;
-    void qc.invalidateQueries({ queryKey: ['low-confidence'] });
-    void qc.invalidateQueries({ queryKey: ['library-series'] });
-    void qc.invalidateQueries({ queryKey: ['series', seriesId] });
-  }, [identify.dataUpdatedAt, qc, seriesId]);
+    if (!identifyOutcome) return;
+    let cancelled = false;
+    void (async () => {
+      // Reuses the cached (or in-flight) series detail the caller already loads.
+      const detail = await qc.ensureQueryData({ queryKey: ['series', seriesId], queryFn: () => api.series(seriesId) }).catch(() => null);
+      const match = detail?.match;
+      if (cancelled || !match?.providerId || !match.providerSeriesId) return;
+      const current = identifyOutcome.candidates.find((candidate) => candidate.providerId === match.providerId && candidate.providerSeriesId === match.providerSeriesId);
+      if (!current || current.score === match.matchScore) return;
+      const score = current.score;
+      qc.setQueryData<Awaited<ReturnType<typeof api.series>>>(['series', seriesId], (prev) => prev?.match ? { ...prev, match: { ...prev.match, matchScore: score } } : prev);
+      qc.setQueriesData<SeriesRow[]>({ queryKey: ['library-series'] }, (rows) => rows?.some((row) => row.id === seriesId && row.matchScore !== score)
+        ? rows.map((row) => row.id === seriesId ? { ...row, matchScore: score } : row)
+        : rows);
+      // Membership of the review queue and its count depend on the score.
+      void qc.invalidateQueries({ queryKey: ['low-confidence'] });
+      void qc.invalidateQueries({ queryKey: ['library-series', 'review'] });
+    })();
+    return () => { cancelled = true; };
+  }, [identifyOutcome, qc, seriesId]);
 
 
   const apply = useMutation({
@@ -531,24 +553,29 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   // keeps protected fields visibly apart, and folds away what needs no decision.
   const titleChoices = preview.data?.titleOptions ?? [];
   const hasTitleChoice = titleChoices.length > 1;
-  const changedRows: RowEntry[] = [];
-  const lockedRows: RowEntry[] = [];
-  const unchangedRows: RowEntry[] = [];
-  if (diff) {
-    for (const field of FIELD_ORDER) {
-      const row = diff.rows.find((r) => r.field === field);
-      if (!row) continue;
-      const kind = rowChange(row);
-      if (protectedKeys.has(field)) {
-        if (kind === 'change') lockedRows.push({ row, kind });
-        else if (kind === 'same') unchangedRows.push({ row, kind });
-        continue;
+  const { changedRows, lockedRows, unchangedRows } = React.useMemo(() => {
+    const changed: RowEntry[] = [];
+    const locked: RowEntry[] = [];
+    const unchanged: RowEntry[] = [];
+    if (diff) {
+      for (const field of FIELD_ORDER) {
+        const row = diff.rows.find((r) => r.field === field);
+        if (!row) continue;
+        const kind = rowChange(row);
+        if (protectedKeys.has(field)) {
+          if (kind === 'change') locked.push({ row, kind });
+          else if (kind === 'same') unchanged.push({ row, kind });
+          continue;
+        }
+        // The title chooser stays reachable even when the first option already matches.
+        if (kind === 'change' || (field === 'title' && hasTitleChoice && kind !== 'empty')) changed.push({ row, kind });
+        else unchanged.push({ row, kind });
       }
-      // The title chooser stays reachable even when the first option already matches.
-      if (kind === 'change' || (field === 'title' && hasTitleChoice && kind !== 'empty')) changedRows.push({ row, kind });
-      else unchangedRows.push({ row, kind });
     }
-  }
+    return { changedRows: changed, lockedRows: locked, unchangedRows: unchanged };
+  }, [diff, protectedKeys, hasTitleChoice]);
+  const currentMetadata = current.metadata;
+  const savedArtists = React.useMemo(() => [...new Set([...(currentMetadata?.pencillers ?? []), ...(currentMetadata?.writers ?? []), ...(currentMetadata?.coverArtists ?? [])].map(person => person.name?.trim()).filter((name): name is string => !!name))], [currentMetadata]);
   const includedChanges = changedRows.filter(({ row, kind }) => kind === 'change' && !excluded.has(row.field!)).length;
   const skippedByUser = changedRows.filter(({ row, kind }) => kind === 'change' && excluded.has(row.field!)).length;
   const sameCount = unchangedRows.filter(({ kind }) => kind === 'same').length;
@@ -613,7 +640,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
           </div>
           <MetadataHistory key={seriesId} id={historyId} seriesId={seriesId} open={historyOpen} />
           {browseArtists && <div ref={artistBrowser} id={artistBrowserId} hidden={!!selected}>
-            <ArtistWorksBrowser active={!selected} seriesTitle={current.name} artists={[...new Set([...(current.metadata?.pencillers ?? []), ...(current.metadata?.writers ?? []), ...(current.metadata?.coverArtists ?? [])].map(person => person.name?.trim()).filter((name): name is string => !!name))]} onSelect={candidate => { setManualCandidate(candidate); reviewCandidate(candidate, true); }} />
+            <ArtistWorksBrowser active={!selected} seriesTitle={current.name} artists={savedArtists} onSelect={candidate => { setManualCandidate(candidate); reviewCandidate(candidate, true); }} />
           </div>}
 
           {selected && (currentLoading ? (
@@ -902,7 +929,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
     <Dialog open={!!zoomCover} onOpenChange={(o) => { if (!o) setZoomCover(null); }}>
       {zoomCover && (
         <DialogContent aria-label={zoomCover.alt} className="flex max-w-none items-center justify-center bg-transparent p-0 shadow-none">
-          <img src={zoomCover.src} alt={zoomCover.alt} className="max-h-[85vh] max-w-[90vw] rounded-lg object-contain" />
+          <img src={zoomCover.src} alt={zoomCover.alt} decoding="async" className="max-h-[85vh] max-w-[90vw] rounded-lg object-contain" />
         </DialogContent>
       )}
     </Dialog>

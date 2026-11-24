@@ -26,13 +26,16 @@ export function switchKavitaState(previousUrl: string, nextUrl: string): boolean
   // The first configured server inherits legacy data already in this installation.
   if (!previous && !restored) return false;
   const scopedJobs = db.select().from(schema.jobs).where(ne(schema.jobs.type, 'check-watched-searches')).all();
+  // A subquery instead of an id list: thousands of jobs would exceed SQLite's
+  // bound-variable limit. Callers run this inside one transaction.
+  const scopedJobIds = db.select({ id: schema.jobs.id }).from(schema.jobs).where(ne(schema.jobs.type, 'check-watched-searches'));
   if (previous) {
     const state: ConnectionState = {
       matches: db.select().from(schema.seriesMatches).all(),
       history: db.select().from(schema.syncHistory).all(),
       overrides: db.select().from(schema.libraryOverrides).all(),
       jobs: scopedJobs,
-      logs: scopedJobs.length ? db.select().from(schema.jobLogs).where(inArray(schema.jobLogs.jobId, scopedJobs.map(job => job.id))).all() : [],
+      logs: scopedJobs.length ? db.select().from(schema.jobLogs).where(inArray(schema.jobLogs.jobId, scopedJobIds)).all() : [],
     };
     const valueJson = JSON.stringify(state);
     db.insert(schema.keyValueStore).values({ key: key(previous), valueJson })
@@ -41,7 +44,7 @@ export function switchKavitaState(previousUrl: string, nextUrl: string): boolean
   db.delete(schema.seriesMatches).run();
   db.delete(schema.syncHistory).run();
   db.delete(schema.libraryOverrides).run();
-  if (scopedJobs.length) db.delete(schema.jobLogs).where(inArray(schema.jobLogs.jobId, scopedJobs.map(job => job.id))).run();
+  if (scopedJobs.length) db.delete(schema.jobLogs).where(inArray(schema.jobLogs.jobId, scopedJobIds)).run();
   db.delete(schema.jobs).where(ne(schema.jobs.type, 'check-watched-searches')).run();
   if (restored) {
     for (const row of restored.matches) db.insert(schema.seriesMatches).values(row).run();

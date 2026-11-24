@@ -1,9 +1,7 @@
 import * as React from 'react';
 import { Slot } from '@radix-ui/react-slot';
-import * as DialogPrimitive from '@radix-ui/react-dialog';
-import * as SwitchPrimitive from '@radix-ui/react-switch';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { X, Loader2, AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Loader2, AlertTriangle, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn, PROVIDER_COLORS, PROVIDER_NAMES } from '../lib/utils';
 import { useSelectionIndicator } from '../lib/useSelectionIndicator';
 
@@ -95,33 +93,6 @@ export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttrib
   ),
 );
 Select.displayName = 'Select';
-
-export function Switch({
-  checked,
-  onCheckedChange,
-  className,
-  ...props
-}: { checked: boolean; onCheckedChange: (c: boolean) => void } & Omit<
-  React.ComponentProps<typeof SwitchPrimitive.Root>,
-  'checked' | 'onCheckedChange'
->) {
-  return (
-    <SwitchPrimitive.Root
-      checked={checked}
-      onCheckedChange={onCheckedChange}
-      aria-label={props['aria-label'] ?? 'Toggle'}
-      className={cn(
-        'group inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full bg-transparent transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50',
-        className,
-      )}
-      {...props}
-    >
-      <span aria-hidden="true" className="flex h-6 w-11 items-center rounded-full bg-border-2 transition-colors group-data-[state=checked]:bg-primary-button">
-        <SwitchPrimitive.Thumb className="block h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-150 data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0.5" />
-      </span>
-    </SwitchPrimitive.Root>
-  );
-}
 
 const badgeVariants = cva('inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-sans text-xs font-medium', {
   variants: {
@@ -240,59 +211,6 @@ export function Pager({ page, count, onPageChange }: { page: number; count: numb
     </nav>
   );
 }
-
-export function Dialog({
-  open,
-  onOpenChange,
-  children,
-}: {
-  open: boolean;
-  onOpenChange: (o: boolean) => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
-      {children}
-    </DialogPrimitive.Root>
-  );
-}
-
-export function DialogContent({ children, className, ...props }: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>) {
-  return (
-    <DialogPrimitive.Portal>
-      <DialogPrimitive.Overlay className="dialog-overlay fixed inset-0 z-50 bg-black/50" />
-      <DialogPrimitive.Content
-        className={cn(
-          'dialog-content fixed left-1/2 top-1/2 z-50 w-[calc(100vw-1rem)] max-w-5xl -translate-x-1/2 -translate-y-1/2 sm:w-[calc(100vw-1.5rem)]',
-          'max-h-[calc(100dvh-1rem)] overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl sm:max-h-[calc(100dvh-1.5rem)]',
-          className,
-        )}
-        {...props}
-      >
-        {children}
-        <DialogPrimitive.Close aria-label="Close dialog" className="ui-button ui-button-icon absolute right-3 top-3 z-10 flex h-9 w-9 items-center justify-center rounded-lg bg-surface text-muted hover:bg-surface-2 hover:text-foreground">
-          <X className="h-4 w-4" />
-        </DialogPrimitive.Close>
-      </DialogPrimitive.Content>
-    </DialogPrimitive.Portal>
-  );
-}
-
-export const DialogTitle = React.forwardRef<
-  React.ElementRef<typeof DialogPrimitive.Title>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
->(({ className, ...props }, ref) => (
-  <DialogPrimitive.Title ref={ref} className={cn('text-base font-semibold tracking-tight', className)} {...props} />
-));
-DialogTitle.displayName = DialogPrimitive.Title.displayName;
-
-export const DialogDescription = React.forwardRef<
-  React.ElementRef<typeof DialogPrimitive.Description>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>
->(({ className, ...props }, ref) => (
-  <DialogPrimitive.Description ref={ref} className={cn('text-sm text-muted', className)} {...props} />
-));
-DialogDescription.displayName = DialogPrimitive.Description.displayName;
 
 export function ErrorState({ title = 'Something went wrong', description, onRetry }: { title?: string; description?: string; onRetry?: () => void }) {
   return (
@@ -458,33 +376,6 @@ export function InlineConfirm({ label, children, keepLabel, confirmLabel, icon, 
       </div>
       <span aria-hidden="true" className="confirm-countdown absolute bottom-0 left-0 h-0.5 w-full bg-danger/70" />
     </div>
-  );
-}
-
-export function ConfirmDialog({ open, title, description, details, confirmLabel, danger = false, pending = false, onConfirm, onOpenChange }: { open: boolean; title: string; description: string; details?: React.ReactNode; confirmLabel: string; danger?: boolean; pending?: boolean; onConfirm: () => void; onOpenChange: (open: boolean) => void }) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
-        <div className="flex flex-col gap-4 p-4 pr-12 sm:p-5 sm:pr-12">
-          <div className="flex items-start gap-3">
-            <div className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-full', danger ? 'bg-danger/15 text-danger' : 'bg-primary/15 text-primary')}>
-              {danger ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
-            </div>
-            <div className="min-w-0">
-              <DialogTitle>{title}</DialogTitle>
-              <DialogDescription className="mt-1">{description}</DialogDescription>
-              {details ? <div className="mt-2 flex min-w-0 flex-col gap-2 text-sm text-muted">{details}</div> : null}
-            </div>
-          </div>
-          <div className="flex flex-wrap justify-end gap-2">
-            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
-            <Button variant={danger ? 'danger' : 'default'} onClick={onConfirm} disabled={pending}>
-              {pending && <Spinner />} {confirmLabel}
-            </Button>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
   );
 }
 

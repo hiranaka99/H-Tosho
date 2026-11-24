@@ -190,9 +190,11 @@ export function buildZip(entries: Entry[]): Buffer {
 }
 
 /**
- * Build a ZIP archive at `destPath` from page files on disk. Each file is read
- * one at a time (peak memory = one image), and positional file-handle writes
- * avoid stream backpressure/error races. Only a complete archive replaces the destination.
+ * Build a ZIP archive at `destPath` from page files on disk. The next page is
+ * read while the current one is written (peak memory = two images), each
+ * entry's header and payload go out in one vectored positional write, and
+ * positional file-handle writes avoid stream backpressure/error races. Only a
+ * complete archive replaces the destination.
  */
 export async function buildZipFromFiles(
   files: { name: string; path: string }[],
@@ -215,6 +217,7 @@ export async function buildZipFromFiles(
     throw error;
   }
   let failure: unknown;
+  let pending: Promise<Buffer> | null = null;
   try {
     let offset = 0;
     const central: Buffer[] = [];
@@ -228,19 +231,36 @@ export async function buildZipFromFiles(
       }
       offset += buf.length;
     };
+    /** Header + payload in one writev; a short write finishes buffer by buffer. */
+    const writeEntry = async (local: Buffer, payload: Buffer): Promise<void> => {
+      const { bytesWritten } = await out.writev([local, payload], offset);
+      if (bytesWritten === local.length + payload.length) { offset += bytesWritten; return; }
+      const rest = Buffer.concat([local, payload]).subarray(bytesWritten);
+      offset += bytesWritten;
+      await write(rest);
+    };
     const append = async (name: string, data: Buffer, tryDeflate: boolean): Promise<void> => {
       signal?.throwIfAborted();
       const entryOffset = offset;
       const spec = await encodeEntryAsync(name, data, entryOffset, now, tryDeflate);
-      await write(spec.local);
-      await write(spec.payload);
+      await writeEntry(spec.local, spec.payload);
       central.push(spec.central);
     };
+    const readAhead = (index: number): Promise<Buffer> | null => {
+      if (index >= files.length) return null;
+      const read = fs.promises.readFile(files[index].path);
+      read.catch(() => {}); // observed when awaited; never an unhandled rejection after an abort
+      return read;
+    };
 
-    for (const f of files) {
+    pending = readAhead(0);
+    for (let index = 0; index < files.length; index++) {
       signal?.throwIfAborted();
+      const f = files[index];
+      const data = await pending!;
+      pending = readAhead(index + 1);
       const ext = f.name.slice(f.name.lastIndexOf('.') + 1).toLowerCase();
-      await append(f.name, await fs.promises.readFile(f.path), !STORE_EXTENSIONS[ext]);
+      await append(f.name, data, !STORE_EXTENSIONS[ext]);
     }
     for (const e of inlineEntries) await append(e.name, e.data, true);
 
@@ -255,6 +275,8 @@ export async function buildZipFromFiles(
   } catch (error) {
     failure = error;
   }
+  // Let an in-flight read-ahead settle before the staging area is torn down.
+  if (pending) await (pending as Promise<Buffer>).catch(() => undefined);
   try {
     await out.close();
   } catch (error) {

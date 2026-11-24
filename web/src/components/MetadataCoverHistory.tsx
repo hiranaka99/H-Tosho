@@ -9,7 +9,7 @@ export function RecordedCoverImage({seriesId,operationId,label,cover,src}:{serie
   return <figure className="min-w-0 space-y-2">
     <figcaption className="text-xs font-medium text-muted">{label}</figcaption>
     {cover.state==='captured' && url ? <>
-      {state!=='error' && <img key={url} src={url} alt={`${label} recorded cover`} loading="lazy" onLoad={()=>setState('loaded')} onError={()=>setState('error')} className="h-44 max-w-full rounded object-contain object-left"/>}
+      {state!=='error' && <img key={url} src={url} alt={`${label} recorded cover`} loading="lazy" decoding="async" onLoad={()=>setState('loaded')} onError={()=>setState('error')} className="h-44 max-w-full rounded object-contain object-left"/>}
       {state==='loading' && <p role="status" className="text-xs text-muted">Loading retained cover…</p>}
       {state==='error' && <div role="alert" className="space-y-2"><p className="text-xs text-danger">Retained cover could not be displayed.</p><Button className="min-h-11" size="sm" variant="outline" onClick={()=>{setState('loading');setAttempt(value=>value+1);}}>Retry {label.toLowerCase()} cover</Button></div>}
       <p className="break-words text-xs text-muted">{cover.mediaType} · {cover.byteSize?.toLocaleString()} bytes</p>

@@ -1,6 +1,7 @@
 import { pathContains } from './paths.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 /** FIFO ownership of resources. '*' conflicts with every resource. */
 export class MutationCoordinator {
@@ -58,6 +59,18 @@ export class MutationCoordinator {
 export function archiveResource(file: string): string {
   let absolute = path.resolve(file);
   try { absolute = fs.realpathSync(absolute); } catch { /* New output is not published yet. */ }
+  return process.platform === 'win32' ? absolute.toLowerCase() : absolute;
+}
+
+// fs.realpath (callback form) is the same JS resolver as fs.realpathSync, so
+// both variants produce identical identities. fs.promises.realpath is the
+// native resolver and can spell Windows paths differently; never mix them.
+const realpathJs = promisify(fs.realpath);
+
+/** Non-blocking archiveResource for large batches; identical results. */
+export async function archiveResourceAsync(file: string): Promise<string> {
+  let absolute = path.resolve(file);
+  try { absolute = await realpathJs(absolute); } catch { /* New output is not published yet. */ }
   return process.platform === 'win32' ? absolute.toLowerCase() : absolute;
 }
 

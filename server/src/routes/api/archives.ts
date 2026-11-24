@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDownloaderSettings } from '../../services/settings.js';
-import { imageMime, listCbzFiles, listCbzImages, readComicInfo, readZipEntryFromDisk, resolveExistingFile, resolveSeriesHostDir } from '../../lib/cbz.js';
+import { imageMime, listCbzFilesAsync, listCbzImages, readComicInfo, readZipEntryFromDisk, resolveExistingFileAsync, resolveSeriesHostDir } from '../../lib/cbz.js';
+import { mapLimit } from '../../lib/http.js';
 import { parseComicInfo } from '../../downloader/comicinfo.js';
 
 import { connectedClient, errMsg, intParam } from './helpers.js';
@@ -65,7 +66,7 @@ api.get('/cbz/browse', async (c) => {
 /** Read and parse the ComicInfo.xml embedded in a .cbz (null entry when absent). */
 api.get('/cbz/comicinfo', async (c) => {
   const file = c.req.query('path');
-  const full = file ? resolveExistingFile(file) : null;
+  const full = file ? await resolveExistingFileAsync(file) : null;
   if (!full || !full.toLowerCase().endsWith('.cbz')) {
     return c.json({ error: 'Path must point to an existing .cbz file' }, 400);
   }
@@ -83,7 +84,7 @@ api.get('/cbz/comicinfo', async (c) => {
 /** List the image entries (pages) of a .cbz in reading order. */
 api.get('/cbz/images', async (c) => {
   const file = c.req.query('path');
-  const full = file ? resolveExistingFile(file) : null;
+  const full = file ? await resolveExistingFileAsync(file) : null;
   if (!full || !full.toLowerCase().endsWith('.cbz')) {
     return c.json({ error: 'Path must point to an existing .cbz file' }, 400);
   }
@@ -99,7 +100,7 @@ api.get('/cbz/images', async (c) => {
 api.get('/cbz/page', async (c) => {
   const file = c.req.query('path');
   const name = c.req.query('name');
-  const full = file ? resolveExistingFile(file) : null;
+  const full = file ? await resolveExistingFileAsync(file) : null;
   if (!full || !full.toLowerCase().endsWith('.cbz') || !name) {
     return c.json({ error: 'Path and entry name are required' }, 400);
   }
@@ -133,25 +134,25 @@ api.get('/cbz/series/:id', async (c) => {
     folderPath: s.folderPath,
     anchors: dl.downloadDirectory ? [path.resolve(dl.downloadDirectory)] : [],
     mappings: dl.libraryPathMappings });
-  if (!dir || !fs.existsSync(dir)) {
+  const dirExists = dir ? await fs.promises.access(dir).then(() => true, () => false) : false;
+  if (!dir || !dirExists) {
     return c.json({ seriesId: id, name: s.name, dir: null, reason: 'Could not locate this series on this machine — type a path manually.', files: [] });
   }
-  const files = listCbzFiles(dir);
+  const files = await listCbzFilesAsync(dir);
   // Prefill chapter numbers (merge dialog) from the archives' existing metadata.
+  // Bounded: a large series must not open every archive at once.
   const chapterNumbers: Record<string, string> = {};
-  await Promise.all(
-    files.map(async (f) => {
-      try {
-        const xml = await readComicInfo(f);
-        if (xml) {
-          const n = parseComicInfo(xml).fields.Number;
-          if (n && n.trim()) chapterNumbers[f] = n.trim();
-        }
-      } catch {
-        // unreadable archive — leave the prefill empty
+  await mapLimit(files, 8, async (f) => {
+    try {
+      const xml = await readComicInfo(f);
+      if (xml) {
+        const n = parseComicInfo(xml).fields.Number;
+        if (n && n.trim()) chapterNumbers[f] = n.trim();
       }
-    }),
-  );
+    } catch {
+      // unreadable archive — leave the prefill empty
+    }
+  });
   return c.json({ seriesId: id, name: s.name, dir, reason: null, files, chapterNumbers });
 });
 // ---------------- Jobs ----------------

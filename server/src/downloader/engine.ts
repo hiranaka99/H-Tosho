@@ -76,6 +76,9 @@ async function replacePublishedFile(staged: string, destination: string): Promis
   }
 }
 
+/** Live task subscriber; `serialized()` is the shared, memoized JSON of `task`. */
+export type TaskListener = (task: DownloadTask, serialized: () => string) => void;
+
 interface DownloadRow {
   id: number;
   source: string;
@@ -157,7 +160,7 @@ export class DownloadQueue {
   private lastWrite = new Map<number, number>();
   /** id -> pending cooldown timer that will re-queue the task. */
   private retryTimers = new Map<number, NodeJS.Timeout>();
-  private listeners = new Set<(task: DownloadTask) => void>();
+  private listeners = new Set<TaskListener>();
   private removalListeners = new Set<(ids: number[]) => void>();
   private started = false;
   /** Process start (ms): staging dirs older than this belong to a dead process. */
@@ -290,17 +293,23 @@ export class DownloadQueue {
 
   // ---------------- Live update fan-out (SSE) ----------------
 
-  /** Subscribe to live task updates. Returns an unsubscribe function. */
-  subscribe(listener: (task: DownloadTask) => void): () => void {
+  /**
+   * Subscribe to live task updates. Returns an unsubscribe function. The
+   * second argument returns `JSON.stringify(task)`, computed at most once per
+   * broadcast and shared by every subscriber (e.g. one per SSE client).
+   */
+  subscribe(listener: TaskListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
   private broadcast(task: DownloadTask): void {
     if (this.listeners.size === 0) return;
+    let json: string | undefined;
+    const serialized = (): string => (json ??= JSON.stringify(task));
     for (const l of this.listeners) {
       try {
-        l(task);
+        l(task, serialized);
       } catch {
         /* a misbehaving listener must never break the pipeline */
       }
@@ -624,7 +633,8 @@ export class DownloadQueue {
     let count = 0;
     if (queuedRows.length > 0) {
       const ids = queuedRows.map((row) => row.id);
-      db.update(schema.downloadQueue)
+      // RETURNING yields exactly the rows this sweep paused — no per-row re-read.
+      const paused = db.update(schema.downloadQueue)
         .set({
           status: 'paused',
           speed: 0,
@@ -633,16 +643,16 @@ export class DownloadQueue {
           revision: sql`${schema.downloadQueue.revision} + 1`,
         })
         .where(and(inArray(schema.downloadQueue.id, ids), eq(schema.downloadQueue.status, 'queued')))
-        .run();
+        .returning()
+        .all();
       for (const id of ids) {
         this.live.delete(id);
         this.lastBroadcast.delete(id);
         this.lastWrite.delete(id);
-        const updated = this.readRow(id);
-        if (updated && updated.status === 'paused') {
-          this.broadcast(updated);
-          count++;
-        }
+      }
+      for (const row of paused) {
+        this.broadcast(rowToTask(row));
+        count++;
       }
     }
     const downloadingRows = db
@@ -666,7 +676,7 @@ export class DownloadQueue {
       .all();
     if (!pausedRows.length) return 0;
     const ids = pausedRows.map((row) => row.id);
-    db.update(schema.downloadQueue)
+    const queued = db.update(schema.downloadQueue)
       .set({
         status: 'queued',
         speed: null,
@@ -675,18 +685,12 @@ export class DownloadQueue {
         revision: sql`${schema.downloadQueue.revision} + 1`,
       })
       .where(and(inArray(schema.downloadQueue.id, ids), eq(schema.downloadQueue.status, 'paused')))
-      .run();
-    let resumed = 0;
-    for (const id of ids) {
-      this.live.delete(id);
-      const updated = this.readRow(id);
-      if (updated && updated.status === 'queued') {
-        this.broadcast(updated);
-        resumed++;
-      }
-    }
-    if (resumed > 0) void this.pump();
-    return resumed;
+      .returning()
+      .all();
+    for (const id of ids) this.live.delete(id);
+    for (const row of queued) this.broadcast(rowToTask(row));
+    if (queued.length > 0) void this.pump();
+    return queued.length;
   }
 
   /** Retry all permanently failed (non-cancelled, non-retry-wait) downloads and pump once. */
@@ -716,7 +720,7 @@ export class DownloadQueue {
       }
       this.live.delete(id);
     }
-    db.update(schema.downloadQueue)
+    const requeued = db.update(schema.downloadQueue)
       .set({
         status: 'queued',
         speed: null,
@@ -731,11 +735,9 @@ export class DownloadQueue {
         revision: sql`${schema.downloadQueue.revision} + 1`,
       })
       .where(inArray(schema.downloadQueue.id, ids))
-      .run();
-    for (const id of ids) {
-      const updated = this.readRow(id);
-      if (updated) this.broadcast(updated);
-    }
+      .returning()
+      .all();
+    for (const row of requeued) this.broadcast(rowToTask(row));
     void this.pump();
     return ids.length;
   }
@@ -1340,10 +1342,11 @@ export class DownloadQueue {
         if (ctx.shuttingDown) throw new DownloadShutdownError();
         ctx.committing = true;
         await fs.promises.mkdir(dir, { recursive: true });
-        // Preserve unrelated files in an existing gallery folder.
-        for (const name of [...images.map((img) => img.name), 'ComicInfo.xml']) {
-          await replacePublishedFile(path.join(stagingDir, name), path.join(dir, name));
-        }
+        // Preserve unrelated files in an existing gallery folder. Each name is
+        // distinct, so replacements are independent; a little parallelism
+        // keeps large galleries from paying hundreds of serial rename trips.
+        await mapLimit([...images.map((img) => img.name), 'ComicInfo.xml'], 4, (name) =>
+          replacePublishedFile(path.join(stagingDir, name), path.join(dir, name)));
         return dir;
       }
 

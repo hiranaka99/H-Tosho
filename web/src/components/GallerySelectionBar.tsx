@@ -3,6 +3,10 @@ import { CheckSquare, ChevronDown, Combine, Download, EyeOff, ImageOff, Merge, X
 import type { DoujinSearchResult } from '../lib/api';
 import { cn, sourceDisplayName } from '../lib/utils';
 import { Button } from './ui';
+import { useMediaQuery } from '../lib/useMediaQuery';
+
+/** Same breakpoint as the bar's `lg:` classes (and the app shell). */
+const DESKTOP_QUERY = '(min-width: 1024px)';
 
 /** The selection actions a results view hands to the bar (desktop and phone tray share them). */
 export interface GallerySelectionActions {
@@ -36,9 +40,13 @@ export const GallerySelectionBar = React.memo(function GallerySelectionBar({ ite
   const listId = React.useId();
   // The phone tray keeps the count and actions in reach; the title list is one tap away.
   const [listOpen, setListOpen] = React.useState(false);
+  // Desktop and phone copies are both rendered by callers; only the one that
+  // fits the viewport mounts, so the other never builds its list or observers.
+  const desktop = useMediaQuery(DESKTOP_QUERY);
+  const shown = mobile ? !desktop : desktop;
   React.useLayoutEffect(() => {
     const tray = ref.current;
-    if (!mobile || !tray || !onHeightChange) return;
+    if (!shown || !mobile || !tray || !onHeightChange) return;
     const main = tray.closest('main');
     const previousPadding = main?.style.scrollPaddingBottom ?? '';
     const measure = () => {
@@ -55,8 +63,9 @@ export const GallerySelectionBar = React.memo(function GallerySelectionBar({ ite
       onHeightChange(0);
       if (main) main.style.scrollPaddingBottom = previousPadding;
     };
-  }, [mobile, onHeightChange]);
+  }, [shown, mobile, onHeightChange]);
 
+  if (!shown) return null;
   return (
     <div ref={ref} role="region" aria-label="Gallery selection" className={cn(
       'min-w-0 border-border bg-surface',

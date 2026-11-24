@@ -22,7 +22,8 @@ const TTL_MS = 5 * 60 * 1000;
 const CONCURRENCY = 8;
 /** Parallel metadata requests while re-reading expired entries nobody is waiting on. */
 const BACKGROUND_CONCURRENCY = 4;
-const MAX_CACHE_ENTRIES = 5000;
+/** Above any realistic library size, so one large listing never evicts its own entries mid-request. */
+const MAX_CACHE_ENTRIES = 50_000;
 
 export interface SeriesSearchMetadata {
   artists: string[];

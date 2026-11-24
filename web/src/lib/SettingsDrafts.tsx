@@ -131,6 +131,8 @@ export function useSettingsDraft<T>({ id, label, initial, source, valid = () => 
   }, [entry, id, isValid, store]);
   React.useEffect(() => {
     if (source === undefined || entry.pending || (entry.initialized && entry.isDirty)) return;
+    // Same object as the baseline already in the store: nothing to compare.
+    if (entry.initialized && Object.is(source, entry.baseline)) return;
     const sourceJson = serialize(source);
     if (!entry.initialized || sourceJson !== entry.baselineJson) {
       entry.value = source;
@@ -176,7 +178,9 @@ export function useSettingsDraft<T>({ id, label, initial, source, valid = () => 
   }, [entry, id, store]);
   React.useLayoutEffect(() => {
     entry.save = saveDraft;
-    store.notifyEntry(id);
+    // `save` only matters to the page save bar for changed or saving sections;
+    // a clean section mounting needs no extra render.
+    if (entry.isDirty || entry.pending) store.notifyEntry(id);
     return () => { entry.save = undefined; };
   }, [entry, id, saveDraft, store]);
   const status: DraftStatus = entry.pending ? 'pending' : entry.error ? 'error' : entry.isDirty ? 'dirty' : entry.saved ? 'saved' : 'clean';

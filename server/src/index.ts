@@ -1,5 +1,5 @@
 import { serve } from '@hono/node-server';
-import { initDb } from './db/index.js';
+import { closeDb, initDb, startDatabaseMaintenance } from './db/index.js';
 import { createApp } from './app.js';
 import { jobQueue } from './jobs/queue.js';
 import { runJob } from './jobs/executor.js';
@@ -10,6 +10,7 @@ import { startRecommendationPreloading } from './services/recommendations.js';
 import { prefetchMedia } from './routes/media.js';
 import { interruptMetadataHistory } from './services/metadataHistory.js';
 import { interruptMetadataRestore } from './services/metadataRestore.js';
+import { closeDownloadEventStreams } from './routes/api/downloads.js';
 
 const PORT = Number(process.env.PORT ?? 8787);
 // Local-only by default. Set HOST=0.0.0.0 deliberately for remote access;
@@ -25,6 +26,8 @@ function jobCreatedAtMs(createdAt: string | undefined): number {
 
 function main(): void {
   initDb();
+  // initDb applied the retention windows once; keep applying them daily.
+  const stopDatabaseMaintenance = startDatabaseMaintenance();
   interruptMetadataHistory();
   // Replay "new since last check" finds that older builds never persisted to the
   // "recently added" feed (no-op on databases already up to date).
@@ -109,10 +112,23 @@ function main(): void {
     clearInterval(watchedTimer);
     clearInterval(matchableTimer);
     stopRecommendationPreloading();
+    stopDatabaseMaintenance();
+    let exited = false;
+    const exit = (): void => {
+      if (exited) return;
+      exited = true;
+      // Close SQLite last so the WAL is checkpointed and no write is cut short.
+      try { closeDb(); } catch (error) { console.warn('[h-tosho] could not close the database cleanly:', error); }
+      process.exit(0);
+    };
     void downloadQueue.shutdown(1500).finally(() => {
-      server.close(() => process.exit(0));
+      // Live SSE streams would otherwise hold server.close() open until the
+      // forced exit below.
+      closeDownloadEventStreams();
+      server.close(exit);
+      (server as { closeIdleConnections?: () => void }).closeIdleConnections?.();
     });
-    setTimeout(() => process.exit(0), 2500).unref();
+    setTimeout(exit, 2500).unref();
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

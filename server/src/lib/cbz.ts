@@ -256,6 +256,128 @@ function endOfCentralDirectory(count: number, centralStart: number, centralSize:
 }
 
 const CHUNK = 8 * 1024 * 1024;
+const MIN_WINDOW = 64 * 1024;
+
+/**
+ * Positional reads served from one large read-ahead window, so walking an
+ * archive's local headers, payloads and data descriptors in file order costs
+ * one read syscall per window instead of several per entry. The bytes served
+ * are exactly the file's bytes; callers keep all of their validation.
+ *
+ * With `hash`, every byte of the file is also fed into it exactly once and in
+ * file order (gaps between requested ranges are read and hashed too), so a
+ * single sequential pass can fingerprint the whole archive while its entries
+ * are inspected. Call finishHash() to hash the remainder.
+ */
+class WindowedReader {
+  private readonly window: Buffer;
+  private start = 0;
+  private end = 0;
+  private hashedTo = 0;
+
+  constructor(private readonly fh: fs.promises.FileHandle, private readonly size: number, private readonly hash?: ReturnType<typeof createHash>) {
+    this.window = Buffer.allocUnsafe(Math.max(1, Math.min(CHUNK, Math.max(MIN_WINDOW, size))));
+  }
+
+  private contains(position: number, length: number): boolean {
+    return position >= this.start && position + length <= this.end;
+  }
+
+  private async load(position: number): Promise<void> {
+    const want = Math.max(0, Math.min(this.window.length, this.size - position));
+    let filled = 0;
+    while (filled < want) {
+      const { bytesRead } = await this.fh.read(this.window, filled, want - filled, position + filled);
+      if (bytesRead <= 0) break;
+      filled += bytesRead;
+    }
+    this.start = position;
+    this.end = position + filled;
+    if (filled < want) throw new Error('Unexpected EOF while reading ZIP');
+    if (this.hash && position <= this.hashedTo && this.end > this.hashedTo) {
+      this.hash.update(this.window.subarray(this.hashedTo - position, filled));
+      this.hashedTo = this.end;
+    }
+  }
+
+  /** View of [position, position+length); valid only until the next reader call. */
+  async slice(position: number, length: number): Promise<Buffer> {
+    if (length > this.window.length) {
+      if (position + length > this.size) throw new Error('Unexpected EOF while reading ZIP');
+      throw new Error('ZIP read exceeds the read-ahead window');
+    }
+    if (!this.contains(position, length)) {
+      if (this.hash) while (this.hashedTo < position && this.hashedTo < this.size) await this.load(this.hashedTo);
+      if (!this.contains(position, length)) await this.load(position);
+      if (!this.contains(position, length)) throw new Error('Unexpected EOF while reading ZIP');
+    }
+    return this.window.subarray(position - this.start, position - this.start + length);
+  }
+
+  /** Visit [position, position+length) as consecutive window views. */
+  async forEachChunk(position: number, length: number, visit: (view: Buffer) => void | Promise<void>): Promise<void> {
+    for (let done = 0; done < length;) {
+      const len = Math.min(this.window.length, length - done);
+      await visit(await this.slice(position + done, len));
+      done += len;
+    }
+  }
+
+  /** Hash every byte not yet covered by earlier reads. */
+  async finishHash(): Promise<void> {
+    if (!this.hash) return;
+    while (this.hashedTo < this.size) await this.load(this.hashedTo);
+  }
+}
+
+/** Payload start offset for an entry, read through a WindowedReader. */
+async function payloadStartFromReader(reader: WindowedReader, e: ZipEntryInfo): Promise<number> {
+  const header = await reader.slice(e.localOffset, 30);
+  if (header.readUInt32LE(0) !== LOCAL_SIG) {
+    throw new Error(`Corrupt ZIP (bad local header for ${e.name})`);
+  }
+  return e.localOffset + 30 + header.readUInt16LE(26) + header.readUInt16LE(28);
+}
+
+/** Sequential positional writer that coalesces small writes into large ones. */
+class BufferedWriter {
+  private readonly buf: Buffer;
+  private used = 0;
+  private flushed = 0;
+  /** Logical end offset of everything written so far (flushed or buffered). */
+  offset = 0;
+
+  constructor(private readonly fh: fs.promises.FileHandle, private readonly label: string, sizeHint: number) {
+    this.buf = Buffer.allocUnsafe(Math.min(CHUNK, Math.max(MIN_WINDOW, sizeHint)));
+  }
+
+  private async writeAll(data: Buffer, position: number): Promise<void> {
+    for (let off = 0; off < data.length;) {
+      const { bytesWritten } = await this.fh.write(data, off, data.length - off, position + off);
+      if (bytesWritten <= 0) throw new Error(`Could not write ZIP archive ${this.label}`);
+      off += bytesWritten;
+    }
+  }
+
+  async write(data: Buffer): Promise<void> {
+    if (this.used + data.length > this.buf.length) await this.flush();
+    if (data.length >= this.buf.length) {
+      await this.writeAll(data, this.flushed);
+      this.flushed += data.length;
+    } else {
+      data.copy(this.buf, this.used);
+      this.used += data.length;
+    }
+    this.offset += data.length;
+  }
+
+  async flush(): Promise<void> {
+    if (!this.used) return;
+    await this.writeAll(this.buf.subarray(0, this.used), this.flushed);
+    this.flushed += this.used;
+    this.used = 0;
+  }
+}
 
 /**
  * Rewrite `srcPath`, replacing (or appending) the entry `entryName` with `data`.
@@ -283,48 +405,31 @@ async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data:
   try {
     const stat = await src.stat();
     const {entries,comment} = await readZipDirectoryFromDisk(src, stat.size);
-    let offset = 0;
+    // Entries are visited in archive order, so the read-ahead window and the
+    // coalescing writer turn per-entry header/payload/descriptor syscalls
+    // into roughly one large read and one large write per window.
+    const reader = new WindowedReader(src, stat.size);
+    const writer = new BufferedWriter(out, srcPath, stat.size + (data?.length ?? 0));
     let centralSize = 0;
     const centrals: Buffer[] = [];
-    const writeChunk = async (buf: Buffer, len = buf.length): Promise<void> => {
-      let off = 0;
-      while (off < len) {
-        const { bytesWritten } = await out.write(buf, off, len - off, offset + off);
-        if (bytesWritten <= 0) throw new Error(`Could not write ZIP archive ${srcPath}`);
-        off += bytesWritten;
-      }
-      offset += len;
-    };
-    let scratch: Buffer | null = null;
 
     for (const e of entries) {
       if (e.name === entryName) continue; // replaced by the new entry below
-      const entryOffset = offset;
-      const start = await payloadStartFromDisk(src, e);
+      const entryOffset = writer.offset;
+      const start = await payloadStartFromReader(reader, e);
       // Keep names, flags, extra fields, attributes and entry comments verbatim.
       // Only the central record's local-header offset changes.
-      const local=Buffer.allocUnsafe(start-e.localOffset);
-      await readFull(src,local,e.localOffset);
       const central=Buffer.from(e.centralRecord);
       central.writeUInt32LE(entryOffset,42);
-      await writeChunk(local);
-      // Stream the compressed payload in chunks reusing one scratch buffer.
-      let pos = start;
-      while (pos < start + e.compressedSize) {
-        const len = Math.min(CHUNK, start + e.compressedSize - pos);
-        if (!scratch || scratch.length < len) scratch = Buffer.allocUnsafe(Math.min(CHUNK, Math.max(len, 256 * 1024)));
-        const { bytesRead } = await src.read(scratch, 0, len, pos);
-        if (bytesRead <= 0) throw new Error(`Unexpected EOF in ${srcPath} while copying "${e.name}"`);
-        await writeChunk(scratch, bytesRead);
-        pos += bytesRead;
-      }
+      await reader.forEachChunk(e.localOffset, start - e.localOffset, view => writer.write(view));
+      // Stream the compressed payload through the read-ahead window.
+      await reader.forEachChunk(start, e.compressedSize, view => writer.write(view));
       if(e.flags & 8) {
-        const prefix=Buffer.allocUnsafe(4);await readFull(src,prefix,start+e.compressedSize);
-        const signed=prefix.readUInt32LE(0)===0x08074b50;
-        const descriptor=Buffer.allocUnsafe(signed?16:12);await readFull(src,descriptor,start+e.compressedSize);
+        const signed=(await reader.slice(start+e.compressedSize,4)).readUInt32LE(0)===0x08074b50;
+        const descriptor=await reader.slice(start+e.compressedSize,signed?16:12);
         const base=signed?4:0;
         if(descriptor.readUInt32LE(base)!==e.crc || descriptor.readUInt32LE(base+4)!==e.compressedSize || descriptor.readUInt32LE(base+8)!==e.uncompressedSize)throw new Error('Corrupt ZIP (unsupported data descriptor)');
-        await writeChunk(descriptor);
+        await writer.write(descriptor);
       }
       centrals.push(central);
       centralSize += central.length;
@@ -340,22 +445,23 @@ async function rewriteZipEntryUnlocked(srcPath: string, entryName: string, data:
       crc: repCrc,
       compressedSize: (useDeflate ? compressed : data).length,
       uncompressedSize: data.length,
-      offset,
+      offset: writer.offset,
       time: ((now.getHours() & 0x1f) << 11) | ((now.getMinutes() & 0x3f) << 5) | (Math.floor(now.getSeconds() / 2) & 0x1f),
       date: (((Math.max(1980, now.getFullYear()) - 1980) & 0x7f) << 9) | ((now.getMonth() + 1) << 5) | now.getDate(),
     };
     const repPayload = useDeflate ? compressed : data;
     const { local: repLocal, central: repCentral } = encodeHeaders(repSpec);
-    await writeChunk(repLocal);
-    await writeChunk(repPayload);
+    await writer.write(repLocal);
+    await writer.write(repPayload);
     centrals.push(repCentral);
     centralSize += repCentral.length;
     }
 
-    const centralStart = offset;
+    const centralStart = writer.offset;
     const end=endOfCentralDirectory(centrals.length,centralStart,centralSize);
     end.writeUInt16LE(comment.length,20);
-    await writeChunk(Buffer.concat([...centrals, end, comment]));
+    await writer.write(Buffer.concat([...centrals, end, comment]));
+    await writer.flush();
     written = true;
   } finally {
     await src.close();
@@ -396,27 +502,28 @@ async function readComicInfoFromHandle(fh: fs.promises.FileHandle, entries: ZipE
   }
 }
 
+/**
+ * Fingerprint an archive: its exact bytes (fileHash), its non-ComicInfo entry
+ * content (contentHash), and its ComicInfo.xml. One sequential pass over the
+ * file feeds both hashes; a layout whose sorted entries are not in file order
+ * costs extra reads for the out-of-order payloads, never a different result.
+ */
 export async function captureArchiveSnapshot(file: string): Promise<ArchiveSnapshot> {
   const fh = await fs.promises.open(file, 'r');
   try {
     const before = await fh.stat();
     if (!before.isFile()) throw new Error('Archive is not a regular file');
     const hash = createHash('sha256');
-    for await (const chunk of fh.createReadStream({autoClose:false})) hash.update(chunk);
     const content = createHash('sha256');
     const entries = await readZipEntriesFromDisk(fh,before.size);
     if (entries.filter(entry => entry.name === 'ComicInfo.xml').length > 1) throw new Error('Duplicate ComicInfo.xml ZIP entries are ambiguous');
-    let scratch: Buffer | null = null;
+    const reader = new WindowedReader(fh, before.size, hash);
     for (const entry of entries.filter(entry => entry.name !== 'ComicInfo.xml').sort((a,b) => a.name.localeCompare(b.name))) {
       content.update(JSON.stringify([entry.name,entry.method,entry.crc,entry.uncompressedSize,entry.compressedSize]));
-      const start = await payloadStartFromDisk(fh,entry);
-      for (let position=start;position<start+entry.compressedSize;) {
-        const len = Math.min(CHUNK,start+entry.compressedSize-position);
-        if (!scratch || scratch.length < len) scratch = Buffer.allocUnsafe(Math.min(CHUNK, Math.max(len, 256 * 1024)));
-        const view = scratch.subarray(0, len);
-        await readFull(fh,view,position); content.update(view); position+=len;
-      }
+      const start = await payloadStartFromReader(reader,entry);
+      await reader.forEachChunk(start, entry.compressedSize, view => { content.update(view); });
     }
+    await reader.finishHash();
     const xml = await readComicInfoFromHandle(fh, entries);
     const after = await fs.promises.stat(file);
     if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
@@ -432,13 +539,45 @@ export function sameArchiveSnapshot(expected: ArchiveSnapshot, current: ArchiveS
     && expected.device === current.device && expected.inode === current.inode && expected.xml === current.xml;
 }
 
+/**
+ * Exactly what sameArchiveSnapshot(expected, await captureArchiveSnapshot(file))
+ * decides, without the content-identity pass: identity/size/mtime are checked
+ * before any hashing, then the complete file bytes and ComicInfo.xml. An equal
+ * fileHash means byte-identical content, so contentHash cannot differ either.
+ */
+export async function verifyArchiveSnapshot(file: string, expected: ArchiveSnapshot): Promise<boolean> {
+  const fh = await fs.promises.open(file, 'r');
+  try {
+    const before = await fh.stat();
+    if (!before.isFile()) throw new Error('Archive is not a regular file');
+    if (before.dev !== expected.device || before.ino !== expected.inode || before.size !== expected.size || before.mtimeMs !== expected.mtimeMs) return false;
+    const hash = createHash('sha256');
+    const reader = new WindowedReader(fh, before.size, hash);
+    await reader.finishHash();
+    if (hash.digest('hex') !== expected.fileHash) return false;
+    const xml = await readComicInfoFromHandle(fh, await readZipEntriesFromDisk(fh, before.size));
+    const after = await fs.promises.stat(file);
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+      throw new Error('Archive changed while its fingerprint was being read; review required');
+    }
+    return xml === expected.xml;
+  } finally { await fh.close(); }
+}
+
 /** Caller owns archive mutation resources. Verify the approved file again before atomic publication. */
 export async function restoreComicInfoArchive(file: string, xml: string | null, expected: ArchiveSnapshot): Promise<ArchiveSnapshot> {
   const verify = async () => {
-    if (!sameArchiveSnapshot(expected,await captureArchiveSnapshot(file))) throw new Error('Archive changed after preview; review required');
+    if (!await verifyArchiveSnapshot(file,expected)) throw new Error('Archive changed after preview; review required');
   };
+  if (xml === expected.xml) {
+    // Nothing to write: one full capture both verifies and observes.
+    const after = await captureArchiveSnapshot(file);
+    if (!sameArchiveSnapshot(expected,after)) throw new Error('Archive changed after preview; review required');
+    if (after.contentHash !== expected.contentHash) throw new Error('ComicInfo exact restoration or unrelated archive content could not be verified');
+    return after;
+  }
   await verify();
-  if (xml !== expected.xml) await rewriteZipEntryUnlocked(file,'ComicInfo.xml',xml === null ? null : Buffer.from(xml,'utf8'),verify);
+  await rewriteZipEntryUnlocked(file,'ComicInfo.xml',xml === null ? null : Buffer.from(xml,'utf8'),verify);
   const after = await captureArchiveSnapshot(file);
   if (after.xml !== xml || after.contentHash !== expected.contentHash) throw new Error('ComicInfo exact restoration or unrelated archive content could not be verified');
   return after;
@@ -504,9 +643,12 @@ export function imageMime(name: string): string | null {
   }
 }
 
+/** One collator for natural page order; localeCompare would rebuild it per comparison. */
+const PAGE_NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
 /** Compare page file names in natural order (02.jpg before 10.jpg). */
 function comparePageNames(a: string, b: string): number {
-  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+  return PAGE_NAME_COLLATOR.compare(a, b);
 }
 
 /**
@@ -648,6 +790,39 @@ export function resolveExistingFile(p: string): string | null {
   }
 }
 
+/** Async resolveExistingFile for request paths: a network-drive stat never blocks the event loop. */
+export async function resolveExistingFileAsync(p: string): Promise<string | null> {
+  if (!p || !path.isAbsolute(p)) return null;
+  const full = path.resolve(p);
+  try {
+    return (await fs.promises.stat(full)).isFile() ? full : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Async listCbzFiles: same traversal, depth bound and ordering, without blocking readdir calls. */
+export async function listCbzFilesAsync(dir: string, maxDepth = 3): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (d: string, depth: number): Promise<void> => {
+    let entries;
+    try {
+      entries = await fs.promises.readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        if (depth < maxDepth) await walk(path.join(d, e.name), depth + 1);
+      } else if (e.isFile() && e.name.toLowerCase().endsWith('.cbz')) {
+        out.push(path.join(d, e.name));
+      }
+    }
+  };
+  await walk(dir, 0);
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
 /** .cbz files under dir, recursive to a bounded depth (series folders may nest volume subfolders). */
 export function listCbzFiles(dir: string, maxDepth = 3): string[] {
   const out: string[] = [];
@@ -712,7 +887,7 @@ export async function mergeCbzFiles(
     seen.add(src);
     try {
       await archiveMutations.run([archiveResource(src), archiveResource(targetDir)], async () => {
-        const file = resolveExistingFile(src);
+        const file = await resolveExistingFileAsync(src);
         if (!file) throw new Error('file not found');
         if (!file.toLowerCase().endsWith('.cbz')) throw new Error('not a .cbz file');
 

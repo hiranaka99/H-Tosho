@@ -10,7 +10,7 @@
  */
 
 import {
-  ehentaiFetchText, ehentaiApiPost, ehentaiTagSuggestions, approveGalleryImageRefs, fetchEhentaiImage, EhentaiUpstreamError,
+  ehentaiFetchText, ehentaiApiPost, ehentaiTagSuggestions, approveGalleryImageRefs, fetchEhentaiImage, fetchEhentaiImageBuffer, EhentaiUpstreamError,
   type EhentaiTextResponse, type ImageFormat,
 } from './ehentaiClient.js';
 import { parseEhentaiGdata, gdataNumber } from './ehentaiGdata.js';
@@ -19,12 +19,8 @@ import {
   type EhentaiSite, type SearchCursor,
 } from '../contracts/doujin.js';
 import type { EhentaiSessionInput } from '../contracts/ehentai.js';
-import { getStoredSession, getAccountRevision, getEhentaiAccountSite, EhentaiAccountCryptoError } from '../services/ehentaiAccount.js';
+import { getEhentaiAccountSnapshot, EhentaiAccountCryptoError } from '../services/ehentaiAccount.js';
 import { getDownloaderSettings } from '../services/settings.js';
-import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import { randomUUID } from 'node:crypto';
 import type {
   DoujinProvider, DoujinSearchResult, DoujinGallery, DoujinSort, DoujinSearchOptions,
   DoujinSuggestion,
@@ -48,17 +44,18 @@ interface ResolvedSession {
  *  silently degrading to public E-Hentai would surface a subset of the catalog
  *  the user paid for. */
 function currentSession(): ResolvedSession {
-  let site: EhentaiSite;
-  let revision: number;
+  // One record read per call (site, revision, and envelope come from the same
+  // snapshot, so they can never straddle a concurrent save).
+  let account: ReturnType<typeof getEhentaiAccountSnapshot>;
   try {
-    site = getEhentaiAccountSite();
-    revision = getAccountRevision();
+    account = getEhentaiAccountSnapshot();
   } catch (error) {
     throw new EhentaiUpstreamError('The E-Hentai account cannot be read. Re-save your account in Settings.', 'denied');
   }
+  const { site, revision } = account;
   let session: ResolvedSession['session'];
   try {
-    session = getStoredSession();
+    session = account.readSession();
   } catch (error) {
     if (error instanceof EhentaiAccountCryptoError) {
       throw new EhentaiUpstreamError('The stored E-Hentai session cannot be decrypted. Re-save your account cookies in Settings.', 'denied');
@@ -186,8 +183,20 @@ const decodeEntities = (text: string): string => text
 
 const stripTags = (html: string): string => decodeEntities(html.replace(/<[^>]*>/g, ''));
 
+// Attribute and element patterns are compiled once per name, not per call:
+// a gallery page runs these thousands of times. Attribute patterns are
+// non-global (stateless exec); element patterns are global but only used
+// synchronously with an explicit lastIndex reset.
+const attributePatterns = new Map<string, RegExp>();
+const elementTagPatterns = new Map<string, RegExp>();
+
 function htmlAttribute(tag: string, name: string): string | null {
-  const match = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i').exec(tag);
+  let pattern = attributePatterns.get(name);
+  if (!pattern) {
+    pattern = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i');
+    attributePatterns.set(name, pattern);
+  }
+  const match = pattern.exec(tag);
   return match ? decodeEntities(match[1] ?? match[2]) : null;
 }
 
@@ -518,7 +527,12 @@ interface ParsedGalleryInfo {
 function htmlElementById(html: string, id: string): { inner: string; tag: string } | null {
   for (const open of html.matchAll(/<([a-z][a-z0-9]*)\b[^>]*>/gi)) {
     if (htmlAttribute(open[0], 'id') !== id) continue;
-    const tags = new RegExp(`<\\/?${open[1]}\\b[^>]*>`, 'gi');
+    const tagName = open[1].toLowerCase();
+    let tags = elementTagPatterns.get(tagName);
+    if (!tags) {
+      tags = new RegExp(`<\\/?${tagName}\\b[^>]*>`, 'gi');
+      if (elementTagPatterns.size < 64) elementTagPatterns.set(tagName, tags);
+    }
     tags.lastIndex = open.index + open[0].length;
     let depth = 1;
     let tag: RegExpExecArray | null;
@@ -705,7 +719,7 @@ export const ehentaiProvider: DoujinProvider = {
     const exhausted = remaining.length === 0 && (nextUrl === null || !validateContinuationUrl(nextUrl, site, compiled));
     const items = await buildSearchResults({ galleries: chunk, nextUrl }, site, chunk.length, compiled.language, signal);
     return {
-      items: applyBans(items),
+      items, // buildSearchResults already applied the configured bans
       nextCursor: exhausted ? null : encodeCursor({ v: 1, fp: compiled.fingerprint, site, acctRev, nextUrl, buffer: remaining }),
       exhausted,
     };
@@ -917,17 +931,16 @@ export async function ehentaiPreviewBytes(viewerUrl: string): Promise<{ buf: Buf
   const imageUrl = parseEhentaiViewerImage(viewer.body, viewerUrl);
   const galleryKey = `${site}/${gid}-${token}`;
   approveGalleryImageRefs(galleryKey, [imageUrl]);
-  const destPath = path.join(os.tmpdir(), `htosho-ehentai-preview-${randomUUID()}`);
-  try {
-    const { format } = await fetchEhentaiImage(imageUrl, {
-      site,
-      galleryKey,
-      destPath,
-      referer: viewerUrl,
-    });
-    const buf = await fs.readFile(destPath);
-    return { buf, type: IMAGE_CONTENT_TYPES[format] };
-  } finally {
-    await fs.rm(destPath, { force: true }).catch(() => { /* already removed */ });
-  }
+  // Previews are small: validate and return them straight from memory (the
+  // media route owns the only on-disk copy, its L2 cache).
+  const { format, buf } = await fetchEhentaiImageBuffer(imageUrl, {
+    site,
+    galleryKey,
+    referer: viewerUrl,
+    maxBytes: PREVIEW_MAX_BYTES,
+  });
+  return { buf, type: IMAGE_CONTENT_TYPES[format] };
 }
+
+/** Matches the media proxy's per-response cap. */
+const PREVIEW_MAX_BYTES = 20 * 1024 * 1024;

@@ -27,6 +27,8 @@ const TTL_MS = 30 * 60_000;
 let connectionKey = '';
 let listing: { at: number; series: KavitaSeries[]; excludedLibraryPaths: string[] } | null = null;
 const metadata = new Map<number, { at: number; signal: KavitaSeriesSignal }>();
+/** Series edited since the listing was read; re-read individually instead of re-listing every library. */
+const staleListingSeries = new Set<number>();
 const listeners = new Set<() => void>();
 
 export function getExcludedKavitaLibraryPaths(): string[] {
@@ -40,19 +42,42 @@ export function onRecommendationSeriesChange(listener: () => void): () => void {
 
 export function invalidateRecommendationSeries(seriesId: number): void {
   metadata.delete(seriesId);
-  listing = null;
+  // One series' sync can rename it, but leaves the rest of the listing valid.
+  if (listing) staleListingSeries.add(seriesId);
   for (const listener of listeners) listener();
 }
 
 export function clearRecommendationSignals(): void {
   listing = null;
+  staleListingSeries.clear();
 }
 
 onSettingChange('kavita-connection', () => {
   connectionKey = '';
   listing = null;
+  staleListingSeries.clear();
   metadata.clear();
 });
+
+/** Re-read edited series in place; any failure falls back to a full re-list. */
+async function refreshStaleListingSeries(client: KavitaClient): Promise<void> {
+  if (!listing || staleListingSeries.size === 0) return;
+  const current = listing;
+  const ids = [...staleListingSeries];
+  staleListingSeries.clear();
+  const positions = new Map(current.series.map((series, index) => [series.id, index]));
+  const sampled = ids.filter((id) => positions.has(id));
+  try {
+    const fresh = await mapLimit(sampled, 4, (id) => client.getSeriesById(id));
+    if (listing !== current) return;
+    for (const series of fresh) {
+      const index = positions.get(series.id);
+      if (index !== undefined) current.series[index] = series;
+    }
+  } catch {
+    if (listing === current) listing = null;
+  }
+}
 
 /** Round-robin sampling prevents the first large library starving later libraries. */
 export function balancedSeries(libraries: KavitaSeries[][], limit = SERIES_LIMIT): KavitaSeries[] {
@@ -85,7 +110,9 @@ export async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
     listing = null;
   }
   const client = new KavitaClient(conn.baseUrl, conn.apiKey);
+  await refreshStaleListingSeries(client);
   if (!listing || Date.now() - listing.at >= TTL_MS) {
+    staleListingSeries.clear();
     try {
       const allLibraries = await client.getLibraries();
       const libraries = allLibraries.filter((library) => !excluded.has(library.id));

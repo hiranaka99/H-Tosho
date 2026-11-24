@@ -1,7 +1,8 @@
-import { prepareDuplicateCheck, findDuplicateReports, lookupLibraryMatches } from '../../services/galleryDuplicates.js';
+import { prepareDuplicateCheck, findDuplicateReports, lookupLibraryMatches, createDuplicateChecker, type DuplicateChecker } from '../../services/galleryDuplicates.js';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { and, eq, inArray } from 'drizzle-orm';
 import { getDb, schema } from '../../db/index.js';
@@ -81,7 +82,7 @@ function commitMergeGroup(group: MergeDownloadGroup): void {
 }
 
 /** Resolve and validate before starting workers, so a batch is registered together. */
-async function prepareDownload(body: DownloadInput, group?: MergeDownloadGroup): Promise<Response | (() => Response)> {
+async function prepareDownload(body: DownloadInput, group?: MergeDownloadGroup): Promise<Response | ((checker?: DuplicateChecker) => Response)> {
   const respond = (value: unknown, status: number) => Response.json(value, { status });
   if (!body || typeof body !== 'object' || typeof body.source !== 'string' || typeof body.galleryId !== 'string' || !body.source || !body.galleryId.trim()) return respond({ error: 'source and galleryId are required' }, 400);
   if (getDoujinProvider(body.source)?.id !== body.source) return respond({ error: `Unknown source: ${body.source}` }, 400);
@@ -124,14 +125,16 @@ async function prepareDownload(body: DownloadInput, group?: MergeDownloadGroup):
   const priority = typeof body.priority === 'number' && Number.isFinite(body.priority) ? Math.trunc(body.priority) : 0;
   try {
     const identities = await prepareDuplicateCheck([{ source: body.source as DoujinSource, galleryId: body.galleryId, ...(sourceUrl ? { url: sourceUrl } : {}) }]);
-    return () => {
+    // A batch passes one checker shared by all of its items (see /downloads/merged).
+    return (checker?: DuplicateChecker) => {
       // Another request can finish its preflight while the batch is resolving.
       if (downloadQueue.findCompleted(body.source as DoujinSource, body.galleryId)
         || getDb().select().from(schema.ownedGalleries).where(and(eq(schema.ownedGalleries.source, body.source), eq(schema.ownedGalleries.galleryId, body.galleryId))).get()) return respond({ error: 'already-downloaded' }, 409);
       if (downloadQueue.findActive(body.source as DoujinSource, body.galleryId)) return respond({ error: 'already-queued' }, 409);
-      const check = findDuplicateReports(identities);
+      const check = checker ? checker.check(identities) : findDuplicateReports(identities);
       if (body.allowDuplicate !== true && check.reports.some(report => report.matches.length)) return respond({ error: 'possible-duplicate', ...check }, 409);
       const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, identities[0].title, outputFormat, group ? undefined : mergeFolder, chapter, priority, undefined, sourceUrl);
+      checker?.noteQueued(identities[0], id);
       if (group) {
         group.plans.push({source:body.source as DoujinSource,galleryId:body.galleryId,title:identities[0].title,chapter:chapter === undefined ? '' : String(chapter),allowDuplicate:body.allowDuplicate === true,url:sourceUrl});
         group.ids[`${body.source}:${body.galleryId}`] = id;
@@ -176,8 +179,11 @@ api.post('/downloads/merged', async (c) => {
     requireMergeProtection(checked.preview);
     group.protection = checked.state;
   } catch(error) { return c.json({error:errMsg(error)},error instanceof MergeProtectionError ? error.status : 502); }
-  // No await between inserts and durable merge linkage.
-  const responses = prepared.map(item => typeof item === 'function' ? item() : item);
+  // No await between inserts and durable merge linkage. One duplicate snapshot
+  // serves the whole batch; each enqueue is added to it, so later items still
+  // see earlier ones exactly as a per-item check would.
+  const checker = prepared.some(item => typeof item === 'function') ? createDuplicateChecker() : undefined;
+  const responses = prepared.map(item => typeof item === 'function' ? item(checker) : item);
   commitMergeGroup(group);
   const items = await Promise.all(responses.map(async (response, index) => ({
     source: body.items[index].source, galleryId: body.items[index].galleryId, ...(await response.json() as Record<string, unknown>),
@@ -239,6 +245,12 @@ api.get('/downloads/gallery-files', (c) => {
   return c.json({ files });
 });
 
+/** Open SSE streams, ended on server shutdown so the HTTP server can close promptly. */
+const eventStreams = new Set<() => void>();
+export function closeDownloadEventStreams(): void {
+  for (const close of [...eventStreams]) close();
+}
+
 /**
  * Server-Sent Events stream of live download-task updates. The client receives
  * an initial `snapshot` of every task, then a `task` event each time a tracked
@@ -252,8 +264,9 @@ api.get('/downloads/events', (c) =>
     // event repeating snapshot state is harmless). Stream writes are queued in
     // call order, so the snapshot still reaches the client first.
     const snapshot = `data: ${JSON.stringify({ type: 'snapshot', tasks: downloadQueue.listForManager() })}\n\n`;
-    const unsubscribe = downloadQueue.subscribe((task) => {
-      void sse.write(`data: ${JSON.stringify({ type: 'task', task })}\n\n`).catch(() => {});
+    // serialized() is computed once per broadcast and shared by every client.
+    const unsubscribe = downloadQueue.subscribe((_task, serialized) => {
+      void sse.write(`data: {"type":"task","task":${serialized()}}\n\n`).catch(() => {});
     });
     const unsubscribeRemovals = downloadQueue.subscribeRemovals((ids) => {
       void sse.write(`data: ${JSON.stringify({ type: 'removed', ids })}\n\n`).catch(() => {});
@@ -266,11 +279,15 @@ api.get('/downloads/events', (c) =>
       void sse.write(': ping\n\n').catch(() => {});
     }, 15_000);
 
+    let close: () => void = () => {};
     await new Promise<void>((resolve) => {
       const signal = c.req.raw.signal;
       if (signal.aborted) return resolve();
+      close = resolve;
+      eventStreams.add(close);
       signal.addEventListener('abort', () => resolve(), { once: true });
     });
+    eventStreams.delete(close);
 
     clearInterval(heartbeat);
     unsubscribe();
@@ -296,11 +313,58 @@ api.get('/downloads/:id/cover', async (c) => {
   if (id === null) return c.json({ error: 'Invalid download id' }, 400);
   const task = downloadQueue.get(id);
   if (!task || task.status !== 'completed' || !task.outputPath) return c.json({ error: 'No cover available' }, 404);
-  const img = await readCoverImage(task.outputPath);
-  if (!img) return c.json({ error: 'No cover available' }, 404);
-  return new Response(img.data, {
-    headers: { 'Content-Type': img.mime, 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff' } });
+  const outputPath = task.outputPath;
+  let stat: fs.Stats;
+  try { stat = await fs.promises.stat(outputPath); }
+  catch { return c.json({ error: 'No cover available' }, 404); }
+  // An archive is rewritten as a whole, so its path, mtime and size identify
+  // the cover. A folder's first image can change in place without touching the
+  // folder's own mtime, so folder covers are tagged by their bytes and not cached.
+  const archiveTag = stat.isDirectory() ? null : coverTag(JSON.stringify([outputPath, stat.mtimeMs, stat.size]));
+  if (archiveTag && ifNoneMatch(c.req.header('If-None-Match'), archiveTag)) return coverNotModified(archiveTag);
+  let cover = archiveTag ? coverCacheGet(archiveTag) : undefined;
+  if (!cover) {
+    const img = await readCoverImage(outputPath);
+    if (!img) return c.json({ error: 'No cover available' }, 404);
+    cover = { data: img.data, mime: img.mime, etag: archiveTag ?? coverTag(img.data) };
+    if (archiveTag) coverCacheSet(archiveTag, cover);
+    else if (ifNoneMatch(c.req.header('If-None-Match'), cover.etag)) return coverNotModified(cover.etag);
+  }
+  return new Response(cover.data, { headers: { 'Content-Type': cover.mime, ...coverHeaders(cover.etag) } });
 });
+
+/** Raw first pages are large; repeat thumbnail requests are served from memory. */
+const COVER_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const coverCache = new Map<string, { data: Buffer; mime: string; etag: string }>();
+let coverCacheBytes = 0;
+function coverCacheGet(key: string) {
+  const hit = coverCache.get(key);
+  if (hit) { coverCache.delete(key); coverCache.set(key, hit); }
+  return hit;
+}
+function coverCacheSet(key: string, value: { data: Buffer; mime: string; etag: string }): void {
+  if (value.data.length > COVER_CACHE_MAX_BYTES / 4) return;
+  const previous = coverCache.get(key);
+  if (previous) { coverCacheBytes -= previous.data.length; coverCache.delete(key); }
+  coverCache.set(key, value);
+  coverCacheBytes += value.data.length;
+  for (const [oldest, entry] of coverCache) {
+    if (coverCacheBytes <= COVER_CACHE_MAX_BYTES) break;
+    coverCache.delete(oldest);
+    coverCacheBytes -= entry.data.length;
+  }
+}
+const coverTag = (input: string | Buffer) => `"${createHash('sha1').update(input).digest('base64url')}"`;
+const coverHeaders = (etag: string) => ({ ETag: etag, 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
+const coverNotModified = (etag: string) => new Response(null, { status: 304, headers: coverHeaders(etag) });
+/** If-None-Match uses weak comparison: `W/` prefixes are ignored and `*` matches any tag. */
+function ifNoneMatch(header: string | undefined, etag: string): boolean {
+  if (!header) return false;
+  return header.split(',').some((candidate) => {
+    const value = candidate.trim();
+    return value === '*' || value.replace(/^W\//, '') === etag;
+  });
+}
 
 const DOWNLOAD_ACTIONS = ['pause', 'resume', 'cancel', 'retry', 'prioritize'] as const;
 for (const action of DOWNLOAD_ACTIONS) {

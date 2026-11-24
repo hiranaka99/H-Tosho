@@ -4,6 +4,7 @@ import { ChevronRight } from 'lucide-react';
 import { Link } from 'react-router';
 import { MetadataRestoreReview } from './MetadataRestoreReview';
 import { MetadataCoverHistory } from './MetadataCoverHistory';
+import { LazyDetails } from './LazyDetails';
 import { api } from '../lib/api';
 import { Button, Spinner } from './ui';
 import type { RecordedValue } from '../../../server/src/contracts/metadataHistory';
@@ -41,13 +42,13 @@ export function MetadataHistory({seriesId,id,open}:{seriesId:number;id:string;op
         {selected===entry.id&&(detail.isPending?<p role="status" className="mt-3 text-sm">Loading snapshot…</p>:detail.isError?<div role="alert" className="mt-3"><p className="text-sm text-danger">Could not load this snapshot.</p><Button size="sm" variant="outline" onClick={()=>void detail.refetch()}>Retry snapshot</Button></div>:detail.data?<div className="mt-3 min-w-0">
           <dl className="divide-y divide-border">{Object.entries(detail.data.before.fields).map(([field,before])=><div key={field} className="grid min-w-0 gap-2 py-3 sm:grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)]"><dt className="text-xs font-medium">{names[field]??field}</dt>{([before,detail.data.after?.fields[field]] as const).map((cell,index)=><dd key={index} className="min-w-0"><span className="mb-1 block text-xs font-medium text-muted">{index?'After (observed)':'Before'}</span><p className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{value(cell)}</p>{cell?.nativeLocked!==undefined&&<p className="mt-1 text-xs text-muted">Kavita lock: {cell.nativeLocked?'locked':'unlocked'}</p>}</dd>)}</div>)}</dl>
           <p className="mt-3 text-xs text-muted">{detail.data.archives.length} archive snapshot(s). Archive moves and deletions cannot be undone here.</p>
-          {detail.data.archives.map((file,index)=><details key={index} className="group/archive mt-2 border-t border-border pt-1">
-            <summary className="flex min-h-[44px] cursor-pointer list-none items-center gap-2 break-words py-3 text-xs font-medium [&::-webkit-details-marker]:hidden"><ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 group-open/archive:rotate-90"/><span className="min-w-0 [overflow-wrap:anywhere]">{file.target} · {file.status}</span></summary>
+          {detail.data.archives.map((file,index)=><LazyDetails key={index} className="group/archive mt-2 border-t border-border pt-1" summary={
+            <summary className="flex min-h-[44px] cursor-pointer list-none items-center gap-2 break-words py-3 text-xs font-medium [&::-webkit-details-marker]:hidden"><ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 group-open/archive:rotate-90"/><span className="min-w-0 [overflow-wrap:anywhere]">{file.target} · {file.status}</span></summary>}>
             <p className="text-xs text-muted">ComicInfo.xml: {file.beforePresent?'present':'absent'} before; {file.afterPresent===null?'not verified':file.afterPresent?'present':'absent'} after.</p>
             {file.changes.length?<dl className="divide-y divide-border">{file.changes.map(change=><div key={change.field} className="grid min-w-0 gap-2 py-3 sm:grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)]">
               <dt className="text-xs font-medium">{change.field}</dt>{([change.before,change.after] as const).map((cell,index)=><dd key={index} className="min-w-0"><span className="mb-1 block text-xs font-medium text-muted">{index?'After (observed)':'Before'}</span><p className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{value(cell)}</p></dd>)}
             </div>)}</dl>:<p className="py-3 text-xs text-muted">No changed text fields. Original XML is retained with this operation.</p>}
-          </details>)}
+          </LazyDetails>)}
           <MetadataCoverHistory seriesId={seriesId} operationId={detail.data.id} history={detail.data.covers}/>
           <MetadataRestoreReview key={`${seriesId}:${detail.data.id}`} seriesId={seriesId} detail={detail.data}/>
         </div>:null)}

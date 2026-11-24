@@ -56,6 +56,11 @@ export class JobConflict extends Error {
 }
 
 const CONCURRENCY = 2;
+/** Newest log lines returned for one job; long library jobs can write many thousands. */
+const JOB_LOG_LIMIT = 2000;
+/** Ids per IN (...) list, well under SQLite's bound-variable limit. */
+const ID_CHUNK = 500;
+const chunks = <T>(values: T[]): T[][] => Array.from({ length: Math.ceil(values.length / ID_CHUNK) }, (_, index) => values.slice(index * ID_CHUNK, (index + 1) * ID_CHUNK));
 
 interface JobRow {
   id: number;
@@ -164,9 +169,28 @@ class JobQueue {
     };
   }
 
+  /**
+   * Whether the persisted state column carries a context. Answered from the
+   * already-decoded payload where that is exact, so list polls do not parse
+   * every state column a second time.
+   */
+  private stateHasContext(row: JobRow, decodedContext: JobContext | undefined): boolean {
+    const stateJson = row.stateJson ?? '{}';
+    // A top-level "context" key always appears literally in the JSON text.
+    if (!stateJson.includes('"context"')) return false;
+    // With no context in the command JSON, a decoded context can only have come
+    // from the state column, and a decoded context is always a truthy object.
+    if (decodedContext && !row.payloadJson.includes('"context"')) return true;
+    return !!safeParse<JobPayload>(stateJson, {}).context;
+  }
+
   private hydrate(row: JobRow): Job {
     const decoded = readJobPayload(row.type, row.payloadJson, row.stateJson);
-    const payload = structuredClone(this.legacyContexts.get(row.id) ?? decoded.payload);
+    const decodedContext = decoded.payload.context;
+    const legacy = this.legacyContexts.get(row.id);
+    // decoded.payload is freshly parsed for this call; only the shared cached
+    // projection needs a private copy before it is handed out and modified.
+    const payload = legacy ? structuredClone(legacy) : decoded.payload;
     const context = this.contextForPayload(payload);
     const previousIds = new Set((payload.context?.series ?? []).filter((target) => target.name !== `Series #${target.id}`).map((target) => target.id));
     if (context && payload.contextPendingSeriesIds === undefined) {
@@ -175,7 +199,7 @@ class JobQueue {
     if (context) {
       payload.context = context;
       // Projection only: GET/list never write persistent job state.
-      if (!safeParse<JobPayload>(row.stateJson ?? '{}', {}).context) {
+      if (!this.stateHasContext(row, decodedContext)) {
         this.legacyContexts.set(row.id, payload);
         if (this.legacyContexts.size > 300) this.legacyContexts.delete(this.legacyContexts.keys().next().value!);
       }
@@ -232,7 +256,7 @@ class JobQueue {
   /** Insert a new job and return its id. */
   enqueue<T extends JobType>(type: T, payload: JobPayloads[NoInfer<T>] & JobExecutionState): number {
     const command = parseJobCommand(type, payload);
-    if (command.type === 'apply-series' && this.active().some(job => job.type === command.type && job.payload.seriesId === command.payload.seriesId)) throw new JobConflict();
+    if (command.type === 'apply-series' && this.hasActiveSeriesJob(command.type, command.payload.seriesId)) throw new JobConflict();
     const db = getDb();
     const context = this.contextForPayload(payload);
     if (context) {
@@ -267,6 +291,19 @@ class JobQueue {
   latest(type: JobType): Job | null {
     const row = getDb().select().from(schema.jobs).where(eq(schema.jobs.type, type)).orderBy(desc(schema.jobs.id)).limit(1).get();
     return row ? this.hydrate(row) : null;
+  }
+
+  /** Whether any job of this type is queued or running, without hydrating rows. */
+  hasActiveType(type: JobType): boolean {
+    return !!getDb().select({ id: schema.jobs.id }).from(schema.jobs)
+      .where(and(eq(schema.jobs.type, type), inArray(schema.jobs.status, ['queued', 'running']))).limit(1).get();
+  }
+
+  /** Active-job conflict check for one series, decoding only that type's payloads. */
+  private hasActiveSeriesJob(type: JobType, seriesId: number | undefined): boolean {
+    return getDb().select({ type: schema.jobs.type, payloadJson: schema.jobs.payloadJson, stateJson: schema.jobs.stateJson }).from(schema.jobs)
+      .where(and(eq(schema.jobs.type, type), inArray(schema.jobs.status, ['queued', 'running']))).all()
+      .some(row => readJobPayload(row.type, row.payloadJson, row.stateJson).payload.seriesId === seriesId);
   }
 
   /** Jobs that are queued or currently running. */
@@ -328,18 +365,28 @@ class JobQueue {
     const failed = id === undefined
       ? eq(schema.jobs.status, 'failed')
       : and(eq(schema.jobs.id, id), eq(schema.jobs.status, 'failed'));
+    // Filesystem evidence checks run before the write transaction so it never
+    // holds the database lock across disk I/O. Everything here is synchronous,
+    // so no job can change state between the checks and the deletes; the
+    // status guard below is kept regardless.
+    const candidates=getDb().select().from(schema.jobs).where(failed).all().filter(row=>{
+      const decoded=readJobPayload(row.type,row.payloadJson,row.stateJson);
+      if (row.type==='merge-series' && decoded.validationError && /"mergeProtection"\s*:/.test(row.stateJson)) return false;
+      const protection=decoded.payload.mergeProtection;
+      if (!protection || protection.completedTargetSeriesId!==undefined) return true;
+      const published=protection.archives.some(archive=>pathContains(archiveResource(protection.targetDir),archiveResource(archive.path)) && fs.existsSync(archive.path)) || protection.moves?.some(move=>fs.existsSync(move.destination));
+      return !published;
+    }).map(row=>row.id);
+    if (!candidates.length) return 0;
     return getDb().transaction((tx) => {
-      const failedIds=tx.select().from(schema.jobs).where(failed).all().filter(row=>{
-        const decoded=readJobPayload(row.type,row.payloadJson,row.stateJson);
-        if (row.type==='merge-series' && decoded.validationError && /"mergeProtection"\s*:/.test(row.stateJson)) return false;
-        const protection=decoded.payload.mergeProtection;
-        if (!protection || protection.completedTargetSeriesId!==undefined) return true;
-        const published=protection.archives.some(archive=>pathContains(archiveResource(protection.targetDir),archiveResource(archive.path)) && fs.existsSync(archive.path)) || protection.moves?.some(move=>fs.existsSync(move.destination));
-        return !published;
-      }).map(row=>row.id);
-      if (!failedIds.length) return 0;
-      tx.delete(schema.jobLogs).where(inArray(schema.jobLogs.jobId, failedIds)).run();
-      return tx.delete(schema.jobs).where(inArray(schema.jobs.id,failedIds)).run().changes;
+      let removed=0;
+      for (const chunk of chunks(candidates)) {
+        const failedIds=tx.select({id:schema.jobs.id}).from(schema.jobs).where(and(inArray(schema.jobs.id,chunk),eq(schema.jobs.status,'failed'))).all().map(row=>row.id);
+        if (!failedIds.length) continue;
+        tx.delete(schema.jobLogs).where(inArray(schema.jobLogs.jobId, failedIds)).run();
+        removed+=tx.delete(schema.jobs).where(inArray(schema.jobs.id,failedIds)).run().changes;
+      }
+      return removed;
     });
   }
 
@@ -373,8 +420,9 @@ class JobQueue {
     getDb().update(schema.jobs).set({ progressCurrent: current, progressTotal: total }).where(eq(schema.jobs.id, jobId)).run();
   }
 
-  logs(jobId: number): JobLog[] {
-    return getDb().select().from(schema.jobLogs).where(eq(schema.jobLogs.jobId, jobId)).orderBy(asc(schema.jobLogs.id)).all();
+  /** The newest `limit` log lines of one job, oldest first. */
+  logs(jobId: number, limit = JOB_LOG_LIMIT): JobLog[] {
+    return getDb().select().from(schema.jobLogs).where(eq(schema.jobLogs.jobId, jobId)).orderBy(desc(schema.jobLogs.id)).limit(limit).all().reverse();
   }
 
   recentLogs(limit = 300): JobLog[] {

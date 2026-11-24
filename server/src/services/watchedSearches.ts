@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, lte, notInArray, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, lte, notInArray, sql } from 'drizzle-orm';
 import { getDb, schema, type Db } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinSearchResult } from '../downloader/types.js';
@@ -91,6 +91,15 @@ export function getWatchedSearch(id: number): WatchedSearch | undefined {
   if (!row) return undefined;
   const count = db.select({ n: sql<number>`count(*)` }).from(schema.watchedSearchSeen).where(eq(schema.watchedSearchSeen.searchId, id)).get();
   return rowToWatch(row, Number(count?.n ?? 0), getWatchedSearchIntervalMinutes());
+}
+
+/** True when every id names an existing watch (one query, for bulk request validation). */
+export function watchedSearchesExist(ids: number[]): boolean {
+  const unique = [...new Set(ids)];
+  if (!unique.length) return true;
+  const table = schema.watchedSearches;
+  const row = getDb().select({ n: sql<number>`count(*)` }).from(table).where(inArray(table.id, unique)).get();
+  return Number(row?.n ?? 0) === unique.length;
 }
 
 export function listWatchedSearches(): WatchedSearch[] {
@@ -295,16 +304,18 @@ export async function checkWatchedSearches(
     db.select({ id: table.id }).from(table).where(sql`${table.pausedAt} IS NULL`).orderBy(asc(table.id)).all().map(row => row.id);
   const result: CheckResult = { checked: 0, notified: 0, newGalleries: 0, failed: 0, notificationFailed: 0, notificationUnknown: 0 };
   const notifications = new Map<string, { gallery: DoujinSearchResult; source: string; settings: NotificationSettings; watches: { id: number; revision: number }[] }>();
-  for (let i = 0; i < targets.length; i++) {
+  /** Per-target finds to notify, merged in target order once every lane finishes. */
+  const foundByTarget = new Map<number, { key: string; gallery: DoujinSearchResult; source: string; watch: { id: number; revision: number } }[]>();
+  let started = 0;
+  const checkTarget = async (id: number): Promise<void> => {
     if (isCancelled?.()) throw new JobCancelled();
-    const id = targets[i];
-    onProgress?.(i, targets.length);
+    onProgress?.(started++, targets.length);
     if (isCancelled?.()) throw new JobCancelled();
-    if (ownedWatches.has(id)) { log('warn', `Watch ${id} is already being checked; skipped`); continue; }
+    if (ownedWatches.has(id)) { log('warn', `Watch ${id} is already being checked; skipped`); return; }
     const watch = db.select().from(table).where(eq(table.id, id)).get();
-    if (!watch || (!explicit && watch.pausedAt !== null)) continue;
+    if (!watch || (!explicit && watch.pausedAt !== null)) return;
     if (mode === 'due' && (effectiveFollowingInterval(getWatchedSearchIntervalMinutes(), watch.pausedAt, watch.intervalMinutes as FollowingInterval | null) === 0
-      || watch.nextCheckAt === null || Date.parse(watch.nextCheckAt) > Date.now() || !Number.isFinite(Date.parse(watch.nextCheckAt)))) continue;
+      || watch.nextCheckAt === null || Date.parse(watch.nextCheckAt) > Date.now() || !Number.isFinite(Date.parse(watch.nextCheckAt)))) return;
     ownedWatches.add(id);
     try {
       let results: DoujinSearchResult[];
@@ -316,7 +327,7 @@ export async function checkWatchedSearches(
         if (isCancelled?.()) throw new JobCancelled();
         const latest = db.select().from(table).where(eq(table.id, id)).get();
         if (!latest || latest.revision !== watch.revision || (mode === 'due' &&
-          (getWatchedSearchIntervalMinutes() === 0 || latest.pausedAt !== null || latest.nextCheckAt === null || Date.parse(latest.nextCheckAt) > Date.now()))) continue;
+          (getWatchedSearchIntervalMinutes() === 0 || latest.pausedAt !== null || latest.nextCheckAt === null || Date.parse(latest.nextCheckAt) > Date.now()))) return;
         const now = Date.now(), attemptedAt = new Date(now).toISOString();
         const minutes = effectiveFollowingInterval(getWatchedSearchIntervalMinutes(), latest.pausedAt, latest.intervalMinutes as FollowingInterval | null);
         const message = error instanceof Error ? error.message : String(error);
@@ -325,12 +336,12 @@ export async function checkWatchedSearches(
         }).where(and(eq(table.id, id), eq(table.revision, watch.revision))).run();
         result.failed++;
         log('error', `Watch ${id} "${watch.query}" failed: ${message}`);
-        continue;
+        return;
       }
       if (isCancelled?.()) throw new JobCancelled();
       const latest = db.select().from(table).where(eq(table.id, id)).get();
       if (!latest || latest.revision !== watch.revision || (mode === 'due' &&
-        (getWatchedSearchIntervalMinutes() === 0 || latest.pausedAt !== null || latest.nextCheckAt === null || Date.parse(latest.nextCheckAt) > Date.now()))) continue;
+        (getWatchedSearchIntervalMinutes() === 0 || latest.pausedAt !== null || latest.nextCheckAt === null || Date.parse(latest.nextCheckAt) > Date.now()))) return;
       const now = Date.now(), checkedAt = new Date(now).toISOString();
       const byId = new Map(results.map(gallery => [gallery.galleryId, gallery]));
       const ids = [...byId.keys()];
@@ -386,18 +397,50 @@ export async function checkWatchedSearches(
       result.checked++;
       result.newGalleries += freshIds.length;
       if (latest.pausedAt === null && latest.notificationMode === 'immediate' && !(mode === 'due' && getWatchedSearchIntervalMinutes() === 0)) {
-        for (const galleryId of freshIds) {
-          const key = JSON.stringify([latest.source, galleryId]);
-          const candidate = notifications.get(key) ?? { gallery: byId.get(galleryId)!, source: latest.source, settings: getNotificationSettings(), watches: [] };
-          candidate.watches.push({ id: latest.id, revision: latest.revision });
-          notifications.set(key, candidate);
-        }
+        foundByTarget.set(id, freshIds.map(galleryId => ({ key: JSON.stringify([latest.source, galleryId]), gallery: byId.get(galleryId)!,
+          source: latest.source, watch: { id: latest.id, revision: latest.revision } })));
       }
       if (newIds.length > freshIds.length) log('warn', `Watch ${id} "${latest.query}": suppressed ${newIds.length - freshIds.length} old upload(s) re-entering the result window (provider index hiccup)`);
       log(firstRun ? 'info' : 'success', `Watch ${id} "${latest.query}": ${ids.length} result(s), ${freshIds.length} new${firstRun ? ' (seeded)' : ''}`);
       if (isCancelled?.()) throw new JobCancelled();
     } finally {
       ownedWatches.delete(id);
+    }
+  };
+  // Providers rate-limit independently, so each source runs as its own serial
+  // lane and lanes run concurrently (target order is kept within a lane).
+  const sources = new Map<number, string>();
+  for (let i = 0; i < targets.length; i += 500) {
+    const chunk = targets.slice(i, i + 500);
+    for (const row of db.select({ id: table.id, source: table.source }).from(table).where(inArray(table.id, chunk)).all()) sources.set(row.id, row.source);
+  }
+  const lanes = new Map<string, number[]>();
+  for (const id of targets) {
+    const source = sources.get(id) ?? '';
+    const lane = lanes.get(source);
+    if (lane) lane.push(id);
+    else lanes.set(source, [id]);
+  }
+  let laneFailed = false;
+  const settled = await Promise.allSettled([...lanes.values()].map(async (lane) => {
+    for (const id of lane) {
+      // One lane's failure or cancellation stops the others at their next target.
+      if (laneFailed) return;
+      try {
+        await checkTarget(id);
+      } catch (error) {
+        laneFailed = true;
+        throw error;
+      }
+    }
+  }));
+  const failure = settled.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+  if (failure) throw failure.reason;
+  for (const id of targets) {
+    for (const found of foundByTarget.get(id) ?? []) {
+      const candidate = notifications.get(found.key) ?? { gallery: found.gallery, source: found.source, settings: getNotificationSettings(), watches: [] };
+      candidate.watches.push(found.watch);
+      notifications.set(found.key, candidate);
     }
   }
   // Discoveries and check results are committed before Discord is contacted.
@@ -461,8 +504,11 @@ function pruneSeen(searchId: number, db: Db): void {
   db.delete(schema.watchedSearchSeen).where(inArray(schema.watchedSearchSeen.id, ids)).run();
 }
 
+type FeedRow = Pick<typeof schema.watchedSearchNew.$inferSelect, 'source' | 'galleryId' | 'title' | 'url' | 'coverUrl' | 'pageCount'
+  | 'query' | 'watchLabel' | 'foundAt' | 'searchId' | 'artistsJson' | 'language' | 'reviewedAt'>;
+
 /** Read current labels/membership when possible and snapshots after watch removal. */
-function feedItem(r: typeof schema.watchedSearchNew.$inferSelect, watch: Pick<WatchRow, 'displayName' | 'query'> | undefined): WatchedNewGallery {
+function feedItem(r: FeedRow, watch: Pick<WatchRow, 'displayName' | 'query'> | undefined): WatchedNewGallery {
   let artists: string[] = [];
   try { const values: unknown = JSON.parse(r.artistsJson); if (Array.isArray(values)) artists = values.filter((artist): artist is string => typeof artist === 'string'); } catch { /* Old metadata may be incomplete. */ }
   return { source: r.source as DoujinSource, galleryId: r.galleryId, title: r.title,
@@ -479,11 +525,35 @@ export function listGalleryFeed(options: FollowingFeedOptions = {}): WatchedGall
     options.folderId === 'unfiled' ? sql`NOT EXISTS (SELECT 1 FROM ${watch} WHERE ${watch.id} = ${table.searchId} AND ${watch.folderId} IS NOT NULL)` :
       options.folderId !== undefined ? sql`EXISTS (SELECT 1 FROM ${watch} WHERE ${watch.id} = ${table.searchId} AND ${watch.folderId} = ${options.folderId})` : undefined);
   // Folder membership, source, and watch filters apply before winner selection.
-  const winners = sql`${table.id} IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY source, gallery_id ORDER BY found_at DESC, id DESC) AS n FROM watched_search_new ${filters ? sql`WHERE ${filters}` : sql``}) WHERE n = 1)`;
-  const counts = db.select({ total: sql<number>`count(*)`, inboxCount: sql<number>`coalesce(sum(case when ${table.reviewedAt} is null then 1 else 0 end), 0)` }).from(table).where(winners).get()!;
-  const where = and(winners, options.view === 'inbox' ? sql`${table.reviewedAt} IS NULL` : undefined);
-  const current = new Map(db.select().from(watch).all().map(row => [row.id, row] as const));
-  const items = db.select().from(table).where(where).orderBy(desc(table.foundAt), desc(table.id)).limit(options.limit ?? 100).offset(options.offset ?? 0).all().map(row => feedItem(row, current.get(row.searchId)));
+  // Winners are ranked once per request: the counts and the page share one
+  // materialized CTE, and the counts row survives an empty page via LEFT JOIN.
+  const columns = sql.raw('id, search_id, source, query, watch_label, gallery_id, title, url, cover_url, page_count, artists_json, language, reviewed_at, found_at');
+  const rows = db.all<{
+    total: number; inbox_count: number; id: number | null; search_id: number; source: string; query: string; watch_label: string;
+    gallery_id: string; title: string; url: string | null; cover_url: string | null; page_count: number | null;
+    artists_json: string; language: string | null; reviewed_at: string | null; found_at: string;
+  }>(sql`WITH winners AS MATERIALIZED (
+      SELECT ${columns} FROM (
+        SELECT ${columns}, ROW_NUMBER() OVER (PARTITION BY source, gallery_id ORDER BY found_at DESC, id DESC) AS n
+        FROM watched_search_new ${filters ? sql`WHERE ${filters}` : sql``}
+      ) WHERE n = 1
+    ),
+    counts AS (SELECT count(*) AS total, coalesce(sum(CASE WHEN reviewed_at IS NULL THEN 1 ELSE 0 END), 0) AS inbox_count FROM winners),
+    page AS (
+      SELECT * FROM winners ${options.view === 'inbox' ? sql`WHERE reviewed_at IS NULL` : sql``}
+      ORDER BY found_at DESC, id DESC LIMIT ${options.limit ?? 100} OFFSET ${options.offset ?? 0}
+    )
+    SELECT counts.total AS total, counts.inbox_count AS inbox_count, page.* FROM counts LEFT JOIN page ON 1
+    ORDER BY page.found_at DESC, page.id DESC`);
+  const counts = { total: Number(rows[0]?.total ?? 0), inboxCount: Number(rows[0]?.inbox_count ?? 0) };
+  // Watch labels only; lastResultsJson blobs are not needed here.
+  const current = new Map(db.select({ id: watch.id, query: watch.query, source: watch.source, displayName: watch.displayName, folderId: watch.folderId })
+    .from(watch).all().map(row => [row.id, row] as const));
+  const items = rows.filter(row => row.id !== null).map(row => feedItem({
+    source: row.source, galleryId: row.gallery_id, title: row.title, url: row.url, coverUrl: row.cover_url, pageCount: row.page_count,
+    query: row.query, watchLabel: row.watch_label, foundAt: row.found_at, searchId: row.search_id, artistsJson: row.artists_json,
+    language: row.language, reviewedAt: row.reviewed_at,
+  }, current.get(row.search_id)));
   const watches: WatchedGalleryFeed['watches'] = [...current.values()].map(row => ({ id: row.id, query: row.query, source: row.source as DoujinSource,
     watchLabel: row.displayName ?? row.query, folderId: row.folderId, removed: false }));
   const retained = db.select({ id: table.searchId, query: table.query, source: table.source, watchLabel: table.watchLabel })
@@ -516,10 +586,29 @@ export function setGalleriesReviewed(items: { source: DoujinSource; galleryId: s
  * unique index makes replays of already-persisted finds no-ops, so this is safe
  * to run on every startup; it returns how many rows were actually inserted.
  */
+/**
+ * Set once a replay has completed. Current builds persist every reported find to
+ * watched_search_new in the same transaction as lastResultsJson, so later boots
+ * have nothing to replay.
+ */
+const BACKFILL_DONE_KEY = 'watched-new-backfill:v1';
+
 export function backfillNewGalleries(): number {
   const db = getDb();
+  if (db.select({ key: schema.keyValueStore.key }).from(schema.keyValueStore).where(eq(schema.keyValueStore.key, BACKFILL_DONE_KEY)).get()) return 0;
+  return db.transaction(tx => {
+    const inserted = replayLegacyLastResults(tx);
+    tx.insert(schema.keyValueStore).values({ key: BACKFILL_DONE_KEY, valueJson: JSON.stringify({ completedAt: new Date().toISOString() }) })
+      .onConflictDoNothing().run();
+    return inserted;
+  });
+}
+
+function replayLegacyLastResults(db: Db): number {
   const rows = db
-    .select()
+    .select({ id: schema.watchedSearches.id, source: schema.watchedSearches.source, query: schema.watchedSearches.query,
+      displayName: schema.watchedSearches.displayName, lastResultsJson: schema.watchedSearches.lastResultsJson,
+      lastFindsAt: schema.watchedSearches.lastFindsAt, lastCheckedAt: schema.watchedSearches.lastCheckedAt })
     .from(schema.watchedSearches)
     .where(sql`${schema.watchedSearches.lastResultsJson} IS NOT NULL`)
     .all();
@@ -528,6 +617,12 @@ export function backfillNewGalleries(): number {
     const items = decodeLastResults(row.lastResultsJson);
     if (items.length === 0) continue;
     const foundAt = row.lastFindsAt ?? row.lastCheckedAt ?? new Date().toISOString();
+    // Review is shared per gallery identity: one lookup per watch, not per find.
+    const reviewed = new Map(db.select({ galleryId: schema.watchedSearchNew.galleryId, reviewedAt: schema.watchedSearchNew.reviewedAt })
+      .from(schema.watchedSearchNew)
+      .where(and(eq(schema.watchedSearchNew.source, row.source), inArray(schema.watchedSearchNew.galleryId, [...new Set(items.map(item => item.galleryId))]),
+        sql`${schema.watchedSearchNew.reviewedAt} IS NOT NULL`))
+      .all().map(found => [found.galleryId, found.reviewedAt] as const));
     const res = db
       .insert(schema.watchedSearchNew)
       .values(items.map((r) => ({
@@ -540,8 +635,7 @@ export function backfillNewGalleries(): number {
         ...(r.url ? { url: r.url } : {}),
         ...(r.coverUrl ? { coverUrl: r.coverUrl } : {}),
         ...pageCountMetadata(r.pageCount),
-        reviewedAt: db.select({ reviewedAt: schema.watchedSearchNew.reviewedAt }).from(schema.watchedSearchNew)
-          .where(and(eq(schema.watchedSearchNew.source, row.source), eq(schema.watchedSearchNew.galleryId, r.galleryId), sql`${schema.watchedSearchNew.reviewedAt} IS NOT NULL`)).get()?.reviewedAt ?? null,
+        reviewedAt: reviewed.get(r.galleryId) ?? null,
         foundAt,
       })))
       .onConflictDoNothing()

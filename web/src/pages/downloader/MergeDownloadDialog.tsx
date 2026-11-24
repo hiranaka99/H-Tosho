@@ -2,7 +2,8 @@ import * as React from 'react';
 import { Link } from 'react-router';
 import { Loader2, RotateCcw, Combine } from 'lucide-react';
 import { type DoujinSearchResult } from '../../lib/api';
-import { Button, Input, Dialog, DialogContent, DialogTitle, DialogDescription } from '../../components/ui';
+import { Button, Input } from '../../components/ui';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '../../components/dialog';
 import { chapterErrors } from '../../lib/chapterNumbers';
 import { mergeSeriesNameError } from '../../lib/mergeNames';
 export { folderNameFrom } from '../../lib/mergeNames';
@@ -34,11 +35,21 @@ export function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm, 
   const [folder, setFolder] = React.useState(defaultFolder);
   // Per-gallery chapter numbers as editable strings, prefilled with selection order.
   const [numbers, setNumbers] = React.useState<string[]>(() => items.map((_, i) => String(i + 1)));
-  const settled = new Set([...(result?.queuedKeys ?? []), ...(result?.skippedKeys ?? [])]);
+  // Per-item status lookups as sets/maps, so each row is O(1) instead of scanning the result lists.
+  const { settled, queued, skipped, failuresByKey } = React.useMemo(() => {
+    const failures = new Map<string, MergeDownloadResult['failures']>();
+    for (const failure of result?.failures ?? []) failures.set(failure.key, [...(failures.get(failure.key) ?? []), failure]);
+    return {
+      settled: new Set([...(result?.queuedKeys ?? []), ...(result?.skippedKeys ?? [])]),
+      queued: new Set(result?.queuedKeys ?? []),
+      skipped: new Set(result?.skippedKeys ?? []),
+      failuresByKey: failures,
+    };
+  }, [result]);
   const setNumber = (i: number, v: string) => {
     setNumbers((prev) => prev.map((n, j) => (j === i ? v : n)));
   };
-  const numberErrors = chapterErrors(numbers.map((value, index) => ({ key: String(index), value, changed: true })));
+  const numberErrors = React.useMemo(() => chapterErrors(numbers.map((value, index) => ({ key: String(index), value, changed: true }))), [numbers]);
   const folderError = /[\\/]/.test(folder) ? 'Use a series name without slashes.' : mergeSeriesNameError(folder);
   const directory = setup.directory;
   const targetDir = setup.status === 'ready' && directory ? `${directory}${directory.includes('\\') ? '\\' : '/'}${folder.trim()}` : undefined;
@@ -68,9 +79,9 @@ export function MergeDownloadDialog({ items, defaultFolder, onClose, onConfirm, 
               <div key={`${item.source}:${item.galleryId}`} className="flex shrink-0 items-center gap-2 rounded-md border border-border-2 bg-surface-2 px-2 py-1.5">
                 <div className="min-w-0 flex-1 text-xs">
                   <p className="break-words">{item.title}</p>
-                  {result?.queuedKeys.includes(`${item.source}:${item.galleryId}`) && <p className="text-success">Queued</p>}
-                  {result?.skippedKeys.includes(`${item.source}:${item.galleryId}`) && <p className="text-muted">Already owned or queued</p>}
-                  {result?.failures.filter(failure => failure.key === `${item.source}:${item.galleryId}`).map(failure => <p key={failure.key} className="mt-1 text-danger">{failure.message}</p>)}
+                  {queued.has(`${item.source}:${item.galleryId}`) && <p className="text-success">Queued</p>}
+                  {skipped.has(`${item.source}:${item.galleryId}`) && <p className="text-muted">Already owned or queued</p>}
+                  {failuresByKey.get(`${item.source}:${item.galleryId}`)?.map(failure => <p key={failure.key} className="mt-1 text-danger">{failure.message}</p>)}
                   {numberErrors[String(i)] && <p id={`merge-number-error-${i}`} className="mt-1 text-danger">{numberErrors[String(i)]}</p>}
                 </div>
                 <Input

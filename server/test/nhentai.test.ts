@@ -450,3 +450,50 @@ test('numeric, date and title autocomplete never waste a tag API request', async
   for (const query of ['pages:>20', 'uploaded:7d', 'favorites:>=100', 'title:"sample"']) assert.deepEqual(await nhentaiProvider.suggest!(query), []);
   assert.equal(requests.length, 0);
 });
+
+test('a capped artist search reads only the listing pages it needs', async () => {
+  const artist = { id: 9500, type: 'artist', name: 'lazy artist', slug: 'lazy-artist' };
+  // The english slug may already be cached (id 9060) by an earlier test; rows carry both ids.
+  const english = { id: 9560, type: 'language', name: 'english', slug: 'english' };
+  const pages: string[] = [];
+  handler = (raw) => {
+    const url = new URL(raw);
+    if (url.pathname === '/api/v2/cdn') return jsonResponse(CDN);
+    if (url.pathname === '/api/v2/tags/artist/lazy-artist') return jsonResponse(artist);
+    if (url.pathname === '/api/v2/tags/language/english') return jsonResponse(english);
+    if (url.pathname === '/api/v2/tags/ids') return jsonResponse([artist, english]);
+    if (url.pathname === '/api/v2/galleries/tagged') {
+      const page = Number(url.searchParams.get('page'));
+      pages.push(String(page));
+      const result = Array.from({ length: 3 }, (_, i) => ({ id: 9500 + page * 10 + i, english_title: 'Row', tag_ids: [9500, 9560, 9060], num_pages: 5 }));
+      return jsonResponse({ result, num_pages: 4 });
+    }
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  };
+  const results = await nhentaiProvider.search('artist:"lazy artist"', 2);
+  assert.equal(results.length, 2);
+  assert.deepEqual(pages, ['1'], 'two results need only the first listing page');
+  const paged = await nhentaiProvider.searchPage!('artist:"lazy artist"', 0, 2);
+  assert.equal(paged.total, 12, 'exact totals still read the whole listing');
+  assert.deepEqual(pages, ['1', '2', '3', '4'], 'the cached first page is reused');
+});
+
+test('autocomplete results are cached briefly and honor cancellation', async () => {
+  process.env.NHENTAI_API_KEY = 'test-key-123';
+  let posts = 0;
+  handler = (url) => {
+    if (url.includes('/api/v2/tags/search')) {
+      posts++;
+      return jsonResponse([{ id: 11, type: 'tag', name: 'cached tag', slug: 'cached-tag', url: '/tag/cached-tag/', count: 3 }]);
+    }
+    return jsonResponse({}, 404);
+  };
+  const first = await nhentaiProvider.suggest!('cached', 5);
+  const second = await nhentaiProvider.suggest!('cached', 5);
+  assert.deepEqual(second, first);
+  assert.equal(posts, 1, 'a repeated prefix is served from the cache');
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(nhentaiProvider.suggest!('uncached prefix', 5, undefined, controller.signal));
+  assert.equal(posts, 1, 'an aborted lookup sends nothing');
+});

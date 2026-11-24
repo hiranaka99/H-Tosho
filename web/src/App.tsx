@@ -3,13 +3,16 @@ import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-route
 import { House, Library, Settings as SettingsIcon, ListChecks, Compass, Menu, X, LogOut, Monitor, Sun, Moon } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './lib/api';
+import { loadDownloader, loadHome, loadJobs, loadLibraries, loadSettings } from './lib/routeChunks';
+import { APP_VERSION } from './lib/appVersion';
 // Route-level code splitting: each page (and the modals only it imports) loads
 // on first navigation instead of one upfront bundle.
-const Libraries = React.lazy(() => import('./pages/Libraries').then((m) => ({ default: m.Libraries })));
-const Home = React.lazy(() => import('./pages/Home').then((m) => ({ default: m.Home })));
-const Downloader = React.lazy(() => import('./pages/Downloader').then((m) => ({ default: m.Downloader })));
-const Jobs = React.lazy(() => import('./pages/Jobs').then((m) => ({ default: m.Jobs })));
-const Settings = React.lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
+// main.tsx preloads the current route's chunk through the same loaders.
+const Libraries = React.lazy(() => loadLibraries().then((m) => ({ default: m.Libraries })));
+const Home = React.lazy(() => loadHome().then((m) => ({ default: m.Home })));
+const Downloader = React.lazy(() => loadDownloader().then((m) => ({ default: m.Downloader })));
+const Jobs = React.lazy(() => loadJobs().then((m) => ({ default: m.Jobs })));
+const Settings = React.lazy(() => loadSettings().then((m) => ({ default: m.Settings })));
 import { SidebarStatus } from './components/SidebarStatus';
 import { Button } from './components/ui';
 import { cn } from './lib/utils';
@@ -72,13 +75,12 @@ class PageErrorBoundary extends React.Component<{ children: React.ReactNode }, {
 
 /** Brand mark + wordmark, shared by the mobile header and the desktop sidebar. */
 function Brand() {
-  const { data } = useQuery({ queryKey: ['app-version'], queryFn: api.version, staleTime: Infinity });
   return (
     <div className="flex min-w-0 items-center gap-2.5">
-      <img src="/h-tosho-icon.png?v=199908e7" alt="" aria-hidden="true" width={32} height={32} className="h-8 w-8 shrink-0 rounded-lg object-contain" />
+      <img src="/h-tosho-icon.png?v=26b1c759" alt="" aria-hidden="true" width={32} height={32} className="h-8 w-8 shrink-0 rounded-lg object-contain" />
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold leading-tight tracking-tight">H-Tosho</div>
-        {data?.version && <div className="text-[11px] leading-tight text-muted">v{data.version}</div>}
+        {APP_VERSION && <div className="text-[11px] leading-tight text-muted">v{APP_VERSION}</div>}
       </div>
     </div>
   );
@@ -111,6 +113,9 @@ const NAV = [
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ];
 
+/** Mount-time style only; later positions are written to the node directly. */
+const NAV_INDICATOR_INITIAL: React.CSSProperties = { height: 0, transform: 'translateY(0px)', opacity: 0 };
+
 export default function App() {
   const location = useLocation();
   const { username, logout } = useAuth();
@@ -124,23 +129,29 @@ export default function App() {
   const mainRef = React.useRef<HTMLElement>(null);
   const navToggleRef = React.useRef<HTMLButtonElement>(null);
   const navigationRef = React.useRef<HTMLElement>(null);
-  const [navIndicator, setNavIndicator] = React.useState({ top: 0, height: 0 });
+  const navIndicatorRef = React.useRef<HTMLSpanElement>(null);
+  // The indicator is positioned straight on the DOM node: moving it never
+  // re-renders App, and one ResizeObserver lives for the sidebar's lifetime.
+  const measureNavIndicator = React.useCallback(() => {
+    const nav = navigationRef.current, indicator = navIndicatorRef.current;
+    if (!nav || !indicator) return;
+    const active = nav.querySelector<HTMLElement>('a[aria-current="page"]');
+    const bounds = active?.getBoundingClientRect();
+    const top = bounds ? bounds.top - nav.getBoundingClientRect().top : 0;
+    const height = bounds?.height ?? 0;
+    indicator.style.height = `${height}px`;
+    indicator.style.transform = `translateY(${top}px)`;
+    indicator.style.opacity = height ? '1' : '0';
+  }, []);
   React.useLayoutEffect(() => {
     const nav = navigationRef.current;
     if (!nav) return;
-    const measure = () => {
-      const active = nav.querySelector<HTMLElement>('a[aria-current="page"]');
-      if (!active) { setNavIndicator({ top: 0, height: 0 }); return; }
-      const bounds = active.getBoundingClientRect();
-      const top = bounds.top - nav.getBoundingClientRect().top;
-      setNavIndicator(current => current.top === top && current.height === bounds.height ? current : { top, height: bounds.height });
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
+    const observer = new ResizeObserver(measureNavIndicator);
     observer.observe(nav);
     nav.querySelectorAll('a').forEach(link => observer.observe(link));
     return () => observer.disconnect();
-  }, [location.pathname, isDesktop]);
+  }, [measureNavIndicator]);
+  React.useLayoutEffect(measureNavIndicator, [location.pathname, isDesktop, measureNavIndicator]);
   React.useEffect(() => setNavOpen(false), [location.pathname, location.search, isDesktop]);
   React.useLayoutEffect(() => {
     if (sidebarRef.current) sidebarRef.current.inert = !isDesktop && !navOpen;
@@ -202,7 +213,7 @@ export default function App() {
           {isDesktop && <Brand />}
         </div>
         <nav ref={navigationRef} aria-label="Primary navigation" className="relative isolate flex flex-1 flex-col gap-1 p-3">
-          <span aria-hidden="true" className="app-nav-indicator pointer-events-none absolute inset-x-3 top-0 rounded-lg bg-primary/10" style={{ height: navIndicator.height, transform: `translateY(${navIndicator.top}px)`, opacity: navIndicator.height ? 1 : 0 }} />
+          <span ref={navIndicatorRef} aria-hidden="true" className="app-nav-indicator pointer-events-none absolute inset-x-3 top-0 rounded-lg bg-primary/10" style={NAV_INDICATOR_INITIAL} />
           {NAV.map((item) => (
             <div key={item.to} className="relative z-10">
               <NavLink
@@ -232,7 +243,7 @@ export default function App() {
           </Button>
         </div>
         <KavitaIndicator />
-        <SidebarStatus />
+        <SidebarStatus live={isDesktop || navOpen} />
       </aside>
       <main ref={mainRef} id="main-content" tabIndex={-1} className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
         {/* Padding lives on an inner wrapper, not on the scroll container itself: sticky

@@ -69,6 +69,29 @@ export async function notify(n: Notification, expected?: { revision: number; des
   return { status: 'delivered', receiptId: await sendDiscord(n, settings.discord.webhookUrl, expected !== undefined) };
 }
 
+/** Most background sends that may wait behind a slow webhook before new ones are dropped. */
+const BACKGROUND_MAX_PENDING = 100;
+let backgroundChain: Promise<void> = Promise.resolve();
+let backgroundPending = 0;
+
+/**
+ * Fire-and-forget delivery for best-effort notifications sent from inside job
+ * work (and its library ownership). Sends run one at a time in order, so a
+ * slow or rate-limited webhook paces itself without delaying the caller.
+ * Failures are reported through onError and never reject.
+ */
+export function notifyInBackground(n: Notification, onError: (error: unknown) => void): void {
+  if (backgroundPending >= BACKGROUND_MAX_PENDING) {
+    onError(new Error('Too many notifications are waiting to send; this one was skipped'));
+    return;
+  }
+  backgroundPending++;
+  backgroundChain = backgroundChain
+    .then(() => notify(n))
+    .then(() => undefined, (error: unknown) => { try { onError(error); } catch { /* reporting is best-effort */ } })
+    .finally(() => { backgroundPending--; });
+}
+
 /** A network timeout can follow acceptance. It is ambiguous, never a safe automatic replay. */
 async function postDiscord(webhookUrl: string, embed: Record<string, unknown>, acknowledged: boolean): Promise<string | null> {
   let url: URL;
@@ -84,7 +107,9 @@ async function postDiscord(webhookUrl: string, embed: Record<string, unknown>, a
     throw new NotificationFailure('Discord acknowledgement unavailable; the message may have been accepted.', 'unknown');
   }
   if (!res.ok) {
-    const retryAfter = Number(res.headers.get('retry-after'));
+    // A missing or blank header must reach the 5s fallback; Number(null) is 0.
+    const retryAfterHeader = res.headers.get('retry-after')?.trim();
+    const retryAfter = retryAfterHeader ? Number(retryAfterHeader) : Number.NaN;
     // Never include remote response bodies or webhook credentials in persisted errors.
     throw new NotificationFailure(`Discord webhook HTTP ${res.status}`, 'failed', res.status === 429 || res.status >= 500,
       res.status === 429 ? Math.min(300_000, Math.max(1_000, Number.isFinite(retryAfter) ? retryAfter * 1000 : 5_000)) : undefined);

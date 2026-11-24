@@ -4,8 +4,9 @@ import { FileText, FolderOpen, FileArchive, ArrowUp, Save, HardDrive } from 'luc
 import { api } from '../lib/api';
 import { cn } from '../lib/utils';
 import { toast } from '../lib/toast';
-import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Input, Label, Spinner, EmptyState, Disclosure } from './ui';
-import { changedComicInfoFields, comicInfoHasChanges, createComicInfoDraft, editComicInfoField, type ComicInfoDraft } from '../lib/comicInfoDraft';
+import { Button, Input, Label, Spinner, EmptyState, Disclosure } from './ui';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from './dialog';
+import { changedComicInfoFields, comicInfoHasChanges, comicInfoXml, createComicInfoDraft, editComicInfoField, type ComicInfoDraft } from '../lib/comicInfoDraft';
 
 const FIELD_GROUPS = [
   { title: 'Chapter identity', fields: ['Title', 'Series', 'Number', 'Volume'] },
@@ -18,6 +19,8 @@ const EDITOR_FIELDS = FIELD_GROUPS.flatMap(group => group.fields);
 
 /** Join a directory + child using the separator the server's paths actually use. */
 const joinPath = (dir: string, name: string): string => `${dir}${dir.includes('\\') ? '\\' : '/'}${name}`;
+/** Folder listings longer than this render a filter and only the first matches. */
+const BROWSE_RENDER_LIMIT = 200;
 
 interface ComicInfoModalProps {
   /** Absolute path to open immediately (e.g. from a completed download row). */
@@ -34,6 +37,8 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose, onStateChange 
   const [browseOpen, setBrowseOpen] = React.useState(!initialPath && seriesId === undefined);
   const [file, setFile] = React.useState<string | null>(initialPath ?? null);
   const [dir, setDir] = React.useState<string | null>(null);
+  const [browseFilter, setBrowseFilter] = React.useState('');
+  React.useEffect(() => setBrowseFilter(''), [dir]);
   const [drafts, setDrafts] = React.useState<Record<string, ComicInfoDraft>>({});
   const [pickerOpen, setPickerOpen] = React.useState(!initialPath);
   const [queuedFiles, setQueuedFiles] = React.useState<Record<string, number>>({});
@@ -50,6 +55,20 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose, onStateChange 
     queryFn: () => api.cbzBrowse(dir!),
     enabled: browseOpen && !!dir,
   });
+  // Library roots can hold thousands of folders: past the limit, offer a filter
+  // and render only the first matches instead of every button at once.
+  const browseListing = React.useMemo(() => {
+    const data = dirData.data;
+    if (!data) return null;
+    const total = data.dirs.length + data.files.length;
+    const needle = browseFilter.trim().toLowerCase();
+    const match = (name: string) => !needle || name.toLowerCase().includes(needle);
+    const matchedDirs = needle ? data.dirs.filter(match) : data.dirs;
+    const matchedFiles = needle ? data.files.filter(match) : data.files;
+    const dirs = matchedDirs.slice(0, BROWSE_RENDER_LIMIT);
+    const files = matchedFiles.slice(0, BROWSE_RENDER_LIMIT - dirs.length);
+    return { dirs, files, total, matched: matchedDirs.length + matchedFiles.length, large: total > BROWSE_RENDER_LIMIT };
+  }, [dirData.data, browseFilter]);
   const doc = useQuery({
     queryKey: ['cbz-comicinfo', file],
     queryFn: () => api.cbzComicInfo(file!),
@@ -100,13 +119,13 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose, onStateChange 
   const save = useMutation({
     mutationFn: ({ path, snapshot }: { path: string; snapshot: ComicInfoDraft }) => api.enqueue('edit-comicinfo', {
       path,
-      ...(snapshot.rawEdited ? { xml: snapshot.xml } : { fields: Object.fromEntries(changedComicInfoFields(snapshot).map(key => [key, snapshot.values[key] ?? ''])) }),
+      ...(snapshot.rawEdited ? { xml: comicInfoXml(snapshot) } : { fields: Object.fromEntries(changedComicInfoFields(snapshot).map(key => [key, snapshot.values[key] ?? ''])) }),
       ...(associatedSeriesId !== undefined ? { seriesId: associatedSeriesId } : {}),
     }),
     onSuccess: (result, { path, snapshot }) => {
       void qc.invalidateQueries({ queryKey: ['jobs'] });
       setQueuedFiles(previous => ({ ...previous, [path]: result.id }));
-      setDrafts(previous => previous[path] ? { ...previous, [path]: { ...previous[path], originalXml: snapshot.xml, originalValues: { ...snapshot.values } } } : previous);
+      setDrafts(previous => previous[path] ? { ...previous, [path]: { ...previous[path], originalXml: comicInfoXml(snapshot), originalValues: { ...snapshot.values } } } : previous);
       toast({ tone: 'success', title: 'ComicInfo save queued', description: `${path.split(/[\\/]/).pop()} — check the Tasks page` });
     },
     onError: error => toast({ tone: 'danger', title: 'Could not queue save', description: error instanceof Error ? error.message : String(error) }),
@@ -246,15 +265,21 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose, onStateChange 
                       </button>
                       <span className="break-all font-mono text-xs text-muted">{dirData.data.path}</span>
                     </div>
-                    {dirData.data.dirs.length > 0 || dirData.data.files.length > 0 ? (
+                    {browseListing?.large && (
+                      <div className="flex flex-col gap-1">
+                        <Input aria-label="Filter this folder" value={browseFilter} onChange={(e) => setBrowseFilter(e.target.value)} placeholder={`Filter ${browseListing.total} items…`} className="text-base lg:text-xs" />
+                        {browseListing.matched > BROWSE_RENDER_LIMIT && <p className="text-xs text-muted">Showing the first {BROWSE_RENDER_LIMIT} of {browseListing.matched}. Type to narrow the list.</p>}
+                      </div>
+                    )}
+                    {browseListing && (browseListing.dirs.length > 0 || browseListing.files.length > 0) ? (
                       <div className="grid max-h-48 grid-cols-1 gap-1 overflow-y-auto sm:grid-cols-2">
-                        {dirData.data.dirs.map((d) => (
+                        {browseListing.dirs.map((d) => (
                           <button key={d} type="button" onClick={() => setDir(joinPath(dirData.data.path, d))} aria-label={`Open folder ${d}`}
                             className="flex min-h-9 min-w-0 items-center gap-1.5 rounded-md border border-border-2 px-2 py-1 text-left text-xs transition-colors hover:border-primary/50">
                             <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted" /> <span className="break-all">{d}</span>
                           </button>
                         ))}
-                        {dirData.data.files.map((f) => (
+                        {browseListing.files.map((f) => (
                           <button key={f} type="button" onClick={() => openFile(joinPath(dirData.data.path, f))} aria-label={`Open file ${f}`}
                             className="flex min-h-9 min-w-0 items-center gap-1.5 rounded-md border border-border-2 px-2 py-1 text-left text-xs transition-colors hover:border-primary/50">
                             <FileArchive className="h-3.5 w-3.5 shrink-0 text-success" /> <span className="break-all">{f}</span>
@@ -262,7 +287,7 @@ export function ComicInfoEditor({ initialPath, seriesId, onClose, onStateChange 
                         ))}
                       </div>
                     ) : (
-                      <p className="text-xs text-muted">No subdirectories or .cbz files here.</p>
+                      <p className="text-xs text-muted">{browseListing?.total ? 'Nothing here matches the filter.' : 'No subdirectories or .cbz files here.'}</p>
                     )}
                   </div>
                 )}

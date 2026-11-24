@@ -1,7 +1,8 @@
 import * as React from 'react';
 import { Copy } from 'lucide-react';
 import { api, type DuplicateCheck, type DoujinSource } from '../lib/api';
-import { Button, Dialog, DialogContent, DialogTitle, DialogDescription, Badge } from './ui';
+import { Button, Badge } from './ui';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from './dialog';
 import { sourceDisplayName } from '../lib/utils';
 
 export function useDuplicateReview() {

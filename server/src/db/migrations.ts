@@ -35,11 +35,11 @@ function createIndexes(sqlite: Database.Database, following = false): void {
   for (const table of tables) for (const index of table.indexes) {
     // Legacy watch rows must be reconciled and extended before F1 indexes exist.
     if (!following && (index.config.name === 'idx_watched_searches_source_query' || index.config.name === 'idx_watched_searches_due')) continue;
-    const columns = index.config.columns.map(column => {
-      if (column instanceof SQL) throw new Error('Expression indexes require an explicit migration');
-      return quote(column.name);
-    });
-    sqlite.exec(`CREATE ${index.config.unique ? 'UNIQUE ' : ''}INDEX IF NOT EXISTS ${quote(index.config.name)} ON ${quote(table.name)} (${columns.join(', ')})`);
+    // SQL terms are plain column terms with a sort order (`"priority" DESC`);
+    // a WHERE clause makes a partial index. Both are written as raw SQL in the schema.
+    const columns = index.config.columns.map(column => column instanceof SQL ? dialect.sqlToQuery(column.inlineParams()).sql : quote(column.name));
+    const where = index.config.where ? ` WHERE ${dialect.sqlToQuery(index.config.where.inlineParams()).sql}` : '';
+    sqlite.exec(`CREATE ${index.config.unique ? 'UNIQUE ' : ''}INDEX IF NOT EXISTS ${quote(index.config.name)} ON ${quote(table.name)} (${columns.join(', ')})${where}`);
   }
 }
 
@@ -164,6 +164,12 @@ export function migrateSchema(sqlite: Database.Database): void {
     },
     () => {
       // Performance indexes for hot queries and retention sweeps.
+      createIndexes(sqlite, true);
+    },
+    () => {
+      // The claim index gains `priority DESC, id` so claimNext needs no temp
+      // sort; IF NOT EXISTS cannot redefine an index, so rebuild it.
+      sqlite.exec('DROP INDEX IF EXISTS idx_download_queue_claim');
       createIndexes(sqlite, true);
     },
   ];

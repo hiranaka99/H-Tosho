@@ -9,7 +9,8 @@ import { GripVertical, Loader2, Pause, Pencil, Play, Trash2, ExternalLink, Chevr
 import { api, ApiError, type DoujinSource } from '../../lib/api';
 import { cn, timeAgo } from '../../lib/utils';
 import { toast } from '../../lib/toast';
-import { Button, Badge, Select, ErrorState, ConfirmDialog, Skeleton, Dialog, DialogContent, DialogTitle, DialogDescription } from '../../components/ui';
+import { Button, Badge, Select, ErrorState, Skeleton } from '../../components/ui';
+import { ConfirmDialog, Dialog, DialogContent, DialogTitle, DialogDescription } from '../../components/dialog';
 import { PageCountPill } from '../../components/PageCountPill';
 import { switchProviderSearch, type TranslationLink } from '../../lib/searchTranslation';
 
@@ -323,11 +324,16 @@ export function FollowingCheckStatus({ watches }: { watches: WatchedSearch[] }) 
     refetchInterval: query => checking || requestedJob !== null || ['queued', 'running'].includes(query.state.data?.status ?? '') ? 2500 : 60_000 });
   const checkJob = checkQuery.data;
   const checkActive = checking || (requestedJob !== null && checkJob?.id !== requestedJob && !checkQuery.isError) || checkJob?.status === 'queued' || checkJob?.status === 'running';
-  const completionRef = React.useRef('');
+  // null until the first status is seen: a check that had already finished when
+  // this mounted is not a new completion, so it must not refetch the lists.
+  // A check seen queued/running records '' and invalidates once it finishes.
+  const completionRef = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (!checkJob || ['queued', 'running'].includes(checkJob.status)) return;
-    const stamp = `${checkJob.id}:${checkJob.status}`;
-    if (completionRef.current === stamp) return;
+    if (!checkJob) return;
+    const done = !['queued', 'running'].includes(checkJob.status);
+    const stamp = done ? `${checkJob.id}:${checkJob.status}` : '';
+    if (completionRef.current === null) { completionRef.current = stamp; return; }
+    if (!done || completionRef.current === stamp) return;
     completionRef.current = stamp;
     void qc.invalidateQueries({ queryKey: ['watched-searches'] });
     void qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });

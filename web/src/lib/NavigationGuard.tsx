@@ -1,52 +1,27 @@
 import * as React from 'react';
-import { useBlocker, useBeforeUnload } from 'react-router';
-import { Button, Dialog, DialogContent, DialogTitle, DialogDescription } from '../components/ui';
+import { useBlocker } from 'react-router';
 import { useSettingsNavigation } from './SettingsDrafts';
+
+const NavigationGuardDialog = React.lazy(() => import('./NavigationGuardDialog'));
 
 export function NavigationGuard() {
   const drafts = useSettingsNavigation();
-  const [saving, setSaving] = React.useState(false);
-  const [error, setError] = React.useState('');
   const blocker = useBlocker(React.useCallback(({ currentLocation, nextLocation }) =>
     drafts.dirty && currentLocation.pathname === '/settings' && nextLocation.pathname !== '/settings', [drafts.dirty]));
-  useBeforeUnload(React.useCallback((event) => {
+  // A beforeunload listener makes the page ineligible for the back/forward
+  // cache, so attach it only while there are unsaved drafts to protect.
+  React.useEffect(() => {
     if (!drafts.dirty) return;
-    event.preventDefault();
-    event.returnValue = '';
-  }, [drafts.dirty]));
-  const stay = () => {
-    if (saving || drafts.pending) return;
-    setError('');
-    if (blocker.state === 'blocked') blocker.reset();
-  };
-  return <Dialog open={blocker.state === 'blocked'} onOpenChange={(open) => { if (!open) stay(); }}>
-    <DialogContent className="max-w-lg" onEscapeKeyDown={(event) => { if (saving || drafts.pending) event.preventDefault(); }} onPointerDownOutside={(event) => { if (saving || drafts.pending) event.preventDefault(); }}>
-      <div className="flex flex-col gap-4 p-5 pr-12">
-        <div>
-          <DialogTitle>Save your settings changes?</DialogTitle>
-          <DialogDescription className="mt-2">You have unsaved changes in {drafts.labels.join(', ')}. Save them before leaving, discard them, or stay to continue editing.</DialogDescription>
-        </div>
-        {!drafts.canSave && !saving && <p className="text-sm text-muted">{drafts.invalid.length > 0 ? `Fix the highlighted fields in ${drafts.invalid.map((entry) => entry.label).join(', ')} to save, or discard your changes.` : 'Wait for the current save to finish before saving all changes.'}</p>}
-        {error && <p role="alert" className="break-words text-sm text-danger">{error}</p>}
-        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
-          <Button variant="outline" disabled={saving || drafts.pending} onClick={stay}>Stay</Button>
-          <Button variant="outline" disabled={saving || drafts.pending} onClick={() => {
-            drafts.discardAll();
-            setError('');
-            if (blocker.state === 'blocked') blocker.proceed();
-          }}>Discard</Button>
-          <Button disabled={!drafts.canSave || saving} onClick={async () => {
-            setSaving(true);
-            setError('');
-            try {
-              await drafts.saveAll();
-              if (blocker.state === 'blocked') blocker.proceed();
-            } catch (cause) {
-              setError(cause instanceof Error ? cause.message : String(cause));
-            } finally { setSaving(false); }
-          }}>{saving ? 'Saving…' : 'Save & leave'}</Button>
-        </div>
-      </div>
-    </DialogContent>
-  </Dialog>;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [drafts.dirty]);
+  // Mount the dialog once navigation is first blocked, then keep it mounted so it can animate closed.
+  const [needed, setNeeded] = React.useState(false);
+  if (blocker.state === 'blocked' && !needed) setNeeded(true);
+  if (!needed) return null;
+  return <React.Suspense fallback={null}><NavigationGuardDialog blocker={blocker} drafts={drafts} /></React.Suspense>;
 }

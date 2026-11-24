@@ -2,10 +2,10 @@ import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router';
 import { AlertTriangle, ArrowRight, Check, CheckCircle2, Download, Eraser, History, House, Image as ImageIcon, Inbox, Link2, PenLine, RefreshCw, Search, ShieldQuestion, Sparkles, Unlink, X, XCircle, type LucideIcon } from 'lucide-react';
-import { api, type DoujinSearchResult, type MatchSuggestion } from '../lib/api';
+import { api, type DoujinSearchResult, type DownloadTask, type MatchSuggestion } from '../lib/api';
 import { cn, PROVIDER_NAMES, sourceDisplayName, timeAgo, toIsoUtc } from '../lib/utils';
 import { toast } from '../lib/toast';
-import { useDownloadTasks, useGalleryDownloadTask } from '../lib/DownloadsContext';
+import { useDownloadsSelector, useGalleryDownloadStatus } from '../lib/DownloadsContext';
 import { Badge, Button, EmptyState, ErrorState, PageHeader, Pager, ProgressBar, Skeleton, Spinner } from '../components/ui';
 import { Cover, GalleryCard, OwnershipChip } from './downloader/GalleryCard';
 import type { DownloadSetup } from './downloader/state';
@@ -78,15 +78,25 @@ function CandidateReview({ item, onClose }: { item: MatchSuggestion; onClose: ()
     onRetryCurrent={() => { void current.refetch(); }} match={current.data?.match ?? null} currentCover={item.cover} onClose={onClose} />;
 }
 
+const NO_DOWNLOAD_COUNTS = { active: 0, failed: 0 };
+/** Header chip counts; numbers are structurally shared, so progress ticks never re-render Home. */
+function selectHomeDownloadCounts(tasks: DownloadTask[]) {
+  return {
+    active: tasks.filter(task => task.status === 'downloading' || task.status === 'queued').length,
+    failed: tasks.filter(task => task.status === 'failed' && !task.retryAt).length,
+  };
+}
+
 /** One Following find: the same download, ownership and dismiss decisions as a Discover card, in a list row. */
 function FollowingRow({ item, label, ownership, starting, reviewing, setupStatus, onOpen, onDownload, onDismiss }: {
   item: DoujinSearchResult; label?: string; ownership: GalleryOwnership; starting: boolean; reviewing: boolean; setupStatus: DownloadSetup['status'];
   onOpen: (item: DoujinSearchResult) => void; onDownload: (item: DoujinSearchResult) => void; onDismiss: (item: DoujinSearchResult) => void;
 }) {
-  const task = useGalleryDownloadTask(item.source, item.galleryId);
-  const active = starting || !!task;
+  // Coarse status only, so the row never re-renders on byte/speed ticks.
+  const taskStatus = useGalleryDownloadStatus(item.source, item.galleryId);
+  const active = starting || !!taskStatus;
   const inLibrary = ownership.type === 'in-library', owned = inLibrary || ownership.type === 'downloaded', possible = ownership.type === 'possible-duplicate';
-  const actionLabel = task?.state?.type === 'retry-wait' ? 'Retry scheduled' : task?.status === 'queued' ? 'Queued' : task?.status === 'paused' ? 'Paused' : starting && !task ? 'Checking…' : active ? 'Downloading'
+  const actionLabel = taskStatus === 'retry-wait' ? 'Retry scheduled' : taskStatus === 'queued' ? 'Queued' : taskStatus === 'paused' ? 'Paused' : starting && !taskStatus ? 'Checking…' : active ? 'Downloading'
     : inLibrary ? 'In library' : owned ? 'Downloaded' : possible ? 'Review duplicate' : setupStatus === 'missing' ? 'Set folder' : 'Download';
   return <li className="flex min-w-0 gap-3 py-4">
     <button type="button" onClick={() => onOpen(item)} className="h-20 w-14 shrink-0 self-start overflow-hidden rounded-md" tabIndex={-1} aria-hidden="true"><Cover url={item.coverUrl} title={item.title} className="h-full w-full" /></button>
@@ -109,7 +119,7 @@ export function Home() {
   const qc = useQueryClient(), navigate = useNavigate();
   const { recs, recsLoading, recsFailed, recsError, refetchRecs, recsRefreshing, doRefreshRecs, visibleRecs, ownedKeys } = useRecommendations('search');
   const { setup, pendingKeys, doStartDownload, duplicateDialog } = useGalleryDownload();
-  const { tasks: downloadTasks, active: activeDownloads } = useDownloadTasks();
+  const { active: activeDownloads, failed: failedDownloads } = useDownloadsSelector(selectHomeDownloadCounts) ?? NO_DOWNLOAD_COUNTS;
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
   const [review, setReview] = React.useState<MatchSuggestion | null>(null);
   const [openedIds, setOpenedIds] = React.useState(new Set<number>());
@@ -182,7 +192,6 @@ export function Home() {
   const kavitaMissing = matches.data?.configured === false;
   const uncertain = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, enabled: !!matches.data?.configured, refetchInterval: 60_000 });
   const uncertainCount = matches.data?.configured ? uncertain.data?.count ?? 0 : 0;
-  const failedDownloads = downloadTasks.filter(task => task.status === 'failed' && !task.retryAt).length;
   const waiting: WaitingItem[] = [];
   if (matches.data?.configured && matchItems.length > 0) waiting.push({ key: 'matches', jump: 'home-matches', icon: Link2, label: `${matchItems.length} ${matchItems.length === 1 ? 'match' : 'matches'} to review` });
   if (uncertainCount > 0) waiting.push({ key: 'uncertain', to: '/libraries/review', icon: ShieldQuestion, tone: 'warning', label: `${uncertainCount} uncertain ${uncertainCount === 1 ? 'match' : 'matches'} in Libraries` });
@@ -296,7 +305,7 @@ export function Home() {
     <div className="flex min-w-0 flex-col gap-4">
       <PageHeader icon={<House className="h-5 w-5" />} title="Home">
         {/* The sidebar shows running downloads on desktop; the phone header has no sidebar. */}
-        {activeDownloads.length > 0 && <Link to="/downloader?tab=downloads" className={cn(chipClass, 'border-border-2 lg:hidden')}><Spinner />{activeDownloads.length} downloading</Link>}
+        {activeDownloads > 0 && <Link to="/downloader?tab=downloads" className={cn(chipClass, 'border-border-2 lg:hidden')}><Spinner />{activeDownloads} downloading</Link>}
       </PageHeader>
       {waiting.length > 0 && <nav aria-label="Waiting for you"><ul className="flex flex-wrap gap-2">{waiting.map(item => {
         const Icon = item.icon;

@@ -1,4 +1,5 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
+import { mapLimit } from '../lib/http.js';
 import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
 import { autoMatch, type CandidateMatch } from '../match/autoMatcher.js';
@@ -76,10 +77,11 @@ export async function scanMatchSuggestions(options: {
   } else {
     const libraries = await client.getLibraries();
     check();
-    for (const library of libraries) {
-      const series = await client.getSeries(library.id);
-      check();
-      for (const item of series) {
+    // Library listings are independent reads; results stay in library order.
+    const seriesByLibrary = await mapLimit(libraries, 4, async library => { check(); return client.getSeries(library.id); });
+    check();
+    for (const [index, library] of libraries.entries()) {
+      for (const item of seriesByLibrary[index]) {
         if (['matched', 'syncing'].includes(statuses.get(item.id) ?? '')) continue;
         targets.push({ id: item.id, name: item.name, libraryId: library.id, libraryName: library.name, cover: item.cover });
       }
@@ -87,9 +89,13 @@ export async function scanMatchSuggestions(options: {
   }
   // Only prune within the successfully resolved scope; download checks keep other galleries intact.
   const live = new Set(targets.map(item => item.id));
-  for (const row of db.select().from(schema.matchSuggestions).where(eq(schema.matchSuggestions.connectionKey, connectionKey)).all()) {
-    if ((!scopedIds || scopedIds.has(row.seriesId)) && !live.has(row.seriesId)) db.delete(schema.matchSuggestions).where(and(eq(schema.matchSuggestions.connectionKey, connectionKey), eq(schema.matchSuggestions.seriesId, row.seriesId))).run();
-  }
+  const stale = db.select({ seriesId: schema.matchSuggestions.seriesId }).from(schema.matchSuggestions).where(eq(schema.matchSuggestions.connectionKey, connectionKey)).all()
+    .map(row => row.seriesId).filter(seriesId => (!scopedIds || scopedIds.has(seriesId)) && !live.has(seriesId));
+  if (stale.length) db.transaction(tx => {
+    for (let index = 0; index < stale.length; index += 500) {
+      tx.delete(schema.matchSuggestions).where(and(eq(schema.matchSuggestions.connectionKey, connectionKey), inArray(schema.matchSuggestions.seriesId, stale.slice(index, index + 500)))).run();
+    }
+  });
   let processed = 0, failed = 0, checked = 0;
   options.progress(0, targets.length);
   // Sequential searches respect the same provider throttles as Identify.

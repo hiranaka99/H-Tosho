@@ -134,16 +134,39 @@ export function isPublicAddress(ip: string): boolean {
  *  Every returned address must be public; the first is pinned for the
  *  connection. */
 function resolvePinnedAddress(hostname: string): Promise<string> {
+  const key = hostname.toLowerCase();
+  const cached = pinnedAddressCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.address);
+  if (cached) pinnedAddressCache.delete(key);
   return new Promise((resolve, reject) => {
     dns.lookup(hostname, { all: true, verbatim: true }, (error, addresses) => {
       if (error) return reject(new EhentaiUpstreamError('Could not resolve the E-Hentai image host.', 'unavailable'));
       if (!addresses.length) return reject(new EhentaiUpstreamError('The E-Hentai image host has no addresses.', 'unavailable'));
       const invalid = addresses.find((a) => !isPublicAddress(a.address));
       if (invalid) return reject(new EhentaiUpstreamError('Blocked: E-Hentai image host resolved to a private or reserved address.', 'blocked'));
+      // Only a fully validated answer is cached, and the cached value is the
+      // exact address the connection is pinned to — so reuse never skips the
+      // public-address check, and rebinding within the window cannot redirect
+      // a pinned connection (it never re-resolves).
+      if (pinnedAddressCache.size >= PINNED_ADDRESS_CACHE_MAX) {
+        const oldest = pinnedAddressCache.keys().next().value;
+        if (oldest !== undefined) pinnedAddressCache.delete(oldest);
+      }
+      pinnedAddressCache.set(key, { address: addresses[0].address, expiresAt: Date.now() + PINNED_ADDRESS_TTL_MS });
       resolve(addresses[0].address);
     });
   });
 }
+
+/** Validated pinned addresses (public-only), reused briefly across requests. */
+const PINNED_ADDRESS_TTL_MS = 30_000;
+const PINNED_ADDRESS_CACHE_MAX = 64;
+const pinnedAddressCache = new Map<string, { address: string; expiresAt: number }>();
+
+/** Coalesce streamed body chunks into writes of about this size. */
+const WRITE_COALESCE_BYTES = 256 * 1024;
+/** Bytes of the body head kept in memory for magic-byte validation. */
+const SNIFF_BYTES = 16;
 
 // ---------------- pinned HTTPS request ----------------
 
@@ -159,8 +182,10 @@ interface PinnedRequestOptions {
   destPath?: string;
   onAttemptStart?: () => void;
   onBytes?: (receivedBytes: number, totalBytes: number | null) => void;
-  /** Optional validator invoked on the `.part` file before atomic rename to `destPath`. */
-  validatePart?: (partPath: string, contentType: string | null) => Promise<void>;
+  /** Optional validator invoked before the `.part` file is atomically renamed
+   *  to `destPath`, with the body's leading bytes (sniffed inline while
+   *  streaming, so the file is never re-opened) and its total size. */
+  validatePart?: (head: Buffer, size: number, contentType: string | null) => void | Promise<void>;
 }
 
 interface PinnedResponse {
@@ -169,6 +194,8 @@ interface PinnedResponse {
   contentType: string | null;
   /** Present when destPath is not set (capped in-memory body). */
   body?: Buffer;
+  /** In-memory bodies: the declared length when unencoded and known. */
+  expectedBytes?: number | null;
   bytesWritten?: number;
 }
 
@@ -210,13 +237,10 @@ function pinnedGet(
       const onAbort = (): void => {
         fail(new RequestAbortedError());
       };
+      // Re-arm the idle window in place (no new timer per chunk). A no-op once
+      // the request settled, so a late chunk can never revive a cleared timer.
       const armTimeout = (): void => {
-        clearTimeout(timeout);
-        timeout = setTimeout(() => {
-          try {
-            req.destroy(new EhentaiUpstreamError('E-Hentai request timed out.', 'timeout'));
-          } catch { /* already destroyed */ }
-        }, options.timeoutMs);
+        if (!settled) timeout.refresh();
       };
       timeout = setTimeout(() => {
         try {
@@ -276,6 +300,20 @@ function pinnedGet(
                 const parsedTotal = totalHeader ? Number(totalHeader) : NaN;
                 const totalBytes = Number.isFinite(parsedTotal) && parsedTotal > 0 ? parsedTotal : null;
                 const hasEncoding = Boolean(res.headers['content-encoding']);
+                // Small socket chunks are coalesced into ~256 KiB writes; the
+                // pending buffer is always flushed before close (and discarded
+                // with the .part file on any failure).
+                const head = Buffer.alloc(SNIFF_BYTES);
+                let headBytes = 0;
+                let pending: Buffer[] = [];
+                let pendingBytes = 0;
+                const flush = async (): Promise<void> => {
+                  if (!pendingBytes) return;
+                  const batch = pending.length === 1 ? pending[0] : Buffer.concat(pending, pendingBytes);
+                  pending = [];
+                  pendingBytes = 0;
+                  await fh!.write(batch);
+                };
                 for await (const chunk of res) {
                   if (settled || options.signal?.aborted) throw new RequestAbortedError();
                   armTimeout(); // bytes arrived — reset idle timeout for slow large images
@@ -284,9 +322,13 @@ function pinnedGet(
                   if (received > options.maxBytes) {
                     throw new EhentaiUpstreamError('E-Hentai response exceeded the size limit.', 'unavailable');
                   }
-                  await fh.write(buf);
+                  if (headBytes < SNIFF_BYTES) headBytes += buf.copy(head, headBytes, 0, SNIFF_BYTES - headBytes);
+                  pending.push(buf);
+                  pendingBytes += buf.byteLength;
+                  if (pendingBytes >= WRITE_COALESCE_BYTES) await flush();
                   options.onBytes?.(received, totalBytes);
                 }
+                await flush();
                 await fh.close();
                 fh = null;
                 if (settled || options.signal?.aborted) throw new RequestAbortedError();
@@ -297,7 +339,7 @@ function pinnedGet(
                   throw new EhentaiUpstreamError(`Incomplete download: received ${received} of ${totalBytes} bytes from E-Hentai.`, 'unavailable');
                 }
                 if (options.validatePart) {
-                  await options.validatePart(partPath, contentType);
+                  await options.validatePart(head.subarray(0, headBytes), received, contentType);
                 }
                 await fs.rename(partPath, destPath);
                 published = true;
@@ -330,12 +372,15 @@ function pinnedGet(
             }
             chunks.push(chunk);
           });
+          const lengthHeader = res.headers['content-length'];
+          const declaredLength = lengthHeader ? Number(lengthHeader) : NaN;
+          const expectedBytes = Number.isFinite(declaredLength) && declaredLength > 0 && !res.headers['content-encoding'] ? declaredLength : null;
           res.on('end', () => {
             if (settled) return;
             settled = true;
             clearTimeout(timeout);
             cleanup();
-            resolve({ status, finalUrl: url, contentType, body: Buffer.concat(chunks) });
+            resolve({ status, finalUrl: url, contentType, body: Buffer.concat(chunks, received), expectedBytes });
           });
           res.on('error', () => fail(new EhentaiUpstreamError('E-Hentai connection error.', 'unavailable')));
         },
@@ -630,26 +675,31 @@ export function validateImageFile(filePath: string, contentType: string | null):
   return fs.open(filePath, 'r').then(async (fh) => {
     try {
       const stat = await fh.stat();
-      if (stat.size < MIN_IMAGE_BYTES) {
-        throw new EhentaiUpstreamError('Rejected: E-Hentai returned an empty or placeholder image.', 'denied');
-      }
-      const head = Buffer.alloc(16);
-      const { bytesRead } = await fh.read(head, 0, 16, 0);
-      const format = detectImageFormat(head.subarray(0, bytesRead));
-      if (!format) {
-        // Some content types carry real data without a sniffable head;
-        // trust an explicit image/* content type only.
-        const declared = (contentType ?? '').split(';')[0].trim().toLowerCase();
-        if (declared.startsWith('image/')) {
-          return declared.includes('jpeg') ? 'jpg' : declared.includes('png') ? 'png' : declared.includes('gif') ? 'gif' : 'webp';
-        }
-        throw new EhentaiUpstreamError('Rejected: E-Hentai response is not a supported image.', 'parse');
-      }
-      return format;
+      const head = Buffer.alloc(SNIFF_BYTES);
+      const { bytesRead } = stat.size >= MIN_IMAGE_BYTES ? await fh.read(head, 0, SNIFF_BYTES, 0) : { bytesRead: 0 };
+      return validateImageHead(head.subarray(0, bytesRead), stat.size, contentType);
     } finally {
       await fh.close();
     }
   });
+}
+
+/** {@link validateImageFile} over bytes already in memory (leading bytes + total size). */
+export function validateImageHead(head: Buffer, size: number, contentType: string | null): ImageFormat {
+  if (size < MIN_IMAGE_BYTES) {
+    throw new EhentaiUpstreamError('Rejected: E-Hentai returned an empty or placeholder image.', 'denied');
+  }
+  const format = detectImageFormat(head.subarray(0, SNIFF_BYTES));
+  if (!format) {
+    // Some content types carry real data without a sniffable head;
+    // trust an explicit image/* content type only.
+    const declared = (contentType ?? '').split(';')[0].trim().toLowerCase();
+    if (declared.startsWith('image/')) {
+      return declared.includes('jpeg') ? 'jpg' : declared.includes('png') ? 'png' : declared.includes('gif') ? 'gif' : 'webp';
+    }
+    throw new EhentaiUpstreamError('Rejected: E-Hentai response is not a supported image.', 'parse');
+  }
+  return format;
 }
 
 /** Stream one approved viewer image to a file through the image pacing gate.
@@ -687,8 +737,8 @@ export async function fetchEhentaiImage(
         destPath: options.destPath,
         onAttemptStart: options.onAttemptStart,
         onBytes: options.onBytes,
-        validatePart: async (partPath, contentType) => {
-          detectedFormat = await validateImageFile(partPath, contentType);
+        validatePart: (head, size, contentType) => {
+          detectedFormat = validateImageHead(head, size, contentType);
         },
       },
     );
@@ -696,6 +746,50 @@ export async function fetchEhentaiImage(
       format: detectedFormat ?? await validateImageFile(options.destPath, res.contentType),
       bytes: res.bytesWritten ?? 0,
     };
+  } catch (error) {
+    if (error instanceof EhentaiUpstreamError && error.kind === 'rate-limited') {
+      const cooldownMs = error.retryAfterMs ?? gate.image.minGapMs * 5;
+      if (cooldownMs > 0) gate.image.setCooldown(Date.now() + cooldownMs);
+    }
+    throw error;
+  } finally {
+    release();
+  }
+}
+
+/**
+ * In-memory variant of {@link fetchEhentaiImage} for small previews: the same
+ * approval check, image pacing gate, pinned transport and magic-byte
+ * validation, but the capped body is returned as a Buffer instead of being
+ * staged through a temp file and read back.
+ */
+export async function fetchEhentaiImageBuffer(
+  url: string,
+  options: { site: EhentaiSite; galleryKey: string; referer: string; maxBytes: number; signal?: AbortSignal },
+): Promise<{ format: ImageFormat; buf: Buffer }> {
+  if (!isApprovedImageUrl(options.galleryKey, url)) {
+    throw new EhentaiUpstreamError('Blocked: image target was not obtained from the authorized gallery page.', 'blocked');
+  }
+  const gate = getEhentaiGate();
+  const release = await gate.image.acquire(options.signal);
+  try {
+    const res = await pinnedGet(
+      url,
+      (_hostname, target) => isApprovedImageUrl(options.galleryKey, target.toString()),
+      {
+        headers: { 'User-Agent': UA, Referer: options.referer, Accept: 'image/avif,image/webp,image/*;q=0.8' },
+        signal: options.signal,
+        timeoutMs: 60_000,
+        maxBytes: options.maxBytes,
+        allowNonStandardPort: true,
+      },
+    );
+    const buf = res.body ?? Buffer.alloc(0);
+    if (buf.length === 0) throw new EhentaiUpstreamError('E-Hentai returned an empty image body.', 'unavailable');
+    if (res.expectedBytes != null && buf.length < res.expectedBytes) {
+      throw new EhentaiUpstreamError(`Incomplete download: received ${buf.length} of ${res.expectedBytes} bytes from E-Hentai.`, 'unavailable');
+    }
+    return { format: validateImageHead(buf, buf.length, res.contentType), buf };
   } catch (error) {
     if (error instanceof EhentaiUpstreamError && error.kind === 'rate-limited') {
       const cooldownMs = error.retryAfterMs ?? gate.image.minGapMs * 5;

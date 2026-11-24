@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { Trigger as DialogTrigger } from '@radix-ui/react-dialog';
 import { MessageSquare, RotateCcw, ThumbsDown, ThumbsUp, VolumeX } from 'lucide-react';
 import type { DoujinSearchResult, FeedbackRequest, RecommendationFeedback } from '../lib/api';
-import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogTitle } from './ui';
+import { Badge, Button } from './ui';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from './dialog';
 
 const artistKey = (name: string) => name.normalize('NFKC').trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
 const tagKey = (name: string) => name.normalize('NFKC').trim().toLowerCase().replace(/^(?:female|male|tag):/i, '').replace(/_/g, ' ').replace(/\s+/g, ' ');
@@ -20,7 +21,8 @@ export function GalleryFeedbackDialog({ item, feedback, pending, onClose, onActi
 }) {
   const liked = feedback?.liked.some(g => g.source === item.source && g.galleryId === item.galleryId);
   const target = { source: item.source, galleryId: item.galleryId };
-  const mutedTags = feedback?.mutedTags ?? [];
+  const mutedTagKeys = new Set((feedback?.mutedTags ?? []).map(tagKey));
+  const mutedArtistKeys = new Set((feedback?.mutedArtists ?? []).map(artistKey));
   const visibleTags = [...new Set(item.tags)].filter(t => !BOILERPLATE_UI_TAGS.has(tagKey(t))).slice(0, 12);
   const fallbackTags = visibleTags.length ? visibleTags : [...new Set(item.tags)].slice(0, 8);
   return <Dialog open onOpenChange={open => { if (!open && !pending) onClose(); }}>
@@ -30,11 +32,11 @@ export function GalleryFeedbackDialog({ item, feedback, pending, onClose, onActi
         <Button variant={liked ? 'secondary' : 'outline'} className="w-full justify-start" disabled={pending || !feedback} onClick={() => onAction({ ...target, action: liked ? 'unlike' : 'like' })}><ThumbsUp className="h-4 w-4" />{liked ? 'Undo more like this' : 'More like this'}</Button>
         {onDismiss && <Button variant="outline" className="w-full justify-start" disabled={pending} onClick={onDismiss}><ThumbsDown className="h-4 w-4 shrink-0" /><span className="whitespace-normal text-left">Don’t recommend this gallery</span></Button>}
         {item.artists.length > 0 && <div className="space-y-2"><p className="text-xs font-medium text-muted">Hide all recommendations by an artist</p>{[...new Set(item.artists)].map(artist => {
-          const muted = feedback?.mutedArtists.some(a => artistKey(a) === artistKey(artist));
+          const muted = mutedArtistKeys.has(artistKey(artist));
           return <Button variant="outline" key={artist} className="w-full justify-start" disabled={pending || !feedback} onClick={() => onAction({ ...target, artist, action: muted ? 'unmute-artist' : 'mute-artist' })}><VolumeX className="h-4 w-4 shrink-0" /><span className="truncate">{muted ? 'Unmute' : 'Mute'} {artist}</span></Button>;
         })}</div>}
         {fallbackTags.length > 0 && <div className="space-y-2"><p className="text-xs font-medium text-muted">Hide recommendations with a tag</p><div className="flex flex-wrap gap-1.5">{fallbackTags.map(tag => {
-          const muted = mutedTags.some(t => tagKey(t) === tagKey(tag));
+          const muted = mutedTagKeys.has(tagKey(tag));
           return <Button variant={muted ? 'secondary' : 'outline'} size="sm" key={tag} className="max-w-full" disabled={pending || !feedback} onClick={() => onAction({ ...target, tag, action: muted ? 'unmute-tag' : 'mute-tag' })}><VolumeX className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{muted ? `Unmute ${tag}` : tag}</span></Button>;
         })}</div></div>}
       </div>

@@ -6,7 +6,8 @@ import { Loader2, Download as DownloadIcon, RotateCcw, CheckCircle2, X, External
 import { api, type DoujinSource, type DoujinSearchResult } from '../../lib/api';
 import { useGalleryDownloadTask } from '../../lib/DownloadsContext';
 import { buildTagSearchFragment, cn } from '../../lib/utils';
-import { Button, Spinner, Dialog, DialogContent, DialogTitle, Disclosure, ProgressBar } from '../../components/ui';
+import { Button, Spinner, Disclosure, ProgressBar } from '../../components/ui';
+import { Dialog, DialogContent, DialogTitle } from '../../components/dialog';
 import { PagePreview, type PagePreviewHandle } from '../../components/PagePreview';
 
 import { SOURCE_LABELS, type DownloadSetup } from './state';

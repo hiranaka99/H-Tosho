@@ -211,31 +211,39 @@ export async function fetchToFileStreaming(
 ): Promise<number> {
   init.signal?.throwIfAborted();
   const partPath = `${destPath}.part`;
-  const fh = await fsp.open(partPath, 'w');
+  // Opened lazily, once a 2xx response is in hand: failed requests (404s,
+  // challenges, timeouts) never touch the filesystem.
+  let fh: fsp.FileHandle | null = null;
   let closed = false;
+  const openFile = async (): Promise<fsp.FileHandle> => {
+    fh = await fsp.open(partPath, 'w');
+    return fh;
+  };
   const closeFile = async (): Promise<void> => {
-    if (closed) return;
+    if (closed || !fh) return;
     closed = true;
     await fh.close();
   };
   const controller = new AbortController();
   const signal = init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal;
-  let timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Restart the idle window in place instead of allocating a timer per chunk.
   const armTimer = (): void => {
-    clearTimeout(timer);
-    timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer.refresh();
   };
   let reader: { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel?: () => Promise<unknown> } | null = null;
   try {
     signal.throwIfAborted();
     const res = await fetch(url, { ...init, signal, redirect: 'follow' });
     if (!res.ok) {
+      void res.body?.cancel().catch(() => {}); // free the socket for reuse
       throw new HttpStatusError(`Download failed: HTTP ${res.status}`, res.status, parseRetryAfterMs(res.headers, 60_000));
     }
     armTimer(); // headers received — start the idle window for the body
     if (opts.rejectHtml) {
       const mediaType = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
       if (mediaType === 'text/html' || mediaType === 'application/xhtml+xml') {
+        void res.body?.cancel().catch(() => {});
         throw new Error('Download failed: unexpected HTML response instead of image');
       }
     }
@@ -257,7 +265,7 @@ export async function fetchToFileStreaming(
       if (totalBytes !== null && !hasEncoding && buf.length < totalBytes) {
         throw new Error(`Incomplete download: received ${buf.length} of ${totalBytes} bytes`);
       }
-      await fh.write(buf);
+      await (await openFile()).write(buf);
       handlers.onProgress?.(buf.length, totalBytes ?? buf.length);
       await closeFile();
       await fsp.rename(partPath, destPath);
@@ -265,6 +273,19 @@ export async function fetchToFileStreaming(
     }
 
     reader = body.getReader();
+    const file = await openFile();
+    // Coalesce small network chunks into ~256 KiB writes. Everything pending
+    // is flushed before the size checks and close; on any failure the .part
+    // file is deleted, so unflushed bytes never need to reach disk.
+    let pending: Uint8Array[] = [];
+    let pendingBytes = 0;
+    const flush = async (): Promise<void> => {
+      if (!pendingBytes) return;
+      const batch = pending.length === 1 ? pending[0] : Buffer.concat(pending, pendingBytes);
+      pending = [];
+      pendingBytes = 0;
+      await file.write(batch);
+    };
     let written = 0;
     for (;;) {
       const { done, value } = await reader.read();
@@ -272,11 +293,14 @@ export async function fetchToFileStreaming(
       if (done) break;
       if (value) {
         armTimer(); // bytes arrived — reset the idle window
-        await fh.write(value);
+        pending.push(value);
+        pendingBytes += value.byteLength;
         written += value.byteLength;
+        if (pendingBytes >= STREAM_WRITE_COALESCE_BYTES) await flush();
         handlers.onProgress?.(written, totalBytes);
       }
     }
+    await flush();
     if (written === 0) throw new Error('Empty response body (0 bytes)');
     if (totalBytes !== null && !hasEncoding && written < totalBytes) {
       throw new Error(`Incomplete download: received ${written} of ${totalBytes} bytes`);
@@ -286,10 +310,15 @@ export async function fetchToFileStreaming(
     return written;
   } catch (e) {
     await reader?.cancel?.().catch(() => {});
-    await closeFile().catch(() => {});
-    await fsp.unlink(partPath).catch(() => {});
+    if (fh) {
+      await closeFile().catch(() => {});
+      await fsp.unlink(partPath).catch(() => {});
+    }
     throw e;
   } finally {
     clearTimeout(timer);
   }
 }
+
+/** Target size of coalesced writes while streaming a body to disk. */
+const STREAM_WRITE_COALESCE_BYTES = 256 * 1024;

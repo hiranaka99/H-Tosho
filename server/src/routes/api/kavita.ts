@@ -9,15 +9,51 @@ import { kavitaConnectionKey } from '../../services/kavitaState.js';
 import { getDb, schema } from '../../db/index.js';
 import { KavitaClient } from '../../kavita/client.js';
 import { KAVITA_OPENAPI_VERSION, type KavitaSeries } from '../../kavita/types.js';
-import { getKavitaConnection, setKavitaConnection } from '../../services/settings.js';
+import { getKavitaConnection, onSettingChange, setKavitaConnection } from '../../services/settings.js';
 import { kavitaSeriesSearchMetadata } from '../../services/seriesArtists.js';
 
 import { connectedClient, errMsg, intParam, kavitaCoverUrl } from './helpers.js';
 export const api = new Hono();
 
-// A large library's series list is megabytes of repetitive JSON, fetched on open and
-// every few seconds while a task runs; gzip shrinks it by roughly 90% on the wire.
+// A large library's series list is megabytes of repetitive JSON; gzip shrinks it ~90%.
+// app.ts also compresses /api/*, but compress() skips already-encoded responses, and
+// this keeps the router compressed when mounted on its own.
 api.use('/kavita/libraries/:id/series', compress());
+
+/**
+ * Artists/tags parsed from a match row's metadataJson, keyed by Kavita series id
+ * and stamped with the row id plus lastSyncedAt (every metadata write goes through
+ * upsertMatch, which refreshes lastSyncedAt; delete + reinsert changes the row id).
+ * Polls then skip loading and re-parsing multi-KB blobs for unchanged rows.
+ */
+const MATCH_META_CACHE_MAX = 50_000;
+const matchMetaCache = new Map<number, { stamp: string; artists: string[]; tags: string[] }>();
+onSettingChange('kavita-connection', () => matchMetaCache.clear());
+
+const stringList = (values: unknown): string[] =>
+  Array.isArray(values) ? values.filter((v): v is string => typeof v === 'string' && v.trim().length > 0) : [];
+
+function parseMatchMeta(metadataJson: string | null): { artists: string[]; tags: string[] } {
+  if (!metadataJson) return { artists: [], tags: [] };
+  try {
+    const raw = JSON.parse(metadataJson) as unknown;
+    if (raw && typeof raw === 'object') {
+      const meta = raw as { artists?: unknown; tags?: unknown };
+      return { artists: stringList(meta.artists), tags: stringList(meta.tags) };
+    }
+  } catch { /* ignore malformed metadata */ }
+  return { artists: [], tags: [] };
+}
+
+function rememberMatchMeta(seriesId: number, entry: { stamp: string; artists: string[]; tags: string[] }): void {
+  matchMetaCache.delete(seriesId);
+  matchMetaCache.set(seriesId, entry);
+  while (matchMetaCache.size > MATCH_META_CACHE_MAX) {
+    const oldest = matchMetaCache.keys().next().value;
+    if (oldest === undefined) break;
+    matchMetaCache.delete(oldest);
+  }
+}
 
 /** Snapshot of the connection that was replaced by a save whose test failed. */
 const KAVITA_PREVIOUS_KEY = 'kavita-previous';
@@ -139,11 +175,42 @@ api.get('/kavita/libraries/:id/series', async (c) => {
     const series = (await client.getSeries(libraryId)) as KavitaSeries[];
     const seriesIds = series.map((s) => s.id);
     const db = getDb();
-    const byId = new Map<number, typeof schema.seriesMatches.$inferSelect>();
+    const matchColumns = {
+      rowId: schema.seriesMatches.id,
+      kavitaSeriesId: schema.seriesMatches.kavitaSeriesId,
+      status: schema.seriesMatches.status,
+      providerId: schema.seriesMatches.providerId,
+      matchScore: schema.seriesMatches.matchScore,
+      confirmed: schema.seriesMatches.confirmed,
+      lastSyncedAt: schema.seriesMatches.lastSyncedAt,
+      errorMessage: schema.seriesMatches.errorMessage,
+    };
+    const selectMatches = (ids: number[]) => db.select(matchColumns).from(schema.seriesMatches).where(inArray(schema.seriesMatches.kavitaSeriesId, ids)).all();
+    const byId = new Map<number, { row: ReturnType<typeof selectMatches>[number]; meta: { artists: string[]; tags: string[] } }>();
+    const misses: { seriesId: number; stamp: string }[] = [];
     for (let i = 0; i < seriesIds.length; i += 400) {
-      const batch = seriesIds.slice(i, i + 400);
-      for (const row of db.select().from(schema.seriesMatches).where(inArray(schema.seriesMatches.kavitaSeriesId, batch)).all()) {
-        byId.set(row.kavitaSeriesId, row);
+      for (const row of selectMatches(seriesIds.slice(i, i + 400))) {
+        const stamp = `${row.rowId}:${row.lastSyncedAt ?? ''}`;
+        const cached = matchMetaCache.get(row.kavitaSeriesId);
+        if (cached?.stamp === stamp) {
+          rememberMatchMeta(row.kavitaSeriesId, cached);
+          byId.set(row.kavitaSeriesId, { row, meta: cached });
+        } else {
+          byId.set(row.kavitaSeriesId, { row, meta: { artists: [], tags: [] } });
+          misses.push({ seriesId: row.kavitaSeriesId, stamp });
+        }
+      }
+    }
+    // Only changed or unseen rows load their metadata blob (same synchronous read, so no write can interleave).
+    for (let i = 0; i < misses.length; i += 400) {
+      const batch = misses.slice(i, i + 400);
+      const blobs = new Map(db.select({ kavitaSeriesId: schema.seriesMatches.kavitaSeriesId, metadataJson: schema.seriesMatches.metadataJson })
+        .from(schema.seriesMatches).where(inArray(schema.seriesMatches.kavitaSeriesId, batch.map((miss) => miss.seriesId))).all()
+        .map((row) => [row.kavitaSeriesId, row.metadataJson]));
+      for (const { seriesId, stamp } of batch) {
+        const meta = parseMatchMeta(blobs.get(seriesId) ?? null);
+        rememberMatchMeta(seriesId, { stamp, ...meta });
+        byId.get(seriesId)!.meta = meta;
       }
     }
     // Series without match-derived artists fall back to Kavita's own people
@@ -153,18 +220,10 @@ api.get('/kavita/libraries/:id/series', async (c) => {
     const searchMetadata = await kavitaSeriesSearchMetadata(client, seriesIds);
     return c.json(
       series.map((s) => {
-        const m = byId.get(s.id);
+        const match = byId.get(s.id);
+        const m = match?.row;
         const liveMeta = searchMetadata.get(s.id);
-        let parsedMeta: { artists?: unknown; tags?: unknown } | null = null;
-        if (m?.metadataJson) {
-          try {
-            const raw = JSON.parse(m.metadataJson) as unknown;
-            if (raw && typeof raw === 'object') parsedMeta = raw as { artists?: unknown; tags?: unknown };
-          } catch { /* ignore malformed metadata */ }
-        }
-        const stringList = (values: unknown): string[] =>
-          Array.isArray(values) ? values.filter((v): v is string => typeof v === 'string' && v.trim().length > 0) : [];
-        const matchArtists = parsedMeta ? stringList(parsedMeta.artists) : [];
+        const matchArtists = match?.meta.artists ?? [];
         return {
           id: s.id,
           name: s.name,
@@ -180,7 +239,7 @@ api.get('/kavita/libraries/:id/series', async (c) => {
           lastSyncedAt: m?.lastSyncedAt ?? null,
           errorMessage: m?.errorMessage ?? null,
           artists: matchArtists.length > 0 ? matchArtists : (liveMeta?.artists ?? []),
-          tags: liveMeta?.tags ?? (parsedMeta ? stringList(parsedMeta.tags) : []) };
+          tags: liveMeta?.tags ?? match?.meta.tags ?? [] };
       }),
     );
   } catch (e) {

@@ -3,13 +3,17 @@ import { Link, useParams, useNavigate, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { Search, RefreshCw, Play, BookOpen, Unlink, FileText, Combine, Check, CheckSquare, EllipsisVertical, Trash2, Eye, X, Settings2, ListChecks } from 'lucide-react';
 import { api, type SeriesRow, type DoujinSource, type Job } from '../lib/api';
-import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, Switch, PageHeader, ErrorState, ConfirmDialog, SegmentedControl, TabPanel, Spinner, ProgressBar, Pager } from '../components/ui';
+import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, PageHeader, ErrorState, SegmentedControl, TabPanel, Spinner, ProgressBar, Pager } from '../components/ui';
+import { Switch } from '../components/switch';
+import { ConfirmDialog } from '../components/dialog';
 import { PageCountPill } from '../components/PageCountPill';
 import { buildTagSearchFragment, cn, jobLabel } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { DEFAULT_REVIEW_THRESHOLD, filterLibraryRows, librarySearchTerm, normalizeSort, normalizeStatusFilter, prepareLibraryRows, rowBucket, type LibraryBucket, type LibrarySort, type LibraryStatusFilter } from '../lib/libraryShelf';
 const SERIES_PAGE_SIZE = 40;
 const EMPTY_SERIES: SeriesRow[] = [];
+const EMPTY_JOBS: Job[] = [];
+const BULK_UNMATCH_CONCURRENCY = 4;
 
 // Dialogs open on demand, so they stay out of the shelf's first paint and are
 // fetched once the shelf is idle; the first open is then as quick as before.
@@ -42,18 +46,42 @@ interface LibraryStateCache {
   pages?: Record<string, number>;
 }
 
-function readLibraryState(): LibraryStateCache {
+/** Updates not yet written; reads merge them in so state is never observed stale. */
+let pendingLibraryState: Partial<LibraryStateCache> | null = null;
+let libraryStateTimer: ReturnType<typeof setTimeout> | undefined;
+const LIBRARY_STATE_WRITE_DELAY_MS = 300;
+
+function flushLibraryState() {
+  clearTimeout(libraryStateTimer);
+  libraryStateTimer = undefined;
+  const update = pendingLibraryState;
+  pendingLibraryState = null;
+  if (!update) return;
   try {
-    return JSON.parse(sessionStorage.getItem(LIBRARY_STATE_KEY) ?? '{}') as LibraryStateCache;
+    const current = JSON.parse(sessionStorage.getItem(LIBRARY_STATE_KEY) ?? '{}') as LibraryStateCache;
+    sessionStorage.setItem(LIBRARY_STATE_KEY, JSON.stringify({ ...current, ...update }));
   } catch {
-    return {};
+    /* storage unavailable: the shelf just starts fresh next visit */
   }
 }
 
-function writeLibraryState(update: Partial<LibraryStateCache>) {
-  const current = readLibraryState();
-  sessionStorage.setItem(LIBRARY_STATE_KEY, JSON.stringify({ ...current, ...update }));
+function readLibraryState(): LibraryStateCache {
+  let stored: LibraryStateCache = {};
+  try {
+    stored = JSON.parse(sessionStorage.getItem(LIBRARY_STATE_KEY) ?? '{}') as LibraryStateCache;
+  } catch {
+    /* fall through with an empty cache */
+  }
+  return pendingLibraryState ? { ...stored, ...pendingLibraryState } : stored;
 }
+
+/** Debounced sessionStorage write, so typing in the search box doesn't serialize on every keystroke. */
+function writeLibraryState(update: Partial<LibraryStateCache>) {
+  pendingLibraryState = { ...(pendingLibraryState ?? {}), ...update };
+  clearTimeout(libraryStateTimer);
+  libraryStateTimer = setTimeout(flushLibraryState, LIBRARY_STATE_WRITE_DELAY_MS);
+}
+if (typeof window !== 'undefined') window.addEventListener('pagehide', flushLibraryState);
 
 function MatchingTags({ tags, query }: { tags?: string[]; query: string }) {
   const { q } = librarySearchTerm(query);
@@ -71,7 +99,7 @@ function Cover({ src, name, className }: { src?: string | null; name: string; cl
   // (e.g. Kavita returns 404 because the cover file is missing on disk).
   const showImage = !failed && src !== null && src !== undefined && src !== '' && (/^https?:\/\//i.test(src) || src.startsWith('/'));
   if (showImage) {
-    return <img src={src} alt={name} className={cn('h-full w-full object-cover', className)} loading="lazy" onError={() => setFailed(true)} />;
+    return <img src={src} alt={name} className={cn('h-full w-full object-cover', className)} loading="lazy" decoding="async" onError={() => setFailed(true)} />;
   }
   return (
     <div className={cn('flex h-full w-full items-center justify-center bg-surface-2 text-2xl font-semibold text-muted', className)}>
@@ -304,11 +332,19 @@ const STATUS_CHIPS: readonly { id: LibraryStatusFilter; label: string }[] = [
   { id: 'matched', label: 'Matched' },
 ];
 
-/** Follow visible books through shelf changes; never measure on idle job polls. */
-function useLibraryMotion(state: string) {
+/** Above this many moving books, FLIP costs more than it explains. */
+const MOTION_MAX_ITEMS = 50;
+
+/** Follow visible books through shelf changes; never measure on idle job polls.
+ * Changes driven by the text filter (`filterKey`) re-measure but don't animate,
+ * so typing in the search box never starts dozens of animations per keystroke. */
+function useLibraryMotion(state: string, filterKey: string) {
   const ref = React.useRef<HTMLDivElement>(null);
   const previous = React.useRef<Map<string, { x: number; y: number }> | null>(null);
+  const previousFilter = React.useRef(filterKey);
   React.useLayoutEffect(() => {
+    const filterChanged = previousFilter.current !== filterKey;
+    previousFilter.current = filterKey;
     const container = ref.current;
     if (!container) return;
     const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -321,10 +357,11 @@ function useLibraryMotion(state: string) {
       id: element.dataset.libraryMotionId!,
       bounds: element.getBoundingClientRect(),
     }));
+    const animate = !filterChanged && measured.length <= MOTION_MAX_ITEMS;
     measured.forEach(({ element, id, bounds }) => {
       const position = { x: bounds.left - origin.left, y: bounds.top - origin.top };
       positions.set(id, position);
-      if (!previous.current || preference.matches || document.hidden || bounds.bottom < 0 || bounds.top > window.innerHeight || typeof element.animate !== 'function') return;
+      if (!animate || !previous.current || preference.matches || document.hidden || bounds.bottom < 0 || bounds.top > window.innerHeight || typeof element.animate !== 'function') return;
       const old = previous.current.get(id);
       const dx = old ? old.x - position.x : 0;
       const dy = old ? old.y - position.y : 0;
@@ -348,7 +385,7 @@ function useLibraryMotion(state: string) {
       preference.removeEventListener('change', onPreferenceChange);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [state]);
+  }, [state, filterKey]);
   return ref;
 }
 
@@ -440,19 +477,21 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const connection = useQuery({ queryKey: ['kavita-status'], queryFn: api.kavitaStatus });
   const needsConnection = connection.data?.configured === false;
   const libs = useQuery({ queryKey: ['libraries'], queryFn: api.libraries, enabled: !needsConnection });
-  const reviewCount = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, enabled: !needsConnection, refetchInterval: 60_000 });
+  // The sidebar's LowConfidenceBadge already polls this key every minute; a
+  // second interval here would only double the requests.
+  const reviewCount = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, enabled: !needsConnection });
   // The full series list is expensive server-side (Kavita fan-out per request),
-  // so only refresh it while a job is actually running — the sidebar's always-on
-  // ['jobs'] poll drives this. When the last active job finishes, one explicit
-  // refresh captures the outcome without any idle polling.
-  const { data: jobs } = useQuery({ queryKey: ['jobs'], queryFn: api.jobs });
-  const hasRelevantActiveJob = React.useMemo(() => {
-    const active = (jobs ?? []).filter((j) => j.status === 'queued' || j.status === 'running');
-    if (review) return active.some((j) => j.type !== 'check-watched-searches');
-    return active.some((j) =>
-      j.type !== 'check-watched-searches' && (j.payload.libraryId === undefined || j.payload.libraryId === selected),
-    );
-  }, [jobs, review, selected]);
+  // so only refresh it while a job that can touch this shelf is running — the
+  // sidebar's always-on ['jobs'] poll drives this. `select` reduces each poll to
+  // one boolean, so job progress ticks don't re-render the page through it.
+  // When the last active job finishes, one explicit refresh captures the outcome.
+  const selectHasRelevantActiveJob = React.useCallback((all: Job[]) => all.some((j) => {
+    if ((j.status !== 'queued' && j.status !== 'running') || j.type === 'check-watched-searches') return false;
+    if (review) return true;
+    const jobLibrary = (j.payload.libraryId as number | undefined) ?? j.context?.libraryId;
+    return jobLibrary === undefined || jobLibrary === selected;
+  }), [review, selected]);
+  const { data: hasRelevantActiveJob = false } = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, select: selectHasRelevantActiveJob });
 
   const series = useQuery({
     queryKey: ['library-series', review ? 'review' : selected],
@@ -494,7 +533,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const pageCount = React.useMemo(() => Math.max(1, Math.ceil(filtered.length / SERIES_PAGE_SIZE)), [filtered.length]);
   const currentPage = Math.min(page, pageCount);
   const visibleRows = filtered.slice((currentPage - 1) * SERIES_PAGE_SIZE, currentPage * SERIES_PAGE_SIZE);
-  const motionRef = useLibraryMotion(`${review}:${selected}:${currentPage}:${visibleRows.map(row => row.id).join(',')}:${selectMode}`);
+  const motionRef = useLibraryMotion(`${review}:${selected}:${currentPage}:${visibleRows.map(row => row.id).join(',')}:${selectMode}`, deferredQuery);
   React.useEffect(() => {
     if (review) return;
     writeLibraryState({ query: deferredQuery, statusFilter, sortBy });
@@ -539,11 +578,17 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const queueLibraryJob = (type: 'scan-new' | 'match-unmatched') => {
     if (selected !== null && !enqueue.isPending) enqueue.mutate({ type, libraryId: selected });
   };
-  const libraryJobs = React.useMemo(() => (jobs ?? []).filter((job) =>
-    job.payload.libraryId === selected || shelf.ids.has(job.payload.seriesId as number),
-  ), [jobs, selected, shelf]);
+  // Only this shelf's jobs: react-query structurally shares the selection, so
+  // polls that change nothing here (other libraries' progress) don't re-render.
+  const lastQueuedJobId = lastQueuedJob?.libraryId === selected ? lastQueuedJob.id : null;
+  const selectShelfJobs = React.useCallback((all: Job[]) => ({
+    libraryJobs: all.filter((job) => job.payload.libraryId === selected || shelf.ids.has(job.payload.seriesId as number)),
+    lastJob: lastQueuedJobId === null ? undefined : all.find((job) => job.id === lastQueuedJobId),
+  }), [selected, shelf, lastQueuedJobId]);
+  const shelfJobs = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, select: selectShelfJobs }).data;
+  const libraryJobs = shelfJobs?.libraryJobs ?? EMPTY_JOBS;
   const runningLibraryJobs = libraryJobs.filter((job) => job.status === 'queued' || job.status === 'running');
-  const lastJob = lastQueuedJob?.libraryId === selected ? (jobs ?? []).find((job) => job.id === lastQueuedJob.id) : undefined;
+  const lastJob = shelfJobs?.lastJob;
   const libraryActivity: Pick<Job, 'id' | 'type' | 'payload' | 'status' | 'progressCurrent' | 'progressTotal'> | null = runningLibraryJobs[0] ?? lastJob ?? (lastQueuedJob?.libraryId === selected ? { ...lastQueuedJob, payload: { libraryId: selected }, status: 'queued', progressCurrent: 0, progressTotal: 0 } : null);
   const finishedJobId = lastJob && lastJob.status !== 'queued' && lastJob.status !== 'running' ? lastJob.id : null;
   // The shelf only polls while a job runs, so refresh once when it ends to capture the outcome.
@@ -600,9 +645,15 @@ export function Libraries({ review = false }: { review?: boolean }) {
     mutationFn: async (targets: SeriesRow[]) => {
       let ok = 0;
       let failed = 0;
-      for (const target of targets) {
-        try { await api.unmatch(target.id); ok++; } catch { failed++; }
-      }
+      let next = 0;
+      // A few requests in flight at once instead of strictly one after another.
+      const worker = async () => {
+        while (next < targets.length) {
+          const target = targets[next++];
+          try { await api.unmatch(target.id); ok++; } catch { failed++; }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(BULK_UNMATCH_CONCURRENCY, targets.length) }, worker));
       return { ok, failed };
     },
     onSuccess: ({ ok, failed }) => {
@@ -644,8 +695,17 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const hasSeries = series.data !== undefined;
   React.useEffect(() => {
     if (!hasSeries) return;
-    const timer = window.setTimeout(prefetchLibraryDialogs, DIALOG_PREFETCH_DELAY_MS);
-    return () => window.clearTimeout(timer);
+    // Respect Data Saver: the dialogs still load on first open.
+    if ((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData) return;
+    let idle: number | undefined;
+    const timer = window.setTimeout(() => {
+      if (typeof window.requestIdleCallback === 'function') idle = window.requestIdleCallback(prefetchLibraryDialogs, { timeout: 5000 });
+      else prefetchLibraryDialogs();
+    }, DIALOG_PREFETCH_DELAY_MS);
+    return () => {
+      window.clearTimeout(timer);
+      if (idle !== undefined) window.cancelIdleCallback(idle);
+    };
   }, [hasSeries]);
 
   /** Arrow keys move between books; Tab still walks the actions inside each card. */
@@ -663,13 +723,16 @@ export function Libraries({ review = false }: { review?: boolean }) {
     else if (event.key === 'End') next = cells[cells.length - 1];
     else {
       const direction = event.key === 'ArrowDown' ? 1 : -1;
-      const beyond = cells.filter((cell) => direction * (cell.getBoundingClientRect().top - rect.top) > 4);
+      // Measure every cell once, then compare plain numbers.
+      const beyond = cells
+        .map((cell) => ({ cell, bounds: cell.getBoundingClientRect() }))
+        .filter(({ bounds }) => direction * (bounds.top - rect.top) > 4);
       if (beyond.length) {
-        const tops = beyond.map((cell) => cell.getBoundingClientRect().top);
+        const tops = beyond.map(({ bounds }) => bounds.top);
         const rowTop = direction === 1 ? Math.min(...tops) : Math.max(...tops);
         next = beyond
-          .filter((cell) => Math.abs(cell.getBoundingClientRect().top - rowTop) < 4)
-          .sort((a, b) => Math.abs(a.getBoundingClientRect().left - rect.left) - Math.abs(b.getBoundingClientRect().left - rect.left))[0];
+          .filter(({ bounds }) => Math.abs(bounds.top - rowTop) < 4)
+          .sort((a, b) => Math.abs(a.bounds.left - rect.left) - Math.abs(b.bounds.left - rect.left))[0]?.cell;
       }
     }
     if (next) { event.preventDefault(); next.focus(); next.scrollIntoView({ block: 'nearest' }); }
@@ -855,7 +918,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
                     selectMode={selectMode}
                     checked={checked.has(r.id)}
                     flashed={flashIds.has(r.id)}
-                    query={query}
+                    query={deferredQuery}
                     onOpen={openCard}
                     onToggle={toggleCheck}
                     onPreview={previewCard}

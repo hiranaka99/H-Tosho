@@ -14,10 +14,15 @@ test('large libraries share the sample and a metadata edit refetches only its se
   const originalFetch = globalThis.fetch;
   const metadataCalls: number[] = [];
   let edited = false;
+  let listings = 0;
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     if (url.endsWith('/api/Library/libraries')) return Response.json([{ id: 1, name: 'Large' }, { id: 2, name: 'Small' }]);
+    if (url.endsWith('/api/Series/900')) {
+      return Response.json({ id: 900, name: edited ? 'Renamed small title' : 'Small library title', libraryId: 2, pages: 40, pagesRead: 40, totalReads: 2, hasUserRated: true, userRating: 5 });
+    }
     if (url.includes('/api/Series/all-v2?')) {
+      listings++;
       const body = JSON.parse(String(init?.body));
       const id = Number(body.statements[0].value);
       return Response.json(id === 1 ? Array.from({ length: 700 }, (_, i) => ({ id: i + 1, name: `Large ${i}`, libraryId: 1 })) : [{ id: 900, name: 'Small library title', libraryId: 2, pages: 40, pagesRead: 40, totalReads: 2, hasUserRated: true, userRating: 5 }]);
@@ -53,9 +58,12 @@ test('large libraries share the sample and a metadata edit refetches only its se
     assert.equal(metadataCalls.length, before);
     edited = true;
     invalidateRecommendationSeries(900);
+    const listingsBefore = listings;
     const updated = await buildKavitaSignals();
     assert.deepEqual(metadataCalls.slice(before), [900]);
-    assert.deepEqual(updated.find((signal) => signal.name === 'Small library title')?.tags, ['Action', 'new tag']);
+    assert.equal(listings, listingsBefore, 'a single-series edit must not re-list every library');
+    assert.equal(updated.length, 600);
+    assert.deepEqual(updated.find((signal) => signal.name === 'Renamed small title')?.tags, ['Action', 'new tag']);
   } finally {
     globalThis.fetch = originalFetch;
   }

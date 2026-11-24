@@ -10,11 +10,12 @@ import { toast } from '../../lib/toast';
 import { cn, timeAgo, toIsoUtc } from '../../lib/utils';
 import { formatBytes, formatEta, formatSpeed } from '../../lib/format';
 import { Button, Badge, EmptyState, ProgressBar, ErrorState, Skeleton, Spinner, SegmentedControl, InlineConfirm } from '../../components/ui';
-import { ComicInfoModal } from '../../components/ComicInfoModal';
 import { DownloadFailure } from './DownloadSetup';
 import { DownloadStatusBadge, SourceBadge } from './GalleryCard';
 import { SOURCE_LABELS } from './state';
 import { useDownloaderTransitions } from './motion';
+
+const ComicInfoModal = React.lazy(() => import('../../components/ComicInfoModal').then((module) => ({ default: module.ComicInfoModal })));
 
 /** Completed rows shown before "Show all" in the combined view. */
 const HISTORY_PREVIEW = 5;
@@ -40,7 +41,20 @@ function sortActive(tasks: DownloadTask[]): DownloadTask[] {
     || (a.status === 'queued' && b.status === 'queued' ? (b.priority ?? 0) - (a.priority ?? 0) : 0)
     || a.id - b.id);
 }
-const byFinished = (a: DownloadTask, b: DownloadTask) => time(b.finishedAt) - time(a.finishedAt) || b.id - a.id;
+/** Newest finish first; parses each timestamp once instead of inside the comparator. */
+function sortByFinished(tasks: DownloadTask[]): DownloadTask[] {
+  const keys = new Map(tasks.map((task) => [task, time(task.finishedAt)]));
+  return [...tasks].sort((a, b) => keys.get(b)! - keys.get(a)! || b.id - a.id);
+}
+
+/** Keep the previous array when its members are the same objects, so SSE ticks
+ * on active rows don't rebuild memos that only depend on finished ones. */
+function useStableList<T>(next: T[]): T[] {
+  const ref = React.useRef(next);
+  const prev = ref.current;
+  if (prev !== next && (prev.length !== next.length || prev.some((item, index) => item !== next[index]))) ref.current = next;
+  return ref.current;
+}
 
 function fileName(outputPath: string): string {
   return outputPath.split(/[\\/]/).filter(Boolean).pop() ?? outputPath;
@@ -73,8 +87,17 @@ function RetryCountdown({ at }: { at: string }) {
   const target = time(at);
   const [now, setNow] = React.useState(() => Date.now());
   React.useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
+    let timer: number | undefined;
+    // No ticks while the tab is hidden; catch up immediately when it returns.
+    const start = () => {
+      if (timer !== undefined || document.hidden) return;
+      timer = window.setInterval(() => setNow(Date.now()), 1000);
+    };
+    const stop = () => { if (timer !== undefined) { window.clearInterval(timer); timer = undefined; } };
+    const onVisibility = () => { if (document.hidden) stop(); else { setNow(Date.now()); start(); } };
+    start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => { stop(); document.removeEventListener('visibilitychange', onVisibility); };
   }, []);
   const seconds = Math.max(0, Math.round((target - now) / 1000));
   return <span className="tabular-nums">{seconds <= 0 ? 'any moment now' : seconds < 60 ? `in ${seconds}s` : `in ${Math.ceil(seconds / 60)} min`}</span>;
@@ -330,7 +353,7 @@ export function ManagerTab() {
   const attention = React.useMemo(() => tasks.filter(needsAttention).sort((a, b) => b.id - a.id), [tasks]);
   const active = React.useMemo(() => sortActive(tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused' || isRetryWait(t))), [tasks]);
   const cancelledTasks = React.useMemo(() => tasks.filter(isCancelled).sort((a, b) => b.id - a.id), [tasks]);
-  const liveCompleted = React.useMemo(() => tasks.filter((t) => t.status === 'completed'), [tasks]);
+  const liveCompleted = useStableList(React.useMemo(() => tasks.filter((t) => t.status === 'completed'), [tasks]));
 
   // Every completed gallery (also powers Discover's Downloaded badges): its length is the true history size.
   const completedIndex = useQuery({ queryKey: ['downloads-completed'], queryFn: api.downloadsCompleted, staleTime: 30_000 });
@@ -345,11 +368,11 @@ export function ManagerTab() {
   const completed = React.useMemo(() => {
     const byId = new Map(liveCompleted.map((task) => [task.id, task]));
     for (const page of older.data?.pages ?? []) for (const task of page.items) if (!byId.has(task.id) && task.status === 'completed') byId.set(task.id, task);
-    return [...byId.values()].sort(byFinished);
+    return sortByFinished([...byId.values()]);
   }, [liveCompleted, older.data]);
 
   const fullHistory = filter === 'completed' || showAllHistory;
-  const shownCompleted = fullHistory ? completed : completed.slice(0, HISTORY_PREVIEW);
+  const shownCompleted = React.useMemo(() => (fullHistory ? completed : completed.slice(0, HISTORY_PREVIEW)), [fullHistory, completed]);
   const moreToLoad = fullHistory && completed.length < completedTotal;
 
   const libraryIds = React.useMemo(() => shownCompleted.map((task) => task.id), [shownCompleted]);
@@ -529,7 +552,9 @@ export function ManagerTab() {
         )}
       </div>
       {comicInfo && (
-        <ComicInfoModal initialPath={comicInfo.path} onClose={() => setComicInfo(null)} />
+        <React.Suspense fallback={null}>
+          <ComicInfoModal initialPath={comicInfo.path} onClose={() => setComicInfo(null)} />
+        </React.Suspense>
       )}
     </>
   );

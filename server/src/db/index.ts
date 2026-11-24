@@ -38,14 +38,20 @@ const LEGACY_DB_FILENAMES = ['kavisync.db', 'h-tosho.db'];
 
 const TMP_DIR = path.join(DATA_DIR, 'tmp');
 
+let tmpDirReady = false;
+/** The scratch directory, created on first use rather than on every call. */
 export function getTmpDir(): string {
-  fs.mkdirSync(TMP_DIR, { recursive: true });
+  if (!tmpDirReady) {
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+    tmpDirReady = true;
+  }
   return TMP_DIR;
 }
 
 export type Db = BetterSQLite3Database<typeof schema>;
 
 let db: Db | null = null;
+let sqliteHandle: Database.Database | null = null;
 
 export function initDb(): Db {
   if (db) return db;
@@ -65,8 +71,37 @@ export function initDb(): Db {
   sqlite.pragma('mmap_size = 268435456');
   migrateSchema(sqlite);
   pruneOldData(sqlite);
+  sqliteHandle = sqlite;
   db = drizzle(sqlite, { schema });
   return db;
+}
+
+/**
+ * Apply the retention windows to the open database. initDb runs this at boot;
+ * long-lived processes also call it periodically (see startDatabaseMaintenance).
+ */
+export function pruneDatabase(): void {
+  getDb();
+  if (sqliteHandle?.open) pruneOldData(sqliteHandle);
+}
+
+const PRUNE_INTERVAL_MS = 86_400_000;
+/** Daily retention sweep for servers that stay up for weeks. Returns a stop function. */
+export function startDatabaseMaintenance(intervalMs = PRUNE_INTERVAL_MS): () => void {
+  const timer = setInterval(() => {
+    try { pruneDatabase(); }
+    catch (error) { console.warn('[h-tosho] database retention sweep failed:', error); }
+  }, intervalMs);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
+/** Close the SQLite handle (flushing WAL state). A later getDb() reopens it. */
+export function closeDb(): void {
+  const handle = sqliteHandle;
+  sqliteHandle = null;
+  db = null;
+  if (handle?.open) handle.close();
 }
 /** Retention windows for finished work so the database does not grow unbounded. */
 const JOB_RETENTION_DAYS = 30;
@@ -74,8 +109,8 @@ const HISTORY_RETENTION_DAYS = 90;
 
 /**
  * Delete finished jobs (and their logs) older than JOB_RETENTION_DAYS and sync
- * history older than HISTORY_RETENTION_DAYS. Runs once per process start; the
- * tables are small and indexed, so this is cheap. Cutoffs use SQLite's own
+ * history older than HISTORY_RETENTION_DAYS. Runs at process start and daily
+ * thereafter; the tables are small and indexed, so this is cheap. Cutoffs use SQLite's own
  * timestamp format ('YYYY-MM-DD HH:MM:SS') for consistent lexicographic
  * comparison against both default-generated and app-written timestamps.
  */

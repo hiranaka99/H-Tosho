@@ -287,9 +287,28 @@ function hashTerm(term: string): Uint8Array {
   return new Uint8Array(crypto.createHash('sha256').update(term, 'utf8').digest().subarray(0, 4));
 }
 
+/** Per-request upper bounds so a stalled CDN connection cannot pin a search forever. */
+const RANGE_TIMEOUT_MS = 15_000;
+const NOZOMI_TIMEOUT_MS = 30_000;
+const SUGGEST_TIMEOUT_MS = 10_000;
+
+/** A request timeout, combined with an optional caller cancellation signal. */
+function requestSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([timeout, signal]) : timeout;
+}
+
+/** Release an unread response body so undici can reuse the socket. */
+function discardBody(r: Response): void {
+  void r.body?.cancel().catch(() => undefined);
+}
+
 async function rangeFetch(url: string, start: number, end: number): Promise<Buffer> {
-  const r = await fetch(url, { headers: { ...headers(), Range: `bytes=${start}-${end}` } });
-  if (r.status !== 200 && r.status !== 206) throw new Error(`Hitomi range request failed (HTTP ${r.status})`);
+  const r = await fetch(url, { headers: { ...headers(), Range: `bytes=${start}-${end}` }, signal: requestSignal(RANGE_TIMEOUT_MS) });
+  if (r.status !== 200 && r.status !== 206) {
+    discardBody(r);
+    throw new Error(`Hitomi range request failed (HTTP ${r.status})`);
+  }
   return Buffer.from(await r.arrayBuffer());
 }
 
@@ -368,7 +387,12 @@ async function getGalleryIdsForTerm(term: string, version: string): Promise<numb
   for (let depth = 0; depth < 12; depth++) {
     const nodeKey = `${version}:${addr}`;
     let node = btreeNodeCache.get(nodeKey);
-    if (!node) {
+    if (node) {
+      // Promote to MRU so hot nodes (the root, upper levels) are never the
+      // eviction candidate.
+      btreeNodeCache.delete(nodeKey);
+      btreeNodeCache.set(nodeKey, node);
+    } else {
       const buf = await rangeFetch(indexUrl, Number(addr), Number(addr) + MAX_NODE_SIZE - 1);
       node = decodeNode(buf);
       // LRU: evict the stalest entry (Map insertion order) when over cap.
@@ -449,17 +473,81 @@ async function fetchNozomiIds(f: NozomiFilter, strict = false): Promise<number[]
   return fetchNozomiUrl(nozomiUrl(f), strict);
 }
 
+/**
+ * Short-lived cache of decoded `.nozomi` payloads (successful 200s only), with
+ * in-flight dedupe. The ranking indexes are multi-megabyte and every keyword
+ * search starts from one, so back-to-back searches would otherwise re-download
+ * the same index. Entries are bounded by total id count, and the returned
+ * arrays are shared: callers must never mutate them.
+ */
+const NOZOMI_CACHE_TTL_MS = 60_000;
+const NOZOMI_CACHE_MAX_IDS = 3_000_000;
+const nozomiCache = new Map<string, { at: number; ids: number[] }>();
+const nozomiInflight = new Map<string, Promise<{ status: number; ids: number[] }>>();
+let nozomiCacheIds = 0;
+
+function cacheNozomi(url: string, ids: number[]): void {
+  if (ids.length > NOZOMI_CACHE_MAX_IDS) return;
+  const existing = nozomiCache.get(url);
+  if (existing) {
+    nozomiCache.delete(url);
+    nozomiCacheIds -= existing.ids.length;
+  }
+  while (nozomiCache.size && nozomiCacheIds + ids.length > NOZOMI_CACHE_MAX_IDS) {
+    const [oldestKey, oldest] = nozomiCache.entries().next().value!;
+    nozomiCache.delete(oldestKey);
+    nozomiCacheIds -= oldest.ids.length;
+  }
+  nozomiCache.set(url, { at: Date.now(), ids });
+  nozomiCacheIds += ids.length;
+}
+
+async function loadNozomi(url: string): Promise<{ status: number; ids: number[] }> {
+  const cached = nozomiCache.get(url);
+  if (cached) {
+    if (Date.now() - cached.at < NOZOMI_CACHE_TTL_MS) return { status: 200, ids: cached.ids };
+    nozomiCache.delete(url);
+    nozomiCacheIds -= cached.ids.length;
+  }
+  const pending = nozomiInflight.get(url);
+  if (pending) return pending;
+  const request = (async () => {
+    const r = await fetch(url, { headers: { ...headers() }, signal: requestSignal(NOZOMI_TIMEOUT_MS) });
+    if (r.status !== 200) {
+      discardBody(r);
+      return { status: r.status, ids: [] as number[] };
+    }
+    const ids = parseNozomiIds(Buffer.from(await r.arrayBuffer()));
+    cacheNozomi(url, ids);
+    return { status: 200, ids };
+  })();
+  nozomiInflight.set(url, request);
+  try { return await request; }
+  finally { if (nozomiInflight.get(url) === request) nozomiInflight.delete(url); }
+}
+
+/** The ids of one `.nozomi` index (a shared cached array — never mutate it). */
 async function fetchNozomiUrl(url: string, strict = false): Promise<number[]> {
   try {
-    const r = await fetch(url, { headers: { ...headers() } });
-    if (r.status !== 200) {
-      if (strict && r.status !== 404) throw new Error(`Hitomi exclusion index HTTP ${r.status}`);
+    const { status, ids } = await loadNozomi(url);
+    if (status !== 200) {
+      if (strict && status !== 404) throw new Error(`Hitomi exclusion index HTTP ${status}`);
       return [];
     }
-    return parseNozomiIds(Buffer.from(await r.arrayBuffer()));
+    return ids;
   } catch (error) {
     if (strict) throw error;
     return [];
+  }
+}
+
+/** In-place Fisher-Yates shuffle (non-cryptographic: this is display order only). */
+function shuffleInPlace(ids: number[]): void {
+  for (let index = ids.length - 1; index > 0; index--) {
+    const other = Math.floor(Math.random() * (index + 1));
+    const value = ids[index];
+    ids[index] = ids[other];
+    ids[other] = value;
   }
 }
 
@@ -536,16 +624,11 @@ async function searchGalleryIds(query: string, version: string, sort?: DoujinSor
     ? fetchNozomiUrl(`${API_BASE}${hitomiNozomiPath(hitomiStateForTerm(term, state))}`)
     : getGalleryIdsForTerm(term, version);
   // The first positive namespace determines the ranking index on the website.
-  let ids = !positive.length || (!positive[0].includes(':') && state.orderbykey !== 'added')
+  // May be a shared cached array: never reorder it in place (the filter below
+  // always produces a fresh array, which is what gets reversed/shuffled).
+  const ids = !positive.length || (!positive[0].includes(':') && state.orderbykey !== 'added')
     ? await fetchNozomiUrl(`${API_BASE}${hitomiNozomiPath(state)}`)
     : await resolve(positive.shift()!);
-  if (state.direction === 'asc' || state.direction === 'ascending') ids.reverse();
-  else if (state.direction === 'random' || state.direction === 'rand') {
-    for (let index = ids.length - 1; index > 0; index--) {
-      const other = crypto.randomInt(index + 1);
-      [ids[index], ids[other]] = [ids[other], ids[index]];
-    }
-  }
   if (!ids.length) return [];
   const [required, alternatives, excluded] = await Promise.all([
     Promise.all(positive.map(resolve)),
@@ -555,8 +638,14 @@ async function searchGalleryIds(query: string, version: string, sort?: DoujinSor
   const allowed = required.map(list => new Set(list));
   const disallowed = new Set(excluded.flat());
   const banned = await bannedIdSet(strictExclusions ? '' : query, version, strictExclusions);
-  return ids.filter(id => allowed.every(set => set.has(id)) && alternatives.every(set => set.has(id))
+  const kept = ids.filter(id => allowed.every(set => set.has(id)) && alternatives.every(set => set.has(id))
     && !disallowed.has(id) && !banned?.has(id));
+  // Order only the survivors: filtering preserves order, so reversing or
+  // shuffling afterwards gives the same distribution as doing it on the full
+  // index, without touching the (often hundreds of thousands of) discarded ids.
+  if (state.direction === 'asc' || state.direction === 'ascending') kept.reverse();
+  else if (state.direction === 'random' || state.direction === 'rand') shuffleInPlace(kept);
+  return kept;
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +686,16 @@ async function resolveBannedEntry(entry: string, version: string, strict = false
  * ban until the index changes.
  */
 let bannedCache: { version: string; entries: Map<string, number[]> } | null = null;
+/**
+ * Merged exclusion sets for the current index version, keyed by the exact list
+ * of applicable entries. Rebuilding a Set over up to ~1M ids on every search is
+ * expensive, so it is memoized — but only when every applicable entry resolved
+ * to a cached (non-empty) id list, so a transient failure is never frozen in.
+ * Callers treat the returned set as read-only.
+ */
+let bannedMerged: { version: string; sets: Map<string, Set<number>> } | null = null;
+const BANNED_MERGED_MAX = 2;
+const BANNED_RESOLVE_CONCURRENCY = 4;
 
 async function bannedIdSet(query: string, version: string, strict = false): Promise<Set<number> | null> {
   let rawTags: unknown;
@@ -613,7 +712,12 @@ async function bannedIdSet(query: string, version: string, strict = false): Prom
   if (!bannedCache || bannedCache.version !== version) {
     bannedCache = { version, entries: new Map() };
   }
-  const banned = new Set<number>();
+  if (!bannedMerged || bannedMerged.version !== version) {
+    bannedMerged = { version, sets: new Map() };
+  }
+  const entries = bannedCache.entries;
+  const merged = bannedMerged.sets;
+  const active: string[] = [];
   for (const raw of rawTags) {
     const entry = String(raw ?? '').trim();
     if (!entry) continue;
@@ -621,19 +725,50 @@ async function bannedIdSet(query: string, version: string, strict = false): Prom
     // Explicitly searched (every term of the entry appears verbatim) — this
     // ban doesn't apply to the current query.
     if (!strict && terms.length && terms.every((t) => queryTerms.has(termKey(t)))) continue;
-    let ids = bannedCache.entries.get(entry);
-    if (ids === undefined) {
+    active.push(entry);
+  }
+  if (!active.length) return null;
+
+  const activeKey = JSON.stringify(active);
+  const memo = merged.get(activeKey);
+  if (memo) {
+    merged.delete(activeKey);
+    merged.set(activeKey, memo);
+    return memo;
+  }
+
+  // Resolve cold entries with bounded parallelism (each one is a few CDN
+  // range reads or a nozomi fetch).
+  const cold = [...new Set(active.filter((entry) => !entries.has(entry)))];
+  let firstError: unknown = null;
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(BANNED_RESOLVE_CONCURRENCY, cold.length) }, async () => {
+    while (next < cold.length && !(strict && firstError)) {
+      const entry = cold[next++];
       try {
-        ids = await resolveBannedEntry(entry, version, strict);
+        const ids = await resolveBannedEntry(entry, version, strict);
+        if (ids.length) entries.set(entry, ids);
       } catch (error) {
-        if (strict) throw error;
-        continue; // manual search can still fail open
+        // Strict callers fail closed; manual search can still fail open.
+        if (strict) firstError ??= error;
       }
-      if (ids.length) bannedCache.entries.set(entry, ids);
     }
+  }));
+  if (strict && firstError) throw firstError;
+
+  const banned = new Set<number>();
+  let complete = true;
+  for (const entry of active) {
+    const ids = entries.get(entry);
+    if (!ids) { complete = false; continue; }
     for (const id of ids) banned.add(id);
   }
-  return banned.size ? banned : null;
+  if (!banned.size) return null;
+  if (complete) {
+    while (merged.size >= BANNED_MERGED_MAX) merged.delete(merged.keys().next().value!);
+    merged.set(activeKey, banned);
+  }
+  return banned;
 }
 
 // ---------------------------------------------------------------------------
@@ -651,7 +786,7 @@ interface TagSuggestion {
  * `get_suggestions_for_query`: each character of the (lowercased) term becomes a
  * path segment under `{field}`, yielding `[name, count, namespace]` triples.
  */
-async function fetchTagSuggestions(field: string, term: string): Promise<TagSuggestion[]> {
+async function fetchTagSuggestions(field: string, term: string, signal?: AbortSignal): Promise<TagSuggestion[]> {
   const encoded = term.toLowerCase().replace(/_/g, ' ');
   const chars = encoded.split('').map((c) => (c === ' ' ? '_' : c === '/' ? 'slash' : c === '.' ? 'dot' : c));
 
@@ -660,8 +795,11 @@ async function fetchTagSuggestions(field: string, term: string): Promise<TagSugg
   url += '.json';
 
   try {
-    const r = await fetch(url, { headers: { ...headers() } });
-    if (r.status !== 200) return [];
+    const r = await fetch(url, { headers: { ...headers() }, signal: requestSignal(SUGGEST_TIMEOUT_MS, signal) });
+    if (r.status !== 200) {
+      discardBody(r);
+      return [];
+    }
     const data: unknown = await r.json();
     if (!Array.isArray(data)) return [];
     const out: TagSuggestion[] = [];
@@ -867,7 +1005,7 @@ export const hitomiProvider: DoujinProvider = {
    * a character-prefix query. If the seed contains a colon (e.g. "artist:charu"),
    * the part before it scopes the lookup to that namespace; otherwise 'global'.
    */
-  async suggest(query: string, limit = 10, context?: string): Promise<DoujinSuggestion[]> {
+  async suggest(query: string, limit = 10, context?: string, signal?: AbortSignal): Promise<DoujinSuggestion[]> {
     const q = normalizeHitomiQuery(query).replace(/^-/, '');
     if (!q) return [];
 
@@ -885,7 +1023,7 @@ export const hitomiProvider: DoujinProvider = {
       return values.slice(0, limit).map(name => ({ source: 'hitomi', type: field, name, filter: `${field}:${name}` }));
     }
 
-    const suggestions = await fetchTagSuggestions(field, term);
+    const suggestions = await fetchTagSuggestions(field, term, signal);
     const out: DoujinSuggestion[] = [];
     for (const s of suggestions.slice(0, Math.max(limit, 1))) {
       // Filter fragment is `ns:tag_name` with spaces as underscores, which the

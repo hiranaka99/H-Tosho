@@ -1,4 +1,4 @@
-import { desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery } from '../downloader/types.js';
@@ -10,6 +10,10 @@ import { getRecommendationFeedback, normalizeArtist, normalizeTag } from './reco
 import { getDownloaderSettings } from './settings.js';
 
 const BACKFILL_LIMIT = 25;
+/** Unreachable (deleted/404) galleries back off from one hour, doubling to a week. */
+const BACKFILL_RETRY_BASE_MS = 60 * 60_000;
+const BACKFILL_RETRY_MAX_MS = 7 * 24 * 60 * 60_000;
+const backfillFailures = new Map<string, { failures: number; retryAt: number }>();
 
 /**
  * Structural/meta Hitomi tags that appear on the majority of galleries and
@@ -208,26 +212,31 @@ function addWatchedSearchSignals(terms: Map<string, ProfileTerm>): void {
 
 function buildDislikedTerms(): Record<string, number> {
   const db = getDb();
-  const dismissed = db.select().from(schema.dismissedGalleries).all();
+  const dismissed = db.select({
+    source: schema.dismissedGalleries.source,
+    galleryId: schema.dismissedGalleries.galleryId,
+    artistsJson: schema.dismissedGalleries.artistsJson,
+    tagsJson: schema.dismissedGalleries.tagsJson,
+  }).from(schema.dismissedGalleries).all();
   if (!dismissed.length) return {};
   const disliked: Record<string, number> = {};
-  let historyByKey: Map<string, { artists?: string[]; tags?: string[] }> | null = null;
-  const loadHistory = () => {
-    if (historyByKey) return historyByKey;
-    historyByKey = new Map();
-    for (const row of db.select().from(schema.recommendationHistory).all()) {
-      try {
-        const item = JSON.parse(row.itemJson) as { artists?: string[]; tags?: string[] };
-        historyByKey.set(`${row.source}:${row.galleryId}`, item);
-      } catch { /* skip malformed */ }
+  // Only legacy dismissals without stored metadata need history, so look those
+  // up by key instead of parsing the whole history table.
+  const historyItem = (source: string, galleryId: string): { artists?: string[]; tags?: string[] } | null => {
+    const row = db.select({ itemJson: schema.recommendationHistory.itemJson }).from(schema.recommendationHistory)
+      .where(and(eq(schema.recommendationHistory.source, source), eq(schema.recommendationHistory.galleryId, galleryId))).get();
+    if (!row) return null;
+    try {
+      return JSON.parse(row.itemJson) as { artists?: string[]; tags?: string[] };
+    } catch {
+      return null; /* skip malformed */
     }
-    return historyByKey;
   };
   for (const row of dismissed) {
     let artists = parseEntries(row.artistsJson).map((a) => String(a ?? '').trim()).filter(Boolean);
     let tags = parseEntries(row.tagsJson).map((t) => String(t ?? '').trim()).filter(Boolean);
     if (!artists.length && !tags.length) {
-      const historic = loadHistory().get(`${row.source}:${row.galleryId}`);
+      const historic = historyItem(row.source, row.galleryId);
       if (historic) {
         artists = (historic.artists ?? []).map((a) => String(a ?? '').trim()).filter(Boolean);
         tags = (historic.tags ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);
@@ -446,20 +455,29 @@ export async function backfillMissingTags(persistGalleryTags: (source: DoujinSou
   const db = getDb();
   // Always inspect a bounded missing batch. A global row-count threshold would
   // strand large legacy libraries forever once any ten galleries were tagged.
-  const tagged = new Set(
-    db
-      .select({ source: schema.galleryTags.source, galleryId: schema.galleryTags.galleryId })
-      .from(schema.galleryTags)
-      .all()
-      .map((r) => `${r.source}:${r.galleryId}`),
-  );
+  // Galleries in backoff are skipped, so the batch over-fetches by their count
+  // to keep them from occupying every slot.
+  const now = Date.now();
+  const backingOff = new Set<string>();
+  for (const [key, entry] of backfillFailures) if (entry.retryAt > now) backingOff.add(key);
   const completed = db
     .select({ source: schema.downloadQueue.source, galleryId: schema.downloadQueue.galleryId })
     .from(schema.downloadQueue)
-    .where(eq(schema.downloadQueue.status, 'completed'))
+    .leftJoin(schema.galleryTags, and(
+      eq(schema.galleryTags.source, schema.downloadQueue.source),
+      eq(schema.galleryTags.galleryId, schema.downloadQueue.galleryId),
+    ))
+    .where(and(eq(schema.downloadQueue.status, 'completed'), isNull(schema.galleryTags.galleryId)))
     .orderBy(desc(schema.downloadQueue.id))
+    .limit(BACKFILL_LIMIT + backingOff.size)
     .all();
-  const missing = completed.filter((r) => !tagged.has(`${r.source}:${r.galleryId}`)).slice(0, BACKFILL_LIMIT);
+  const seen = new Set<string>();
+  const missing = completed.filter((r) => {
+    const key = `${r.source}:${r.galleryId}`;
+    if (backingOff.has(key) || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, BACKFILL_LIMIT);
   if (!missing.length) return;
 
   const bySource = new Map<DoujinSource, typeof missing>();
@@ -476,11 +494,17 @@ export async function backfillMissingTags(persistGalleryTags: (source: DoujinSou
     for (let i = 0; i < rows.length; i += 8) {
       await Promise.all(
         rows.slice(i, i + 8).map(async (row) => {
+          const key = `${source}:${row.galleryId}`;
           try {
             const gallery = await provider.getGallery(row.galleryId);
             persistGalleryTags(source, gallery, false);
+            backfillFailures.delete(key);
           } catch {
-            /* skip unreachable galleries — they stay untagged until a later pass */
+            // Unreachable galleries stay untagged and back off instead of being
+            // re-requested on every refresh.
+            const failures = (backfillFailures.get(key)?.failures ?? 0) + 1;
+            const delay = Math.min(BACKFILL_RETRY_MAX_MS, BACKFILL_RETRY_BASE_MS * 2 ** (failures - 1));
+            backfillFailures.set(key, { failures, retryAt: Date.now() + delay });
           }
         }),
       );

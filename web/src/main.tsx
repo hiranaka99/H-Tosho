@@ -10,7 +10,12 @@ import { AuthProvider } from './lib/AuthContext';
 import { ThemeProvider } from './lib/theme';
 import { SettingsDraftsProvider } from './lib/SettingsDrafts';
 import { NavigationGuard } from './lib/NavigationGuard';
+import { preloadRouteChunk } from './lib/routeChunks';
 import './index.css';
+
+// Fetch the landing page's chunk in parallel with the auth check instead of
+// waiting for GET /api/auth/status to resolve before the route renders.
+preloadRouteChunk(window.location.pathname);
 
 const queryClient = new QueryClient({
   defaultOptions: {
