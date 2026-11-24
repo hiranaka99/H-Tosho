@@ -63,7 +63,8 @@ test('dragging saves folder moves, ignores the current folder, and persists afte
   const folder = (id: number | string) => page.locator(`[data-watch-folder-id="${id}"]`);
   const original = await currentWatch(page);
   await dragWatch(page, handle, folder(folderIds[0]));
-  await expect(row).toContainText('Artists desktop');
+  // Folder membership is shown by grouping, not repeated inside the row.
+  await expect(page.locator(`[data-watch-folder-id="${folderIds[0]}"] [data-watched-search-id="${watchId}"]`)).toBeVisible();
   await expect(folder(folderIds[0]).locator(`[data-watched-search-id="${watchId}"]`)).toBeVisible();
   await expect(folder('unfiled').locator(`[data-watched-search-id="${watchId}"]`)).toHaveCount(0);
   await expect.poll(async () => (await currentWatch(page)).folderId).toBe(folderIds[0]);
@@ -78,16 +79,13 @@ test('dragging saves folder moves, ignores the current folder, and persists afte
   await dragWatch(page, handle, folder(folderIds[0]));
   expect((await currentWatch(page)).revision).toBe(firstMove.revision);
   await dragWatch(page, handle, folder(folderIds[1]));
-  await expect(row).toContainText('Favorites desktop');
   await expect(folder(folderIds[1]).locator(`[data-watched-search-id="${watchId}"]`)).toBeVisible();
   await expect(folder(folderIds[0]).locator(`[data-watched-search-id="${watchId}"]`)).toHaveCount(0);
   await expect(handle).toBeEnabled();
   await page.reload();
   await page.getByRole('button', { name: /^Manage watches/ }).click();
-  await expect(row).toContainText('Favorites desktop');
   await expect(folder(folderIds[1]).locator(`[data-watched-search-id="${watchId}"]`)).toBeVisible();
   await dragWatch(page, handle, folder('unfiled'));
-  await expect(row).toContainText('Unfiled');
   await expect(folder('unfiled').locator(`[data-watched-search-id="${watchId}"]`)).toBeVisible();
   await expect.poll(async () => (await currentWatch(page)).folderId).toBeNull();
   await expect(handle).toBeEnabled();
@@ -131,13 +129,15 @@ test('failed and conflicting drops retain saved organization and recover for ano
   expect((await currentWatch(page)).folderId).toBeNull();
   await expect(handle).toBeEnabled();
   await dragWatch(page, handle, destination);
-  await expect(row).toContainText('Artists desktop');
+  // Folder membership is shown by grouping, not repeated inside the row.
+  await expect(page.locator(`[data-watch-folder-id="${folderIds[0]}"] [data-watched-search-id="${watchId}"]`)).toBeVisible();
   await expect(row.getByRole('alert')).toHaveCount(0);
 });
 
 test('the move handle opens a keyboard and touch accessible folder selector', async ({ page, isMobile }, testInfo) => {
   const row = page.locator(`[data-watched-search-id="${watchId}"]`);
-  const handle = row.getByRole('button', { name: /^Move watch/ });
+  // Touch has no drag, so the grip is hidden there and Edit carries the folder choice.
+  const handle = row.getByRole('button', isMobile ? { name: /^Edit watch/ } : { name: /^Move watch/ });
   if (isMobile) await handle.tap();
   else { await handle.focus(); await handle.press('Enter'); }
   const editor = row.getByRole('form');
@@ -149,12 +149,12 @@ test('the move handle opens a keyboard and touch accessible folder selector', as
   }
   await editor.getByRole('button', { name: 'Save watch', exact: true }).click();
   await expect(editor).toHaveCount(0);
-  await expect(row).toContainText(`Artists ${testInfo.project.name}`);
+  await expect(page.locator(`[data-watch-folder-id="${folderIds[0]}"] [data-watched-search-id="${watchId}"]`)).toBeVisible();
   const group = page.locator(`[data-watch-folder-id="${folderIds[0]}"]`);
   await expect(group.locator(`[data-watched-search-id="${watchId}"]`)).toBeVisible();
   await expect(page.locator('[data-watch-folder-id="unfiled"]').locator(`[data-watched-search-id="${watchId}"]`)).toHaveCount(0);
   await expect(row).toContainText('Not checked yet');
-  await expect(row).toContainText(/Every .+ · (inherited|custom)/);
+  await expect(row).toContainText(/Every \d+ (min|hours?)/);
   expect((await currentWatch(page)).folderId).toBe(folderIds[0]);
   await expect(row.getByRole('button', { name: /^Edit watch/ })).toBeFocused();
   await expect(row.getByRole('button', { name: /^Check once/ })).toHaveCount(0);
