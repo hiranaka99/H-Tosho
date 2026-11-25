@@ -1,12 +1,12 @@
 # Screenshot examples and cover credits
 
-These screenshots show H-Tosho v2.5.0 rendered in a browser from the actual app
+These screenshots show H-Tosho v4.2.0 rendered in a browser from the actual app
 interface, with isolated sample data. No personal library, account credentials,
 or download history is included.
 
-- **libraries.png** — desktop Libraries page in the light theme.
+- **libraries.png** — desktop Libraries page in the dark theme.
 - **metadata-preview.png** — metadata comparison in the dark theme.
-- **libraries-mobile.png** — Libraries page at a phone viewport size.
+- **libraries-mobile.png** — Libraries page in the dark theme at a phone viewport size.
 
 The series counts, page counts, confidence scores, connection status, and
 metadata preview are examples, not live provider results. Real cover images

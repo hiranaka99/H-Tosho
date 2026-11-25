@@ -177,7 +177,7 @@ With this example, use `/mnt/downloads` as H-Tosho's output folder.
 4. Choose **Apply & Sync**. H-Tosho applies your selection in the background;
    **Tasks** shows its progress and any warnings.
 
-![Dark-theme metadata preview for Spy x Family, showing current and proposed fields, cover art, and Apply & Sync](docs/screenshots/metadata-preview.png)
+![Dark-theme metadata preview for Spy x Family, showing current and proposed fields, cover art, and apply controls](docs/screenshots/metadata-preview.png)
 
 *Review the title, description, creators, tags, and cover before applying them.
 This preview uses sample metadata and real cover art.*
