@@ -14,10 +14,11 @@ import { authStatus, changeCredentials, login, logout, requireAuth, setup } from
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** Locate the built frontend (web/dist). Works from any cwd. */
+/** Locate the built frontend (web/dist). Works from any cwd or staged update bundle. */
 function resolveWebDist(): string | null {
   const candidates = [
-    path.resolve(__dirname, '../../web/dist'), // server/dist -> repo root
+    ...(process.env.HTOSHO_WEB_DIST ? [path.resolve(process.env.HTOSHO_WEB_DIST)] : []),
+    path.resolve(__dirname, '../../web/dist'), // server/dist -> repo root or bundle root
     path.resolve(process.cwd(), 'web/dist'), // run from repo root
   ];
   for (const dir of candidates) {

@@ -23,6 +23,17 @@ import type { DoujinSource, EhentaiSite } from '../../../server/src/contracts/do
 import type { UnifiedSearchPage, UnifiedSearchProgress, UnifiedSearchStreamEvent } from '../../../server/src/contracts/doujin';
 import type { EhentaiAccountView, EhentaiSessionInput, EhentaiSiteAccess } from '../../../server/src/contracts/ehentai';
 export type { EhentaiAccountView, EhentaiSessionInput, EhentaiSiteAccess };
+export type {
+  AppUpdateStatus,
+  DockerReplacementReason,
+  DockerReplacementReasonCode,
+  DockerUpdateGuidance,
+  InstallMode,
+  UpdateJobPhase,
+  UpdateProgress,
+  UpdateReleaseInfo,
+} from '../../../server/src/contracts/appUpdate';
+import type { AppUpdateStatus } from '../../../server/src/contracts/appUpdate';
 // Typed client for the H-Tosho REST API.
 
 export interface KavitaConnection {
@@ -457,6 +468,10 @@ export const api = {
   dismissSuggestedFollow: (artist: string, dismissed: boolean) => request<{ ok: boolean }>('/watched-searches/suggestions/dismiss', { method: 'POST', body: JSON.stringify({ artist, dismissed }) }),
   authStatus: () => request<AuthStatus>('/auth/status'),
   version: () => request<{ version: string | null }>('/version'),
+  appUpdateStatus: () => request<AppUpdateStatus>('/app-update/status'),
+  checkAppUpdate: () => request<AppUpdateStatus>('/app-update/check', { method: 'POST' }),
+  applyAppUpdate: (targetVersion: string) => request<AppUpdateStatus>('/app-update/apply', { method: 'POST', body: JSON.stringify({ targetVersion }) }),
+  dismissUpdateRollback: () => request<{ ok: boolean }>('/app-update/dismiss-rollback', { method: 'POST' }),
   setup: (username: string, password: string) => request<{ authenticated: true; username: string }>('/auth/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),
   login: (username: string, password: string) => request<{ authenticated: true; username: string }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request<{ authenticated: false }>('/auth/logout', { method: 'POST' }),

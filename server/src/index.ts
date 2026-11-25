@@ -1,4 +1,9 @@
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
+import { RESTART_EXIT_CODE } from './bootstrap.js';
+import { appUpdateManager } from './services/appUpdate.js';
 import { closeDb, initDb, startDatabaseMaintenance } from './db/index.js';
 import { createApp } from './app.js';
 import { jobQueue } from './jobs/queue.js';
@@ -112,10 +117,10 @@ function main(): void {
   const stopRecommendationPreloading = startRecommendationPreloading(prefetchMedia);
 
   let shuttingDown = false;
-  const shutdown = (): void => {
+  const shutdown = (mode: 'stop' | 'restart' = 'stop'): void => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log('[h-tosho] shutting down');
+    console.log(mode === 'restart' ? '[h-tosho] restarting for update' : '[h-tosho] shutting down');
     unsubscribePollInterval();
     unsubscribeWatchedSearchInterval();
     unsubscribeDownloaderSettings();
@@ -130,6 +135,28 @@ function main(): void {
       exited = true;
       // Close SQLite last so the WAL is checkpointed and no write is cut short.
       try { closeDb(); } catch (error) { console.warn('[h-tosho] could not close the database cleanly:', error); }
+      if (mode === 'restart') {
+        if (process.env.HTOSHO_BOOTSTRAPPED === '1') {
+          process.exit(RESTART_EXIT_CODE);
+        }
+        const externallySupervised = Boolean(process.env.INVOCATION_ID || process.env.pm_id || process.env.HTOSHO_SUPERVISED === '1');
+        if (!externallySupervised) {
+          const entryDir = path.dirname(fileURLToPath(import.meta.url));
+          const appRoot = process.env.HTOSHO_APP_ROOT ?? path.resolve(entryDir, '..', '..');
+          const nextEntry = path.join(appRoot, 'server', 'dist', 'index.js');
+          try {
+            const child = spawn(process.execPath, [nextEntry], {
+              cwd: appRoot,
+              env: process.env,
+              detached: true,
+              stdio: 'ignore',
+            });
+            child.unref();
+          } catch (error) {
+            console.error('[h-tosho] failed to spawn restarted server process:', error);
+          }
+        }
+      }
       process.exit(0);
     };
     void downloadQueue.shutdown(1500).finally(() => {
@@ -141,8 +168,9 @@ function main(): void {
     });
     setTimeout(exit, 2500).unref();
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  appUpdateManager.registerRestartHandler(() => shutdown('restart'));
+  process.on('SIGINT', () => shutdown('stop'));
+  process.on('SIGTERM', () => shutdown('stop'));
 }
 
 main();

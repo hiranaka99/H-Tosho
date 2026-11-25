@@ -5,7 +5,7 @@ on:
     types: [published]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   publish:
@@ -50,3 +50,33 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  release-bundle:
+    name: Publish in-app update bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies and build
+        run: npm install -g npm@12 && npm ci && npm run build
+
+      - name: Package in-app update bundle
+        run: node scripts/update-bundle.mjs --build-bundle release-assets --tag "${{ github.event.release.tag_name }}"
+
+      - name: Upload bundle assets to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            release-assets/h-tosho-update-bundle.zip \
+            release-assets/h-tosho-update-manifest.json \
+            --clobber

@@ -6,6 +6,7 @@ import { api, ApiError, type Settings as SettingsType, type ProviderInfo, type D
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Badge, PageHeader, ErrorState, SegmentedTabs, SegmentedControl, TabPanel, Disclosure } from '../components/ui';
 import { Switch } from '../components/switch';
 import { ConfirmDialog } from '../components/dialog';
+import { AppUpdatesCard } from '../components/AppUpdatesCard';
 import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { useAuth } from '../lib/AuthContext';
@@ -1125,6 +1126,7 @@ export function Settings() {
           </div>}
           {mounted('account') && <div hidden={tab !== 'account'} className="flex flex-col gap-4">
             <AppearanceCard />
+            <AppUpdatesCard />
             <AccountSettingsCard />
           </div>}
         </TabPanel>

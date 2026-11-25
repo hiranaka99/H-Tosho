@@ -17,19 +17,23 @@ COPY web/package.json ./web/
 RUN npm install -g npm@12 && npm ci
 
 # Copy shared source before building the frontend, which imports its contracts.
+COPY Dockerfile ./
+COPY scripts ./scripts
 COPY server ./server
 # Build the frontend into web/dist.
 COPY web ./web
 RUN npm run build --workspace @h-tosho/web
 
-# Build the backend into server/dist.
-RUN npm run build --workspace @h-tosho/server
+# Build the backend into server/dist and record the image's runtime fingerprint.
+RUN npm run build --workspace @h-tosho/server \
+    && node scripts/update-bundle.mjs --write-runtime-manifest /app/runtime-manifest.json --in-docker
 
 # ---- Stage 2: runtime -------------------------------------------------------
 FROM node:22-slim
 WORKDIR /app
 ENV NODE_ENV=production
 ENV HTOSHO_DATA_DIR=/data
+ENV HTOSHO_IN_DOCKER=1
 
 # curl is used by the NHentai tag-autocomplete provider (Cloudflare lets curl
 # through where Node's fetch gets challenged). ca-certificates provides the
@@ -40,6 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 # npm workspaces hoist all runtime dependencies to the root node_modules.
 COPY package.json ./
 COPY server/package.json ./server/
+COPY --from=build /app/runtime-manifest.json ./runtime-manifest.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/server/dist ./server/dist
 COPY --from=build /app/web/dist ./web/dist
@@ -47,4 +52,4 @@ COPY --from=build /app/web/dist ./web/dist
 VOLUME ["/data"]
 EXPOSE 8787
 
-CMD ["node", "server/dist/index.js"]
+CMD ["node", "server/dist/bootstrap.js"]

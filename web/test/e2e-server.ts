@@ -9,6 +9,7 @@ import { eq, like } from 'drizzle-orm';
 // A fresh DB, no download workers or schedulers. Only explicitly targeted F1
 // fixture checks may execute through the real Task handler; all other jobs fail closed.
 process.env.HTOSHO_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-e2e-'));
+process.env.HTOSHO_UPDATE_CHECK_DISABLED = '1';
 const { initDb, schema } = await import('../../server/src/db/index.js');
 const { addWatchedSearch } = await import('../../server/src/services/watchedSearches.js');
 const { createApp } = await import('../../server/src/app.js');

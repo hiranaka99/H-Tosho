@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router';
-import { House, Library, Settings as SettingsIcon, ListChecks, Compass, Menu, X, LogOut, Monitor, Sun, Moon } from 'lucide-react';
+import { House, Library, Settings as SettingsIcon, ListChecks, Compass, Menu, X, LogOut, Monitor, Sun, Moon, ArrowUpCircle, AlertTriangle } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './lib/api';
 import { loadDownloader, loadHome, loadJobs, loadLibraries, loadSettings } from './lib/routeChunks';
@@ -33,6 +33,35 @@ function LowConfidenceBadge() {
   return (
     <Link to="/libraries/review" className="absolute right-1 top-0 flex h-9 min-w-9 items-center justify-center rounded-md" aria-label={`Review queue · ${data.count}`} title={`Review matches below ${Math.round(data.threshold * 100)}% confidence`}>
       <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-foreground">{data.count}</span>
+    </Link>
+  );
+}
+
+/** Quiet sidebar notice when a newer H-Tosho release is available. */
+function UpdateIndicator() {
+  const { data } = useQuery({
+    queryKey: ['app-update-status'],
+    queryFn: api.appUpdateStatus,
+    staleTime: 5 * 60_000,
+    refetchInterval: 6 * 3_600_000,
+    retry: false,
+  });
+  if (!data?.updateAvailable || !data.latestRelease) return null;
+  const replaceImage = Boolean(data.installMode === 'docker' && data.docker?.requiresImageReplacement);
+  const label = replaceImage
+    ? `v${data.latestRelease.version} · Replace image`
+    : `Update available · v${data.latestRelease.version}`;
+  return (
+    <Link
+      to="/settings?tab=account#app-updates"
+      className={cn(
+        'flex items-center gap-2 border-t border-border px-4 py-2.5 text-xs font-medium transition-colors hover:bg-surface-2',
+        replaceImage ? 'text-warning' : 'text-primary',
+      )}
+      title={replaceImage ? `v${data.latestRelease.version} requires replacing the Docker image` : `Update H-Tosho to v${data.latestRelease.version}`}
+    >
+      {replaceImage ? <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5 shrink-0" /> : <ArrowUpCircle aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
     </Link>
   );
 }
@@ -242,6 +271,7 @@ export default function App() {
             <LogOut className="h-4 w-4" />
           </Button>
         </div>
+        <UpdateIndicator />
         <KavitaIndicator />
         <SidebarStatus live={isDesktop || navOpen} />
       </aside>
