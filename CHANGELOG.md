@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.3.1
+
+- Fix a startup database migration crash (`no such table: main.match_updates`) when upgrading
+  existing v4.1 or v4.2 installations to v4.3. Skip indexes whose target table or column has
+  not been created yet so earlier index migrations succeed before later migrations create
+  those tables and indexes.
+
 ## v4.3.0
 
 - Update H-Tosho from inside the app under Settings → Account → App updates, with a sidebar
