@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## v4.3.0
 
+- Update H-Tosho from inside the app under Settings → Account → App updates, with a sidebar
+  indicator when a new release is available. Git checkouts fetch, install, rebuild, and restart
+  automatically; Docker installations apply verified in-app release bundles with automatic startup
+  rollback when only application code changed, and warn with copyable pull/rebuild commands
+  whenever the Dockerfile, Node.js version, or server runtime dependencies require completely
+  replacing the Docker image.
 - Check matched series for provider updates every 7 days (configurable, or on demand).
   Each series is re-read from the exact entry it is matched to, so a new or better
   candidate never raises an alert. Changes appear under Provider updates on Home with
@@ -13,8 +19,20 @@
   edition; Following records better-edition finds for Home and Discord.
 - Suggest artists to follow from your downloads and liked picks. Follow creates a named
   watch on the artist's main source; dismissed and muted artists are not suggested.
-- Rewrite the architecture notes by area, remove the retired Following delivery queue
-  and digest, and describe the new refresh, better-edition and suggestion owners.
+- Stream unified search results per provider as each source answers, with a Searching
+  indicator for lanes still running, and use nHentai's dedicated cover image on search cards.
+- Add fit-to-width and 1x–4x zoom with drag-to-pan and keyboard navigation to the gallery
+  page reader, remembering the last page per gallery and preferred fit mode for the session.
+  Group gallery detail tags by namespace with per-namespace colors and show live download
+  progress and confirmed library copies in the modal.
+- Refine Home and Following triage: keyboard shortcuts (`j`/`k`/`d`/`u`), 5 min–24 h watch
+  check intervals, caught-up and filtered empty states, source-watch labels, failure chips
+  and sync errors on Home, a Kavita setup card when disconnected, and larger cover previews
+  in identification review.
+- Optimize SPA shell ETag and Brotli/gzip caching, run database retention pruning daily in
+  long-lived processes, coalesce E-Hentai image writes, parallelize download publishing,
+  and add database indexes for downloads, merges, and unreviewed watched results.
+- Refresh README screenshots for v4.2.0 and rewrite architecture notes by ownership area.
 
 ## v4.2.0
 
