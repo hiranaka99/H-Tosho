@@ -32,14 +32,27 @@ export function createSchemaTables(sqlite: Database.Database): void {
 }
 
 function createIndexes(sqlite: Database.Database, following = false): void {
-  for (const table of tables) for (const index of table.indexes) {
-    // Legacy watch rows must be reconciled and extended before F1 indexes exist.
-    if (!following && (index.config.name === 'idx_watched_searches_source_query' || index.config.name === 'idx_watched_searches_due')) continue;
-    // SQL terms are plain column terms with a sort order (`"priority" DESC`);
-    // a WHERE clause makes a partial index. Both are written as raw SQL in the schema.
-    const columns = index.config.columns.map(column => column instanceof SQL ? dialect.sqlToQuery(column.inlineParams()).sql : quote(column.name));
-    const where = index.config.where ? ` WHERE ${dialect.sqlToQuery(index.config.where.inlineParams()).sql}` : '';
-    sqlite.exec(`CREATE ${index.config.unique ? 'UNIQUE ' : ''}INDEX IF NOT EXISTS ${quote(index.config.name)} ON ${quote(table.name)} (${columns.join(', ')})${where}`);
+  // Earlier migrations can run before a later migration creates a newer table
+  // or column in `schema.ts`. Skip indexes whose target table/column does not
+  // exist yet; the migration that introduces them calls `createIndexes` again.
+  const existingTables = new Set(
+    (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((row) => row.name),
+  );
+  for (const table of tables) {
+    if (!existingTables.has(table.name)) continue;
+    const existingColumns = new Set(
+      (sqlite.prepare(`PRAGMA table_info(${quote(table.name)})`).all() as { name: string }[]).map((col) => col.name),
+    );
+    for (const index of table.indexes) {
+      // Legacy watch rows must be reconciled and extended before F1 indexes exist.
+      if (!following && (index.config.name === 'idx_watched_searches_source_query' || index.config.name === 'idx_watched_searches_due')) continue;
+      if (index.config.columns.some(column => !(column instanceof SQL) && !existingColumns.has(column.name))) continue;
+      // SQL terms are plain column terms with a sort order (`"priority" DESC`);
+      // a WHERE clause makes a partial index. Both are written as raw SQL in the schema.
+      const columns = index.config.columns.map(column => column instanceof SQL ? dialect.sqlToQuery(column.inlineParams()).sql : quote(column.name));
+      const where = index.config.where ? ` WHERE ${dialect.sqlToQuery(index.config.where.inlineParams()).sql}` : '';
+      sqlite.exec(`CREATE ${index.config.unique ? 'UNIQUE ' : ''}INDEX IF NOT EXISTS ${quote(index.config.name)} ON ${quote(table.name)} (${columns.join(', ')})${where}`);
+    }
   }
 }
 
