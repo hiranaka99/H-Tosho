@@ -6,6 +6,7 @@ import type { MergeProtectionState } from './mergeProtection.js';
 export const JOB_TYPES = [
   'scan-new',
   'scan-matchable',
+  'refresh-matched',
   'scan-downloaded',
   'match-unmatched',
   'match-library',
@@ -59,6 +60,7 @@ export interface JobExecutionState {
 export type JobPayload = Partial<SeriesTargets & ApplySeriesCommand & EditComicInfoCommand & MergeSeriesCommand & DownloadDiscoveryCommand & RestoreMetadataCommand & CheckWatchedSearchesCommand> & JobExecutionState;
 export interface JobPayloads {
   'scan-matchable': Record<string, never>;
+  'refresh-matched': Record<string, never>;
   'scan-downloaded': DownloadDiscoveryCommand;
   'scan-new': Pick<SeriesTargets, 'libraryId'>;
   'match-unmatched': Pick<SeriesTargets, 'libraryId'>;
@@ -77,6 +79,7 @@ export type JobCommand = { [T in JobType]: { type: T; payload: JobPayloads[T] } 
 
 const fieldsByType: Record<JobType, readonly string[]> = {
   'scan-matchable': [],
+  'refresh-matched': [],
   'scan-downloaded': ['path', 'connectionKey', 'seriesName'],
   'scan-new': ['libraryId'], 'match-unmatched': ['libraryId'], 'match-library': ['libraryId'],
   'match-series': ['seriesId', 'seriesIds', 'libraryId'], 'sync-series': ['seriesIds', 'libraryId'],

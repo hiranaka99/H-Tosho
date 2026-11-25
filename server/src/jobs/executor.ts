@@ -28,6 +28,7 @@ import { autoMatch, fetchProviderMetadata, type CandidateMatch } from '../match/
 import { applyResolvedSeriesMatch, applySeriesMatch, type ApplySeriesResult } from '../services/sync.js';
 import { checkWatchedSearches } from '../services/watchedSearches.js';
 import { scanMatchSuggestions } from '../services/matchSuggestions.js';
+import { refreshMatchedSeries } from '../services/matchRefresh.js';
 import { queueDownloadedMatchDiscovery, runDownloadedMatchDiscovery } from '../services/downloadDiscovery.js';
 import { notifyInBackground, formatPushedFields, providerName } from '../notify/dispatcher.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from './queue.js';
@@ -206,7 +207,7 @@ const MATCH_CONCURRENCY = 3;
 
 /** Run a queued job. Returns a small summary stored on the job row. */
 export function runJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<JobResult> {
-  if (job.type === 'check-watched-searches' || job.type === 'scan-matchable' || job.type === 'clear-overrides') return executeJob(job, log, signal);
+  if (job.type === 'check-watched-searches' || job.type === 'scan-matchable' || job.type === 'refresh-matched' || job.type === 'clear-overrides') return executeJob(job, log, signal);
   if (job.type === 'merge-series') return prepareMergeForPublication(job,log,signal).then(()=>libraryMutations.run(['*'],()=>executeJob(job,log,signal),signal));
   // Broad scans, merges, deletes and path-only edits conflict with every series.
   const scoped = ['apply-series', 'restore-metadata', 'sync-series', 'match-series', 'edit-comicinfo'].includes(job.type);
@@ -222,7 +223,7 @@ export function runJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<JobR
  * (title stamping, ComicInfo edits/restores, merges, deletes), so the 5-minute
  * duplicate scan is dropped before and after those runs instead of on every job.
  */
-const ARCHIVE_READ_ONLY_JOBS: ReadonlySet<JobType> = new Set<JobType>(['check-watched-searches', 'scan-matchable', 'clear-overrides']);
+const ARCHIVE_READ_ONLY_JOBS: ReadonlySet<JobType> = new Set<JobType>(['check-watched-searches', 'scan-matchable', 'refresh-matched', 'clear-overrides']);
 
 async function executeJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<JobResult> {
   const command = parseJobCommand(job.type, job.payload);
@@ -237,6 +238,12 @@ async function executeTypedJob(typed: ExecutableJob, job: Job, log: LogFn, signa
   switch (typed.type) {
     case 'scan-downloaded': return runDownloadedMatchDiscovery(typed, log, signal);
     case 'scan-matchable': return scanMatchSuggestions({
+      signal,
+      checkCancelled: () => throwIfJobCancelled(job.id),
+      progress: (current, total) => jobQueue.setProgress(job.id, current, total),
+      log,
+    });
+    case 'refresh-matched': return refreshMatchedSeries({
       signal,
       checkCancelled: () => throwIfJobCancelled(job.id),
       progress: (current, total) => jobQueue.setProgress(job.id, current, total),

@@ -1,15 +1,15 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router';
-import { AlertTriangle, ArrowRight, Check, CheckCircle2, Download, Eraser, History, House, Image as ImageIcon, Inbox, Link2, PenLine, RefreshCw, Search, ShieldQuestion, Sparkles, Unlink, X, XCircle, type LucideIcon } from 'lucide-react';
-import { api, type DoujinSearchResult, type DownloadTask, type MatchSuggestion } from '../lib/api';
+import { AlertTriangle, ArrowRight, BellRing, Check, CheckCircle2, Download, Eraser, History, House, Image as ImageIcon, Inbox, Link2, PenLine, RefreshCw, Search, ShieldQuestion, Sparkles, Unlink, X, XCircle, type LucideIcon } from 'lucide-react';
+import { api, type DoujinSearchResult, type DownloadTask, type MatchSuggestion, type MatchUpdate } from '../lib/api';
 import { cn, PROVIDER_NAMES, sourceDisplayName, timeAgo, toIsoUtc } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { useDownloadsSelector, useGalleryDownloadStatus } from '../lib/DownloadsContext';
 import { Badge, Button, EmptyState, ErrorState, PageHeader, Pager, ProgressBar, Skeleton, Spinner } from '../components/ui';
 import { Cover, GalleryCard, OwnershipChip } from './downloader/GalleryCard';
 import type { DownloadSetup } from './downloader/state';
-import type { GalleryOwnership } from './downloader/ownership';
+import { libraryMatchFor, type GalleryOwnership } from './downloader/ownership';
 const IdentifyModal = React.lazy(() => import('../components/IdentifyModal').then((m) => ({ default: m.IdentifyModal })));
 const GalleryDetailModal = React.lazy(() => import('./downloader/GalleryDetailModal').then((m) => ({ default: m.GalleryDetailModal })));
 import { useGalleryDownload } from './downloader/useGalleryDownload';
@@ -87,6 +87,17 @@ function selectHomeDownloadCounts(tasks: DownloadTask[]) {
   };
 }
 
+/** Opens the comparison on the exact candidate the series is already matched to. */
+function UpdateReview({ item, onClose }: { item: MatchUpdate; onClose: () => void }) {
+  const current = useQuery({ queryKey: ['series', item.seriesId], queryFn: () => api.series(item.seriesId) });
+  const candidate = React.useMemo(() => ({ providerId: item.providerId, providerSeriesId: item.providerSeriesId, title: item.candidateTitle, type: 'MANGA',
+    score: item.score ?? 1, ...(item.candidateCoverUrl ? { coverUrl: item.candidateCoverUrl } : {}) }), [item]);
+  return <IdentifyModal seriesId={item.seriesId} initialCandidate={candidate}
+    current={{ name: current.data?.series.name ?? item.name, metadata: current.data?.kavita ?? null }}
+    currentLoading={current.isPending} currentError={current.isError ? current.error.message : null}
+    onRetryCurrent={() => { void current.refetch(); }} match={current.data?.match ?? null} currentCover={item.cover} onClose={onClose} />;
+}
+
 /** One Following find: the same download, ownership and dismiss decisions as a Discover card, in a list row. */
 function FollowingRow({ item, label, ownership, starting, reviewing, setupStatus, onOpen, onDownload, onDismiss }: {
   item: DoujinSearchResult; label?: string; ownership: GalleryOwnership; starting: boolean; reviewing: boolean; setupStatus: DownloadSetup['status'];
@@ -122,6 +133,8 @@ export function Home() {
   const { active: activeDownloads, failed: failedDownloads } = useDownloadsSelector(selectHomeDownloadCounts) ?? NO_DOWNLOAD_COUNTS;
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
   const [review, setReview] = React.useState<MatchSuggestion | null>(null);
+  const [updateReview, setUpdateReview] = React.useState<MatchUpdate | null>(null);
+  const [dismissingUpdates, setDismissingUpdates] = React.useState(new Set<number>());
   const [openedIds, setOpenedIds] = React.useState(new Set<number>());
   const [matchPage, setMatchPage] = React.useState(1);
   const [reviewingKeys, setReviewingKeys] = React.useState(new Set<string>());
@@ -130,6 +143,8 @@ export function Home() {
     refetchInterval: query => ['queued', 'running'].includes(query.state.data?.scan?.status ?? '') ? 3000 : 60_000 });
   const feed = useQuery({ queryKey: ['watched-gallery-feed', 'home'], queryFn: () => api.watchedGalleryFeed({ view: 'inbox', offset: 0, limit: 4 }), refetchInterval: 60_000 });
   const activity = useQuery({ queryKey: ['home-activity'], queryFn: api.homeActivity, refetchInterval: 30_000 });
+  const updates = useQuery({ queryKey: ['home-updates'], queryFn: api.homeUpdates,
+    refetchInterval: query => ['queued', 'running'].includes(query.state.data?.refresh?.status ?? '') ? 3000 : 60_000 });
   const completed = useQuery({ queryKey: ['downloads-completed'], queryFn: api.downloadsCompleted });
   const recommendationItems = React.useMemo(() => visibleRecs.slice(0, 6), [visibleRecs]);
   const discoveryItems = React.useMemo<DoujinSearchResult[]>(() => (feed.data?.items ?? []).map(item => ({ ...item, coverUrl: item.coverUrl ?? undefined, tags: [] })), [feed.data]);
@@ -144,8 +159,13 @@ export function Home() {
   });
   const owned = React.useMemo(() => new Set([...ownedKeys, ...(completed.data ?? []).map(item => `${item.source}:${item.galleryId}`)]), [ownedKeys, completed.data]);
   const inLibrary = React.useMemo(() => new Set((ownership.data?.reports ?? []).filter(report => report.matches.some(match => match.confirmed && ['In library', 'Owned', 'completed'].includes(match.status))).map(report => `${report.source}:${report.galleryId}`)), [ownership.data]);
-  const possible = React.useMemo(() => new Set((ownership.data?.reports ?? []).filter(report => report.matches.length > 0).map(report => `${report.source}:${report.galleryId}`)), [ownership.data]);
-  const ownershipFor = (key: string): GalleryOwnership => ({ type: inLibrary.has(key) ? 'in-library' : owned.has(key) ? 'downloaded' : possible.has(key) ? 'possible-duplicate' : 'available' });
+  const possible = React.useMemo(() => new Set((ownership.data?.reports ?? []).filter(report => libraryMatchFor(report) === 'possible').map(report => `${report.source}:${report.galleryId}`)), [ownership.data]);
+  // Better editions: every library match is an earlier edition, or the find was flagged when it arrived.
+  const better = React.useMemo(() => new Set([
+    ...(ownership.data?.reports ?? []).filter(report => libraryMatchFor(report) === 'better').map(report => `${report.source}:${report.galleryId}`),
+    ...(feed.data?.items ?? []).filter(item => item.betterEditionOf).map(item => `${item.source}:${item.galleryId}`),
+  ]), [ownership.data, feed.data]);
+  const ownershipFor = (key: string): GalleryOwnership => ({ type: inLibrary.has(key) ? 'in-library' : owned.has(key) ? 'downloaded' : possible.has(key) ? 'possible-duplicate' : better.has(key) ? 'better-edition' : 'available' });
   const scan = matches.data?.scan;
   const scanning = ['queued', 'running'].includes(scan?.status ?? '');
   const matchItems = matches.data?.items ?? [];
@@ -177,6 +197,16 @@ export function Home() {
     } catch (error) { notifyError('Could not save your decision')(error as Error); }
     finally { setRejectedIds(current => new Set([...current].filter(id => id !== item.seriesId))); }
   }
+  async function dismissUpdate(item: MatchUpdate) {
+    setDismissingUpdates(current => new Set(current).add(item.seriesId));
+    try {
+      await api.dismissMatchUpdate(item.seriesId, true);
+      await qc.invalidateQueries({ queryKey: ['home-updates'] });
+      toast({ tone: 'info', title: 'Update dismissed', description: `${item.name}: this provider change stays hidden. A later change will show up again.`,
+        action: { label: 'Undo', onClick: () => { void api.dismissMatchUpdate(item.seriesId, false).then(() => qc.invalidateQueries({ queryKey: ['home-updates'] })).catch(notifyError('Could not undo')); } } });
+    } catch (error) { notifyError('Could not dismiss the update')(error as Error); }
+    finally { setDismissingUpdates(current => new Set([...current].filter(id => id !== item.seriesId))); }
+  }
   async function dismissFinds(targets: DoujinSearchResult[]) {
     const keys = targets.map(item => `${item.source}:${item.galleryId}`), refs = targets.map(item => ({ source: item.source, galleryId: item.galleryId }));
     setReviewingKeys(current => new Set([...current, ...keys]));
@@ -192,12 +222,19 @@ export function Home() {
   const kavitaMissing = matches.data?.configured === false;
   const uncertain = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, enabled: !!matches.data?.configured, refetchInterval: 60_000 });
   const uncertainCount = matches.data?.configured ? uncertain.data?.count ?? 0 : 0;
+  const updateItems = matches.data?.configured ? updates.data?.items ?? [] : [];
+  const refresh = updates.data?.refresh;
+  const refreshing = ['queued', 'running'].includes(refresh?.status ?? '');
+  const refreshNow = useMutation({ mutationFn: api.refreshMatchedSeries, onSuccess: () => { void qc.invalidateQueries({ queryKey: ['home-updates'] }); void qc.invalidateQueries({ queryKey: ['jobs'] }); }, onError: notifyError('Could not check for provider updates') });
+  const betterCount = feed.data?.betterEditionCount ?? 0;
   const waiting: WaitingItem[] = [];
   if (matches.data?.configured && matchItems.length > 0) waiting.push({ key: 'matches', jump: 'home-matches', icon: Link2, label: `${matchItems.length} ${matchItems.length === 1 ? 'match' : 'matches'} to review` });
   if (uncertainCount > 0) waiting.push({ key: 'uncertain', to: '/libraries/review', icon: ShieldQuestion, tone: 'warning', label: `${uncertainCount} uncertain ${uncertainCount === 1 ? 'match' : 'matches'} in Libraries` });
+  if (updateItems.length > 0) waiting.push({ key: 'updates', jump: 'home-updates', icon: BellRing, label: `${updateItems.length} provider ${updateItems.length === 1 ? 'update' : 'updates'} to review` });
   if (inboxCount > 0) waiting.push({ key: 'inbox', jump: 'home-inbox', icon: Inbox, label: `${inboxCount} new in Following` });
+  if (betterCount > 0) waiting.push({ key: 'better', to: '/downloader?tab=watched', icon: Sparkles, label: `${betterCount} better ${betterCount === 1 ? 'edition' : 'editions'} in Following` });
   if (failedDownloads > 0) waiting.push({ key: 'failed', to: '/downloader?tab=downloads&status=failed', icon: AlertTriangle, tone: 'danger', label: `${failedDownloads} failed ${failedDownloads === 1 ? 'download' : 'downloads'}` });
-  const caughtUp = !!matches.data?.configured && !feed.isPending && !feed.isError && !uncertain.isPending && !matchItems.length && !discoveryItems.length && uncertainCount === 0 && !scanning && !scanFailed && !scanStale && !scanPartial;
+  const caughtUp = !!matches.data?.configured && !feed.isPending && !feed.isError && !uncertain.isPending && !matchItems.length && !discoveryItems.length && !updates.isPending && !updateItems.length && uncertainCount === 0 && !scanning && !scanFailed && !scanStale && !scanPartial;
   // Work comes first; recommendations lead only once nothing is waiting.
   const recsFirst = caughtUp && waiting.length === 0;
   const chipClass = 'inline-flex min-h-9 items-center gap-1.5 rounded-full border bg-surface px-3 text-sm font-medium transition-colors hover:bg-surface-2 max-lg:min-h-11 pointer-coarse:min-h-11';
@@ -230,6 +267,30 @@ export function Home() {
         const key = `${item.source}:${item.galleryId}`;
         return <li key={key} className="w-40 shrink-0 snap-start xl:w-auto [&>article]:h-full"><GalleryCard item={item} onOpen={setSelected} onDownload={doStartDownload} downloadSetup={setup.status} starting={pendingKeys.has(key)} display="recommendation" quietAction compact reasons={item.reasons} ownership={ownershipFor(key)} /></li>;
       })}</ul>}
+  </section>;
+
+  const updatesSection = (updateItems.length > 0 || refreshing || refresh?.status === 'failed') && <section aria-labelledby="home-updates" className="min-w-0 rounded-xl border border-border bg-surface p-4 sm:p-5">
+    <SectionHeading id="home-updates" title="Provider updates" count={updateItems.length} countLabel="series" description="The sources your series are matched to changed since you last applied them. Only the exact match is checked; nothing changes until you apply.">
+      <Button variant="outline" size="sm" disabled={refreshing || refreshNow.isPending} onClick={() => refreshNow.mutate()}>{refreshing || refreshNow.isPending ? <Spinner /> : <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />}{refreshing ? 'Checking…' : 'Check now'}</Button>
+    </SectionHeading>
+    {refreshing ? <><p className="mt-3 text-xs text-muted">{refresh?.progressTotal ? `Checking ${refresh.progressCurrent} of ${refresh.progressTotal} matched series` : 'Checking your matched series…'}</p><ProgressBar className="mt-3" label="Provider update check progress" value={refresh?.progressCurrent ?? 0} max={refresh?.progressTotal ?? 0} active /></>
+      : refresh?.status === 'failed' ? <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-danger"><AlertTriangle aria-hidden="true" className="h-4 w-4 shrink-0" /><span>The last update check failed.</span><Link to="/jobs" className="underline underline-offset-4">View task</Link></p>
+      : refresh?.finishedAt ? <p className="mt-3 text-xs text-muted">Checked {timeAgo(refresh.finishedAt)}</p> : null}
+    {updateItems.length > 0 && <ul className="mt-4 divide-y divide-border lg:grid lg:grid-cols-2 lg:gap-x-8 lg:divide-y-0">{updateItems.map(item => {
+      const provider = PROVIDER_NAMES[item.providerId] ?? item.providerId;
+      return <li key={item.seriesId} className="flex min-w-0 gap-3 py-4 lg:border-b lg:border-border">
+        <button type="button" onClick={() => setUpdateReview(item)} className="shrink-0 self-start" tabIndex={-1} aria-hidden="true"><Cover url={item.cover ?? item.candidateCoverUrl} title={item.name} className="h-[4.5rem] w-12 rounded-md" /></button>
+        <div className="min-w-0 flex-1">
+          <p className="break-words text-sm font-medium">{item.name}</p>
+          <p className="mt-0.5 break-words text-xs text-muted">{[item.libraryName, provider].filter(Boolean).join(' · ')}</p>
+          <ul aria-label={`What changed for ${item.name}`} className="mt-2 flex flex-wrap gap-1.5">{item.changes.map(change => <li key={change.field} className="min-w-0 max-w-full"><Badge tone="muted" className="max-w-full whitespace-normal break-words">{change.summary}</Badge></li>)}</ul>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => setUpdateReview(item)} aria-label={`Review update: ${item.name}`}>Review update<ArrowRight aria-hidden="true" className="h-3.5 w-3.5" /></Button>
+            <Button size="sm" variant="ghost" disabled={dismissingUpdates.has(item.seriesId)} onClick={() => void dismissUpdate(item)} aria-label={`Dismiss update: ${item.name}`}>{dismissingUpdates.has(item.seriesId) ? <Spinner /> : <X aria-hidden="true" className="h-3.5 w-3.5" />}Dismiss</Button>
+          </div>
+        </div>
+      </li>;
+    })}</ul>}
   </section>;
 
   const caughtUpCard = <section aria-labelledby="home-caught-up" className="flex min-w-0 flex-wrap items-center justify-between gap-x-6 gap-y-3 rounded-xl border border-border bg-surface p-4 sm:p-5">
@@ -316,7 +377,7 @@ export function Home() {
       })}</ul></nav>}
     </div>
 
-    {recsFirst ? <>{recommendations}{caughtUpCard}</> : <>{caughtUp ? caughtUpCard : queues}{recommendations}</>}
+    {recsFirst ? <>{recommendations}{caughtUpCard}</> : <>{caughtUp ? caughtUpCard : <>{queues}{updatesSection}</>}{recommendations}</>}
 
     <section aria-labelledby="home-activity" className="min-w-0 border-t border-border pt-6">
       <SectionHeading id="home-activity" title="Recent activity" description={kavitaMissing ? 'Your latest downloads.' : 'Your latest matches, downloads, and library updates.'}><SectionLink to="/jobs">View tasks</SectionLink></SectionHeading>
@@ -335,6 +396,7 @@ export function Home() {
     </section>
     <React.Suspense fallback={null}>
       {review && <CandidateReview key={review.seriesId} item={review} onClose={() => { setReview(null); void qc.invalidateQueries({ queryKey: ['home-matches'] }); }} />}
+      {updateReview && <UpdateReview key={updateReview.seriesId} item={updateReview} onClose={() => { setUpdateReview(null); void qc.invalidateQueries({ queryKey: ['home-updates'] }); }} />}
       {selected && <GalleryDetailModal item={selected} onClose={() => setSelected(null)} onDownload={() => void doStartDownload(selected)} checking={pendingKeys.has(`${selected.source}:${selected.galleryId}`)} downloaded={owned.has(`${selected.source}:${selected.galleryId}`) || inLibrary.has(`${selected.source}:${selected.galleryId}`)} inLibrary={inLibrary.has(`${selected.source}:${selected.galleryId}`)} libraryMatch={ownership.data?.reports.find(report => report.source === selected.source && report.galleryId === selected.galleryId)?.matches.find(match => match.confirmed && match.status === 'In library')} setup={setup} onSearchTag={(fragment, source) => navigate(`/downloader?tab=search&source=${source ?? selected.source}&q=${encodeURIComponent(fragment)}`)} />}
     </React.Suspense>
     {duplicateDialog}

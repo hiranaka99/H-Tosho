@@ -39,12 +39,45 @@ function meaningfulLabel(value: string): boolean {
     || /^(?:b\s*[/&]\s*w|black\s*(?:and|&)\s*white|raw)$/i.test(label);
 }
 
+/** Censorship edition read from title labels and, optionally, source tags. */
+export type CensorshipEdition = 'uncensored' | 'censored' | 'unmarked' | 'mixed';
+
+/** Source tags that state an edition: nHentai/Hitomi `uncensored`, E-Hentai `other:uncensored` / `other:mosaic censorship`. */
+function tagCensorship(tag: string): 'uncensored' | 'censored' | null {
+  const name = tag.normalize('NFKC').toLowerCase().replace(/^[a-z]+:/, '').replace(/_/g, ' ').trim();
+  if (/^(?:un|de)[ -]?censored$/.test(name)) return 'uncensored';
+  if (name === 'censored' || name === 'mosaic censorship' || name === 'bar censorship') return 'censored';
+  return null;
+}
+
+/**
+ * Absence of a label says nothing about censorship. Conflicting labels
+ * likewise must not silently join either explicit edition.
+ */
+export function censorshipEdition(titles: readonly string[], tags: readonly string[] = []): CensorshipEdition {
+  const labels = new Set<string>();
+  for (const title of titles) {
+    for (const match of title.normalize('NFKC').matchAll(/\b(?:un[ -]?censored|de[ -]?censored|censored)\b/gi)) {
+      labels.add(match[0].toLowerCase() === 'censored' ? 'censored' : 'uncensored');
+    }
+  }
+  for (const tag of tags) {
+    const edition = tagCensorship(tag);
+    if (edition) labels.add(edition);
+  }
+  return labels.size > 1 ? 'mixed' : ([...labels][0] as CensorshipEdition | undefined) ?? 'unmarked';
+}
+
+/** Remove censorship release labels so two editions of one work share a title. */
+export function withoutCensorshipLabels(title: string): string {
+  return title.normalize('NFKC')
+    .replace(/\s*[\[(【]\s*(?:un[ -]?censored|de[ -]?censored|censored)(?:\s+(?:ver(?:sion)?\.?|edition|release))?(?:\s+by\s+[^\])】]+)?\s*[\])】]/gi, ' ')
+    .replace(/\s+[-–—|]\s+(?:un[ -]?censored|de[ -]?censored|censored)(?:\s+(?:ver(?:sion)?\.?|edition|release))?\s*$/i, '')
+    .replace(/\s+/g, ' ').trim();
+}
+
 export function unifiedTitleKey(title: string, artists: string[], language: string): string {
-  const censorship = new Set([...title.normalize('NFKC').matchAll(/\b(?:un[ -]?censored|de[ -]?censored|censored)\b/gi)]
-    .map((match) => match[0].toLowerCase() === 'censored' ? 'censored' : 'uncensored'));
-  // Absence of a label says nothing about censorship. Conflicting labels
-  // likewise must not silently join either explicit edition.
-  const edition = censorship.size > 1 ? 'mixed' : [...censorship][0] ?? 'unmarked';
+  const edition = censorshipEdition([title]);
   const names = new Set(artists.map(compact).filter(Boolean));
   const languageLabels = new Set([language]);
   if (language === 'english') languageLabels.add('en');

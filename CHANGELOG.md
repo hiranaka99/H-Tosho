@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Check matched series for provider updates every 7 days (configurable, or on demand).
+  Each series is re-read from the exact entry it is matched to, so a new or better
+  candidate never raises an alert. Changes appear under Provider updates on Home with
+  Review update and Dismiss, respect protected fields, resolve after Apply & Sync, and
+  are announced once on Discord.
+- Mark uncensored and decensored editions of galleries you own as Better edition in
+  Discover, For you, Following and Home, including decensored uploads on the same
+  source and editions stated only by tags. The download review offers Download better
+  edition; Following records better-edition finds for Home and Discord.
+- Suggest artists to follow from your downloads and liked picks. Follow creates a named
+  watch on the artist's main source; dismissed and muted artists are not suggested.
+- Rewrite the architecture notes by area, remove the retired Following delivery queue
+  and digest, and describe the new refresh, better-edition and suggestion owners.
+
 ## v4.2.0
 
 - Rework the Download Manager with separate queue and paginated history views, counts by

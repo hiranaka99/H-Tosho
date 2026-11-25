@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { getProvider } from '../../providers/registry.js';
 import { getNotificationSettings, getPollIntervalHours, getProviderPriorities, getWatchedSearchIntervalMinutes, parseNotificationSettings, getProviderSettings, setNotificationSettings, setPollIntervalHours, setProviderPriorities, setWatchedSearchIntervalMinutes, setProviderSetting } from '../../services/settings.js';
 import { testNotification } from '../../notify/dispatcher.js';
-import { getDownloaderSettings, parseDownloaderSettings, setDownloaderSettings } from '../../services/settings.js';
+import { getDownloaderSettings, parseDownloaderSettings, setDownloaderSettings, getMatchRefreshIntervalDays, setMatchRefreshIntervalDays, MAX_MATCH_REFRESH_INTERVAL_DAYS } from '../../services/settings.js';
 import { NotificationSettingsConflict } from '../../services/settings.js';
 import {
   getEhentaiAccountView, getStoredSession, removeEhentaiAccount, recordAccess, saveEhentaiAccount,
@@ -79,6 +79,7 @@ api.get('/settings', (c) => {
     priorities: getProviderPriorities(),
     notifications: getNotificationSettings(),
     pollIntervalHours: getPollIntervalHours(),
+    matchRefreshIntervalDays: getMatchRefreshIntervalDays(),
     watchedSearchIntervalMinutes: getWatchedSearchIntervalMinutes() });
 });
 
@@ -113,6 +114,14 @@ api.put('/settings/poll-interval', async (c) => {
   const hours = typeof body?.hours === 'number' ? body.hours : typeof body?.hours === 'string' && body.hours.trim() ? Number(body.hours) : NaN;
   if (!Number.isFinite(hours) || hours < 0) return c.json({ error: 'hours must be a non-negative number' }, 400);
   setPollIntervalHours(hours);
+  return c.json({ ok: true });
+});
+
+api.put('/settings/match-refresh-interval', async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { days?: unknown } | null;
+  const days = typeof body?.days === 'number' ? body.days : typeof body?.days === 'string' && body.days.trim() ? Number(body.days) : NaN;
+  if (!Number.isInteger(days) || days < 0 || days > MAX_MATCH_REFRESH_INTERVAL_DAYS) return c.json({ error: `days must be a whole number from 0 to ${MAX_MATCH_REFRESH_INTERVAL_DAYS}` }, 400);
+  setMatchRefreshIntervalDays(days);
   return c.json({ ok: true });
 });
 

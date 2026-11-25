@@ -11,6 +11,7 @@ import { readComicInfoAndImageCount, mapKavitaPathToLocalPath } from '../lib/cbz
 import { parseComicInfo } from '../downloader/comicinfo.js';
 import { mapLimit } from '../lib/http.js';
 import { getEhentaiAccountSite, onEhentaiAccountChange } from './ehentaiAccount.js';
+import { censorshipEdition, withoutCensorshipLabels, type CensorshipEdition } from './unifiedTitle.js';
 
 // A preflight resolves metadata, never image bytes. Reuse that result at enqueue
 // and consume it in the worker so duplicate checking does not double provider traffic.
@@ -76,6 +77,10 @@ export interface GalleryIdentity {
   path?: string;
   stamp?: string;
   sourceKeys?: string[];
+  /** Source tags of an incoming gallery; only their censorship edition is retained when stored. */
+  tags?: string[];
+  /** Censorship edition stated by tags (title labels are read separately). */
+  edition?: 'uncensored' | 'censored';
 }
 export interface DuplicateMatch {
   title: string;
@@ -89,6 +94,8 @@ export interface DuplicateMatch {
   status: string;
   reasons: string[];
   confirmed?: boolean;
+  /** The checked gallery is an uncensored/decensored edition of this owned copy. */
+  betterEdition?: boolean;
 }
 export interface DuplicateReport { source: DoujinSource; galleryId: string; title: string; matches: DuplicateMatch[] }
 
@@ -192,12 +199,56 @@ export function duplicateReasons(a: GalleryIdentity, b: GalleryIdentity): string
   return ['Same title', 'Same artist', ...(languageA && languageB ? ['Same language'] : []), ...(samePageCount ? ['Same page count'] : [])];
 }
 
+/** Censorship edition of a gallery, from its titles and any tag-stated edition. */
+export function galleryEdition(identity: GalleryIdentity): CensorshipEdition {
+  return censorshipEdition([identity.title, identity.titleAlt ?? ''], [...identity.tags ?? [], ...(identity.edition ? [identity.edition] : [])]);
+}
+
+function tagEdition(tags: readonly string[] | undefined): GalleryIdentity['edition'] {
+  const edition = censorshipEdition([], tags ?? []);
+  return edition === 'uncensored' || edition === 'censored' ? edition : undefined;
+}
+
+/** Label-free copies are memoized per identity so their title keys are derived once too. */
+const strippedIdentities = new WeakMap<GalleryIdentity, { title: string; titleAlt: string | undefined; stripped: GalleryIdentity }>();
+function withoutCensorship(identity: GalleryIdentity): GalleryIdentity {
+  const hit = strippedIdentities.get(identity);
+  if (hit && hit.title === identity.title && hit.titleAlt === identity.titleAlt && hit.stripped.pageCount === identity.pageCount) return hit.stripped;
+  const stripped = { ...identity, title: withoutCensorshipLabels(identity.title), titleAlt: identity.titleAlt === undefined ? undefined : withoutCensorshipLabels(identity.titleAlt) };
+  strippedIdentities.set(identity, { title: identity.title, titleAlt: identity.titleAlt, stripped });
+  return stripped;
+}
+
+/**
+ * The checked gallery is an uncensored or decensored edition of an owned copy
+ * that is censored or not marked either way. Same work, artist and language;
+ * release labels are ignored for the title, and a decensored release may add
+ * or drop a few credit pages. Never a claim about image content.
+ */
+export function betterEditionReasons(incoming: GalleryIdentity, owned: GalleryIdentity): string[] {
+  if (galleryEdition(incoming) !== 'uncensored') return [];
+  const ownedEdition = galleryEdition(owned);
+  if (ownedEdition !== 'censored' && ownedEdition !== 'unmarked') return [];
+  const artists = new Set(owned.artists.map(normalize).filter(Boolean));
+  if (!incoming.artists.some(artist => artists.has(normalize(artist)))) return [];
+  const languageA = languageKey(incoming.language), languageB = languageKey(owned.language);
+  if (languageA && languageB && languageA !== languageB) return [];
+  const a = withoutCensorship(incoming), b = withoutCensorship(owned);
+  const pageGap = a.pageCount && b.pageCount ? Math.abs(a.pageCount - b.pageCount) : null;
+  if (pageGap !== null && pageGap > Math.max(2, Math.round(Math.max(a.pageCount!, b.pageCount!) * 0.1))) return [];
+  const keysA = keySets(a), keysB = keySets(b);
+  if (!intersects(keysA.exact, keysB.exact) && !(pageGap === 0 && intersects(keysA.core, keysB.core))) return [];
+  return ['Same title', 'Same artist', ...(languageA && languageB ? ['Same language'] : []),
+    ownedEdition === 'censored' ? 'Your copy is the censored edition' : 'Your copy is not marked uncensored'];
+}
+
 const storeKey = (identity: GalleryIdentity) => identity.path ? `duplicate-file:${identity.path}` : `duplicate-gallery:${identity.source}:${identity.galleryId}`;
 const galleryKey = (identity: { source: string; galleryId: string }) => `${identity.source}:${identity.galleryId}`;
 const ACTIVE_TASK_STATUSES = ['completed', 'queued', 'downloading', 'paused'];
 
 export function recordGalleryIdentity(gallery: DoujinGallery): GalleryIdentity {
-  const identity: GalleryIdentity = { source: gallery.source, galleryId: gallery.galleryId, title: gallery.title, titleAlt: gallery.titleAlt, artists: gallery.artists ?? [], language: gallery.language, pageCount: gallery.pages.length || gallery.pageCount };
+  const edition = tagEdition(gallery.tags);
+  const identity: GalleryIdentity = { source: gallery.source, galleryId: gallery.galleryId, title: gallery.title, titleAlt: gallery.titleAlt, artists: gallery.artists ?? [], language: gallery.language, pageCount: gallery.pages.length || gallery.pageCount, ...(edition ? { edition } : {}) };
   saveIdentity(identity);
   return identity;
 }
@@ -380,7 +431,8 @@ async function scanLibrary(): Promise<void> {
     await mapLimit([...files], 6, async file => {
       try {
         const stat = await fs.promises.stat(file);
-        const stamp = `v4:${stat.mtimeMs}:${stat.size}`;
+        // v5 also reads the censorship edition stated by ComicInfo Tags.
+        const stamp = `v5:${stat.mtimeMs}:${stat.size}`;
         if (previous.get(file)?.stamp === stamp) return;
         const { xml: raw, imageCount: count } = await readComicInfoAndImageCount(file);
         if (!raw) { missingMetadata++; files.delete(file); return; }
@@ -401,7 +453,8 @@ async function scanLibrary(): Promise<void> {
           .replace(/\.cbz$/i, '')
           .replace(/\s*\[(?:(?:hitomi|nhentai)-\d+|ehentai-[1-9]\d{0,9}-[0-9a-f]{10,12})\]$/i, '')
           .trim();
-        updatedIdentities.push({ source: 'library', galleryId: file, path: file, title: title || originalFilename, titleAlt: originalFilename, artists, language: fields.LanguageISO || fields.Language, pageCount: count, stamp, sourceKeys: keys });
+        const edition = tagEdition((fields.Tags ?? '').split(','));
+        updatedIdentities.push({ source: 'library', galleryId: file, path: file, title: title || originalFilename, titleAlt: originalFilename, artists, language: fields.LanguageISO || fields.Language, pageCount: count, stamp, sourceKeys: keys, ...(edition ? { edition } : {}) });
       } catch { files.delete(file); problems.push(`Could not read archive metadata: ${file}`); }
     });
     if (updatedIdentities.length) {
@@ -451,6 +504,22 @@ export async function prepareDuplicateCheck(items: { source: DoujinSource; galle
   });
   await scanLibrary();
   return identities;
+}
+
+/** The owned copy each gallery improves on, when every library match is an earlier edition. */
+export interface BetterEditionOf { title: string; path?: string; source: string; galleryId: string }
+
+/** Better-edition verdicts for galleries already described by search metadata (no provider fetches). */
+export async function findBetterEditions(items: GalleryIdentity[]): Promise<Map<string, BetterEditionOf>> {
+  const out = new Map<string, BetterEditionOf>();
+  if (!items.length) return out;
+  await scanLibrary();
+  for (const report of findDuplicateReports(items, [], true).reports) {
+    if (!report.matches.length || !report.matches.every(match => match.betterEdition)) continue;
+    const owned = report.matches[0];
+    out.set(`${report.source}:${report.galleryId}`, { title: owned.title, source: owned.source, galleryId: owned.galleryId, ...(owned.path ? { path: owned.path } : {}) });
+  }
+  return out;
 }
 
 /** Search results already contain enough metadata; never fetch provider pages for a card badge. */
@@ -571,12 +640,15 @@ function buildChecker(excludedPaths: string[], includeOwned: boolean, ownedIncom
       for (const candidate of titleMatches) {
         const confirmed = !incomingSet.has(candidate) && (candidate.sourceKeys?.includes(itemKey) || (includeOwned && candidate.source === item.source && candidate.galleryId === item.galleryId));
         if (!confirmed && candidate.source === item.source && candidate.galleryId === item.galleryId) continue;
-        if (!confirmed && !candidate.path && candidate.source === item.source) continue;
-        const reasons = confirmed ? ['Same source gallery'] : duplicateReasons(item, candidate);
+        // A decensored upload is usually a separate gallery on the same source, so
+        // better editions are compared even where same-source duplicates are not.
+        const better = confirmed || incomingSet.has(candidate) ? [] : betterEditionReasons(item, candidate);
+        if (!confirmed && !better.length && !candidate.path && candidate.source === item.source) continue;
+        const reasons = confirmed ? ['Same source gallery'] : better.length ? better : duplicateReasons(item, candidate);
         if (!reasons.length || seen.has(storeKey(candidate)) || (candidate.path && !pathExists(candidate.path))) continue;
         seen.add(storeKey(candidate));
         const task = tasksByGallery.get(galleryKey(candidate));
-        matches.push({ title: candidate.title, source: candidate.source, galleryId: candidate.galleryId, artists: candidate.artists, language: candidate.language, pageCount: candidate.pageCount, path: candidate.path ?? task?.outputPath ?? undefined, taskId: task?.id, status: candidate.path ? 'In library' : task?.status ?? (owned.has(galleryKey(candidate)) ? 'Owned' : 'In selection'), reasons, confirmed: !!confirmed });
+        matches.push({ title: candidate.title, source: candidate.source, galleryId: candidate.galleryId, artists: candidate.artists, language: candidate.language, pageCount: candidate.pageCount, path: candidate.path ?? task?.outputPath ?? undefined, taskId: task?.id, status: candidate.path ? 'In library' : task?.status ?? (owned.has(galleryKey(candidate)) ? 'Owned' : 'In selection'), reasons, confirmed: !!confirmed, ...(better.length ? { betterEdition: true } : {}) });
       }
       return { source: item.source as DoujinSource, galleryId: item.galleryId, title: item.title, matches };
     }), warnings: [...warnings] };
@@ -635,7 +707,8 @@ export function findKnownLibraryDuplicateKeys(incoming: GalleryIdentity[]): Set<
     for (const candidate of titleCandidates) {
       if (!candidate.path && candidate.source === item.source && candidate.galleryId === item.galleryId) continue;
       // The metadata comparison is cheap in memory; only a real match costs a filesystem check.
-      if (duplicateReasons(item, candidate).length > 0 && (!candidate.path || pathExists(candidate.path))) {
+      // A better edition of an owned copy is not a duplicate of it.
+      if (duplicateReasons(item, candidate).length > 0 && !betterEditionReasons(item, candidate).length && (!candidate.path || pathExists(candidate.path))) {
         duplicates.add(key);
         break;
       }

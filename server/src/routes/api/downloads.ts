@@ -25,9 +25,11 @@ api.post('/downloads/library-matches', async (c) => {
   if (!body || !Array.isArray(body.items) || !body.items.length || body.items.length > 100) return c.json({ error: 'Provide 1–100 galleries to check.' }, 400);
   const items = [];
   for (const raw of body.items) {
-    const item = raw as { source: DoujinSource; galleryId: string; title: string; artists: string[]; language?: string; pageCount?: number } | null;
+    const item = raw as { source: DoujinSource; galleryId: string; title: string; artists: string[]; language?: string; pageCount?: number; tags?: unknown } | null;
+    if (item && item.tags !== undefined && (!Array.isArray(item.tags) || item.tags.length > 500 || item.tags.some(tag => typeof tag !== 'string'))) return c.json({ error: 'Invalid gallery metadata.' }, 400);
     if (!item || getDoujinProvider(item.source)?.id !== item.source || typeof item.galleryId !== 'string' || !item.galleryId.trim() || typeof item.title !== 'string' || !Array.isArray(item.artists) || item.artists.some(artist => typeof artist !== 'string') || (item.language !== undefined && typeof item.language !== 'string') || (item.pageCount !== undefined && (typeof item.pageCount !== 'number' || !Number.isFinite(item.pageCount) || item.pageCount < 0))) return c.json({ error: 'Invalid gallery metadata.' }, 400);
-    items.push({ source: item.source, galleryId: item.galleryId, title: item.title, artists: item.artists, language: item.language, pageCount: item.pageCount });
+    // Tags only inform the censorship edition (better-edition badges); they are never stored.
+    items.push({ source: item.source, galleryId: item.galleryId, title: item.title, artists: item.artists, language: item.language, pageCount: item.pageCount, ...(Array.isArray(item.tags) ? { tags: item.tags as string[] } : {}) });
   }
   try { return c.json(await lookupLibraryMatches(items)); }
   catch (error) { return c.json({ error: 'Could not check library matches', message: errMsg(error) }, 502); }

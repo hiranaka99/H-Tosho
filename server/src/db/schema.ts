@@ -207,6 +207,30 @@ export const rejectedMatchCandidates = sqliteTable('rejected_match_candidates', 
   rejectedAt: text('rejected_at').notNull(),
 }, table => [uniqueIndex('idx_rejected_match_candidate').on(table.connectionKey, table.seriesId, table.providerId, table.providerSeriesId)]);
 
+/**
+ * Provider changes to the exact candidate a series is matched to, found by the
+ * scheduled refresh. A different or better candidate is never recorded here.
+ * `dismissedHash` hides one specific update; a later provider change reappears.
+ */
+export const matchUpdates = sqliteTable('match_updates', {
+  connectionKey: text('connection_key').notNull(),
+  seriesId: integer('series_id').notNull(),
+  providerId: text('provider_id').notNull(),
+  providerSeriesId: text('provider_series_id').notNull(),
+  name: text('name').notNull(),
+  libraryId: integer('library_id'),
+  libraryName: text('library_name'),
+  cover: text('cover'),
+  /** Fingerprint of the provider metadata seen by the latest refresh. */
+  latestHash: text('latest_hash').notNull(),
+  /** That provider metadata; changes are recomputed against the applied match on read. */
+  latestJson: text('latest_json').notNull(),
+  detectedAt: text('detected_at').notNull(),
+  checkedAt: text('checked_at').notNull(),
+  dismissedHash: text('dismissed_hash'),
+  notifiedHash: text('notified_hash'),
+}, table => [uniqueIndex('idx_match_updates_series').on(table.connectionKey, table.seriesId)]);
+
 export const jobs = sqliteTable('jobs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   /** scan-new | match-unmatched | match-library | match-series | sync-series | apply-series | clear-overrides | check-watched-searches | edit-comicinfo | merge-series (see src/jobs/queue.ts JOB_TYPES) */
@@ -393,6 +417,8 @@ export const watchedSearchNew = sqliteTable('watched_search_new', {
   artistsJson: text('artists_json').notNull().default('[]'),
   language: text('language'),
   reviewedAt: text('reviewed_at'),
+  /** Owned copy this find is an uncensored/decensored edition of (JSON), recorded when it was found. */
+  betterEditionJson: text('better_edition_json'),
   /** A single send checkpoint prevents duplicate Discord messages across overlapping watches. */
   notificationAttemptedAt: text('notification_attempted_at'),
   /** ISO 8601 timestamp of the check that first reported the gallery. */

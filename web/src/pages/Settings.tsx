@@ -30,7 +30,7 @@ const LEGACY_TABS: Record<string, SettingsTab> = { general: 'kavita', providers:
 function draftLocation(id: string): { tab: SettingsTab; section: string } {
   if (id === 'connection') return { tab: 'kavita', section: 'kavita-connection' };
   if (id === 'library-folders') return { tab: 'kavita', section: 'library-folders' };
-  if (id === 'poll') return { tab: 'kavita', section: 'auto-scan' };
+  if (id === 'poll' || id === 'match-refresh') return { tab: 'kavita', section: 'auto-scan' };
   if (id === 'priorities' || id.startsWith('provider:')) return { tab: 'sources', section: 'metadata-providers' };
   if (id === 'ehentai-account') return { tab: 'sources', section: 'ehentai-account' };
   if (id === 'nhentai-api-key') return { tab: 'sources', section: 'nhentai' };
@@ -453,8 +453,25 @@ function KavitaLibraryFoldersCard({ connected }: { connected: boolean }) {
   );
 }
 
-function AutoScanCard({ hours }: { hours: number }) {
+function AutoScanCard({ hours, refreshDays }: { hours: number; refreshDays: number }) {
   const qc = useQueryClient();
+  const refresh = useSettingsDraft({
+    id: 'match-refresh', label: 'Provider update checks', initial: '7', source: String(refreshDays),
+    valid: (value) => !numberError(value, 0, 60, true),
+    save: async (value) => {
+      await api.saveMatchRefreshInterval(Number(value));
+      qc.setQueryData<SettingsType>(['settings'], (current) => current ? { ...current, matchRefreshIntervalDays: Number(value) } : current);
+      return String(Number(value));
+    },
+  });
+  const checkNow = useMutation({
+    mutationFn: api.refreshMatchedSeries,
+    onSuccess: (result) => {
+      void qc.invalidateQueries({ queryKey: ['home-updates'] });
+      toast({ tone: 'info', title: result.alreadyRunning ? 'Already checking for updates' : 'Checking matched series', description: 'Changes to each series’ matched source appear on Home for review. Nothing is applied automatically.' });
+    },
+    onError: (error) => toast({ tone: 'danger', title: 'Could not check for provider updates', description: error instanceof Error ? error.message : String(error) }),
+  });
   const polling = useSettingsDraft({
     id: 'poll', label: 'Auto-scan interval', initial: '12', source: String(hours),
     valid: (value) => !numberError(value, 0, 576),
@@ -466,10 +483,13 @@ function AutoScanCard({ hours }: { hours: number }) {
   });
   return (
     <Card id="auto-scan" className="animate-fade-up scroll-mt-16">
-      <SectionHeader icon={<Timer className="h-4 w-4" />} title="Auto-scan interval"><SectionStatus draft={polling} label="auto-scan" /></SectionHeader>
+      <SectionHeader icon={<Timer className="h-4 w-4" />} title="Auto-scan interval"><div className="flex flex-wrap items-center gap-2"><SectionStatus draft={polling} label="auto-scan" /><SectionStatus draft={refresh} label="provider update checks" /></div></SectionHeader>
       <CardContent className="flex flex-col gap-1">
         <Label htmlFor="scan-interval">Hours between background scans</Label>
         <SettingsInput id="scan-interval" type="number" inputMode="decimal" min={0} max={576} step="any" value={polling.value} onChange={(e) => polling.setValue(e.target.value)} className="w-full sm:w-28" hint="Checks Kavita for newly added series. Up to 576 hours (24 days); 0 turns automatic scans off." error={polling.dirty ? numberError(polling.value, 0, 576) || undefined : undefined} />
+        <Label htmlFor="match-refresh-interval" className="mt-4">Days between provider update checks</Label>
+        <SettingsInput id="match-refresh-interval" type="number" inputMode="numeric" min={0} max={60} step={1} value={refresh.value} onChange={(e) => refresh.setValue(e.target.value)} className="w-full sm:w-28" hint="Re-reads each matched series from the exact source it is matched to and lists changes on Home for review. A different or better match is never suggested here. Up to 60 days; 0 turns these checks off." error={refresh.dirty ? numberError(refresh.value, 0, 60, true) || undefined : undefined} />
+        <Button type="button" variant="outline" className="mt-1 self-start" disabled={checkNow.isPending} onClick={() => checkNow.mutate()}>{checkNow.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}Check matched series now</Button>
       </CardContent>
     </Card>
   );
@@ -1090,7 +1110,7 @@ export function Settings() {
           {mounted('kavita') && <div hidden={tab !== 'kavita'} className="flex flex-col gap-4">
             <KavitaConnectionCard />
             <KavitaLibraryFoldersCard connected={kavitaConnected} />
-            <AutoScanCard hours={s.pollIntervalHours} />
+            <AutoScanCard hours={s.pollIntervalHours} refreshDays={s.matchRefreshIntervalDays ?? 7} />
           </div>}
           {mounted('sources') && <div hidden={tab !== 'sources'} className="flex flex-col gap-4">
             <MetadataProvidersCard savedOrder={s.priorities} />

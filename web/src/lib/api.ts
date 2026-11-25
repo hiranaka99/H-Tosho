@@ -1,6 +1,10 @@
 import type { JobType, JobPayloads } from '../../../server/src/contracts/jobs';
 import type { ArtistProviderId, ArtistSearchPage, ArtistWorksPage } from '../../../server/src/contracts/artists';
 import type { MetadataRestorePreview, RestorePreviewRequest } from '../../../server/src/contracts/metadataRestore';
+import type { SuggestedFollow } from '../../../server/src/contracts/following';
+import type { MatchUpdate } from '../../../server/src/contracts/matchUpdates';
+export type { SuggestedFollow, MatchUpdate };
+export type { MatchUpdateChange } from '../../../server/src/contracts/matchUpdates';
 import type { FollowingFeedOptions, WatchedSearch, WatchedSearchPatch, WatchedSearchFolder, WatchedSearchFolderPatch, WatchedNewGallery, WatchedGalleryFeed } from '../../../server/src/contracts/following';
 import type { MergeProtectionPreview, MergeProtectionRequest } from '../../../server/src/contracts/mergeProtection';
 import type { NotificationSettings } from '../../../server/src/contracts/notifications';
@@ -131,6 +135,8 @@ export interface Settings {
   priorities: string[];
   notifications: NotificationSettings;
   pollIntervalHours: number;
+  /** Days between scheduled provider refreshes of matched series; 0 = off. */
+  matchRefreshIntervalDays: number;
   watchedSearchIntervalMinutes: number;
 }
 
@@ -197,6 +203,7 @@ export interface MatchSuggestion {
   candidate: MatchCandidate;
 }
 export interface HomeMatches { items: MatchSuggestion[]; configured: boolean; scan: Job | null }
+export interface HomeUpdates { items: MatchUpdate[]; configured: boolean; refresh: Job | null }
 export interface HomeActivity { id: string; title: string; action: string; createdAt: string; href: string; /** First error of a failed sync. */ detail?: string | null }
 
 // ---------------- Doujinshi downloader types ----------------
@@ -308,6 +315,8 @@ export type DownloadEvent =
 
 export interface DuplicateMatch {
   title: string; source: string; galleryId: string; artists: string[]; language?: string | null; pageCount?: number; path?: string; taskId?: number; status: string; reasons: string[]; confirmed?: boolean;
+  /** The checked gallery is an uncensored/decensored edition of this owned copy. */
+  betterEdition?: boolean;
 }
 export interface DuplicateReport { source: DoujinSource; galleryId: string; title: string; matches: DuplicateMatch[] }
 export interface DuplicateCheck { reports: DuplicateReport[]; warnings: string[] }
@@ -440,6 +449,12 @@ export const api = {
   rejectMatchCandidate: (item: MatchSuggestion) => request<{ ok: boolean }>(`/home/matches/${item.seriesId}/reject`, { method: 'POST', body: JSON.stringify({ providerId: item.candidate.providerId, providerSeriesId: item.candidate.providerSeriesId }) }),
   restoreMatchCandidate: (item: MatchSuggestion) => request<{ ok: boolean }>(`/home/matches/${item.seriesId}/reject`, { method: 'DELETE', body: JSON.stringify({ providerId: item.candidate.providerId, providerSeriesId: item.candidate.providerSeriesId }) }),
   homeActivity: () => request<HomeActivity[]>('/home/activity'),
+  homeUpdates: () => request<HomeUpdates>('/home/updates'),
+  refreshMatchedSeries: () => request<{ id: number; alreadyRunning: boolean }>('/home/updates/refresh', { method: 'POST' }),
+  dismissMatchUpdate: (seriesId: number, dismissed: boolean) => request<{ ok: boolean }>(`/home/updates/${seriesId}/dismiss`, { method: dismissed ? 'POST' : 'DELETE' }),
+  suggestedFollows: () => request<{ items: SuggestedFollow[] }>('/watched-searches/suggestions'),
+  followSuggestedArtist: (artist: string, source: DoujinSource) => request<WatchedSearch>('/watched-searches/suggestions/follow', { method: 'POST', body: JSON.stringify({ artist, source }) }),
+  dismissSuggestedFollow: (artist: string, dismissed: boolean) => request<{ ok: boolean }>('/watched-searches/suggestions/dismiss', { method: 'POST', body: JSON.stringify({ artist, dismissed }) }),
   authStatus: () => request<AuthStatus>('/auth/status'),
   version: () => request<{ version: string | null }>('/version'),
   setup: (username: string, password: string) => request<{ authenticated: true; username: string }>('/auth/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),
@@ -562,6 +577,8 @@ export const api = {
     method: 'PUT',
     body: JSON.stringify({ notifications }),
   }),
+  saveMatchRefreshInterval: (days: number) =>
+    request<{ ok: boolean }>('/settings/match-refresh-interval', { method: 'PUT', body: JSON.stringify({ days }) }),
   savePollInterval: (hours: number) =>
     request<{ ok: boolean }>('/settings/poll-interval', { method: 'PUT', body: JSON.stringify({ hours }) }),
   saveWatchedSearchInterval: (minutes: number) =>
@@ -639,7 +656,7 @@ export const api = {
   startMergedDownloads: (body: { mergeFolder: string; items: { source: DoujinSource; galleryId: string; url?: string; chapter?: number; allowDuplicate?: boolean }[] }) =>
     request<{ items: { source: DoujinSource; galleryId: string; id?: number; error?: string }[] }>('/downloads/merged', { method: 'POST', body: JSON.stringify(body) }),
   checkDuplicates: (items: { source: DoujinSource; galleryId: string; url?: string }[], refreshLibrary = false) => request<DuplicateCheck>('/downloads/duplicates', { method: 'POST', body: JSON.stringify({ items, refreshLibrary }) }),
-  libraryMatches: (items: DoujinSearchResult[]) => request<DuplicateCheck>('/downloads/library-matches', { method: 'POST', body: JSON.stringify({ items: items.map(({ source, galleryId, title, artists, language, pageCount }) => ({ source, galleryId, title, artists, language, pageCount })) }) }),
+  libraryMatches: (items: DoujinSearchResult[]) => request<DuplicateCheck>('/downloads/library-matches', { method: 'POST', body: JSON.stringify({ items: items.map(({ source, galleryId, title, artists, language, pageCount, tags }) => ({ source, galleryId, title, artists, language, pageCount, ...(tags?.length ? { tags: tags.slice(0, 500) } : {}) })) }) }),
   downloads: () => request<DownloadTask[]>('/downloads'),
   /** Older completed downloads beyond the live list, newest finish first. */
   downloadHistory: (offset: number, limit = 50) => request<DownloadHistoryPage>(`/downloads/history?offset=${offset}&limit=${limit}`),
