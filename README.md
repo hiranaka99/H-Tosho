@@ -39,16 +39,22 @@ shop; counts, match results, and metadata are example data.
   browsing reads public MAL pages; metadata review uses MAL’s API and needs a Client ID.
 - **Keep new series organized.** Enable automatic matching and review uncertain
   results in **Needs review**.
+- **Hear when a matched source changes.** A weekly check re-reads each matched
+  series from the exact entry it is matched to and lists changes (new volumes,
+  status, tags, covers) on Home for review. It never suggests a different match.
 - **Discover and download doujinshi.** Search Hitomi.la, nHentai, or your
   own E-Hentai/ExHentai account — one at a time or together in **Unified
   search**, which groups the same work found on several sources — preview
   galleries, and save them as CBZ files or image folders.
 - **Follow artists and searches.** Save a query and see new finds in
   **Recently added**, with in-app-only or immediate Discord notifications.
+  **Suggested follows** lists artists you keep downloading but don't follow yet.
 - **Get recommendations you can tune.** Ask for more like a gallery, mute an
   artist, or dismiss a pick you do not want.
 - **Review possible duplicate downloads.** Compare galleries across Hitomi and
   nHentai with owned downloads and local CBZ metadata before downloading.
+  Uncensored and decensored editions of galleries you own are marked
+  **Better edition**.
 - **Fix files and organize series.** Edit ComicInfo.xml inside CBZ files and
   merge related series.
 
@@ -307,6 +313,23 @@ tag. Matching is case-insensitive and supports partial tag names. Tag searches
 work with the match-status filter and across all result pages. Tags come from
 Kavita metadata; stored match tags are used if that metadata is unavailable.
 
+### Provider updates for matched series
+
+H-Tosho re-reads every matched series from the exact provider entry it is
+matched to, every 7 days by default. Change the interval or turn it off under
+**Settings → Kavita → Auto-scan interval → Days between provider update
+checks**, or choose **Check matched series now**. Only changes to that entry
+are reported; a different or better candidate is never suggested here, and
+nothing is applied automatically.
+
+Changes appear under **Provider updates** on Home, for example a new status,
+added tags or genres, a new description, cover or volume covers. Protected
+fields, values the provider stopped returning, and a title you picked from the
+provider's alternatives are not reported. **Review update** opens the normal
+comparison on the same match; after **Apply & Sync** the update disappears.
+**Dismiss** hides that provider state until it changes again. When Discord is
+enabled, each new provider state is announced once.
+
 ### Check for duplicate galleries
 
 Search, For you, and Following cards check the local library before download.
@@ -329,6 +352,14 @@ rechecked periodically; unreadable folders and archives without title/artist
 metadata are reported as incomplete coverage.
 Incomplete coverage alone does not interrupt downloads; duplicate matches still
 require review before proceeding.
+
+A gallery whose title or tags mark it uncensored or decensored, and that matches
+a gallery you own whose copy is censored or not marked either way, shows
+**Better edition** instead of a duplicate warning. This also applies to a
+decensored upload on the same source. Downloading it still opens a review
+(**Download better edition**); your existing copy is never replaced or
+deleted. Following finds that are better editions are counted on Home and
+called out in Discord notifications.
 
 These are metadata matches, not image comparisons. Known differences in language
 or page count stay separate; missing metadata, unrelated source title variants,
@@ -451,6 +482,13 @@ or unmute artists. Use thumbs down to dismiss a single gallery, and
 Run a search, then choose **Watch** to save that query. Under **Following**,
 **Check now** checks active watches. Automatic checks follow the **Check every**
 setting; paused watches are excluded.
+
+**Suggested follows**, below the Following feed, lists artists credited on at
+least two galleries you downloaded (a **More like this** pick counts double)
+that no watch covers yet. **Follow** adds a normal watch named after the
+artist on the source most of their galleries came from; its first check is
+silent. The **×** button stops suggesting that artist. Muted artists are never
+suggested.
 
 Watch controls stay above the feed. **Manage watches** opens saved searches and
 the add form. Check progress and outcomes remain visible, with a link to the job.

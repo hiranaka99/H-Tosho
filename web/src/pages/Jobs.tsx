@@ -33,6 +33,7 @@ const INSPECTOR_QUERY = '(min-width: 1280px)';
 
 const JOB_GLYPH: Record<string, LucideIcon> = {
   'scan-matchable': ScanLine,
+  'refresh-matched': RefreshCw,
   'scan-downloaded': ScanLine,
   'scan-new': ScanLine,
   'match-unmatched': RefreshCw,
@@ -153,6 +154,7 @@ function AffectedSeries({ job }: { job: Job }) {
 }
 const JOB_PURPOSE: Record<string, string> = {
   'scan-matchable': 'Find metadata candidates for unmatched galleries to review on Home',
+  'refresh-matched': 'Re-read each matched series from its exact provider entry and list changes to review on Home. Nothing is applied',
   'scan-downloaded': 'Import the completed download into Kavita and find metadata candidates to review on Home',
   'scan-new': 'Refresh Kavita libraries and match newly discovered series',
   'match-unmatched': 'Find and apply metadata matches for unmatched series',
@@ -186,6 +188,8 @@ function jobOutcome(job: Job): string {
   }
   if (job.type === 'scan-matchable' || job.type === 'scan-downloaded') {
     for (const [key, label] of [['processed', 'galleries checked'], ['matchable', 'galleries with candidates'], ['failed', 'galleries with provider errors']]) if (typeof result[key] === 'number') parts.push(`${result[key]} ${label}`);
+  } else if (job.type === 'refresh-matched') {
+    for (const [key, label] of [['processed', 'matched series checked'], ['updates', 'with provider updates to review'], ['failed', 'could not be read'], ['skipped', 'skipped because their provider is disabled']]) if (typeof result[key] === 'number' && (key === 'processed' || key === 'updates' || result[key] > 0)) parts.push(`${result[key]} ${label}`);
   } else if (job.type === 'check-watched-searches') {
     for (const [key, label] of [['processed', 'saved searches checked'], ['newGalleries', 'new galleries found'], ['failed', 'provider checks failed'], ['notified', 'Discord notifications sent'], ['notificationFailed', 'Discord sends failed'], ['notificationUnknown', 'Discord sends unconfirmed'], ['notificationIntents', 'notification contributions committed']]) if (typeof result[key] === 'number') parts.push(`${result[key]} ${label}`);
     const archived = result.notificationDeliveryHistory;

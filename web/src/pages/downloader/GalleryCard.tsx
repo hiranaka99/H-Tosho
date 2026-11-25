@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Search, Loader2, Download as DownloadIcon, Pause, XCircle, CheckCircle2, RotateCcw, Check, Circle, Bookmark, AlertTriangle, EllipsisVertical, EyeOff } from 'lucide-react';
+import { Search, Loader2, Download as DownloadIcon, Pause, XCircle, CheckCircle2, RotateCcw, Check, Circle, Bookmark, AlertTriangle, EllipsisVertical, EyeOff, Sparkles } from 'lucide-react';
 import { type DoujinSource, type DoujinSearchResult } from '../../lib/api';
 import { useGalleryDownloadStatus } from '../../lib/DownloadsContext';
 import { cn, timeAgo, toIsoUtc } from '../../lib/utils';
@@ -22,12 +22,13 @@ const OWNERSHIP_STYLE = {
   'in-library': 'border-success/40 bg-surface text-success',
   downloaded: 'border-border-2 bg-surface text-foreground',
   'possible-duplicate': 'border-warning/50 bg-surface text-warning',
+  'better-edition': 'border-primary/50 bg-surface text-primary',
 } as const;
 
 /** Ownership as text plus icon, never colour alone; the title carries the full meaning. */
 export function OwnershipChip({ type, className }: { type: Exclude<GalleryOwnership['type'], 'available'>; className?: string }) {
   const { label, help } = OWNERSHIP_LABELS[type];
-  const Icon = type === 'in-library' ? CheckCircle2 : type === 'downloaded' ? Bookmark : AlertTriangle;
+  const Icon = type === 'in-library' ? CheckCircle2 : type === 'downloaded' ? Bookmark : type === 'better-edition' ? Sparkles : AlertTriangle;
   return (
     <span title={help} className={cn('inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium', OWNERSHIP_STYLE[type], className)}>
       <Icon aria-hidden="true" className="h-3 w-3 shrink-0" /><span className="truncate">{label}</span>

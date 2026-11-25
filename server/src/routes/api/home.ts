@@ -3,6 +3,7 @@ import { desc, eq } from 'drizzle-orm';
 import { getDb, schema } from '../../db/index.js';
 import { jobQueue } from '../../jobs/queue.js';
 import { listMatchSuggestions, rejectMatchCandidate, restoreMatchCandidate } from '../../services/matchSuggestions.js';
+import { dismissMatchUpdate, listMatchUpdates } from '../../services/matchRefresh.js';
 import { connectedClient, intParam, kavitaCoverUrl } from './helpers.js';
 import { rewriteMangaDexCoverUrl } from '../media.js';
 
@@ -48,6 +49,30 @@ api.delete('/home/matches/:id/reject', async c => {
   restoreMatchCandidate(id, body.providerId, body.providerSeriesId);
   return c.json({ ok: true });
 });
+
+/** Provider changes to the exact candidate each series is matched to. */
+api.get('/home/updates', c => {
+  const items = listMatchUpdates().map(item => ({ ...item,
+    cover: item.cover ? kavitaCoverUrl(item.seriesId, item.cover) : null,
+    candidateCoverUrl: rewriteMangaDexCoverUrl(item.candidateCoverUrl ?? undefined) ?? null,
+  }));
+  return c.json({ items, configured: !!connectedClient(), refresh: jobQueue.active().find(job => job.type === 'refresh-matched') ?? jobQueue.latest('refresh-matched') ?? null });
+});
+
+api.post('/home/updates/refresh', c => {
+  if (!connectedClient()) return c.json({ error: 'Connect Kavita before checking for updates.' }, 503);
+  const active = jobQueue.active().find(job => job.type === 'refresh-matched');
+  return c.json({ id: active?.id ?? jobQueue.enqueue('refresh-matched', {}), alreadyRunning: !!active }, 202);
+});
+
+for (const [method, dismissed] of [['post', true], ['delete', false]] as const) {
+  api[method]('/home/updates/:id/dismiss', c => {
+    const id = intParam(c.req.param('id'));
+    if (id === null) return c.json({ error: 'Invalid series id' }, 400);
+    if (!dismissMatchUpdate(id, dismissed)) return c.json({ error: 'This update is no longer waiting. Refresh Home.' }, 404);
+    return c.json({ ok: true });
+  });
+}
 
 api.get('/home/activity', c => {
   const db = getDb();

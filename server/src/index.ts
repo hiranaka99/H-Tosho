@@ -3,7 +3,7 @@ import { closeDb, initDb, startDatabaseMaintenance } from './db/index.js';
 import { createApp } from './app.js';
 import { jobQueue } from './jobs/queue.js';
 import { runJob } from './jobs/executor.js';
-import { getCredentialMap, getKavitaConnection, getPollIntervalHours, onSettingChange } from './services/settings.js';
+import { getCredentialMap, getKavitaConnection, getMatchRefreshIntervalDays, getPollIntervalHours, onSettingChange } from './services/settings.js';
 import { backfillNewGalleries, initializeWatchedSchedule, rescheduleWatchedSearches, dueWatchedSearchIds } from './services/watchedSearches.js';
 import { downloadQueue } from './downloader/engine.js';
 import { startRecommendationPreloading } from './services/recommendations.js';
@@ -49,8 +49,19 @@ function main(): void {
     const lastAttempt = jobCreatedAtMs(jobQueue.latest('scan-matchable')?.createdAt);
     if (!lastAttempt || Date.now() - lastAttempt >= 86_400_000) jobQueue.enqueue('scan-matchable', {});
   };
+  // Matched series are re-read from their exact provider candidate on their own
+  // cadence. Only changes to that candidate surface; nothing is searched or applied.
+  const refreshMatchedIfDue = () => {
+    const days = getMatchRefreshIntervalDays();
+    const connection = getKavitaConnection();
+    if (days <= 0 || !connection.baseUrl || !connection.apiKey || !getCredentialMap().enabledProviders.length) return;
+    if (jobQueue.active().some(job => job.type === 'refresh-matched')) return;
+    const lastAttempt = jobCreatedAtMs(jobQueue.latest('refresh-matched')?.createdAt);
+    if (!lastAttempt || Date.now() - lastAttempt >= days * 86_400_000) jobQueue.enqueue('refresh-matched', {});
+  };
   scanMatchableIfDue();
-  const matchableTimer = setInterval(scanMatchableIfDue, 60_000);
+  refreshMatchedIfDue();
+  const matchableTimer = setInterval(() => { scanMatchableIfDue(); refreshMatchedIfDue(); }, 60_000);
   matchableTimer.unref();
 
 // Watched doujin searches run on a configurable cadence independent of the

@@ -261,6 +261,29 @@ export function setPollIntervalHours(hours: number): void {
   notifySettingChange('poll-interval');
 }
 
+const DEFAULT_MATCH_REFRESH_INTERVAL_DAYS = 7;
+export const MAX_MATCH_REFRESH_INTERVAL_DAYS = 60;
+
+/** Days between scheduled provider refreshes of matched series. 0 disables. */
+export function getMatchRefreshIntervalDays(): number {
+  return cachedSetting('match-refresh-interval', (v) => v, () => {
+    const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'matchRefreshIntervalDays')).get();
+    if (!row) return DEFAULT_MATCH_REFRESH_INTERVAL_DAYS;
+    const parsed = Number(safeParseJson<unknown>(row.valueJson));
+    return Number.isInteger(parsed) && parsed >= 0 ? Math.min(parsed, MAX_MATCH_REFRESH_INTERVAL_DAYS) : DEFAULT_MATCH_REFRESH_INTERVAL_DAYS;
+  });
+}
+
+export function setMatchRefreshIntervalDays(days: number): void {
+  const safeDays = Math.min(Math.max(0, Math.round(days)), MAX_MATCH_REFRESH_INTERVAL_DAYS);
+  getDb().insert(schema.keyValueStore)
+    .values({ key: 'matchRefreshIntervalDays', valueJson: JSON.stringify(safeDays) })
+    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(safeDays) } })
+    .run();
+  settingsCache.delete('match-refresh-interval');
+  notifySettingChange('match-refresh-interval');
+}
+
 const DEFAULT_WATCHED_SEARCH_INTERVAL_MINUTES = 15;
 export const MAX_WATCHED_SEARCH_INTERVAL_MINUTES = 24 * 60;
 

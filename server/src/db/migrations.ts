@@ -172,6 +172,13 @@ export function migrateSchema(sqlite: Database.Database): void {
       sqlite.exec('DROP INDEX IF EXISTS idx_download_queue_claim');
       createIndexes(sqlite, true);
     },
+    () => {
+      // Scheduled refreshes of matched series, and better-edition context on Following finds.
+      const columns = sqlite.prepare('PRAGMA table_info(watched_search_new)').all() as { name: string }[];
+      if (!columns.some(column => column.name === 'better_edition_json')) sqlite.exec('ALTER TABLE watched_search_new ADD COLUMN better_edition_json TEXT');
+      createSchemaTables(sqlite);
+      createIndexes(sqlite, true);
+    },
   ];
   for (const [index, migration] of migrations.entries()) {
     const version = index + 1;

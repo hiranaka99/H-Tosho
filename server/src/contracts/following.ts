@@ -84,6 +84,8 @@ export interface WatchedNewGallery {
   artists: string[];
   language?: string;
   reviewedAt: string | null;
+  /** Owned copy this find is an uncensored/decensored edition of, checked when it was found. */
+  betterEditionOf?: { title: string };
 }
 
 export interface WatchedGalleryFeed {
@@ -91,6 +93,8 @@ export interface WatchedGalleryFeed {
   total: number;
   inboxCount: number;
   historyCount: number;
+  /** Unreviewed finds that are better editions of owned galleries (same filters). */
+  betterEditionCount: number;
   watches: { id: number; query: string; source: DoujinSource; watchLabel: string; folderId: number | null; removed: boolean }[];
 }
 
@@ -105,4 +109,20 @@ export interface FollowingFeedOptions {
 
 export function effectiveFollowingInterval(globalMinutes: number, pausedAt: string | null, intervalMinutes: FollowingInterval | null): number {
   return globalMinutes === 0 || pausedAt !== null ? 0 : intervalMinutes ?? globalMinutes;
+}
+
+/** An artist the user collects but does not follow yet, with the evidence behind the suggestion. */
+export interface SuggestedFollow {
+  artist: string;
+  /** Source the watch would run on: where most of this artist's galleries came from. */
+  source: DoujinSource;
+  /** The watch query compiled for that source. */
+  query: string;
+  /** Downloaded galleries credited to this artist. */
+  downloads: number;
+  /** Recommendation picks marked More like this. */
+  liked: number;
+  /** A few downloaded titles, for recognition. */
+  titles: string[];
+  lastDownloadedAt: string | null;
 }

@@ -33,7 +33,8 @@ import { WatchedManagerDrawer, FollowingCheckStatus, nextScheduledCheck, formatC
 import { SearchHint } from './downloader/SearchHint';
 import { SearchFailure } from './downloader/SearchFailure';
 import { GallerySkeletonGrid } from './downloader/GallerySkeletons';
-import { galleryKey, galleryOwnership } from './downloader/ownership';
+import { galleryKey, galleryOwnership, libraryMatchFor } from './downloader/ownership';
+import { SuggestedFollows } from './downloader/SuggestedFollows';
 import { folderNameFrom } from '../lib/mergeNames';
 import type { MergeDownloadResult } from './downloader/MergeDownloadDialog';
 const MergeDownloadDialog = React.lazy(() => import('./downloader/MergeDownloadDialog').then((m) => ({ default: m.MergeDownloadDialog })));
@@ -558,10 +559,16 @@ export function Downloader() {
   const matchReportsRef = React.useRef(matchReports);
   if (matchReports.length !== matchReportsRef.current.length || matchReports.some((data, i) => data !== matchReportsRef.current[i])) matchReportsRef.current = matchReports;
   const stableMatchReports = matchReportsRef.current;
-  const libraryMatches = React.useMemo(() => new Map(stableMatchReports.flatMap((data) => data?.reports ?? []).map(report => [
-    `${report.source}:${report.galleryId}`,
-    report.matches.some(match => match.confirmed && ['In library', 'Owned', 'completed'].includes(match.status)) ? 'owned' as const : report.matches.length ? 'possible' as const : undefined,
-  ])), [stableMatchReports]);
+  const libraryMatches = React.useMemo(() => {
+    const verdicts = new Map(stableMatchReports.flatMap((data) => data?.reports ?? []).map(report => [`${report.source}:${report.galleryId}`, libraryMatchFor(report)]));
+    // A Following find checked against the library when it arrived keeps that
+    // verdict even though feed rows carry no tags for a fresh check.
+    for (const item of galleryFeed?.items ?? []) {
+      const key = `${item.source}:${item.galleryId}`;
+      if (item.betterEditionOf && !verdicts.get(key)) verdicts.set(key, 'better');
+    }
+    return verdicts;
+  }, [stableMatchReports, galleryFeed]);
   const ownershipFor = (item: DoujinSearchResult) => galleryOwnership([galleryKey(item)], libraryMatches, downloadedAt, ownedKeys);
   /** The confirmed library copy behind an "In library" gallery, for the detail modal. */
   const libraryCopyFor = (key: string) => stableMatchReports.flatMap(data => data?.reports ?? []).find(report => `${report.source}:${report.galleryId}` === key)
@@ -968,6 +975,7 @@ export function Downloader() {
               </div>
             )}
           </section>
+          <SuggestedFollows />
           <WatchedManagerDrawer open={manageWatchesOpen} onOpenChange={setManageWatchesOpen} returnFocusTo={manageWatchesTrigger} onOpenSearch={(src, q) => searchTagFragment(q, src)} />
         </div>
       )}

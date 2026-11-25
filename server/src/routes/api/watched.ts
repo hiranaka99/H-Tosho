@@ -7,7 +7,8 @@ import {
   removeWatchedSearch, listGalleryFeed, setGalleriesReviewed, FollowingError,
   listWatchedSearchFolders, addWatchedSearchFolder, patchWatchedSearchFolder, removeWatchedSearchFolder,
 } from '../../services/watchedSearches.js';
-import { type DoujinSource } from '../../contracts/doujin.js';
+import { isDoujinSource, type DoujinSource } from '../../contracts/doujin.js';
+import { followSuggestedArtist, listSuggestedFollows, setSuggestedFollowDismissed } from '../../services/suggestedFollows.js';
 import { FOLLOWING_TARGET_LIMIT, type CheckWatchedSearchesCommand, type WatchedSearchPatch, type WatchedSearchFolderPatch } from '../../contracts/following.js';
 
 import { intParam } from './helpers.js';
@@ -17,6 +18,23 @@ api.onError((error, c) => {
   throw error;
 });
 api.get('/watched-searches', (c) => c.json(listWatchedSearches()));
+
+api.get('/watched-searches/suggestions', (c) => c.json({ items: listSuggestedFollows() }));
+
+api.post('/watched-searches/suggestions/follow', async (c) => {
+  const body = await c.req.json().catch(() => null) as { artist?: unknown; source?: unknown } | null;
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['artist', 'source'].includes(key))
+    || typeof body.artist !== 'string' || !isDoujinSource(body.source)) return c.json({ error: 'Provide an artist and source.' }, 400);
+  return c.json(followSuggestedArtist(body.artist, body.source), 201);
+});
+
+api.post('/watched-searches/suggestions/dismiss', async (c) => {
+  const body = await c.req.json().catch(() => null) as { artist?: unknown; dismissed?: unknown } | null;
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['artist', 'dismissed'].includes(key))
+    || typeof body.artist !== 'string' || typeof body.dismissed !== 'boolean') return c.json({ error: 'Provide an artist and dismissed.' }, 400);
+  setSuggestedFollowDismissed(body.artist, body.dismissed);
+  return c.json({ ok: true });
+});
 
 api.get('/watched-searches/feed', (c) => {
   const view = c.req.query('view') ?? 'inbox', source = c.req.query('source'), watch = c.req.query('searchId'), folder = c.req.query('folderId');

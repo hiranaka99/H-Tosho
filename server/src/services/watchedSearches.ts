@@ -7,6 +7,7 @@ import { JobCancelled, type LogFn } from '../jobs/queue.js';
 import { notify, NotificationFailure } from '../notify/dispatcher.js';
 import { getNotificationSettings, getWatchedSearchIntervalMinutes } from './settings.js';
 import type { NotificationSettings } from '../contracts/notifications.js';
+import { findBetterEditions, type BetterEditionOf } from './galleryDuplicates.js';
 import {
   effectiveFollowingInterval, FOLLOWING_INTERVAL_MINUTES, FOLLOWING_SEARCH_LIMIT, FOLLOWING_TARGET_LIMIT,
   type CheckWatchedSearchesCommand, type FollowingFeedOptions, type FollowingInterval,
@@ -287,6 +288,7 @@ interface CheckResult {
   failed: number;
   notificationFailed: number;
   notificationUnknown: number;
+  betterEditions: number;
 }
 
 /** Manual checks include explicit paused targets; scheduled work must still be due. */
@@ -302,7 +304,9 @@ export async function checkWatchedSearches(
   const table = schema.watchedSearches;
   const targets = explicit ? [...new Set(command.watchIds)] : mode === 'due' ? dueWatchedSearchIds() :
     db.select({ id: table.id }).from(table).where(sql`${table.pausedAt} IS NULL`).orderBy(asc(table.id)).all().map(row => row.id);
-  const result: CheckResult = { checked: 0, notified: 0, newGalleries: 0, failed: 0, notificationFailed: 0, notificationUnknown: 0 };
+  const result: CheckResult = { checked: 0, notified: 0, newGalleries: 0, failed: 0, notificationFailed: 0, notificationUnknown: 0, betterEditions: 0 };
+  /** Every fresh find, for one better-edition check against the library after all lanes finish. */
+  const freshFinds = new Map<string, DoujinSearchResult>();
   const notifications = new Map<string, { gallery: DoujinSearchResult; source: string; settings: NotificationSettings; watches: { id: number; revision: number }[] }>();
   /** Per-target finds to notify, merged in target order once every lane finishes. */
   const foundByTarget = new Map<number, { key: string; gallery: DoujinSearchResult; source: string; watch: { id: number; revision: number } }[]>();
@@ -396,6 +400,7 @@ export async function checkWatchedSearches(
       });
       result.checked++;
       result.newGalleries += freshIds.length;
+      for (const galleryId of freshIds) freshFinds.set(JSON.stringify([latest.source, galleryId]), byId.get(galleryId)!);
       if (latest.pausedAt === null && latest.notificationMode === 'immediate' && !(mode === 'due' && getWatchedSearchIntervalMinutes() === 0)) {
         foundByTarget.set(id, freshIds.map(galleryId => ({ key: JSON.stringify([latest.source, galleryId]), gallery: byId.get(galleryId)!,
           source: latest.source, watch: { id: latest.id, revision: latest.revision } })));
@@ -443,6 +448,10 @@ export async function checkWatchedSearches(
       notifications.set(found.key, candidate);
     }
   }
+  // Finds that improve on an owned copy (uncensored/decensored editions) are
+  // recorded on the discovery so Home, the feed and Discord can call them out.
+  const betterEditions = await recordBetterEditions([...freshFinds.values()], log);
+  result.betterEditions = betterEditions.size;
   // Discoveries and check results are committed before Discord is contacted.
   // The normal Task records outcomes; there is no delivery queue or backlog replay.
   for (const candidate of notifications.values()) {
@@ -464,9 +473,10 @@ export async function checkWatchedSearches(
     const escape = (value: string, limit: number) => value.slice(0, limit).replace(/[\\`*_~\[\]()<>]/g, '\\$&');
     const title = escape(gallery.title, 100);
     const url = gallery.url && /^https?:\/\//i.test(gallery.url) ? gallery.url.replace(/[()\s]/g, encodeURIComponent) : null;
+    const better = betterEditions.get(`${candidate.source}:${gallery.galleryId}`);
     try {
-      const outcome = await notify({ title: 'New in Following', success: true,
-        description: `1 new gallery\n${url && url.length < 300 ? `[${title}](${url})` : title}\nVia ${escape(label, 180)}` },
+      const outcome = await notify({ title: better ? 'Better edition in Following' : 'New in Following', success: true,
+        description: `${better ? 'Uncensored edition of a gallery you own' : '1 new gallery'}\n${url && url.length < 300 ? `[${title}](${url})` : title}${better ? `\nYou own: ${escape(better.title, 160)}` : ''}\nVia ${escape(label, 180)}` },
       { revision: candidate.settings.revision, destinationIdentity: candidate.settings.destinationIdentity });
       if (outcome.status === 'delivered') {
         result.notified++;
@@ -480,6 +490,30 @@ export async function checkWatchedSearches(
   }
   onProgress?.(targets.length, targets.length);
   return result;
+}
+
+/** Check fresh finds against the library once; a failed check never fails the watch check. */
+async function recordBetterEditions(finds: DoujinSearchResult[], log: LogFn): Promise<Map<string, BetterEditionOf>> {
+  if (!finds.length) return new Map();
+  let better: Map<string, BetterEditionOf>;
+  try {
+    better = await findBetterEditions(finds.map(gallery => ({ source: gallery.source, galleryId: gallery.galleryId, title: gallery.title, artists: gallery.artists ?? [],
+      language: gallery.language, ...pageCountMetadata(gallery.pageCount), tags: gallery.tags ?? [] })));
+  } catch (error) {
+    log('warn', `Could not compare new finds with your library for better editions: ${error instanceof Error ? error.message : String(error)}`);
+    return new Map();
+  }
+  if (!better.size) return better;
+  const table = schema.watchedSearchNew;
+  getDb().transaction(tx => {
+    for (const [key, owned] of better) {
+      const [source, ...rest] = key.split(':');
+      tx.update(table).set({ betterEditionJson: JSON.stringify({ title: owned.title }) })
+        .where(and(eq(table.source, source), eq(table.galleryId, rest.join(':')))).run();
+    }
+  });
+  for (const [key, owned] of better) log('success', `Better edition found: ${finds.find(gallery => `${gallery.source}:${gallery.galleryId}` === key)?.title ?? key} improves on “${owned.title}”`);
+  return better;
 }
 
 /** Keep the seen table bounded: drop the oldest rows beyond the retention cap. */
@@ -505,7 +539,12 @@ function pruneSeen(searchId: number, db: Db): void {
 }
 
 type FeedRow = Pick<typeof schema.watchedSearchNew.$inferSelect, 'source' | 'galleryId' | 'title' | 'url' | 'coverUrl' | 'pageCount'
-  | 'query' | 'watchLabel' | 'foundAt' | 'searchId' | 'artistsJson' | 'language' | 'reviewedAt'>;
+  | 'query' | 'watchLabel' | 'foundAt' | 'searchId' | 'artistsJson' | 'language' | 'reviewedAt' | 'betterEditionJson'>;
+
+function betterEditionOf(json: string | null): WatchedNewGallery['betterEditionOf'] {
+  if (!json) return undefined;
+  try { const value = JSON.parse(json) as { title?: unknown }; return typeof value?.title === 'string' ? { title: value.title } : undefined; } catch { return undefined; }
+}
 
 /** Read current labels/membership when possible and snapshots after watch removal. */
 function feedItem(r: FeedRow, watch: Pick<WatchRow, 'displayName' | 'query'> | undefined): WatchedNewGallery {
@@ -515,7 +554,8 @@ function feedItem(r: FeedRow, watch: Pick<WatchRow, 'displayName' | 'query'> | u
     ...(r.url ? { url: r.url } : {}), ...(r.coverUrl ? { coverUrl: r.coverUrl } : {}), ...pageCountMetadata(r.pageCount),
     query: r.query, watchLabel: watch ? watch.displayName ?? watch.query : r.watchLabel || r.query,
     watchRemoved: !watch, foundAt: r.foundAt, searchId: r.searchId, artists,
-    ...(r.language ? { language: r.language } : {}), reviewedAt: r.reviewedAt };
+    ...(r.language ? { language: r.language } : {}), reviewedAt: r.reviewedAt,
+    ...(betterEditionOf(r.betterEditionJson) ? { betterEditionOf: betterEditionOf(r.betterEditionJson) } : {}) };
 }
 
 export function listGalleryFeed(options: FollowingFeedOptions = {}): WatchedGalleryFeed {
@@ -527,32 +567,33 @@ export function listGalleryFeed(options: FollowingFeedOptions = {}): WatchedGall
   // Folder membership, source, and watch filters apply before winner selection.
   // Winners are ranked once per request: the counts and the page share one
   // materialized CTE, and the counts row survives an empty page via LEFT JOIN.
-  const columns = sql.raw('id, search_id, source, query, watch_label, gallery_id, title, url, cover_url, page_count, artists_json, language, reviewed_at, found_at');
+  const columns = sql.raw('id, search_id, source, query, watch_label, gallery_id, title, url, cover_url, page_count, artists_json, language, reviewed_at, better_edition_json, found_at');
   const rows = db.all<{
-    total: number; inbox_count: number; id: number | null; search_id: number; source: string; query: string; watch_label: string;
+    total: number; inbox_count: number; better_count: number; id: number | null; search_id: number; source: string; query: string; watch_label: string;
     gallery_id: string; title: string; url: string | null; cover_url: string | null; page_count: number | null;
-    artists_json: string; language: string | null; reviewed_at: string | null; found_at: string;
+    artists_json: string; language: string | null; reviewed_at: string | null; better_edition_json: string | null; found_at: string;
   }>(sql`WITH winners AS MATERIALIZED (
       SELECT ${columns} FROM (
         SELECT ${columns}, ROW_NUMBER() OVER (PARTITION BY source, gallery_id ORDER BY found_at DESC, id DESC) AS n
         FROM watched_search_new ${filters ? sql`WHERE ${filters}` : sql``}
       ) WHERE n = 1
     ),
-    counts AS (SELECT count(*) AS total, coalesce(sum(CASE WHEN reviewed_at IS NULL THEN 1 ELSE 0 END), 0) AS inbox_count FROM winners),
+    counts AS (SELECT count(*) AS total, coalesce(sum(CASE WHEN reviewed_at IS NULL THEN 1 ELSE 0 END), 0) AS inbox_count,
+      coalesce(sum(CASE WHEN reviewed_at IS NULL AND better_edition_json IS NOT NULL THEN 1 ELSE 0 END), 0) AS better_count FROM winners),
     page AS (
       SELECT * FROM winners ${options.view === 'inbox' ? sql`WHERE reviewed_at IS NULL` : sql``}
       ORDER BY found_at DESC, id DESC LIMIT ${options.limit ?? 100} OFFSET ${options.offset ?? 0}
     )
-    SELECT counts.total AS total, counts.inbox_count AS inbox_count, page.* FROM counts LEFT JOIN page ON 1
+    SELECT counts.total AS total, counts.inbox_count AS inbox_count, counts.better_count AS better_count, page.* FROM counts LEFT JOIN page ON 1
     ORDER BY page.found_at DESC, page.id DESC`);
-  const counts = { total: Number(rows[0]?.total ?? 0), inboxCount: Number(rows[0]?.inbox_count ?? 0) };
+  const counts = { total: Number(rows[0]?.total ?? 0), inboxCount: Number(rows[0]?.inbox_count ?? 0), betterEditionCount: Number(rows[0]?.better_count ?? 0) };
   // Watch labels only; lastResultsJson blobs are not needed here.
   const current = new Map(db.select({ id: watch.id, query: watch.query, source: watch.source, displayName: watch.displayName, folderId: watch.folderId })
     .from(watch).all().map(row => [row.id, row] as const));
   const items = rows.filter(row => row.id !== null).map(row => feedItem({
     source: row.source, galleryId: row.gallery_id, title: row.title, url: row.url, coverUrl: row.cover_url, pageCount: row.page_count,
     query: row.query, watchLabel: row.watch_label, foundAt: row.found_at, searchId: row.search_id, artistsJson: row.artists_json,
-    language: row.language, reviewedAt: row.reviewed_at,
+    language: row.language, reviewedAt: row.reviewed_at, betterEditionJson: row.better_edition_json,
   }, current.get(row.search_id)));
   const watches: WatchedGalleryFeed['watches'] = [...current.values()].map(row => ({ id: row.id, query: row.query, source: row.source as DoujinSource,
     watchLabel: row.displayName ?? row.query, folderId: row.folderId, removed: false }));
@@ -560,7 +601,7 @@ export function listGalleryFeed(options: FollowingFeedOptions = {}): WatchedGall
     .from(table).where(sql`NOT EXISTS (SELECT 1 FROM ${watch} WHERE ${watch.id} = ${table.searchId})`).groupBy(table.searchId).orderBy(table.searchId).all();
   for (const row of retained) watches.push({ ...row, source: row.source as DoujinSource, watchLabel: row.watchLabel || row.query, folderId: null, removed: true });
   watches.sort((a, b) => a.id - b.id);
-  return { items, total: Number(options.view === 'inbox' ? counts.inboxCount : counts.total), inboxCount: Number(counts.inboxCount), historyCount: Number(counts.total), watches };
+  return { items, total: Number(options.view === 'inbox' ? counts.inboxCount : counts.total), inboxCount: Number(counts.inboxCount), historyCount: Number(counts.total), betterEditionCount: counts.betterEditionCount, watches };
 }
 
 export function listNewGalleries(limit = 100): WatchedNewGallery[] {
