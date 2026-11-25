@@ -567,9 +567,18 @@ files.
 
 ### Update and back up
 
-For a Git checkout running in Docker:
+H-Tosho can check for new GitHub releases and update itself from **Settings → Account → App updates** (a notice also appears in the sidebar when a newer version is available):
+
+- **Git checkout (source install):** fetches the release tag, runs `npm ci` (or `npm install`) and `npm run build`, and restarts H-Tosho automatically. The working tree must be clean and active tasks/downloads must be idle.
+- **Docker:** when only application code changed (same `Dockerfile`, Node.js requirement, and server runtime dependencies), H-Tosho downloads the verified release bundle into `/data/updates` and restarts automatically, rolling back to the base image if startup fails. Whenever a release changes the `Dockerfile`, Node.js requirement, or server runtime/native dependencies — or ships without a compatible bundle — H-Tosho warns that the **Docker image must be completely replaced**, lists the exact reasons, and provides copyable commands.
+
+To update a Docker installation manually (or when an image replacement is required):
 
 ```bash
+# Prebuilt image
+docker compose pull && docker compose up -d
+
+# Local Git checkout
 git pull
 docker compose up -d --build
 ```

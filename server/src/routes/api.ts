@@ -16,6 +16,7 @@ import { api as jobs } from './api/jobs.js';
 import { api as home } from './api/home.js';
 import { api as artists } from './api/artists.js';
 import { api as mergeProtection } from './api/mergeProtection.js';
+import { api as appUpdate } from './api/appUpdate.js';
 export { kavitaCoverUrl } from './api/helpers.js';
 
 export const api = new Hono();
@@ -56,3 +57,4 @@ api.route('/', jobs);
 api.route('/', home);
 api.route('/', artists);
 api.route('/', mergeProtection);
+api.route('/', appUpdate);
