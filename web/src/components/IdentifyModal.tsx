@@ -281,7 +281,7 @@ function CoverThumb({ src, alt, onZoom }: { src?: string | null; alt: string; on
   React.useEffect(() => {
     setFailed(false);
   }, [src]);
-  const size = 'aspect-[2/3] h-32 sm:h-40';
+  const size = 'aspect-[2/3] h-48 sm:h-72';
   if (!src || failed) return <span className={cn(size, 'flex items-center justify-center rounded bg-surface-2 text-xs text-muted')}>No cover</span>;
   const img = (
     <img src={src} alt={alt} loading="lazy" decoding="async" onError={() => setFailed(true)} className={cn(size, 'rounded object-cover')} />
@@ -800,7 +800,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                         <CoverThumb src={currentCover ?? `/api/kavita/series/${seriesId}/cover`} alt="Current cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
                         <figcaption className="text-xs text-muted">Current</figcaption>
                       </figure>
-                      <ArrowRight aria-hidden="true" className="mt-14 h-4 w-4 shrink-0 text-muted sm:mt-[4.5rem]" />
+                      <ArrowRight aria-hidden="true" className="mt-[5.5rem] h-4 w-4 shrink-0 text-muted sm:mt-[8.5rem]" />
                       <figure className="m-0 flex flex-col gap-1.5">
                         <CoverThumb src={diff.coverCandidate} alt="Proposed cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
                         <figcaption className="text-xs text-muted">{coverIncluded ? 'Proposed' : 'Proposed · not synced'}</figcaption>

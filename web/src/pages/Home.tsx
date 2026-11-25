@@ -58,16 +58,16 @@ function SectionLink({ to, children }: { to: string; children: React.ReactNode }
 
 type WaitingItem = { key: string; label: string; icon: LucideIcon; tone?: 'warning' | 'danger'; jump?: string; to?: string };
 
-/** A small cover with a caption, so the current → proposed direction never relies on the arrow alone. */
+/** A cover with a caption, so the current → proposed direction never relies on the arrow alone. */
 function CoverWithLabel({ url, title, label }: { url: string | undefined; title: string; label: string }) {
-  return <span className="flex w-12 flex-col items-center gap-1">
-    <Cover url={url} title={title} className="h-[4.5rem] w-12 rounded-md" />
+  return <span className="flex w-16 flex-col items-center gap-1 sm:w-24">
+    <Cover url={url} title={title} className="h-24 w-16 rounded-md sm:h-36 sm:w-24" />
     <span className="text-[11px] leading-none text-muted">{label}</span>
   </span>;
 }
 
 function LoadingRows() {
-  return <div aria-label="Loading galleries" role="status" className="space-y-4 py-4">{[0, 1, 2].map(i => <div key={i} className="flex gap-3"><Skeleton className="h-16 w-12 shrink-0 rounded-md" /><div className="flex-1 space-y-2 pt-1"><Skeleton className="h-4 w-3/4" /><Skeleton className="h-3 w-1/2" /></div></div>)}</div>;
+  return <div aria-label="Loading galleries" role="status" className="space-y-4 py-4">{[0, 1, 2].map(i => <div key={i} className="flex gap-3"><Skeleton className="h-24 w-16 shrink-0 rounded-md sm:h-36 sm:w-24" /><div className="flex-1 space-y-2 pt-1"><Skeleton className="h-4 w-3/4" /><Skeleton className="h-3 w-1/2" /></div></div>)}</div>;
 }
 
 function CandidateReview({ item, onClose }: { item: MatchSuggestion; onClose: () => void }) {
@@ -329,7 +329,7 @@ export function Home() {
           return <li key={item.seriesId} className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 py-4">
             <button type="button" onClick={() => openReview(item)} className="flex shrink-0 items-start gap-1 self-start" tabIndex={-1} aria-hidden="true">
               {item.cover && <CoverWithLabel url={item.cover} title={item.name} label="Current" />}
-              {item.cover && candidateCover && <ArrowRight className="mt-8 h-3 w-3 text-muted" />}
+              {item.cover && candidateCover && <ArrowRight className="mt-11 h-3.5 w-3.5 shrink-0 text-muted sm:mt-16" />}
               {candidateCover ? <CoverWithLabel url={candidateCover} title={item.candidate.title} label="Proposed" />
                 : !item.cover && <CoverWithLabel url={undefined} title={item.name} label="Current" />}
             </button>
