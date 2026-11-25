@@ -81,3 +81,27 @@ test('failed cleanup rolls back logs and table state and remains eligible for th
     assert.deepEqual(db.prepare('SELECT count(*) AS count FROM jobs').get(), { count: 1 });
   } finally { db.close(); }
 });
+
+test('upgrading from v4.1/v4.2 databases without match_updates succeeds across index and table migrations', () => {
+  for (const baseVersion of [16, 17]) {
+    const db = new Database(':memory:');
+    try {
+      migrateSchema(db);
+      // Rewind to a pre-v4.3 database where match_updates does not exist yet
+      // and idx_download_queue_claim has the older definition.
+      db.exec('DROP TABLE match_updates');
+      db.exec('DROP INDEX IF EXISTS idx_download_queue_claim');
+      db.exec('CREATE INDEX idx_download_queue_claim ON download_queue (status, id)');
+      db.exec(`DELETE FROM schema_migrations WHERE version > ${baseVersion}`);
+
+      migrateSchema(db);
+
+      const matchUpdatesTable = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'match_updates'").get();
+      assert.ok(matchUpdatesTable, `match_updates table must exist after upgrading from migration ${baseVersion}`);
+      const matchUpdatesIdx = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_match_updates_series'").get();
+      assert.ok(matchUpdatesIdx, `idx_match_updates_series must exist after upgrading from migration ${baseVersion}`);
+      const claimIdx = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_download_queue_claim'").get() as { sql: string } | undefined;
+      assert.match(claimIdx?.sql ?? '', /"priority" DESC/i, `idx_download_queue_claim must be rebuilt with priority DESC from migration ${baseVersion}`);
+    } finally { db.close(); }
+  }
+});
