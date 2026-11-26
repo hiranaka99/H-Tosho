@@ -9,7 +9,7 @@ import { createApp } from './app.js';
 import { jobQueue } from './jobs/queue.js';
 import { runJob } from './jobs/executor.js';
 import { getCredentialMap, getKavitaConnection, getMatchRefreshIntervalDays, getPollIntervalHours, onSettingChange } from './services/settings.js';
-import { backfillNewGalleries, initializeWatchedSchedule, rescheduleWatchedSearches, dueWatchedSearchIds } from './services/watchedSearches.js';
+import { backfillNewGalleries, initializeWatchedSchedule, rescheduleWatchedSearches, dueWatchedSearchIds, nextWatchedSearchDueAt, onWatchedScheduleChange } from './services/watchedSearches.js';
 import { downloadQueue } from './downloader/engine.js';
 import { startRecommendationPreloading } from './services/recommendations.js';
 import { prefetchMedia } from './routes/media.js';
@@ -50,8 +50,8 @@ function main(): void {
   const scanMatchableIfDue = () => {
     const connection = getKavitaConnection();
     if (!connection.baseUrl || !connection.apiKey || !getCredentialMap().enabledProviders.length) return;
-    if (jobQueue.active().some(job => job.type === 'scan-matchable')) return;
-    const lastAttempt = jobCreatedAtMs(jobQueue.latest('scan-matchable')?.createdAt);
+    if (jobQueue.hasActiveType('scan-matchable')) return;
+    const lastAttempt = jobCreatedAtMs(jobQueue.latestCreatedAt('scan-matchable') ?? undefined);
     if (!lastAttempt || Date.now() - lastAttempt >= 86_400_000) jobQueue.enqueue('scan-matchable', {});
   };
   // Matched series are re-read from their exact provider candidate on their own
@@ -60,8 +60,8 @@ function main(): void {
     const days = getMatchRefreshIntervalDays();
     const connection = getKavitaConnection();
     if (days <= 0 || !connection.baseUrl || !connection.apiKey || !getCredentialMap().enabledProviders.length) return;
-    if (jobQueue.active().some(job => job.type === 'refresh-matched')) return;
-    const lastAttempt = jobCreatedAtMs(jobQueue.latest('refresh-matched')?.createdAt);
+    if (jobQueue.hasActiveType('refresh-matched')) return;
+    const lastAttempt = jobCreatedAtMs(jobQueue.latestCreatedAt('refresh-matched') ?? undefined);
     if (!lastAttempt || Date.now() - lastAttempt >= days * 86_400_000) jobQueue.enqueue('refresh-matched', {});
   };
   scanMatchableIfDue();
@@ -79,13 +79,12 @@ function main(): void {
     const intervalHours = getPollIntervalHours();
     if (intervalHours > 0) {
       const intervalMs = intervalHours * 3_600_000;
-      const lastScan = jobCreatedAtMs(jobQueue.latest('scan-new')?.createdAt);
+      const lastScan = jobCreatedAtMs(jobQueue.latestCreatedAt('scan-new') ?? undefined);
       const delay = lastScan ? Math.min(intervalMs, Math.max(0, lastScan + intervalMs - Date.now())) : intervalMs;
       pollTimer = setTimeout(async () => {
         const conn = getKavitaConnection();
         if (conn.baseUrl && conn.apiKey) {
-          const active = jobQueue.active().some((j) => j.type === 'scan-new');
-          if (!active) jobQueue.enqueue('scan-new', {});
+          if (!jobQueue.hasActiveType('scan-new')) jobQueue.enqueue('scan-new', {});
         }
         scheduleScan();
       }, delay);
@@ -93,39 +92,55 @@ function main(): void {
     }
   }
 
+  let shuttingDown = false;
   initializeWatchedSchedule();
-  function sweepWatchedSearches(): void {
-    if (jobQueue.active().some(job => job.type === 'check-watched-searches')) return;
+  let watchedTimer: NodeJS.Timeout | undefined;
+  function scheduleWatchedSweep(): void {
+    clearTimeout(watchedTimer);
+    watchedTimer = undefined;
+    if (shuttingDown || jobQueue.hasActiveType('check-watched-searches')) return;
     const watchIds = dueWatchedSearchIds();
-    if (watchIds.length) jobQueue.enqueue('check-watched-searches', { mode: 'due', watchIds });
+    if (watchIds.length) {
+      jobQueue.enqueue('check-watched-searches', { mode: 'due', watchIds });
+      return;
+    }
+    const nextDue = nextWatchedSearchDueAt();
+    if (nextDue !== null) {
+      const delay = Math.min(300_000, Math.max(250, nextDue - Date.now()));
+      watchedTimer = setTimeout(scheduleWatchedSweep, delay);
+      watchedTimer.unref();
+    }
   }
-  const watchedTimer = setInterval(sweepWatchedSearches, 15_000);
-  watchedTimer.unref();
+  const unsubscribeWatchedSchedule = onWatchedScheduleChange(scheduleWatchedSweep);
+  const unsubscribeWatchedJob = jobQueue.onSettled((ev) => {
+    if (ev.type === 'check-watched-searches') scheduleWatchedSweep();
+  });
   const unsubscribePollInterval = onSettingChange('poll-interval', scheduleScan);
   const unsubscribeWatchedSearchInterval = onSettingChange('watched-search-interval', () => {
     rescheduleWatchedSearches();
-    sweepWatchedSearches();
+    scheduleWatchedSweep();
   });
   const unsubscribeDownloaderSettings = onSettingChange('downloader', () => {
     downloadQueue.onSettingsChanged();
   });
   scheduleScan();
-  sweepWatchedSearches();
+  scheduleWatchedSweep();
   const app = createApp();
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST });
   console.log(`[h-tosho] listening on http://${HOST}:${PORT} (api at /api)`);
   const stopRecommendationPreloading = startRecommendationPreloading(prefetchMedia);
 
-  let shuttingDown = false;
   const shutdown = (mode: 'stop' | 'restart' = 'stop'): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(mode === 'restart' ? '[h-tosho] restarting for update' : '[h-tosho] shutting down');
     unsubscribePollInterval();
     unsubscribeWatchedSearchInterval();
+    unsubscribeWatchedSchedule();
+    unsubscribeWatchedJob();
     unsubscribeDownloaderSettings();
     clearTimeout(pollTimer);
-    clearInterval(watchedTimer);
+    clearTimeout(watchedTimer);
     clearInterval(matchableTimer);
     stopRecommendationPreloading();
     stopDatabaseMaintenance();

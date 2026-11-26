@@ -32,22 +32,46 @@ export function isProgressOnlyUpdate(previous: DownloadTask | undefined, next: D
  * the cache write and every observer notification.
  */
 export function applyTaskUpdates(list: readonly DownloadTask[] | undefined, updates: Iterable<DownloadTask>): DownloadTask[] | undefined {
-  let current: DownloadTask[] = Array.isArray(list) ? (list as DownloadTask[]) : [];
+  const base = Array.isArray(list) ? (list as DownloadTask[]) : [];
+  const indexById = new Map<number, number>();
+  for (let i = 0; i < base.length; i++) {
+    indexById.set(base[i].id, i);
+  }
+  let current: DownloadTask[] = base;
+  let copied = false;
   let changed = false;
+  const prepended: DownloadTask[] = [];
+  const prependedIdx = new Map<number, number>();
+
   for (const task of updates) {
-    const idx = current.findIndex((t) => t.id === task.id);
-    if (idx === -1) {
-      current = [task, ...current];
+    const idx = indexById.get(task.id);
+    if (idx !== undefined) {
+      const merged = newerDownload(current[idx], task);
+      if (merged === current[idx]) continue;
+      if (!copied) {
+        current = [...base];
+        copied = true;
+      }
+      current[idx] = merged;
       changed = true;
       continue;
     }
-    const merged = newerDownload(current[idx], task);
-    if (merged === current[idx]) continue;
-    if (!changed) current = [...current];
-    current[idx] = merged;
+    const pIdx = prependedIdx.get(task.id);
+    if (pIdx !== undefined) {
+      const merged = newerDownload(prepended[pIdx], task);
+      if (merged !== prepended[pIdx]) {
+        prepended[pIdx] = merged;
+        changed = true;
+      }
+      continue;
+    }
+    prependedIdx.set(task.id, prepended.length);
+    prepended.push(task);
     changed = true;
   }
-  return changed ? current : undefined;
+
+  if (!changed) return undefined;
+  return prepended.length ? [...prepended.reverse(), ...current] : current;
 }
 
 function sameList(a: readonly DownloadTask[], b: readonly DownloadTask[]): boolean {

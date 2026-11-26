@@ -286,7 +286,7 @@ body {
   a[role='button'], nav a, #app-navigation a {
     min-height: 44px;
   }
-  button:has(svg):not(:has(:not(svg, path, circle, line, polyline, polygon, rect, g))) {
+  .ui-button-icon {
     min-width: 44px;
   }
   summary {
@@ -442,7 +442,6 @@ select {
     border-color 160ms ease,
     color 160ms ease,
     opacity 160ms ease,
-    box-shadow 160ms ease,
     transform 160ms var(--ease-out-soft);
 }
 
@@ -466,7 +465,7 @@ select {
 }
 
 .ui-card-interactive {
-  transition: border-color 180ms ease, box-shadow 180ms ease;
+  transition: border-color 180ms ease;
 }
 
 .ui-field {
@@ -519,7 +518,7 @@ select {
     opacity: 0;
     transform: translateX(-100%);
     box-shadow: none;
-    transition: transform 180ms ease-in, opacity 140ms ease-in, box-shadow 180ms ease-in, visibility 0s linear 180ms;
+    transition: transform 180ms ease-in, opacity 140ms ease-in, visibility 0s linear 180ms;
   }
 
   .app-nav-drawer.app-nav-open {
@@ -527,7 +526,7 @@ select {
     opacity: 1;
     transform: translateX(0);
     box-shadow: 12px 0 32px var(--control-shadow);
-    transition: transform 280ms var(--ease-out-soft), opacity 180ms ease-out, box-shadow 280ms ease-out, visibility 0s;
+    transition: transform 280ms var(--ease-out-soft), opacity 180ms ease-out, visibility 0s;
   }
 
   .app-nav-drawer:not(.app-nav-open) :is(.animate-spin,
@@ -764,4 +763,14 @@ html[data-motion-paused] :is(.skeleton::after, .progress-stripes::after, .animat
 @media (prefers-reduced-motion: reduce) {
   .settings-save-bar { animation: settings-save-bar-fade 100ms ease-out both; }
   @keyframes settings-save-bar-fade { from { opacity: 0.6; } to { opacity: 1; } }
+}
+
+.cv-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 76px;
+}
+
+.cv-log {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 20px;
 }

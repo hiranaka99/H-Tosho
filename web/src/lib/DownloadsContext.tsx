@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { api, type DownloadTask, type DoujinSource } from './api';
-import { useDownloadEvents } from './useDownloadEvents';
+import { useDownloadEvents, type DownloadStreamState } from './useDownloadEvents';
 import { toast } from './toast';
 import { downloadErrorHelp } from './downloadErrors';
 import { mergeDownloadSnapshot } from './downloadEventBuffer';
@@ -103,24 +103,17 @@ function createGalleryStatusStore(): GalleryStatusStore {
   };
 }
 
-/**
- * App-wide download state. Lifts the downloads query + SSE subscription out of
- * the Downloader page so progress is live on every screen, and surfaces
- * completion/failure toasts as tasks change status.
- *
- * The two context surfaces are split on update frequency: actions only change
- * when the connection flips, tasks change on every SSE tick — so a component
- * that merely starts downloads (Search tab) subscribes to actions and never
- * re-renders during progress streaming.
- */
-export function DownloadsProvider({ children }: { children: React.ReactNode }) {
+function DownloadTasksProvider({
+  stream,
+  onPollSync,
+  children,
+}: {
+  stream: DownloadStreamState;
+  onPollSync: (tasks: DownloadTask[]) => void;
+  children: React.ReactNode;
+}) {
   const qc = useQueryClient();
-  const stream = useDownloadEvents();
   const liveConnected = stream === 'live';
-  // Mutation callbacks read this ref so they stay stable across reconnects.
-  const liveRef = React.useRef(liveConnected);
-  liveRef.current = liveConnected;
-  const [statusStore] = React.useState(createGalleryStatusStore);
   const queryFn = React.useMemo(() => downloadsQueryFn(qc), [qc]);
 
   // The SSE stream opens with a full snapshot and then folds every task change
@@ -134,11 +127,86 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
   });
   const data = downloadsQuery.data;
   const tasks = React.useMemo(() => (Array.isArray(data) ? data : []), [data]);
-  React.useEffect(() => { statusStore.sync(tasks); }, [statusStore, tasks]);
+  React.useEffect(() => {
+    if (!liveConnected && Array.isArray(data)) onPollSync(tasks);
+  }, [liveConnected, data, tasks, onPollSync]);
   const active = React.useMemo(
     () => tasks.filter((t) => t.status === 'downloading' || t.status === 'queued'),
     [tasks],
   );
+  const tasksValue = React.useMemo<DownloadTasksApi>(
+    () => ({
+      error: downloadsQuery.error instanceof Error ? downloadsQuery.error : null,
+      loading: downloadsQuery.isPending,
+      refetch: downloadsQuery.refetch,
+      tasks,
+      active,
+    }),
+    [tasks, active, downloadsQuery.error, downloadsQuery.isPending, downloadsQuery.refetch],
+  );
+  return <TasksCtx.Provider value={tasksValue}>{children}</TasksCtx.Provider>;
+}
+
+/**
+ * App-wide download state. Lifts the downloads query + SSE subscription out of
+ * the Downloader page so progress is live on every screen, and surfaces
+ * completion/failure toasts as tasks change status.
+ *
+ * The context surfaces are split on update frequency: actions and coarse
+ * per-gallery status only update on state changes, while live tasks live in
+ * `DownloadTasksProvider` so progress ticks never re-render `DownloadsProvider`
+ * or unrelated gallery grids.
+ */
+export function DownloadsProvider({ children }: { children: React.ReactNode }) {
+  const qc = useQueryClient();
+  const [statusStore] = React.useState(createGalleryStatusStore);
+
+  // Toast on status transitions to completed/failed and keep coarse gallery status synced.
+  // A completion also makes Downloaded badges stale, so refresh directly without polling.
+  const prevStatuses = React.useRef<Map<number, string>>(new Map());
+  const hasPrev = React.useRef(false);
+  const handleStateChange = React.useCallback((tasks: DownloadTask[]) => {
+    statusStore.sync(tasks);
+    if (!hasPrev.current) {
+      tasks.forEach((t) => prevStatuses.current.set(t.id, t.status));
+      hasPrev.current = true;
+      return;
+    }
+    let completed = false;
+    const currentIds = new Set<number>();
+    for (const t of tasks) {
+      currentIds.add(t.id);
+      const prev = prevStatuses.current.get(t.id);
+      prevStatuses.current.set(t.id, t.status);
+      if (prev === undefined || prev === t.status) continue;
+      if (t.status === 'completed') completed = true;
+      const title = t.title ?? `Gallery ${t.galleryId}`;
+      if (t.status === 'completed') {
+        toast({ tone: 'success', title: 'Download complete', description: title });
+      } else if (t.status === 'failed' && t.state?.type !== 'cancelled') {
+        // Surface genuine failures; a user cancel also lands as "failed" but carries a distinct message.
+        // A scheduled automatic retry is H-Tosho's job, not the user's: no failure toast.
+        if (t.state?.type !== 'retry-wait') toast({ tone: 'danger', title: 'Download failed', description: t.errorMessage ? `${title}: ${downloadErrorHelp(t.errorMessage, t.errorCode, SOURCE_LABELS[t.source]).message}` : title });
+      }
+    }
+    for (const id of prevStatuses.current.keys()) {
+      if (!currentIds.has(id)) prevStatuses.current.delete(id);
+    }
+    if (completed) {
+      void qc.invalidateQueries({ queryKey: ['downloads-completed'] });
+      void qc.invalidateQueries({ queryKey: ['home-activity'] });
+      void qc.invalidateQueries({ queryKey: ['home-matches'] });
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
+      void qc.invalidateQueries({ queryKey: ['downloads-library'] });
+      void qc.invalidateQueries({ queryKey: ['downloads-history'] });
+    }
+  }, [statusStore, qc]);
+
+  const stream = useDownloadEvents(handleStateChange);
+  const liveConnected = stream === 'live';
+  // Mutation callbacks read this ref so they stay stable across reconnects.
+  const liveRef = React.useRef(liveConnected);
+  liveRef.current = liveConnected;
 
   // Every queue mutation is broadcast on the stream, so refetching the list
   // after one is only needed while the stream is down.
@@ -197,47 +265,6 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
     onError: mutationError('Could not clear cancelled downloads'),
   });
 
-  // Toast on status transitions to completed/failed. A completion also makes
-  // the Downloaded badges stale, so refresh that query directly instead of
-  // polling it on a timer.
-  const prevStatuses = React.useRef<Map<number, string>>(new Map());
-  const hasPrev = React.useRef(false);
-  React.useEffect(() => {
-    if (!hasPrev.current) {
-      tasks.forEach((t) => prevStatuses.current.set(t.id, t.status));
-      hasPrev.current = true;
-      return;
-    }
-    let completed = false;
-    const currentIds = new Set<number>();
-    for (const t of tasks) {
-      currentIds.add(t.id);
-      const prev = prevStatuses.current.get(t.id);
-      prevStatuses.current.set(t.id, t.status);
-      if (prev === undefined || prev === t.status) continue;
-      if (t.status === 'completed') completed = true;
-      const title = t.title ?? `Gallery ${t.galleryId}`;
-      if (t.status === 'completed') {
-        toast({ tone: 'success', title: 'Download complete', description: title });
-      } else if (t.status === 'failed' && t.state?.type !== 'cancelled') {
-        // Surface genuine failures; a user cancel also lands as "failed" but carries a distinct message.
-        // A scheduled automatic retry is H-Tosho's job, not the user's: no failure toast.
-        if (t.state?.type !== 'retry-wait') toast({ tone: 'danger', title: 'Download failed', description: t.errorMessage ? `${title}: ${downloadErrorHelp(t.errorMessage, t.errorCode, SOURCE_LABELS[t.source]).message}` : title });
-      }
-    }
-    for (const id of prevStatuses.current.keys()) {
-      if (!currentIds.has(id)) prevStatuses.current.delete(id);
-    }
-    if (completed) {
-      void qc.invalidateQueries({ queryKey: ['downloads-completed'] });
-      void qc.invalidateQueries({ queryKey: ['home-activity'] });
-      void qc.invalidateQueries({ queryKey: ['home-matches'] });
-      void qc.invalidateQueries({ queryKey: ['jobs'] });
-      void qc.invalidateQueries({ queryKey: ['downloads-library'] });
-      void qc.invalidateQueries({ queryKey: ['downloads-history'] });
-    }
-  }, [tasks, qc]);
-
   // mutate/mutateAsync are stable references, so this value never changes.
   const { mutateAsync: startMutate } = start;
   const { mutate: actionMutate } = action;
@@ -266,21 +293,10 @@ export function DownloadsProvider({ children }: { children: React.ReactNode }) {
     [startMutate, actionMutate, prioritizeMutate, pauseAllMutate, resumeAllMutate, retryFailedMutate, removeMutate, clearMutate, clearCancelledMutate],
   );
 
-  const tasksValue = React.useMemo<DownloadTasksApi>(
-    () => ({
-      error: downloadsQuery.error instanceof Error ? downloadsQuery.error : null,
-      loading: downloadsQuery.isPending,
-      refetch: downloadsQuery.refetch,
-      tasks,
-      active,
-    }),
-    [tasks, active, downloadsQuery.error, downloadsQuery.isPending, downloadsQuery.refetch],
-  );
-
   return (
     <GalleryStatusCtx.Provider value={statusStore}>
       <ActionsCtx.Provider value={actionsValue}>
-        <TasksCtx.Provider value={tasksValue}>{children}</TasksCtx.Provider>
+        <DownloadTasksProvider stream={stream} onPollSync={handleStateChange}>{children}</DownloadTasksProvider>
       </ActionsCtx.Provider>
     </GalleryStatusCtx.Provider>
   );

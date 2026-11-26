@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { captureArchiveSnapshot, readZipEntries, readZipEntry, rewriteZipEntry, verifyArchiveSnapshot } from '../src/lib/cbz.js';
+import { captureArchiveSnapshot, readZipEntries, readZipEntry, restoreComicInfoArchive, rewriteZipEntry, verifyArchiveSnapshot } from '../src/lib/cbz.js';
 import { buildZip, buildZipFromFiles } from '../src/downloader/zip.js';
 
 const dir = fs.mkdtempSync(path.join(tmpdir(), 'htosho-cbz-snapshot-'));
@@ -101,4 +101,16 @@ test('truncated archives fail capture instead of producing a fingerprint', async
   const broken = Buffer.concat([buf.subarray(0, big.localOffset + 1000), buf.subarray(buf.length - (buf.length - entries.at(-1)!.localOffset))]);
   fs.writeFileSync(file, broken);
   await assert.rejects(captureArchiveSnapshot(file));
+});
+
+test('single-pass restoreComicInfoArchive on out-of-order archive matches reference fingerprint verbatim', async () => {
+  const file = await buildFromFiles('single-pass-restore.cbz', Object.keys(pages).reverse());
+  const before = await captureArchiveSnapshot(file);
+  const restoredXml = '<?xml version="1.0" encoding="UTF-8"?>\n<ComicInfo>\n  <Series>Restored Single Pass</Series>\n</ComicInfo>\n';
+  const after = await restoreComicInfoArchive(file, restoredXml, before);
+  assert.equal(after.xml, restoredXml);
+  assert.equal(after.contentHash, before.contentHash);
+  assert.deepEqual({ fileHash: after.fileHash, contentHash: after.contentHash }, referenceHashes(file));
+  assert.equal(await verifyArchiveSnapshot(file, after), true);
+  assert.deepEqual(await captureArchiveSnapshot(file), after);
 });

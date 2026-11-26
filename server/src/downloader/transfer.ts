@@ -2,11 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { DoujinGallery } from './types.js';
 import type { DownloaderSettings } from '../services/settings.js';
-import { sleep } from '../lib/http.js';
+import { mapLimit, sleep } from '../lib/http.js';
 import { extFromUrl, padPage } from './util.js';
 import {
   errorRetryAfterMs,
-  fetchPageToFileWithRetry,
+  fetchCandidatesToFileWithRetry,
   isRouteRefreshableError,
   isTransientError,
   jitterDelay,
@@ -75,6 +75,7 @@ export async function downloadPages(
     namesDirty = true;
     if (!namesFlushTimer) {
       namesFlushTimer = setTimeout(() => { void flushPageNames(); }, 750);
+      namesFlushTimer.unref?.();
     }
   };
 
@@ -87,13 +88,26 @@ export async function downloadPages(
   // `i`), so an interrupted fetch never shows up here — leftover `.part`
   // files are simply never counted.
   const resumedSizes = new Map<number, number>();
-  for (let i = 0; i < total; i++) {
-    try {
-      const st = await fs.promises.stat(path.join(tmpDir, String(i)));
-      if (!st.isFile() || st.size <= 0) break;
-      resumedSizes.set(i, st.size);
-    } catch {
-      break;
+  let prefixLen = 0;
+  try {
+    const existingNames = new Set(await fs.promises.readdir(tmpDir));
+    while (prefixLen < total && existingNames.has(String(prefixLen))) prefixLen++;
+  } catch {
+    /* empty or unreadable scratch dir — start from page 0 */
+  }
+  if (prefixLen > 0) {
+    const indices = Array.from({ length: prefixLen }, (_, idx) => idx);
+    const sizes = await mapLimit(indices, 16, async (idx) => {
+      try {
+        const st = await fs.promises.stat(path.join(tmpDir, String(idx)));
+        return st.isFile() && st.size > 0 ? st.size : 0;
+      } catch {
+        return 0;
+      }
+    });
+    for (let i = 0; i < sizes.length; i++) {
+      if (sizes[i] <= 0) break;
+      resumedSizes.set(i, sizes[i]);
     }
   }
   for (const [i] of resumedSizes) {
@@ -262,6 +276,7 @@ export async function downloadPages(
   };
 
   let nextIndex = resumedSizes.size;
+  let preferredMirror = 0;
   const worker = async (): Promise<void> => {
     while (true) {
       checkStop();
@@ -343,18 +358,26 @@ export async function downloadPages(
             if (ctx.stopped) return;
           }
           const candidates = await resolvePageCandidates(gallery, i, force, ctx.controller.signal);
-          for (const url of candidates) {
+          if (candidates.length > 0) {
             checkStop();
             if (ctx.stopped) return;
             try {
-              size = await fetchPageToFileWithRetry(url, pageHeaders, filePath, {
-                onAttemptStart: () => {
-                  setInflight(i, 0);
+              const result = await fetchCandidatesToFileWithRetry(
+                candidates,
+                pageHeaders,
+                filePath,
+                {
+                  onAttemptStart: () => {
+                    setInflight(i, 0);
+                  },
+                  onProgress: (received, totalBytes) => onChunk(i, received, totalBytes),
                 },
-                onProgress: (received, totalBytes) => onChunk(i, received, totalBytes),
-              }, ctx.controller.signal);
-              usedUrl = url;
-              break;
+                ctx.controller.signal,
+                force ? 0 : preferredMirror,
+              );
+              size = result.bytes;
+              usedUrl = result.url;
+              preferredMirror = result.index;
             } catch (err) {
               clearInflight(i);
               lastErr = err;
@@ -370,7 +393,7 @@ export async function downloadPages(
       out[i] = { name, path: filePath };
       recordPageName(i, name);
       onPageDone(i, size);
-      if (delay > 0) await sleep(delay, ctx.controller.signal);
+      if (delay > 0 && nextIndex < total) await sleep(delay, ctx.controller.signal);
     }
   };
 

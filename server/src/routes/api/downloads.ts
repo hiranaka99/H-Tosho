@@ -10,12 +10,12 @@ import { getDownloaderSettings } from '../../services/settings.js';
 import { downloadQueue } from '../../downloader/engine.js';
 import { getDoujinProvider } from '../../downloader/providers.js';
 import { type DoujinSource } from '../../contracts/doujin.js';
-import { listCbzFiles, readCoverImage } from '../../lib/cbz.js';
+import { listCbzFilesAsync, readCoverImage } from '../../lib/cbz.js';
 import { galleryFilesystemName, sanitizeFilename } from '../../downloader/util.js';
 import { mapLimit } from '../../lib/http.js';
 import { jobQueue } from '../../jobs/queue.js';
 import type { MergeProtectionState } from '../../contracts/mergeProtection.js';
-import { resolveMergeProtection, requireMergeProtection, MergeProtectionError } from '../../services/mergeProtection.js';
+import { MergeChapterCache, resolveMergeProtection, requireMergeProtection, MergeProtectionError } from '../../services/mergeProtection.js';
 
 import { downloadLibraryStates } from '../../services/downloadLibraryState.js';
 import { connectedClient, errMsg, intParam } from './helpers.js';
@@ -63,14 +63,14 @@ interface MergeDownloadGroup {
   ids: Record<string,number>;
 }
 
-async function prepareMergeGroup(folder: string): Promise<MergeDownloadGroup> {
+async function prepareMergeGroup(folder: string, chapterCache?: MergeChapterCache): Promise<MergeDownloadGroup> {
   const client = connectedClient();
   if (!folder.trim() || /[\\/\u0000-\u001f\u007f]/.test(folder)) throw new MergeProtectionError('mergeFolder must be a plain series name without control characters',400);
   if (!client) throw new MergeProtectionError('Kavita is required to review merged download protection');
   const dl = getDownloaderSettings();
   if (!dl.downloadDirectory.trim()) throw new MergeProtectionError('Set an output folder in Downloader settings before starting merged downloads',400);
   const targetDir = path.join(path.resolve(dl.downloadDirectory),sanitizeFilename(folder,'merged'));
-  const reviewed = await resolveMergeProtection(client,{targetDir,seriesName:folder});
+  const reviewed = await resolveMergeProtection(client, { targetDir, seriesName: folder }, undefined, chapterCache ? { chapterCache } : undefined);
   requireMergeProtection(reviewed.preview);
   return {protection:reviewed.state,plans:[],ids:{}};
 }
@@ -152,10 +152,12 @@ api.post('/downloads', async (c) => {
   if (!body || typeof body !== 'object') return c.json({ error: 'source and galleryId are required' }, 400);
   if (body.mergeFolder && (body.format ?? getDownloaderSettings().format) === 'folder') return c.json({error:'Merged downloads require CBZ output'},400);
   try {
-    const group = typeof body?.mergeFolder === 'string' && body.mergeFolder.trim() ? await prepareMergeGroup(body.mergeFolder.trim()) : undefined;
+    const hasMergeFolder = typeof body?.mergeFolder === 'string' && body.mergeFolder.trim().length > 0;
+    const chapterCache = hasMergeFolder ? new MergeChapterCache() : undefined;
+    const group = hasMergeFolder ? await prepareMergeGroup(body.mergeFolder!.trim(), chapterCache) : undefined;
     const prepared = await prepareDownload(body,group);
     if (group) {
-      const checked = await resolveMergeProtection(connectedClient()!,{targetDir:group.protection.targetDir,seriesName:group.protection.seriesName},group.protection);
+      const checked = await resolveMergeProtection(connectedClient()!, { targetDir: group.protection.targetDir, seriesName: group.protection.seriesName }, group.protection, chapterCache ? { chapterCache } : undefined);
       requireMergeProtection(checked.preview);
       group.protection = checked.state;
     }
@@ -172,12 +174,13 @@ api.post('/downloads/merged', async (c) => {
   if (!Array.isArray(body.items) || !body.items.length || body.items.length > 100
     || body.items.some((item: DownloadInput) => !item || typeof item.source !== 'string' || typeof item.galleryId !== 'string')
     || new Set(body.items.map((item: DownloadInput) => `${item.source}:${item.galleryId}`)).size !== body.items.length) return c.json({ error: 'Provide 1–100 distinct galleries.' }, 400);
+  const chapterCache = new MergeChapterCache();
   let group: MergeDownloadGroup;
-  try { group = await prepareMergeGroup(body.mergeFolder.trim()); }
+  try { group = await prepareMergeGroup(body.mergeFolder.trim(), chapterCache); }
   catch(error) { return c.json({error:errMsg(error)},error instanceof MergeProtectionError ? error.status : 502); }
   const prepared = await mapLimit(body.items as DownloadInput[], 3, item => prepareDownload({ ...item, format: 'cbz', mergeFolder: body.mergeFolder },group));
   try {
-    const checked = await resolveMergeProtection(connectedClient()!,{targetDir:group.protection.targetDir,seriesName:group.protection.seriesName},group.protection);
+    const checked = await resolveMergeProtection(connectedClient()!, { targetDir: group.protection.targetDir, seriesName: group.protection.seriesName }, group.protection, { chapterCache });
     requireMergeProtection(checked.preview);
     group.protection = checked.state;
   } catch(error) { return c.json({error:errMsg(error)},error instanceof MergeProtectionError ? error.status : 502); }
@@ -217,14 +220,16 @@ api.get('/downloads/completed', (c) => c.json(downloadQueue.completedGalleries()
  * the history was cleared (or the download predates the queue), fall back to the
  * per-gallery folder that writeOutput derives from the sanitized title.
  */
-api.get('/downloads/gallery-files', (c) => {
+api.get('/downloads/gallery-files', async (c) => {
   const source = c.req.query('source');
   const galleryId = c.req.query('galleryId');
   const title = c.req.query('title') ?? '';
   if (!source || !galleryId) return c.json({ error: 'source and galleryId are required' }, 400);
   let files: string[] = [];
   const done = downloadQueue.findCompleted(source as DoujinSource, galleryId);
-  if (done?.outputPath?.toLowerCase().endsWith('.cbz') && fs.existsSync(done.outputPath)) {
+  const exists = done?.outputPath?.toLowerCase().endsWith('.cbz')
+    && await fs.promises.access(done.outputPath).then(() => true, () => false);
+  if (done?.outputPath && exists) {
     files = [done.outputPath];
   } else if (title.trim()) {
     const dl = getDownloaderSettings();
@@ -236,7 +241,7 @@ api.get('/downloads/gallery-files', (c) => {
       ];
       for (const dir of candidates) {
         try {
-          files = listCbzFiles(dir);
+          files = await listCbzFilesAsync(dir);
         } catch {
           /* try the legacy title-only directory */
         }
@@ -259,43 +264,50 @@ export function closeDownloadEventStreams(): void {
  * field changes (throttled server-side). Used for real-time progress without
  * polling; the REST endpoints remain as the fallback/authoritative source.
  */
-api.get('/downloads/events', (c) =>
-  streamSSE(c, async (sse) => {
+api.get('/downloads/events', (c) => {
+  c.header('X-Accel-Buffering', 'no');
+  return streamSSE(c, async (sse) => {
     // Snapshot and subscription happen in one synchronous step, so no
     // broadcast can fall between them (the client merges by revision, so an
     // event repeating snapshot state is harmless). Stream writes are queued in
     // call order, so the snapshot still reaches the client first.
     const snapshot = `data: ${JSON.stringify({ type: 'snapshot', tasks: downloadQueue.listForManager() })}\n\n`;
+    let closed = false;
+    let resolveClose: (() => void) | undefined;
+    const close = () => {
+      closed = true;
+      resolveClose?.();
+    };
     // serialized() is computed once per broadcast and shared by every client.
     const unsubscribe = downloadQueue.subscribe((_task, serialized) => {
-      void sse.write(`data: {"type":"task","task":${serialized()}}\n\n`).catch(() => {});
+      void sse.write(`data: {"type":"task","task":${serialized()}}\n\n`).catch(() => close());
     });
     const unsubscribeRemovals = downloadQueue.subscribeRemovals((ids) => {
-      void sse.write(`data: ${JSON.stringify({ type: 'removed', ids })}\n\n`).catch(() => {});
+      void sse.write(`data: ${JSON.stringify({ type: 'removed', ids })}\n\n`).catch(() => close());
     });
     // Push the current state immediately so a freshly-opened client is up to date.
-    await sse.write(snapshot);
+    await sse.write(snapshot).catch(() => close());
 
     // Keep the connection alive so proxies/clients don't time out during idle.
     const heartbeat = setInterval(() => {
-      void sse.write(': ping\n\n').catch(() => {});
+      void sse.write(': ping\n\n').catch(() => close());
     }, 15_000);
+    heartbeat.unref?.();
 
-    let close: () => void = () => {};
     await new Promise<void>((resolve) => {
       const signal = c.req.raw.signal;
-      if (signal.aborted) return resolve();
-      close = resolve;
+      if (closed || signal.aborted) return resolve();
+      resolveClose = resolve;
       eventStreams.add(close);
-      signal.addEventListener('abort', () => resolve(), { once: true });
+      signal.addEventListener('abort', close, { once: true });
     });
     eventStreams.delete(close);
 
     clearInterval(heartbeat);
     unsubscribe();
     unsubscribeRemovals();
-  }),
-);
+  });
+});
 
 api.get('/downloads/:id', (c) => {
   const id = intParam(c.req.param('id'));

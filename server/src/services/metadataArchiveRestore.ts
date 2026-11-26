@@ -6,7 +6,8 @@ import type { KavitaClient } from '../kavita/client.js';
 import type { MetadataSnapshot, RecordedValue } from '../contracts/metadataHistory.js';
 import type { ArchiveRestorePreview, ArchiveRestoreSelection } from '../contracts/metadataRestore.js';
 import { PROTECTABLE_FIELDS } from '../contracts/metadata.js';
-import { archiveResource } from '../lib/mutations.js';
+import { archiveResourceAsync } from '../lib/mutations.js';
+import { mapLimit } from '../lib/http.js';
 import { pathContains } from '../lib/paths.js';
 import { mapKavitaPathToLocalPath } from '../kavita/libraryPaths.js';
 import { captureArchiveSnapshot, verifyArchiveSnapshot, type ArchiveSnapshot } from '../lib/cbz.js';
@@ -26,6 +27,11 @@ export interface PreparedArchiveRestores { approved: ApprovedArchiveRestore[]; p
 const protection: Record<string,string> = {Series:'title',Summary:'summary',Genre:'genres',Tags:'tags',Writer:'writers',Artist:'artists',Year:'releaseDate',Language:'language',LanguageISO:'language',Web:'url'};
 export function archiveProtectedFields(archives: ApprovedArchiveRestore[]): string[] {
   return [...new Set(archives.flatMap(archive => archive.mode === 'document' ? PROTECTABLE_FIELDS : archive.fields.map(field => protection[field]).filter(Boolean)))];
+}
+
+function realpathResourceKey(real: string): string {
+  const normalized = path.resolve(real);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 /** Current Kavita index, current allowed roots, and the complete readable folder must agree. No guessed paths. */
@@ -61,11 +67,11 @@ export async function resolveRestoreArchiveTargets(client: KavitaClient, snapsho
       if (!file.filePath || !/\.cbz$/i.test(file.filePath) || !path.isAbsolute(local(file.filePath))) throw new Error('Only fully indexed CBZ series support archive restoration');
       const target = await fs.realpath(local(file.filePath));
       if (!pathContains(realDirectory,target)) throw new Error('Indexed archive lies outside the current series folder');
-      indexed.add(archiveResource(target));
+      indexed.add(realpathResourceKey(target));
     }
   }
-  // One identity per file: archiveResource resolves the real path on every call.
-  const keyed = files.map(file => ({file,key:archiveResource(file)}));
+  // All paths above already come from fs.realpath; normalize case cleanly without sync syscalls.
+  const keyed = files.map(file => ({file,key:realpathResourceKey(file)}));
   const actual = new Set(keyed.map(item => item.key));
   if (!actual.size || indexed.size !== actual.size || [...indexed].some(file => !actual.has(file))) throw new Error('Indexed and on-disk archive membership differ; rescan and review');
   return keyed.sort((a,b) => a.key.localeCompare(b.key)).map(item => item.file);
@@ -81,7 +87,7 @@ export async function prepareArchiveRestores(client: KavitaClient, current: Meta
   if (!selections.length && title === undefined) return {approved:[],previews:[]};
   const targets = await resolveRestoreArchiveTargets(client,current);
   // Precomputed identities: first indexed file wins, as a linear search would.
-  const targetKeys = targets.map(archiveResource);
+  const targetKeys = await mapLimit(targets, 16, archiveResourceAsync);
   const targetByKey = new Map<string,string>();
   targets.forEach((file,index) => { if (!targetByKey.has(targetKeys[index])) targetByKey.set(targetKeys[index],file); });
   const steps = new Map<number,typeof schema.metadataOperationSteps.$inferSelect>();
@@ -98,7 +104,35 @@ export async function prepareArchiveRestores(client: KavitaClient, current: Meta
     if(nextBefore>16*1024*1024 || nextDesired>16*1024*1024)throw new Error('ComicInfo restore exceeds the 16 MiB budget per snapshot side');
     beforeBytes=nextBefore;desiredBytes=nextDesired;
   };
-  for (const selection of selections) {
+  interface SelectionPrep {
+    saved?: ArchiveSnapshot;
+    target?: string;
+    expected?: ArchiveSnapshot;
+    error?: unknown;
+  }
+  const selectionPrep = new Map<number, SelectionPrep>();
+  const snapTargets: { index: number; target: string; prep: SelectionPrep }[] = [];
+  for (const [index, selection] of selections.entries()) {
+    const step = steps.get(selection.id);
+    if (!step) continue;
+    if (side === 'after' && step.status !== 'observed') continue;
+    const json = side === 'before' ? step.beforeJson : step.afterJson;
+    if (!json) continue;
+    try {
+      const saved = JSON.parse(json) as ArchiveSnapshot;
+      if (!saved.contentHash) continue;
+      const target = targetByKey.get(await archiveResourceAsync(step.target));
+      if (!target) continue;
+      const prep: SelectionPrep = { saved, target };
+      selectionPrep.set(index, prep);
+      snapTargets.push({ index, target, prep });
+    } catch { /* Handled identically inside the sequential validation loop below. */ }
+  }
+  await mapLimit(snapTargets, 4, async ({ target, prep }) => {
+    try { prep.expected = await captureArchiveSnapshot(target); }
+    catch (error) { prep.error = error; }
+  });
+  for (const [index, selection] of selections.entries()) {
     const step = steps.get(selection.id);
     const preview:ArchiveRestorePreview = {id:selection.id,target:step?path.basename(step.target):'Unknown archive',mode:selection.mode,
       available:false,reason:null,laterEdit:false,changes:[]};
@@ -108,11 +142,13 @@ export async function prepareArchiveRestores(client: KavitaClient, current: Meta
       if (side === 'after' && step.status !== 'observed') throw new Error('Archive After snapshot was not verified');
       const json = side === 'before' ? step.beforeJson : step.afterJson;
       if (!json) throw new Error('Archive snapshot was not captured');
-      const saved = JSON.parse(json) as ArchiveSnapshot;
+      const prep = selectionPrep.get(index);
+      const saved = prep?.saved ?? JSON.parse(json) as ArchiveSnapshot;
       if (!saved.contentHash) throw new Error('This older snapshot has no archive content identity; archive restoration is unavailable');
-      const target = targetByKey.get(archiveResource(step.target));
+      const target = prep?.target ?? targetByKey.get(await archiveResourceAsync(step.target));
       if (!target) throw new Error('Saved archive is no longer indexed at its original location; file moves cannot be reversed');
-      const expected = await captureArchiveSnapshot(target);
+      if (prep?.error) throw prep.error;
+      const expected = prep?.expected ?? await captureArchiveSnapshot(target);
       if (expected.contentHash !== saved.contentHash) throw new Error('Archive page/content identity differs from the saved snapshot');
       validateRestoreXml(saved.xml); validateRestoreXml(expected.xml);
       const currentSeries = comicInfoSeries(expected.xml);
@@ -130,18 +166,20 @@ export async function prepareArchiveRestores(client: KavitaClient, current: Meta
       preview.changes = selection.mode === 'document' ? [{field:'Complete ComicInfo.xml',current:{present:expected.xml!==null,value:expected.xml},restoreTo:{present:desiredXml!==null,value:desiredXml}}]
         : fields.map(field => ({field,current:cell(expected.xml,field),restoreTo:cell(desiredXml,field)}));
       account(expected.xml,desiredXml);
-      byTarget.set(archiveResource(target),approved);preview.available=true;
+      byTarget.set(await archiveResourceAsync(target),approved);preview.available=true;
     } catch (error) { preview.available=false;preview.reason = error instanceof Error ? error.message : String(error); }
   }
-  if (title !== undefined) for (const [index,target] of targets.entries()) {
-    const existing = byTarget.get(targetKeys[index]);
-    if (existing) continue;
-    const expected = await captureArchiveSnapshot(target);
-    const desiredXml = restoreComicInfoSeries(expected.xml,title);
-    account(expected.xml,desiredXml);
-    byTarget.set(targetKeys[index],{sourceId:null,target,expected,desiredXml,mode:'title',fields:['Series']});
-    previews.push({id:null,target:path.basename(target),mode:'title',available:true,reason:null,laterEdit:false,
-      changes:[{field:'Series',current:cell(expected.xml,'Series'),restoreTo:{present:true,value:title}}]});
+  if (title !== undefined) {
+    const missing = targets.map((target, index) => ({ target, key: targetKeys[index] })).filter((item) => !byTarget.has(item.key));
+    const missingSnapshots = await mapLimit(missing, 4, async (item) => ({ ...item, expected: await captureArchiveSnapshot(item.target) }));
+    for (const { target, key, expected } of missingSnapshots) {
+      if (byTarget.has(key)) continue;
+      const desiredXml = restoreComicInfoSeries(expected.xml, title);
+      account(expected.xml, desiredXml);
+      byTarget.set(key, { sourceId: null, target, expected, desiredXml, mode: 'title', fields: ['Series'] });
+      previews.push({ id: null, target: path.basename(target), mode: 'title', available: true, reason: null, laterEdit: false,
+        changes: [{ field: 'Series', current: cell(expected.xml, 'Series'), restoreTo: { present: true, value: title } }] });
+    }
   }
   return {approved:[...byTarget.values()],previews};
 }
@@ -149,15 +187,18 @@ export async function prepareArchiveRestores(client: KavitaClient, current: Meta
 /** Called again while all archive resources are held. A new mount/index/file means a fresh review. */
 export async function recheckArchiveRestores(client:KavitaClient,current:MetadataSnapshot,approved:ApprovedArchiveRestore[],titleSelected:boolean):Promise<void> {
   if (!approved.length) return;
-  const targets = (await resolveRestoreArchiveTargets(client,current)).map(archiveResource);
-  const targetSet = new Set(targets), approvedKeys = approved.map(item => archiveResource(item.target)), approvedSet = new Set(approvedKeys);
+  const [targets, approvedKeys] = await Promise.all([
+    resolveRestoreArchiveTargets(client, current).then((items) => mapLimit(items, 16, archiveResourceAsync)),
+    mapLimit(approved, 16, (item) => archiveResourceAsync(item.target)),
+  ]);
+  const targetSet = new Set(targets), approvedSet = new Set(approvedKeys);
   if (titleSelected && (targets.length !== approved.length || targets.some(target => !approvedSet.has(target)))) {
     throw new Error('Series archive membership changed after preview; review required');
   }
-  for (const [index,item] of approved.entries()) {
+  await mapLimit(approved, 4, async (item, index) => {
     // Same decision as sameArchiveSnapshot(expected, capture), without the content-identity pass.
-    if (!targetSet.has(approvedKeys[index]) || !await verifyArchiveSnapshot(item.target,item.expected)) {
+    if (!targetSet.has(approvedKeys[index]) || !await verifyArchiveSnapshot(item.target, item.expected)) {
       throw new Error('Archive identity or fingerprint changed after preview; review required');
     }
-  }
+  });
 }

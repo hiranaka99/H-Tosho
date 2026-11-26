@@ -101,7 +101,10 @@ function createShellHandler(indexPath: string) {
     if (encoding) headers['Content-Encoding'] = encoding;
     headers['Content-Type'] = 'text/html; charset=UTF-8';
     headers['Content-Length'] = String(body.length);
-    return new Response(c.req.method === 'HEAD' ? null : new Uint8Array(body), { status: 200, headers });
+    const bytes = body.buffer instanceof ArrayBuffer
+      ? new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
+      : Uint8Array.from(body);
+    return new Response(c.req.method === 'HEAD' ? null : bytes, { status: 200, headers });
   };
 }
 

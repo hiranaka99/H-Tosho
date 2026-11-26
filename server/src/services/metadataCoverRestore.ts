@@ -3,8 +3,8 @@ import { getDb, schema } from '../db/index.js';
 import type { KavitaClient } from '../kavita/client.js';
 import type { MetadataSnapshot } from '../contracts/metadataHistory.js';
 import type { CoverTarget, CoverRestoreSelection, CoverRestorePreview, RecordedCover, CoverNativeLockChoice } from '../contracts/metadataCovers.js';
-import { coverHistory, getCoverCheckpoint, retainedCoverAsset, type CoverCheckpointRow } from './metadataCovers.js';
-import { observeCover, retainCoverObservation, sameCoverObservation, loadCoverAsset, type CoverObservation, type CoverEvidence } from './coverObservations.js';
+import { coverHistory, hasRetainedCoverAsset, type CoverCheckpointRow } from './metadataCovers.js';
+import { observeCover, retainCoverObservation, sameCoverObservation, coverTargetKey, loadCoverAsset, type CoverObservation, type CoverEvidence } from './coverObservations.js';
 import { getKavitaConnection } from './settings.js';
 import { kavitaConnectionKey } from './kavitaState.js';
 
@@ -65,11 +65,22 @@ function publicObservation(value: CoverObservation): RecordedCover {
 
 export async function prepareCoverRestores(client: KavitaClient, current: MetadataSnapshot, selected: MetadataSnapshot, operationId: string, side: 'before' | 'after', selections: CoverRestoreSelection[], lockedFields: readonly string[], retainCurrent?: (preview: CoverRestorePreview, observed: CoverObservation) => void): Promise<PreparedCoverRestores> {
   const result: PreparedCoverRestores = { approved: [], previews: [] };
+  if (!selections.length) return result;
+  const db = getDb();
   const key = kavitaConnectionKey(getKavitaConnection().baseUrl), history = coverHistory(operationId);
+  const seriesRow = selections.some(s => s.kind !== 'volume')
+    ? db.select().from(schema.metadataSeriesCovers).where(eq(schema.metadataSeriesCovers.operationId, operationId)).get()
+    : undefined;
+  const volumeRowsById = new Map(
+    selections.some(s => s.kind === 'volume')
+      ? db.select().from(schema.metadataVolumeCovers).where(eq(schema.metadataVolumeCovers.operationId, operationId)).all().map(row => [row.volumeId, row] as const)
+      : [],
+  );
   for (const selection of selections) {
     const target: CoverTarget = selection.kind === 'volume' ? { kind: 'volume', volumeId: selection.volumeId! } : { kind: 'series' };
     const checkpoint = target.kind === 'series' ? history?.series : history?.volumes.find(item => item.volumeId === target.volumeId);
-    const row = getCoverCheckpoint(operationId, target), nativeLock = selection.nativeLock ?? 'preserve';
+    const row = target.kind === 'series' ? seriesRow : volumeRowsById.get(target.volumeId);
+    const nativeLock = selection.nativeLock ?? 'preserve';
     const restoreTo: RecordedCover = checkpoint ? checkpoint[side] : { state: 'unavailable', assetId: null, mediaType: null, byteSize: null, nativeLocked: null, reason: 'No retained image exists for this target' };
     const preview: CoverRestorePreview = { target, name: checkpoint?.name ?? (target.kind === 'series' ? 'Series cover' : `Volume #${target.volumeId}`),
       current: { state: 'unavailable', assetId: null, mediaType: null, byteSize: null, nativeLocked: null, reason: 'Current cover has not been inspected' }, restoreTo,
@@ -77,7 +88,7 @@ export async function prepareCoverRestores(client: KavitaClient, current: Metada
     result.previews.push(preview);
     try {
       if (!row || !checkpoint || !checkpoint.restoreAvailability[side].available) throw new Error(checkpoint?.restoreAvailability[side].reason ?? 'This cover snapshot is unavailable');
-      if (!restoreTo.assetId || !retainedCoverAsset(current.series.id, operationId, restoreTo.assetId)) throw new Error('The retained source image failed authorization or integrity checks');
+      if (!restoreTo.assetId || !hasRetainedCoverAsset(current.series.id, operationId, restoreTo.assetId)) throw new Error('The retained source image failed authorization or integrity checks');
       const observed = await observeCover(client, current.series.id, target, current, key);
       preview.current = publicObservation(observed);
       preview.nativeLockReadbackAvailable = observed.locked !== null;
@@ -98,13 +109,16 @@ export async function prepareCoverRestores(client: KavitaClient, current: Metada
   return result;
 }
 
-export async function recheckCoverRestores(client: KavitaClient, current: MetadataSnapshot, covers: ApprovedCoverRestore[], sourceOperationId: string): Promise<void> {
+export async function recheckCoverRestores(client: KavitaClient, current: MetadataSnapshot, covers: ApprovedCoverRestore[], sourceOperationId: string): Promise<Map<string, CoverObservation>> {
   const key = kavitaConnectionKey(getKavitaConnection().baseUrl);
+  const observedByKey = new Map<string, CoverObservation>();
   for (const cover of covers) {
-    if (cover.sourceOperationId !== sourceOperationId || cover.expected.evidence.seriesId !== current.series.id || !retainedCoverAsset(current.series.id, sourceOperationId, cover.sourceAssetId)) throw new Error('Approved cover source no longer belongs to this operation');
+    if (cover.sourceOperationId !== sourceOperationId || cover.expected.evidence.seriesId !== current.series.id || !hasRetainedCoverAsset(current.series.id, sourceOperationId, cover.sourceAssetId)) throw new Error('Approved cover source no longer belongs to this operation');
     const observed = await observeCover(client, current.series.id, cover.target, current, key);
     if (!sameCoverObservation(cover.expected, observed)) throw new Error(`${cover.name}: current image, native lock or indexed identity changed after preview; review required`);
+    observedByKey.set(coverTargetKey(cover.target), observed);
   }
+  return observedByKey;
 }
 
 /** Current preview images are authorized by their retained preview or durable approved plan. */

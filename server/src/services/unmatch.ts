@@ -9,10 +9,11 @@ import { getFieldPolicy } from './fieldPolicies.js';
 import { EXCLUDABLE_FIELDS } from '../contracts/metadata.js';
 import { withMetadataHistory } from './metadataHistory.js';
 import { recoverMergeProtectionForSeriesOwned } from './mergeProtection.js';
+import { mapLimit } from '../lib/http.js';
 export function removeSeriesMatch(client: KavitaClient, seriesId: number): Promise<{ removed: boolean }> {
   return libraryMutations.run([`series:${seriesId}`], async () => {
     await recoverMergeProtectionForSeriesOwned(client, seriesId);
-    if(!getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId,seriesId)).get())return {removed:false};
+    if(!getDb().select({ id: schema.seriesMatches.id }).from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId,seriesId)).get())return {removed:false};
     return withMetadataHistory(client,seriesId,'unmatch',{},async journal=>{
     const series = await client.getSeriesById(seriesId);
     const db = getDb();
@@ -45,7 +46,7 @@ export function removeSeriesMatch(client: KavitaClient, seriesId: number): Promi
       }
       // Every original cover must be durable before any metadata or cover cleanup.
       if (coverUpdated) await journal.captureSeriesCover();
-      for (const volumeId of volumeCoverIds) await journal.captureVolumeCover(volumeId);
+      await mapLimit(volumeCoverIds, 4, (volumeId) => journal.captureVolumeCover(volumeId));
       if (metadata && pushed.length > 0) await client.removeSeriesMetadata(seriesId, buildSeriesPayload(metadata), pushed);
       if (coverUpdated) {await journal.captureSeriesCover();journal.beginCoverWrite({kind:'series'},false);await client.resetSeriesCover(seriesId);journal.acknowledgeCoverWrite({kind:'series'});}
       for (const volumeId of volumeCoverIds) {

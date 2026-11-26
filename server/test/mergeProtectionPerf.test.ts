@@ -173,3 +173,57 @@ test('isTaskRunning settles on the first running answer and remembers a legacy-o
   assert.equal(await legacy.isTaskRunning(), false, 'an upgraded server returns to scoped calls');
   assert.equal(requests.length, 7);
 });
+
+test('resolveMergeProtection skips unrelated mapped series and fails closed on unmapped series', async () => {
+  const f = fixture('scoped-chapters');
+  const unrelatedId = nextId++;
+  const unrelatedDir = path.join(f.root, 'UnrelatedMapped');
+  fs.mkdirSync(unrelatedDir, { recursive: true });
+  f.replaceSeries([
+    { id: f.sourceId, libraryId: 7, name: 'Source', folderPath: path.dirname(f.source) },
+    { id: f.targetId, libraryId: 7, name: 'Target', folderPath: f.targetDir },
+    { id: unrelatedId, libraryId: 7, name: 'Completely Different Title', folderPath: unrelatedDir },
+  ]);
+  f.files.set(unrelatedId, [path.join(unrelatedDir, 'Other.cbz')]);
+
+  await resolveMergeProtection(f.client, { sourceFiles: [f.source], targetDir: f.targetDir });
+  assert.equal(f.chapterCalls.includes(unrelatedId), false, 'unrelated mapped series skips getChaptersBySeries');
+  assert.ok(f.chapterCalls.includes(f.sourceId) && f.chapterCalls.includes(f.targetId));
+
+  // Unmapped series are still inspected so missing mappings fail closed.
+  f.chapterCalls.length = 0;
+  f.replaceSeries([
+    { id: f.sourceId, libraryId: 7, name: 'Source', folderPath: path.dirname(f.source) },
+    { id: f.targetId, libraryId: 7, name: 'Target', folderPath: f.targetDir },
+    { id: unrelatedId, libraryId: 7, name: 'Unmapped', folderPath: undefined as unknown as string },
+  ]);
+  f.files.set(unrelatedId, ['/unmapped-kavita-library/Unmapped/Book.cbz']);
+  await assert.rejects(
+    resolveMergeProtection(f.client, { sourceFiles: [f.source], targetDir: f.targetDir }),
+    /Map Kavita library paths/,
+  );
+  assert.equal(f.chapterCalls.includes(unrelatedId), true);
+});
+
+test('GET /series/:id/field-locks responds without waiting on libraryMutations when no incomplete merge exists', async () => {
+  const f = fixture('field-locks-fastpath');
+  getDb().delete(schema.jobs).where(eq(schema.jobs.type, 'merge-series')).run();
+  await saveFieldPolicy(f.sourceId, ['title'], 0);
+  const { api } = await import('../src/routes/api.js');
+
+  const gate = Promise.withResolvers<void>();
+  const holder = libraryMutations.run(['*'], () => gate.promise);
+  try {
+    let settled = false;
+    const response = await Promise.race([
+      api.request(`/series/${f.sourceId}/field-locks`).then((res) => { settled = true; return res; }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('field-locks timed out while libraryMutations was held')), 2000)),
+    ]);
+    assert.equal(settled, true);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { lockedFields: ['title'], revision: 1 });
+  } finally {
+    gate.resolve();
+    await holder;
+  }
+});

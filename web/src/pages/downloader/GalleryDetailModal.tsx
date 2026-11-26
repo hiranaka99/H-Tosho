@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router';
 import { Loader2, Download as DownloadIcon, RotateCcw, CheckCircle2, X, ExternalLink, BookOpen, Users, Layers, Star, Tags } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSearchResult } from '../../lib/api';
-import { useGalleryDownloadTask } from '../../lib/DownloadsContext';
+import { useGalleryDownloadStatus, useGalleryDownloadTask } from '../../lib/DownloadsContext';
 import { buildTagSearchFragment, cn } from '../../lib/utils';
 import { Button, Spinner, Disclosure, ProgressBar } from '../../components/ui';
 import { Dialog, DialogContent, DialogTitle } from '../../components/dialog';
@@ -122,7 +122,9 @@ function TagGroups({ tags, onSearch, titleFor }: {
 }
 
 /** Where an in-progress download stands, with the way to the queue. */
-function DownloadProgressNotice({ task, onClose }: { task: NonNullable<ReturnType<typeof useGalleryDownloadTask>>; onClose: () => void }) {
+function DownloadProgressNotice({ source, galleryId, onClose }: { source: DoujinSource; galleryId: string; onClose: () => void }) {
+  const task = useGalleryDownloadTask(source, galleryId);
+  if (!task) return null;
   const packing = task.state?.type === 'packing';
   const retrying = task.state?.type === 'retry-wait';
   const resolving = task.status === 'downloading' && task.phase === 'resolving';
@@ -148,8 +150,7 @@ function DownloadProgressNotice({ task, onClose }: { task: NonNullable<ReturnTyp
 }
 
 export function GalleryDetailModal({ item, onClose, onDownload, checking, downloaded, inLibrary, libraryMatch, setup, onSearchTag, searchAcrossSources = false, variants, selectedVariantKey, onSelectVariant }: { item: DoujinSearchResult; onClose: () => void; onDownload: () => void; checking: boolean; downloaded: boolean; inLibrary: boolean; /** The confirmed library copy, when one was found. */ libraryMatch?: { title: string; path?: string }; setup: DownloadSetup; onSearchTag: (fragment: string, source?: DoujinSource | 'all') => void; /** Opened from All sources: shared filters search every source again. */ searchAcrossSources?: boolean; variants?: { item: DoujinSearchResult; position?: number }[]; selectedVariantKey?: string; onSelectVariant?: (item: DoujinSearchResult) => void }) {
-  const task = useGalleryDownloadTask(item.source, item.galleryId);
-  const downloading = !!task;
+  const downloading = !!useGalleryDownloadStatus(item.source, item.galleryId);
   const { data: gallery, isPending, isFetching, isError, error, refetch } = useQuery({
     queryKey: ['doujin-gallery', item.source, item.galleryId],
     queryFn: () => api.doujinGallery(item.source, item.galleryId),
@@ -169,8 +170,11 @@ export function GalleryDetailModal({ item, onClose, onDownload, checking, downlo
   const uploaded = formatDate(g?.uploadedAt ?? item.uploadedAt);
   const facts = [pageCount ? `${pageCount} pages` : null, language, uploaded ? `Uploaded ${uploaded}` : null].filter(Boolean).join(' · ');
   // The language already sits in the header; a tag that only repeats it is noise.
-  const tags = (g?.tags ?? []).map((value, i) => ({ value, ns: g?.tagNamespaces?.[i] ?? null }))
-    .filter((tag) => !(language && tag.value.toLowerCase() === language.toLowerCase() && (!tag.ns || tag.ns === 'language' || GENERAL_NAMESPACES.has(tag.ns))));
+  const tags = React.useMemo(
+    () => (g?.tags ?? []).map((value, i) => ({ value, ns: g?.tagNamespaces?.[i] ?? null }))
+      .filter((tag) => !(language && tag.value.toLowerCase() === language.toLowerCase() && (!tag.ns || tag.ns === 'language' || GENERAL_NAMESPACES.has(tag.ns)))),
+    [g?.tags, g?.tagNamespaces, language],
+  );
 
   const bodyRef = React.useRef<HTMLDivElement>(null);
   const readerRef = React.useRef<PagePreviewHandle>(null);
@@ -248,7 +252,7 @@ export function GalleryDetailModal({ item, onClose, onDownload, checking, downlo
                 <Link to={`/libraries?q=${encodeURIComponent(libraryMatch?.title ?? title)}`} onClick={onClose} className="ml-6 inline-flex min-h-8 max-lg:min-h-11 pointer-coarse:min-h-11 items-center self-start text-xs text-primary underline underline-offset-4">Search Libraries for this title</Link>
               </div>
             )}
-            {task && !inLibrary && <DownloadProgressNotice task={task} onClose={onClose} />}
+            {downloading && !inLibrary && <DownloadProgressNotice source={item.source} galleryId={item.galleryId} onClose={onClose} />}
 
             {isPending && (
               <div className="flex items-center gap-2 py-6 text-sm text-muted">

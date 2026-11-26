@@ -1,5 +1,5 @@
 import { getProvider } from '../providers/registry.js';
-import type { SearchResult, SeriesMetadata, MediaType } from '../providers/types.js';
+import type { MetadataProvider, SearchResult, SeriesMetadata, MediaType } from '../providers/types.js';
 import { AUTO_MATCH_THRESHOLD, canonicalTitle, scoreCanonical, titleSearchParts } from './normalize.js';
 import type { KavitaSeries } from '../kavita/types.js';
 
@@ -128,8 +128,11 @@ export async function autoMatch(
       const found = await searchOneProvider(providerId, searchQuery);
       candidates.push(...found);
       // Early exit: a confident exact/near-exact match from the top provider.
-      const top = found.sort((a, b) => b.score - a.score)[0];
-      if (top && top.score >= 0.97) break;
+      let topScoreFound = -1;
+      for (const item of found) {
+        if (item.score > topScoreFound) topScoreFound = item.score;
+      }
+      if (topScoreFound >= 0.97) break;
     }
   };
 
@@ -159,7 +162,7 @@ export async function autoMatch(
   // Exact score ties (e.g. two containment matches at 0.92) are broken by
   // token overlap with the series name, so a title sharing more of the query
   // wins regardless of provider priority or catalog merge order.
-  const queryTokens = new Set(canonicalTitle(query).split(' '));
+  const queryTokens = new Set((query === series.name ? seriesCanonical : canonicalTitle(query)).split(' '));
   const sharedTokenCount = new Map<string, number>();
   const sharedTokens = (c: CandidateMatch): number => {
     let n = sharedTokenCount.get(c.title);
@@ -196,4 +199,28 @@ export async function fetchProviderMetadata(
   if (!provider) throw new Error(`Unknown provider: ${providerId}`);
   provider.setCredentials(credentials[providerId] ?? {});
   return provider.getSeriesMetadata(providerSeriesId, signal);
+}
+
+/**
+ * Use the provider's batch metadata fetcher unless single-item `getSeriesMetadata`
+ * was monkey-patched directly on the instance (e.g. test mocks) without its batch peer.
+ */
+export function canBatchProviderMetadata(provider: MetadataProvider): boolean {
+  return typeof provider.getSeriesMetadataBatch === 'function'
+    && (Object.prototype.hasOwnProperty.call(provider, 'getSeriesMetadataBatch')
+      || !Object.prototype.hasOwnProperty.call(provider, 'getSeriesMetadata'));
+}
+
+export async function fetchProviderMetadataBatch(
+  providerId: string,
+  providerSeriesIds: string[],
+  credentials: Record<string, Record<string, string>>,
+  signal?: AbortSignal,
+  opts?: { skipVolumeCovers?: ReadonlySet<string> },
+): Promise<Map<string, SeriesMetadata> | null> {
+  const provider = getProvider(providerId);
+  if (!provider) throw new Error(`Unknown provider: ${providerId}`);
+  provider.setCredentials(credentials[providerId] ?? {});
+  if (!canBatchProviderMetadata(provider)) return null;
+  return provider.getSeriesMetadataBatch!(providerSeriesIds, signal, opts);
 }

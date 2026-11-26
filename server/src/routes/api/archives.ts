@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDownloaderSettings } from '../../services/settings.js';
-import { imageMime, listCbzFilesAsync, listCbzImages, readComicInfo, readZipEntryFromDisk, resolveExistingFileAsync, resolveSeriesHostDir } from '../../lib/cbz.js';
+import { imageMime, listCbzFilesAsync, listCbzImages, readComicInfo, readZipEntryFromDisk, resolveExistingFileAsync, resolveSeriesHostDirAsync } from '../../lib/cbz.js';
 import { mapLimit } from '../../lib/http.js';
 import { parseComicInfo } from '../../downloader/comicinfo.js';
 
@@ -107,8 +108,18 @@ api.get('/cbz/page', async (c) => {
   const mime = imageMime(name);
   if (!mime) return c.json({ error: 'Entry is not a recognized image' }, 400);
   try {
+    const stat = await fs.promises.stat(full);
+    const etag = `W/"${createHash('sha1').update(`${full}|${stat.mtimeMs}|${stat.size}|${name}`).digest('base64url').slice(0, 22)}"`;
+    const ifNoneMatch = c.req.header('If-None-Match');
+    const bare = etag.replace(/^W\//, '');
+    if (ifNoneMatch && ifNoneMatch.split(',').some(tag => {
+      const t = tag.trim();
+      return t === '*' || t.replace(/^W\//, '') === bare;
+    })) {
+      return new Response(null, { status: 304, headers: { 'Cache-Control': 'private, max-age=3600', ETag: etag, 'X-Content-Type-Options': 'nosniff' } });
+    }
     const buf = await readZipEntryFromDisk(full, name);
-    return new Response(buf, { status: 200, headers: { 'Content-Type': mime, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' } });
+    return new Response(buf, { status: 200, headers: { 'Content-Type': mime, 'Cache-Control': 'private, max-age=3600', ETag: etag, 'X-Content-Type-Options': 'nosniff' } });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 404);
   }
@@ -120,16 +131,19 @@ api.get('/cbz/series/:id', async (c) => {
   if (id === null) return c.json({ error: 'Invalid series id' }, 400);
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
-  let s;
-  try {
-    s = await client.getSeriesById(id);
-  } catch (e) {
-    return c.json({ error: errMsg(e) }, 404);
-  }
-  const libraries = await client.getLibraries();
+  const [seriesResult, prefetchedLibs] = await Promise.all([
+    client.getSeriesById(id).then(
+      (series) => ({ ok: true as const, series }),
+      (error) => ({ ok: false as const, error }),
+    ),
+    client.getLibraries().catch(() => undefined),
+  ]);
+  if (!seriesResult.ok) return c.json({ error: errMsg(seriesResult.error) }, 404);
+  const s = seriesResult.series;
+  const libraries = prefetchedLibs ?? await client.getLibraries();
   const lib = libraries.find((l) => l.id === s.libraryId);
   const dl = getDownloaderSettings();
-  const dir = resolveSeriesHostDir({
+  const dir = await resolveSeriesHostDirAsync({
     libraryPath: lib?.path,
     folderPath: s.folderPath,
     anchors: dl.downloadDirectory ? [path.resolve(dl.downloadDirectory)] : [],

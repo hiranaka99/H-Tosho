@@ -25,12 +25,12 @@ api.get('/home/matches', c => {
     candidate: { ...item.candidate, coverUrl: rewriteMangaDexCoverUrl(item.candidate.coverUrl) },
   }));
   const latest = [jobQueue.latest('scan-matchable'), jobQueue.latest('scan-downloaded')].filter(job => !!job).sort((a, b) => b.id - a.id)[0];
-  return c.json({ items, configured: !!connectedClient(), scan: jobQueue.active().find(job => job.type === 'scan-matchable' || job.type === 'scan-downloaded') ?? latest });
+  return c.json({ items, configured: !!connectedClient(), scan: jobQueue.activeByTypes(['scan-matchable', 'scan-downloaded'])[0] ?? latest });
 });
 
 api.post('/home/matches/scan', c => {
   if (!connectedClient()) return c.json({ error: 'Connect Kavita before scanning for matches.' }, 503);
-  const active = jobQueue.active().find(job => job.type === 'scan-matchable');
+  const active = jobQueue.activeByTypes(['scan-matchable'])[0];
   return c.json({ id: active?.id ?? jobQueue.enqueue('scan-matchable', {}), alreadyRunning: !!active }, 202);
 });
 
@@ -56,12 +56,12 @@ api.get('/home/updates', c => {
     cover: item.cover ? kavitaCoverUrl(item.seriesId, item.cover) : null,
     candidateCoverUrl: rewriteMangaDexCoverUrl(item.candidateCoverUrl ?? undefined) ?? null,
   }));
-  return c.json({ items, configured: !!connectedClient(), refresh: jobQueue.active().find(job => job.type === 'refresh-matched') ?? jobQueue.latest('refresh-matched') ?? null });
+  return c.json({ items, configured: !!connectedClient(), refresh: jobQueue.activeByTypes(['refresh-matched'])[0] ?? jobQueue.latest('refresh-matched') ?? null });
 });
 
 api.post('/home/updates/refresh', c => {
   if (!connectedClient()) return c.json({ error: 'Connect Kavita before checking for updates.' }, 503);
-  const active = jobQueue.active().find(job => job.type === 'refresh-matched');
+  const active = jobQueue.activeByTypes(['refresh-matched'])[0];
   return c.json({ id: active?.id ?? jobQueue.enqueue('refresh-matched', {}), alreadyRunning: !!active }, 202);
 });
 

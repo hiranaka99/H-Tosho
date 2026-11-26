@@ -3,6 +3,7 @@ import path from 'node:path';
 import { and, desc, eq, lt } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import type { KavitaClient } from '../kavita/client.js';
+import type { KavitaSeriesMetadataDto } from '../kavita/types.js';
 import { captureArchiveSnapshot } from '../lib/cbz.js';
 import { parseComicInfo } from '../downloader/comicinfo.js';
 import { archiveMutations, archiveResource } from '../lib/mutations.js';
@@ -25,22 +26,39 @@ const keys: Record<string, [string, string?]> = {
   writers:['writers','writerLocked'],artists:['pencillers','pencillerLocked'],releaseDate:['releaseYear','releaseYearLocked'],
   language:['language','languageLocked'],status:['publicationStatus','publicationStatusLocked'],url:['webLinks'],
 };
-export async function captureMetadataSnapshot(client: KavitaClient, seriesId: number, verifyMetadataIdentity = false): Promise<MetadataSnapshot> {
-  const [series, metadata] = await Promise.all([client.getSeriesDto(seriesId),client.getSeriesMetadata(seriesId)]);
+export async function captureMetadataSnapshotWithRaw(client: KavitaClient, seriesId: number, verifyMetadataIdentity = false): Promise<{ snapshot: MetadataSnapshot; metadata: KavitaSeriesMetadataDto }> {
+  const [series, metadata] = await Promise.all([client.getSeriesDto(seriesId), client.getSeriesMetadata(seriesId)]);
   if (series.id !== seriesId || !Number.isSafeInteger(series.libraryId)) throw new Error('History target identity could not be verified');
   if (verifyMetadataIdentity && metadata.seriesId !== seriesId) throw new Error('Metadata target identity could not be verified');
   const fields: MetadataSnapshot['fields'] = {};
-  for (const [field,[key,lock]] of Object.entries(keys)) {
-    const source = (['title','sortName','localizedName'].includes(field) ? series : metadata) as unknown as Record<string,unknown>;
-    fields[field] = { present: Object.hasOwn(source,key), ...(Object.hasOwn(source,key)?{value:source[key]}:{}),
-      ...(lock && typeof source[lock] === 'boolean' ? {nativeLocked:source[lock] as boolean}: {}) };
+  for (const [field, [key, lock]] of Object.entries(keys)) {
+    const source = (['title', 'sortName', 'localizedName'].includes(field) ? series : metadata) as unknown as Record<string, unknown>;
+    fields[field] = {
+      present: Object.hasOwn(source, key), ...(Object.hasOwn(source, key) ? { value: source[key] } : {}),
+      ...(lock && typeof source[lock] === 'boolean' ? { nativeLocked: source[lock] as boolean } : {}),
+    };
   }
-  return {titleContext:{sortName:series.sortName,sortNameLocked:series.sortNameLocked,localizedName:series.localizedName,
-    localizedNameLocked:series.localizedNameLocked,coverImageLocked:series.coverImageLocked},series:{id:series.id,libraryId:series.libraryId,name:series.name ?? null,
-    ...(Object.hasOwn(series, 'folderPath') ? {folderPath:series.folderPath} : {})},fields};
+  return {
+    snapshot: {
+      titleContext: {
+        sortName: series.sortName, sortNameLocked: series.sortNameLocked, localizedName: series.localizedName,
+        localizedNameLocked: series.localizedNameLocked, coverImageLocked: series.coverImageLocked,
+      },
+      series: {
+        id: series.id, libraryId: series.libraryId, name: series.name ?? null,
+        ...(Object.hasOwn(series, 'folderPath') ? { folderPath: series.folderPath } : {}),
+      },
+      fields,
+    },
+    metadata,
+  };
+}
+export async function captureMetadataSnapshot(client: KavitaClient, seriesId: number, verifyMetadataIdentity = false): Promise<MetadataSnapshot> {
+  return (await captureMetadataSnapshotWithRaw(client, seriesId, verifyMetadataIdentity)).snapshot;
 }
 const archiveSnapshot = captureArchiveSnapshot;
 export interface MetadataJournal {
+  beforeMetadata?: KavitaSeriesMetadataDto;
   captureArchives: (files: string[]) => Promise<void>;
   captureSeriesCover: () => Promise<void>;
   captureVolumeCover: (volumeId: number) => Promise<void>;
@@ -70,7 +88,7 @@ function unverifiedFields(after: MetadataSnapshot, desired: Record<string, unkno
 export async function withMetadataHistory<T>(client: KavitaClient, seriesId: number, origin: string,
   desired: Record<string,unknown>, operation: (journal: MetadataJournal) => Promise<T>, jobId?: number): Promise<T> {
   const key=connection();
-  const before=await captureMetadataSnapshot(client,seriesId);
+  const { snapshot: before, metadata: beforeMetadata } = await captureMetadataSnapshotWithRaw(client, seriesId);
   if(connection()!==key)throw new Error('Kavita connection changed before history capture');
   const id=randomUUID(), db=getDb();
   db.insert(schema.metadataOperations).values({id,connectionKey:key,seriesId,jobId,origin,fieldsJson:JSON.stringify(Object.keys(desired)),desiredJson:JSON.stringify(desired),policyRevision:getFieldPolicy(seriesId).revision,beforeJson:JSON.stringify(before),createdAt:new Date().toISOString()}).run();
@@ -87,6 +105,7 @@ export async function withMetadataHistory<T>(client: KavitaClient, seriesId: num
     coverFieldRecorded=true;
   };
   const journal: MetadataJournal = {
+    beforeMetadata,
     captureSeriesCover: async () => { recordCoverField(); await covers.capture({ kind: 'series' }); },
     captureVolumeCover: async volumeId => { recordCoverField(); await covers.capture({ kind: 'volume', volumeId }); },
     beginCoverWrite: (target, lock, assetId) => covers.beginWrite(target, lock, assetId),
@@ -138,7 +157,7 @@ export async function withMetadataHistory<T>(client: KavitaClient, seriesId: num
   return result as T;
 }
 
-type Row=typeof schema.metadataOperations.$inferSelect;
+type Row = Omit<typeof schema.metadataOperations.$inferSelect, 'desiredJson' | 'connectionKey' | 'seriesId' | 'policyRevision' | 'version'>;
 function summary(row:Row, cover?: CoverHistory, parsedBefore?: MetadataSnapshot, parsedAfter?: MetadataSnapshot | null):MetadataHistoryEntry {
   const before:MetadataSnapshot=parsedBefore ?? JSON.parse(row.beforeJson);
   const after:MetadataSnapshot|null=parsedAfter !== undefined ? parsedAfter : (row.afterJson?JSON.parse(row.afterJson):null);
@@ -146,7 +165,20 @@ function summary(row:Row, cover?: CoverHistory, parsedBefore?: MetadataSnapshot,
     fields:JSON.parse(row.fieldsJson),changedFields:[...(after?Object.keys(before.fields).filter(field=>metadataValueKey(before.fields[field])!==metadataValueKey(after.fields[field])):[]),...((cover?.series?.changed || cover?.volumes.some(volume => volume.changed))?['cover']:[])],message:row.message,jobId:row.jobId,restoredFromOperationId:row.restoredFromOperationId};
 }
 export function listMetadataHistory(seriesId:number,cursor?:number) {
-  const rows=getDb().select().from(schema.metadataOperations).where(and(eq(schema.metadataOperations.connectionKey,connection()),eq(schema.metadataOperations.seriesId,seriesId),cursor?lt(schema.metadataOperations.sequence,cursor):undefined)).orderBy(desc(schema.metadataOperations.sequence)).limit(21).all();
+  const rows=getDb().select({
+    id: schema.metadataOperations.id,
+    sequence: schema.metadataOperations.sequence,
+    origin: schema.metadataOperations.origin,
+    status: schema.metadataOperations.status,
+    createdAt: schema.metadataOperations.createdAt,
+    finishedAt: schema.metadataOperations.finishedAt,
+    fieldsJson: schema.metadataOperations.fieldsJson,
+    beforeJson: schema.metadataOperations.beforeJson,
+    afterJson: schema.metadataOperations.afterJson,
+    message: schema.metadataOperations.message,
+    jobId: schema.metadataOperations.jobId,
+    restoredFromOperationId: schema.metadataOperations.restoredFromOperationId,
+  }).from(schema.metadataOperations).where(and(eq(schema.metadataOperations.connectionKey,connection()),eq(schema.metadataOperations.seriesId,seriesId),cursor?lt(schema.metadataOperations.sequence,cursor):undefined)).orderBy(desc(schema.metadataOperations.sequence)).limit(21).all();
   const page = rows.slice(0,20);
   const coversByOp = coverHistoryBatch(page);
   const items=page.map(row => summary(row, coversByOp.get(row.id)));

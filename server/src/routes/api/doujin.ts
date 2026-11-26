@@ -1,7 +1,7 @@
 import { recordGalleryIdentity, resolveDuplicateGallery } from '../../services/galleryDuplicates.js';
 import { Hono } from 'hono';
 import { getDoujinProvider, listDoujinProviders } from '../../downloader/providers.js';
-import { getEhentaiAccountView } from '../../services/ehentaiAccount.js';
+import { getEhentaiAccountSite } from '../../services/ehentaiAccount.js';
 import { currentPrincipal } from '../../services/auth.js';
 import { unifiedSuggestions } from '../../services/unifiedSuggestions.js';
 import { runUnifiedSearch, UnifiedQueryError, UnifiedSessionError } from '../../services/unifiedSearch.js';
@@ -15,7 +15,7 @@ api.get('/doujin/providers', (c) => {
   // The E-Hentai entry reflects the saved account's family site (E-Hentai vs
   // ExHentai) so the UI labels and origin follow the user's configuration.
   try {
-    return c.json(listDoujinProviders(getEhentaiAccountView().site));
+    return c.json(listDoujinProviders(getEhentaiAccountSite()));
   } catch {
     return c.json(listDoujinProviders());
   }
@@ -140,7 +140,7 @@ api.post('/doujin/search/unified', async (c) => {
     // no-transform keeps compression and proxies from buffering the events.
     return new Response(stream, {
       status: 200,
-      headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'private, no-store, no-transform' },
+      headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'private, no-store, no-transform', 'X-Accel-Buffering': 'no' },
     });
   }
 

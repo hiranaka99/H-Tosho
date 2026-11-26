@@ -154,8 +154,7 @@ test('the upgrade migration adds match updates and better-edition context withou
   const { migrateSchema } = await import('../src/db/migrations.js');
   const sqlite = new Database(':memory:');
   migrateSchema(sqlite);
-  const latestVersion = (sqlite.prepare('SELECT max(version) AS v FROM schema_migrations').get() as { v: number }).v;
-  sqlite.exec(`DROP TABLE match_updates; ALTER TABLE watched_search_new DROP COLUMN better_edition_json; DELETE FROM schema_migrations WHERE version=${latestVersion}`);
+  sqlite.exec('DROP TABLE match_updates; ALTER TABLE watched_search_new DROP COLUMN better_edition_json; DELETE FROM schema_migrations WHERE version >= 19');
   sqlite.prepare("INSERT INTO watched_search_new (search_id, source, query, gallery_id, title, found_at) VALUES (1, 'hitomi', 'q', '7', 'Kept', '2026-01-01')").run();
   migrateSchema(sqlite);
   migrateSchema(sqlite);

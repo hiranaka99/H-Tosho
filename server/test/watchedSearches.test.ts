@@ -449,4 +449,44 @@ describe('watched inbox and history', () => {
     getDb().insert(schema.jobs).values(Array.from({ length: 101 }, () => ({ type: 'scan-new', status: 'completed', payloadJson: '{}' }))).run();
     assert.equal((await (await api.request('/watched-searches/check-status')).json()).id, id);
   });
+
+  it('migration 20 creates performance indexes used by feed dedupe, active job checks, and asset size sums', async () => {
+    const { default: Database } = await import('better-sqlite3');
+    const { migrateSchema } = await import('../src/db/migrations.js');
+    const sqlite = new Database(':memory:');
+    try {
+      migrateSchema(sqlite);
+      const indexNames = new Set((sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]).map(r => r.name));
+      for (const expected of [
+        'idx_watched_search_new_dedupe',
+        'idx_watched_search_seen_search_id',
+        'idx_download_queue_status_id',
+        'idx_jobs_status_finished',
+        'idx_jobs_active',
+        'idx_metadata_operations_finished',
+        'idx_metadata_assets_byte_size',
+        'idx_metadata_series_covers_reserved',
+        'idx_metadata_volume_covers_reserved',
+      ]) {
+        assert.ok(indexNames.has(expected), `expected index ${expected} to exist`);
+      }
+      for (const dropped of ['idx_watched_search_new_found', 'idx_watched_search_new_gallery', 'idx_jobs_finished_at']) {
+        assert.equal(indexNames.has(dropped), false, `expected obsolete index ${dropped} to be removed`);
+      }
+
+      const explain = (query: string) => (sqlite.prepare(`EXPLAIN QUERY PLAN ${query}`).all() as { detail: string }[]).map(r => r.detail).join(' | ');
+      const feedPlan = explain(
+        'SELECT id, found_at, reviewed_at, (better_edition_json IS NOT NULL) AS has_better, ROW_NUMBER() OVER (PARTITION BY source, gallery_id ORDER BY found_at DESC, id DESC) AS n FROM watched_search_new',
+      );
+      assert.match(feedPlan, /idx_watched_search_new_dedupe/);
+
+      const activeJobPlan = explain("SELECT id FROM jobs WHERE type = 'scan-new' AND status IN ('queued', 'running') LIMIT 1");
+      assert.match(activeJobPlan, /idx_jobs_active/);
+
+      const assetSumPlan = explain('SELECT coalesce(sum(byte_size), 0) FROM metadata_assets');
+      assert.match(assetSumPlan, /idx_metadata_assets_byte_size/);
+    } finally {
+      sqlite.close();
+    }
+  });
 });

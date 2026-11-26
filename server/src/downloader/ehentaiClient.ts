@@ -22,6 +22,9 @@
 import dns from 'node:dns';
 import https from 'node:https';
 import fs from 'node:fs/promises';
+import zlib from 'node:zlib';
+
+const ehentaiHttpsAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 30_000, maxSockets: 16, maxFreeSockets: 8 });
 import { getEhentaiGate, RequestAbortedError } from './ehentaiGate.js';
 import { parseRetryAfterMs } from '../lib/http.js';
 import { ehentaiHost, type EhentaiSite } from '../contracts/doujin.js';
@@ -258,6 +261,7 @@ function pinnedGet(
           host: pinnedIp,
           servername: parsed.hostname,
           port: Number(parsed.port || 443),
+          agent: ehentaiHttpsAgent,
           method: 'GET',
           path: `${parsed.pathname}${parsed.search}`,
           headers: { ...options.headers, Host: parsed.host },
@@ -272,8 +276,11 @@ function pinnedGet(
               fail(new EhentaiUpstreamError('Too many redirects from the E-Hentai host.', 'blocked'));
               return;
             }
+            settled = true;
+            clearTimeout(timeout);
+            cleanup();
             const next = new URL(location, url).toString();
-            void doRequest(next, redirectCount + 1).then(resolve, (error) => fail(error as Error));
+            void doRequest(next, redirectCount + 1).then(resolve, reject);
             return;
           }
           const contentType = res.headers['content-type'] ?? null;
@@ -361,28 +368,24 @@ function pinnedGet(
             })();
             return;
           }
-          const chunks: Buffer[] = [];
-          let received = 0;
-          res.on('data', (chunk: Buffer) => {
-            received += chunk.byteLength;
-            if (received > options.maxBytes) {
-              res.destroy();
-              fail(new EhentaiUpstreamError('E-Hentai response exceeded the size limit.', 'unavailable'));
-              return;
-            }
-            chunks.push(chunk);
-          });
           const lengthHeader = res.headers['content-length'];
           const declaredLength = lengthHeader ? Number(lengthHeader) : NaN;
           const expectedBytes = Number.isFinite(declaredLength) && declaredLength > 0 && !res.headers['content-encoding'] ? declaredLength : null;
-          res.on('end', () => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            cleanup();
-            resolve({ status, finalUrl: url, contentType, body: Buffer.concat(chunks, received), expectedBytes });
-          });
-          res.on('error', () => fail(new EhentaiUpstreamError('E-Hentai connection error.', 'unavailable')));
+          collectResponseBody(
+            res,
+            options.maxBytes,
+            () => settled,
+            (body) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timeout);
+              cleanup();
+              resolve({ status, finalUrl: url, contentType, body, expectedBytes });
+            },
+            fail,
+            'E-Hentai response exceeded the size limit.',
+            'E-Hentai connection error.',
+          );
         },
       );
       req.on('error', (error: Error) => {
@@ -397,6 +400,104 @@ function pinnedGet(
     }));
   };
   return doRequest(startUrl, 0);
+}
+
+function collectResponseBody(
+  res: { headers: Record<string, string | string[] | undefined>; on: (event: any, listener: any) => any; destroy?: () => void },
+  maxBytes: number,
+  isSettled: () => boolean,
+  onDone: (body: Buffer) => void,
+  onFail: (error: Error) => void,
+  limitMessage: string,
+  connErrorMessage: string,
+): void {
+  const rawEncoding = res.headers['content-encoding'];
+  const encoding = (Array.isArray(rawEncoding) ? rawEncoding[0] : rawEncoding ?? '').toLowerCase().trim();
+  const chunks: Buffer[] = [];
+  let received = 0;
+  let compressed = 0;
+  let ended = false;
+  let finished = false;
+  let decoder: zlib.Gunzip | zlib.Inflate | null = null;
+
+  if (encoding === 'gzip' || encoding === 'x-gzip' || encoding === 'deflate') {
+    decoder = encoding === 'deflate' ? zlib.createInflate() : zlib.createGunzip();
+    decoder.on('data', (chunk: Buffer) => {
+      if (finished || isSettled()) {
+        if (!finished) { finished = true; decoder?.destroy(); }
+        return;
+      }
+      received += chunk.byteLength;
+      if (received > maxBytes) {
+        finished = true;
+        decoder?.destroy();
+        res.destroy?.();
+        onFail(new EhentaiUpstreamError(limitMessage, 'unavailable'));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    decoder.on('end', () => {
+      if (finished || isSettled()) return;
+      finished = true;
+      onDone(Buffer.concat(chunks, received));
+    });
+    decoder.on('error', () => {
+      if (finished || isSettled()) return;
+      finished = true;
+      res.destroy?.();
+      onFail(new EhentaiUpstreamError(connErrorMessage, 'unavailable'));
+    });
+  }
+
+  res.on('data', (chunk: Buffer) => {
+    if (finished || isSettled()) {
+      if (!finished) { finished = true; decoder?.destroy(); }
+      return;
+    }
+    if (decoder) {
+      compressed += chunk.byteLength;
+      if (compressed > Math.max(maxBytes * 4, maxBytes + 1024 * 1024)) {
+        finished = true;
+        decoder.destroy();
+        res.destroy?.();
+        onFail(new EhentaiUpstreamError(limitMessage, 'unavailable'));
+        return;
+      }
+      decoder.write(chunk);
+      return;
+    }
+    received += chunk.byteLength;
+    if (received > maxBytes) {
+      finished = true;
+      res.destroy?.();
+      onFail(new EhentaiUpstreamError(limitMessage, 'unavailable'));
+      return;
+    }
+    chunks.push(chunk);
+  });
+  res.on('end', () => {
+    ended = true;
+    if (finished || isSettled()) return;
+    if (decoder) {
+      decoder.end();
+      return;
+    }
+    finished = true;
+    onDone(Buffer.concat(chunks, received));
+  });
+  res.on('error', () => {
+    if (finished || isSettled()) return;
+    finished = true;
+    decoder?.destroy();
+    onFail(new EhentaiUpstreamError(connErrorMessage, 'unavailable'));
+  });
+  res.on('close', () => {
+    if (!ended && !finished) {
+      finished = true;
+      decoder?.destroy();
+    }
+  });
 }
 
 // ---------------- lane-scoped fetch with gate + cookies ----------------
@@ -439,6 +540,7 @@ export async function ehentaiFetchText(
     const headers: Record<string, string> = {
       'User-Agent': UA,
       Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+      'Accept-Encoding': 'gzip, deflate',
       'Accept-Language': 'en-US,en;q=0.8',
       ...options.headers,
     };
@@ -495,8 +597,14 @@ export async function ehentaiApiPost(
 }
 
 /** Native tag completion stays on the selected family host, with scoped cookies. */
-export async function ehentaiTagSuggestions(text: string, options: EhentaiFetchOptions): Promise<EhentaiTextResponse> {
+export async function ehentaiTagSuggestions(
+  text: string,
+  options: EhentaiFetchOptions & { maxWaitMs?: number },
+): Promise<EhentaiTextResponse> {
   const gate = getEhentaiGate();
+  if (options.maxWaitMs !== undefined && gate.api.estimatedWaitMs() > options.maxWaitMs) {
+    throw new EhentaiUpstreamError('E-Hentai tag suggestions skipped while lane is busy.', 'rate-limited');
+  }
   const release = await gate.api.acquire(options.signal);
   try {
     const cookie = buildEhentaiCookies(options.session, options.site);
@@ -542,9 +650,11 @@ function pinnedGetPost(url: string, jsonBody: string, options: PinnedRequestOpti
         host: pinnedIp,
         servername: parsed.hostname,
         port: 443,
+        agent: ehentaiHttpsAgent,
         method: 'POST',
         path: parsed.pathname,
         headers: {
+          'Accept-Encoding': 'gzip, deflate',
           ...options.headers,
           Host: parsed.hostname,
           'User-Agent': UA,
@@ -554,30 +664,26 @@ function pinnedGetPost(url: string, jsonBody: string, options: PinnedRequestOpti
       },
       (res) => {
         const status = res.statusCode ?? 0;
-        const chunks: Buffer[] = [];
-        let received = 0;
-        res.on('data', (chunk: Buffer) => {
-          received += chunk.byteLength;
-          if (received > options.maxBytes) {
-            res.destroy();
-            fail(new EhentaiUpstreamError('E-Hentai API response exceeded the size limit.', 'unavailable'));
-            return;
-          }
-          chunks.push(chunk);
-        });
-        res.on('end', () => {
-          if (settled) return;
-          if (status < 200 || status >= 300) {
-            const retryAfterMs = status === 429 ? parseRetryAfterMs(res.headers, 60_000) : null;
-            fail(new EhentaiUpstreamError(`E-Hentai API returned HTTP ${status}.`, status === 429 ? 'rate-limited' : 'unavailable', status, retryAfterMs));
-            return;
-          }
-          settled = true;
-          clearTimeout(timeout);
-          options.signal?.removeEventListener('abort', onAbort);
-          resolve({ status, finalUrl: url, contentType: res.headers['content-type'] ?? null, body: Buffer.concat(chunks) });
-        });
-        res.on('error', () => fail(new EhentaiUpstreamError('E-Hentai API connection error.', 'unavailable')));
+        collectResponseBody(
+          res,
+          options.maxBytes,
+          () => settled,
+          (body) => {
+            if (settled) return;
+            if (status < 200 || status >= 300) {
+              const retryAfterMs = status === 429 ? parseRetryAfterMs(res.headers, 60_000) : null;
+              fail(new EhentaiUpstreamError(`E-Hentai API returned HTTP ${status}.`, status === 429 ? 'rate-limited' : 'unavailable', status, retryAfterMs));
+              return;
+            }
+            settled = true;
+            clearTimeout(timeout);
+            options.signal?.removeEventListener('abort', onAbort);
+            resolve({ status, finalUrl: url, contentType: res.headers['content-type'] ?? null, body });
+          },
+          fail,
+          'E-Hentai API response exceeded the size limit.',
+          'E-Hentai API connection error.',
+        );
       },
     );
     req.on('error', () => {

@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery } from '../downloader/types.js';
@@ -171,7 +171,7 @@ function excludedDownloadKeys(): Set<string> {
     .filter(Boolean);
   if (!roots.length) return new Set();
   const excluded = new Set<string>();
-  for (const row of getDb().select({ source: schema.downloadQueue.source, galleryId: schema.downloadQueue.galleryId, outputPath: schema.downloadQueue.outputPath }).from(schema.downloadQueue).all()) {
+  for (const row of getDb().select({ source: schema.downloadQueue.source, galleryId: schema.downloadQueue.galleryId, outputPath: schema.downloadQueue.outputPath }).from(schema.downloadQueue).where(isNotNull(schema.downloadQueue.outputPath)).all()) {
     if (!row.outputPath) continue;
     const out = normalizePathPrefix(row.outputPath);
     if (roots.some((root) => out === root || out.startsWith(`${root}/`))) {
@@ -191,7 +191,7 @@ function looksLikeSearchableSeriesName(name: string, downloadedTitles: Set<strin
 }
 
 function addWatchedSearchSignals(terms: Map<string, ProfileTerm>): void {
-  const watches = getDb().select().from(schema.watchedSearches).where(isNull(schema.watchedSearches.pausedAt)).all();
+  const watches = getDb().select({ source: schema.watchedSearches.source, query: schema.watchedSearches.query }).from(schema.watchedSearches).where(isNull(schema.watchedSearches.pausedAt)).all();
   for (const watch of watches) {
     const source = watch.source === 'hitomi' || watch.source === 'nhentai' ? (watch.source as DoujinSource) : null;
     const tokens = watch.query.trim().split(/\s+/).filter(Boolean);
@@ -219,24 +219,51 @@ function buildDislikedTerms(): Record<string, number> {
     tagsJson: schema.dismissedGalleries.tagsJson,
   }).from(schema.dismissedGalleries).all();
   if (!dismissed.length) return {};
-  const disliked: Record<string, number> = {};
-  // Only legacy dismissals without stored metadata need history, so look those
-  // up by key instead of parsing the whole history table.
-  const historyItem = (source: string, galleryId: string): { artists?: string[]; tags?: string[] } | null => {
-    const row = db.select({ itemJson: schema.recommendationHistory.itemJson }).from(schema.recommendationHistory)
-      .where(and(eq(schema.recommendationHistory.source, source), eq(schema.recommendationHistory.galleryId, galleryId))).get();
-    if (!row) return null;
-    try {
-      return JSON.parse(row.itemJson) as { artists?: string[]; tags?: string[] };
-    } catch {
-      return null; /* skip malformed */
-    }
-  };
+
+  const parsedRows: { source: string; galleryId: string; artists: string[]; tags: string[] }[] = [];
+  const legacyBySource = new Map<string, Set<string>>();
   for (const row of dismissed) {
-    let artists = parseEntries(row.artistsJson).map((a) => String(a ?? '').trim()).filter(Boolean);
-    let tags = parseEntries(row.tagsJson).map((t) => String(t ?? '').trim()).filter(Boolean);
+    const artists = parseEntries(row.artistsJson).map((a) => String(a ?? '').trim()).filter(Boolean);
+    const tags = parseEntries(row.tagsJson).map((t) => String(t ?? '').trim()).filter(Boolean);
+    parsedRows.push({ source: row.source, galleryId: row.galleryId, artists, tags });
     if (!artists.length && !tags.length) {
-      const historic = historyItem(row.source, row.galleryId);
+      let ids = legacyBySource.get(row.source);
+      if (!ids) {
+        ids = new Set();
+        legacyBySource.set(row.source, ids);
+      }
+      ids.add(row.galleryId);
+    }
+  }
+
+  // Only legacy dismissals without stored metadata need history; batch-load them per source.
+  const historicByKey = new Map<string, { artists?: string[]; tags?: string[] }>();
+  for (const [source, idSet] of legacyBySource) {
+    const ids = [...idSet];
+    for (let i = 0; i < ids.length; i += 500) {
+      const rows = db.select({
+        source: schema.recommendationHistory.source,
+        galleryId: schema.recommendationHistory.galleryId,
+        itemJson: schema.recommendationHistory.itemJson,
+      }).from(schema.recommendationHistory)
+        .where(and(eq(schema.recommendationHistory.source, source), inArray(schema.recommendationHistory.galleryId, ids.slice(i, i + 500))))
+        .all();
+      for (const h of rows) {
+        try {
+          historicByKey.set(`${h.source}:${h.galleryId}`, JSON.parse(h.itemJson) as { artists?: string[]; tags?: string[] });
+        } catch {
+          /* skip malformed */
+        }
+      }
+    }
+  }
+
+  const disliked: Record<string, number> = {};
+  for (const row of parsedRows) {
+    let artists = row.artists;
+    let tags = row.tags;
+    if (!artists.length && !tags.length) {
+      const historic = historicByKey.get(`${row.source}:${row.galleryId}`);
       if (historic) {
         artists = (historic.artists ?? []).map((a) => String(a ?? '').trim()).filter(Boolean);
         tags = (historic.tags ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);

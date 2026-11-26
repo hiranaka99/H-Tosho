@@ -128,29 +128,7 @@ export class AniListProvider extends BaseProvider {
       }));
   }
 
-  async getSeriesMetadata(providerSeriesId: string, signal?: AbortSignal): Promise<SeriesMetadata> {
-    const result = await this.gql<{ Media?: AniListMedia | null }>(
-      `query ($id: Int) {
-        Media(id: $id) {
-          id
-          title { romaji english native userPreferred }
-          format
-          coverImage { extraLarge large }
-          description
-          averageScore
-          startDate { year month day }
-          genres
-          tags { name }
-          studios { nodes { name } }
-          status
-          synonyms
-        }
-      }`,
-      { id: Number(providerSeriesId) }, signal,
-    );
-    const m = result.data?.Media;
-    if (!m) throw new Error(`AniList: media ${providerSeriesId} not found`);
-
+  private mapMediaToSeriesMetadata(m: AniListMedia): SeriesMetadata {
     const date = m.startDate;
     const releaseDate = date
       ? `${date.year}-${String(date.month ?? 1).padStart(2, '0')}-${String(date.day ?? 1).padStart(2, '0')}`
@@ -186,6 +164,70 @@ export class AniListProvider extends BaseProvider {
       status: mapAniListStatus(m.status),
       url: `https://anilist.co/manga/${m.id}`,
     };
+  }
+
+  async getSeriesMetadata(providerSeriesId: string, signal?: AbortSignal): Promise<SeriesMetadata> {
+    const result = await this.gql<{ Media?: AniListMedia | null }>(
+      `query ($id: Int) {
+        Media(id: $id) {
+          id
+          title { romaji english native userPreferred }
+          format
+          coverImage { extraLarge large }
+          description
+          averageScore
+          startDate { year month day }
+          genres
+          tags { name }
+          studios { nodes { name } }
+          status
+          synonyms
+        }
+      }`,
+      { id: Number(providerSeriesId) }, signal,
+    );
+    const m = result.data?.Media;
+    if (!m) throw new Error(`AniList: media ${providerSeriesId} not found`);
+    return this.mapMediaToSeriesMetadata(m);
+  }
+
+  async getSeriesMetadataBatch(providerSeriesIds: string[], signal?: AbortSignal): Promise<Map<string, SeriesMetadata>> {
+    const out = new Map<string, SeriesMetadata>();
+    const validIds = [...new Set(
+      providerSeriesIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    )].sort((a, b) => a - b);
+    for (let i = 0; i < validIds.length; i += 50) {
+      signal?.throwIfAborted();
+      const ids = validIds.slice(i, i + 50);
+      const result = await this.gql<{ Page?: { media?: AniListMedia[] } | null }>(
+        `query ($ids: [Int]) {
+          Page(page: 1, perPage: 50) {
+            media(id_in: $ids) {
+              id
+              title { romaji english native userPreferred }
+              format
+              coverImage { extraLarge large }
+              description
+              averageScore
+              startDate { year month day }
+              genres
+              tags { name }
+              studios { nodes { name } }
+              status
+              synonyms
+            }
+          }
+        }`,
+        { ids },
+        signal,
+      );
+      for (const m of result.data?.Page?.media ?? []) {
+        out.set(String(m.id), this.mapMediaToSeriesMetadata(m));
+      }
+    }
+    return out;
   }
 
   private artist(staff: AniListStaff): ProviderArtist {

@@ -1,17 +1,29 @@
 import { waitForScan, type ScanOutcome } from './scans.js';
 import path from 'node:path';
 import fs from 'node:fs';
-import { archiveResource } from '../lib/mutations.js';
-import { KavitaClient } from './client.js';
+import { promisify } from 'node:util';
+import { archiveResourceAsync } from '../lib/mutations.js';
+import { KavitaClient, kavitaNormalizeName } from './client.js';
 import type { KavitaChapterDto } from './types.js';
 import { getDownloaderSettings, getKavitaConnection } from '../services/settings.js';
-import { lastSegment, pathContains, safeRealpath } from '../lib/paths.js';
+import { lastSegment, pathContains } from '../lib/paths.js';
 import { mapKavitaPathToLocalPath } from './libraryPaths.js';
 import { getDb, schema } from '../db/index.js';
 import { inArray } from 'drizzle-orm';
 import { mapLimit, sleep } from '../lib/http.js';
 import { JobCancelled, type Job, type LogFn } from '../jobs/queue.js';
 import { rememberTargets, rememberLibraries, throwIfJobCancelled } from '../jobs/context.js';
+const realpathAsync = promisify(fs.realpath);
+async function safeRealpathAsync(targetPath: string): Promise<string> {
+  try { return await realpathAsync(targetPath); }
+  catch { return path.resolve(targetPath); }
+}
+
+function normLocalPath(targetPath: string): string {
+  const clean = path.resolve(targetPath).replace(/\\/g, '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? clean.toLowerCase() : clean;
+}
+
 /** Best-effort Kavita refresh after a local ComicInfo edit. */
 export async function rescanLibraryContainingDir(dir: string, log: LogFn, seriesName?: string): Promise<void> {
   try {
@@ -19,9 +31,11 @@ export async function rescanLibraryContainingDir(dir: string, log: LogFn, series
     if (!conn.baseUrl || !conn.apiKey) return;
     const client = new KavitaClient(conn.baseUrl, conn.apiKey);
     const libraries = await client.getLibraries();
+    const realDir = await safeRealpathAsync(dir);
+    const normDir = normLocalPath(dir);
     const candidates = new Set<string>();
     // Walk both the literal path and its realpath: symlinked mount points resolve to one real path.
-    for (const start of [dir, safeRealpath(dir)]) {
+    for (const start of [dir, realDir]) {
       let d = start;
       for (let i = 0; i < 3; i++) {
         const seg = lastSegment(d);
@@ -32,26 +46,45 @@ export async function rescanLibraryContainingDir(dir: string, log: LogFn, series
         d = parent;
       }
     }
-    const realDir = safeRealpath(dir);
     const mappings = getDownloaderSettings().libraryPathMappings ?? [];
-    const inMappedRoot = mappings.some((m) => pathContains(safeRealpath(m.localPath), realDir));
+    const mappedLocalRoots = await Promise.all(mappings.map((m) => safeRealpathAsync(m.localPath)));
+    const inMappedRoot = mappedLocalRoots.some((root) => pathContains(root, realDir));
 
-    for (const lib of libraries) {
-      const directLibrary = (lib.paths ?? (lib.path ? [lib.path] : [])).some((root) =>
-        pathContains(safeRealpath(mapKavitaPathToLocalPath(root, mappings) ?? root), realDir));
+    const evaluated = await Promise.all(libraries.map(async (lib) => {
+      const rootPaths = await Promise.all((lib.paths ?? (lib.path ? [lib.path] : [])).map((root) =>
+        safeRealpathAsync(mapKavitaPathToLocalPath(root, mappings) ?? root)));
+      const directLibrary = rootPaths.some((root) => pathContains(root, realDir));
       const libRootName = lib.path ? lastSegment(lib.path).toLowerCase() : '';
       const matchingLibrary = directLibrary || (!inMappedRoot && Boolean(libRootName && candidates.has(libRootName)));
+      return { lib, directLibrary, matchingLibrary };
+    }));
+    const ordered = evaluated
+      .filter(({ directLibrary }) => !inMappedRoot || directLibrary)
+      .sort((a, b) => Number(b.matchingLibrary) - Number(a.matchingLibrary));
+
+    for (const { lib, matchingLibrary } of ordered) {
       let series;
       try {
         series = await client.getSeries(lib.id);
       } catch {
         continue;
       }
-      const hit = series.find((s) => {
-        if (!s.folderPath) return false;
+      let hit: (typeof series)[number] | undefined;
+      for (const s of series) {
+        if (!s.folderPath) continue;
         const mapped = mapKavitaPathToLocalPath(s.folderPath, mappings);
-        return mapped ? safeRealpath(mapped) === realDir : !inMappedRoot && candidates.has(lastSegment(s.folderPath).toLowerCase());
-      });
+        if (!mapped) {
+          if (!inMappedRoot && candidates.has(lastSegment(s.folderPath).toLowerCase())) {
+            hit = s;
+            break;
+          }
+          continue;
+        }
+        if (normLocalPath(mapped) === normDir || await safeRealpathAsync(mapped) === realDir) {
+          hit = s;
+          break;
+        }
+      }
       if (hit) {
         if (seriesName) {
           await client.updateSeriesMetadata(hit.id, { name: seriesName });
@@ -220,12 +253,25 @@ export async function removeSourceSeriesFromKavita(seriesIds: number[], log: Log
   if (!conn.baseUrl || !conn.apiKey) throw new Error('Kavita is required to finish merge source cleanup');
   const client = new KavitaClient(conn.baseUrl, conn.apiKey);
   const deleted: number[] = [];
+  const mappings = getDownloaderSettings().libraryPathMappings ?? [];
+  const targetKey = await archiveResourceAsync(targetDir);
   for (const id of seriesIds) {
     if (!await beforeDelete(id)) continue;
     try {
-      const mappings = getDownloaderSettings().libraryPathMappings ?? [];
       const chapters = await client.getChaptersBySeries(id);
-      const remaining = chapters.some(chapter => (chapter.files ?? []).some(file => file.filePath && fs.existsSync(mapKavitaPathToLocalPath(file.filePath,mappings) ?? file.filePath) && !pathContains(archiveResource(targetDir),archiveResource(mapKavitaPathToLocalPath(file.filePath,mappings) ?? file.filePath))));
+      let remaining = false;
+      for (const chapter of chapters) {
+        for (const file of chapter.files ?? []) {
+          if (!file.filePath) continue;
+          const local = mapKavitaPathToLocalPath(file.filePath, mappings) ?? file.filePath;
+          const exists = await fs.promises.access(local).then(() => true, () => false);
+          if (exists && !pathContains(targetKey, await archiveResourceAsync(local))) {
+            remaining = true;
+            break;
+          }
+        }
+        if (remaining) break;
+      }
       if (remaining) continue;
     } catch(error) {
       if (error instanceof JobCancelled) throw error;
@@ -281,10 +327,16 @@ export async function rescanAndVerifyMerge(
     let lib = opts?.libraryId != null ? libraries.find((l) => l.id === opts.libraryId) : undefined;
     if (!lib) {
       // Path matching with realpath normalization: symlinked mount points resolve to one real path.
-      const realTarget = safeRealpath(targetDir);
+      const realTarget = await safeRealpathAsync(targetDir);
       const mappings = getDownloaderSettings().libraryPathMappings ?? [];
-      lib = libraries.find((l) => (l.paths ?? (l.path ? [l.path] : [])).some((root) =>
-        pathContains(safeRealpath(mapKavitaPathToLocalPath(root, mappings) ?? root), realTarget)));
+      for (const candidate of libraries) {
+        const rootPaths = await Promise.all((candidate.paths ?? (candidate.path ? [candidate.path] : [])).map((root) =>
+          safeRealpathAsync(mapKavitaPathToLocalPath(root, mappings) ?? root)));
+        if (rootPaths.some((root) => pathContains(root, realTarget))) {
+          lib = candidate;
+          break;
+        }
+      }
     }
     if (!lib) {
       log('warn', 'No mapped Kavita library contains this output folder — archives remain outside indexed series policy coverage');
@@ -307,7 +359,33 @@ export async function rescanAndVerifyMerge(
       log(series.name === opts.seriesName ? 'success' : 'warn', series.name === opts.seriesName ? `Set Kavita series name to "${series.name}"` : 'Kavita did not confirm the requested merge title');
     };
 
-    const findSeries = async (): Promise<{ id: number; name: string } | undefined> => {
+    // Exact mapped paths prevent same-basename archives elsewhere from falsely
+    // satisfying regroup verification and receiving inherited policies.
+    const mappings = getDownloaderSettings().libraryPathMappings ?? [];
+    const [expectedList, realTargetDir] = await Promise.all([
+      mapLimit(movedFiles, 16, archiveResourceAsync),
+      archiveResourceAsync(targetDir),
+    ]);
+    const expectedNames = new Set(expectedList);
+    const dirKeyCache = new Map<string, string>();
+    const cachedDirKey = async (localPath: string): Promise<string> => {
+      const hit = dirKeyCache.get(localPath);
+      if (hit !== undefined) return hit;
+      const key = await archiveResourceAsync(localPath);
+      dirKeyCache.set(localPath, key);
+      return key;
+    };
+    const toIndexedSet = async (chapters: KavitaChapterDto[]): Promise<Set<string>> => {
+      const paths = chapters.flatMap((chapter) => (chapter.files ?? []).map((f) => f.filePath).filter((fp): fp is string => !!fp));
+      const keys = await mapLimit(paths, 16, (fp) => archiveResourceAsync(mapKavitaPathToLocalPath(fp, mappings) ?? fp));
+      return new Set(keys);
+    };
+    const indexedNames = async (seriesId: number): Promise<Set<string>> => {
+      return toIndexedSet(await client.getChaptersBySeries(seriesId));
+    };
+
+    const targetNormName = kavitaNormalizeName(opts.seriesName ?? lastSegment(targetDir));
+    const findSeries = async (): Promise<{ id: number; name: string; indexedFiles?: Set<string> } | undefined> => {
       if (opts?.seriesId != null) {
         try {
           const s = await client.getSeriesById(opts.seriesId);
@@ -319,36 +397,46 @@ export async function rescanAndVerifyMerge(
         }
       }
       const series = await client.getSeries(library.id);
-      const mappings = getDownloaderSettings().libraryPathMappings ?? [];
-      const expected = new Set(movedFiles.map(archiveResource));
-      const candidates: {id:number;name:string}[] = [];
-      await mapLimit(series, 8, async (item) => {
-        const chapters = await client.getChaptersBySeries(item.id);
-        if (chapters.some(chapter => (chapter.files ?? []).some(file => file.filePath && expected.has(archiveResource(mapKavitaPathToLocalPath(file.filePath,mappings) ?? file.filePath))))) candidates.push(item);
-      });
+      const likely: typeof series = [];
+      const rest: typeof series = [];
+      await Promise.all(series.map(async (item) => {
+        const mapped = item.folderPath ? mapKavitaPathToLocalPath(item.folderPath, mappings) : null;
+        if (!mapped) {
+          likely.push(item);
+          return;
+        }
+        const dirKey = await cachedDirKey(mapped);
+        if (pathContains(realTargetDir, dirKey) || pathContains(dirKey, realTargetDir)
+          || (targetNormName && kavitaNormalizeName(item.name) === targetNormName)) {
+          likely.push(item);
+        } else {
+          rest.push(item);
+        }
+      }));
+      const inspectGroup = async (group: typeof series) => {
+        const hits: { id: number; name: string; indexedFiles: Set<string> }[] = [];
+        await mapLimit(group, 8, async (item) => {
+          const indexed = await toIndexedSet(await client.getChaptersBySeries(item.id));
+          for (const fileKey of expectedNames) {
+            if (indexed.has(fileKey)) {
+              hits.push({ id: item.id, name: item.name, indexedFiles: indexed });
+              break;
+            }
+          }
+        });
+        return hits;
+      };
+      let candidates = await inspectGroup(likely);
+      if (candidates.length === 0 && rest.length > 0) candidates = await inspectGroup(rest);
       if (candidates.length > 1) throw new Error('Moved archives are indexed under multiple series');
       const found = candidates[0];
-      if (found) rememberTargets(opts.job, [{id:found.id,name:found.name,libraryId:library.id}]);
-      return found;
-    };
-    // Exact mapped paths prevent same-basename archives elsewhere from falsely
-    // satisfying regroup verification and receiving inherited policies.
-    const mappings = getDownloaderSettings().libraryPathMappings ?? [];
-    const expectedNames = new Set(movedFiles.map(archiveResource));
-    const indexedNames = async (seriesId: number): Promise<Set<string>> => {
-      const chapters = await client.getChaptersBySeries(seriesId);
-      const found = new Set<string>();
-      for (const chapter of chapters) {
-        for (const file of chapter.files ?? []) {
-          if (file.filePath) found.add(archiveResource(mapKavitaPathToLocalPath(file.filePath,mappings) ?? file.filePath));
-        }
-      }
+      if (found) rememberTargets(opts.job, [{ id: found.id, name: found.name, libraryId: library.id }]);
       return found;
     };
 
     const deadline = Date.now() + MERGE_VERIFY_TIMEOUT_MS;
+    let series = await findSeries().catch(() => undefined);
     for (;;) {
-      const series = await findSeries().catch(() => undefined);
       await renameSeries(series);
       if (series) {
         await client.scanSeries(library.id, series.id);
@@ -367,7 +455,7 @@ export async function rescanAndVerifyMerge(
       let missing: string[] | null = null;
       if (after) {
         try {
-          const indexed = await indexedNames(after.id);
+          const indexed = after.indexedFiles ?? await indexedNames(after.id);
           missing = [...expectedNames].filter((n) => !indexed.has(n));
         } catch {
           /* chapter list unavailable — treat as not yet indexed */
@@ -388,6 +476,7 @@ export async function rescanAndVerifyMerge(
           : `Kavita merge verification timed out after ${MERGE_VERIFY_TIMEOUT_MS / 60_000} minutes — run a manual scan in Kavita`);
         return;
       }
+      series = after;
       await sleep(SCAN_STATUS_POLL_MS);
     }
   } catch (e) {

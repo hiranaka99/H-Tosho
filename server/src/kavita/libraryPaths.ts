@@ -92,6 +92,48 @@ export function resolveSeriesHostDir(opts: { libraryPath?: string | null; folder
   return null;
 }
 
+const existsAsync = (p: string) => fs.promises.access(p).then(() => true, () => false);
+const isDirAsync = async (p: string) => { try { return (await fs.promises.stat(p)).isDirectory(); } catch { return false; } };
+
+export async function resolveSeriesHostDirAsync(opts: { libraryPath?: string | null; folderPath?: string | null; anchors: string[]; mappings?: LibraryPathMapping[] }): Promise<string | null> {
+  const { libraryPath, folderPath, anchors } = opts;
+  if (folderPath) {
+    if (folderPath.replace(/\\/g, '/').split('/').some((segment) => segment === '..' || segment === '.')) return null;
+    const mapped = mapKavitaPathToLocalPath(folderPath, opts.mappings);
+    if (mapped) {
+      return await isDirAsync(mapped) ? mapped : null;
+    }
+  }
+  if (!libraryPath || !folderPath) return null;
+  const norm = (p: string): string => p.replace(/\\/g, '/');
+  const lib = norm(libraryPath).replace(/\/+$/, '');
+  let rel = norm(folderPath);
+  if (rel.startsWith(lib + '/')) rel = rel.slice(lib.length + 1);
+  else if (rel === lib) rel = '';
+
+  const roots: string[] = [];
+  if (await existsAsync(libraryPath)) roots.push(libraryPath);
+  const want = lastSegment(libraryPath);
+  for (const a of anchors) if (lastSegment(a) === want) roots.push(a);
+
+  for (const root of roots) {
+    if (!rel) return root;
+    const candidate = path.join(root, ...rel.split('/'));
+    if (await existsAsync(candidate)) return candidate;
+  }
+
+  if (!rel) return null;
+  const tail = rel.split('/');
+  const fallbackAnchors = [libraryPath, ...anchors];
+  for (let depth = Math.min(3, tail.length); depth >= 1; depth--) {
+    for (const a of fallbackAnchors) {
+      const candidate = path.join(a, ...tail.slice(-depth));
+      if (await existsAsync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
 export function libraryContainingPath(libraries: KavitaLibrary[], localPath: string, mappings: LibraryPathMapping[] = []): KavitaLibrary | undefined {
   const target = safeRealpath(localPath);
   return libraries.find(library => (library.paths ?? (library.path ? [library.path] : [])).some(root =>

@@ -1,10 +1,18 @@
 import { eq, inArray, ne } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 
+let lastRawUrl: string | undefined;
+let lastKey = '';
+
 export function kavitaConnectionKey(baseUrl: string): string {
+  if (baseUrl === lastRawUrl) return lastKey;
   const value = baseUrl.trim();
-  try { return new URL(value).href.replace(/\/+$/, ''); }
-  catch { return value.replace(/\/+$/, ''); }
+  let key: string;
+  try { key = new URL(value).href.replace(/\/+$/, ''); }
+  catch { key = value.replace(/\/+$/, ''); }
+  lastRawUrl = baseUrl;
+  lastKey = key;
+  return key;
 }
 
 interface ConnectionState {
@@ -47,11 +55,14 @@ export function switchKavitaState(previousUrl: string, nextUrl: string): boolean
   if (scopedJobs.length) db.delete(schema.jobLogs).where(inArray(schema.jobLogs.jobId, scopedJobIds)).run();
   db.delete(schema.jobs).where(ne(schema.jobs.type, 'check-watched-searches')).run();
   if (restored) {
-    for (const row of restored.matches) db.insert(schema.seriesMatches).values(row).run();
-    for (const row of restored.history) db.insert(schema.syncHistory).values(row).run();
-    for (const row of restored.overrides) db.insert(schema.libraryOverrides).values(row).run();
-    for (const row of restored.jobs) db.insert(schema.jobs).values(row).run();
-    for (const row of restored.logs) db.insert(schema.jobLogs).values(row).run();
+    const insertChunks = <T extends Record<string, unknown>>(rows: T[], runBatch: (batch: T[]) => void) => {
+      for (let i = 0; i < rows.length; i += 200) runBatch(rows.slice(i, i + 200));
+    };
+    insertChunks(restored.matches, batch => db.insert(schema.seriesMatches).values(batch).run());
+    insertChunks(restored.history, batch => db.insert(schema.syncHistory).values(batch).run());
+    insertChunks(restored.overrides, batch => db.insert(schema.libraryOverrides).values(batch).run());
+    insertChunks(restored.jobs, batch => db.insert(schema.jobs).values(batch).run());
+    insertChunks(restored.logs, batch => db.insert(schema.jobLogs).values(batch).run());
   }
   return true;
 }

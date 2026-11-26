@@ -19,8 +19,10 @@ import { PROVIDER_NAMES, cn } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { Button, Input, Label, ProviderBadge, Spinner } from './ui';
 import { Dialog, DialogContent, DialogTitle, DialogDescription, ConfirmDialog } from './dialog';
-import { ArtistWorksBrowser } from './ArtistWorksBrowser';
-import { MetadataHistory } from './MetadataHistory';
+import { shouldEnableIdentify } from '../lib/identifyGating';
+
+const ArtistWorksBrowser = React.lazy(() => import('./ArtistWorksBrowser').then((m) => ({ default: m.ArtistWorksBrowser })));
+const MetadataHistory = React.lazy(() => import('./MetadataHistory').then((m) => ({ default: m.MetadataHistory })));
 
 const STATUS_LABELS: Record<number, string> = {
   0: 'Ongoing',
@@ -63,6 +65,8 @@ interface IdentifyModalProps {
   reviewPosition?: string;
   onNext?: () => void;
   autoReview?: boolean;
+  /** True when the series already has a match (before async series details finish loading). */
+  hasMatch?: boolean;
   /** Open a background-discovered candidate directly in the normal comparison. */
   initialCandidate?: MatchCandidate;
 }
@@ -303,10 +307,12 @@ function CandidateCover({ src }: { src?: string }) {
   if (!src || failed) return <Search className="h-4 text-muted" />;
   return <img src={src} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} className="h-full w-full object-cover" />;
 }
-export function IdentifyModal({ seriesId, current, currentLoading, currentError, onRetryCurrent, match, currentCover, onClose, reviewPosition, onNext, autoReview = false, initialCandidate }: IdentifyModalProps) {
+export function IdentifyModal({ seriesId, current, currentLoading, currentError, onRetryCurrent, match, currentCover, onClose, reviewPosition, onNext, autoReview = false, hasMatch = false, initialCandidate }: IdentifyModalProps) {
   const qc = useQueryClient();
   const [browseArtists, setBrowseArtists] = React.useState(false);
   const [historyOpen, setHistoryOpen] = React.useState(false);
+  const [historyMounted, setHistoryMounted] = React.useState(false);
+  const [autoReviewDone, setAutoReviewDone] = React.useState(false);
   const historyId = React.useId();
   const artistBrowser = React.useRef<HTMLDivElement>(null);
   const artistTrigger = React.useRef<HTMLButtonElement>(null);
@@ -389,11 +395,20 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
     setSelected(candidate);
   };
 
+  const effectiveHasMatch = Boolean(match?.providerId && match.providerSeriesId) || (hasMatch && currentLoading);
   const identify = useQuery({
     queryKey: ['identify', seriesId],
     queryFn: () => api.identify(seriesId),
-    // Home opens its saved candidate directly; search when returning to the list.
-    enabled: !browseArtists && (!initialCandidate || !selected),
+    // Skip fetching candidates when reviewing an existing match or provided candidate until user asks for matches.
+    enabled: shouldEnableIdentify({
+      browseArtists,
+      selected: Boolean(selected),
+      hasInitialCandidate: Boolean(initialCandidate),
+      autoReview,
+      hasMatch: effectiveHasMatch,
+      currentError: Boolean(currentError),
+      autoReviewDone,
+    }),
     staleTime: 60_000,
   });
 
@@ -490,10 +505,15 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   }, [alternatives, tab, manualKey]);
   const openedExisting = React.useRef(false);
   React.useEffect(() => {
-    if (!autoReview || openedExisting.current || !match?.providerId || !match.providerSeriesId) return;
-    openedExisting.current = true;
-    reviewCandidate({ providerId: match.providerId, providerSeriesId: match.providerSeriesId, title: current.name, type: 'unknown', score: match.matchScore ?? 0 }, false, true);
-  }, [autoReview, match?.providerId, match?.providerSeriesId, current.name, match?.matchScore]);
+    if (!autoReview || openedExisting.current) return;
+    if (match?.providerId && match.providerSeriesId) {
+      openedExisting.current = true;
+      setAutoReviewDone(true);
+      reviewCandidate({ providerId: match.providerId, providerSeriesId: match.providerSeriesId, title: current.name, type: 'unknown', score: match.matchScore ?? 0 }, false, true);
+    } else if (!currentLoading && !match) {
+      setAutoReviewDone(true);
+    }
+  }, [autoReview, currentLoading, match?.providerId, match?.providerSeriesId, current.name, match?.matchScore]);
 
   // Full aggregated metadata for the selected candidate — fetched through the
   // same path Apply & Sync uses, so the diff previews exactly what will push.
@@ -546,7 +566,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
       { label: PROTECT_LABELS.url, current: k?.webLinks ?? '', candidate: m?.url ?? '', field: 'url', link: true },
     ];
     return { rows, coverCandidate: m?.coverUrl ?? selected.coverUrl };
-  }, [selected, preview.data, resolvedTitle, current, k]);
+  }, [selected, preview.data, resolvedTitle, current.name, k]);
 
   // Covers H-Tosho already pushed from this same source are not a change. The
   // checkbox also governs volume covers, so every proposed one must be applied too.
@@ -644,14 +664,20 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
               {!selected && <Button ref={artistTrigger} size="sm" variant="outline" className="min-h-11" disabled={apply.isPending} aria-expanded={browseArtists} aria-controls={artistBrowserId} onClick={() => setBrowseArtists(value => !value)}>
                 {browseArtists ? <ArrowLeft aria-hidden="true" className="h-4 w-4" /> : <Users aria-hidden="true" className="h-4 w-4" />}{browseArtists ? 'Back to matches' : 'Browse artist works'}
               </Button>}
-              <Button size="sm" variant={selected ? 'ghost' : 'outline'} disabled={apply.isPending} aria-expanded={historyOpen} aria-controls={historyId} className={cn('min-h-11', historyOpen && 'border border-primary/50 bg-primary/10 text-primary')} onClick={() => setHistoryOpen(value => !value)}>
+              <Button size="sm" variant={selected ? 'ghost' : 'outline'} disabled={apply.isPending} aria-expanded={historyOpen} aria-controls={historyId} className={cn('min-h-11', historyOpen && 'border border-primary/50 bg-primary/10 text-primary')} onClick={() => { setHistoryMounted(true); setHistoryOpen(value => !value); }}>
                 <History aria-hidden="true" className="h-4 w-4" />Metadata history
               </Button>
             </div>
           </div>
-          <MetadataHistory key={seriesId} id={historyId} seriesId={seriesId} open={historyOpen} />
+          {historyMounted && (
+            <React.Suspense fallback={historyOpen ? <div role="status" className="flex items-center gap-2 py-2 text-sm text-muted"><Spinner /> Loading metadata history…</div> : null}>
+              <MetadataHistory key={seriesId} id={historyId} seriesId={seriesId} open={historyOpen} />
+            </React.Suspense>
+          )}
           {browseArtists && <div ref={artistBrowser} id={artistBrowserId} hidden={!!selected}>
-            <ArtistWorksBrowser active={!selected} seriesTitle={current.name} artists={savedArtists} onSelect={candidate => { setManualCandidate(candidate); reviewCandidate(candidate, true); }} />
+            <React.Suspense fallback={<div role="status" className="flex items-center gap-2 py-4 text-sm text-muted"><Spinner /> Loading artist browser…</div>}>
+              <ArtistWorksBrowser active={!selected} seriesTitle={current.name} artists={savedArtists} onSelect={candidate => { setManualCandidate(candidate); reviewCandidate(candidate, true); }} />
+            </React.Suspense>
           </div>}
 
           {selected && (currentLoading ? (

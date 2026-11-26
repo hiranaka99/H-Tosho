@@ -1,6 +1,7 @@
 import { KavitaClient } from '../kavita/client.js';
 import type { KavitaSeries } from '../kavita/types.js';
 import { mapLimit } from '../lib/http.js';
+import { clearCachedSeriesMetadataForSignals, getCachedSeriesMetadataForSignals, setCachedSeriesMetadataForSignals } from './seriesMetadataCache.js';
 import { getKavitaConnection, getRecommendationSettings, onSettingChange } from './settings.js';
 
 export interface KavitaSeriesSignal {
@@ -42,6 +43,7 @@ export function onRecommendationSeriesChange(listener: () => void): () => void {
 
 export function invalidateRecommendationSeries(seriesId: number): void {
   metadata.delete(seriesId);
+  clearCachedSeriesMetadataForSignals(seriesId);
   // One series' sync can rename it, but leaves the rest of the listing valid.
   if (listing) staleListingSeries.add(seriesId);
   for (const listener of listeners) listener();
@@ -150,7 +152,9 @@ export async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
       return { ...cached.signal, ...engagement };
     }
     try {
-      const meta = await client.getSeriesMetadata(series.id);
+      const preloaded = getCachedSeriesMetadataForSignals(series.id, TTL_MS);
+      const meta = preloaded ?? await client.getSeriesMetadata(series.id);
+      if (!preloaded) setCachedSeriesMetadataForSignals(series.id, meta);
       const genres = (meta.genres ?? []).map((tag) => tag.title?.trim() ?? '').filter(Boolean);
       const rawTags = (meta.tags ?? []).map((tag) => tag.title?.trim() ?? '').filter(Boolean);
       const seenArtists = new Set<string>();

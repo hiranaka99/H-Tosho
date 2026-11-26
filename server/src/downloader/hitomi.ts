@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { hitomiNozomiPath, hitomiStateForTerm, normalizeHitomiQuery, parseHitomiSearch } from './hitomiSearch.js';
-import { fetchBuffer } from '../lib/http.js';
+import { fetchBuffer, mapLimit } from '../lib/http.js';
 import { getDownloaderSettings } from '../services/settings.js';
 import { stripTags, toIsoDate } from './util.js';
 import type { DoujinGallery, DoujinProvider, DoujinSearchOptions, DoujinSearchResult, DoujinSuggestion, DoujinSort } from './types.js';
@@ -107,8 +107,8 @@ async function loadFreshGG(): Promise<GG> {
   return gg;
 }
 
-async function fetchText(url: string): Promise<string> {
-  const buf = await fetchBuffer(url, { headers: headers() });
+async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
+  const buf = await fetchBuffer(url, { headers: headers(), ...(signal ? { signal } : {}) });
   return buf.toString('utf8');
 }
 
@@ -303,8 +303,21 @@ function discardBody(r: Response): void {
   void r.body?.cancel().catch(() => undefined);
 }
 
-async function rangeFetch(url: string, start: number, end: number): Promise<Buffer> {
-  const r = await fetch(url, { headers: { ...headers(), Range: `bytes=${start}-${end}` }, signal: requestSignal(RANGE_TIMEOUT_MS) });
+function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('Aborted'));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error('Aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error) => { signal.removeEventListener('abort', onAbort); reject(error); },
+    );
+  });
+}
+
+async function rangeFetch(url: string, start: number, end: number, signal?: AbortSignal): Promise<Buffer> {
+  const r = await fetch(url, { headers: { ...headers(), Range: `bytes=${start}-${end}` }, signal: requestSignal(RANGE_TIMEOUT_MS, signal) });
   if (r.status !== 200 && r.status !== 206) {
     discardBody(r);
     throw new Error(`Hitomi range request failed (HTTP ${r.status})`);
@@ -359,12 +372,20 @@ function cmp(a: Uint8Array, b: Uint8Array): number {
 }
 
 let galleriesIndexVersion: { value: string; at: number } | null = null;
+let versionInflight: Promise<string> | null = null;
 
-async function getGalleriesIndexVersion(): Promise<string> {
+async function getGalleriesIndexVersion(signal?: AbortSignal): Promise<string> {
   if (galleriesIndexVersion && Date.now() - galleriesIndexVersion.at < 30_000) return galleriesIndexVersion.value;
-  const v = await fetchText(`${API_BASE}/galleriesindex/version?_=${Date.now()}`);
-  galleriesIndexVersion = { value: v.trim(), at: Date.now() };
-  return galleriesIndexVersion.value;
+  if (!versionInflight) {
+    versionInflight = fetchText(`${API_BASE}/galleriesindex/version?_=${Date.now()}`)
+      .then((v) => {
+        const value = v.trim();
+        galleriesIndexVersion = { value, at: Date.now() };
+        return value;
+      })
+      .finally(() => { versionInflight = null; });
+  }
+  return raceAbort(versionInflight, signal);
 }
 
 /**
@@ -375,33 +396,46 @@ async function getGalleriesIndexVersion(): Promise<string> {
  * final gallery-id data fetch stays uncached — it is one read per exact match.
  */
 const btreeNodeCache = new Map<string, BTreeNode>();
+const btreeNodeInflight = new Map<string, Promise<BTreeNode>>();
 const BTREE_NODE_CACHE_MAX = 256;
 
+async function loadBTreeNode(indexUrl: string, version: string, addr: bigint, signal?: AbortSignal): Promise<BTreeNode> {
+  const nodeKey = `${version}:${addr}`;
+  const cached = btreeNodeCache.get(nodeKey);
+  if (cached) {
+    btreeNodeCache.delete(nodeKey);
+    btreeNodeCache.set(nodeKey, cached);
+    return cached;
+  }
+  let pending = btreeNodeInflight.get(nodeKey);
+  if (!pending) {
+    pending = rangeFetch(indexUrl, Number(addr), Number(addr) + MAX_NODE_SIZE - 1)
+      .then((buf) => {
+        const node = decodeNode(buf);
+        if (btreeNodeCache.size >= BTREE_NODE_CACHE_MAX) {
+          const oldest = btreeNodeCache.keys().next().value;
+          if (oldest !== undefined) btreeNodeCache.delete(oldest);
+        }
+        btreeNodeCache.set(nodeKey, node);
+        return node;
+      })
+      .finally(() => {
+        if (btreeNodeInflight.get(nodeKey) === pending) btreeNodeInflight.delete(nodeKey);
+      });
+    btreeNodeInflight.set(nodeKey, pending);
+  }
+  return raceAbort(pending, signal);
+}
+
 /** Resolve the gallery ids that exactly match a single keyword term. */
-async function getGalleryIdsForTerm(term: string, version: string): Promise<number[]> {
+async function getGalleryIdsForTerm(term: string, version: string, signal?: AbortSignal): Promise<number[]> {
   const key = hashTerm(term);
   const indexUrl = `${API_BASE}/galleriesindex/galleries.${version}.index`;
   const dataUrl = `${API_BASE}/galleriesindex/galleries.${version}.data`;
 
   let addr = 0n;
   for (let depth = 0; depth < 12; depth++) {
-    const nodeKey = `${version}:${addr}`;
-    let node = btreeNodeCache.get(nodeKey);
-    if (node) {
-      // Promote to MRU so hot nodes (the root, upper levels) are never the
-      // eviction candidate.
-      btreeNodeCache.delete(nodeKey);
-      btreeNodeCache.set(nodeKey, node);
-    } else {
-      const buf = await rangeFetch(indexUrl, Number(addr), Number(addr) + MAX_NODE_SIZE - 1);
-      node = decodeNode(buf);
-      // LRU: evict the stalest entry (Map insertion order) when over cap.
-      if (btreeNodeCache.size >= BTREE_NODE_CACHE_MAX) {
-        const oldest = btreeNodeCache.keys().next().value;
-        if (oldest !== undefined) btreeNodeCache.delete(oldest);
-      }
-      btreeNodeCache.set(nodeKey, node);
-    }
+    const node = await loadBTreeNode(indexUrl, version, addr, signal);
     if (!node.keys.length) return [];
 
     let there = false;
@@ -421,12 +455,12 @@ async function getGalleryIdsForTerm(term: string, version: string): Promise<numb
     if (there) {
       const [offset, length] = node.datas[where];
       if (!length || length <= 0) return [];
-      const d = await rangeFetch(dataUrl, offset, offset + length - 1);
+      const d = await rangeFetch(dataUrl, offset, offset + length - 1, signal);
       const dv = new DataView(d.buffer, d.byteOffset, d.byteLength);
       const count = dv.getInt32(0, false);
       if (count <= 0 || count > 10_000_000) return [];
-      const ids: number[] = [];
-      for (let i = 0; i < count; i++) ids.push(dv.getInt32(4 + i * 4, false));
+      const ids = new Array<number>(count);
+      for (let i = 0; i < count; i++) ids[i] = dv.getInt32(4 + i * 4, false);
       return ids;
     }
 
@@ -463,14 +497,14 @@ function nozomiUrl(f: NozomiFilter): string {
 /** Parse a nozomi payload: big-endian int32 gallery-id list. */
 function parseNozomiIds(buf: Buffer): number[] {
   const count = Math.floor(buf.byteLength / 4);
-  const ids: number[] = [];
-  for (let i = 0; i < count; i++) ids.push(buf.readInt32BE(i * 4));
+  const ids = new Array<number>(count);
+  for (let i = 0; i < count; i++) ids[i] = buf.readInt32BE(i * 4);
   return ids;
 }
 
 /** Fetch the big-endian int32 gallery-id list from a nozomi filter. */
-async function fetchNozomiIds(f: NozomiFilter, strict = false): Promise<number[]> {
-  return fetchNozomiUrl(nozomiUrl(f), strict);
+async function fetchNozomiIds(f: NozomiFilter, strict = false, signal?: AbortSignal): Promise<number[]> {
+  return fetchNozomiUrl(nozomiUrl(f), strict, signal);
 }
 
 /**
@@ -482,7 +516,7 @@ async function fetchNozomiIds(f: NozomiFilter, strict = false): Promise<number[]
  */
 const NOZOMI_CACHE_TTL_MS = 60_000;
 const NOZOMI_CACHE_MAX_IDS = 3_000_000;
-const nozomiCache = new Map<string, { at: number; ids: number[] }>();
+const nozomiCache = new Map<string, { at: number; ids: number[]; set?: Set<number> }>();
 const nozomiInflight = new Map<string, Promise<{ status: number; ids: number[] }>>();
 let nozomiCacheIds = 0;
 
@@ -502,43 +536,54 @@ function cacheNozomi(url: string, ids: number[]): void {
   nozomiCacheIds += ids.length;
 }
 
-async function loadNozomi(url: string): Promise<{ status: number; ids: number[] }> {
+async function loadNozomi(url: string, signal?: AbortSignal): Promise<{ status: number; ids: number[] }> {
   const cached = nozomiCache.get(url);
   if (cached) {
     if (Date.now() - cached.at < NOZOMI_CACHE_TTL_MS) return { status: 200, ids: cached.ids };
     nozomiCache.delete(url);
     nozomiCacheIds -= cached.ids.length;
   }
-  const pending = nozomiInflight.get(url);
-  if (pending) return pending;
-  const request = (async () => {
-    const r = await fetch(url, { headers: { ...headers() }, signal: requestSignal(NOZOMI_TIMEOUT_MS) });
-    if (r.status !== 200) {
-      discardBody(r);
-      return { status: r.status, ids: [] as number[] };
-    }
-    const ids = parseNozomiIds(Buffer.from(await r.arrayBuffer()));
-    cacheNozomi(url, ids);
-    return { status: 200, ids };
-  })();
-  nozomiInflight.set(url, request);
-  try { return await request; }
-  finally { if (nozomiInflight.get(url) === request) nozomiInflight.delete(url); }
+  let pending = nozomiInflight.get(url);
+  if (!pending) {
+    pending = (async () => {
+      const r = await fetch(url, { headers: { ...headers() }, signal: requestSignal(NOZOMI_TIMEOUT_MS) });
+      if (r.status !== 200) {
+        discardBody(r);
+        return { status: r.status, ids: [] as number[] };
+      }
+      const ids = parseNozomiIds(Buffer.from(await r.arrayBuffer()));
+      cacheNozomi(url, ids);
+      return { status: 200, ids };
+    })().finally(() => {
+      if (nozomiInflight.get(url) === pending) nozomiInflight.delete(url);
+    });
+    nozomiInflight.set(url, pending);
+  }
+  return raceAbort(pending, signal);
 }
 
 /** The ids of one `.nozomi` index (a shared cached array — never mutate it). */
-async function fetchNozomiUrl(url: string, strict = false): Promise<number[]> {
+async function fetchNozomiUrl(url: string, strict = false, signal?: AbortSignal): Promise<number[]> {
   try {
-    const { status, ids } = await loadNozomi(url);
+    const { status, ids } = await loadNozomi(url, signal);
     if (status !== 200) {
       if (strict && status !== 404) throw new Error(`Hitomi exclusion index HTTP ${status}`);
       return [];
     }
     return ids;
   } catch (error) {
-    if (strict) throw error;
+    if (strict || signal?.aborted) throw error;
     return [];
   }
+}
+
+async function getNozomiSet(url: string, strict = false, signal?: AbortSignal): Promise<Set<number>> {
+  const ids = await fetchNozomiUrl(url, strict, signal);
+  const entry = nozomiCache.get(url);
+  if (entry && entry.ids === ids) {
+    return (entry.set ??= new Set(ids));
+  }
+  return new Set(ids);
 }
 
 /** In-place Fisher-Yates shuffle (non-cryptographic: this is display order only). */
@@ -572,13 +617,19 @@ function nozomiFilterFromTerm(term: string): NozomiFilter | null {
 
 /** AND-intersect a list of id sets (empty result if any set is empty). */
 function intersectIds(sets: number[][]): number[] {
-  let result: number[] | null = null;
-  for (const set of sets) {
-    const asSet = new Set(set);
-    result = result === null ? [...set] : result.filter((id) => asSet.has(id));
-    if (result.length === 0) return [];
+  if (!sets.length) return [];
+  const ordered = [...sets].sort((a, b) => a.length - b.length);
+  if (!ordered[0].length) return [];
+  let current = new Set(ordered[0]);
+  for (let i = 1; i < ordered.length; i++) {
+    const next = new Set<number>();
+    for (const id of ordered[i]) {
+      if (current.has(id)) next.add(id);
+    }
+    if (!next.size) return [];
+    current = next;
   }
-  return result ?? [];
+  return [...current];
 }
 
 /**
@@ -618,28 +669,57 @@ function tokenizeQuery(query: string): { ns?: string; val: string }[] {
  * that tag's exclusion, so searching a banned tag still returns results (a
  * bare gallery-id lookup never reaches this function at all).
  */
-async function searchGalleryIds(query: string, version: string, sort?: DoujinSort, strictExclusions = false, defaultLanguage?: string): Promise<number[]> {
+async function searchGalleryIds(
+  query: string,
+  version: string,
+  sort?: DoujinSort,
+  strictExclusions = false,
+  defaultLanguage?: string,
+  signal?: AbortSignal,
+): Promise<number[]> {
   const { state, positive, negative, groups } = parseHitomiSearch(query, sort, defaultLanguage);
-  const resolve = (term: string) => term.includes(':')
-    ? fetchNozomiUrl(`${API_BASE}${hitomiNozomiPath(hitomiStateForTerm(term, state))}`)
-    : getGalleryIdsForTerm(term, version);
+  const resolveList = (term: string) => term.includes(':')
+    ? fetchNozomiUrl(`${API_BASE}${hitomiNozomiPath(hitomiStateForTerm(term, state))}`, false, signal)
+    : getGalleryIdsForTerm(term, version, signal);
+  const resolveSet = (term: string) => term.includes(':')
+    ? getNozomiSet(`${API_BASE}${hitomiNozomiPath(hitomiStateForTerm(term, state))}`, false, signal)
+    : getGalleryIdsForTerm(term, version, signal).then((list) => new Set(list));
   // The first positive namespace determines the ranking index on the website.
-  // May be a shared cached array: never reorder it in place (the filter below
-  // always produces a fresh array, which is what gets reversed/shuffled).
-  const ids = !positive.length || (!positive[0].includes(':') && state.orderbykey !== 'added')
-    ? await fetchNozomiUrl(`${API_BASE}${hitomiNozomiPath(state)}`)
-    : await resolve(positive.shift()!);
-  if (!ids.length) return [];
-  const [required, alternatives, excluded] = await Promise.all([
-    Promise.all(positive.map(resolve)),
-    Promise.all(groups.map(async group => new Set((await Promise.all(group.map(resolve))).flat()))),
-    Promise.all(negative.map(resolve)),
+  // May be a shared cached array: never reorder it in place (the filter loop
+  // always builds a fresh array, which is what gets reversed/shuffled).
+  const useIndexRanking = !positive.length || (!positive[0].includes(':') && state.orderbykey !== 'added');
+  const basePromise = useIndexRanking
+    ? fetchNozomiUrl(`${API_BASE}${hitomiNozomiPath(state)}`, false, signal)
+    : resolveList(positive[0]);
+  const remainingPositive = useIndexRanking ? positive : positive.slice(1);
+  const [ids, allowed, alternatives, excludedSets, banned] = await Promise.all([
+    basePromise,
+    Promise.all(remainingPositive.map(resolveSet)),
+    Promise.all(groups.map(async (group) => {
+      const lists = await Promise.all(group.map(resolveList));
+      const union = new Set<number>();
+      for (const list of lists) {
+        for (const id of list) union.add(id);
+      }
+      return union;
+    })),
+    Promise.all(negative.map(resolveSet)),
+    raceAbort(bannedIdSet(strictExclusions ? '' : query, version, strictExclusions), signal),
   ]);
-  const allowed = required.map(list => new Set(list));
-  const disallowed = new Set(excluded.flat());
-  const banned = await bannedIdSet(strictExclusions ? '' : query, version, strictExclusions);
-  const kept = ids.filter(id => allowed.every(set => set.has(id)) && alternatives.every(set => set.has(id))
-    && !disallowed.has(id) && !banned?.has(id));
+  if (!ids.length) return [];
+  for (let i = 0; i < allowed.length; i++) if (!allowed[i].size) return [];
+  for (let i = 0; i < alternatives.length; i++) if (!alternatives[i].size) return [];
+
+  const nonEmptyExcluded = excludedSets.filter((s) => s.size > 0);
+  const kept: number[] = [];
+  outer: for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
+    if (banned?.has(id)) continue;
+    for (let j = 0; j < allowed.length; j++) if (!allowed[j].has(id)) continue outer;
+    for (let j = 0; j < alternatives.length; j++) if (!alternatives[j].has(id)) continue outer;
+    for (let j = 0; j < nonEmptyExcluded.length; j++) if (nonEmptyExcluded[j].has(id)) continue outer;
+    kept.push(id);
+  }
   // Order only the survivors: filtering preserves order, so reversing or
   // shuffling afterwards gives the same distribution as doing it on the full
   // index, without touching the (often hundreds of thousands of) discarded ids.
@@ -781,6 +861,11 @@ interface TagSuggestion {
   ns: string;
 }
 
+const TAG_SUGGEST_CACHE_TTL_MS = 5 * 60_000;
+const TAG_SUGGEST_CACHE_MAX = 256;
+const tagSuggestCache = new Map<string, { at: number; items: TagSuggestion[] }>();
+const tagSuggestInflight = new Map<string, Promise<TagSuggestion[] | null>>();
+
 /**
  * Fetch tag suggestions from the tag index. Mirrors the live site's
  * `get_suggestions_for_query`: each character of the (lowercased) term becomes a
@@ -794,22 +879,48 @@ async function fetchTagSuggestions(field: string, term: string, signal?: AbortSi
   if (chars.length > 0) url += '/' + chars.join('/');
   url += '.json';
 
+  const cached = tagSuggestCache.get(url);
+  if (cached && Date.now() - cached.at < TAG_SUGGEST_CACHE_TTL_MS) {
+    tagSuggestCache.delete(url);
+    tagSuggestCache.set(url, cached);
+    return cached.items;
+  }
+  if (cached) tagSuggestCache.delete(url);
+
+  let pending = tagSuggestInflight.get(url);
+  if (!pending) {
+    pending = (async () => {
+      try {
+        const r = await fetch(url, { headers: { ...headers() }, signal: requestSignal(SUGGEST_TIMEOUT_MS) });
+        if (r.status !== 200) {
+          discardBody(r);
+          return null;
+        }
+        const data: unknown = await r.json();
+        if (!Array.isArray(data)) return null;
+        const out: TagSuggestion[] = [];
+        for (const item of data) {
+          if (!Array.isArray(item) || item.length < 3) continue;
+          const [name, count, ns] = item as [string, number, string];
+          if (typeof name !== 'string') continue;
+          out.push({ name, count: typeof count === 'number' ? count : 0, ns: String(ns) });
+        }
+        if (tagSuggestCache.size >= TAG_SUGGEST_CACHE_MAX) {
+          const oldest = tagSuggestCache.keys().next().value;
+          if (oldest !== undefined) tagSuggestCache.delete(oldest);
+        }
+        tagSuggestCache.set(url, { at: Date.now(), items: out });
+        return out;
+      } catch {
+        return null;
+      }
+    })().finally(() => {
+      if (tagSuggestInflight.get(url) === pending) tagSuggestInflight.delete(url);
+    });
+    tagSuggestInflight.set(url, pending);
+  }
   try {
-    const r = await fetch(url, { headers: { ...headers() }, signal: requestSignal(SUGGEST_TIMEOUT_MS, signal) });
-    if (r.status !== 200) {
-      discardBody(r);
-      return [];
-    }
-    const data: unknown = await r.json();
-    if (!Array.isArray(data)) return [];
-    const out: TagSuggestion[] = [];
-    for (const item of data) {
-      if (!Array.isArray(item) || item.length < 3) continue;
-      const [name, count, ns] = item as [string, number, string];
-      if (typeof name !== 'string') continue;
-      out.push({ name, count: typeof count === 'number' ? count : 0, ns: String(ns) });
-    }
-    return out;
+    return (await raceAbort(pending, signal)) ?? [];
   } catch {
     return [];
   }
@@ -834,13 +945,13 @@ async function imageSetIds(version: string): Promise<Set<number>> {
 // Keep one ranking snapshot across page requests, including a random shuffle.
 // Match the frontend's five-minute search cache and bound retained catalog IDs.
 const searchPageCache = new Map<string, { expiresAt: number; ids: Promise<number[]>; count: number }>();
-async function pagedSearchIds(query: string, sort?: DoujinSort): Promise<number[]> {
+async function pagedSearchIds(query: string, sort?: DoujinSort, signal?: AbortSignal): Promise<number[]> {
   const key = JSON.stringify([normalizeHitomiQuery(query), sort ?? 'default', getDownloaderSettings().hitomiBannedTags]);
   const cached = searchPageCache.get(key);
   if (cached && cached.expiresAt > Date.now()) {
     searchPageCache.delete(key);
     searchPageCache.set(key, cached);
-    return cached.ids;
+    return raceAbort(cached.ids, signal);
   }
   searchPageCache.delete(key);
   while (searchPageCache.size >= 4) searchPageCache.delete(searchPageCache.keys().next().value!);
@@ -852,14 +963,14 @@ async function pagedSearchIds(query: string, sort?: DoujinSort): Promise<number[
   const entry = { expiresAt: Date.now() + 5 * 60_000, ids, count: 0 };
   searchPageCache.set(key, entry);
   try {
-    const result = await ids;
+    const result = await raceAbort(ids, signal);
     entry.count = result.length;
     while (searchPageCache.size > 1 && [...searchPageCache.values()].reduce((sum, item) => sum + item.count, 0) > 2_000_000) {
       searchPageCache.delete(searchPageCache.keys().next().value!);
     }
     return result;
   } catch (error) {
-    if (searchPageCache.get(key) === entry) searchPageCache.delete(key);
+    if (!signal?.aborted && searchPageCache.get(key) === entry) searchPageCache.delete(key);
     throw error;
   }
 }
@@ -888,7 +999,24 @@ async function resolveHitomiTagInfo(rawName: string): Promise<{ name: string; ns
   return resolved;
 }
 
-async function hydrateSearchIds(ids: number[], limit: number, opts?: DoujinSearchOptions): Promise<DoujinSearchResult[]> {
+const HITOMI_HYDRATE_CONCURRENCY = 12;
+const galleryInfoInflight = new Map<string, Promise<any>>();
+
+async function loadGalleryInfo(id: number | string, signal?: AbortSignal): Promise<any> {
+  const key = String(id);
+  let pending = galleryInfoInflight.get(key);
+  if (!pending) {
+    pending = fetchText(`${API_BASE}/galleries/${key}.js`)
+      .then(parseGalleryInfo)
+      .finally(() => {
+        if (galleryInfoInflight.get(key) === pending) galleryInfoInflight.delete(key);
+      });
+    galleryInfoInflight.set(key, pending);
+  }
+  return raceAbort(pending, signal);
+}
+
+async function hydrateSearchIds(ids: number[], limit: number, opts?: DoujinSearchOptions, signal?: AbortSignal): Promise<DoujinSearchResult[]> {
   const target = Math.max(limit, 1);
   const rawSkip = Math.max(opts?.skip ?? 0, 0);
   const start = opts?.wrapSkip && ids.length > 0
@@ -900,10 +1028,15 @@ async function hydrateSearchIds(ids: number[], limit: number, opts?: DoujinSearc
   const out: DoujinSearchResult[] = [];
   let ggPromise: ReturnType<typeof loadGG> | null = null;
   const getGG = () => (ggPromise ??= loadGG());
-  for (let index = 0; index < scanLimit && out.length < target; index += 25) {
-    await Promise.all(ids.slice(start + index, Math.min(start + index + 25, start + scanLimit)).map(async id => {
+  for (let index = 0; index < scanLimit && out.length < target; ) {
+    signal?.throwIfAborted();
+    const waveSize = Math.min(scanLimit - index, Math.min(25, Math.max(4, Math.ceil((target - out.length) * 1.25))));
+    const batch = ids.slice(start + index, start + index + waveSize);
+    index += waveSize;
+    await mapLimit(batch, HITOMI_HYDRATE_CONCURRENCY, async (id) => {
+      if (signal?.aborted) return;
       try {
-        const info = parseGalleryInfo(await fetchText(`${API_BASE}/galleries/${id}.js`));
+        const info = await loadGalleryInfo(id, signal);
         const type = typeof info.type === 'string' ? info.type.toLowerCase().replace(/[^a-z]/g, '') : '';
         if (excludedTypes.has(type)) return;
         const gg = await getGG();
@@ -929,8 +1062,11 @@ async function hydrateSearchIds(ids: number[], limit: number, opts?: DoujinSearc
           ...(groups.length ? { groups } : {}),
           pageCount: files.length || undefined, url: galleryUrlFor(info, String(id)), uploadedAt: toIsoDate(info.date),
         });
-      } catch { /* Preserve partial results when an individual metadata lookup fails. */ }
-    }));
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        /* Preserve partial results when an individual metadata lookup fails. */
+      }
+    });
   }
   const byId = new Map(out.map(result => [result.galleryId, result]));
   return ids.slice(start, start + scanLimit).map(id => byId.get(String(id))).filter((result): result is DoujinSearchResult => !!result).slice(0, target);
@@ -977,13 +1113,13 @@ export const hitomiProvider: DoujinProvider = {
     return hydrateSearchIds(ids, limit, opts);
   },
 
-  async searchPage(query: string, offset: number, limit: number, sort?: DoujinSort) {
+  async searchPage(query: string, offset: number, limit: number, sort?: DoujinSort, opts?: { exactTotal?: boolean; signal?: AbortSignal }) {
     if (galleryIdFromInput(query)) {
       const items = await this.search(query, 1, sort);
       return { items: offset ? [] : items, total: items.length };
     }
-    const ids = await pagedSearchIds(query, sort);
-    const items = await hydrateSearchIds(ids.slice(offset, offset + limit), limit);
+    const ids = await pagedSearchIds(query, sort, opts?.signal);
+    const items = await hydrateSearchIds(ids.slice(offset, offset + limit), limit, undefined, opts?.signal);
     if (offset < ids.length && !items.length) throw new Error('Could not load this Hitomi results page. Please retry.');
     return { items, total: ids.length };
   },
@@ -1047,8 +1183,7 @@ export const hitomiProvider: DoujinProvider = {
     // The gallery JSON and the gg.js routing table are independent fetches (gg
     // is only consumed after the files list is parsed), so load them in
     // parallel; both must succeed for the gallery to resolve.
-    const [infoText, gg] = await Promise.all([fetchText(`${API_BASE}/galleries/${id}.js`), loadGG()]);
-    const info = parseGalleryInfo(infoText);
+    const [info, gg] = await Promise.all([loadGalleryInfo(id), loadGG()]);
     const files: HitomiFile[] = info.files ?? [];
     if (!files.length) throw new Error(`Could not find any images for Hitomi gallery ${id}.`);
 

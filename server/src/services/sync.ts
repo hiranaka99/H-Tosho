@@ -14,7 +14,7 @@ import {
 import type { SeriesMetadata, VolumeCover } from '../providers/types.js';
 import type { KavitaLibrary, KavitaVolume, KavitaSeries, KavitaSeriesMetadataDto } from '../kavita/types.js';
 import { fetchProviderMetadata } from '../match/autoMatcher.js';
-import { listCbzFilesAsync, resolveSeriesHostDir, setSeriesTitleInCbzFiles } from '../lib/cbz.js';
+import { listCbzFilesAsync, resolveSeriesHostDirAsync, setSeriesTitleInCbzFiles } from '../lib/cbz.js';
 import { mapLimit } from '../lib/http.js';
 import { invalidateSeriesArtists } from './seriesArtists.js';
 import { getCredentialMap, getDownloaderSettings } from './settings.js';
@@ -88,6 +88,8 @@ export async function applyToKavita(
     journal?: MetadataJournal;
     /** Protected fields the caller already read under its series mutation boundary. */
     protectedFields?: readonly string[];
+    /** Current Kavita metadata already captured for this operation (skips redundant GET /Series/metadata). */
+    currentMetadata?: KavitaSeriesMetadataDto;
   },
 ): Promise<ApplyResult> {
   const errors: string[] = [];
@@ -101,10 +103,12 @@ export async function applyToKavita(
   const payload = selectMetadataFields(buildSeriesPayload(meta), [...(opts.excludedFields ?? []), ...protectedFields]);
   // Merge provider tags with the series' existing Kavita tags instead of
   // replacing them (Kavita's metadata update is a full-field write).
-  let currentMetadata: KavitaSeriesMetadataDto | undefined;
+  let currentMetadata: KavitaSeriesMetadataDto | undefined = opts.currentMetadata ?? opts.journal?.beforeMetadata;
   if (payload.tags) {
     try {
-      currentMetadata = await client.getSeriesMetadata(seriesId);
+      if (!currentMetadata || currentMetadata.seriesId !== seriesId) {
+        currentMetadata = await client.getSeriesMetadata(seriesId);
+      }
       payload.tags = mergeTagLists((currentMetadata.tags ?? []).map((t) => t.title).filter((t): t is string => Boolean(t)), payload.tags);
     } catch {
       /* series without a metadata row yet — push provider tags as-is */
@@ -394,7 +398,7 @@ async function applyResolvedSeriesMatchRecorded(
     const libraries = await cachedLibraries(client);
     const library = libraries.find((entry) => entry.id === series.libraryId);
     const dl = getDownloaderSettings();
-    const dir = resolveSeriesHostDir({
+    const dir = await resolveSeriesHostDirAsync({
       libraryPath: library?.path,
       folderPath: series.folderPath,
       anchors: dl.downloadDirectory ? [path.resolve(dl.downloadDirectory)] : [],
@@ -434,7 +438,6 @@ async function applyResolvedSeriesMatchRecorded(
   result.errors.unshift(...coverCaptureErrors);
   // History/notifications show the name Kavita displays after this sync.
   const renamed = !excludedFields.includes('title') && newTitle !== series.name.trim() && result.pushed.includes('name');
-  invalidateSeriesArtists(seriesId);
   const name = renamed ? newTitle : series.name;
   getDb().transaction(() => {
     const existing = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();

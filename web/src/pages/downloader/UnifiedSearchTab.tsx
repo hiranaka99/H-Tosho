@@ -202,8 +202,19 @@ const UnifiedEntryCard = React.memo(function UnifiedEntryCard({
   );
 }, sameEntryCardProps);
 
-export function UnifiedSearchTab({ unified, scopeControl, watchControl, onOpenEntry, onDownload, downloadStatus, startingKeys, ownershipFor, selectedEntryIds, onToggleGroup, selectMode, onToggleSelectMode, selectionActions, showSelection }: UnifiedSearchTabProps) {
-  const { draft, committed, status, entries, cursor, hasMore, loadedUniqueCount, totalUnique, providers, error, retrying, setDraft } = unified;
+const UnifiedSearchCard = React.memo(function UnifiedSearchCard({
+  draft,
+  busy,
+  scopeControl,
+  onDraftChange,
+  onStartSearch,
+}: {
+  draft: string;
+  busy: boolean;
+  scopeControl: React.ReactNode;
+  onDraftChange: (next: string) => void;
+  onStartSearch: (query: string) => void;
+}) {
   const [formDraft, setFormDraft] = React.useState(draft);
   const syncedDraftRef = React.useRef(draft);
   React.useEffect(() => {
@@ -216,23 +227,48 @@ export function UnifiedSearchTab({ unified, scopeControl, watchControl, onOpenEn
     if (formDraft === syncedDraftRef.current) return;
     const timer = window.setTimeout(() => {
       syncedDraftRef.current = formDraft;
-      setDraft(formDraft);
+      onDraftChange(formDraft);
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [formDraft, setDraft]);
-  const busy = status === 'searching' || status === 'loading-more';
-  const failedProviders = providers.filter(isFailed);
-  const okProviders = providers.filter(isOk);
-  const searchingProviders = status === 'searching' ? providers.filter(isSearching) : [];
+  }, [formDraft, onDraftChange]);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
     const q = formDraft.trim();
     if (!q) return;
     syncedDraftRef.current = q;
-    unified.setDraft(q);
-    unified.startSearch(q);
+    onDraftChange(q);
+    onStartSearch(q);
   }
+
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-3">
+        {scopeControl}
+        <form onSubmit={submit} className="flex min-w-0 gap-2">
+          <GallerySearchInput
+            value={formDraft} source="unified"
+            onChange={setFormDraft}
+            label="Search galleries" describedBy="unified-search-hint"
+            placeholder="Keyword, tag, artist or gallery URL…"
+            clearLabel="Clear search input" className="h-11"
+          />
+          <Button className="h-11 shrink-0" type="submit" disabled={busy || !formDraft.trim()}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
+          </Button>
+        </form>
+        <SearchHint id="unified-search-hint" />
+      </CardContent>
+    </Card>
+  );
+});
+
+export function UnifiedSearchTab({ unified, scopeControl, watchControl, onOpenEntry, onDownload, downloadStatus, startingKeys, ownershipFor, selectedEntryIds, onToggleGroup, selectMode, onToggleSelectMode, selectionActions, showSelection }: UnifiedSearchTabProps) {
+  const { draft, committed, status, entries, cursor, hasMore, loadedUniqueCount, totalUnique, providers, error, retrying, setDraft, startSearch } = unified;
+  const busy = status === 'searching' || status === 'loading-more';
+  const failedProviders = providers.filter(isFailed);
+  const okProviders = providers.filter(isOk);
+  const searchingProviders = status === 'searching' ? providers.filter(isSearching) : [];
 
   const galleries = (n: number) => `${n} ${n === 1 ? 'gallery' : 'galleries'}`;
   const resultStatus = status === 'loading-more' ? 'Loading more…'
@@ -242,24 +278,13 @@ export function UnifiedSearchTab({ unified, scopeControl, watchControl, onOpenEn
 
   return (
     <div className="flex flex-col gap-4">
-      <Card>
-        <CardContent className="flex flex-col gap-3">
-          {scopeControl}
-          <form onSubmit={submit} className="flex min-w-0 gap-2">
-            <GallerySearchInput
-              value={formDraft} source="unified"
-              onChange={setFormDraft}
-              label="Search galleries" describedBy="unified-search-hint"
-              placeholder="Keyword, tag, artist or gallery URL…"
-              clearLabel="Clear search input" className="h-11"
-            />
-            <Button className="h-11 shrink-0" type="submit" disabled={busy || !formDraft.trim()}>
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
-            </Button>
-          </form>
-          <SearchHint id="unified-search-hint" />
-        </CardContent>
-      </Card>
+      <UnifiedSearchCard
+        draft={draft}
+        busy={busy}
+        scopeControl={scopeControl}
+        onDraftChange={setDraft}
+        onStartSearch={startSearch}
+      />
 
       {/* A shortlist carried over from another search stays reachable while this one has no cards. */}
       {showSelection && (committed === null || entries.length === 0) && <GallerySelectionBar {...selectionActions} />}

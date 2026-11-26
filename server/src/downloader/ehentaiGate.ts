@@ -41,6 +41,8 @@ export interface GateLane {
   setCooldown(untilMs: number): void;
   /** Milliseconds remaining on the current cooldown (0 when none). */
   cooldownRemainingMs(): number;
+  /** Approximate queue/pacing wait (ms) before a new request on this lane could start. */
+  estimatedWaitMs(): number;
 }
 
 const abortError = (): Error => new RequestAbortedError();
@@ -239,6 +241,12 @@ function createLane(minGapMs: number, maxConcurrent: number): GateLane {
     },
     cooldownRemainingMs(): number {
       return Math.max(0, cooldownUntil - Date.now());
+    },
+    estimatedWaitMs(): number {
+      const now = Date.now();
+      const nextWindow = Math.max(now, lastStartAt + minGapMs, cooldownUntil);
+      const backlog = (active >= maxConcurrent ? 1 : 0) + queue.length;
+      return Math.max(0, nextWindow - now) + backlog * minGapMs;
     },
   };
 }

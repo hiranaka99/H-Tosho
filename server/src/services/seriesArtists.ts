@@ -1,6 +1,13 @@
 import type { KavitaSeriesMetadataDto } from '../kavita/types.js';
 import { invalidateRecommendationSeries } from './recommendationSignals.js';
 import { onSettingChange } from './settings.js';
+import { invalidateSeriesCoverCache } from '../routes/api/kavita.js';
+import {
+  clearCachedSeriesMetadataForSignals,
+  getCachedSeriesMetadataForSignals,
+  setCachedSeriesMetadataForSignals,
+  type CachedKavitaMetadata,
+} from './seriesMetadataCache.js';
 
 /** Minimal client surface the cache needs — satisfied by KavitaClient. */
 export interface MetadataSource {
@@ -64,9 +71,23 @@ function setCacheEntry(id: number, entry: Entry): void {
 /** Drop cached artists and tags after Kavita metadata is rewritten. */
 export function invalidateSeriesArtists(seriesId: number): void {
   cache.delete(seriesId);
+  clearCachedSeriesMetadataForSignals(seriesId);
   inflight.delete(seriesId);
   generations.set(seriesId, (generations.get(seriesId) ?? 0) + 1);
   invalidateRecommendationSeries(seriesId);
+  invalidateSeriesCoverCache(seriesId);
+}
+
+function summarizeSeriesMetadata(meta: CachedKavitaMetadata): SeriesSearchMetadata {
+  const artists = artistNames(meta);
+  const seen = new Set<string>();
+  const tags = meta.tags === undefined ? null : (meta.tags ?? []).flatMap(tag => {
+    const title = tag.title?.trim();
+    if (!title || seen.has(title.toLowerCase())) return [];
+    seen.add(title.toLowerCase());
+    return [title];
+  });
+  return { artists, tags };
 }
 
 /** Roles treated as "artist" for search purposes, in display priority order. */
@@ -91,21 +112,18 @@ function isNotFound(e: unknown): boolean {
 /** Read one series' metadata, caching definitive answers unless the connection or series changed meanwhile. Never throws. */
 async function readOne(client: MetadataSource, id: number, epoch: number): Promise<SeriesSearchMetadata> {
   const generation = generations.get(id) ?? 0;
-  const remember = (entry: SeriesSearchMetadata) => {
-    if (epoch === connectionEpoch && generation === (generations.get(id) ?? 0)) setCacheEntry(id, { ...entry, at: Date.now() });
+  const remember = (entry: SeriesSearchMetadata, rawMeta?: CachedKavitaMetadata) => {
+    if (epoch === connectionEpoch && generation === (generations.get(id) ?? 0)) {
+      const now = Date.now();
+      setCacheEntry(id, { ...entry, at: now });
+      if (rawMeta) setCachedSeriesMetadataForSignals(id, rawMeta, now);
+    }
   };
   try {
     const meta = await client.getSeriesMetadata(id);
-    const artists = artistNames(meta);
-    const seen = new Set<string>();
-    const tags = meta.tags === undefined ? null : (meta.tags ?? []).flatMap(tag => {
-      const title = tag.title?.trim();
-      if (!title || seen.has(title.toLowerCase())) return [];
-      seen.add(title.toLowerCase());
-      return [title];
-    });
-    remember({ artists, tags });
-    return { artists, tags };
+    const summary = summarizeSeriesMetadata(meta);
+    remember(summary, meta);
+    return summary;
   } catch (e) {
     if (isNotFound(e)) remember({ artists: [], tags: null });
     // A transient failure stays uncached (or keeps its stale entry) so the next request retries.
@@ -145,6 +163,13 @@ export async function kavitaSeriesSearchMetadata(client: MetadataSource, seriesI
       setCacheEntry(id, hit);
       out.set(id, hit);
       if (now - hit.at >= TTL_MS && !refreshing.has(id)) stale.push(id);
+      continue;
+    }
+    const signalMeta = getCachedSeriesMetadataForSignals(id, TTL_MS);
+    if (signalMeta) {
+      const entry = { ...summarizeSeriesMetadata(signalMeta), at: now };
+      setCacheEntry(id, entry);
+      out.set(id, entry);
       continue;
     }
     const existing = inflight.get(id);

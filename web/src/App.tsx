@@ -106,7 +106,7 @@ class PageErrorBoundary extends React.Component<{ children: React.ReactNode }, {
 function Brand() {
   return (
     <div className="flex min-w-0 items-center gap-2.5">
-      <img src="/h-tosho-icon.png?v=26b1c759" alt="" aria-hidden="true" width={32} height={32} className="h-8 w-8 shrink-0 rounded-lg object-contain" />
+      <img src="/h-tosho-icon.png?v=26b1c759" alt="" aria-hidden="true" width={32} height={32} decoding="async" className="h-8 w-8 shrink-0 rounded-lg object-contain" />
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold leading-tight tracking-tight">H-Tosho</div>
         {APP_VERSION && <div className="text-[11px] leading-tight text-muted">v{APP_VERSION}</div>}

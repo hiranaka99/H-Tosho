@@ -24,17 +24,21 @@ export type DownloadStreamState = 'connecting' | 'live' | 'offline';
  * - `snapshot`: replaces the whole list (sent first on every connect).
  * - `task`: upserts a single task by id. Progress-only ticks are buffered and
  *   flushed every PROGRESS_FLUSH_MS (held entirely while the tab is hidden);
- *   any other change flushes the buffer immediately along with itself.
- * - `removed`: drops tasks by id.
+ *   any other change flushes the buffer immediately along with itself and
+ *   triggers `onStateChange`.
+ * - `removed`: drops tasks by id and triggers `onStateChange`.
  *
  * EventSource reconnects automatically on transient errors; while it is down
  * the state is `offline` so callers can fall back to polling.
  */
-export function useDownloadEvents(): DownloadStreamState {
+export function useDownloadEvents(onStateChange?: (tasks: DownloadTask[]) => void): DownloadStreamState {
   const qc = useQueryClient();
   const [state, setState] = React.useState<DownloadStreamState>('connecting');
+  const onStateChangeRef = React.useRef(onStateChange);
+  onStateChangeRef.current = onStateChange;
 
   React.useEffect(() => {
+    let active = true;
     let es: EventSource | null = null;
     try {
       es = new EventSource('/api/downloads/events');
@@ -44,20 +48,35 @@ export function useDownloadEvents(): DownloadStreamState {
     }
 
     const pending = new Map<number, DownloadTask>();
+    const knownById = new Map<number, DownloadTask>();
     let timer: ReturnType<typeof setTimeout> | null = null;
 
-    const flush = () => {
+    const syncKnown = (tasks: readonly DownloadTask[]) => {
+      knownById.clear();
+      for (const task of tasks) knownById.set(task.id, task);
+    };
+
+    const flush = (notify = false) => {
       if (timer !== null) { clearTimeout(timer); timer = null; }
       if (pending.size === 0) return;
       const updates = [...pending.values()];
       pending.clear();
-      qc.setQueryData<DownloadTask[]>(['downloads'], (prev) => applyTaskUpdates(prev, updates));
+      let nextTasks: DownloadTask[] | undefined;
+      qc.setQueryData<DownloadTask[]>(['downloads'], (prev) => {
+        const next = applyTaskUpdates(prev, updates);
+        nextTasks = next;
+        return next;
+      });
+      if (nextTasks) {
+        syncKnown(nextTasks);
+        if (notify && active) onStateChangeRef.current?.(nextTasks);
+      }
     };
     const scheduleFlush = () => {
       if (timer !== null || document.hidden) return; // Hidden tabs hold progress until visible.
-      timer = setTimeout(flush, PROGRESS_FLUSH_MS);
+      timer = setTimeout(() => flush(false), PROGRESS_FLUSH_MS);
     };
-    const onVisibility = () => { if (!document.hidden) flush(); };
+    const onVisibility = () => { if (!document.hidden) flush(false); };
     document.addEventListener('visibilitychange', onVisibility);
 
     const connectTimeout = setTimeout(() => setState((current) => current === 'connecting' ? 'offline' : current), CONNECT_TIMEOUT_MS);
@@ -68,23 +87,48 @@ export function useDownloadEvents(): DownloadStreamState {
       try {
         const msg = JSON.parse(ev.data) as DownloadEvent;
         if (msg.type === 'snapshot') {
-          flush();
-          qc.setQueryData<DownloadTask[]>(['downloads'], (prev) => mergeDownloadSnapshot(prev, msg.tasks));
+          flush(false);
+          let nextTasks: DownloadTask[] | undefined;
+          qc.setQueryData<DownloadTask[]>(['downloads'], (prev) => {
+            const next = mergeDownloadSnapshot(prev, msg.tasks);
+            nextTasks = next;
+            return next;
+          });
+          if (nextTasks) {
+            syncKnown(nextTasks);
+            if (active) onStateChangeRef.current?.(nextTasks);
+          }
           setState('live');
         } else if (msg.type === 'task') {
-          const known = pending.get(msg.task.id) ?? qc.getQueryData<DownloadTask[]>(['downloads'])?.find((task) => task.id === msg.task.id);
+          if (knownById.size === 0) {
+            const cached = qc.getQueryData<DownloadTask[]>(['downloads']);
+            if (cached) syncKnown(cached);
+          }
           const buffered = pending.get(msg.task.id);
-          pending.set(msg.task.id, buffered ? newerDownload(buffered, msg.task) : msg.task);
+          const known = buffered ?? knownById.get(msg.task.id);
+          const merged = buffered ? newerDownload(buffered, msg.task) : msg.task;
+          pending.set(msg.task.id, merged);
+          knownById.set(msg.task.id, merged);
           if (isProgressOnlyUpdate(known, msg.task)) scheduleFlush();
-          else flush();
+          else flush(true);
         } else if (msg.type === 'removed') {
           const removed = new Set(msg.ids);
-          for (const id of removed) pending.delete(id);
-          flush();
+          for (const id of removed) {
+            pending.delete(id);
+            knownById.delete(id);
+          }
+          flush(false);
+          let nextTasks: DownloadTask[] | undefined;
           qc.setQueryData<DownloadTask[]>(['downloads'], (prev) => {
             if (!prev?.some((task) => removed.has(task.id))) return undefined;
-            return prev.filter((task) => !removed.has(task.id));
+            const next = prev.filter((task) => !removed.has(task.id));
+            nextTasks = next;
+            return next;
           });
+          if (nextTasks) {
+            syncKnown(nextTasks);
+            if (active) onStateChangeRef.current?.(nextTasks);
+          }
           void qc.invalidateQueries({ queryKey: ['downloads-completed'] });
         }
       } catch {
@@ -93,7 +137,8 @@ export function useDownloadEvents(): DownloadStreamState {
     };
 
     return () => {
-      flush();
+      active = false;
+      flush(false);
       clearTimeout(connectTimeout);
       document.removeEventListener('visibilitychange', onVisibility);
       es?.close();

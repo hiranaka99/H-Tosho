@@ -5,6 +5,7 @@ import { Download as DownloadIcon, Pause, Play, XCircle, RotateCcw, Trash2, Chec
 import { MAX_AUTO_RETRIES } from '../../../../server/src/contracts/downloads';
 import { api, type DownloadTask, type DownloadLibraryState } from '../../lib/api';
 import { useDownloads, needsAttention } from '../../lib/DownloadsContext';
+import { useNow } from '../../lib/useNow';
 import { retryWaitReason } from '../../lib/downloadErrors';
 import { toast } from '../../lib/toast';
 import { cn, timeAgo, toIsoUtc } from '../../lib/utils';
@@ -82,23 +83,10 @@ function TaskCover({ id, folder }: { id: number; folder: boolean }) {
   );
 }
 
-/** Seconds tick only inside this span, so a waiting retry never re-renders its row. */
+/** Seconds tick on the shared second clock, so waiting retries don't own per-row timers. */
 function RetryCountdown({ at }: { at: string }) {
   const target = time(at);
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    let timer: number | undefined;
-    // No ticks while the tab is hidden; catch up immediately when it returns.
-    const start = () => {
-      if (timer !== undefined || document.hidden) return;
-      timer = window.setInterval(() => setNow(Date.now()), 1000);
-    };
-    const stop = () => { if (timer !== undefined) { window.clearInterval(timer); timer = undefined; } };
-    const onVisibility = () => { if (document.hidden) stop(); else { setNow(Date.now()); start(); } };
-    start();
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => { stop(); document.removeEventListener('visibilitychange', onVisibility); };
-  }, []);
+  const now = useNow(1000, target > Date.now());
   const seconds = Math.max(0, Math.round((target - now) / 1000));
   return <span className="tabular-nums">{seconds <= 0 ? 'any moment now' : seconds < 60 ? `in ${seconds}s` : `in ${Math.ceil(seconds / 60)} min`}</span>;
 }
@@ -187,7 +175,7 @@ const DownloadRow = React.memo(function DownloadRow({ task, library, queueLabel,
   );
 
   return (
-    <li data-download-id={task.id} className={cn('flex min-w-0 gap-3 p-3 sm:p-4', cancelled && 'bg-surface-2/40')}>
+    <li data-download-id={completed || cancelled ? undefined : task.id} className={cn('flex min-w-0 gap-3 p-3 sm:p-4', cancelled && 'bg-surface-2/40', (completed || cancelled) && 'cv-row')}>
       {completed && <TaskCover id={task.id} folder={task.outputFormat === 'folder'} />}
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">

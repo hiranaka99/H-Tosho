@@ -175,6 +175,8 @@ function diskFile(key: string): string {
 
 /** Skip access-time bumps for entries touched within this window. */
 const DISK_TOUCH_INTERVAL_MS = 60_000;
+/** Header prefix for single-file packed L2 cache entries: 5-byte magic + 2-byte BE MIME length. */
+const MEDIA_MAGIC = Buffer.from('HTMC\x01');
 
 /** L2 lookup: read a cached cover from disk (missing/expired → null). */
 async function getFromDisk(key: string): Promise<{ type: string; buf: Buffer } | null> {
@@ -186,10 +188,19 @@ async function getFromDisk(key: string): Promise<{ type: string; buf: Buffer } |
       await fs.rm(file + '.type', { force: true });
       return null;
     }
-    const [buf, typeRaw] = await Promise.all([
-      fs.readFile(file),
-      fs.readFile(file + '.type', 'utf8').catch(() => ''),
-    ]);
+    const raw = await fs.readFile(file);
+    let type: string;
+    let buf: Buffer;
+    if (raw.length >= 7 && raw.subarray(0, 5).equals(MEDIA_MAGIC)) {
+      const typeLen = raw.readUInt16BE(5);
+      if (7 + typeLen > raw.length) return null;
+      type = raw.toString('utf8', 7, 7 + typeLen) || 'image/jpeg';
+      buf = raw.subarray(7 + typeLen);
+    } else {
+      const typeRaw = await fs.readFile(file + '.type', 'utf8').catch(() => '');
+      type = typeRaw.trim() || 'image/jpeg';
+      buf = raw;
+    }
     // Record the access (atime only: mtime stays the write time that drives
     // the TTL) so eviction drops the least recently used entries, not merely
     // the oldest written. Fire-and-forget; explicit utimes works even on
@@ -197,7 +208,7 @@ async function getFromDisk(key: string): Promise<{ type: string; buf: Buffer } |
     if (Date.now() - st.atimeMs > DISK_TOUCH_INTERVAL_MS) {
       void fs.utimes(file, new Date(), st.mtime).catch(() => undefined);
     }
-    return { type: typeRaw.trim() || 'image/jpeg', buf };
+    return { type, buf };
   } catch {
     return null;
   }
@@ -246,10 +257,13 @@ async function setDisk(key: string, type: string, buf: Buffer): Promise<void> {
     }
     const file = diskFile(key);
     const suffix = `.${randomUUID()}.tmp`;
-    await Promise.all([
-      fs.writeFile(file + suffix, buf).then(() => fs.rename(file + suffix, file)),
-      fs.writeFile(file + '.type' + suffix, type).then(() => fs.rename(file + '.type' + suffix, file + '.type')),
-    ]);
+    const typeBuf = Buffer.from(type, 'utf8');
+    const header = Buffer.allocUnsafe(7);
+    MEDIA_MAGIC.copy(header, 0);
+    header.writeUInt16BE(typeBuf.length, 5);
+    const packed = Buffer.concat([header, typeBuf, buf]);
+    await fs.writeFile(file + suffix, packed).then(() => fs.rename(file + suffix, file));
+    void fs.rm(file + '.type', { force: true }).catch(() => undefined);
     diskWritesSinceEvict += 1;
     if (!diskEvictRunning && (diskWritesSinceEvict >= 16 || Date.now() - lastDiskEvictAt >= 30_000)) {
       void evictDiskCache();
@@ -419,9 +433,17 @@ async function loadMediaUncached(key: string, target: string, parsed: URL): Prom
     // few minutes. Recommendation sets are cached for a day, so rebuild a
     // stale URL on demand instead of returning a broken cover.
     if (!res.ok && parsed.hostname.endsWith('.gold-usergeneratedcontent.net')) {
-      const refreshed = await refreshHitomiImageUrl(parsed.href);
+      let refreshed: string | null = null;
+      try {
+        refreshed = await refreshHitomiImageUrl(parsed.href);
+      } catch (error) {
+        discardBody(res);
+        throw error;
+      }
       if (refreshed && refreshed !== parsed.href) {
-        const next = new URL(refreshed);
+        let next: URL;
+        try { next = new URL(refreshed); }
+        catch (error) { discardBody(res); throw error; }
         if (isAllowedHost(next.hostname)) {
           discardBody(res);
           res = await fetchWithValidatedRedirects(next);
@@ -435,6 +457,12 @@ async function loadMediaUncached(key: string, target: string, parsed: URL): Prom
   if (!res.ok) {
     discardBody(res);
     return { ok: false, status: 502, error: `Upstream returned HTTP ${res.status}` };
+  }
+
+  const declaredLength = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_DOWNLOAD_BYTES) {
+    discardBody(res);
+    return { ok: false, status: 502, error: 'Response too large' };
   }
 
   let buf: Buffer;

@@ -124,7 +124,25 @@ class JobQueue {
   private pumping = false;
   private cancelRequested = new Set<number>();
   private controllers = new Map<number, AbortController>();
+  private settledListeners = new Set<(event: { id: number; type: JobType; status: JobStatus }) => void>();
   private historyDb: Db | null = null;
+
+  onSettled(listener: (event: { id: number; type: JobType; status: JobStatus }) => void): () => void {
+    this.settledListeners.add(listener);
+    return () => {
+      this.settledListeners.delete(listener);
+    };
+  }
+
+  private emitSettled(event: { id: number; type: JobType; status: JobStatus }): void {
+    for (const listener of this.settledListeners) {
+      try {
+        listener(event);
+      } catch {
+        /* listener errors must not disrupt queue state */
+      }
+    }
+  }
   private historyId = 0;
   private historyNames = new Map<number, string>();
   private legacyContexts = new Map<number, JobPayload>();
@@ -212,7 +230,8 @@ class JobQueue {
     const db = getDb();
     const row = db.select({ payloadJson: schema.jobs.payloadJson, stateJson: schema.jobs.stateJson }).from(schema.jobs).where(eq(schema.jobs.id, jobId)).get();
     if (!row) return undefined;
-    const payload = { ...safeParse<JobPayload>(row.payloadJson, {}), ...safeParse<JobPayload>(row.stateJson ?? '{}', {}) };
+    const parsedState = safeParse<JobPayload>(row.stateJson ?? '{}', {});
+    const payload = { ...safeParse<JobPayload>(row.payloadJson, {}), ...parsedState };
     const previous = payload.context;
     const series = new Map((previous?.series ?? []).map((target) => [target.id, target]));
     const pendingIds = new Set(payload.contextPendingSeriesIds ?? []);
@@ -232,7 +251,7 @@ class JobQueue {
     });
     payload.contextPendingSeriesIds = [...pendingIds];
     this.legacyContexts.delete(jobId);
-    const state = { ...safeParse<JobPayload>(row.stateJson ?? '{}', {}), context: payload.context, contextPendingSeriesIds: payload.contextPendingSeriesIds };
+    const state = { ...parsedState, context: payload.context, contextPendingSeriesIds: payload.contextPendingSeriesIds };
     db.update(schema.jobs).set({ stateJson: JSON.stringify(state) }).where(eq(schema.jobs.id, jobId)).run();
     return payload.context;
   }
@@ -293,6 +312,21 @@ class JobQueue {
     return row ? this.hydrate(row) : null;
   }
 
+  /** Timestamp of the newest job of a type without decoding payload/state blobs. */
+  latestCreatedAt(type: JobType): string | null {
+    const row = getDb().select({ createdAt: schema.jobs.createdAt }).from(schema.jobs)
+      .where(eq(schema.jobs.type, type)).orderBy(desc(schema.jobs.id)).limit(1).get();
+    return row?.createdAt ?? null;
+  }
+
+  /** Queued or running jobs restricted to the given types (backed by idx_jobs_active). */
+  activeByTypes(types: JobType[]): Job[] {
+    if (!types.length) return [];
+    const rows = getDb().select().from(schema.jobs)
+      .where(and(inArray(schema.jobs.type, types), inArray(schema.jobs.status, ['queued', 'running']))).all();
+    return rows.map((row) => this.hydrate(row));
+  }
+
   /** Whether any job of this type is queued or running, without hydrating rows. */
   hasActiveType(type: JobType): boolean {
     return !!getDb().select({ id: schema.jobs.id }).from(schema.jobs)
@@ -332,6 +366,7 @@ class JobQueue {
         this.log(id, 'info', 'Job cancelled before start');
         if (job.type === 'restore-metadata') settleMetadataRestoreJob(id, 'cancelled', 'Cancelled before restore started');
         if (job.type==='merge-series') this.mergeDownloadCanceller?.(id);
+        this.emitSettled({ id, type: job.type, status: 'cancelled' });
         return true;
       }
     }
@@ -461,6 +496,8 @@ class JobQueue {
     const log: LogFn = (level, message) => this.log(job.id, level, message);
     const controller = new AbortController();
     this.controllers.set(job.id, controller);
+    let terminalStatus: 'completed' | 'cancelled' | 'failed' = 'failed';
+    let terminalError: string | undefined;
     try {
       if (!this.handler) throw new Error('No job handler registered');
       log('info', `Starting ${job.type}`);
@@ -475,10 +512,12 @@ class JobQueue {
         })
         .where(eq(schema.jobs.id, job.id))
         .run();
+      terminalStatus = 'completed';
       this.log(job.id, 'success', `Completed ${job.type}`);
     } catch (e) {
       if (e instanceof JobCancelled) {
         db.update(schema.jobs).set({ status: 'cancelled', finishedAt: new Date().toISOString() }).where(eq(schema.jobs.id, job.id)).run();
+        terminalStatus = 'cancelled';
         this.log(job.id, 'info', `Cancelled ${job.type}`);
       } else {
         const message = e instanceof Error ? e.message : String(e);
@@ -486,20 +525,21 @@ class JobQueue {
           .set({ status: 'failed', errorMessage: message, errorCode: classifyJobError(message), finishedAt: new Date().toISOString() })
           .where(eq(schema.jobs.id, job.id))
           .run();
+        terminalStatus = 'failed';
+        terminalError = message;
         this.log(job.id, 'error', message);
       }
     } finally {
       if (job.type === 'restore-metadata') {
-        const terminal = this.get(job.id);
-        if (terminal) settleMetadataRestoreJob(job.id, terminal.status, terminal.errorMessage ?? undefined);
+        settleMetadataRestoreJob(job.id, terminalStatus, terminalError);
       }
-      if (job.type==='merge-series') {
-        const terminal=this.get(job.id);
-        if (terminal?.status==='failed' || terminal?.status==='cancelled') this.mergeDownloadCanceller?.(job.id);
+      if (job.type === 'merge-series' && (terminalStatus === 'failed' || terminalStatus === 'cancelled')) {
+        this.mergeDownloadCanceller?.(job.id);
       }
       this.cancelRequested.delete(job.id);
       this.controllers.delete(job.id);
       this.running--;
+      this.emitSettled({ id: job.id, type: job.type, status: terminalStatus });
       void this.pump();
     }
   }

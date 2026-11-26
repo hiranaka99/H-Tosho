@@ -1,4 +1,5 @@
 import { rememberDuplicateLibraryRoots } from '../../services/galleryDuplicates.js';
+import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { compress } from 'hono/compress';
 import { eq, inArray } from 'drizzle-orm';
@@ -28,7 +29,67 @@ api.use('/kavita/libraries/:id/series', compress());
  */
 const MATCH_META_CACHE_MAX = 50_000;
 const matchMetaCache = new Map<number, { stamp: string; artists: string[]; tags: string[] }>();
-onSettingChange('kavita-connection', () => matchMetaCache.clear());
+
+const COVER_CACHE_MAX_ENTRIES = 200;
+const COVER_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+interface CachedSeriesCover {
+  seriesId: number;
+  data: Buffer;
+  contentType: string;
+  etag: string;
+}
+const seriesCoverCache = new Map<string, CachedSeriesCover>();
+let seriesCoverCacheBytes = 0;
+const seriesCoverInflight = new Map<string, Promise<CachedSeriesCover>>();
+
+function deleteSeriesCoverEntry(key: string): void {
+  const existing = seriesCoverCache.get(key);
+  if (!existing) return;
+  seriesCoverCache.delete(key);
+  seriesCoverCacheBytes -= existing.data.length;
+}
+
+function setSeriesCoverEntry(key: string, entry: CachedSeriesCover): void {
+  deleteSeriesCoverEntry(key);
+  if (entry.data.length > COVER_CACHE_MAX_BYTES) return;
+  while (seriesCoverCache.size >= COVER_CACHE_MAX_ENTRIES || (seriesCoverCacheBytes + entry.data.length > COVER_CACHE_MAX_BYTES && seriesCoverCache.size > 0)) {
+    const oldest = seriesCoverCache.keys().next().value;
+    if (oldest === undefined) break;
+    deleteSeriesCoverEntry(oldest);
+  }
+  seriesCoverCache.set(key, entry);
+  seriesCoverCacheBytes += entry.data.length;
+}
+
+export function invalidateSeriesCoverCache(seriesId?: number): void {
+  if (seriesId === undefined) {
+    seriesCoverCache.clear();
+    seriesCoverCacheBytes = 0;
+    seriesCoverInflight.clear();
+    return;
+  }
+  for (const [key, entry] of [...seriesCoverCache.entries()]) {
+    if (entry.seriesId === seriesId) deleteSeriesCoverEntry(key);
+  }
+  const marker = `\0${seriesId}\0`;
+  for (const key of [...seriesCoverInflight.keys()]) {
+    if (key.includes(marker)) seriesCoverInflight.delete(key);
+  }
+}
+
+onSettingChange('kavita-connection', () => {
+  matchMetaCache.clear();
+  invalidateSeriesCoverCache();
+});
+
+function etagMatches(header: string | undefined, tag: string): boolean {
+  if (!header) return false;
+  const bare = tag.replace(/^W\//, '');
+  return header.split(',').some((candidate) => {
+    const value = candidate.trim();
+    return value === '*' || value.replace(/^W\//, '') === bare;
+  });
+}
 
 const stringList = (values: unknown): string[] =>
   Array.isArray(values) ? values.filter((v): v is string => typeof v === 'string' && v.trim().length > 0) : [];
@@ -218,7 +279,7 @@ api.get('/kavita/libraries/:id/series', async (c) => {
     // Read tags for every series, sharing the existing bounded metadata/artist
     // cache. Live Kavita tags take precedence over older provider match data.
     const searchMetadata = await kavitaSeriesSearchMetadata(client, seriesIds);
-    return c.json(
+    const json = JSON.stringify(
       series.map((s) => {
         const match = byId.get(s.id);
         const m = match?.row;
@@ -242,6 +303,14 @@ api.get('/kavita/libraries/:id/series', async (c) => {
           tags: liveMeta?.tags ?? match?.meta.tags ?? [] };
       }),
     );
+    const etag = `W/"${Buffer.byteLength(json).toString(36)}-${createHash('sha1').update(json).digest('base64url').slice(0, 22)}"`;
+    if (etagMatches(c.req.header('If-None-Match'), etag)) {
+      return new Response(null, { status: 304, headers: { ETag: etag, 'Cache-Control': 'no-cache' } });
+    }
+    return new Response(json, {
+      status: 200,
+      headers: { 'Content-Type': 'application/json; charset=UTF-8', ETag: etag, 'Cache-Control': 'no-cache' },
+    });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }
@@ -253,15 +322,41 @@ api.get('/kavita/series/:id/cover', async (c) => {
   try {
     const seriesId = intParam(c.req.param('id'));
     if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
-    const cover = await client.getSeriesCover(seriesId);
-    const buffer = cover.data.buffer;
-    const bytes = buffer instanceof ArrayBuffer
-      ? new Uint8Array(buffer, cover.data.byteOffset, cover.data.byteLength)
-      : Uint8Array.from(cover.data);
+    const connKey = kavitaConnectionKey(getKavitaConnection().baseUrl);
+    const cacheKey = `${connKey}\0${seriesId}\0${c.req.query('v') ?? ''}`;
+    let entry = seriesCoverCache.get(cacheKey);
+    if (entry) {
+      seriesCoverCache.delete(cacheKey);
+      seriesCoverCache.set(cacheKey, entry);
+    } else {
+      let pending = seriesCoverInflight.get(cacheKey);
+      if (!pending) {
+        pending = client.getSeriesCover(seriesId).then((cover) => {
+          const etag = `W/"${cover.data.length.toString(36)}-${createHash('sha1').update(cover.data).digest('base64url').slice(0, 22)}"`;
+          const built: CachedSeriesCover = { seriesId, data: cover.data, contentType: cover.contentType, etag };
+          setSeriesCoverEntry(cacheKey, built);
+          return built;
+        }).finally(() => {
+          if (seriesCoverInflight.get(cacheKey) === pending) seriesCoverInflight.delete(cacheKey);
+        });
+        seriesCoverInflight.set(cacheKey, pending);
+      }
+      entry = await pending;
+    }
     const versioned = Boolean(c.req.query('v'));
+    const cacheControl = versioned ? 'private, max-age=86400' : 'private, no-store';
+    if (etagMatches(c.req.header('If-None-Match'), entry.etag)) {
+      return new Response(null, { status: 304, headers: { 'Cache-Control': cacheControl, ETag: entry.etag } });
+    }
+    const buffer = entry.data.buffer;
+    const bytes = buffer instanceof ArrayBuffer
+      ? new Uint8Array(buffer, entry.data.byteOffset, entry.data.byteLength)
+      : Uint8Array.from(entry.data);
     return c.body(bytes, 200, {
-      'Content-Type': cover.contentType,
-      'Cache-Control': versioned ? 'private, max-age=86400' : 'private, no-store' });
+      'Content-Type': entry.contentType,
+      'Cache-Control': cacheControl,
+      ETag: entry.etag,
+    });
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }

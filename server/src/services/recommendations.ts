@@ -1,7 +1,7 @@
 import { buildProfile, backfillMissingTags, isBoilerplateTag, type ProfileTerm, type TasteProfile } from './recommendationProfile.js';
 import { MutationCoordinator } from '../lib/mutations.js';
 const recommendationMutations = new MutationCoordinator();
-import { and, asc, desc, eq, gte, lt, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lt, ne, sql } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinGallery, DoujinSearchResult, DoujinSort } from '../downloader/types.js';
@@ -604,18 +604,33 @@ function parseHistoryEntry(value: unknown): HistoryEntry | null {
 function writeHistory(entries: HistoryEntry[]): void {
   const db = getDb();
   const keep = new Set(entries.map((entry) => entry.key));
-  for (const row of db.select().from(schema.recommendationHistory).all()) {
-    if (!keep.has(`${row.source}:${row.galleryId}`)) {
-      db.delete(schema.recommendationHistory).where(and(eq(schema.recommendationHistory.source, row.source), eq(schema.recommendationHistory.galleryId, row.galleryId))).run();
+  db.transaction((tx) => {
+    const toDeleteBySource = new Map<string, string[]>();
+    for (const row of tx.select({ source: schema.recommendationHistory.source, galleryId: schema.recommendationHistory.galleryId }).from(schema.recommendationHistory).all()) {
+      if (!keep.has(`${row.source}:${row.galleryId}`)) {
+        let list = toDeleteBySource.get(row.source);
+        if (!list) {
+          list = [];
+          toDeleteBySource.set(row.source, list);
+        }
+        list.push(row.galleryId);
+      }
     }
-  }
-  for (const entry of entries) {
-    const itemJson = JSON.stringify(entry.item);
-    db.insert(schema.recommendationHistory)
-      .values({ source: entry.item.source, galleryId: entry.item.galleryId, servedDate: entry.date, servedAt: entry.servedAt, itemJson })
-      .onConflictDoUpdate({ target: [schema.recommendationHistory.source, schema.recommendationHistory.galleryId], set: { servedDate: entry.date, servedAt: entry.servedAt, itemJson } })
-      .run();
-  }
+    for (const [source, ids] of toDeleteBySource) {
+      for (let i = 0; i < ids.length; i += 500) {
+        tx.delete(schema.recommendationHistory)
+          .where(and(eq(schema.recommendationHistory.source, source), inArray(schema.recommendationHistory.galleryId, ids.slice(i, i + 500))))
+          .run();
+      }
+    }
+    for (const entry of entries) {
+      const itemJson = JSON.stringify(entry.item);
+      tx.insert(schema.recommendationHistory)
+        .values({ source: entry.item.source, galleryId: entry.item.galleryId, servedDate: entry.date, servedAt: entry.servedAt, itemJson })
+        .onConflictDoUpdate({ target: [schema.recommendationHistory.source, schema.recommendationHistory.galleryId], set: { servedDate: entry.date, servedAt: entry.servedAt, itemJson } })
+        .run();
+    }
+  });
 }
 
 /** Read normalized history and migrate the legacy JSON blob once. */
@@ -758,10 +773,19 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
   const pool = candidatePool;
   const asCandidate = (item: RecommendationItem): Candidate => ({ result: item, score: 1, reasons: item.reasons, matched: new Set() });
   const readFreshPool = async () => {
-    const eligible = await eligibleRecommendations([...pool.candidates.values()].map((candidate) => candidate.result), eligibility);
+    const combined = new Map<string, DoujinSearchResult>();
+    for (const candidate of pool.candidates.values()) combined.set(keyOf(candidate.result), candidate.result);
+    for (const item of pool.popular) {
+      const k = keyOf(item);
+      if (!combined.has(k)) combined.set(k, item);
+    }
+    const eligible = await eligibleRecommendations([...combined.values()], eligibility);
     const eligibleKeys = new Set(eligible.map(keyOf));
     const candidates = new Map([...pool.candidates].filter(([key]) => eligibleKeys.has(key) && !freshExcluded.has(key)));
-    const popular = (await eligibleRecommendations(pool.popular, eligibility)).filter((item) => !freshExcluded.has(keyOf(item)));
+    const popular = pool.popular.filter((item) => {
+      const k = keyOf(item);
+      return eligibleKeys.has(k) && !freshExcluded.has(k);
+    });
     return { candidates, popular };
   };
   let { candidates, popular } = await readFreshPool();
@@ -812,6 +836,7 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
   let repeatedCount = 0;
   let repeatedToday = false;
   if (items.length < TOTAL_PICKS) {
+    const historyDateByKey = new Map(history.map((entry) => [entry.key, entry.date]));
     const eligibleHistory = await eligibleRecommendations(history.map((entry) => entry.item), eligibility);
     for (const item of eligibleHistory) {
       // Preserve least-recent ordering while enforcing artist/work exclusions.
@@ -819,7 +844,7 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
       if (!selected.length) continue;
       items.push(item);
       repeatedCount += 1;
-      repeatedToday ||= history.find((entry) => entry.key === keyOf(item))?.date === date;
+      repeatedToday ||= historyDateByKey.get(keyOf(item)) === date;
       if (items.length >= TOTAL_PICKS) break;
     }
   }
@@ -853,11 +878,9 @@ async function doGenerate(date: string, nonce: number): Promise<CachedRecommenda
 
 const cacheKey = (date: string) => `recommendations-v2:${date}`;
 
-function readCached(date: string): CachedRecommendationSet | null {
-  const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(date))).get();
-  if (!row) return null;
+function parseCachedSet(valueJson: string): CachedRecommendationSet | null {
   try {
-    const parsed: unknown = JSON.parse(row.valueJson);
+    const parsed: unknown = JSON.parse(valueJson);
     if (!parsed || typeof parsed !== 'object') return null;
     const set = parsed as Partial<CachedRecommendationSet>;
     if (!Array.isArray(set.items) || !set.items.every(isRecommendationItem)) return null;
@@ -877,12 +900,17 @@ function readCached(date: string): CachedRecommendationSet | null {
   }
 }
 
+function readCached(date: string): CachedRecommendationSet | null {
+  const row = getDb().select({ valueJson: schema.keyValueStore.valueJson }).from(schema.keyValueStore).where(eq(schema.keyValueStore.key, cacheKey(date))).get();
+  return row ? parseCachedSet(row.valueJson) : null;
+}
+
 /** Feedback after midnight edits the displayed set, without starting a new day. */
 function readDisplayedSet(): CachedRecommendationSet | null {
-  const row = getDb().select({ key: schema.keyValueStore.key }).from(schema.keyValueStore)
+  const row = getDb().select({ valueJson: schema.keyValueStore.valueJson }).from(schema.keyValueStore)
     .where(and(gte(schema.keyValueStore.key, 'recommendations-v2:'), lt(schema.keyValueStore.key, 'recommendations-v2;')))
-    .orderBy(desc(schema.keyValueStore.key)).get();
-  return row ? readCached(row.key.slice('recommendations-v2:'.length)) : null;
+    .orderBy(desc(schema.keyValueStore.key)).limit(1).get();
+  return row ? parseCachedSet(row.valueJson) : null;
 }
 
 function writeCached(set: CachedRecommendationSet): void {

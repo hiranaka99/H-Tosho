@@ -84,6 +84,12 @@ export interface MetadataProvider {
   testConnection(): Promise<void>;
   search(query: string, type?: MediaType, signal?: AbortSignal): Promise<SearchResult[]>;
   getSeriesMetadata(providerSeriesId: string, signal?: AbortSignal): Promise<SeriesMetadata>;
+  /** Optional batch metadata lookup for scheduled refresh. Missing ids fall back to getSeriesMetadata. */
+  getSeriesMetadataBatch?(
+    providerSeriesIds: string[],
+    signal?: AbortSignal,
+    opts?: { skipVolumeCovers?: ReadonlySet<string> },
+  ): Promise<Map<string, SeriesMetadata>>;
   getBookMetadata?(providerBookId: string): Promise<BookMetadata>;
   searchArtists?(query: string, page?: number): Promise<import('../contracts/artists.js').ArtistSearchPage>;
   getArtist?(artistId: string): Promise<import('../contracts/artists.js').ProviderArtist>;

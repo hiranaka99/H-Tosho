@@ -15,6 +15,60 @@ function candidateKey(candidate: Pick<CandidateMatch, 'providerId' | 'providerSe
   return `${candidate.providerId}:${candidate.providerSeriesId}`;
 }
 
+/** Fast lookup of series IDs that currently have at least one unrejected match suggestion. */
+export function pendingMatchSuggestionSeriesIds(seriesIds?: readonly number[]): Set<number> {
+  if (seriesIds && !seriesIds.length) return new Set();
+  const db = getDb(), connectionKey = currentMatchConnection();
+  const targetIds = seriesIds ? [...new Set(seriesIds)] : null;
+  const suggestionRows: Array<{ seriesId: number; candidatesJson: string }> = [];
+  if (targetIds) {
+    for (let i = 0; i < targetIds.length; i += 500) {
+      const chunk = targetIds.slice(i, i + 500);
+      suggestionRows.push(
+        ...db.select({ seriesId: schema.matchSuggestions.seriesId, candidatesJson: schema.matchSuggestions.candidatesJson })
+          .from(schema.matchSuggestions)
+          .where(and(eq(schema.matchSuggestions.connectionKey, connectionKey), inArray(schema.matchSuggestions.seriesId, chunk)))
+          .all(),
+      );
+    }
+  } else {
+    suggestionRows.push(
+      ...db.select({ seriesId: schema.matchSuggestions.seriesId, candidatesJson: schema.matchSuggestions.candidatesJson })
+        .from(schema.matchSuggestions)
+        .where(eq(schema.matchSuggestions.connectionKey, connectionKey))
+        .all(),
+    );
+  }
+  if (!suggestionRows.length) return new Set();
+  const candidateSeriesIds = suggestionRows.map((row) => row.seriesId);
+  const settledStatuses = new Set<number>();
+  const rejected = new Set<string>();
+  for (let i = 0; i < candidateSeriesIds.length; i += 500) {
+    const chunk = candidateSeriesIds.slice(i, i + 500);
+    for (const row of db.select({ id: schema.seriesMatches.kavitaSeriesId, status: schema.seriesMatches.status })
+      .from(schema.seriesMatches)
+      .where(inArray(schema.seriesMatches.kavitaSeriesId, chunk))
+      .all()) {
+      if (row.status === 'matched' || row.status === 'syncing') settledStatuses.add(row.id);
+    }
+    for (const row of db.select({ seriesId: schema.rejectedMatchCandidates.seriesId, providerId: schema.rejectedMatchCandidates.providerId, providerSeriesId: schema.rejectedMatchCandidates.providerSeriesId })
+      .from(schema.rejectedMatchCandidates)
+      .where(and(eq(schema.rejectedMatchCandidates.connectionKey, connectionKey), inArray(schema.rejectedMatchCandidates.seriesId, chunk)))
+      .all()) {
+      rejected.add(`${row.seriesId}:${candidateKey(row)}`);
+    }
+  }
+  const out = new Set<number>();
+  for (const row of suggestionRows) {
+    if (settledStatuses.has(row.seriesId)) continue;
+    const candidates: CandidateMatch[] = JSON.parse(row.candidatesJson);
+    if (candidates.some((item) => !rejected.has(`${row.seriesId}:${candidateKey(item)}`))) {
+      out.add(row.seriesId);
+    }
+  }
+  return out;
+}
+
 export function listMatchSuggestions() {
   const db = getDb(), connectionKey = currentMatchConnection();
   const statuses = new Map(db.select({ id: schema.seriesMatches.kavitaSeriesId, status: schema.seriesMatches.status }).from(schema.seriesMatches).all().map(row => [row.id, row.status]));

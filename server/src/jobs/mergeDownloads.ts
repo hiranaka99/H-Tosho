@@ -25,6 +25,10 @@ export async function prepareMergeDownloads(job: Job, log: LogFn, signal?:AbortS
     jobQueue.updateMergeState(job.id, { mergeDownloadIds: job.payload.mergeDownloadIds });
   };
   try {
+    type ClassifiedPlan =
+      | { kind: 'reuse'; plan: typeof plans[number]; key: string; task: NonNullable<ReturnType<typeof queue.get>>; owned: boolean }
+      | { kind: 'need-download'; plan: typeof plans[number]; key: string };
+    const classified: ClassifiedPlan[] = [];
     for (const plan of plans) {
       checkCancelled();
       const key = `${plan.source}:${plan.galleryId}`;
@@ -51,34 +55,52 @@ export async function prepareMergeDownloads(job: Job, log: LogFn, signal?:AbortS
         task = queue.get(task.id);
       }
       if (!task || (task.status === 'completed' && !archiveExists(task)) || (task.status === 'failed' && task.mergeJobId == null && !queue.hasPendingRetry(task.id) && !queue.isRunning(task.id))) {
-        if (!plan.allowDuplicate) {
-          const identities = await prepareDuplicateCheck([plan]);
-          checkCancelled();
-          // An independent task may have appeared while metadata was resolving.
-          const raced = queue.findActive(plan.source, plan.galleryId) ?? queue.findCompleted(plan.source, plan.galleryId);
-          if (raced && (raced.status !== 'completed' || archiveExists(raced))) {
-            if (raced.mergeJobId != null && raced.mergeJobId !== job.id) {
-              const owner = jobQueue.get(raced.mergeJobId);
-              if (owner?.status === 'queued' || owner?.status === 'running') throw new Error(`${plan.title} is already assigned to merge job #${owner.id}.`);
-            }
-            tracked.push({ plan, id: raced.id, owned: raced.mergeJobId === job.id });
-            remember(key, raced.id);
-            continue;
-          }
-          const check = findDuplicateReports(identities, job.payload.sourceFiles);
-          if (check.reports.some(report => report.matches.length)) throw new Error(`Possible duplicate for ${plan.title}. Review this gallery in Downloader before queueing the merge again.`);
-        }
-        const id = queue.enqueue(plan.source, plan.galleryId, plan.title, 'cbz', undefined, plan.chapter.trim() ? Number(plan.chapter) : undefined, 0, job.id, plan.url);
-        tracked.push({ plan, id, owned: true });
-        remember(key, id);
-        log('info', `Download queued: ${plan.title} (task #${id})`);
+        classified.push({ kind: 'need-download', plan, key });
       } else {
-        tracked.push({ plan, id: task.id, owned: saved !== undefined && task.mergeJobId != null });
-        remember(key, task.id);
-        log('info', `${task.status === 'completed' ? 'Reusing archive' : 'Waiting for download'}: ${plan.title} (task #${task.id})`);
+        classified.push({ kind: 'reuse', plan, key, task, owned: saved !== undefined && task.mergeJobId != null });
       }
     }
+
+    const plansToCheck = classified.filter((c): c is Extract<ClassifiedPlan, { kind: 'need-download' }> => c.kind === 'need-download' && !c.plan.allowDuplicate).map((c) => c.plan);
+    const hasMatchByKey = new Set<string>();
+    if (plansToCheck.length > 0) {
+      const identities = await prepareDuplicateCheck(plansToCheck);
+      checkCancelled();
+      const check = findDuplicateReports(identities, job.payload.sourceFiles);
+      for (const report of check.reports) {
+        if (report.matches.length) hasMatchByKey.add(`${report.source}:${report.galleryId}`);
+      }
+    }
+
+    for (const item of classified) {
+      if (item.kind === 'reuse') {
+        tracked.push({ plan: item.plan, id: item.task.id, owned: item.owned });
+        remember(item.key, item.task.id);
+        log('info', `${item.task.status === 'completed' ? 'Reusing archive' : 'Waiting for download'}: ${item.plan.title} (task #${item.task.id})`);
+        continue;
+      }
+      const { plan, key } = item;
+      if (!plan.allowDuplicate) {
+        // An independent task may have appeared while metadata was resolving.
+        const raced = queue.findActive(plan.source, plan.galleryId) ?? queue.findCompleted(plan.source, plan.galleryId);
+        if (raced && (raced.status !== 'completed' || archiveExists(raced))) {
+          if (raced.mergeJobId != null && raced.mergeJobId !== job.id) {
+            const owner = jobQueue.get(raced.mergeJobId);
+            if (owner?.status === 'queued' || owner?.status === 'running') throw new Error(`${plan.title} is already assigned to merge job #${owner.id}.`);
+          }
+          tracked.push({ plan, id: raced.id, owned: raced.mergeJobId === job.id });
+          remember(key, raced.id);
+          continue;
+        }
+        if (hasMatchByKey.has(key)) throw new Error(`Possible duplicate for ${plan.title}. Review this gallery in Downloader before queueing the merge again.`);
+      }
+      const id = queue.enqueue(plan.source, plan.galleryId, plan.title, 'cbz', undefined, plan.chapter.trim() ? Number(plan.chapter) : undefined, 0, job.id, plan.url);
+      tracked.push({ plan, id, owned: true });
+      remember(key, id);
+      log('info', `Download queued: ${plan.title} (task #${id})`);
+    }
     let lastComplete = -1;
+    const completedOutputs = new Map<number, string>();
     for (;;) {
       checkCancelled();
       let complete = 0;
@@ -101,6 +123,7 @@ export async function prepareMergeDownloads(job: Job, log: LogFn, signal?:AbortS
           }
           throw new Error(`Downloaded archive not found for ${entry.plan.title}. Check Downloads before retrying the merge.`);
         }
+        completedOutputs.set(entry.id, task.outputPath!);
         complete += 1;
       }
       if (complete !== lastComplete) {
@@ -133,8 +156,9 @@ export async function prepareMergeDownloads(job: Job, log: LogFn, signal?:AbortS
       });
     }
     checkCancelled();
-    const files = tracked.map(entry => queue.get(entry.id)!.outputPath!);
-    const chapters = Object.fromEntries(tracked.filter(entry => entry.plan.chapter.trim()).map(entry => [queue.get(entry.id)!.outputPath!, entry.plan.chapter.trim()]));
+    const outputFor = (id: number) => completedOutputs.get(id) ?? queue.get(id)!.outputPath!;
+    const files = tracked.map(entry => outputFor(entry.id));
+    const chapters = Object.fromEntries(tracked.filter(entry => entry.plan.chapter.trim()).map(entry => [outputFor(entry.id), entry.plan.chapter.trim()]));
     log('success', `All ${tracked.length} download(s) ready; applying the merge`);
     return { files, chapters };
   } catch (error) {

@@ -1,4 +1,5 @@
-import { fetchBuffer, fetchJson, fetchJsonRetry } from '../lib/http.js';
+import { fetchBuffer, fetchJson, fetchJsonRetry, mapLimit } from '../lib/http.js';
+import { onSettingChange } from '../services/settings.js';
 import {
   KAVITA_MIN_SERVER_VERSION,
   KavitaLibraryType,
@@ -63,6 +64,10 @@ const LIBRARY_MEDIA_FORMATS: Record<KavitaLibraryType, MediaFormat> = {
 const personCache = new Map<string, { id: number; name: string; at: number }>();
 const PERSON_CACHE_TTL_MS = 60 * 60_000;
 const PERSON_CACHE_MAX_ENTRIES = 5000;
+const legacyTaskHosts = new Map<string, boolean>();
+onSettingChange('kavita-connection', () => legacyTaskHosts.clear());
+const inflightLibraries = new Map<string, Promise<KavitaLibrary[]>>();
+const inflightPeople = new Map<string, Promise<KavitaPersonDto>>();
 /** Scan task methods reported by /Server/is-task-running?methodName= (ScannerService, as enqueued by TaskScheduler). */
 const SCAN_TASK_METHODS = ['ScanLibrary', 'ScanLibraries', 'ScanSeries'] as const;
 /** Hangfire queues that can hold scan jobs — 0.9.1 runs scans on a dedicated "scan" queue. */
@@ -94,8 +99,6 @@ export interface UpdateMetadataOptions {
 export class KavitaClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
-  /** Set once the bare is-task-running call answered where no scoped call did. */
-  private legacyTaskStatus = false;
 
   constructor(baseUrl: string, apiKey: string) {
     this.baseUrl = baseUrl.trim().replace(/\/+$/, '').replace(/\/api$/i, '');
@@ -212,49 +215,63 @@ export class KavitaClient {
     // A server already seen answering only the bare call is pre-0.9.1; skip
     // the six scoped calls it rejects. 0.9.1+ rejects the bare call, so a
     // failure there (e.g. after an upgrade) returns to the scoped calls.
-    if (this.legacyTaskStatus) {
+    if (legacyTaskHosts.get(this.baseUrl)) {
       try { return await legacy(); }
-      catch { this.legacyTaskStatus = false; }
+      catch { legacyTaskHosts.delete(this.baseUrl); }
     }
+    const controller = new AbortController();
     const scoped = SCAN_TASK_METHODS.flatMap((method) =>
       SCAN_TASK_QUEUES.map((queue) =>
         this.getJson<boolean | string>(
           `/Server/is-task-running?methodName=${encodeURIComponent(method)}&queue=${queue}`,
           'Kavita task status',
+          controller.signal,
         ),
       ),
     );
     // The answer is an OR: settle as soon as one call reports a running task
     // rather than waiting for the slowest of the six.
     const answered = await new Promise<boolean | null>((resolve) => {
-      let pending = scoped.length, any = false;
+      let pending = scoped.length, any = false, settled = false;
       for (const request of scoped) {
         request.then((value) => {
           any = true;
-          if (parse(value)) resolve(true);
+          if (!settled && parse(value)) {
+            settled = true;
+            controller.abort();
+            resolve(true);
+          }
         }, () => { /* unanswered; the legacy call covers the all-failed case */ }).finally(() => {
-          if (--pending === 0) resolve(any ? false : null);
+          if (--pending === 0 && !settled) resolve(any ? false : null);
         });
       }
     });
     if (answered !== null) return answered;
     const running = await legacy();
-    this.legacyTaskStatus = true;
+    legacyTaskHosts.set(this.baseUrl, true);
     return running;
   }
 
   /** GET /api/Library/libraries */
   async getLibraries(): Promise<KavitaLibrary[]> {
-    const libraries = await this.getJson<KavitaLibraryDto[]>('/Library/libraries', 'Get libraries');
-    return libraries.map((library) => ({
-      id: library.id,
-      name: library.name?.trim() || `Library ${library.id}`,
-      path: library.folders?.[0] ?? undefined,
-      paths: library.folders ?? [],
-      monitor: library.folderWatching ?? false,
-      mediaFormat: LIBRARY_MEDIA_FORMATS[library.type] ?? 'other',
-      lastModified: library.lastScanned,
-    }));
+    const key = `${this.baseUrl}\0${this.apiKey}`;
+    const existing = inflightLibraries.get(key);
+    if (existing) return existing;
+    const promise = this.getJson<KavitaLibraryDto[]>('/Library/libraries', 'Get libraries')
+      .then((libraries) => libraries.map((library) => ({
+        id: library.id,
+        name: library.name?.trim() || `Library ${library.id}`,
+        path: library.folders?.[0] ?? undefined,
+        paths: library.folders ?? [],
+        monitor: library.folderWatching ?? false,
+        mediaFormat: LIBRARY_MEDIA_FORMATS[library.type] ?? 'other',
+        lastModified: library.lastScanned,
+      })))
+      .finally(() => {
+        if (inflightLibraries.get(key) === promise) inflightLibraries.delete(key);
+      });
+    inflightLibraries.set(key, promise);
+    return promise;
   }
 
   /** POST /api/Series/all-v2, filtered to one library. */
@@ -342,29 +359,46 @@ export class KavitaClient {
    * not-yet-created person may exist by the next sync.
    */
   private async resolvePeople(names: string[]): Promise<KavitaPersonDto[]> {
-    const now = Date.now();
-    const resolved = await Promise.all(
-      names.map(async (raw) => {
-        const name = raw.trim();
-        if (!name) return null;
-        const key = `${this.baseUrl}|${name.toLowerCase()}`;
-        const cached = personCache.get(key);
-        if (cached) {
-          if (now - cached.at < PERSON_CACHE_TTL_MS) return { id: cached.id, name: cached.name };
-          personCache.delete(key);
+    const trimmed = names.map((raw) => raw.trim()).filter(Boolean);
+    if (!trimmed.length) return [];
+    const unique = new Map<string, string>();
+    for (const name of trimmed) {
+      const lower = name.toLowerCase();
+      if (!unique.has(lower)) unique.set(lower, name);
+    }
+    const resolvedByKey = new Map<string, KavitaPersonDto>();
+    await mapLimit([...unique.entries()], 6, async ([lower, name]) => {
+      const key = `${this.baseUrl}|${lower}`;
+      const now = Date.now();
+      const cached = personCache.get(key);
+      if (cached) {
+        if (now - cached.at < PERSON_CACHE_TTL_MS) {
+          resolvedByKey.set(lower, { id: cached.id, name: cached.name });
+          return;
         }
-        const found = await this.findPerson(name);
-        if (!found || found.id <= 0) return { id: 0, name };
-        if (personCache.size >= PERSON_CACHE_MAX_ENTRIES) {
-          // Map iterates in insertion order, so the first key is the oldest entry.
-          const oldest = personCache.keys().next().value;
-          if (oldest !== undefined) personCache.delete(oldest);
-        }
-        personCache.set(key, { id: found.id, name: found.name ?? name, at: now });
-        return found;
-      }),
-    );
-    return resolved.filter((person): person is KavitaPersonDto => person !== null);
+        personCache.delete(key);
+      }
+      let lookup = inflightPeople.get(key);
+      if (!lookup) {
+        lookup = (async () => {
+          const found = await this.findPerson(name);
+          if (!found || found.id <= 0) return { id: 0, name };
+          if (personCache.size >= PERSON_CACHE_MAX_ENTRIES) {
+            // Map iterates in insertion order, so the first key is the oldest entry.
+            const oldest = personCache.keys().next().value;
+            if (oldest !== undefined) personCache.delete(oldest);
+          }
+          const entry = { id: found.id, name: found.name ?? name };
+          personCache.set(key, { ...entry, at: Date.now() });
+          return entry;
+        })().finally(() => {
+          if (inflightPeople.get(key) === lookup) inflightPeople.delete(key);
+        });
+        inflightPeople.set(key, lookup);
+      }
+      resolvedByKey.set(lower, await lookup);
+    });
+    return trimmed.map((name) => resolvedByKey.get(name.toLowerCase())!);
   }
 
   /** Read, merge, and write using Kavita's split v0.9 update endpoints. */
@@ -916,7 +950,10 @@ export class KavitaClient {
       headers: this.headers,
       signal: AbortSignal.timeout(30_000),
     });
-    if (!response.ok) throw this.requestError('Fetch staged cover image', path, response.status);
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => {});
+      throw this.requestError('Fetch staged cover image', path, response.status);
+    }
     const data = Buffer.from(await response.arrayBuffer());
     if (data.length === 0) throw new Error(`Kavita staged cover image ${filename} was empty.`);
     return data;
@@ -953,7 +990,10 @@ export class KavitaClient {
       headers: this.headers,
       signal: AbortSignal.timeout(30_000),
     });
-    if (!response.ok) throw this.requestError(`Get series ${seriesId} cover`, path, response.status);
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => {});
+      throw this.requestError(`Get series ${seriesId} cover`, path, response.status);
+    }
     return {
       data: Buffer.from(await response.arrayBuffer()),
       contentType: response.headers.get('content-type') ?? 'application/octet-stream',

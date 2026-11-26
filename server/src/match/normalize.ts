@@ -48,24 +48,50 @@ export function canonicalize(normalized: string): string {
 }
 
 /**
- * Classic Levenshtein edit distance (iterative, two rows).
+ * Classic Levenshtein edit distance (single Int32Array row with prefix/suffix trimming).
  */
 export function levenshtein(a: string, b: string): number {
   if (a === b) return 0;
-  if (!a.length) return b.length;
-  if (!b.length) return a.length;
-  let prev = new Array(b.length + 1);
-  let curr = new Array(b.length + 1);
-  for (let j = 0; j <= b.length; j++) prev[j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    curr[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
-    }
-    [prev, curr] = [curr, prev];
+  let start = 0;
+  let aEnd = a.length;
+  let bEnd = b.length;
+  while (start < aEnd && start < bEnd && a.charCodeAt(start) === b.charCodeAt(start)) start++;
+  while (aEnd > start && bEnd > start && a.charCodeAt(aEnd - 1) === b.charCodeAt(bEnd - 1)) {
+    aEnd--;
+    bEnd--;
   }
-  return prev[b.length];
+  let aLen = aEnd - start;
+  let bLen = bEnd - start;
+  if (aLen === 0) return bLen;
+  if (bLen === 0) return aLen;
+
+  let s1 = a;
+  let s2 = b;
+  if (aLen < bLen) {
+    s1 = b;
+    s2 = a;
+    [aLen, bLen] = [bLen, aLen];
+  }
+
+  const row = new Int32Array(bLen + 1);
+  for (let j = 0; j <= bLen; j++) row[j] = j;
+  for (let i = 1; i <= aLen; i++) {
+    let prevDiag = i - 1;
+    row[0] = i;
+    const ch1 = s1.charCodeAt(start + i - 1);
+    for (let j = 1; j <= bLen; j++) {
+      const temp = row[j];
+      if (ch1 === s2.charCodeAt(start + j - 1)) {
+        row[j] = prevDiag;
+      } else {
+        let min = temp < row[j - 1] ? temp : row[j - 1];
+        if (prevDiag < min) min = prevDiag;
+        row[j] = min + 1;
+      }
+      prevDiag = temp;
+    }
+  }
+  return row[bLen];
 }
 
 /** 0..1 similarity (1 = identical). */
@@ -75,12 +101,27 @@ export function similarity(a: string, b: string): number {
   return 1 - levenshtein(a, b) / maxLen;
 }
 
+const CANONICAL_CACHE_MAX = 2048;
+const canonicalCache = new Map<string, string>();
+
 /**
  * Strip volume markers, normalize and canonicalize a title into its
  * comparable form.
  */
 export function canonicalTitle(raw: string): string {
-  return canonicalize(normalizeTitle(stripVolumeMarkers(raw)));
+  const hit = canonicalCache.get(raw);
+  if (hit !== undefined) {
+    canonicalCache.delete(raw);
+    canonicalCache.set(raw, hit);
+    return hit;
+  }
+  const value = canonicalize(normalizeTitle(stripVolumeMarkers(raw)));
+  if (canonicalCache.size >= CANONICAL_CACHE_MAX) {
+    const oldest = canonicalCache.keys().next().value;
+    if (oldest !== undefined) canonicalCache.delete(oldest);
+  }
+  canonicalCache.set(raw, value);
+  return value;
 }
 
 /**
@@ -111,14 +152,12 @@ export function scoreCanonical(a: string, b: string): number {
   // (Substring containment is unsafe: titles that normalize to fragments like
   // "re" would match inside unrelated words such as "harem".)
   const [small, large] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
-  let contained = true;
-  for (const w of small) {
-    if (!large.has(w)) { contained = false; break; }
-  }
-  if (contained) return 0.92;
-
   let inter = 0;
-  ta.forEach((w) => { if (tb.has(w)) inter++; });
+  for (const w of small) {
+    if (large.has(w)) inter++;
+  }
+  if (inter === small.size) return 0.92;
+
   const jaccard = inter / (ta.size + tb.size - inter || 1);
   const lev = similarity(a, b);
   return Math.max(0.5 * lev + 0.5 * jaccard, Math.min(lev, jaccard) * 0.95);

@@ -52,12 +52,14 @@ function volumeMembership(volume: KavitaVolumeCoverDto): string {
 export async function observeCover(client: KavitaClient, seriesId: number, target: CoverTarget, expected: MetadataSnapshot, connectionKey: string): Promise<CoverObservation> {
   const activeConnection = () => kavitaConnectionKey(getKavitaConnection().baseUrl);
   if (activeConnection() !== connectionKey) throw new Error('Kavita connection changed during cover observation');
-  const series = await client.getSeriesDto(seriesId);
+  const [series, info, volume] = await Promise.all([
+    client.getSeriesDto(seriesId),
+    typeof client.getServerInfo === 'function' ? client.getServerInfo() : Promise.resolve(undefined),
+    target.kind === 'volume' ? client.getVolumeForCoverHistory(target.volumeId) : Promise.resolve(null),
+  ]);
   if (series.id !== seriesId || series.libraryId !== expected.series.libraryId ||
     (Object.hasOwn(expected.series, 'folderPath') && series.folderPath !== expected.series.folderPath)) throw new Error('Series identity changed during cover observation');
-  const info = typeof client.getServerInfo === 'function' ? await client.getServerInfo() : undefined;
   if (expected.installationId !== undefined && info?.installId !== expected.installationId) throw new Error('Kavita installation changed during cover observation');
-  const volume = target.kind === 'volume' ? await client.getVolumeForCoverHistory(target.volumeId) : null;
   if (target.kind === 'volume' && volume && (volume.id !== target.volumeId || volume.seriesId !== seriesId || !Number.isFinite(Date.parse(volume.createdUtc)))) throw new Error('Volume identity no longer belongs to this series');
   const token = volume ? volume.coverImage : series.coverImage;
   if (token !== null && typeof token !== 'string') throw new Error('Kavita did not return the cover image identity');
@@ -72,8 +74,10 @@ export async function observeCover(client: KavitaClient, seriesId: number, targe
     ...(Object.hasOwn(series, 'folderPath') ? { folderPath: series.folderPath } : {}),
     ...(info?.installId ? { installationId: info.installId } : {}),
     ...(volume ? { volume: { id: volume.id, seriesId: volume.seriesId, createdUtc: volume.createdUtc, membership: volumeMembership(volume) } } : {}) };
-  const afterSeries = await client.getSeriesDto(seriesId);
-  const afterVolume = volume ? await client.getVolumeForCoverHistory(volume.id) : null;
+  const [afterSeries, afterVolume] = await Promise.all([
+    client.getSeriesDto(seriesId),
+    volume ? client.getVolumeForCoverHistory(volume.id) : Promise.resolve(null),
+  ]);
   if (activeConnection() !== connectionKey || afterSeries.id !== series.id || afterSeries.libraryId !== series.libraryId || afterSeries.folderPath !== series.folderPath ||
     (afterVolume ? afterVolume.coverImage !== token || afterVolume.coverImageLocked !== rawLock || afterVolume.createdUtc !== volume!.createdUtc || afterVolume.seriesId !== seriesId || volumeMembership(afterVolume) !== evidence.volume!.membership
       : afterSeries.coverImage !== token || afterSeries.coverImageLocked !== rawLock)) throw new Error('Cover or indexed identity changed while it was being observed');
@@ -87,27 +91,48 @@ export function sameCoverObservation(expected: Omit<CoverObservation, 'data'>, c
     JSON.stringify(expected.evidence) === JSON.stringify(current.evidence);
 }
 
-export function retainCoverObservation(value: CoverObservation): void {
-  if (!value.assetId || !value.data || !value.mediaType) return;
-  const db = getDb();
-  const existing = db.select().from(schema.metadataAssets).where(eq(schema.metadataAssets.id, value.assetId)).get();
-  if (existing) {
-    if (existing.byteSize !== value.data.length || existing.data.length !== existing.byteSize || createHash('sha256').update(existing.data).digest('hex') !== value.assetId) throw new Error('An existing retained image asset failed integrity checks; the cover write was not started');
-    return;
-  }
+function coverBudgetUsage(db: ReturnType<typeof getDb>): number {
   const used = db.select({ bytes: sql<number>`coalesce(sum(${schema.metadataAssets.byteSize}), 0)` }).from(schema.metadataAssets).get()!.bytes;
-  const seriesReserved = db.select({ bytes: sql<number>`coalesce(sum(${schema.metadataSeriesCovers.reservedBytes}), 0)` }).from(schema.metadataSeriesCovers).get()!.bytes;
-  const volumeReserved = db.select({ bytes: sql<number>`coalesce(sum(${schema.metadataVolumeCovers.reservedBytes}), 0)` }).from(schema.metadataVolumeCovers).get()!.bytes;
-  if (used + seriesReserved + volumeReserved + value.data.length > coverStorageBudget()) throw new Error('Retained cover storage reached its configured budget; no retained history was evicted. Increase the cover-history budget before retrying');
-  db.insert(schema.metadataAssets).values({ id: value.assetId, mediaType: value.mediaType, byteSize: value.data.length, data: value.data }).run();
+  const seriesReserved = db.select({ bytes: sql<number>`coalesce(sum(${schema.metadataSeriesCovers.reservedBytes}), 0)` }).from(schema.metadataSeriesCovers)
+    .where(sql`${schema.metadataSeriesCovers.reservedBytes} > 0`).get()!.bytes;
+  const volumeReserved = db.select({ bytes: sql<number>`coalesce(sum(${schema.metadataVolumeCovers.reservedBytes}), 0)` }).from(schema.metadataVolumeCovers)
+    .where(sql`${schema.metadataVolumeCovers.reservedBytes} > 0`).get()!.bytes;
+  return used + seriesReserved + volumeReserved;
+}
+
+export function retainCoverWithBudgetCheck(value: CoverObservation, requireReadbackFits: boolean): void {
+  const db = getDb();
+  const budget = coverStorageBudget();
+  let currentUsage: number | undefined;
+  if (value.assetId && value.data && value.mediaType) {
+    const existing = db.select().from(schema.metadataAssets).where(eq(schema.metadataAssets.id, value.assetId)).get();
+    if (existing) {
+      if (existing.byteSize !== value.data.length || existing.data.length !== existing.byteSize || createHash('sha256').update(existing.data).digest('hex') !== value.assetId) throw new Error('An existing retained image asset failed integrity checks; the cover write was not started');
+    } else {
+      currentUsage = coverBudgetUsage(db);
+      if (currentUsage + value.data.length > budget) throw new Error('Retained cover storage reached its configured budget; no retained history was evicted. Increase the cover-history budget before retrying');
+      db.insert(schema.metadataAssets).values({ id: value.assetId, mediaType: value.mediaType, byteSize: value.data.length, data: value.data }).run();
+      currentUsage += value.data.length;
+    }
+  }
+  if (requireReadbackFits) {
+    const total = currentUsage ?? coverBudgetUsage(db);
+    if (total > budget) throw new Error('Insufficient cover-history storage for guaranteed readback; increase its budget before writing');
+  }
+}
+
+export function retainCoverObservation(value: CoverObservation): void {
+  retainCoverWithBudgetCheck(value, false);
 }
 
 export function coverReadbackReservationFits(): boolean {
-  const db = getDb();
-  const used = db.select({ bytes: sql<number>`coalesce(sum(${schema.metadataAssets.byteSize}), 0)` }).from(schema.metadataAssets).get()!.bytes;
-  const series = db.select({ bytes: sql<number>`coalesce(sum(${schema.metadataSeriesCovers.reservedBytes}), 0)` }).from(schema.metadataSeriesCovers).get()!.bytes;
-  const volumes = db.select({ bytes: sql<number>`coalesce(sum(${schema.metadataVolumeCovers.reservedBytes}), 0)` }).from(schema.metadataVolumeCovers).get()!.bytes;
-  return used + series + volumes <= coverStorageBudget();
+  return coverBudgetUsage(getDb()) <= coverStorageBudget();
+}
+
+export function hasCoverAssetMetadata(assetId: string): boolean {
+  if (!/^[a-f0-9]{64}$/.test(assetId)) return false;
+  const asset = getDb().select({ byteSize: schema.metadataAssets.byteSize }).from(schema.metadataAssets).where(eq(schema.metadataAssets.id, assetId)).get();
+  return !!asset && asset.byteSize > 0 && asset.byteSize <= MAX_RETAINED_COVER_BYTES;
 }
 
 export function loadCoverAsset(assetId: string): { data: Buffer; mediaType: string } | null {

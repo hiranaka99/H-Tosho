@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import type { CommonSearchQuery, DoujinSource } from '../contracts/doujin.js';
 import type { SuggestedFollow, WatchedSearch } from '../contracts/following.js';
@@ -24,7 +24,7 @@ function parseList(json: string | null | undefined): unknown[] {
 }
 
 function dismissedArtists(): Set<string> {
-  const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, DISMISSED_KEY)).get();
+  const row = getDb().select({ valueJson: schema.keyValueStore.valueJson }).from(schema.keyValueStore).where(eq(schema.keyValueStore.key, DISMISSED_KEY)).get();
   return new Set(parseList(row?.valueJson).filter((name): name is string => typeof name === 'string'));
 }
 
@@ -65,13 +65,24 @@ export function listSuggestedFollows(): SuggestedFollow[] {
     entry.bySource.set(source, (entry.bySource.get(source) ?? 0) + 1);
     return entry;
   };
-  const owned = new Set(db.select({ source: schema.ownedGalleries.source, galleryId: schema.ownedGalleries.galleryId }).from(schema.ownedGalleries).all().map(row => `${row.source}:${row.galleryId}`));
-  for (const row of db.select({ source: schema.galleryTags.source, galleryId: schema.galleryTags.galleryId, title: schema.galleryTags.title, artistsJson: schema.galleryTags.artistsJson, fetchedAt: schema.galleryTags.fetchedAt }).from(schema.galleryTags).all()) {
-    if (!owned.has(`${row.source}:${row.galleryId}`)) continue;
+  const ownedRows = db.select({
+    source: schema.galleryTags.source,
+    galleryId: schema.galleryTags.galleryId,
+    title: schema.galleryTags.title,
+    artistsJson: schema.galleryTags.artistsJson,
+    fetchedAt: schema.galleryTags.fetchedAt,
+  }).from(schema.galleryTags)
+    .innerJoin(schema.ownedGalleries, and(
+      eq(schema.ownedGalleries.source, schema.galleryTags.source),
+      eq(schema.ownedGalleries.galleryId, schema.galleryTags.galleryId),
+    )).all();
+  for (const row of ownedRows) {
     const seen = new Set<string>();
     for (const raw of parseList(row.artistsJson)) {
-      if (typeof raw !== 'string' || seen.has(normalizeArtist(raw))) continue;
-      seen.add(normalizeArtist(raw));
+      if (typeof raw !== 'string') continue;
+      const norm = normalizeArtist(raw);
+      if (seen.has(norm)) continue;
+      seen.add(norm);
       const entry = tally(raw, row.source as DoujinSource);
       if (!entry) continue;
       entry.downloads++;

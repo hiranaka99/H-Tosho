@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs/promises';
 import { and, eq, inArray, lte } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import type { KavitaClient } from '../kavita/client.js';
@@ -19,7 +20,7 @@ import { prepareArchiveRestores, recheckArchiveRestores, archiveProtectedFields,
 import { prepareCoverRestores, recheckCoverRestores, parseApprovedCoverRestores, type PreparedCoverRestores } from './metadataCoverRestore.js';
 import { coverJournal, retainedCoverAsset, pruneUnusedCoverAssets, type CoverJournal, type CoverJournalResult } from './metadataCovers.js';
 import { recoverMergeProtectionForSeriesOwned } from './mergeProtection.js';
-import { retainCoverObservation } from './coverObservations.js';
+import { retainCoverObservation, coverTargetKey } from './coverObservations.js';
 
 const PREVIEW_LIFETIME_MS = 15 * 60_000;
 const connection = () => kavitaConnectionKey(getKavitaConnection().baseUrl);
@@ -81,8 +82,8 @@ function sameIdentity(expected: MetadataSnapshot, current: MetadataSnapshot, com
 }
 function expirePreviews(): void {
   // Approval copies all authority into its pinned plan; consumed previews may expire too.
-  getDb().delete(schema.metadataRestorePreviews).where(lte(schema.metadataRestorePreviews.expiresAt, now())).run();
-  pruneUnusedCoverAssets();
+  const deleted = getDb().delete(schema.metadataRestorePreviews).where(lte(schema.metadataRestorePreviews.expiresAt, now())).run();
+  if (deleted.changes > 0) pruneUnusedCoverAssets();
 }
 
 export async function createMetadataRestorePreview(client: KavitaClient, seriesId: number, operationId: string,
@@ -220,15 +221,15 @@ export async function executeMetadataRestore(client: KavitaClient, command: Rest
   checkCancelled: () => void): Promise<MetadataRestoreResult> {
   const plan = getDb().select().from(schema.metadataRestorePlans).where(eq(schema.metadataRestorePlans.id,command.planId)).get();
   const archives = plan ? JSON.parse(plan.archivesJson) as ApprovedArchiveRestore[] : [];
-  const execute = () => executeApprovedMetadataRestore(client,command,jobId,checkCancelled);
+  const execute = () => executeApprovedMetadataRestore(client,command,jobId,checkCancelled, plan ? { plan, archives } : undefined);
   return archives.length ? archiveMutations.run(archives.map(item => archiveResource(item.target)),execute) : execute();
 }
 
 async function executeApprovedMetadataRestore(client: KavitaClient, command: RestoreMetadataCommand, jobId: number,
-  checkCancelled: () => void): Promise<MetadataRestoreResult> {
+  checkCancelled: () => void, preloaded?: { plan: typeof schema.metadataRestorePlans.$inferSelect; archives: ApprovedArchiveRestore[] }): Promise<MetadataRestoreResult> {
   validSeriesId(command.seriesId); validKey(command.planId, 'plan id');
   const db = getDb();
-  const plan = db.select().from(schema.metadataRestorePlans).where(eq(schema.metadataRestorePlans.id,command.planId)).get();
+  const plan = preloaded?.plan ?? db.select().from(schema.metadataRestorePlans).where(eq(schema.metadataRestorePlans.id,command.planId)).get();
   if (!plan || plan.seriesId !== command.seriesId || plan.connectionKey !== command.connectionKey || plan.jobId !== jobId) {
     conflict('Restore command does not match its approved job');
   }
@@ -240,7 +241,7 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
   const desired = JSON.parse(plan.desiredJson) as ExactMetadataRestoreValues;
   const fields = Object.keys(desired) as RestorableMetadataField[];
   const nativeLockFields = JSON.parse(plan.nativeLockFieldsJson) as RestorableMetadataField[];
-  const archives = JSON.parse(plan.archivesJson) as ApprovedArchiveRestore[];
+  const archives = preloaded?.archives ?? JSON.parse(plan.archivesJson) as ApprovedArchiveRestore[];
   const covers = parseApprovedCoverRestores(plan.coversJson);
   const operationId = randomUUID();
   let before: MetadataSnapshot | null = null, after: MetadataSnapshot | null = null;
@@ -277,10 +278,13 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
     if (changed.length) conflict(`Selected metadata or native locks changed after preview: ${changed.join(', ')}`);
     if(fields.includes('title') && titleRestoreCapability(before.titleContext)) conflict(titleRestoreCapability(before.titleContext)!);
     await recheckArchiveRestores(client,before,archives,fields.includes('title'));
-    await recheckCoverRestores(client, before, covers, plan.sourceOperationId);
+    const preObservedCovers = await recheckCoverRestores(client, before, covers, plan.sourceOperationId);
     if (covers.length) {
       coverCapture = coverJournal(client, operationId, plan.seriesId, before, plan.connectionKey);
-      for (const cover of covers) { checkCancelled(); await coverCapture.capture(cover.target); }
+      for (const cover of covers) {
+        checkCancelled();
+        await coverCapture.capture(cover.target, { preObserved: preObservedCovers.get(coverTargetKey(cover.target)) });
+      }
     }
     db.transaction(tx => {
       for (const archive of archives) tx.insert(schema.metadataOperationSteps).values({operationId,target:archive.target,beforeJson:JSON.stringify(archive.expected)}).run();
@@ -297,9 +301,9 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
     }
     if (fields.length) await client.restoreSeriesMetadataExact(plan.seriesId,desired,{expected,nativeLockFields,
       checkCancelled:fields.includes('title')?undefined:checkCancelled});
-    for (const cover of covers) {
+    for (const [index, cover] of covers.entries()) {
       checkCancelled();
-      await coverCapture!.capture(cover.target);
+      await coverCapture!.capture(cover.target, { skipVerify: archives.length === 0 && fields.length === 0 && index === 0 });
       const asset = retainedCoverAsset(plan.seriesId, cover.sourceOperationId, cover.sourceAssetId);
       if (!asset) conflict('Retained image became unavailable before upload');
       coverCapture!.beginWrite(cover.target, cover.requestedLock, cover.sourceAssetId);
@@ -344,7 +348,15 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
     if (!step) continue;
     try {
       const restored = restoredSnapshots.get(archive.target);
-      const observed = restored && await verifyArchiveSnapshot(archive.target,restored) ? restored : await captureArchiveSnapshot(archive.target);
+      let observed: ArchiveSnapshot;
+      if (restored && fields.length === 0 && covers.length === 0) {
+        const currentStat = await fs.stat(archive.target);
+        observed = currentStat.isFile() && currentStat.dev === restored.device && currentStat.ino === restored.inode && currentStat.size === restored.size && currentStat.mtimeMs === restored.mtimeMs
+          ? restored
+          : await captureArchiveSnapshot(archive.target);
+      } else {
+        observed = restored && await verifyArchiveSnapshot(archive.target, restored) ? restored : await captureArchiveSnapshot(archive.target);
+      }
       archiveChanged ||= observed.xml !== archive.expected.xml;
       const verified = observed.xml === archive.desiredXml && observed.contentHash === archive.expected.contentHash;
       if (!verified && startedWrite) problems.push(`Archive restore was not confirmed: ${archive.target.split(/[\\/]/).at(-1)}`);
@@ -373,7 +385,11 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
 
 /** Terminal hooks release pins, including queued cancellations and pre-execution validation failures. */
 export function settleMetadataRestoreJob(jobId: number, status: string, message?: string): void {
-  const plans = getDb().select().from(schema.metadataRestorePlans).where(and(eq(schema.metadataRestorePlans.jobId,jobId),
+  const plans = getDb().select({
+    id: schema.metadataRestorePlans.id,
+    status: schema.metadataRestorePlans.status,
+    operationId: schema.metadataRestorePlans.operationId,
+  }).from(schema.metadataRestorePlans).where(and(eq(schema.metadataRestorePlans.jobId,jobId),
     inArray(schema.metadataRestorePlans.status,activeStatuses))).all();
   if (!plans.length) return;
   const finishedAt = now();
@@ -390,7 +406,12 @@ export function settleMetadataRestoreJob(jobId: number, status: string, message?
 
 /** Queued, never-started approvals survive restart; ambiguous attempts never repeat automatically. */
 export function interruptMetadataRestore(): void {
-  const plans = getDb().select().from(schema.metadataRestorePlans).where(inArray(schema.metadataRestorePlans.status,activeStatuses)).all();
+  const plans = getDb().select({
+    id: schema.metadataRestorePlans.id,
+    jobId: schema.metadataRestorePlans.jobId,
+    status: schema.metadataRestorePlans.status,
+    operationId: schema.metadataRestorePlans.operationId,
+  }).from(schema.metadataRestorePlans).where(inArray(schema.metadataRestorePlans.status,activeStatuses)).all();
   const finishedAt = now(), message = 'Server stopped before restore verification; inspect current values and create a new preview';
   getDb().transaction(tx => {
     for (const plan of plans) {

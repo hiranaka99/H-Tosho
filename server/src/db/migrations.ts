@@ -192,6 +192,16 @@ export function migrateSchema(sqlite: Database.Database): void {
       createSchemaTables(sqlite);
       createIndexes(sqlite, true);
     },
+    () => {
+      sqlite.exec(`
+        DROP INDEX IF EXISTS idx_watched_search_new_found;
+        DROP INDEX IF EXISTS idx_watched_search_new_gallery;
+        DROP INDEX IF EXISTS idx_watched_search_new_dedupe;
+        DROP INDEX IF EXISTS idx_download_queue_status_id;
+        DROP INDEX IF EXISTS idx_jobs_finished_at;
+      `);
+      createIndexes(sqlite, true);
+    },
   ];
   for (const [index, migration] of migrations.entries()) {
     const version = index + 1;

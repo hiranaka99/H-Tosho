@@ -136,7 +136,7 @@ export function GallerySearchInput({ id, value, onChange, source, label, placeho
     />
     {value && <button type="button" disabled={disabled} aria-label={clearLabel}
       onClick={() => { onChange(''); setCaret(0); setClosed(false); inputRef.current?.focus(); }}
-      className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded text-muted hover:text-foreground disabled:opacity-50">
+      className="ui-button-icon absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded text-muted hover:text-foreground disabled:opacity-50">
       <X className="h-4 w-4" />
     </button>}
     {showDropdown && <div id={listId} role="listbox" aria-label={`${label} suggestions`} className="absolute left-0 right-0 top-full z-50 mt-1 origin-top animate-scale-in overflow-hidden rounded-md border border-border bg-surface shadow-lg">

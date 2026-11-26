@@ -13,16 +13,29 @@ export const normalizeArtist = (s: string) => s.normalize('NFKC').trim().toLower
 export const normalizeTag = (s: string) => s.normalize('NFKC').trim().toLowerCase().replace(/^(?:female|male|tag):/i, '').replace(/_/g, ' ').replace(/\s+/g, ' ');
 const sameGallery = (a: { source: string; galleryId: string }, b: { source: string; galleryId: string }) => a.source === b.source && a.galleryId === b.galleryId;
 
+let feedbackCache: { raw: string | null; value: RecommendationFeedback } | null = null;
+
+function cloneFeedback(value: RecommendationFeedback): RecommendationFeedback {
+  return { liked: value.liked, mutedArtists: value.mutedArtists, mutedTags: value.mutedTags };
+}
+
 export function getRecommendationFeedback(): RecommendationFeedback {
   try {
-    const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, KEY)).get();
-    const stored = JSON.parse(row?.valueJson ?? '{}');
-    return {
+    const row = getDb().select({ valueJson: schema.keyValueStore.valueJson })
+      .from(schema.keyValueStore)
+      .where(eq(schema.keyValueStore.key, KEY))
+      .get();
+    const raw = row?.valueJson ?? null;
+    if (feedbackCache && feedbackCache.raw === raw) return cloneFeedback(feedbackCache.value);
+    const stored = JSON.parse(raw ?? '{}');
+    const parsed: RecommendationFeedback = {
       liked: (Array.isArray(stored.liked) ? stored.liked : []).filter((item: DoujinSearchResult) => item && item.source === 'hitomi' && typeof item.galleryId === 'string'
         && typeof item.title === 'string' && Array.isArray(item.artists) && item.artists.every(a => typeof a === 'string') && Array.isArray(item.tags) && item.tags.every(t => typeof t === 'string')),
       mutedArtists: (Array.isArray(stored.mutedArtists) ? stored.mutedArtists : []).filter((a: unknown) => typeof a === 'string'),
       mutedTags: (Array.isArray(stored.mutedTags) ? stored.mutedTags : []).filter((t: unknown) => typeof t === 'string'),
     };
+    feedbackCache = { raw, value: parsed };
+    return cloneFeedback(parsed);
   } catch { return { liked: [], mutedArtists: [], mutedTags: [] }; }
 }
 
@@ -60,5 +73,6 @@ export function saveRecommendationFeedback(action: FeedbackAction, target: { sou
   if (action === 'unmute-tag') feedback.mutedTags = feedback.mutedTags.filter(t => normalizeTag(t) !== normalizeTag(target.tag ?? ''));
   const valueJson = JSON.stringify(feedback);
   getDb().insert(schema.keyValueStore).values({ key: KEY, valueJson }).onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson } }).run();
+  feedbackCache = { raw: valueJson, value: cloneFeedback(feedback) };
   return feedback;
 }

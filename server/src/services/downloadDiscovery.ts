@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { DownloadDiscoveryCommand } from '../contracts/jobs.js';
 import { jobQueue, JobCancelled, type Job, type LogFn } from '../jobs/queue.js';
@@ -5,7 +6,7 @@ import { rememberLibraries, rememberTargets, throwIfJobCancelled } from '../jobs
 import { KavitaClient } from '../kavita/client.js';
 import { libraryContainingPath, mapKavitaPathToLocalPath, mapLocalPathToKavita } from '../kavita/libraryPaths.js';
 import { waitForScan } from '../kavita/scans.js';
-import { pathContains, safeRealpath } from '../lib/paths.js';
+import { pathContains } from '../lib/paths.js';
 import { sleep } from '../lib/http.js';
 import { getDownloaderSettings, getKavitaConnection } from './settings.js';
 import { currentMatchConnection, scanMatchSuggestions } from './matchSuggestions.js';
@@ -42,18 +43,36 @@ export async function runDownloadedMatchDiscovery(job: Job & { payload: Download
   jobQueue.setProgress(job.id, 0, 1);
   const isArchive = job.payload.path.toLowerCase().endsWith('.cbz');
   const outputDir = isArchive ? path.dirname(job.payload.path) : job.payload.path;
-  const normalize = (value: string) => {
-    const absolute = safeRealpath(mapKavitaPathToLocalPath(value, mappings) ?? value).replace(/\\/g, '/').replace(/\/+$/, '');
-    return process.platform === 'win32' ? absolute.toLowerCase() : absolute;
+  const realpathCache = new Map<string, string>();
+  const realpathAsync = async (filePath: string): Promise<string> => {
+    const resolved = path.resolve(filePath);
+    const hit = realpathCache.get(resolved);
+    if (hit !== undefined) return hit;
+    let real = resolved;
+    try { real = await fs.realpath(resolved); } catch { /* path may not exist on this host yet */ }
+    realpathCache.set(resolved, real);
+    return real;
   };
-  const targetDir = normalize(outputDir), targetFile = normalize(job.payload.path);
+  const stripTrailing = (value: string) => {
+    const cleaned = value.replace(/\\/g, '/').replace(/\/+$/, '');
+    return process.platform === 'win32' ? cleaned.toLowerCase() : cleaned;
+  };
+  await Promise.all(mappings.map(mapping => realpathAsync(mapping.localPath)));
+  const targetDir = stripTrailing(await realpathAsync(outputDir));
+  const targetFile = stripTrailing(await realpathAsync(job.payload.path));
+  const normalize = async (value: string): Promise<string> => {
+    const mapped = mapKavitaPathToLocalPath(value, mappings) ?? value;
+    const pure = stripTrailing(path.resolve(mapped));
+    if (pure === targetDir || pure === targetFile) return pure;
+    return stripTrailing(await realpathAsync(mapped));
+  };
   await client.scanFolder(library.id, mapLocalPathToKavita(outputDir, mappings));
   check();
   log('info', `Requested Kavita import of ${outputDir}`);
   // Kavita can defer a scan while another is running. Keep the job visible and
   // cancellable until the new record appears; do not mistake an idle read for no match.
   const deadline = Date.now() + 20 * 60_000;
-  const scanned = await waitForScan(client, { deadline, pollMs: 2_000, checkCancelled: check });
+  const scanned = await waitForScan(client, { deadline, pollMs: 2_000, checkCancelled: check, signal });
   check();
   if (scanned !== 'completed') throw new Error(`Kavita import ${scanned === 'timed-out' ? 'timed out' : 'status could not be verified'}. Retry this discovery job after checking Kavita.`);
   for (;;) {
@@ -62,14 +81,23 @@ export async function runDownloadedMatchDiscovery(job: Job & { payload: Download
     check();
     const targets = [];
     for (const item of series) {
-      let found = !!item.folderPath && normalize(item.folderPath) === targetDir;
+      let found = !!item.folderPath && await normalize(item.folderPath) === targetDir;
       // ComicInfo.Series can group this download into a series in another folder.
       // Verify its files rather than trusting an equal title or guessing by folder name.
       if (!found && job.payload.seriesName && item.name.trim().toLowerCase() === job.payload.seriesName.trim().toLowerCase()) {
         const chapters = await client.getChaptersBySeries(item.id);
         check();
-        found = chapters.some(chapter => (chapter.files ?? []).some(file => file.filePath
-          && (isArchive ? normalize(file.filePath) === targetFile : pathContains(targetDir, normalize(file.filePath)))));
+        for (const chapter of chapters) {
+          for (const file of chapter.files ?? []) {
+            if (!file.filePath) continue;
+            const normPath = await normalize(file.filePath);
+            if (isArchive ? normPath === targetFile : pathContains(targetDir, normPath)) {
+              found = true;
+              break;
+            }
+          }
+          if (found) break;
+        }
       }
       if (found) targets.push({ ...item, libraryName: library.name });
     }

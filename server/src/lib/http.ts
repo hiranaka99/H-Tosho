@@ -59,11 +59,19 @@ export async function fetchBuffer(
   init: RequestInit = {},
   timeoutMs = 30_000,
 ): Promise<Buffer> {
+  init.signal?.throwIfAborted();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { ...init, signal: controller.signal, redirect: 'follow' });
-    if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
+    const res = await fetch(url, {
+      ...init,
+      signal: init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal,
+      redirect: 'follow',
+    });
+    if (!res.ok) {
+      void res.body?.cancel().catch(() => {});
+      throw new Error(`Download failed: HTTP ${res.status}`);
+    }
     return Buffer.from(await res.arrayBuffer());
   } finally {
     clearTimeout(timer);

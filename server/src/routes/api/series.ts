@@ -5,7 +5,7 @@ import { createMetadataRestorePreview, enqueueMetadataRestore, MetadataRestoreEr
 import type { RestorePreviewRequest } from '../../contracts/metadataRestore.js';
 import { retainedCoverAsset } from '../../services/metadataCovers.js';
 import { retainedPreviewCoverAsset } from '../../services/metadataCoverRestore.js';
-import { recoverMergeProtectionForSeriesOwned } from '../../services/mergeProtection.js';
+import { hasPendingMergeRecovery, recoverMergeProtectionForSeriesOwned } from '../../services/mergeProtection.js';
 import { libraryMutations } from '../../lib/mutations.js';
 import { parseJobCommand } from '../../contracts/jobs.js';
 import { Hono } from 'hono';
@@ -94,7 +94,9 @@ api.get('/series/:id/field-locks', async (c) => {
   const id = intParam(c.req.param('id'));
   if (id === null || id <= 0) return c.json({ error: 'Invalid series id' }, 400);
   const client = connectedClient();
-  if (client) await libraryMutations.run([`series:${id}`], () => recoverMergeProtectionForSeriesOwned(client, id));
+  if (client && hasPendingMergeRecovery()) {
+    await libraryMutations.run([`series:${id}`], () => recoverMergeProtectionForSeriesOwned(client, id));
+  }
   return c.json(getFieldPolicy(id));
 });
 api.put('/series/:id/field-locks', async (c) => {
@@ -215,7 +217,11 @@ api.get('/series/:id/identify', async (c) => {
     const providerOrder = providerOrderFor(series.libraryId, enabledProviders);
     const outcome = await autoMatch(series, { providerOrder, credentials, enabledProviders, searchAll: true });
     // Refresh stored confidence when the current match surfaces in this search.
-    const existingMatch = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
+    const existingMatch = getDb().select({
+      providerId: schema.seriesMatches.providerId,
+      providerSeriesId: schema.seriesMatches.providerSeriesId,
+      matchScore: schema.seriesMatches.matchScore,
+    }).from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
     if (existingMatch) {
       const current = outcome.candidates.find(
         (cand) => cand.providerId === existingMatch.providerId && cand.providerSeriesId === existingMatch.providerSeriesId,
@@ -259,9 +265,11 @@ api.post('/series/:id/manual-match', async (c) => {
   try {
     const seriesId = intParam(c.req.param('id'));
     if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
-    const series = await client.getSeriesById(seriesId);
     const { credentials } = getCredentialMap();
-    const meta = await fetchProviderMetadata(ref.providerId, ref.providerSeriesId, credentials);
+    const [series, meta] = await Promise.all([
+      client.getSeriesById(seriesId),
+      fetchProviderMetadata(ref.providerId, ref.providerSeriesId, credentials),
+    ]);
     const candidate: CandidateMatch = {
       providerId: ref.providerId,
       providerSeriesId: ref.providerSeriesId,

@@ -31,7 +31,10 @@ export const metadataOperations = sqliteTable('metadata_operations', {
   message: text('message'),
   createdAt: text('created_at').notNull(),
   finishedAt: text('finished_at'),
-}, table => [index('idx_metadata_operations_series').on(table.connectionKey, table.seriesId, table.sequence)]);
+}, table => [
+  index('idx_metadata_operations_series').on(table.connectionKey, table.seriesId, table.sequence),
+  index('idx_metadata_operations_finished').on(table.finishedAt).where(sql`"status" <> 'running'`),
+]);
 
 export const metadataOperationSteps = sqliteTable('metadata_operation_steps', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -48,7 +51,9 @@ export const metadataAssets = sqliteTable('metadata_assets', {
   mediaType: text('media_type').notNull(),
   byteSize: integer('byte_size').notNull(),
   data: blob('data', {mode:'buffer'}).notNull(),
-});
+}, (table) => [
+  index('idx_metadata_assets_byte_size').on(table.byteSize),
+]);
 
 /** One series-cover checkpoint per operation; volume checkpoints share the same retained assets. */
 export const metadataSeriesCovers = sqliteTable('metadata_series_covers', {
@@ -70,6 +75,7 @@ export const metadataSeriesCovers = sqliteTable('metadata_series_covers', {
 }, table => [
   index('idx_metadata_series_covers_before').on(table.beforeAssetId),
   index('idx_metadata_series_covers_after').on(table.afterAssetId),
+  index('idx_metadata_series_covers_reserved').on(table.reservedBytes).where(sql`"reserved_bytes" > 0`),
 ]);
 
 export const metadataVolumeCovers = sqliteTable('metadata_volume_covers', {
@@ -95,6 +101,7 @@ export const metadataVolumeCovers = sqliteTable('metadata_volume_covers', {
   uniqueIndex('idx_metadata_volume_cover_operation').on(table.operationId, table.volumeId),
   index('idx_metadata_volume_covers_before').on(table.beforeAssetId),
   index('idx_metadata_volume_covers_after').on(table.afterAssetId),
+  index('idx_metadata_volume_covers_reserved').on(table.reservedBytes).where(sql`"reserved_bytes" > 0`),
 ]);
 
 /** Unconsumed previews expire; approved plans copy all write authority durably. */
@@ -251,8 +258,9 @@ export const jobs = sqliteTable('jobs', {
   finishedAt: text('finished_at'),
 }, (table) => [
   index('idx_jobs_status').on(table.status),
-  index('idx_jobs_finished_at').on(table.finishedAt),
+  index('idx_jobs_status_finished').on(table.status, table.finishedAt),
   index('idx_jobs_type_id').on(table.type, table.id),
+  index('idx_jobs_active').on(table.type, table.id).where(sql`"status" IN ('queued', 'running')`),
 ]);
 
 export const jobLogs = sqliteTable('job_logs', {
@@ -334,7 +342,7 @@ export const downloadQueue = sqliteTable('download_queue', {
   // exactly, so the next task is read from the index without a temp sort.
   index('idx_download_queue_claim').on(table.status, sql`"priority" DESC`, table.id),
   index('idx_download_queue_status_finished').on(table.status, table.finishedAt),
-  index('idx_download_queue_status_id').on(table.status, table.id),
+  index('idx_download_queue_status_id').on(table.status, sql`"id" DESC`, table.source, table.galleryId),
   index('idx_download_queue_merge_folder').on(table.mergeFolder),
   index('idx_download_queue_output_path').on(table.outputPath),
   index('idx_download_queue_merge_job').on(table.mergeJobId),
@@ -395,6 +403,7 @@ export const watchedSearchSeen = sqliteTable('watched_search_seen', {
     .default(sql`(current_timestamp)`),
 }, (table) => [
   uniqueIndex('idx_watched_search_seen_unique').on(table.searchId, table.source, table.galleryId),
+  index('idx_watched_search_seen_search_id').on(table.searchId, table.id),
 ]);
 /**
  * Galleries a watch reported as new, with enough metadata to render them in
@@ -425,9 +434,7 @@ export const watchedSearchNew = sqliteTable('watched_search_new', {
   foundAt: text('found_at').notNull(),
 }, (table) => [
   uniqueIndex('idx_watched_search_new_unique').on(table.searchId, table.source, table.galleryId),
-  index('idx_watched_search_new_found').on(table.foundAt, table.id),
-  index('idx_watched_search_new_gallery').on(table.source, table.galleryId),
-  index('idx_watched_search_new_dedupe').on(table.source, table.galleryId, table.foundAt, table.id),
+  index('idx_watched_search_new_dedupe').on(table.source, table.galleryId, sql`"found_at" DESC`, sql`"id" DESC`),
   // Inbox (unreviewed) lookups stay proportional to the inbox, not the whole feed.
   index('idx_watched_search_new_unreviewed').on(table.source, table.galleryId).where(sql`"reviewed_at" IS NULL`),
 ]);

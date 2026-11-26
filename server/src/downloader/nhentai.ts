@@ -80,14 +80,10 @@ export const nhentaiRateLimits = {
 
 type RateClass = 'search' | 'listing' | 'gallery' | 'tags' | 'suggest';
 
-// Shared throttle state. Calls are serialized per lane so a burst of
-// watched-search/recommendation lookups cannot fire concurrently and trip an
-// IP ban. Autocomplete has its own lane (its endpoint has its own documented
-// cap and its own class interval) so a long search/listing backoff never
-// blocks interactive suggestions; the global minimum gap and the adaptive
-// multiplier still apply across both lanes.
-type ThrottleLane = 'main' | 'suggest';
-const throttleTails = new Map<ThrottleLane, Promise<void>>();
+// Shared throttle state. Calls are serialized per RateClass so a long
+// search/listing backoff never blocks gallery/tags/suggest lookups; the global
+// minimum gap and the adaptive multiplier still apply across every class.
+const throttleTails = new Map<RateClass, Promise<void>>();
 let lastAnyAt = 0;
 const lastByClass = new Map<RateClass, number>();
 let throttleMultiplier = 1;
@@ -99,13 +95,12 @@ const THROTTLE_MULTIPLIER_MAX = 6;
 const MIN_ANY_GAP_MS = 250;
 
 async function acquireSlot(cls: RateClass, signal?: AbortSignal): Promise<void> {
-  const lane: ThrottleLane = cls === 'suggest' ? 'suggest' : 'main';
-  const run = (throttleTails.get(lane) ?? Promise.resolve()).then(async () => {
+  const run = (throttleTails.get(cls) ?? Promise.resolve()).then(async () => {
     // A caller that gave up while queued must not consume a slot.
     signal?.throwIfAborted();
-    // Re-check after every sleep: the other lane may have fired meanwhile,
-    // and the global gap must hold across lanes. The final check and the
-    // timestamp update run synchronously, so the lanes cannot interleave.
+    // Re-check after every sleep: another RateClass may have fired meanwhile,
+    // and the global gap must hold across classes. The final check and the
+    // timestamp update run synchronously, so lanes cannot violate MIN_ANY_GAP_MS.
     for (;;) {
       if (throttleMultiplier > 1 && Date.now() - last429At > THROTTLE_DECAY_MS) {
         throttleMultiplier = 1;
@@ -125,7 +120,7 @@ async function acquireSlot(cls: RateClass, signal?: AbortSignal): Promise<void> 
     lastAnyAt = at;
     lastByClass.set(cls, at);
   });
-  throttleTails.set(lane, run.then(
+  throttleTails.set(cls, run.then(
     () => undefined,
     () => undefined,
   ));
@@ -310,7 +305,20 @@ function rememberTag(id: number, tag: ApiTag): void {
   boundedSet(tagCache, TAG_CACHE_MAX, id, tag);
 }
 
-async function resolveTags(ids: number[]): Promise<Map<number, ApiTag>> {
+function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('Aborted'));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error('Aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error) => { signal.removeEventListener('abort', onAbort); reject(error); },
+    );
+  });
+}
+
+async function resolveTags(ids: number[], signal?: AbortSignal): Promise<Map<number, ApiTag>> {
   const out = new Map<number, ApiTag>();
   const missing: number[] = [];
   const queued = new Set<number>();
@@ -329,7 +337,7 @@ async function resolveTags(ids: number[]): Promise<Map<number, ApiTag>> {
     const res = await throttledFetchJson<ApiTag[]>(
       'tags',
       `${BASE}/api/v2/tags/ids?ids=${chunk.join(',')}`,
-      { headers: headers() },
+      { headers: headers(), ...(signal ? { signal } : {}) },
     );
     if (res.status !== 200 || !Array.isArray(res.data)) continue;
     for (const t of res.data) {
@@ -486,24 +494,76 @@ async function postTagSearch(body: string, signal?: AbortSignal): Promise<ApiTag
 const SUGGEST_CACHE_TTL_MS = 5 * 60_000;
 const SUGGEST_CACHE_MAX = 256;
 const suggestCache = new Map<string, { at: number; tags: ApiTag[] }>();
+interface SuggestInflight {
+  promise: Promise<ApiTag[] | null>;
+  ac: AbortController;
+  waiters: number;
+}
+const suggestInflight = new Map<string, SuggestInflight>();
+
+function awaitInflightSuggest(entry: SuggestInflight, signal?: AbortSignal): Promise<ApiTag[] | null> {
+  entry.waiters++;
+  if (signal?.aborted) {
+    if (--entry.waiters === 0) entry.ac.abort();
+    return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('Aborted'));
+  }
+  return new Promise<ApiTag[] | null>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      if (--entry.waiters === 0) entry.ac.abort();
+      reject(signal?.reason instanceof Error ? signal.reason : new Error('Aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    entry.promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        entry.waiters--;
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        entry.waiters--;
+        reject(error);
+      },
+    );
+  });
+}
 
 async function searchTagsCached(body: string, signal?: AbortSignal): Promise<ApiTag[] | null> {
+  signal?.throwIfAborted();
   const hit = suggestCache.get(body);
   if (hit && Date.now() - hit.at < SUGGEST_CACHE_TTL_MS) {
     suggestCache.delete(body);
     suggestCache.set(body, hit);
     return hit.tags;
   }
-  // With an API key, go straight through the official POST endpoint
-  // (authenticated requests are usually waved through Cloudflare); without
-  // one, Node's fetch() on POST endpoints gets challenged, so curl goes
-  // first and the in-process POST is only the last resort.
-  const tags: ApiTag[] | null = getApiKey()
-    ? (await postTagSearch(body, signal)) ?? (await fetchTagsViaCurl(body, signal))
-    : (await fetchTagsViaCurl(body, signal)) ?? (await postTagSearch(body, signal));
-  if (tags) boundedSet(suggestCache, SUGGEST_CACHE_MAX, body, { at: Date.now(), tags });
-  else suggestCache.delete(body);
-  return tags;
+  let entry = suggestInflight.get(body);
+  if (!entry) {
+    const ac = new AbortController();
+    const promise = (async () => {
+      // With an API key, go straight through the official POST endpoint
+      // (authenticated requests are usually waved through Cloudflare); without
+      // one, Node's fetch() on POST endpoints gets challenged, so curl goes
+      // first and the in-process POST is only the last resort.
+      const tags: ApiTag[] | null = getApiKey()
+        ? (await postTagSearch(body, ac.signal)) ?? (await fetchTagsViaCurl(body, ac.signal))
+        : (await fetchTagsViaCurl(body, ac.signal)) ?? (await postTagSearch(body, ac.signal));
+      if (tags) boundedSet(suggestCache, SUGGEST_CACHE_MAX, body, { at: Date.now(), tags });
+      else suggestCache.delete(body);
+      return tags;
+    })().finally(() => {
+      if (suggestInflight.get(body) === entry) suggestInflight.delete(body);
+    });
+    entry = { promise, ac, waiters: 0 };
+    suggestInflight.set(body, entry);
+  }
+  return awaitInflightSuggest(entry, signal);
 }
 
 // ---- API shapes -------------------------------------------------------------
@@ -566,10 +626,10 @@ function directGalleryId(query: string): string | null {
   return /^(?:https?:\/\/(?:www\.)?nhentai\.net)?\/(?:g|gallery)\/(\d+)\/?(?:[?#].*)?$/i.exec(q)?.[1] ?? null;
 }
 
-async function fetchSearchPage(query: string, page: number, sort?: DoujinSort): Promise<ApiSearchResponse> {
+async function fetchSearchPage(query: string, page: number, sort?: DoujinSort, signal?: AbortSignal): Promise<ApiSearchResponse> {
   const params = new URLSearchParams({ query, page: String(page) });
   if (sort && ['popular', 'popular-week', 'popular-today', 'popular-month'].includes(sort)) params.set('sort', sort);
-  const res = await throttledFetchJson<ApiSearchResponse>('search', `${BASE}/api/v2/search?${params}`, { headers: headers() });
+  const res = await throttledFetchJson<ApiSearchResponse>('search', `${BASE}/api/v2/search?${params}`, { headers: headers(), ...(signal ? { signal } : {}) });
   if (res.status === 429) throw new Error('nHentai is rate-limiting this search. Set a valid nHentai API key in Settings to raise the limit, then try again.');
   if (res.status !== 200 || !Array.isArray(res.data?.result) || !Number.isSafeInteger(res.data.num_pages) || res.data.num_pages! < 0) {
     throw new Error(`nHentai search failed (HTTP ${res.status})`);
@@ -578,10 +638,10 @@ async function fetchSearchPage(query: string, page: number, sort?: DoujinSort): 
 }
 
 const slugTags = new Map<string, ApiTag>();
-async function tagBySlug(type: string, slug: string): Promise<ApiTag | null> {
+async function tagBySlug(type: string, slug: string, signal?: AbortSignal): Promise<ApiTag | null> {
   const key = `${type}/${slug}`;
   if (slugTags.has(key)) return slugTags.get(key)!;
-  const res = await throttledFetchJson<ApiTag>('tags', `${BASE}/api/v2/tags/${type}/${encodeURIComponent(slug)}`, { headers: headers() });
+  const res = await throttledFetchJson<ApiTag>('tags', `${BASE}/api/v2/tags/${type}/${encodeURIComponent(slug)}`, { headers: headers(), ...(signal ? { signal } : {}) });
   if (res.status === 404) return null;
   if (res.status !== 200 || !Number.isSafeInteger(res.data?.id) || res.data!.id! < 1 || mapTagType(res.data!.type) !== type || res.data!.slug !== slug) {
     throw new Error(`nHentai ${type} lookup failed (HTTP ${res.status})`);
@@ -631,6 +691,7 @@ async function artistRows(
   artist: ApiTag,
   sort?: DoujinSort,
   enough?: (rows: readonly ApiGalleryListItem[]) => boolean,
+  signal?: AbortSignal,
 ): Promise<{ rows: ApiGalleryListItem[]; done: boolean }> {
   const order = sort && ['popular', 'popular-week', 'popular-today', 'popular-month'].includes(sort) ? sort : 'date';
   const key = JSON.stringify([artist.id, order, getApiKey()]);
@@ -643,14 +704,31 @@ async function artistRows(
   const current = entry;
   try {
     while (!current.done && !enough?.(current.rows)) {
+      signal?.throwIfAborted();
       current.loading ??= fetchArtistListingPage(current, artist, order).finally(() => { current.loading = null; });
-      await current.loading;
+      await raceAbort(current.loading, signal);
     }
   } catch (error) {
-    if (artistListings.get(key) === current) artistListings.delete(key);
+    if (!signal?.aborted && artistListings.get(key) === current) artistListings.delete(key);
     throw error;
   }
   return { rows: current.rows, done: current.done };
+}
+
+interface BannedExclusion {
+  ns?: string;
+  name: string;
+}
+
+function parseBannedExclusions(): BannedExclusion[] {
+  const exclusions = buildBannedExclusions().match(/-([a-z]+:)?"[^"]*"/g) ?? [];
+  const out: BannedExclusion[] = [];
+  for (const exclusion of exclusions) {
+    const match = /^-(?:([a-z]+):)?"([^"]*)"$/.exec(exclusion);
+    if (!match) continue;
+    out.push({ ...(match[1] ? { ns: match[1] } : {}), name: match[2].toLowerCase() });
+  }
+  return out;
 }
 
 /**
@@ -658,33 +736,48 @@ async function artistRows(
  * pages are only fetched until at least that many rows survive the filters
  * (or the listing ends); without it, the whole catalog is read.
  */
-async function exactArtistRows(lookup: NonNullable<ReturnType<typeof nhentaiArtistSearch>>, sort?: DoujinSort, need = Infinity): Promise<ApiGalleryListItem[]> {
-  const artist = await tagBySlug('artist', lookup.slug);
-  if (!artist) return [];
-  const language = lookup.language === 'all' ? null : await tagBySlug('language', lookup.language);
-  if (lookup.language !== 'all' && !language) return [];
+async function exactArtistRows(
+  lookup: NonNullable<ReturnType<typeof nhentaiArtistSearch>>,
+  sort?: DoujinSort,
+  need = Infinity,
+  signal?: AbortSignal,
+): Promise<{ rows: ApiGalleryListItem[]; done: boolean }> {
+  const artist = await tagBySlug('artist', lookup.slug, signal);
+  if (!artist) return { rows: [], done: true };
+  const language = lookup.language === 'all' ? null : await tagBySlug('language', lookup.language, signal);
+  if (lookup.language !== 'all' && !language) return { rows: [], done: true };
+  const exclusions = parseBannedExclusions();
   let minRows = Number.isFinite(need) ? need : Infinity;
+  let processed = 0;
+  const kept: ApiGalleryListItem[] = [];
   for (;;) {
-    const listing = await artistRows(artist, sort, Number.isFinite(minRows) ? (rows) => rows.length >= minRows : undefined);
-    const rows = await filterArtistRows(listing.rows, language);
-    if (listing.done || rows.length >= need) return rows;
+    const listing = await artistRows(artist, sort, Number.isFinite(minRows) ? (rows) => rows.length >= minRows : undefined, signal);
+    const batch = listing.rows.slice(processed);
+    processed = listing.rows.length;
+    if (batch.length) {
+      kept.push(...await filterArtistRows(batch, language, exclusions, signal));
+    }
+    if (listing.done || kept.length >= need) return { rows: kept, done: listing.done };
     minRows = listing.rows.length + 1; // filters dropped rows: read one more page
   }
 }
 
-async function filterArtistRows(all: readonly ApiGalleryListItem[], language: ApiTag | null): Promise<ApiGalleryListItem[]> {
-  let rows = all.filter((row) => !language || row.tag_ids!.includes(language.id!));
-  const exclusions = buildBannedExclusions().match(/-([a-z]+:)?"[^"]*"/g) ?? [];
+async function filterArtistRows(
+  all: readonly ApiGalleryListItem[],
+  language: ApiTag | null,
+  exclusions: readonly BannedExclusion[],
+  signal?: AbortSignal,
+): Promise<ApiGalleryListItem[]> {
+  let rows = language ? all.filter((row) => row.tag_ids!.includes(language.id!)) : [...all];
   if (exclusions.length && rows.length) {
-    const tags = await resolveTags(rows.flatMap((row) => row.tag_ids!));
+    const tags = await resolveTags(rows.flatMap((row) => row.tag_ids!), signal);
     if (rows.some((row) => row.tag_ids!.some((id) => !tags.has(id)))) throw new Error('nHentai tag metadata could not be loaded to apply banned tags. Please retry.');
     rows = rows.filter((row) => !exclusions.some((exclusion) => {
-      const match = /^-(?:([a-z]+):)?"([^"]*)"$/.exec(exclusion)!;
-      const name = match[2].toLowerCase();
-      return (!match[1] && [row.english_title, row.japanese_title].some((title) => title?.toLowerCase().includes(name)))
+      const name = exclusion.name;
+      return (!exclusion.ns && [row.english_title, row.japanese_title].some((title) => title?.toLowerCase().includes(name)))
         || row.tag_ids!.some((id) => {
           const tag = tags.get(id)!;
-          return (!match[1] || mapTagType(tag.type) === match[1]) && tag.name.toLowerCase().includes(name);
+          return (!exclusion.ns || mapTagType(tag.type) === exclusion.ns) && tag.name.toLowerCase().includes(name);
         });
     }));
   }
@@ -701,10 +794,10 @@ function searchCoverPath(thumbnail: string): string {
   return thumbnail.replace(/(^|\/)thumb(\.[^/]+)$/, '$1cover$2');
 }
 
-async function mapSearchRows(items: ApiGalleryListItem[]): Promise<NhentaiSearchRow[]> {
+async function mapSearchRows(items: ApiGalleryListItem[], signal?: AbortSignal): Promise<NhentaiSearchRow[]> {
   if (!items.length) return [];
   const tagIds = items.flatMap(item => Array.isArray(item?.tag_ids) ? item.tag_ids : []);
-  const [cdn, tagsById] = await Promise.all([getCdn(), resolveTags(tagIds)]);
+  const [cdn, tagsById] = await Promise.all([raceAbort(getCdn(), signal), resolveTags(tagIds, signal)]);
   return items.filter(item => item && typeof item.id === 'number').map(item => {
     const id = String(item.id);
     const title = item.english_title || item.japanese_title || `Gallery ${id}`;
@@ -738,7 +831,7 @@ export const nhentaiProvider: DoujinProvider = {
     const artist = nhentaiArtistSearch(q);
     if (artist) {
       const cap = Math.min(Math.max(1, limit), 250);
-      return mapSearchRows((await exactArtistRows(artist, sort, cap)).slice(0, cap));
+      return mapSearchRows((await exactArtistRows(artist, sort, cap)).rows.slice(0, cap));
     }
 
     // Append configured banned-tag exclusions so galleries carrying any of them
@@ -782,9 +875,10 @@ export const nhentaiProvider: DoujinProvider = {
     return out.slice(0, want);
   },
 
-  async searchPage(query: string, offset: number, limit: number, sort?: DoujinSort) {
+  async searchPage(query: string, offset: number, limit: number, sort?: DoujinSort, opts?: { exactTotal?: boolean; signal?: AbortSignal }) {
     const q = query.trim();
     if (!q) return { items: [], total: 0 };
+    const signal = opts?.signal;
     const id = directGalleryId(q);
     if (id) {
       const gallery = await this.getGallery(id);
@@ -792,13 +886,16 @@ export const nhentaiProvider: DoujinProvider = {
     }
     const artist = nhentaiArtistSearch(q);
     if (artist) {
-      const rows = await exactArtistRows(artist, sort);
-      return { items: await mapSearchRows(rows.slice(offset, offset + limit)), total: rows.length };
+      const need = opts?.exactTotal === false ? offset + limit : Infinity;
+      const { rows, done } = await exactArtistRows(artist, sort, need, signal);
+      const slice = rows.slice(offset, offset + limit);
+      const total = !done ? Math.max(rows.length, offset + slice.length + 1) : rows.length;
+      return { items: await mapSearchRows(slice, signal), total };
     }
     const searchQuery = nhentaiSearchQuery(q, buildBannedExclusions());
     const fetched = new Map<number, ApiSearchResponse>();
     const getPage = async (page: number) => {
-      if (!fetched.has(page)) fetched.set(page, await fetchSearchPage(searchQuery, page, sort));
+      if (!fetched.has(page)) fetched.set(page, await fetchSearchPage(searchQuery, page, sort, signal));
       return fetched.get(page)!;
     };
     let page = Math.floor(offset / SEARCH_PAGE_SIZE) + 1;
@@ -808,9 +905,14 @@ export const nhentaiProvider: DoujinProvider = {
     if (correctPage !== page) { page = correctPage; response = await getPage(page); }
     const numPages = response.num_pages ?? 0;
     let total = response.total;
-    // The public schema permits a null total; the last page gives an exact count.
+    // The public schema permits a null total; skip fetching the last page when
+    // exact totals aren't requested unless we're already reading it.
     if (!Number.isSafeInteger(total) || total! < 0) {
-      total = numPages ? (numPages - 1) * perPage + (await getPage(numPages)).result.length : 0;
+      if (opts?.exactTotal === false && page < numPages) {
+        total = numPages * perPage;
+      } else {
+        total = numPages ? (numPages - 1) * perPage + (await getPage(numPages)).result.length : 0;
+      }
     }
     const rows = response.result.slice(offset % perPage, offset % perPage + limit);
     if (offset < total! && !rows.length) throw new Error('Could not load this nHentai results page. Please retry.');
@@ -820,7 +922,7 @@ export const nhentaiProvider: DoujinProvider = {
       if (!next.length) break;
       rows.push(...next.slice(0, limit - rows.length));
     }
-    return { items: await mapSearchRows(rows), total: total! };
+    return { items: await mapSearchRows(rows, signal), total: total! };
   },
 
   /**

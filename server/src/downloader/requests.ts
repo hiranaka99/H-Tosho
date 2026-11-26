@@ -90,6 +90,61 @@ export async function fetchPageToFileWithRetry(
 }
 
 /**
+ * Download one page across an ordered list of mirror candidates, rotating
+ * through every remaining mirror within each retry round before sleeping.
+ * Permanently failing (non-transient) mirrors are dropped after their first
+ * failure so healthy fallback mirrors are reached on the first round.
+ */
+export async function fetchCandidatesToFileWithRetry(
+  candidates: string[],
+  headers: Record<string, string>,
+  destPath: string,
+  handlers: StreamProgressHandlers,
+  signal?: AbortSignal,
+  startIndex = 0,
+): Promise<{ bytes: number; url: string; index: number }> {
+  if (!candidates.length) throw new Error('No candidate URLs available for page download');
+  const attempts = 5;
+  const delays = [2000, 6000, 15000, 40000];
+  const offset = ((startIndex % candidates.length) + candidates.length) % candidates.length;
+  const ordered = candidates.map((_, idx) => {
+    const index = (offset + idx) % candidates.length;
+    return { index, url: candidates[index] };
+  });
+  const permanentFailures = new Set<number>();
+  let lastErr: unknown;
+
+  for (let round = 0; round < attempts; round++) {
+    let minRetryAfter: number | null = null;
+    for (const candidate of ordered) {
+      if (permanentFailures.has(candidate.index)) continue;
+      signal?.throwIfAborted();
+      try {
+        const bytes = await fetchToFileStreaming(candidate.url, { headers, signal }, destPath, handlers, 30_000, { rejectHtml: true });
+        return { bytes, url: candidate.url, index: candidate.index };
+      } catch (err) {
+        lastErr = err;
+        signal?.throwIfAborted();
+        if (!isTransientError(err)) {
+          permanentFailures.add(candidate.index);
+          continue;
+        }
+        const advised = errorRetryAfterMs(err);
+        if (advised !== null) {
+          minRetryAfter = minRetryAfter === null ? advised : Math.min(minRetryAfter, advised);
+        }
+      }
+    }
+    if (permanentFailures.size >= ordered.length || round >= attempts - 1) break;
+    const waitMs = minRetryAfter !== null
+      ? Math.max(minRetryAfter, 250)
+      : jitterDelay(delays[round] ?? delays[delays.length - 1]);
+    await sleep(waitMs, signal);
+  }
+  throw lastErr;
+}
+
+/**
  * Run an async operation, retrying transient failures with the given delays.
  * Non-transient errors are rethrown immediately. Used for gallery resolution
  * and anywhere a single request can hit a CDN blip.

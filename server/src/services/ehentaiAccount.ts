@@ -124,38 +124,90 @@ function parseAccess(raw: unknown): EhentaiSiteAccess {
   };
 }
 
-function loadRecord(): StoredRecord {
-  const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, STORE_KEY)).get();
-  if (!row) return { revision: 0, site: 'e-hentai', envelope: null, access: { eHentai: { ...untested }, exHentai: { ...untested } } };
-  let raw: unknown;
-  try {
-    raw = JSON.parse(row.valueJson);
-  } catch {
-    // Malformed stored record is a configuration error, not a silent reset:
-    // wiping it here would discard a user's only copy of the envelope.
-    throw new EhentaiAccountCryptoError();
+let cachedRecord: {
+  raw: string | null;
+  record: StoredRecord;
+  key?: Buffer;
+  session?: EhentaiSessionInput | null;
+} | null = null;
+
+function loadRecordEntry(): { record: StoredRecord; readDecrypted: () => EhentaiSessionInput | null } {
+  const row = getDb().select({ valueJson: schema.keyValueStore.valueJson })
+    .from(schema.keyValueStore)
+    .where(eq(schema.keyValueStore.key, STORE_KEY))
+    .get();
+  const raw = row?.valueJson ?? null;
+  if (cachedRecord && cachedRecord.raw === raw) {
+    const entry = cachedRecord;
+    return {
+      record: entry.record,
+      readDecrypted: () => {
+        if (!entry.record.envelope) return null;
+        const key = loadKey();
+        if (entry.key === key && entry.session !== undefined) return entry.session;
+        const session = decrypt(key, entry.record.envelope);
+        entry.key = key;
+        entry.session = session;
+        return session;
+      },
+    };
   }
-  const stored = raw as Record<string, unknown>;
-  const storedAccess = (stored.access as Record<string, unknown> | undefined) ?? {};
+  let record: StoredRecord;
+  if (raw === null) {
+    record = { revision: 0, site: 'e-hentai', envelope: null, access: { eHentai: { ...untested }, exHentai: { ...untested } } };
+  } else {
+    let parsedRaw: unknown;
+    try {
+      parsedRaw = JSON.parse(raw);
+    } catch {
+      // Malformed stored record is a configuration error, not a silent reset:
+      // wiping it here would discard a user's only copy of the envelope.
+      throw new EhentaiAccountCryptoError();
+    }
+    const stored = parsedRaw as Record<string, unknown>;
+    const storedAccess = (stored.access as Record<string, unknown> | undefined) ?? {};
+    record = {
+      revision: typeof stored.revision === 'number' && Number.isSafeInteger(stored.revision) && stored.revision >= 0 ? stored.revision : 0,
+      site: isEhentaiSite(stored.site) ? stored.site : 'e-hentai',
+      envelope: stored.envelope && typeof stored.envelope === 'object' && typeof (stored.envelope as Record<string, unknown>).iv === 'string'
+        && typeof (stored.envelope as Record<string, unknown>).tag === 'string'
+        && typeof (stored.envelope as Record<string, unknown>).ciphertext === 'string' ? stored.envelope as StoredRecord['envelope'] : null,
+      access: {
+        eHentai: parseAccess(storedAccess.eHentai),
+        exHentai: parseAccess(storedAccess.exHentai),
+      },
+    };
+  }
+  const entry: NonNullable<typeof cachedRecord> = { raw, record };
+  cachedRecord = entry;
   return {
-    revision: typeof stored.revision === 'number' && Number.isSafeInteger(stored.revision) && stored.revision >= 0 ? stored.revision : 0,
-    site: isEhentaiSite(stored.site) ? stored.site : 'e-hentai',
-    envelope: stored.envelope && typeof stored.envelope === 'object' && typeof (stored.envelope as Record<string, unknown>).iv === 'string'
-      && typeof (stored.envelope as Record<string, unknown>).tag === 'string'
-      && typeof (stored.envelope as Record<string, unknown>).ciphertext === 'string' ? stored.envelope as StoredRecord['envelope'] : null,
-    access: {
-      eHentai: parseAccess(storedAccess.eHentai),
-      exHentai: parseAccess(storedAccess.exHentai),
+    record,
+    readDecrypted: () => {
+      if (!entry.record.envelope) return null;
+      const key = loadKey();
+      if (entry.key === key && entry.session !== undefined) return entry.session;
+      const session = decrypt(key, entry.record.envelope);
+      entry.key = key;
+      entry.session = session;
+      return session;
     },
   };
 }
 
-function saveRecord(record: StoredRecord): void {
+function loadRecord(): StoredRecord {
+  return loadRecordEntry().record;
+}
+
+function saveRecord(record: StoredRecord, session?: EhentaiSessionInput | null): void {
+  const raw = JSON.stringify(record);
   getDb()
     .insert(schema.keyValueStore)
-    .values({ key: STORE_KEY, valueJson: JSON.stringify(record) })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(record) } })
+    .values({ key: STORE_KEY, valueJson: raw })
+    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: raw } })
     .run();
+  cachedRecord = session !== undefined
+    ? { raw, record, key: cachedKey ?? undefined, session }
+    : { raw, record };
 }
 
 function requireRevision(record: StoredRecord, expectedRevision: unknown): void {
@@ -193,25 +245,25 @@ function notifyAccountChange(): void {
 
 /** Public account view — never contains cookie values. */
 export function getEhentaiAccountView(): EhentaiAccountView {
-  const view = viewFrom(loadRecord());
-  return view;
+  const { record, readDecrypted } = loadRecordEntry();
+  return viewFrom(record, readDecrypted);
 }
 
 /** Server-side only: the decrypted session, or null when unconfigured.
  *  Throws EhentaiAccountCryptoError when the envelope cannot be decrypted. */
 export function getStoredSession(): EhentaiSessionInput | null {
-  const record = loadRecord();
+  const { record, readDecrypted } = loadRecordEntry();
   if (!record.envelope) return null;
-  return decrypt(loadKey(), record.envelope);
+  return readDecrypted();
 }
 
 /** Has a stored session (public flag; a crypto failure reports unconfigured
  *  rather than leaking secrets — the detailed error surfaces on save/test). */
 export function isAccountConfigured(): boolean {
-  const record = loadRecord();
+  const { record, readDecrypted } = loadRecordEntry();
   if (!record.envelope) return false;
   try {
-    return decrypt(loadKey(), record.envelope) !== null;
+    return readDecrypted() !== null;
   } catch {
     return false;
   }
@@ -233,20 +285,21 @@ export function getAccountRevision(): number {
  * so callers can map record and decryption failures separately.
  */
 export function getEhentaiAccountSnapshot(): { site: EhentaiSite; revision: number; readSession: () => EhentaiSessionInput | null } {
-  const record = loadRecord();
+  const { record, readDecrypted } = loadRecordEntry();
   return {
     site: record.site,
     revision: record.revision,
-    readSession: () => (record.envelope ? decrypt(loadKey(), record.envelope) : null),
+    readSession: readDecrypted,
   };
 }
 
-function viewFrom(record: StoredRecord): EhentaiAccountView {
+function viewFrom(record: StoredRecord, readDecrypted?: () => EhentaiSessionInput | null): EhentaiAccountView {
   let hasIgneous = false;
   let sessionError: string | null = null;
   if (record.envelope) {
     try {
-      hasIgneous = decrypt(loadKey(), record.envelope)?.igneous !== undefined;
+      const session = readDecrypted ? readDecrypted() : decrypt(loadKey(), record.envelope);
+      hasIgneous = session?.igneous !== undefined;
     } catch (error) {
       sessionError = error instanceof Error ? error.message : 'The stored E-Hentai session cannot be decrypted.';
     }
@@ -273,11 +326,12 @@ export interface EhentaiSaveInput {
 /** Save the site selection and/or a complete session replacement. Bumps the
  *  revision, persists, and invalidates account-scoped runtime state. */
 export function saveEhentaiAccount(input: EhentaiSaveInput): EhentaiAccountView {
-  const record = loadRecord();
+  const { record, readDecrypted } = loadRecordEntry();
   requireRevision(record, input.expectedRevision);
   const site = parseEhentaiSite(input.site, record.site);
   if (site.error) throw new EhentaiAccountError(site.error);
   let envelope = record.envelope;
+  let nextSession: EhentaiSessionInput | null | undefined;
   if (input.session !== undefined) {
     // Re-validate through the contract even though the route already did:
     // this is the persistence boundary.
@@ -287,6 +341,7 @@ export function saveEhentaiAccount(input: EhentaiSaveInput): EhentaiAccountView 
       igneous: input.session.igneous,
     });
     if (parsed.error || !parsed.session) throw new EhentaiAccountError(parsed.error ?? 'Invalid session');
+    nextSession = parsed.session;
     envelope = encrypt(loadKey(), parsed.session);
   }
   const next: StoredRecord = {
@@ -295,9 +350,9 @@ export function saveEhentaiAccount(input: EhentaiSaveInput): EhentaiAccountView 
     envelope,
     access: record.access,
   };
-  saveRecord(next);
+  saveRecord(next, nextSession);
   notifyAccountChange();
-  return viewFrom(next);
+  return viewFrom(next, nextSession !== undefined ? () => nextSession! : (next.envelope === record.envelope ? readDecrypted : undefined));
 }
 
 /** Remove the stored session, reset access evidence, advance the revision,
@@ -312,9 +367,9 @@ export function removeEhentaiAccount(expectedRevision: number): EhentaiAccountVi
     envelope: null,
     access: { eHentai: { ...untested }, exHentai: { ...untested } },
   };
-  saveRecord(next);
+  saveRecord(next, null);
   notifyAccountChange();
-  return viewFrom(next);
+  return viewFrom(next, () => null);
 }
 
 export interface EhentaiAccessUpdate {

@@ -9,6 +9,7 @@ import { cn, timeAgo, toIsoUtc, jobLabel } from '../lib/utils';
 import { isActive, hasWarnings, needsAttention } from '../lib/jobStatus';
 import { useMediaQuery } from '../lib/useMediaQuery';
 import { useNow } from '../lib/useNow';
+import { createdAgoIntervalMs, getJobHaystack } from '../lib/jobsPerf';
 import { toast } from '../lib/toast';
 
 type JobFilter = 'active' | 'failed' | 'done' | 'all';
@@ -265,9 +266,10 @@ function timestamp(value: string | null | undefined): string {
   return value ? DATE_TIME_FORMAT.format(new Date(toIsoUtc(value))) : '—';
 }
 
-/** Relative creation time on a shared coarse clock, so memoized rows stay current without re-rendering. */
+/** Relative creation time on an age-tiered shared clock, so old rows stop ticking cleanly. */
 function CreatedAgo({ job }: { job: Job }) {
-  useNow(10_000);
+  const interval = createdAgoIntervalMs(job.createdAt);
+  useNow(interval ?? 60_000, interval !== null);
   return <time className="text-xs tabular-nums text-muted" dateTime={toIsoUtc(job.createdAt)} title={`${timestamp(job.createdAt)}${job.startedAt ? ` · ${duration(job)}` : ''}`}>{timeAgo(job.createdAt)}</time>;
 }
 
@@ -359,11 +361,14 @@ interface RetryControl { onClick: () => void; pending: boolean; disabled: boolea
 /** What happened, what to do next, then (collapsed) the raw error. */
 function FailureCard({ job, retry }: { job: Job; retry?: RetryControl }) {
   const guidance = failureGuidance(job);
-  const now = useNow(1000, guidance.retryAfter !== null);
   const finished = job.finishedAt ? new Date(toIsoUtc(job.finishedAt)).getTime() : NaN;
+  const deadline = guidance.retryAfter !== null && Number.isFinite(finished)
+    ? finished + guidance.retryAfter * 1000
+    : null;
+  const now = useNow(1000, deadline !== null && Date.now() < deadline);
   // Capped at the server's own Retry-After so a skewed clock can never lock Retry for long.
-  const wait = guidance.retryAfter !== null && Number.isFinite(finished)
-    ? Math.min(guidance.retryAfter, Math.max(0, Math.ceil((finished + guidance.retryAfter * 1000 - now) / 1000)))
+  const wait = guidance.retryAfter !== null && deadline !== null
+    ? Math.min(guidance.retryAfter, Math.max(0, Math.ceil((deadline - now) / 1000)))
     : 0;
   const recoveryActions = job.type === 'restore-metadata' ? [] : job.recovery?.actions ?? [];
   const retryFirst = guidance.rateLimited || !recoveryActions.length;
@@ -414,8 +419,9 @@ function StopConfirm({ job, pending, onKeep, onStop }: { job: Job; pending: bool
 }
 
 function RunningFacts({ job }: { job: Job }) {
-  const now = useNow(1000);
   const { progressCurrent: current, progressTotal: total } = job;
+  const needsEta = job.status === 'running' && total > 0 && current > 0 && Boolean(job.startedAt);
+  const now = useNow(1000, needsEta);
   const percent = total > 0 ? Math.round((current / total) * 100) : null;
   const started = job.startedAt ? new Date(toIsoUtc(job.startedAt)).getTime() : NaN;
   const remaining = total > 0 && current > 0 && Number.isFinite(started) ? ((total - current) / current) * Math.max(1, (now - started) / 1000) : null;
@@ -436,6 +442,27 @@ function RunningFacts({ job }: { job: Job }) {
 
 /** Rendered log lines are capped (newest kept); copy/download still include every entry. */
 const LOG_RENDER_LIMIT = 1000;
+
+const formattedLogTime = new WeakMap<JobLog, string>();
+function formatLogTime(log: JobLog): string {
+  let cached = formattedLogTime.get(log);
+  if (cached === undefined) {
+    cached = TIME_FORMAT.format(new Date(toIsoUtc(log.createdAt)));
+    formattedLogTime.set(log, cached);
+  }
+  return cached;
+}
+
+const LogRow = React.memo(function LogRow({ log }: { log: JobLog }) {
+  const level = log.level === 'warning' ? 'warn' : log.level;
+  return (
+    <div className={cn('cv-log flex min-w-0 gap-2 rounded px-1', level === 'error' && 'bg-danger/10', level === 'warn' && 'bg-warning/10')}>
+      <time className="shrink-0 text-muted" dateTime={toIsoUtc(log.createdAt)}>{formatLogTime(log)}</time>
+      <span className={cn('w-12 shrink-0 uppercase', LOG_COLOR[log.level] ?? 'text-muted')}>{log.level}</span>
+      <span className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{log.message}</span>
+    </div>
+  );
+});
 
 const LogConsole = React.memo(function LogConsole({ logs, jobId }: { logs: JobLog[]; jobId: number }) {
   const ref = React.useRef<HTMLDivElement>(null);
@@ -488,16 +515,7 @@ const LogConsole = React.memo(function LogConsole({ logs, jobId }: { logs: JobLo
         if (!nearBottom.current) setFollow(false);
       }} className="h-64 overflow-y-auto overscroll-contain rounded-lg border border-border bg-background p-2 font-mono text-xs leading-relaxed">
         {visible.length > LOG_RENDER_LIMIT && <p className="p-1 text-muted">Showing the latest {LOG_RENDER_LIMIT.toLocaleString()} of {visible.length.toLocaleString()} entries. Copy or download for the full log.</p>}
-        {!visible.length ? <p className="p-1 text-muted">{logs.length ? 'No logs match this severity.' : 'No logs yet.'}</p> : (visible.length > LOG_RENDER_LIMIT ? visible.slice(-LOG_RENDER_LIMIT) : visible).map((log) => {
-          const level = log.level === 'warning' ? 'warn' : log.level;
-          return (
-            <div key={log.id} className={cn('flex min-w-0 gap-2 rounded px-1', level === 'error' && 'bg-danger/10', level === 'warn' && 'bg-warning/10')}>
-              <time className="shrink-0 text-muted" dateTime={toIsoUtc(log.createdAt)}>{TIME_FORMAT.format(new Date(toIsoUtc(log.createdAt)))}</time>
-              <span className={cn('w-12 shrink-0 uppercase', LOG_COLOR[log.level] ?? 'text-muted')}>{log.level}</span>
-              <span className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{log.message}</span>
-            </div>
-          );
-        })}
+        {!visible.length ? <p className="p-1 text-muted">{logs.length ? 'No logs match this severity.' : 'No logs yet.'}</p> : (visible.length > LOG_RENDER_LIMIT ? visible.slice(-LOG_RENDER_LIMIT) : visible).map((log) => <LogRow key={log.id} log={log} />)}
       </div>
       {!follow && <Button className={cn(controlClass, 'w-full')} variant="secondary" onClick={jumpToLatest}><ArrowDown className="h-4 w-4" /> Jump to latest and follow</Button>}
     </section>
@@ -532,7 +550,7 @@ const JobListRow = React.memo(function JobListRow({ job, selected, confirmingSto
   const retryable = job.status === 'failed' && job.type !== 'restore-metadata';
   return (
     <article
-      className={cn('grid min-w-0 cursor-pointer grid-cols-[2rem_minmax(0,1fr)] gap-x-3 gap-y-2 px-3 py-3 transition-colors duration-150 sm:grid-cols-[2.5rem_minmax(0,1fr)_auto] sm:gap-y-0 sm:px-4', confirmingStop ? 'sm:items-start' : 'sm:items-center', selected ? 'bg-primary/10 ring-1 ring-inset ring-primary/50' : job.status === 'failed' ? 'bg-danger/5 hover:bg-danger/10' : 'hover:bg-surface-2/50')}
+      className={cn('cv-row grid min-w-0 cursor-pointer grid-cols-[2rem_minmax(0,1fr)] gap-x-3 gap-y-2 px-3 py-3 transition-colors duration-150 sm:grid-cols-[2.5rem_minmax(0,1fr)_auto] sm:gap-y-0 sm:px-4', confirmingStop ? 'sm:items-start' : 'sm:items-center', selected ? 'bg-primary/10 ring-1 ring-inset ring-primary/50' : job.status === 'failed' ? 'bg-danger/5 hover:bg-danger/10' : 'hover:bg-surface-2/50')}
       onClick={(event) => { if (!(event.target as HTMLElement).closest('button, a, input, select, summary')) actions.open(job.id); }}
     >
       <JobCover job={job} />
@@ -557,6 +575,10 @@ const JobListRow = React.memo(function JobListRow({ job, selected, confirmingSto
   );
 });
 
+function buildJobHaystack(job: Job): string {
+  return `${job.id} ${jobLabel(job.type, job.payload)} ${job.type} ${jobTarget(job)} ${job.context?.series.map((series) => series.name).join(' ') ?? ''} ${job.context?.libraryName ?? ''} ${JOB_PURPOSE[job.type] ?? ''} ${jobOutcome(job)} ${job.errorMessage ?? ''} ${readableValue(job.result)}`;
+}
+
 export function Jobs() {
   const [searchParams, setSearchParams] = useSearchParams();
   const rawFilter = searchParams.get('filter');
@@ -576,7 +598,6 @@ export function Jobs() {
   const jobsQuery = useQuery({
     queryKey: ['jobs'],
     queryFn: api.jobs,
-    staleTime: 0,
     // Polled by the always-mounted SidebarStatus (jobsPollInterval); a second
     // interval here would run its own timer and double the requests.
   });
@@ -671,13 +692,12 @@ export function Jobs() {
   const deferredSearch = React.useDeferredValue(search);
   const query = deferredSearch.trim().toLowerCase();
   const searchActive = query !== '' || type !== 'all';
-  const haystacks = React.useMemo(() => new Map(jobs.map((job) => [job.id, `${job.id} ${jobLabel(job.type, job.payload)} ${job.type} ${jobTarget(job)} ${job.context?.series.map((series) => series.name).join(' ') ?? ''} ${job.context?.libraryName ?? ''} ${JOB_PURPOSE[job.type] ?? ''} ${jobOutcome(job)} ${job.errorMessage ?? ''} ${readableValue(job.result)}`.toLowerCase()])), [jobs]);
   const sorted = React.useMemo(() => jobs.filter((job) => {
-    return matchesFilter(job, filter) && (type === 'all' || job.type === type) && (!query || (haystacks.get(job.id) ?? '').includes(query));
+    return matchesFilter(job, filter) && (type === 'all' || job.type === type) && (!query || getJobHaystack(job, buildJobHaystack).includes(query));
   }).sort((a, b) => {
     const priority = (job: Job) => job.status === 'running' ? 0 : job.status === 'queued' ? 1 : needsAttention(job) ? 2 : 3;
     return priority(a) - priority(b) || b.id - a.id;
-  }), [jobs, filter, type, query, haystacks]);
+  }), [jobs, filter, type, query]);
   // While the pointer is over the list, rows keep their place instead of re-sorting under it.
   const frozen = hovering ? frozenOrder.current : null;
   const visibleJobs = React.useMemo(() => {

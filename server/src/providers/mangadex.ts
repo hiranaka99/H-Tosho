@@ -1,6 +1,7 @@
 import { BaseProvider } from './base.js';
 import type { MediaType, SeriesMetadata, SearchResult, VolumeCover } from './types.js';
 import type { ProviderArtist, ArtistSearchPage, ArtistWorksPage } from '../contracts/artists.js';
+import { mapLimit } from '../lib/http.js';
 
 /**
  * Every contentRating value in MangaDex's current enum. The API's default
@@ -453,19 +454,12 @@ class MangaDexProvider extends BaseProvider {
     return { items: await this.mapSearchResults(data.data), page, hasNextPage: data.offset + data.limit < data.total };
   }
 
-  async getSeriesMetadata(providerSeriesId: string, signal?: AbortSignal): Promise<SeriesMetadata> {
-    // Per-volume covers only need the series id and are independent of the
-    // detail fetch — start both together; a cover-collection failure must not
-    // sink the whole metadata fetch (series-level data is still usable).
-    const volumeCoversPromise = this.fetchVolumeCovers(providerSeriesId, { signal }).catch(() => undefined);
-    // MangaDex v5's relationship type is `cover_art` (not `cover`); including
-    // it inlines the main cover's fileName, so no /cover/{id} lookup is needed.
-    const data = await this.get<{ data: any }>(
-      `/manga/${providerSeriesId}?${this.includesParam(['cover_art', 'author', 'artist'])}`,
-      this.init(signal),
-    );
-    const m = data.data;
-    if (!m) throw new Error(`MangaDex: manga ${providerSeriesId} not found`);
+  private async mapMangaToSeriesMetadata(
+    m: any,
+    volumeCovers: VolumeCover[] | undefined,
+    signal?: AbortSignal,
+  ): Promise<SeriesMetadata> {
+    const providerSeriesId = String(m.id);
     const a = m.attributes ?? {};
     const title = this.pickTitle(a);
     // The matcher scores every known variant (autoMatch.bestVariant), so the
@@ -535,7 +529,6 @@ class MangaDexProvider extends BaseProvider {
         if (name && !people.includes(name)) people.push(name);
       }
     }
-    const volumeCovers = await volumeCoversPromise;
     signal?.throwIfAborted();
 
     // The series cover is always the Volume 1 cover when one exists; otherwise
@@ -572,6 +565,60 @@ class MangaDexProvider extends BaseProvider {
       url: `https://mangadex.org/title/${providerSeriesId}`,
       volumeCovers,
     };
+  }
+
+  async getSeriesMetadata(providerSeriesId: string, signal?: AbortSignal): Promise<SeriesMetadata> {
+    // Per-volume covers only need the series id and are independent of the
+    // detail fetch — start both together; a cover-collection failure must not
+    // sink the whole metadata fetch (series-level data is still usable).
+    const volumeCoversPromise = this.fetchVolumeCovers(providerSeriesId, { signal }).catch(() => undefined);
+    // MangaDex v5's relationship type is `cover_art` (not `cover`); including
+    // it inlines the main cover's fileName, so no /cover/{id} lookup is needed.
+    const data = await this.get<{ data: any }>(
+      `/manga/${providerSeriesId}?${this.includesParam(['cover_art', 'author', 'artist'])}`,
+      this.init(signal),
+    );
+    const m = data.data;
+    if (!m) throw new Error(`MangaDex: manga ${providerSeriesId} not found`);
+    const volumeCovers = await volumeCoversPromise;
+    return this.mapMangaToSeriesMetadata(m, volumeCovers, signal);
+  }
+
+  async getSeriesMetadataBatch(
+    providerSeriesIds: string[],
+    signal?: AbortSignal,
+    opts?: { skipVolumeCovers?: ReadonlySet<string> },
+  ): Promise<Map<string, SeriesMetadata>> {
+    const out = new Map<string, SeriesMetadata>();
+    const unique = [...new Set(providerSeriesIds.filter(Boolean))];
+    for (let i = 0; i < unique.length; i += 100) {
+      signal?.throwIfAborted();
+      const chunk = unique.slice(i, i + 100);
+      const params = new URLSearchParams({ limit: '100' });
+      for (const id of chunk) params.append('ids[]', id);
+      for (const rating of CONTENT_RATINGS) params.append('contentRating[]', rating);
+      for (const inc of ['cover_art', 'author', 'artist']) params.append('includes[]', inc);
+      const data = await this.get<{ data?: any[] }>(`/manga?${params.toString()}`, this.init(signal));
+      const rows = data.data ?? [];
+      const needCovers = rows
+        .map((m) => String(m?.id ?? ''))
+        .filter((id) => id && !opts?.skipVolumeCovers?.has(id));
+      const volumeCoverEntries = needCovers.length
+        ? await mapLimit(needCovers, 4, async (id) => {
+          const covers = await this.fetchVolumeCovers(id, { signal }).catch(() => undefined);
+          return [id, covers] as const;
+        })
+        : [];
+      signal?.throwIfAborted();
+      const volumeCoversById = new Map<string, VolumeCover[] | undefined>(volumeCoverEntries);
+      for (const m of rows) {
+        const mangaId = String(m?.id ?? '');
+        if (!mangaId) continue;
+        signal?.throwIfAborted();
+        out.set(mangaId, await this.mapMangaToSeriesMetadata(m, volumeCoversById.get(mangaId), signal));
+      }
+    }
+    return out;
   }
 }
 

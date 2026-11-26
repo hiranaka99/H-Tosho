@@ -4,7 +4,7 @@ import { getDownloaderSettings, type DownloaderSettings } from './settings.js';
 import { getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinSearchResult } from '../downloader/types.js';
 import { getRecommendationFeedback, normalizeArtist, normalizeTag } from './recommendationFeedback.js';
-import { findKnownLibraryDuplicateKeys } from './galleryDuplicates.js';
+import { createKnownLibraryDuplicateState, findKnownLibraryDuplicateKeys, type KnownLibraryDuplicateState } from './galleryDuplicates.js';
 
 type GalleryKey = { source: string; galleryId: string };
 
@@ -26,6 +26,8 @@ export interface EligibilityContext {
   settings: DownloaderSettings;
   mutedArtists: Set<string>;
   mutedTags: Set<string>;
+  /** Lazy snapshot of known library duplicate indexes, reused across passes in one roll. */
+  duplicateState?: KnownLibraryDuplicateState | null;
 }
 
 const keyOf = (row: GalleryKey) => `${row.source}:${row.galleryId}`;
@@ -142,7 +144,11 @@ export async function eligibleRecommendations<T extends DoujinSearchResult>(item
     return true;
   });
   // The duplicate index is the costliest check, so it only sees items that survived the cheap ones.
-  const libraryDuplicates = findKnownLibraryDuplicateKeys(passesLocalPolicy);
+  let libraryDuplicates = new Set<string>();
+  if (passesLocalPolicy.length > 0) {
+    if (ctx.duplicateState === undefined) ctx.duplicateState = createKnownLibraryDuplicateState();
+    libraryDuplicates = findKnownLibraryDuplicateKeys(passesLocalPolicy, ctx.duplicateState);
+  }
   const allowed = libraryDuplicates.size
     ? passesLocalPolicy.filter((item) => !libraryDuplicates.has(`${item.source}:${item.galleryId}`))
     : passesLocalPolicy;

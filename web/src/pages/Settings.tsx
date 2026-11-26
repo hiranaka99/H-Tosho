@@ -3,10 +3,10 @@ import { useLocation, useSearchParams } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { GripVertical, Plug, FolderTree, ListOrdered, SlidersHorizontal, Bell, Timer, CheckCircle2, XCircle, AlertTriangle, Loader2, Download, X, Plus, ArrowUp, ArrowDown, LockKeyhole, Monitor, Moon, Sun, Palette, KeyRound, Key, RotateCcw, Save } from 'lucide-react';
 import { api, ApiError, type Settings as SettingsType, type ProviderInfo, type DownloaderSettings, type LibraryPathMapping, type EhentaiSite, type EhentaiSessionInput, type EhentaiSiteAccess } from '../lib/api';
-import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Badge, PageHeader, ErrorState, SegmentedTabs, SegmentedControl, TabPanel, Disclosure } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, Badge, PageHeader, ErrorState, SegmentedTabs, SegmentedControl, TabPanel, Disclosure, Skeleton } from '../components/ui';
 import { Switch } from '../components/switch';
 import { ConfirmDialog } from '../components/dialog';
-import { AppUpdatesCard } from '../components/AppUpdatesCard';
+const AppUpdatesCard = React.lazy(() => import('../components/AppUpdatesCard').then((m) => ({ default: m.AppUpdatesCard })));
 import { cn, timeAgo } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { useAuth } from '../lib/AuthContext';
@@ -656,7 +656,7 @@ function BannedTagsEditor({ id, label, hint, value, onChange, draft, setDraft }:
           {value.map((tag) => (
             <li key={tag} className="inline-flex items-center gap-1 rounded-full border border-border-2 bg-surface-2 pl-3 pr-1 text-xs font-medium text-foreground">
               {tag}
-              <button type="button" onClick={() => onChange(value.filter((value) => value !== tag))} className="flex h-7 w-7 items-center justify-center rounded-full text-muted hover:bg-border/60 hover:text-foreground" aria-label={`Remove ${tag}`}><X className="h-3.5 w-3.5" /></button>
+              <button type="button" onClick={() => onChange(value.filter((value) => value !== tag))} className="ui-button-icon flex h-7 w-7 items-center justify-center rounded-full text-muted hover:bg-border/60 hover:text-foreground" aria-label={`Remove ${tag}`}><X className="h-3.5 w-3.5" /></button>
             </li>
           ))}
         </ul>
@@ -1064,7 +1064,7 @@ export function Settings() {
     if (legacyTab) setSearchParams(previous => { const params = new URLSearchParams(previous); params.set('tab', legacyTab); return params; }, { replace: true });
   }, [legacyTab, setSearchParams]);
   React.useEffect(() => {
-    if (!s || !location.hash) return;
+    if (!location.hash) return;
     const timer = window.setTimeout(() => {
       const section = document.getElementById(decodeURIComponent(location.hash.slice(1)));
       // Only sections on the visible tab; hidden panels cannot take focus.
@@ -1089,16 +1089,12 @@ export function Settings() {
     }, 120);
   }, [setTab]);
 
-  if (settings.isError) {
-    return <ErrorState title="Could not load settings" description={settings.error instanceof Error ? settings.error.message : String(settings.error)} onRetry={() => void settings.refetch()} />;
-  }
-  if (!s) {
-    return (
-      <div role="status" className="flex items-center justify-center gap-2 py-24 text-muted">
-        <Loader2 className="h-4 w-4 animate-spin" /> Loading settings…
-      </div>
-    );
-  }
+  const settingsError = settings.error instanceof Error ? settings.error.message : String(settings.error);
+  const renderSettingsCard = (render: (resolved: SettingsType) => React.ReactNode) => {
+    if (s) return render(s);
+    if (settings.isError) return <ErrorState title="Could not load settings" description={settingsError} onRetry={() => void settings.refetch()} />;
+    return <Skeleton className="h-44 w-full rounded-xl" />;
+  };
 
   const kavitaConnected = Boolean(kavita.data?.configured && !kavita.data.error);
   return (
@@ -1111,10 +1107,10 @@ export function Settings() {
           {mounted('kavita') && <div hidden={tab !== 'kavita'} className="flex flex-col gap-4">
             <KavitaConnectionCard />
             <KavitaLibraryFoldersCard connected={kavitaConnected} />
-            <AutoScanCard hours={s.pollIntervalHours} refreshDays={s.matchRefreshIntervalDays ?? 7} />
+            {renderSettingsCard((resolved) => <AutoScanCard hours={resolved.pollIntervalHours} refreshDays={resolved.matchRefreshIntervalDays ?? 7} />)}
           </div>}
           {mounted('sources') && <div hidden={tab !== 'sources'} className="flex flex-col gap-4">
-            <MetadataProvidersCard savedOrder={s.priorities} />
+            {renderSettingsCard((resolved) => <MetadataProvidersCard savedOrder={resolved.priorities} />)}
             <EhentaiAccountCard />
             <NhentaiCard />
           </div>}
@@ -1122,11 +1118,13 @@ export function Settings() {
             <DownloaderSettingsCard />
           </div>}
           {mounted('notifications') && <div hidden={tab !== 'notifications'} className="flex flex-col gap-4">
-            <NotificationsCard saved={s.notifications} refetch={settings.refetch} />
+            {renderSettingsCard((resolved) => <NotificationsCard saved={resolved.notifications} refetch={settings.refetch} />)}
           </div>}
           {mounted('account') && <div hidden={tab !== 'account'} className="flex flex-col gap-4">
             <AppearanceCard />
-            <AppUpdatesCard />
+            <React.Suspense fallback={<Skeleton className="h-40 w-full rounded-xl" />}>
+              <AppUpdatesCard />
+            </React.Suspense>
             <AccountSettingsCard />
           </div>}
         </TabPanel>

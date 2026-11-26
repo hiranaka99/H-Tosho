@@ -1,10 +1,10 @@
 import path from 'node:path';
-import { desc, inArray } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, sql } from 'drizzle-orm';
 import type { DownloadLibraryState } from '../contracts/downloads.js';
 import { getDb, schema } from '../db/index.js';
 import { jobQueue } from '../jobs/queue.js';
 import { readJobPayload } from '../jobs/storage.js';
-import { listMatchSuggestions } from './matchSuggestions.js';
+import { pendingMatchSuggestionSeriesIds } from './matchSuggestions.js';
 
 /** Recent import jobs are enough: older downloads settled long ago and keep their newest job. */
 const JOB_SCAN_LIMIT = 2000;
@@ -12,6 +12,61 @@ const JOB_SCAN_LIMIT = 2000;
 /** Discovery paths compare case-insensitively on Windows, exactly elsewhere. */
 function pathKey(value: string): string {
   return process.platform === 'win32' ? value.toLowerCase() : value;
+}
+
+let scanJobCache: { count: number; maxId: number; byPath: Map<string, number> } | null = null;
+
+function getScanDownloadedJobIndex(): Map<string, number> {
+  const db = getDb();
+  const stats = db.select({
+    count: sql<number>`count(*)`,
+    maxId: sql<number>`coalesce(max(${schema.jobs.id}), 0)`,
+  }).from(schema.jobs).where(eq(schema.jobs.type, 'scan-downloaded')).get();
+  const count = Number(stats?.count ?? 0);
+  const maxId = Number(stats?.maxId ?? 0);
+
+  if (scanJobCache && scanJobCache.count === count && scanJobCache.maxId === maxId) {
+    return scanJobCache.byPath;
+  }
+
+  if (scanJobCache && count > scanJobCache.count && maxId > scanJobCache.maxId) {
+    const added = db.select({ id: schema.jobs.id, payloadJson: schema.jobs.payloadJson })
+      .from(schema.jobs)
+      .where(and(eq(schema.jobs.type, 'scan-downloaded'), gt(schema.jobs.id, scanJobCache.maxId)))
+      .orderBy(desc(schema.jobs.id))
+      .limit(JOB_SCAN_LIMIT)
+      .all();
+    if (added.length === count - scanJobCache.count) {
+      // Iterate oldest-to-newest (reverse) so newer job IDs overwrite older ones, matching full-scan newest-first behavior.
+      for (let i = added.length - 1; i >= 0; i--) {
+        const row = added[i];
+        try {
+          const payload = JSON.parse(row.payloadJson) as { path?: unknown };
+          if (typeof payload.path === 'string') scanJobCache.byPath.set(pathKey(payload.path), row.id);
+        } catch { /* a malformed payload has no path to match */ }
+      }
+      scanJobCache.count = count;
+      scanJobCache.maxId = maxId;
+      return scanJobCache.byPath;
+    }
+  }
+
+  const byPath = new Map<string, number>();
+  const jobRows = db.select({ id: schema.jobs.id, payloadJson: schema.jobs.payloadJson })
+    .from(schema.jobs)
+    .where(eq(schema.jobs.type, 'scan-downloaded'))
+    .orderBy(desc(schema.jobs.id))
+    .limit(JOB_SCAN_LIMIT)
+    .all();
+  for (const row of jobRows) {
+    try {
+      const payload = JSON.parse(row.payloadJson) as { path?: unknown };
+      // Rows arrive newest first; the first job seen for a path wins.
+      if (typeof payload.path === 'string' && !byPath.has(pathKey(payload.path))) byPath.set(pathKey(payload.path), row.id);
+    } catch { /* a malformed payload has no path to match */ }
+  }
+  scanJobCache = { count, maxId, byPath };
+  return byPath;
 }
 
 /**
@@ -35,21 +90,10 @@ export function downloadLibraryStates(taskIds: number[]): Record<number, Downloa
   if (!tasks.length) return {};
 
   // Newest import job per discovery path: a retry supersedes the older attempt.
-  // Indexed once, and only when some task is not owned by a merge job.
+  // Indexed incrementally, and only consulted when a task is not owned by a merge job.
   let byPath: Map<string, number> | null = null;
   const jobFor = (target: string): number | undefined => {
-    if (!byPath) {
-      byPath = new Map();
-      const jobRows = db.select({ id: schema.jobs.id, payloadJson: schema.jobs.payloadJson }).from(schema.jobs)
-        .where(inArray(schema.jobs.type, ['scan-downloaded'])).orderBy(desc(schema.jobs.id)).limit(JOB_SCAN_LIMIT).all();
-      for (const row of jobRows) {
-        try {
-          const payload = JSON.parse(row.payloadJson) as { path?: unknown };
-          // Rows arrive newest first; the first job seen for a path wins.
-          if (typeof payload.path === 'string' && !byPath.has(pathKey(payload.path))) byPath.set(pathKey(payload.path), row.id);
-        } catch { /* a malformed payload has no path to match */ }
-      }
-    }
+    byPath ??= getScanDownloadedJobIndex();
     return byPath.get(pathKey(path.resolve(target)));
   };
 
@@ -69,13 +113,23 @@ export function downloadLibraryStates(taskIds: number[]): Record<number, Downloa
     stateJson: schema.jobs.stateJson,
   }).from(schema.jobs).where(inArray(schema.jobs.id, [...new Set(jobIdByTask.values())])).all().map((row) => [row.id, row]));
 
-  let reviewIds: Set<number> | null = null;
-  const pendingReview = (seriesIds: number[]): boolean => {
-    if (!seriesIds.length) return false;
-    try { reviewIds ??= new Set(listMatchSuggestions().map((item) => item.seriesId)); }
+  const pendingSeries = new Map<number, Extract<DownloadLibraryState, { state: 'imported' }>['series']>();
+  const allSeriesIds: number[] = [];
+  for (const task of tasks) {
+    const jobId = jobIdByTask.get(task.id);
+    const job = jobId !== undefined ? jobs.get(jobId) : undefined;
+    if (!job || job.status !== 'completed') continue;
+    const payload = readJobPayload(job.type, job.payloadJson, job.stateJson).payload;
+    const series = jobQueue.contextForPayload(payload)?.series ?? [];
+    pendingSeries.set(task.id, series);
+    for (const item of series) allSeriesIds.push(item.id);
+  }
+
+  let reviewIds: Set<number> = new Set();
+  if (allSeriesIds.length) {
+    try { reviewIds = pendingMatchSuggestionSeriesIds(allSeriesIds); }
     catch { reviewIds = new Set(); }
-    return seriesIds.some((id) => reviewIds!.has(id));
-  };
+  }
 
   const result: Record<number, DownloadLibraryState> = {};
   for (const task of tasks) {
@@ -86,10 +140,8 @@ export function downloadLibraryStates(taskIds: number[]): Record<number, Downloa
     if (job.status === 'queued' || job.status === 'running') {
       result[task.id] = { state: 'importing', jobId };
     } else if (job.status === 'completed') {
-      // The same context projection jobQueue.get() exposes as `job.context`.
-      const payload = readJobPayload(job.type, job.payloadJson, job.stateJson).payload;
-      const series = jobQueue.contextForPayload(payload)?.series ?? [];
-      result[task.id] = { state: 'imported', jobId, series, review: pendingReview(series.map((item) => item.id)) };
+      const series = pendingSeries.get(task.id) ?? [];
+      result[task.id] = { state: 'imported', jobId, series, review: series.some((item) => reviewIds.has(item.id)) };
     } else {
       result[task.id] = { state: 'failed', jobId, message: job.status === 'cancelled' ? 'The import task was cancelled.' : job.errorMessage };
     }

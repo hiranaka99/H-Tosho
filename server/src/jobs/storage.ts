@@ -2,7 +2,7 @@ import { parseJobCommand, type JobPayload, type JobContext } from '../contracts/
 import type { MergeProtectionState } from '../contracts/mergeProtection.js';
 import { PROTECTABLE_FIELDS } from '../contracts/metadata.js';
 import { getDb, schema } from '../db/index.js';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const id = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 function readObject(json: string): Record<string, unknown> {
@@ -67,14 +67,20 @@ export function readJobPayload(type: unknown, json: string, stateJson = '{}'): {
 /** Preserve independent checkpoints and complete every retry's retained publication evidence atomically. */
 export function persistMergeState(jobId:number,update:Pick<JobPayload,'mergeDownloadIds'|'sourceFiles'|'chapters'|'mergeProtection'>):void {
   const db=getDb();
-  const row=db.select().from(schema.jobs).where(eq(schema.jobs.id,jobId)).get();
+  const row=db.select({type:schema.jobs.type,stateJson:schema.jobs.stateJson}).from(schema.jobs).where(eq(schema.jobs.id,jobId)).get();
   if (!row || row.type!=='merge-series') return;
   db.transaction(()=>{
     db.update(schema.jobs).set({stateJson:JSON.stringify({...readObject(row.stateJson),...update})}).where(eq(schema.jobs.id,jobId)).run();
     const protection=update.mergeProtection;
     if (!protection?.completedTargetSeriesId || !protection.rootJobId) return;
     const moved=new Map((protection.moves ?? []).filter(move=>move.status==='published').map(move=>[move.source,move.destination]));
-    for (const sibling of db.select().from(schema.jobs).where(eq(schema.jobs.type,'merge-series')).all()) {
+    const siblings = db.select({
+      id: schema.jobs.id, type: schema.jobs.type, payloadJson: schema.jobs.payloadJson, stateJson: schema.jobs.stateJson,
+    }).from(schema.jobs).where(and(
+      eq(schema.jobs.type, 'merge-series'),
+      sql`json_valid(${schema.jobs.stateJson}) AND json_extract(${schema.jobs.stateJson}, '$.mergeProtection.rootJobId') = ${protection.rootJobId}`,
+    )).all();
+    for (const sibling of siblings) {
       if (sibling.id===jobId) continue;
       const saved=readObject(sibling.stateJson),decoded=readJobPayload(sibling.type,sibling.payloadJson,sibling.stateJson).payload,previous=decoded.mergeProtection;
       if (!previous || previous.rootJobId!==protection.rootJobId || previous.connectionKey!==protection.connectionKey) continue;

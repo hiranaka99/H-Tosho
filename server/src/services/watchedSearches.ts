@@ -65,6 +65,24 @@ type WatchRow = typeof schema.watchedSearches.$inferSelect;
 const ownedWatches = new Set<number>();
 const SCHEDULE_BATCH_SIZE = 20;
 const SCHEDULE_SWEEP_MS = 15_000;
+const scheduleListeners = new Set<() => void>();
+
+function notifyWatchedScheduleChanged(): void {
+  for (const listener of scheduleListeners) {
+    try {
+      listener();
+    } catch {
+      /* listener errors must not break watch mutations */
+    }
+  }
+}
+
+export function onWatchedScheduleChange(listener: () => void): () => void {
+  scheduleListeners.add(listener);
+  return () => {
+    scheduleListeners.delete(listener);
+  };
+}
 
 export class FollowingError extends Error {
   constructor(message: string, readonly status: 400 | 404 | 409) { super(message); }
@@ -120,6 +138,7 @@ export function addWatchedSearch(source: DoujinSource, query: string): WatchedSe
   const minutes = getWatchedSearchIntervalMinutes();
   db.insert(schema.watchedSearches).values({ source, query, nextCheckAt: minutes > 0 ? new Date(Date.now() + minutes * 60_000).toISOString() : null }).onConflictDoNothing().run();
   const row = db.select().from(schema.watchedSearches).where(and(eq(schema.watchedSearches.source, source), eq(schema.watchedSearches.query, query))).get()!;
+  notifyWatchedScheduleChanged();
   return getWatchedSearch(row.id)!;
 }
 
@@ -133,6 +152,7 @@ export function updateWatchedSearch(id: number, patch: WatchedSearchPatch): Watc
   if (patch.intervalMinutes !== undefined && patch.intervalMinutes !== null && !FOLLOWING_INTERVAL_MINUTES.includes(patch.intervalMinutes)) throw new FollowingError('Invalid watch interval.', 400);
   if (patch.notificationMode !== undefined && !NOTIFICATION_MODES.includes(patch.notificationMode)) throw new FollowingError('Invalid notification mode.', 400);
   const db = getDb();
+  let changedSchedule = false;
   db.transaction(tx => {
     const row = tx.select().from(schema.watchedSearches).where(eq(schema.watchedSearches.id, id)).get();
     if (!row) throw new FollowingError('Watched search not found.', 404);
@@ -141,6 +161,7 @@ export function updateWatchedSearch(id: number, patch: WatchedSearchPatch): Watc
     const pausedAt = patch.paused === undefined ? row.pausedAt : patch.paused ? row.pausedAt ?? new Date().toISOString() : null;
     const intervalMinutes = patch.intervalMinutes === undefined ? row.intervalMinutes : patch.intervalMinutes;
     const reschedule = pausedAt !== row.pausedAt || intervalMinutes !== row.intervalMinutes;
+    changedSchedule = reschedule;
     const minutes = effectiveFollowingInterval(getWatchedSearchIntervalMinutes(), pausedAt, intervalMinutes as FollowingInterval | null);
     tx.update(schema.watchedSearches).set({
       revision: row.revision + 1, pausedAt, intervalMinutes,
@@ -150,13 +171,14 @@ export function updateWatchedSearch(id: number, patch: WatchedSearchPatch): Watc
       ...(reschedule ? { nextCheckAt: minutes > 0 ? new Date(Date.now() + minutes * 60_000).toISOString() : null } : {}),
     }).where(and(eq(schema.watchedSearches.id, id), eq(schema.watchedSearches.revision, patch.expectedRevision))).run();
   });
+  if (changedSchedule) notifyWatchedScheduleChanged();
   return getWatchedSearch(id)!;
 }
 
 /** Remove monitoring and seen IDs while retaining readable discovery/review history. */
 export function removeWatchedSearch(id: number, expectedRevision: number): boolean {
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new FollowingError('Provide expectedRevision.', 400);
-  return getDb().transaction(tx => {
+  const removed = getDb().transaction(tx => {
     const row = tx.select().from(schema.watchedSearches).where(eq(schema.watchedSearches.id, id)).get();
     if (!row) return false;
     if (row.revision !== expectedRevision) throw new FollowingError('Watch changed. Refresh and try again.', 409);
@@ -165,6 +187,8 @@ export function removeWatchedSearch(id: number, expectedRevision: number): boole
     tx.delete(schema.watchedSearches).where(eq(schema.watchedSearches.id, id)).run();
     return true;
   });
+  if (removed) notifyWatchedScheduleChanged();
+  return removed;
 }
 
 export function listWatchedSearchFolders(): WatchedSearchFolder[] {
@@ -236,6 +260,7 @@ export function initializeWatchedSchedule(now = Date.now()): void {
       }
     }
   });
+  notifyWatchedScheduleChanged();
 }
 
 export function rescheduleWatchedSearches(now = Date.now()): void {
@@ -246,6 +271,7 @@ export function rescheduleWatchedSearches(now = Date.now()): void {
       tx.update(schema.watchedSearches).set({ nextCheckAt: effective > 0 ? new Date(now + effective * 60_000).toISOString() : null }).where(eq(schema.watchedSearches.id, row.id)).run();
     }
   });
+  notifyWatchedScheduleChanged();
 }
 
 export function dueWatchedSearchIds(now = Date.now(), limit = SCHEDULE_BATCH_SIZE): number[] {
@@ -254,6 +280,24 @@ export function dueWatchedSearchIds(now = Date.now(), limit = SCHEDULE_BATCH_SIZ
   return getDb().select({ id: table.id }).from(table).where(and(sql`${table.pausedAt} IS NULL`, lte(table.nextCheckAt, new Date(now).toISOString()),
     ownedWatches.size ? notInArray(table.id, [...ownedWatches]) : undefined))
     .orderBy(asc(table.nextCheckAt), asc(table.id)).limit(Math.min(limit, FOLLOWING_TARGET_LIMIT)).all().map(row => row.id);
+}
+
+/** Epoch ms of the earliest due/upcoming watch check, or null when automatic checks are inactive. */
+export function nextWatchedSearchDueAt(now = Date.now()): number | null {
+  if (getWatchedSearchIntervalMinutes() === 0) return null;
+  const table = schema.watchedSearches;
+  const row = getDb().select({ nextCheckAt: table.nextCheckAt }).from(table)
+    .where(and(
+      sql`${table.pausedAt} IS NULL`,
+      sql`${table.nextCheckAt} IS NOT NULL`,
+      ownedWatches.size ? notInArray(table.id, [...ownedWatches]) : undefined,
+    ))
+    .orderBy(asc(table.nextCheckAt))
+    .limit(1)
+    .get();
+  if (!row?.nextCheckAt) return null;
+  const ms = Date.parse(row.nextCheckAt);
+  return Number.isFinite(ms) ? Math.max(now, ms) : now;
 }
 
 /**
@@ -350,8 +394,11 @@ export async function checkWatchedSearches(
       const byId = new Map(results.map(gallery => [gallery.galleryId, gallery]));
       const ids = [...byId.keys()];
       const firstRun = latest.lastCheckedAt === null;
-      const seenIds = new Set(db.select({ galleryId: schema.watchedSearchSeen.galleryId }).from(schema.watchedSearchSeen)
-        .where(eq(schema.watchedSearchSeen.searchId, id)).all().map(row => row.galleryId));
+      const seenIds = ids.length
+        ? new Set(db.select({ galleryId: schema.watchedSearchSeen.galleryId }).from(schema.watchedSearchSeen)
+          .where(and(eq(schema.watchedSearchSeen.searchId, id), inArray(schema.watchedSearchSeen.galleryId, ids)))
+          .all().map(row => row.galleryId))
+        : new Set<string>();
       const newIds = diffSeenResults(firstRun, ids, seenIds);
       const freshIds = newIds.filter(galleryId => !isStaleUpload(byId.get(galleryId)?.uploadedAt, now));
       const lastResults: WatchedSearchResultItem[] = freshIds.slice(0, LAST_RESULTS_MAX).map(galleryId => {
@@ -427,69 +474,87 @@ export async function checkWatchedSearches(
     else lanes.set(source, [id]);
   }
   let laneFailed = false;
-  const settled = await Promise.allSettled([...lanes.values()].map(async (lane) => {
-    for (const id of lane) {
-      // One lane's failure or cancellation stops the others at their next target.
-      if (laneFailed) return;
+  try {
+    const settled = await Promise.allSettled([...lanes.values()].map(async (lane) => {
+      for (const id of lane) {
+        // One lane's failure or cancellation stops the others at their next target.
+        if (laneFailed) return;
+        try {
+          await checkTarget(id);
+        } catch (error) {
+          laneFailed = true;
+          throw error;
+        }
+      }
+    }));
+    const failure = settled.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+    if (failure) throw failure.reason;
+    for (const id of targets) {
+      for (const found of foundByTarget.get(id) ?? []) {
+        const candidate = notifications.get(found.key) ?? { gallery: found.gallery, source: found.source, settings: getNotificationSettings(), watches: [] };
+        candidate.watches.push(found.watch);
+        notifications.set(found.key, candidate);
+      }
+    }
+    // Finds that improve on an owned copy (uncensored/decensored editions) are
+    // recorded on the discovery so Home, the feed and Discord can call them out.
+    const betterEditions = await recordBetterEditions([...freshFinds.values()], log);
+    result.betterEditions = betterEditions.size;
+    // Discoveries and check results are committed before Discord is contacted.
+    // The normal Task records outcomes; there is no delivery queue or backlog replay.
+    for (const candidate of notifications.values()) {
+      if (isCancelled?.()) throw new JobCancelled();
+      const watchIds = [...new Set(candidate.watches.map(snapshot => snapshot.id))];
+      const watchesById = new Map<number, { id: number; revision: number; pausedAt: string | null; notificationMode: string; displayName: string | null; query: string }>();
+      for (let i = 0; i < watchIds.length; i += 500) {
+        for (const watch of db.select({
+          id: table.id,
+          revision: table.revision,
+          pausedAt: table.pausedAt,
+          notificationMode: table.notificationMode,
+          displayName: table.displayName,
+          query: table.query,
+        }).from(table).where(inArray(table.id, watchIds.slice(i, i + 500))).all()) {
+          watchesById.set(watch.id, watch);
+        }
+      }
+      const current = candidate.watches.flatMap(snapshot => {
+        const watch = watchesById.get(snapshot.id);
+        return watch && watch.revision === snapshot.revision && watch.pausedAt === null && watch.notificationMode === 'immediate' ? [watch] : [];
+      });
+      if (!current.length) continue;
+      const discoveries = schema.watchedSearchNew;
+      const identity = and(eq(discoveries.source, candidate.source), eq(discoveries.galleryId, candidate.gallery.galleryId));
+      const claimed = db.transaction(tx => {
+        if (tx.select({ id: discoveries.id }).from(discoveries).where(and(identity, sql`${discoveries.notificationAttemptedAt} IS NOT NULL`)).get()) return false;
+        return tx.update(discoveries).set({ notificationAttemptedAt: new Date(Date.now()).toISOString() }).where(identity).run().changes > 0;
+      });
+      if (!claimed) continue;
+      const gallery = candidate.gallery;
+      const label = [...new Set(current.map(watch => watch.displayName ?? watch.query))].join(', ');
+      const escape = (value: string, limit: number) => value.slice(0, limit).replace(/[\\`*_~\[\]()<>]/g, '\\$&');
+      const title = escape(gallery.title, 100);
+      const url = gallery.url && /^https?:\/\//i.test(gallery.url) ? gallery.url.replace(/[()\s]/g, encodeURIComponent) : null;
+      const better = betterEditions.get(`${candidate.source}:${gallery.galleryId}`);
       try {
-        await checkTarget(id);
+        const outcome = await notify({ title: better ? 'Better edition in Following' : 'New in Following', success: true,
+          description: `${better ? 'Uncensored edition of a gallery you own' : '1 new gallery'}\n${url && url.length < 300 ? `[${title}](${url})` : title}${better ? `\nYou own: ${escape(better.title, 160)}` : ''}\nVia ${escape(label, 180)}` },
+        { revision: candidate.settings.revision, destinationIdentity: candidate.settings.destinationIdentity });
+        if (outcome.status === 'delivered') {
+          result.notified++;
+          log('success', `Discord notification sent for ${gallery.title} · ${label}`);
+        }
       } catch (error) {
-        laneFailed = true;
-        throw error;
+        const unknown = !(error instanceof NotificationFailure) || error.outcome === 'unknown';
+        if (unknown) result.notificationUnknown++; else result.notificationFailed++;
+        log('warn', `Discord ${unknown ? 'delivery uncertain' : 'notification failed'} for ${gallery.title}: ${error instanceof NotificationFailure ? error.message : 'No delivery confirmation.'}`);
       }
     }
-  }));
-  const failure = settled.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
-  if (failure) throw failure.reason;
-  for (const id of targets) {
-    for (const found of foundByTarget.get(id) ?? []) {
-      const candidate = notifications.get(found.key) ?? { gallery: found.gallery, source: found.source, settings: getNotificationSettings(), watches: [] };
-      candidate.watches.push(found.watch);
-      notifications.set(found.key, candidate);
-    }
+    onProgress?.(targets.length, targets.length);
+    return result;
+  } finally {
+    notifyWatchedScheduleChanged();
   }
-  // Finds that improve on an owned copy (uncensored/decensored editions) are
-  // recorded on the discovery so Home, the feed and Discord can call them out.
-  const betterEditions = await recordBetterEditions([...freshFinds.values()], log);
-  result.betterEditions = betterEditions.size;
-  // Discoveries and check results are committed before Discord is contacted.
-  // The normal Task records outcomes; there is no delivery queue or backlog replay.
-  for (const candidate of notifications.values()) {
-    if (isCancelled?.()) throw new JobCancelled();
-    const current = candidate.watches.flatMap(snapshot => {
-      const watch = db.select().from(table).where(eq(table.id, snapshot.id)).get();
-      return watch && watch.revision === snapshot.revision && watch.pausedAt === null && watch.notificationMode === 'immediate' ? [watch] : [];
-    });
-    if (!current.length) continue;
-    const discoveries = schema.watchedSearchNew;
-    const identity = and(eq(discoveries.source, candidate.source), eq(discoveries.galleryId, candidate.gallery.galleryId));
-    const claimed = db.transaction(tx => {
-      if (tx.select({ id: discoveries.id }).from(discoveries).where(and(identity, sql`${discoveries.notificationAttemptedAt} IS NOT NULL`)).get()) return false;
-      return tx.update(discoveries).set({ notificationAttemptedAt: new Date(Date.now()).toISOString() }).where(identity).run().changes > 0;
-    });
-    if (!claimed) continue;
-    const gallery = candidate.gallery;
-    const label = [...new Set(current.map(watch => watch.displayName ?? watch.query))].join(', ');
-    const escape = (value: string, limit: number) => value.slice(0, limit).replace(/[\\`*_~\[\]()<>]/g, '\\$&');
-    const title = escape(gallery.title, 100);
-    const url = gallery.url && /^https?:\/\//i.test(gallery.url) ? gallery.url.replace(/[()\s]/g, encodeURIComponent) : null;
-    const better = betterEditions.get(`${candidate.source}:${gallery.galleryId}`);
-    try {
-      const outcome = await notify({ title: better ? 'Better edition in Following' : 'New in Following', success: true,
-        description: `${better ? 'Uncensored edition of a gallery you own' : '1 new gallery'}\n${url && url.length < 300 ? `[${title}](${url})` : title}${better ? `\nYou own: ${escape(better.title, 160)}` : ''}\nVia ${escape(label, 180)}` },
-      { revision: candidate.settings.revision, destinationIdentity: candidate.settings.destinationIdentity });
-      if (outcome.status === 'delivered') {
-        result.notified++;
-        log('success', `Discord notification sent for ${gallery.title} · ${label}`);
-      }
-    } catch (error) {
-      const unknown = !(error instanceof NotificationFailure) || error.outcome === 'unknown';
-      if (unknown) result.notificationUnknown++; else result.notificationFailed++;
-      log('warn', `Discord ${unknown ? 'delivery uncertain' : 'notification failed'} for ${gallery.title}: ${error instanceof NotificationFailure ? error.message : 'No delivery confirmation.'}`);
-    }
-  }
-  onProgress?.(targets.length, targets.length);
-  return result;
 }
 
 /** Check fresh finds against the library once; a failed check never fails the watch check. */
@@ -512,7 +577,8 @@ async function recordBetterEditions(finds: DoujinSearchResult[], log: LogFn): Pr
         .where(and(eq(table.source, source), eq(table.galleryId, rest.join(':')))).run();
     }
   });
-  for (const [key, owned] of better) log('success', `Better edition found: ${finds.find(gallery => `${gallery.source}:${gallery.galleryId}` === key)?.title ?? key} improves on “${owned.title}”`);
+  const findByKey = new Map(finds.map((gallery) => [`${gallery.source}:${gallery.galleryId}`, gallery]));
+  for (const [key, owned] of better) log('success', `Better edition found: ${findByKey.get(key)?.title ?? key} improves on “${owned.title}”`);
   return better;
 }
 
@@ -535,7 +601,9 @@ function pruneSeen(searchId: number, db: Db): void {
     .limit(excess)
     .all();
   const ids = oldest.map((r) => r.id);
-  db.delete(schema.watchedSearchSeen).where(inArray(schema.watchedSearchSeen.id, ids)).run();
+  for (let i = 0; i < ids.length; i += 500) {
+    db.delete(schema.watchedSearchSeen).where(inArray(schema.watchedSearchSeen.id, ids.slice(i, i + 500))).run();
+  }
 }
 
 type FeedRow = Pick<typeof schema.watchedSearchNew.$inferSelect, 'source' | 'galleryId' | 'title' | 'url' | 'coverUrl' | 'pageCount'
@@ -558,33 +626,38 @@ function feedItem(r: FeedRow, watch: Pick<WatchRow, 'displayName' | 'query'> | u
     ...(betterEditionOf(r.betterEditionJson) ? { betterEditionOf: betterEditionOf(r.betterEditionJson) } : {}) };
 }
 
-export function listGalleryFeed(options: FollowingFeedOptions = {}): WatchedGalleryFeed {
+function queryGalleryFeed(options: FollowingFeedOptions = {}, includeWatches = true): WatchedGalleryFeed {
   const db = getDb(), table = schema.watchedSearchNew, watch = schema.watchedSearches;
   const filters = and(options.source ? eq(table.source, options.source) : undefined,
     options.searchId !== undefined ? eq(table.searchId, options.searchId) : undefined,
     options.folderId === 'unfiled' ? sql`NOT EXISTS (SELECT 1 FROM ${watch} WHERE ${watch.id} = ${table.searchId} AND ${watch.folderId} IS NOT NULL)` :
       options.folderId !== undefined ? sql`EXISTS (SELECT 1 FROM ${watch} WHERE ${watch.id} = ${table.searchId} AND ${watch.folderId} = ${options.folderId})` : undefined);
   // Folder membership, source, and watch filters apply before winner selection.
-  // Winners are ranked once per request: the counts and the page share one
-  // materialized CTE, and the counts row survives an empty page via LEFT JOIN.
-  const columns = sql.raw('id, search_id, source, query, watch_label, gallery_id, title, url, cover_url, page_count, artists_json, language, reviewed_at, better_edition_json, found_at');
+  // Winners only project narrow key/filter columns inside the materialized CTE;
+  // wide text/JSON columns are joined only for the returned page.
   const rows = db.all<{
     total: number; inbox_count: number; better_count: number; id: number | null; search_id: number; source: string; query: string; watch_label: string;
     gallery_id: string; title: string; url: string | null; cover_url: string | null; page_count: number | null;
     artists_json: string; language: string | null; reviewed_at: string | null; better_edition_json: string | null; found_at: string;
   }>(sql`WITH winners AS MATERIALIZED (
-      SELECT ${columns} FROM (
-        SELECT ${columns}, ROW_NUMBER() OVER (PARTITION BY source, gallery_id ORDER BY found_at DESC, id DESC) AS n
+      SELECT id, found_at, reviewed_at, has_better FROM (
+        SELECT id, found_at, reviewed_at, (better_edition_json IS NOT NULL) AS has_better,
+          ROW_NUMBER() OVER (PARTITION BY source, gallery_id ORDER BY found_at DESC, id DESC) AS n
         FROM watched_search_new ${filters ? sql`WHERE ${filters}` : sql``}
       ) WHERE n = 1
     ),
     counts AS (SELECT count(*) AS total, coalesce(sum(CASE WHEN reviewed_at IS NULL THEN 1 ELSE 0 END), 0) AS inbox_count,
-      coalesce(sum(CASE WHEN reviewed_at IS NULL AND better_edition_json IS NOT NULL THEN 1 ELSE 0 END), 0) AS better_count FROM winners),
+      coalesce(sum(CASE WHEN reviewed_at IS NULL AND has_better = 1 THEN 1 ELSE 0 END), 0) AS better_count FROM winners),
     page AS (
-      SELECT * FROM winners ${options.view === 'inbox' ? sql`WHERE reviewed_at IS NULL` : sql``}
+      SELECT id, found_at FROM winners ${options.view === 'inbox' ? sql`WHERE reviewed_at IS NULL` : sql``}
       ORDER BY found_at DESC, id DESC LIMIT ${options.limit ?? 100} OFFSET ${options.offset ?? 0}
     )
-    SELECT counts.total AS total, counts.inbox_count AS inbox_count, counts.better_count AS better_count, page.* FROM counts LEFT JOIN page ON 1
+    SELECT counts.total AS total, counts.inbox_count AS inbox_count, counts.better_count AS better_count,
+      w.id, w.search_id, w.source, w.query, w.watch_label, w.gallery_id, w.title, w.url, w.cover_url,
+      w.page_count, w.artists_json, w.language, w.reviewed_at, w.better_edition_json, w.found_at
+    FROM counts
+    LEFT JOIN page ON 1
+    LEFT JOIN watched_search_new w ON w.id = page.id
     ORDER BY page.found_at DESC, page.id DESC`);
   const counts = { total: Number(rows[0]?.total ?? 0), inboxCount: Number(rows[0]?.inbox_count ?? 0), betterEditionCount: Number(rows[0]?.better_count ?? 0) };
   // Watch labels only; lastResultsJson blobs are not needed here.
@@ -595,17 +668,24 @@ export function listGalleryFeed(options: FollowingFeedOptions = {}): WatchedGall
     query: row.query, watchLabel: row.watch_label, foundAt: row.found_at, searchId: row.search_id, artistsJson: row.artists_json,
     language: row.language, reviewedAt: row.reviewed_at, betterEditionJson: row.better_edition_json,
   }, current.get(row.search_id)));
-  const watches: WatchedGalleryFeed['watches'] = [...current.values()].map(row => ({ id: row.id, query: row.query, source: row.source as DoujinSource,
-    watchLabel: row.displayName ?? row.query, folderId: row.folderId, removed: false }));
-  const retained = db.select({ id: table.searchId, query: table.query, source: table.source, watchLabel: table.watchLabel })
-    .from(table).where(sql`NOT EXISTS (SELECT 1 FROM ${watch} WHERE ${watch.id} = ${table.searchId})`).groupBy(table.searchId).orderBy(table.searchId).all();
-  for (const row of retained) watches.push({ ...row, source: row.source as DoujinSource, watchLabel: row.watchLabel || row.query, folderId: null, removed: true });
-  watches.sort((a, b) => a.id - b.id);
+  const watches: WatchedGalleryFeed['watches'] = [];
+  if (includeWatches) {
+    for (const row of current.values()) watches.push({ id: row.id, query: row.query, source: row.source as DoujinSource,
+      watchLabel: row.displayName ?? row.query, folderId: row.folderId, removed: false });
+    const retained = db.select({ id: table.searchId, query: table.query, source: table.source, watchLabel: table.watchLabel })
+      .from(table).where(sql`NOT EXISTS (SELECT 1 FROM ${watch} WHERE ${watch.id} = ${table.searchId})`).groupBy(table.searchId).orderBy(table.searchId).all();
+    for (const row of retained) watches.push({ ...row, source: row.source as DoujinSource, watchLabel: row.watchLabel || row.query, folderId: null, removed: true });
+    watches.sort((a, b) => a.id - b.id);
+  }
   return { items, total: Number(options.view === 'inbox' ? counts.inboxCount : counts.total), inboxCount: Number(counts.inboxCount), historyCount: Number(counts.total), betterEditionCount: counts.betterEditionCount, watches };
 }
 
+export function listGalleryFeed(options: FollowingFeedOptions = {}): WatchedGalleryFeed {
+  return queryGalleryFeed(options, true);
+}
+
 export function listNewGalleries(limit = 100): WatchedNewGallery[] {
-  return listGalleryFeed({ limit }).items;
+  return queryGalleryFeed({ limit }, false).items;
 }
 
 /** Review is shared by every watch that discovered this provider/gallery identity. */

@@ -5,7 +5,7 @@ import { gallerySearchReducer } from './downloader/searchState';
 import { GallerySearchInput } from '../components/GallerySearchInput';
 import { useGalleryDownload } from './downloader/useGalleryDownload';
 import * as React from 'react';
-import { keepPreviousData, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import { Search, Loader2, RotateCcw, CheckCircle2, Compass, Sparkles, CheckSquare, Settings2, Inbox, CheckCheck, FunnelX, Plus } from 'lucide-react';
 import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult } from '../lib/api';
@@ -29,12 +29,14 @@ const ManagerTab = React.lazy(() => import('./downloader/DownloadManager').then(
 import { UnifiedSearchTab } from './downloader/UnifiedSearchTab';
 import { SearchResultsHeader, SelectModeButton, WatchSearchButton } from './downloader/SearchResultsHeader';
 import { useUnifiedSearch, toWebResult } from './downloader/useUnifiedSearch';
-import { WatchedManagerDrawer, FollowingCheckStatus, nextScheduledCheck, formatCheckTime } from './downloader/WatchedSearchControls';
+import { FollowingCheckStatus, nextScheduledCheck, formatCheckTime } from './downloader/FollowingCheckStatus';
+const WatchedManagerDrawer = React.lazy(() => import('./downloader/WatchedSearchControls').then((m) => ({ default: m.WatchedManagerDrawer })));
+const SuggestedFollows = React.lazy(() => import('./downloader/SuggestedFollows').then((m) => ({ default: m.SuggestedFollows })));
+import { useLibraryMatchReports } from './downloader/useLibraryMatches';
 import { SearchHint } from './downloader/SearchHint';
 import { SearchFailure } from './downloader/SearchFailure';
 import { GallerySkeletonGrid } from './downloader/GallerySkeletons';
 import { galleryKey, galleryOwnership, libraryMatchFor } from './downloader/ownership';
-import { SuggestedFollows } from './downloader/SuggestedFollows';
 import { folderNameFrom } from '../lib/mergeNames';
 import type { MergeDownloadResult } from './downloader/MergeDownloadDialog';
 const MergeDownloadDialog = React.lazy(() => import('./downloader/MergeDownloadDialog').then((m) => ({ default: m.MergeDownloadDialog })));
@@ -42,8 +44,6 @@ import { useDownloaderTransitions } from './downloader/motion';
 import type { UnifiedSearchEntry } from '../lib/api';
 const RESULTS_PAGE_SIZE = 25;
 const EMPTY_GALLERIES: DoujinSearchResult[] = [];
-/** POST /api/downloads/library-matches accepts at most this many galleries per request. */
-const LIBRARY_MATCH_CHUNK = 100;
 
 /** A handler whose identity never changes but always runs the latest closure. */
 function useStableHandler<A extends unknown[], R>(handler: (...args: A) => R): (...args: A) => R {
@@ -72,6 +72,91 @@ function webVariant(entry: UnifiedSearchEntry, key: string | null): DoujinSearch
 /** Every gallery key an edition group can be selected by. */
 const entryKeys = (entry: UnifiedSearchEntry) => [`${entry.primary.source}:${entry.primary.galleryId}`, ...entry.variants.map((v) => `${v.source}:${v.galleryId}`)];
 const sameWatch = (watch: WatchedSearch, target: { source: DoujinSource; query: string }) => watch.source === target.source && watch.query === target.query;
+
+const NativeSearchCard = React.memo(function NativeSearchCard({
+  query,
+  source,
+  sort,
+  isFetching,
+  translationNotice,
+  searchInControl,
+  draftQueryRef,
+  onDraftChange,
+  onCommit,
+  onSortChange,
+}: {
+  query: string;
+  source: DoujinSource;
+  sort: DoujinSort;
+  isFetching: boolean;
+  translationNotice: { query: string; issues: string[] } | null;
+  searchInControl: React.ReactNode;
+  draftQueryRef: React.MutableRefObject<string>;
+  onDraftChange: (next: string) => void;
+  onCommit: (raw: string) => void;
+  onSortChange: (next: DoujinSort) => void;
+}) {
+  const [draftQuery, setDraftQuery] = React.useState(query);
+  const syncedQueryRef = React.useRef(query);
+  draftQueryRef.current = draftQuery;
+
+  React.useEffect(() => {
+    if (query !== syncedQueryRef.current) {
+      syncedQueryRef.current = query;
+      draftQueryRef.current = query;
+      setDraftQuery(query);
+    }
+  }, [query, draftQueryRef]);
+
+  React.useEffect(() => {
+    if (draftQuery === syncedQueryRef.current) return;
+    const timer = window.setTimeout(() => {
+      syncedQueryRef.current = draftQuery;
+      onDraftChange(draftQuery);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [draftQuery, onDraftChange]);
+
+  const runSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    syncedQueryRef.current = draftQuery;
+    draftQueryRef.current = draftQuery;
+    onCommit(draftQuery);
+  };
+
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-3">
+        {searchInControl}
+        <form onSubmit={runSearch} className="flex flex-col gap-2 sm:flex-row">
+          <div className="flex min-w-0 flex-1 gap-2">
+            <GallerySearchInput value={draftQuery} onChange={setDraftQuery} source={source} label="Search galleries" describedBy="search-hint" placeholder="Keyword, tag, artist, gallery ID or URL…" clearLabel="Clear search input" className="h-11" />
+            <Button className="h-11 shrink-0" type="submit" disabled={isFetching || !draftQuery.trim()}>
+              {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
+            </Button>
+          </div>
+          {/* Popularity ordering — mirrors each source's own sort controls. The
+              sort travels as a separate field, so its syntax never appears in the search box. */}
+          {sortsFor(source).length > 1 && (
+            <Select
+              value={sort}
+              onChange={(e) => onSortChange(e.target.value as DoujinSort)}
+              aria-label="Sort results"
+              className="h-11 min-w-0 w-full shrink-0 text-sm sm:w-44"
+            >
+              {sortsFor(source).map((s) => (
+                <option key={s.value} value={s.value}>{s.label}</option>
+              ))}
+            </Select>
+          )}
+        </form>
+        <SearchHint id="search-hint" />
+        {translationNotice?.query === draftQuery && translationNotice.issues.length > 0 && <p role="status" aria-label="Search query translation" className="break-words text-sm text-muted">{translationNotice.issues.join(' ')} Review the query, then choose Search.</p>}
+      </CardContent>
+    </Card>
+  );
+});
+
 export function Downloader() {
   const qc = useQueryClient();
   // Search cards consume live tasks so each doujin reflects queued, downloading,
@@ -116,9 +201,18 @@ export function Downloader() {
       sort: sortsFor(initialSource).some(option => option.value === saved?.sort) ? saved!.sort : 'default' };
   });
   const { source, query, searchKey, sort } = searchState;
-  const setQuery = (query: string) => dispatchSearch({ type: 'input', query });
-  const setSearchKey = (query: string) => dispatchSearch({ type: 'commit', query });
-  const setSort = (sort: DoujinSort) => dispatchSearch({ type: 'sort', sort });
+  const draftQueryRef = React.useRef(query);
+  const setQuery = React.useCallback((next: string) => {
+    draftQueryRef.current = next;
+    dispatchSearch({ type: 'input', query: next });
+  }, []);
+  const onNativeDraft = React.useCallback((next: string) => dispatchSearch({ type: 'input', query: next }), []);
+  const onNativeCommit = React.useCallback((raw: string) => {
+    const trimmed = raw.trim();
+    dispatchSearch({ type: 'input', query: raw });
+    if (trimmed) dispatchSearch({ type: 'commit', query: trimmed });
+  }, []);
+  const onNativeSort = React.useCallback((next: DoujinSort) => dispatchSearch({ type: 'sort', sort: next }), []);
   const searches = React.useRef<DownloaderStateCache['searches']>(initialSearches);
   const translation = React.useRef<TranslationLink | null>(linkedQuery === null ? initialState.translation ?? null : null);
   const [translationNotice, setTranslationNotice] = React.useState<{ query: string; issues: string[] } | null>(() => {
@@ -126,7 +220,7 @@ export function Downloader() {
     return saved?.to === source ? { query: saved.output.query, issues: saved.issues } : null;
   });
   function rememberSearch() {
-    searches.current = { ...searches.current, [source]: { query, searchKey, sort } };
+    searches.current = { ...searches.current, [source]: { query: draftQueryRef.current, searchKey, sort } };
   }
   const deepLink = JSON.stringify([searchParams.get('source'), linkedQuery]);
   const previousDeepLink = React.useRef(deepLink);
@@ -141,6 +235,7 @@ export function Downloader() {
     rememberSearch();
     translation.current = null;
     setTranslationNotice(null);
+    draftQueryRef.current = nextQuery;
     dispatchSearch({ type: 'replace', state: { source: nextSource, query: nextQuery, searchKey: trimmed || null, sort: sortsFor(nextSource).some(option => option.value === sort) ? sort : 'default' } });
     setScope(nextSource);
     setSelected(null);
@@ -224,6 +319,12 @@ export function Downloader() {
     () => new Map((completed ?? []).map((k) => [`${k.source}:${k.galleryId}`, k.finishedAt])),
     [completed],
   );
+  const downloadedResetKey = React.useMemo(() => {
+    if (!completed) return null;
+    let latest = '';
+    for (const item of completed) if ((item.finishedAt ?? '') > latest) latest = item.finishedAt ?? '';
+    return `${completed.length}:${latest}`;
+  }, [completed]);
 
   // Saved watches correspond to the committed search represented by the visible
   // results, never to edits that have not been submitted yet.
@@ -272,19 +373,22 @@ export function Downloader() {
     }
   }
 
-  // The Following tab label carries the unreviewed count even while another tab is open.
+  // The Following tab label carries the unreviewed count while another tab is open.
   const { data: inboxCount } = useQuery({
     queryKey: ['watched-gallery-feed', 'inbox-count'],
     queryFn: () => api.watchedGalleryFeed({ view: 'inbox', offset: 0, limit: 1 }),
     select: feed => feed.inboxCount,
+    enabled: tab !== 'watched',
     staleTime: 60_000,
     refetchInterval: 120_000,
   });
   const [manageWatchesOpen, setManageWatchesOpen] = React.useState(false);
+  const [manageWatchesMounted, setManageWatchesMounted] = React.useState(false);
   const manageWatchesTrigger = React.useRef<HTMLElement | null>(null);
-  const openManageWatches = () => { manageWatchesTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setManageWatchesOpen(true); };
+  const openManageWatches = () => { manageWatchesTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setManageWatchesMounted(true); setManageWatchesOpen(true); };
   const selection = useGallerySelection();
   const { filtersActive, clearFilters, feedView, setFeedView, feedSource, setFeedSource, feedWatch, setFeedWatch, feedFolder, setFeedFolder, foldersQuery, setFeedPage, galleryFeed, feedWatches, feedLoading, feedFailed, feedError, retryFeed, feedItems, knownDiscoveries, feedMetaByKey, feedPageCount, feedCurPage, feedPageItems, reviewingKeys, reviewDiscoveries, reviewGallery } = useWatchedFeed(tab, selection.remove);
+  const displayInboxCount = tab === 'watched' ? (galleryFeed?.inboxCount ?? inboxCount) : inboxCount;
   const selectionView = React.useMemo(() => resolveGallerySelection(selection.chosen, results ?? EMPTY_GALLERIES, feedItems, knownDiscoveries.current), [selection.chosen, results, feedItems, knownDiscoveries]);
   const selectedGalleries = selection.keys, selectedItems = selectionView.items, reviewableSelectedItems = selectionView.reviewable;
   const toggleGallerySelect = selection.toggle;
@@ -361,8 +465,12 @@ export function Downloader() {
     }
   }
   // All sources selects whole edition groups; a group counts once whichever variant was picked.
-  const pageSelectable: DoujinSearchResult[] = searchAll ? unified.entries.filter((e) => !unifiedSelectedIds.has(e.entryId)).map((e) => webVariant(e, null))
-    : tab === 'search' ? pageItems : tab === 'recommend' ? visibleRecs : tab === 'watched' ? feedPageItems : EMPTY_GALLERIES;
+  const pageSelectable = React.useMemo<DoujinSearchResult[]>(
+    () => (searchAll
+      ? unified.entries.filter((e) => !unifiedSelectedIds.has(e.entryId)).map((e) => webVariant(e, null))
+      : tab === 'search' ? pageItems : tab === 'recommend' ? visibleRecs : tab === 'watched' ? feedPageItems : EMPTY_GALLERIES),
+    [searchAll, unified.entries, unifiedSelectedIds, tab, pageItems, visibleRecs, feedPageItems],
+  );
   // Stable handlers + a memoized actions object keep the (memoized) selection
   // bars from re-rendering their shortlist on every keystroke or poll.
   const downloadSelected = useStableHandler(() => void downloadEach(selectedItems));
@@ -446,12 +554,6 @@ export function Downloader() {
     }
   }
 
-  // Send native syntax verbatim; both providers apply the default English filter.
-  function commitQuery(raw: string) {
-    const trimmed = raw.trim();
-    if (!trimmed) return;
-    setSearchKey(trimmed);
-  }
 
   /**
    * Run a fresh search for a single tag/artist clicked in the details card.
@@ -478,6 +580,7 @@ export function Downloader() {
     translation.current = null;
     setTranslationNotice(null);
     const nextSource = itemSource ?? source;
+    draftQueryRef.current = trimmed;
     dispatchSearch({ type: 'replace', state: { source: nextSource, query: trimmed, searchKey: trimmed, sort: sortsFor(nextSource).some(option => option.value === sort) ? sort : 'default' } });
     setScope(nextSource);
     setTab('search');
@@ -488,9 +591,11 @@ export function Downloader() {
   function switchSource(next: DoujinSource) {
     if (next === source) return;
     rememberSearch();
-    const translated = switchProviderSearch({ query, searchKey, sort }, source, next, translation.current);
+    const currentQuery = draftQueryRef.current;
+    const translated = switchProviderSearch({ query: currentQuery, searchKey, sort }, source, next, translation.current);
     translation.current = translated.link;
     setTranslationNotice({ query: translated.search.query, issues: translated.issues });
+    draftQueryRef.current = translated.search.query;
     dispatchSearch({ type: 'replace', state: { ...translated.search, source: next } });
     // A consumed deep link must not overwrite the restored draft on refresh.
     setSearchParams(current => {
@@ -502,24 +607,20 @@ export function Downloader() {
   }
 
   /** Moving between scopes carries a typed-but-unsent query along instead of dropping it. */
-  function changeScope(next: SearchScope) {
+  const changeScope = useStableHandler((next: SearchScope) => {
     if (next === scope) return;
+    const currentQuery = draftQueryRef.current;
     if (next === 'all') {
-      if (!unified.draft.trim() && query.trim()) unified.setDraft(query.trim());
+      if (!unified.draft.trim() && currentQuery.trim()) unified.setDraft(currentQuery.trim());
       setScope('all');
       return;
     }
-    const carried = scope === 'all' && !query.trim() && unified.draft.trim() ? unified.draft : null;
+    const carried = scope === 'all' && !currentQuery.trim() && unified.draft.trim() ? unified.draft : null;
     if (next !== source) switchSource(next);
     if (carried) setQuery(carried);
     setScope(next);
-  }
+  });
   const scopeItems = React.useMemo(() => [{ id: 'all' as SearchScope, label: 'All sources' }, ...sources.map(item => ({ id: item.id as SearchScope, label: item.label }))], [sources]);
-
-  const runSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    commitQuery(query);
-  };
 
   const resultCount = searchResponse?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(resultCount / RESULTS_PAGE_SIZE));
@@ -536,31 +637,13 @@ export function Downloader() {
       : []),
     [searchAll, unified.entries, tab, pageItems, visibleRecs, feedPageItems],
   );
-  // Fixed-size chunks in list order: "Load more" only appends, so earlier chunks
-  // keep their query keys (cache hits) and only the tail and new variants are
-  // sent. Each request also stays within the endpoint's 100-gallery limit.
-  const matchChunks = React.useMemo(() => {
-    const unique = [...new Map(matchItems.map((item) => [galleryKey(item), item])).values()];
-    const chunks: { key: string; items: DoujinSearchResult[] }[] = [];
-    for (let i = 0; i < unique.length; i += LIBRARY_MATCH_CHUNK) {
-      const items = unique.slice(i, i + LIBRARY_MATCH_CHUNK);
-      chunks.push({ key: items.map(galleryKey).join(','), items });
-    }
-    return chunks;
-  }, [matchItems]);
-  const matchResults = useQueries({
-    queries: matchChunks.map((chunk) => ({
-      queryKey: ['gallery-library-matches', chunk.key],
-      queryFn: () => api.libraryMatches(chunk.items),
-      staleTime: 60_000,
-    })),
-  });
-  const matchReports = matchResults.map((result) => result.data);
-  const matchReportsRef = React.useRef(matchReports);
-  if (matchReports.length !== matchReportsRef.current.length || matchReports.some((data, i) => data !== matchReportsRef.current[i])) matchReportsRef.current = matchReports;
-  const stableMatchReports = matchReportsRef.current;
+  // Incremental per-gallery check: cached galleries (including 0-match results) skip network calls within TTL.
+  const reportsByKey = useLibraryMatchReports(matchItems, { resetKey: downloadedResetKey, ttlMs: 60_000 });
   const libraryMatches = React.useMemo(() => {
-    const verdicts = new Map(stableMatchReports.flatMap((data) => data?.reports ?? []).map(report => [`${report.source}:${report.galleryId}`, libraryMatchFor(report)]));
+    const verdicts = new Map<string, ReturnType<typeof libraryMatchFor>>();
+    for (const [key, report] of reportsByKey) {
+      verdicts.set(key, libraryMatchFor(report));
+    }
     // A Following find checked against the library when it arrived keeps that
     // verdict even though feed rows carry no tags for a fresh check.
     for (const item of galleryFeed?.items ?? []) {
@@ -568,16 +651,18 @@ export function Downloader() {
       if (item.betterEditionOf && !verdicts.get(key)) verdicts.set(key, 'better');
     }
     return verdicts;
-  }, [stableMatchReports, galleryFeed]);
+  }, [reportsByKey, galleryFeed]);
   const ownershipFor = (item: DoujinSearchResult) => galleryOwnership([galleryKey(item)], libraryMatches, downloadedAt, ownedKeys);
   /** The confirmed library copy behind an "In library" gallery, for the detail modal. */
-  const libraryCopyFor = (key: string) => stableMatchReports.flatMap(data => data?.reports ?? []).find(report => `${report.source}:${report.galleryId}` === key)
-    ?.matches.find(match => match.confirmed && match.status === 'In library');
+  const libraryCopyFor = (key: string) => reportsByKey.get(key)?.matches.find(match => match.confirmed && match.status === 'In library');
   const folderCount = foldersQuery.data?.length ?? 0;
   const showFolderFilter = folderCount > 0 || feedFolder !== '';
   // Filters appear once there is something to choose between, and stay put while narrowing.
   const showWatchFilter = (watches?.length ?? 0) > 1 || feedWatch !== '';
-  const showSourceFilter = new Set((watches ?? []).map(watch => watch.source)).size > 1 || feedSource !== '';
+  const showSourceFilter = React.useMemo(
+    () => new Set((watches ?? []).map((watch) => watch.source)).size > 1 || feedSource !== '',
+    [watches, feedSource],
+  );
   // ---------------- Following triage ----------------
   // After a dismissal removes a card from Inbox, focus moves to the next find's
   // Dismiss so keyboard triage continues where it was.
@@ -622,7 +707,7 @@ export function Downloader() {
       action.click();
     }
   };
-  const nextCheck = nextScheduledCheck(watches ?? []);
+  const nextCheck = React.useMemo(() => nextScheduledCheck(watches ?? []), [watches]);
 
   // Only the visible tab's grid drives the FLIP pass, so background polls of
   // another tab (Following refreshes every minute) never trigger a layout scan.
@@ -638,16 +723,21 @@ export function Downloader() {
   // Watch targets: the single source, or every lane of an All-sources search
   // that ran and can be followed (E-Hentai is search-and-download only).
   const nativeWatchTargets = source === 'ehentai' || !watchedQuery ? [] : [{ source, query: watchedQuery }];
-  const unifiedWatchTargets = unified.providers.flatMap((p) => (p.watchQuery ? [{ source: p.source, query: p.watchQuery }] : []));
-  const watchingAllOf = (targets: { source: DoujinSource; query: string }[]) => targets.length > 0 && targets.every((t) => (watches ?? []).some((w) => sameWatch(w, t)));
-  const unifiedWatching = watchingAllOf(unifiedWatchTargets);
+  const unifiedWatchTargets = React.useMemo(
+    () => unified.providers.flatMap((p) => (p.watchQuery ? [{ source: p.source, query: p.watchQuery }] : [])),
+    [unified.providers],
+  );
+  const unifiedWatching = React.useMemo(
+    () => unifiedWatchTargets.length > 0 && unifiedWatchTargets.every((t) => (watches ?? []).some((w) => sameWatch(w, t))),
+    [unifiedWatchTargets, watches],
+  );
   const unifiedWatchNames = unifiedWatchTargets.map((t) => SOURCE_LABELS[t.source]).join(' and ');
-  const searchInControl = (
+  const searchInControl = React.useMemo(() => (
     <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
       <span aria-hidden="true" className="text-sm font-medium text-muted">Search in</span>
       <SegmentedControl items={scopeItems} value={scope} onChange={changeScope} label="Search in" className="max-w-full" itemClassName="min-h-9 px-3 text-xs sm:text-sm max-lg:min-h-11" />
     </div>
-  );
+  ), [scopeItems, scope, changeScope]);
 
   return (
     <div ref={galleryMotionRef} className={cn('flex flex-col gap-4', showSelection && 'pb-[calc(var(--selection-tray-height,0px)+1rem)] lg:pb-0')} style={{ '--selection-tray-height': `${selectionHeight}px` } as React.CSSProperties}>
@@ -657,7 +747,7 @@ export function Downloader() {
       {tab !== 'manager' && (downloadStatus === 'missing' || downloadStatus === 'error') && <DownloadDestination setup={setup} />}
 
       <SegmentedTabs
-        items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'For you' }, { id: 'watched' as const, label: inboxCount ? `Following (${inboxCount})` : 'Following' }, { id: 'manager' as const, label: 'Downloads', count: downloadSummary.failed || downloadSummary.active || undefined, alert: downloadSummary.failed > 0 }]}
+        items={[{ id: 'search' as const, label: 'Search' }, { id: 'recommend' as const, label: 'For you' }, { id: 'watched' as const, label: displayInboxCount ? `Following (${displayInboxCount})` : 'Following' }, { id: 'manager' as const, label: 'Downloads', count: downloadSummary.failed || downloadSummary.active || undefined, alert: downloadSummary.failed > 0 }]}
         value={tab}
         onChange={setTab}
         label="Discover sections"
@@ -695,36 +785,18 @@ export function Downloader() {
         />
       ) : (<>
 
-      {/* Search bar */}
-      <Card>
-        <CardContent className="flex flex-col gap-3">
-          {searchInControl}
-          <form onSubmit={runSearch} className="flex flex-col gap-2 sm:flex-row">
-            <div className="flex min-w-0 flex-1 gap-2">
-              <GallerySearchInput value={query} onChange={setQuery} source={source} label="Search galleries" describedBy="search-hint" placeholder="Keyword, tag, artist, gallery ID or URL…" clearLabel="Clear search input" className="h-11" />
-              <Button className="h-11 shrink-0" type="submit" disabled={isFetching || !query.trim()}>
-                {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
-              </Button>
-            </div>
-            {/* Popularity ordering — mirrors each source's own sort controls. The
-                sort travels as a separate field, so its syntax never appears in the search box. */}
-            {sortsFor(source).length > 1 && (
-              <Select
-                value={sort}
-                onChange={(e) => setSort(e.target.value as DoujinSort)}
-                aria-label="Sort results"
-                className="h-11 min-w-0 w-full shrink-0 text-sm sm:w-44"
-              >
-                {sortsFor(source).map((s) => (
-                  <option key={s.value} value={s.value}>{s.label}</option>
-                ))}
-              </Select>
-            )}
-          </form>
-          <SearchHint id="search-hint" />
-          {translationNotice?.query === query && translationNotice.issues.length > 0 && <p role="status" aria-label="Search query translation" className="break-words text-sm text-muted">{translationNotice.issues.join(' ')} Review the query, then choose Search.</p>}
-        </CardContent>
-      </Card>
+      <NativeSearchCard
+        query={query}
+        source={source}
+        sort={sort}
+        isFetching={isFetching}
+        translationNotice={translationNotice}
+        searchInControl={searchInControl}
+        draftQueryRef={draftQueryRef}
+        onDraftChange={onNativeDraft}
+        onCommit={onNativeCommit}
+        onSortChange={onNativeSort}
+      />
 
       {searchKey === null && showSelection && <GallerySelectionBar {...selectionActions} />}
 
@@ -975,8 +1047,12 @@ export function Downloader() {
               </div>
             )}
           </section>
-          <SuggestedFollows />
-          <WatchedManagerDrawer open={manageWatchesOpen} onOpenChange={setManageWatchesOpen} returnFocusTo={manageWatchesTrigger} onOpenSearch={(src, q) => searchTagFragment(q, src)} />
+          <React.Suspense fallback={null}>
+            <SuggestedFollows />
+            {manageWatchesMounted && (
+              <WatchedManagerDrawer open={manageWatchesOpen} onOpenChange={setManageWatchesOpen} returnFocusTo={manageWatchesTrigger} onOpenSearch={(src, q) => searchTagFragment(q, src)} />
+            )}
+          </React.Suspense>
         </div>
       )}
       <React.Suspense fallback={null}>

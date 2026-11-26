@@ -59,6 +59,7 @@ export function initDb(): Db {
   const dbFile = path.join(DATA_DIR, DB_FILENAME);
   migrateLegacyDatabases(dbFile);
   const sqlite = new Database(dbFile);
+  sqlite.pragma('auto_vacuum = INCREMENTAL');
   sqlite.pragma('journal_mode = WAL');
   // Standard WAL pairing: crash-safe, only a power loss may lose the last
   // transactions.
@@ -71,6 +72,7 @@ export function initDb(): Db {
   sqlite.pragma('mmap_size = 268435456');
   migrateSchema(sqlite);
   pruneOldData(sqlite);
+  sqlite.pragma('optimize = 0x10002');
   sqliteHandle = sqlite;
   db = drizzle(sqlite, { schema });
   return db;
@@ -89,8 +91,16 @@ const PRUNE_INTERVAL_MS = 86_400_000;
 /** Daily retention sweep for servers that stay up for weeks. Returns a stop function. */
 export function startDatabaseMaintenance(intervalMs = PRUNE_INTERVAL_MS): () => void {
   const timer = setInterval(() => {
-    try { pruneDatabase(); }
-    catch (error) { console.warn('[h-tosho] database retention sweep failed:', error); }
+    try {
+      pruneDatabase();
+      if (sqliteHandle?.open) {
+        sqliteHandle.pragma('incremental_vacuum(500)');
+        sqliteHandle.pragma('wal_checkpoint(PASSIVE)');
+        sqliteHandle.pragma('optimize');
+      }
+    } catch (error) {
+      console.warn('[h-tosho] database retention sweep failed:', error);
+    }
   }, intervalMs);
   timer.unref();
   return () => clearInterval(timer);
@@ -101,7 +111,10 @@ export function closeDb(): void {
   const handle = sqliteHandle;
   sqliteHandle = null;
   db = null;
-  if (handle?.open) handle.close();
+  if (handle?.open) {
+    try { handle.pragma('optimize'); } catch { /* ignore */ }
+    handle.close();
+  }
 }
 /** Retention windows for finished work so the database does not grow unbounded. */
 const JOB_RETENTION_DAYS = 30;
@@ -116,11 +129,20 @@ const HISTORY_RETENTION_DAYS = 90;
  */
 function pruneOldData(sqlite: Database.Database): void {
   const cutoff = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 19).replace('T', ' ');
-  sqlite.prepare(
-    `DELETE FROM job_logs WHERE job_id IN (SELECT id FROM jobs WHERE status IN ('completed','failed','cancelled') AND finished_at < ?)`,
-  ).run(cutoff(JOB_RETENTION_DAYS));
-  sqlite.prepare(`DELETE FROM jobs WHERE status IN ('completed','failed','cancelled') AND finished_at < ?`).run(cutoff(JOB_RETENTION_DAYS));
-  sqlite.prepare(`DELETE FROM sync_history WHERE created_at < ?`).run(cutoff(HISTORY_RETENTION_DAYS));
+  const jobCutoff = cutoff(JOB_RETENTION_DAYS);
+  const historyCutoff = cutoff(HISTORY_RETENTION_DAYS);
+  sqlite.transaction(() => {
+    const expiredJobIds = (sqlite.prepare(
+      `SELECT id FROM jobs WHERE status IN ('completed','failed','cancelled') AND finished_at < ?`,
+    ).all(jobCutoff) as { id: number }[]).map(row => row.id);
+    for (let i = 0; i < expiredJobIds.length; i += 400) {
+      const chunk = expiredJobIds.slice(i, i + 400);
+      const placeholders = chunk.map(() => '?').join(',');
+      sqlite.prepare(`DELETE FROM job_logs WHERE job_id IN (${placeholders})`).run(...chunk);
+      sqlite.prepare(`DELETE FROM jobs WHERE id IN (${placeholders})`).run(...chunk);
+    }
+    sqlite.prepare(`DELETE FROM sync_history WHERE created_at < ?`).run(historyCutoff);
+  })();
   pruneMetadataHistory(sqlite);
 }
 

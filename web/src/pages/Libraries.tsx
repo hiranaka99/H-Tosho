@@ -5,8 +5,8 @@ import { Search, RefreshCw, Play, BookOpen, Unlink, FileText, Combine, Check, Ch
 import { api, type SeriesRow, type DoujinSource, type Job } from '../lib/api';
 import { Button, Card, Input, Select, Badge, StatusBadge, Skeleton, EmptyState, PageHeader, ErrorState, SegmentedControl, TabPanel, Spinner, ProgressBar, Pager } from '../components/ui';
 import { Switch } from '../components/switch';
-import { ConfirmDialog } from '../components/dialog';
 import { PageCountPill } from '../components/PageCountPill';
+const ConfirmDialog = React.lazy(() => import('../components/dialog').then((m) => ({ default: m.ConfirmDialog })));
 import { buildTagSearchFragment, cn, jobLabel } from '../lib/utils';
 import { toast } from '../lib/toast';
 import { DEFAULT_REVIEW_THRESHOLD, filterLibraryRows, librarySearchTerm, normalizeSort, normalizeStatusFilter, prepareLibraryRows, rowBucket, type LibraryBucket, type LibrarySort, type LibraryStatusFilter } from '../lib/libraryShelf';
@@ -43,6 +43,7 @@ interface LibraryStateCache {
   query?: string;
   statusFilter?: string;
   sortBy?: LibrarySort;
+  lastLibraryId?: number;
   pages?: Record<string, number>;
 }
 
@@ -90,7 +91,7 @@ function MatchingTags({ tags, query }: { tags?: string[]; query: string }) {
   return <p className="min-w-0 break-words text-xs text-muted line-clamp-2" title={`Matching tags: ${matches.join(', ')}`}><span className="font-medium">Tags · </span>{matches.join(', ')}</p>;
 }
 
-function Cover({ src, name, className }: { src?: string | null; name: string; className?: string }) {
+function Cover({ src, name, className, priority = false }: { src?: string | null; name: string; className?: string; priority?: boolean }) {
   const [failed, setFailed] = React.useState(false);
   React.useEffect(() => setFailed(false), [src]);
   // Covers may be absolute provider URLs or same-origin relative paths
@@ -99,7 +100,7 @@ function Cover({ src, name, className }: { src?: string | null; name: string; cl
   // (e.g. Kavita returns 404 because the cover file is missing on disk).
   const showImage = !failed && src !== null && src !== undefined && src !== '' && (/^https?:\/\//i.test(src) || src.startsWith('/'));
   if (showImage) {
-    return <img src={src} alt={name} className={cn('h-full w-full object-cover', className)} loading="lazy" decoding="async" onError={() => setFailed(true)} />;
+    return <img src={src} alt={name} className={cn('h-full w-full object-cover', className)} loading={priority ? 'eager' : 'lazy'} decoding="async" fetchPriority={priority ? 'high' : undefined} onError={() => setFailed(true)} />;
   }
   return (
     <div className={cn('flex h-full w-full items-center justify-center bg-surface-2 text-2xl font-semibold text-muted', className)}>
@@ -174,7 +175,7 @@ function CardActionMenu({ row, onPreview, onEdit, onUnmatch, onDelete }: { row: 
 
   return (
     <div ref={root} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }} className="absolute right-1.5 top-1.5 z-30">
-      <button ref={trigger} type="button" aria-label={`Actions for ${row.name}`} aria-haspopup="menu" aria-controls={open ? menuId : undefined} aria-expanded={open} onClick={() => { focusLast.current = false; setOpen((value) => !value); }} onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); focusLast.current = event.key === 'ArrowUp'; setOpen(true); } }} className="flex h-11 w-11 items-center justify-center rounded-md border border-border bg-surface/90 text-foreground transition-colors duration-150 hover:border-primary hover:bg-surface">
+      <button ref={trigger} type="button" aria-label={`Actions for ${row.name}`} aria-haspopup="menu" aria-controls={open ? menuId : undefined} aria-expanded={open} onClick={() => { focusLast.current = false; setOpen((value) => !value); }} onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); focusLast.current = event.key === 'ArrowUp'; setOpen(true); } }} className="ui-button-icon flex h-11 w-11 items-center justify-center rounded-md border border-border bg-surface/90 text-foreground transition-colors duration-150 hover:border-primary hover:bg-surface">
         <EllipsisVertical className="h-5 w-5" />
       </button>
       {open && (
@@ -188,7 +189,7 @@ function CardActionMenu({ row, onPreview, onEdit, onUnmatch, onDelete }: { row: 
               <p className="px-3 pb-1 pt-1.5 text-xs font-medium text-muted">More by this artist</p>
               {(Object.keys(ARTIST_SOURCE_META) as DoujinSource[]).map((source) => (
                 <button key={source} type="button" role="menuitem" tabIndex={-1} onClick={() => searchArtist(source)} className="flex max-lg:min-h-11 pointer-coarse:min-h-11 w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2">
-                  <img src={`/${ARTIST_SOURCE_META[source].icon}`} alt="" className="h-5 w-5 rounded object-contain" aria-hidden="true" />
+                  <img src={`/${ARTIST_SOURCE_META[source].icon}`} alt="" width={20} height={20} loading="lazy" decoding="async" className="h-5 w-5 rounded object-contain" aria-hidden="true" />
                   {ARTIST_SOURCE_META[source].label}
                 </button>
               ))}
@@ -262,6 +263,7 @@ interface SeriesCardProps {
   checked: boolean;
   flashed: boolean;
   query: string;
+  priority?: boolean;
   onOpen: (row: SeriesRow) => void;
   onToggle: (id: number) => void;
   onPreview: (row: SeriesRow) => void;
@@ -271,7 +273,7 @@ interface SeriesCardProps {
 }
 
 /** Memoized: polls keep unchanged rows referentially equal, and checking one card re-renders only that card. */
-const SeriesCard = React.memo(function SeriesCard({ row: r, bucket, review, selectMode, checked, flashed, query, onOpen, onToggle, onPreview, onEdit, onUnmatch, onDelete }: SeriesCardProps) {
+const SeriesCard = React.memo(function SeriesCard({ row: r, bucket, review, selectMode, checked, flashed, query, priority = false, onOpen, onToggle, onPreview, onEdit, onUnmatch, onDelete }: SeriesCardProps) {
   const action = cardAction(r, bucket);
   return (
     <Card
@@ -299,7 +301,7 @@ const SeriesCard = React.memo(function SeriesCard({ row: r, bucket, review, sele
           <span className={cn('pointer-events-none absolute left-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md border transition-colors duration-150', checked ? 'border-primary-button bg-primary-button text-white' : 'border-border-2 bg-surface text-muted')} aria-hidden>{checked ? <Check className="library-selection-check h-5 w-5" /> : <span className="h-4 w-4 rounded-sm border-2 border-current" />}</span>
         )}
         <div className="relative aspect-[3/4] w-full overflow-hidden rounded-t-xl">
-          <Cover src={r.cover} name={r.name} className="library-cover" />
+          <Cover src={r.cover} name={r.name} className="library-cover" priority={priority} />
           <PageCountPill pageCount={r.pageCount} className="absolute bottom-2 right-2" />
         </div>
         <div className="min-w-0 w-full px-3 pt-3">
@@ -348,20 +350,28 @@ function useLibraryMotion(state: string, filterKey: string) {
     const container = ref.current;
     if (!container) return;
     const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
+    if (filterChanged || preference.matches || document.hidden) {
+      previous.current = null;
+      return;
+    }
+    const elements = Array.from(container.querySelectorAll<HTMLElement>('[data-library-motion-id]'));
+    if (elements.length === 0 || elements.length > MOTION_MAX_ITEMS) {
+      previous.current = null;
+      return;
+    }
     const origin = container.getBoundingClientRect();
     const positions = new Map<string, { x: number; y: number }>();
     const animations: Animation[] = [];
     // Batch all DOM measurements before starting animations to avoid layout thrashing.
-    const measured = Array.from(container.querySelectorAll<HTMLElement>('[data-library-motion-id]')).map((element) => ({
+    const measured = elements.map((element) => ({
       element,
       id: element.dataset.libraryMotionId!,
       bounds: element.getBoundingClientRect(),
     }));
-    const animate = !filterChanged && measured.length <= MOTION_MAX_ITEMS;
     measured.forEach(({ element, id, bounds }) => {
       const position = { x: bounds.left - origin.left, y: bounds.top - origin.top };
       positions.set(id, position);
-      if (!animate || !previous.current || preference.matches || document.hidden || bounds.bottom < 0 || bounds.top > window.innerHeight || typeof element.animate !== 'function') return;
+      if (!previous.current || preference.matches || document.hidden || bounds.bottom < 0 || bounds.top > window.innerHeight || typeof element.animate !== 'function') return;
       const old = previous.current.get(id);
       const dx = old ? old.x - position.x : 0;
       const dy = old ? old.y - position.y : 0;
@@ -395,20 +405,26 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
 
+  const requestedSeries = Number(searchParams.get('series'));
+  const linkedSeriesId = Number.isSafeInteger(requestedSeries) && requestedSeries > 0 ? requestedSeries : null;
   const initialState = React.useMemo(readLibraryState, []);
-  const [selected, setSelected] = React.useState<number | null>(libraryId ? Number(libraryId) : null);
+  const [selected, setSelected] = React.useState<number | null>(() => {
+    if (libraryId) return Number(libraryId);
+    if (!review && linkedSeriesId === null && !searchParams.has('file')) return initialState.lastLibraryId ?? null;
+    return null;
+  });
   const [query, setQuery] = React.useState(review ? '' : initialState.query ?? '');
   const [statusFilter, setStatusFilter] = React.useState<LibraryStatusFilter>(() => review ? 'all' : normalizeStatusFilter(initialState.statusFilter));
   const [sortBy, setSortBy] = React.useState<LibrarySort>(() => review ? 'name' : normalizeSort(initialState.sortBy));
   const [checked, setChecked] = React.useState<Set<number>>(new Set());
-  const [identify, setIdentify] = React.useState<{ id: number; name: string; cover?: string | null } | null>(null);
+  const [identify, setIdentify] = React.useState<{ id: number; name: string; cover?: string | null; hasMatch?: boolean } | null>(null);
   const reviewQueue = React.useRef<SeriesRow[]>([]);
   const browseScroll = React.useRef(0);
   /** A filtered shelf is a work queue: opening any book lets you step through the rest. */
   const openIdentify = (row: SeriesRow, queue?: readonly SeriesRow[]) => {
     browseScroll.current = document.querySelector('main')?.scrollTop ?? 0;
     reviewQueue.current = queue ? [...queue] : review || statusFilter !== 'all' ? [...filtered] : [];
-    setIdentify({ id: row.id, name: row.name, cover: row.cover });
+    setIdentify({ id: row.id, name: row.name, cover: row.cover, hasMatch: Boolean(row.providerId) });
   };
   const closeIdentify = () => {
     setIdentify(null);
@@ -429,12 +445,14 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const [settledJobId, setSettledJobId] = React.useState<number | null>(null);
   const [flashIds, setFlashIds] = React.useState<ReadonlySet<number>>(new Set());
   const [bulkUnmatchOpen, setBulkUnmatchOpen] = React.useState(false);
+  const [confirmMounted, setConfirmMounted] = React.useState(false);
+  React.useEffect(() => {
+    if (unmatchTarget !== null || bulkUnmatchOpen || deleteTarget !== null) setConfirmMounted(true);
+  }, [unmatchTarget, bulkUnmatchOpen, deleteTarget]);
   /** Which books were waiting when a match run was queued, so its result can be summarised. */
   const matchBaseline = React.useRef<{ jobId: number; ids: Set<number> } | null>(null);
   const flashTimer = React.useRef<number | undefined>(undefined);
   React.useEffect(() => () => window.clearTimeout(flashTimer.current), []);
-  const requestedSeries = Number(searchParams.get('series'));
-  const linkedSeriesId = Number.isSafeInteger(requestedSeries) && requestedSeries > 0 ? requestedSeries : null;
   const linkedSeries = useQuery({ queryKey: ['series', linkedSeriesId], queryFn: () => api.series(linkedSeriesId!), enabled: linkedSeriesId !== null });
   const handledLink = React.useRef('');
   React.useEffect(() => {
@@ -449,7 +467,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
       setQuery(searchParams.get('q') ?? series.name);
       setStatusFilter('all');
       setPage(1);
-      const target = { id: series.id, name: series.name, cover: series.cover };
+      const target = { id: series.id, name: series.name, cover: series.cover, hasMatch: linkedSeries.data.match !== null };
       if (searchParams.get('action') === 'identify') setIdentify(target);
       if (searchParams.get('action') === 'comicinfo') setComicInfo(target);
       handledLink.current = key;
@@ -497,7 +515,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
     queryKey: ['library-series', review ? 'review' : selected],
     queryFn: () => review ? api.reviewSeries() : api.librarySeries(selected!),
     enabled: !needsConnection && (review || selected !== null),
-    refetchInterval: hasRelevantActiveJob && !identify ? 5000 : false,
+    refetchInterval: hasRelevantActiveJob && !identify ? 15_000 : false,
   });
   const currentMeta = useQuery({
     queryKey: ['series', identify?.id],
@@ -511,13 +529,16 @@ export function Libraries({ review = false }: { review?: boolean }) {
   });
 
 
-  // /libraries no longer has an "all" view — land on the first library once loaded.
+  // Land on the last visited library (or first available) once libraries load.
   React.useEffect(() => {
-    if (!review && selected === null && linkedSeriesId === null && libs.data && libs.data.length > 0) {
+    if (review || linkedSeriesId !== null || !libs.data || libs.data.length === 0) return;
+    if (selected === null || !libs.data.some((l) => l.id === selected)) {
       if (searchParams.has('file')) setSelected(libs.data[0].id);
       else navigate(`/libraries/${libs.data[0].id}${searchParams.size ? `?${searchParams}` : ''}`, { replace: true });
+    } else if (!libraryId && !searchParams.has('file')) {
+      navigate(`/libraries/${selected}${searchParams.size ? `?${searchParams}` : ''}`, { replace: true });
     }
-  }, [libs.data, selected, navigate, review, linkedSeriesId, searchParams]);
+  }, [libs.data, selected, libraryId, navigate, review, linkedSeriesId, searchParams]);
 
   const rows = series.data ?? EMPTY_SERIES;
   const threshold = reviewCount.data?.threshold ?? DEFAULT_REVIEW_THRESHOLD;
@@ -544,8 +565,11 @@ export function Libraries({ review = false }: { review?: boolean }) {
   };
   React.useEffect(() => {
     if (selected === null) return;
-    writeLibraryState({ pages: { ...(readLibraryState().pages ?? {}), [selected]: page } });
-  }, [selected, page]);
+    writeLibraryState({
+      ...(review ? {} : { lastLibraryId: selected }),
+      pages: { ...(readLibraryState().pages ?? {}), [selected]: page },
+    });
+  }, [selected, page, review]);
   const isFiltering = (!review && statusFilter !== 'all') || query !== '';
   const clearFilters = () => {
     setQuery('');
@@ -909,7 +933,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
               </Card>
             ) : (
               <div onKeyDown={gridKeys} className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-                {visibleRows.map(r => (
+                {visibleRows.map((r, index) => (
                   <SeriesCard
                     key={r.id}
                     row={r}
@@ -919,6 +943,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
                     checked={checked.has(r.id)}
                     flashed={flashIds.has(r.id)}
                     query={deferredQuery}
+                    priority={index < 6}
                     onOpen={openCard}
                     onToggle={toggleCheck}
                     onPreview={previewCard}
@@ -938,50 +963,55 @@ export function Libraries({ review = false }: { review?: boolean }) {
         )}
       </TabPanel>
 
-      <ConfirmDialog
-        open={unmatchTarget !== null}
-        title="Unmatch series?"
-        description={unmatchTarget ? `This removes the match and removes metadata and covers previously applied by H-Tosho from “${unmatchTarget.name}”.` : ''}
-        confirmLabel="Unmatch"
-        danger
-        pending={unmatch.isPending}
-        onOpenChange={(open) => { if (!open && !unmatch.isPending) setUnmatchTarget(null); }}
-        onConfirm={() => { if (unmatchTarget) unmatch.mutate(unmatchTarget); }}
-      />
-      <ConfirmDialog
-        open={bulkUnmatchOpen}
-        title={`Unmatch ${matchedSelected.length} series?`}
-        description="This removes each match and the metadata and covers previously applied by H-Tosho. Series without a match are skipped."
-        confirmLabel="Unmatch"
-        danger
-        pending={bulkUnmatch.isPending}
-        onOpenChange={(open) => { if (!open && !bulkUnmatch.isPending) setBulkUnmatchOpen(false); }}
-        onConfirm={() => bulkUnmatch.mutate(matchedSelected)}
-      />
-      <ConfirmDialog
-        open={deleteTarget !== null}
-        title="Delete series files?"
-        description={deleteTarget ? `This permanently deletes the folder containing “${deleteTarget.name}” and its .cbz files:` : ''}
-        details={deleteTarget ? (
-          <>
-            <code className="break-all rounded bg-surface-2 px-2 py-1.5 font-mono text-xs text-foreground">{deleteTarget.dir}</code>
-            <p>Kavita drops the series on its next scan. This cannot be undone.</p>
-          </>
-        ) : undefined}
-        confirmLabel="Delete"
-        danger
-        pending={deleteSeries.isPending}
-        onOpenChange={(open) => { if (!open && !deleteSeries.isPending) setDeleteTarget(null); }}
-        onConfirm={() => { if (deleteTarget) deleteSeries.mutate(deleteTarget); }}
-      />
       <React.Suspense fallback={null}>
+        {confirmMounted && (
+          <>
+            <ConfirmDialog
+              open={unmatchTarget !== null}
+              title="Unmatch series?"
+              description={unmatchTarget ? `This removes the match and removes metadata and covers previously applied by H-Tosho from “${unmatchTarget.name}”.` : ''}
+              confirmLabel="Unmatch"
+              danger
+              pending={unmatch.isPending}
+              onOpenChange={(open) => { if (!open && !unmatch.isPending) setUnmatchTarget(null); }}
+              onConfirm={() => { if (unmatchTarget) unmatch.mutate(unmatchTarget); }}
+            />
+            <ConfirmDialog
+              open={bulkUnmatchOpen}
+              title={`Unmatch ${matchedSelected.length} series?`}
+              description="This removes each match and the metadata and covers previously applied by H-Tosho. Series without a match are skipped."
+              confirmLabel="Unmatch"
+              danger
+              pending={bulkUnmatch.isPending}
+              onOpenChange={(open) => { if (!open && !bulkUnmatch.isPending) setBulkUnmatchOpen(false); }}
+              onConfirm={() => bulkUnmatch.mutate(matchedSelected)}
+            />
+            <ConfirmDialog
+              open={deleteTarget !== null}
+              title="Delete series files?"
+              description={deleteTarget ? `This permanently deletes the folder containing “${deleteTarget.name}” and its .cbz files:` : ''}
+              details={deleteTarget ? (
+                <>
+                  <code className="break-all rounded bg-surface-2 px-2 py-1.5 font-mono text-xs text-foreground">{deleteTarget.dir}</code>
+                  <p>Kavita drops the series on its next scan. This cannot be undone.</p>
+                </>
+              ) : undefined}
+              confirmLabel="Delete"
+              danger
+              pending={deleteSeries.isPending}
+              onOpenChange={(open) => { if (!open && !deleteSeries.isPending) setDeleteTarget(null); }}
+              onConfirm={() => { if (deleteTarget) deleteSeries.mutate(deleteTarget); }}
+            />
+          </>
+        )}
         {identify && (
           <IdentifyModal
             key={identify.id}
             reviewPosition={reviewIndex >= 0 ? `${reviewIndex + 1} of ${reviewQueue.current.length}` : undefined}
-            onNext={nextReview ? () => setIdentify({ id: nextReview.id, name: nextReview.name, cover: nextReview.cover }) : undefined}
+            onNext={nextReview ? () => setIdentify({ id: nextReview.id, name: nextReview.name, cover: nextReview.cover, hasMatch: Boolean(nextReview.providerId) }) : undefined}
             seriesId={identify.id}
             autoReview
+            hasMatch={identify.hasMatch}
             current={{
               name: currentMeta.data?.series.name ?? identify.name,
               metadata: currentMeta.data?.kavita ?? null,

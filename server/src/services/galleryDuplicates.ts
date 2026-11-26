@@ -161,13 +161,57 @@ function coreTitleKeys(identity: GalleryIdentity): Set<string> {
  * each identity's keys are derived once. Cached identities keep their object
  * across checks; the stored title guards against an identity being edited.
  */
-interface TitleKeySets { title: string; titleAlt: string | undefined; exact: Set<string>; core: Set<string>; index: Set<string> }
+interface TitleKeySets {
+  title: string;
+  titleAlt: string | undefined;
+  artistsRef: string[];
+  artistsLen: number;
+  language: string | null | undefined;
+  tagsRef: string[] | undefined;
+  edition: GalleryIdentity['edition'];
+  exact: Set<string>;
+  core: Set<string>;
+  index: Set<string>;
+  normalizedArtists: Set<string>;
+  langKey: string;
+  computedEdition: CensorshipEdition;
+}
 const titleKeyMemo = new WeakMap<GalleryIdentity, TitleKeySets>();
 function keySets(identity: GalleryIdentity): TitleKeySets {
   const hit = titleKeyMemo.get(identity);
-  if (hit && hit.title === identity.title && hit.titleAlt === identity.titleAlt) return hit;
+  if (
+    hit
+    && hit.title === identity.title
+    && hit.titleAlt === identity.titleAlt
+    && hit.artistsRef === identity.artists
+    && hit.artistsLen === identity.artists.length
+    && hit.language === identity.language
+    && hit.tagsRef === identity.tags
+    && hit.edition === identity.edition
+  ) {
+    return hit;
+  }
   const exact = titleKeys(identity), core = coreTitleKeys(identity);
-  const sets = { title: identity.title, titleAlt: identity.titleAlt, exact, core, index: new Set([...exact, ...core]) };
+  const normalizedArtists = new Set<string>();
+  for (const artist of identity.artists) {
+    const norm = normalize(artist);
+    if (norm) normalizedArtists.add(norm);
+  }
+  const sets: TitleKeySets = {
+    title: identity.title,
+    titleAlt: identity.titleAlt,
+    artistsRef: identity.artists,
+    artistsLen: identity.artists.length,
+    language: identity.language,
+    tagsRef: identity.tags,
+    edition: identity.edition,
+    exact,
+    core,
+    index: new Set([...exact, ...core]),
+    normalizedArtists,
+    langKey: languageKey(identity.language),
+    computedEdition: censorshipEdition([identity.title, identity.titleAlt ?? ''], [...identity.tags ?? [], ...(identity.edition ? [identity.edition] : [])]),
+  };
   titleKeyMemo.set(identity, sets);
   return sets;
 }
@@ -177,31 +221,49 @@ function indexTitleKeys(identity: GalleryIdentity): Set<string> {
   return keySets(identity).index;
 }
 
-const intersects = (a: Set<string>, b: Set<string>) => [...a].some(key => b.has(key));
+function intersects(a: Set<string>, b: Set<string>): boolean {
+  if (a.size > b.size) {
+    const tmp = a;
+    a = b;
+    b = tmp;
+  }
+  for (const key of a) if (b.has(key)) return true;
+  return false;
+}
+
+const LANGUAGE_ALIASES: Record<string, string> = {
+  en: 'english', eng: 'english',
+  ja: 'japanese', jp: 'japanese', jpn: 'japanese',
+  zh: 'chinese', zho: 'chinese', chi: 'chinese',
+  ko: 'korean', kor: 'korean',
+  de: 'german', deu: 'german', ger: 'german',
+  fr: 'french', fra: 'french', fre: 'french',
+  es: 'spanish', spa: 'spanish',
+};
+const IGNORED_LANGUAGES = new Set(['unknown', 'und', 'none']);
+
 function languageKey(value?: string | null): string {
   const key = normalize(value ?? '');
-  const aliases: Record<string, string> = { en: 'english', eng: 'english', ja: 'japanese', jp: 'japanese', jpn: 'japanese', zh: 'chinese', zho: 'chinese', chi: 'chinese', ko: 'korean', kor: 'korean', de: 'german', deu: 'german', ger: 'german', fr: 'french', fra: 'french', fre: 'french', es: 'spanish', spa: 'spanish' };
-  return ['unknown', 'und', 'none'].includes(key) ? '' : aliases[key] ?? key;
+  return IGNORED_LANGUAGES.has(key) ? '' : LANGUAGE_ALIASES[key] ?? key;
 }
 
 /** Conservative metadata evidence, never a claim of byte-identical content. */
 export function duplicateReasons(a: GalleryIdentity, b: GalleryIdentity): string[] {
-  const artists = new Set(b.artists.map(normalize).filter(Boolean));
-  if (!a.artists.some(artist => artists.has(normalize(artist)))) return [];
-  const languageA = languageKey(a.language), languageB = languageKey(b.language);
+  const keysA = keySets(a), keysB = keySets(b);
+  if (!intersects(keysA.normalizedArtists, keysB.normalizedArtists)) return [];
+  const languageA = keysA.langKey, languageB = keysB.langKey;
   if (languageA && languageB && languageA !== languageB) return [];
   if (a.pageCount && b.pageCount && a.pageCount !== b.pageCount) return [];
   const samePageCount = Boolean(a.pageCount && b.pageCount);
   // Exact titles stand on their own; a renamed or re-annotated title
   // ("(Mana) Ganyu" vs "Ganyu") also needs the identical page count.
-  const keysA = keySets(a), keysB = keySets(b);
   if (!intersects(keysA.exact, keysB.exact) && !(samePageCount && intersects(keysA.core, keysB.core))) return [];
   return ['Same title', 'Same artist', ...(languageA && languageB ? ['Same language'] : []), ...(samePageCount ? ['Same page count'] : [])];
 }
 
 /** Censorship edition of a gallery, from its titles and any tag-stated edition. */
 export function galleryEdition(identity: GalleryIdentity): CensorshipEdition {
-  return censorshipEdition([identity.title, identity.titleAlt ?? ''], [...identity.tags ?? [], ...(identity.edition ? [identity.edition] : [])]);
+  return keySets(identity).computedEdition;
 }
 
 function tagEdition(tags: readonly string[] | undefined): GalleryIdentity['edition'] {
@@ -226,12 +288,13 @@ function withoutCensorship(identity: GalleryIdentity): GalleryIdentity {
  * or drop a few credit pages. Never a claim about image content.
  */
 export function betterEditionReasons(incoming: GalleryIdentity, owned: GalleryIdentity): string[] {
-  if (galleryEdition(incoming) !== 'uncensored') return [];
-  const ownedEdition = galleryEdition(owned);
+  const incomingBase = keySets(incoming);
+  if (incomingBase.computedEdition !== 'uncensored') return [];
+  const ownedBase = keySets(owned);
+  const ownedEdition = ownedBase.computedEdition;
   if (ownedEdition !== 'censored' && ownedEdition !== 'unmarked') return [];
-  const artists = new Set(owned.artists.map(normalize).filter(Boolean));
-  if (!incoming.artists.some(artist => artists.has(normalize(artist)))) return [];
-  const languageA = languageKey(incoming.language), languageB = languageKey(owned.language);
+  if (!intersects(incomingBase.normalizedArtists, ownedBase.normalizedArtists)) return [];
+  const languageA = incomingBase.langKey, languageB = ownedBase.langKey;
   if (languageA && languageB && languageA !== languageB) return [];
   const a = withoutCensorship(incoming), b = withoutCensorship(owned);
   const pageGap = a.pageCount && b.pageCount ? Math.abs(a.pageCount - b.pageCount) : null;
@@ -368,8 +431,53 @@ let scannedAt = 0;
 let rootsKey = '';
 let availableFiles = new Set<string>();
 let warnings: string[] = [];
+/** Negative cache of archive mtime/size stamps that lacked comparable ComicInfo metadata. */
+const untaggedStamps = new Map<string, string>();
 /** Library contents or stored identities changed: rescan (within the cache window) and reload. */
 export function invalidateDuplicateLibrary(): void { scannedAt = 0; storedStale = true; }
+
+/** Incrementally record a newly completed archive without forcing a full library directory rescan. */
+export async function noteDownloadedArchive(filePath: string, gallery: DoujinGallery): Promise<void> {
+  const abs = path.resolve(filePath);
+  untaggedStamps.delete(abs);
+  let stat: fs.Stats;
+  try {
+    stat = await fs.promises.stat(abs);
+  } catch {
+    invalidateDuplicateLibrary();
+    return;
+  }
+  const stamp = `v5:${stat.mtimeMs}:${stat.size}`;
+  const artists = (gallery.artists ?? []).map((artist) => artist.trim()).filter(Boolean);
+  const keys = [...new Set([
+    galleryKey({ source: gallery.source, galleryId: gallery.galleryId }),
+    ...(gallery.url ? sourceKeys(gallery.url) : []),
+  ])];
+  if ((!gallery.title && !artists.length) && !keys.length) {
+    untaggedStamps.set(abs, stamp);
+    availableFiles.delete(abs);
+    return;
+  }
+  availableFiles.add(abs);
+  const edition = tagEdition(gallery.tags);
+  const originalFilename = path.basename(abs)
+    .replace(/\.cbz$/i, '')
+    .replace(/\s*\[(?:(?:hitomi|nhentai)-\d+|ehentai-[1-9]\d{0,9}-[0-9a-f]{10,12})\]$/i, '')
+    .trim();
+  saveIdentity({
+    source: 'library',
+    galleryId: abs,
+    path: abs,
+    title: gallery.title || originalFilename,
+    titleAlt: gallery.titleAlt ?? originalFilename,
+    artists,
+    language: gallery.language,
+    pageCount: gallery.pages.length || gallery.pageCount,
+    stamp,
+    sourceKeys: keys,
+    ...(edition ? { edition } : {}),
+  });
+}
 
 /** Learn folders from normal library browsing; downloading never waits for Kavita. */
 export function rememberDuplicateLibraryRoots(libraries: KavitaLibrary[]): void {
@@ -405,37 +513,65 @@ async function scanLibrary(): Promise<void> {
     // Folders that could not be listed: their archives may still exist, so
     // their cached identities are kept rather than pruned.
     const unreadable: string[] = [];
-    async function walk(dir: string): Promise<void> {
-      const absolute = path.resolve(dir);
-      if (visited.has(absolute)) return;
+    let wave: string[] = [];
+    for (const root of roots) {
+      const absolute = path.resolve(root);
+      if (visited.has(absolute)) continue;
       visited.add(absolute);
-      try {
-        const entries = await fs.promises.readdir(absolute, { withFileTypes: true });
-        for (const entry of entries) {
-          const file = path.join(absolute, entry.name);
-          if (entry.isDirectory() && !entry.name.startsWith('.')) await walk(file);
-          else if (entry.isFile() && /\.cbz$/i.test(entry.name)) files.add(file);
-        }
-      } catch (error) {
-        // A new output directory may not exist until the first download.
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { problems.push(`Could not check folder: ${absolute}`); unreadable.push(absolute); }
-        else if (absolute !== path.resolve(settings.downloadDirectory || '.')) { problems.push(`Library folder unavailable: ${absolute}`); unreadable.push(absolute); }
-      }
+      wave.push(absolute);
     }
-    for (const root of new Set(roots)) await walk(root);
+    while (wave.length) {
+      const nextWave: string[] = [];
+      await mapLimit(wave, 16, async (absolute) => {
+        try {
+          const entries = await fs.promises.readdir(absolute, { withFileTypes: true });
+          for (const entry of entries) {
+            const file = path.join(absolute, entry.name);
+            if (entry.isDirectory() && !entry.name.startsWith('.')) {
+              const sub = path.resolve(file);
+              if (!visited.has(sub)) {
+                visited.add(sub);
+                nextWave.push(sub);
+              }
+            } else if (entry.isFile() && /\.cbz$/i.test(entry.name)) {
+              files.add(file);
+            }
+          }
+        } catch (error) {
+          // A new output directory may not exist until the first download.
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { problems.push(`Could not check folder: ${absolute}`); unreadable.push(absolute); }
+          else if (absolute !== path.resolve(settings.downloadDirectory || '.')) { problems.push(`Library folder unavailable: ${absolute}`); unreadable.push(absolute); }
+        }
+      });
+      wave = nextWave;
+    }
     // Pick up rows written outside this module since the last check.
     storedStale = true;
     const previous = new Map<string, GalleryIdentity>();
     for (const { identity } of getStoredIndex().entries.values()) if (identity.path) previous.set(identity.path, identity);
     const updatedIdentities: GalleryIdentity[] = [];
-    await mapLimit([...files], 6, async file => {
+    const seenArchiveFiles = new Set(files);
+    await mapLimit([...seenArchiveFiles], 6, async file => {
       try {
         const stat = await fs.promises.stat(file);
         // v5 also reads the censorship edition stated by ComicInfo Tags.
         const stamp = `v5:${stat.mtimeMs}:${stat.size}`;
-        if (previous.get(file)?.stamp === stamp) return;
+        if (previous.get(file)?.stamp === stamp) {
+          untaggedStamps.delete(file);
+          return;
+        }
+        if (untaggedStamps.get(file) === stamp) {
+          missingMetadata++;
+          files.delete(file);
+          return;
+        }
         const { xml: raw, imageCount: count } = await readComicInfoAndImageCount(file);
-        if (!raw) { missingMetadata++; files.delete(file); return; }
+        if (!raw) {
+          untaggedStamps.set(file, stamp);
+          missingMetadata++;
+          files.delete(file);
+          return;
+        }
         const fields = parseComicInfo(raw).fields;
         const artists = `${fields.Artist ?? ''},${fields.Writer ?? ''}`.split(/[,;]/).map(artist => artist.trim()).filter(Boolean);
         const title = fields.Title?.trim() || fields.Series?.trim() || '';
@@ -448,7 +584,13 @@ async function scanLibrary(): Promise<void> {
           ...(filenameKey ? [`${filenameKey[1].toLowerCase()}:${filenameKey[2]}`] : []),
           ...(parsedEhId ? [`ehentai:${parsedEhId.canonicalId}`] : []),
         ])];
-        if ((!title || !artists.length) && !keys.length) { missingMetadata++; files.delete(file); return; }
+        if ((!title || !artists.length) && !keys.length) {
+          untaggedStamps.set(file, stamp);
+          missingMetadata++;
+          files.delete(file);
+          return;
+        }
+        untaggedStamps.delete(file);
         const originalFilename = baseName
           .replace(/\.cbz$/i, '')
           .replace(/\s*\[(?:(?:hitomi|nhentai)-\d+|ehentai-[1-9]\d{0,9}-[0-9a-f]{10,12})\]$/i, '')
@@ -457,6 +599,11 @@ async function scanLibrary(): Promise<void> {
         updatedIdentities.push({ source: 'library', galleryId: file, path: file, title: title || originalFilename, titleAlt: originalFilename, artists, language: fields.LanguageISO || fields.Language, pageCount: count, stamp, sourceKeys: keys, ...(edition ? { edition } : {}) });
       } catch { files.delete(file); problems.push(`Could not read archive metadata: ${file}`); }
     });
+    if (!unreadable.length) {
+      for (const cachedFile of untaggedStamps.keys()) {
+        if (!seenArchiveFiles.has(cachedFile)) untaggedStamps.delete(cachedFile);
+      }
+    }
     if (updatedIdentities.length) {
       getDb().transaction(() => {
         for (const identity of updatedIdentities) saveIdentity(identity);
@@ -627,15 +774,19 @@ function buildChecker(excludedPaths: string[], includeOwned: boolean, ownedIncom
       const itemKey = galleryKey(item);
       // Candidate order matches a full scan: stored rows by key, then the
       // checked items' own owned profiles, tag profiles, and the selection.
-      const titleMatches = new Set<GalleryIdentity>();
-      for (const title of indexTitleKeys(item)) {
+      const itemTitleKeys = indexTitleKeys(item);
+      const storedCandidates = new Set<GalleryIdentity>();
+      for (const title of itemTitleKeys) {
         const bucket = index.byTitle.get(title);
-        if (bucket) for (const candidate of inKeyOrder(index, [...bucket].filter(eligible))) titleMatches.add(candidate);
+        if (bucket) for (const candidate of bucket) if (eligible(candidate)) storedCandidates.add(candidate);
+      }
+      for (const candidate of index.bySourceKey.get(itemKey) ?? []) if (eligible(candidate)) storedCandidates.add(candidate);
+      if (includeOwned) for (const candidate of index.byGallery.get(itemKey) ?? []) if (eligible(candidate)) storedCandidates.add(candidate);
+      const titleMatches = new Set<GalleryIdentity>(inKeyOrder(index, storedCandidates));
+      for (const title of itemTitleKeys) {
         for (const candidate of local.get(title) ?? []) titleMatches.add(candidate);
         for (const candidate of incomingByTitle.get(title) ?? []) titleMatches.add(candidate);
       }
-      const direct = new Set([...index.bySourceKey.get(itemKey) ?? [], ...(includeOwned ? index.byGallery.get(itemKey) ?? [] : [])]);
-      for (const candidate of inKeyOrder(index, [...direct].filter(eligible))) titleMatches.add(candidate);
       for (const candidate of localDirect.get(itemKey) ?? []) titleMatches.add(candidate);
       for (const candidate of titleMatches) {
         const confirmed = !incomingSet.has(candidate) && (candidate.sourceKeys?.includes(itemKey) || (includeOwned && candidate.source === item.source && candidate.galleryId === item.galleryId));
@@ -672,21 +823,35 @@ export function findDuplicateReports(incoming: GalleryIdentity[], excludedPaths:
   return buildChecker(excludedPaths, includeOwned, incoming).check(incoming);
 }
 
-/**
- * Fast synchronous check against already-indexed local library archives and
- * cross-source download identities — never scans directories or contacts Kavita.
- */
-export function findKnownLibraryDuplicateKeys(incoming: GalleryIdentity[]): Set<string> {
-  if (!incoming.length) return new Set();
-  const db = getDb();
+export interface KnownLibraryDuplicateState {
+  index: StoredIndex;
+  owned: Set<string>;
+  tasks: Set<string>;
+}
+
+/** Snapshot stored duplicate index + ownership + active tasks once across batches. */
+export function createKnownLibraryDuplicateState(): KnownLibraryDuplicateState | null {
   const index = getStoredIndex();
-  if (!index.entries.size) return new Set();
+  if (!index.entries.size) return null;
+  const db = getDb();
   const owned = new Set(db.select({ source: schema.ownedGalleries.source, galleryId: schema.ownedGalleries.galleryId }).from(schema.ownedGalleries).all().map(galleryKey));
   const tasks = new Set(
     db.select({ source: schema.downloadQueue.source, galleryId: schema.downloadQueue.galleryId })
       .from(schema.downloadQueue).where(inArray(schema.downloadQueue.status, ACTIVE_TASK_STATUSES)).all()
       .map(galleryKey),
   );
+  return { index, owned, tasks };
+}
+
+/**
+ * Fast synchronous check against already-indexed local library archives and
+ * cross-source download identities — never scans directories or contacts Kavita.
+ */
+export function findKnownLibraryDuplicateKeys(incoming: GalleryIdentity[], preloadedState?: KnownLibraryDuplicateState | null): Set<string> {
+  if (!incoming.length) return new Set();
+  const state = preloadedState !== undefined ? preloadedState : createKnownLibraryDuplicateState();
+  if (!state) return new Set();
+  const { index, owned, tasks } = state;
   const eligible = (candidate: GalleryIdentity) => candidate.path ? true : owned.has(galleryKey(candidate)) || tasks.has(galleryKey(candidate));
   const existsCache = new Map<string, boolean>();
   const pathExists = (filePath: string): boolean => {
@@ -697,11 +862,15 @@ export function findKnownLibraryDuplicateKeys(incoming: GalleryIdentity[]): Set<
   const duplicates = new Set<string>();
   for (const item of incoming) {
     const key = galleryKey(item);
-    const direct = [...index.bySourceKey.get(key) ?? []].filter(eligible);
-    if (direct.some(candidate => !candidate.path || pathExists(candidate.path))) {
-      duplicates.add(key);
-      continue;
+    let directMatched = false;
+    for (const candidate of index.bySourceKey.get(key) ?? []) {
+      if (eligible(candidate) && (!candidate.path || pathExists(candidate.path))) {
+        duplicates.add(key);
+        directMatched = true;
+        break;
+      }
     }
+    if (directMatched) continue;
     const titleCandidates = new Set<GalleryIdentity>();
     for (const title of indexTitleKeys(item)) for (const candidate of index.byTitle.get(title) ?? []) if (eligible(candidate)) titleCandidates.add(candidate);
     for (const candidate of titleCandidates) {

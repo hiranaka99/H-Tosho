@@ -91,3 +91,78 @@ test('static cache policy: hashed assets and versioned files are immutable, publ
   assert.equal(staticCacheControl('/index.html', 'x'), 'no-cache');
   assert.equal(staticCacheControl('/manifest.webmanifest', undefined), 'no-cache');
 });
+
+test('/cbz/page revalidates via stat-based ETag before decompressing the archive', async () => {
+  const archive = path.join(root, 'page-etag.cbz');
+  fs.writeFileSync(archive, buildZip([{ name: '001.jpg', data: Buffer.from('cbz-page-bytes') }]));
+  const query = `path=${encodeURIComponent(archive)}&name=001.jpg`;
+  const first = await api.request(`/cbz/page?${query}`);
+  assert.equal(first.status, 200);
+  const etag = first.headers.get('etag');
+  assert.ok(etag);
+  assert.equal(Buffer.from(await first.arrayBuffer()).toString(), 'cbz-page-bytes');
+
+  const revalidated = await api.request(`/cbz/page?${query}`, { headers: { 'If-None-Match': etag } });
+  assert.equal(revalidated.status, 304);
+  assert.equal(revalidated.headers.get('etag'), etag);
+  assert.equal((await revalidated.arrayBuffer()).byteLength, 0);
+});
+
+test('kavita cover LRU + 304 invalidates on invalidateSeriesArtists and library series returns 304', async () => {
+  const { setKavitaConnection, getKavitaConnection } = await import('../src/services/settings.js');
+  const { invalidateSeriesArtists } = await import('../src/services/seriesArtists.js');
+  const previousConn = getKavitaConnection();
+  const originalFetch = globalThis.fetch;
+  let coverFetches = 0;
+  let seriesFetches = 0;
+  try {
+    setKavitaConnection({ baseUrl: 'https://cache-test.kavita.local', apiKey: 'cache-secret' });
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.includes('/Image/series-cover')) {
+        coverFetches++;
+        return new Response(Buffer.from(`png-bytes-${coverFetches}`), { status: 200, headers: { 'Content-Type': 'image/png' } });
+      }
+      if (url.includes('/Series/all-v2')) {
+        seriesFetches++;
+        return Response.json([{ id: 77, name: 'Cached Series', coverImage: 'cover.png' }]);
+      }
+      if (url.includes('/Series/metadata')) {
+        return Response.json({ seriesId: 77, pencillers: [], inkers: [], writers: [], tags: [] });
+      }
+      return new Response('not found', { status: 404 });
+    };
+
+    const cover1 = await api.request('/kavita/series/77/cover?v=1');
+    assert.equal(cover1.status, 200);
+    assert.equal(coverFetches, 1);
+    const coverEtag = cover1.headers.get('etag')!;
+    assert.ok(coverEtag);
+
+    const cover2 = await api.request('/kavita/series/77/cover?v=1');
+    assert.equal(cover2.status, 200);
+    assert.equal(coverFetches, 1, 'second cover request hits LRU cache');
+    assert.equal(cover2.headers.get('etag'), coverEtag);
+
+    const cover304 = await api.request('/kavita/series/77/cover?v=1', { headers: { 'If-None-Match': coverEtag } });
+    assert.equal(cover304.status, 304);
+    assert.equal(coverFetches, 1);
+
+    invalidateSeriesArtists(77);
+    const coverAfterInvalidate = await api.request('/kavita/series/77/cover?v=1');
+    assert.equal(coverAfterInvalidate.status, 200);
+    assert.equal(coverFetches, 2, 'invalidation clears cached series cover');
+
+    const series1 = await api.request('/kavita/libraries/1/series');
+    assert.equal(series1.status, 200);
+    assert.equal(seriesFetches, 1);
+    const seriesEtag = series1.headers.get('etag')!;
+    assert.ok(seriesEtag);
+    const series304 = await api.request('/kavita/libraries/1/series', { headers: { 'If-None-Match': seriesEtag } });
+    assert.equal(series304.status, 304);
+    assert.equal(series304.headers.get('etag'), seriesEtag);
+  } finally {
+    globalThis.fetch = originalFetch;
+    setKavitaConnection(previousConn);
+  }
+});

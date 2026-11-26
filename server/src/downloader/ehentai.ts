@@ -525,7 +525,7 @@ interface ParsedGalleryInfo {
 
 /** Extract a known element while retaining nested elements with the same tag. */
 function htmlElementById(html: string, id: string): { inner: string; tag: string } | null {
-  for (const open of html.matchAll(/<([a-z][a-z0-9]*)\b[^>]*>/gi)) {
+  for (const open of html.matchAll(/<([a-z][a-z0-9]*)\b[^>]*\bid\s*=[^>]*>/gi)) {
     if (htmlAttribute(open[0], 'id') !== id) continue;
     const tagName = open[1].toLowerCase();
     let tags = elementTagPatterns.get(tagName);
@@ -559,7 +559,7 @@ function viewerReference(raw: string, baseUrl: string): { url: string; gid: stri
   }
 }
 
-export function parseEhentaiGalleryPage(html: string, baseUrl: string): ParsedGalleryInfo {
+export function parseEhentaiGalleryPage(html: string, baseUrl: string, thumbsOnly = false): ParsedGalleryInfo {
   const title = htmlElementById(html, 'gn');
   if (!title || !stripTags(title.inner).trim()) throw new EhentaiUpstreamError('The E-Hentai gallery page did not contain gallery metadata (unavailable or expunged?).', 'parse');
   const info: ParsedGalleryInfo = {
@@ -581,50 +581,53 @@ export function parseEhentaiGalleryPage(html: string, baseUrl: string): ParsedGa
     coverUrl: null,
   };
 
-  const alt = htmlElementById(html, 'gj');
-  if (alt) info.titleAlt = stripTags(alt.inner).trim() || null;
-  const category = htmlElementById(html, 'gdc');
-  if (category) info.category = stripTags(category.inner).trim() || null;
   const details = htmlElementById(html, 'gdd');
   const fields = new Map<string, string>();
   for (const row of (details?.inner ?? '').matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
     const cells = [...row[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)];
     if (cells.length === 2) fields.set(stripTags(cells[0][1]).trim().replace(/:$/, ''), stripTags(cells[1][1]).trim());
   }
-  info.language = fields.get('Language')?.replace(/\s+(?:TR|RW)\b.*$/, '').trim() || null;
-  const posted = fields.get('Posted');
-  info.uploadedAt = posted ? parseUploadedAt(`${posted} +0000`) : null;
   info.pageCount = Number(/^(\d+) pages?$/.exec(fields.get('Length') ?? '')?.[1] ?? 0);
   if (!Number.isSafeInteger(info.pageCount) || info.pageCount < 1) throw new EhentaiUpstreamError('The E-Hentai gallery did not report a valid page count.', 'parse');
 
-  const tagBlock = htmlElementById(html, 'taglist');
-  if (tagBlock) {
-    for (const anchor of tagBlock.inner.matchAll(/<a\b([^>]*)>[\s\S]*?<\/a>/gi)) {
-      const href = htmlAttribute(anchor[0].slice(0, anchor[0].indexOf('>') + 1), 'href');
-      if (!href || !htmlAttribute(anchor[1], 'id')?.startsWith('ta_')) continue;
-      let value: string;
-      try {
-        const url = new URL(href, baseUrl);
-        if (!url.pathname.startsWith('/tag/')) continue;
-        value = decodeURIComponent(url.pathname.slice(5).replace(/\+/g, ' '));
-      } catch { continue; }
-      const colon = value.indexOf(':');
-      if (colon < 1) continue;
-      const namespace = value.slice(0, colon);
-      const name = value.slice(colon + 1).trim();
-      if (!name) continue;
-      info.tags.push(name);
-      info.tagNamespaces.push(namespace);
-      if (namespace === 'artist') info.artists.push(name);
-      else if (namespace === 'group') info.groups.push(name);
-      else if (namespace === 'parody') info.parodies.push(name);
-      else if (namespace === 'character') info.characters.push(name);
+  if (!thumbsOnly) {
+    const alt = htmlElementById(html, 'gj');
+    if (alt) info.titleAlt = stripTags(alt.inner).trim() || null;
+    const category = htmlElementById(html, 'gdc');
+    if (category) info.category = stripTags(category.inner).trim() || null;
+    info.language = fields.get('Language')?.replace(/\s+(?:TR|RW)\b.*$/, '').trim() || null;
+    const posted = fields.get('Posted');
+    info.uploadedAt = posted ? parseUploadedAt(`${posted} +0000`) : null;
+
+    const tagBlock = htmlElementById(html, 'taglist');
+    if (tagBlock) {
+      for (const anchor of tagBlock.inner.matchAll(/<a\b([^>]*)>[\s\S]*?<\/a>/gi)) {
+        const href = htmlAttribute(anchor[0].slice(0, anchor[0].indexOf('>') + 1), 'href');
+        if (!href || !htmlAttribute(anchor[1], 'id')?.startsWith('ta_')) continue;
+        let value: string;
+        try {
+          const url = new URL(href, baseUrl);
+          if (!url.pathname.startsWith('/tag/')) continue;
+          value = decodeURIComponent(url.pathname.slice(5).replace(/\+/g, ' '));
+        } catch { continue; }
+        const colon = value.indexOf(':');
+        if (colon < 1) continue;
+        const namespace = value.slice(0, colon);
+        const name = value.slice(colon + 1).trim();
+        if (!name) continue;
+        info.tags.push(name);
+        info.tagNamespaces.push(namespace);
+        if (namespace === 'artist') info.artists.push(name);
+        else if (namespace === 'group') info.groups.push(name);
+        else if (namespace === 'parody') info.parodies.push(name);
+        else if (namespace === 'character') info.characters.push(name);
+      }
     }
+    info.series = info.parodies[0] ?? null;
+    const cover = htmlElementById(html, 'gd1');
+    const coverUrl = cover ? /url\(\s*['"]?(https:\/\/[^\s)'"<>]+)/i.exec(cover.inner)?.[1] : null;
+    if (coverUrl) info.coverUrl = decodeEntities(coverUrl);
   }
-  info.series = info.parodies[0] ?? null;
-  const cover = htmlElementById(html, 'gd1');
-  const coverUrl = cover ? /url\(\s*['"]?(https:\/\/[^\s)'"<>]+)/i.exec(cover.inner)?.[1] : null;
-  if (coverUrl) info.coverUrl = decodeEntities(coverUrl);
 
   // Thumbnails can be CSS sprites: the viewer href identifies each page;
   // the sprite itself must never become a full-page preview image.
@@ -674,7 +677,7 @@ export const ehentaiProvider: DoujinProvider = {
     const prefix = (field ? field[2] : raw).replace(/^"|"$/g, '').trim();
     if (!namespace && prefix.length < 2) return [];
     const { site, session } = currentSession();
-    const response = await ehentaiTagSuggestions(namespace ? `${namespace}:${prefix}` : prefix, { site, session, signal });
+    const response = await ehentaiTagSuggestions(namespace ? `${namespace}:${prefix}` : prefix, { site, session, signal, maxWaitMs: 2500 });
     let data: { tags?: Record<string, { ns?: string; tn?: string }> };
     try { data = JSON.parse(response.body); } catch { throw new EhentaiUpstreamError('E-Hentai tag suggestions could not be read.', 'parse'); }
     if (!data || !data.tags || typeof data.tags !== 'object') return [];
@@ -734,7 +737,7 @@ export const ehentaiProvider: DoujinProvider = {
     const site: EhentaiSite = fromUrl?.site ?? accountSite;
     const url = `https://${ehentaiHost(site)}/g/${identity.gid}/${identity.token}/`;
 
-    const fetchPage = async (pageUrl: string): Promise<ParsedGalleryInfo> => {
+    const fetchPage = async (pageUrl: string, thumbsOnly = false): Promise<ParsedGalleryInfo> => {
       let response: EhentaiTextResponse;
       try {
         response = await ehentaiFetchText(pageUrl, 'html', { site, session, headers: { Referer: url } });
@@ -753,7 +756,7 @@ export const ehentaiProvider: DoujinProvider = {
         throw new EhentaiUpstreamError('The E-Hentai session could not open this gallery. Re-test the account in Settings.', 'denied', response.status);
       }
       if (response.status !== 200) throw new EhentaiUpstreamError('The E-Hentai gallery host returned an unexpected response.', 'unavailable', response.status);
-      return parseEhentaiGalleryPage(response.body, pageUrl);
+      return parseEhentaiGalleryPage(response.body, pageUrl, thumbsOnly);
     };
 
     const info = await fetchPage(url);
@@ -778,7 +781,7 @@ export const ehentaiProvider: DoujinProvider = {
         || next.searchParams.get('p') !== String(thumbnailPage) || [...next.searchParams.keys()].some((key) => key !== 'p')) {
         throw new EhentaiUpstreamError('The E-Hentai thumbnail continuation does not match this gallery.', 'parse');
       }
-      page = await fetchPage(next.toString());
+      page = await fetchPage(next.toString(), true);
     }
     info.pageRefs = refs;
 
@@ -894,7 +897,7 @@ export function parseEhentaiViewerImage(html: string, viewerUrl: string): string
   if (/exceeded your image viewing limits|image limit has been reached|quota exceeded/i.test(stripTags(html))) {
     throw new EhentaiUpstreamError('The E-Hentai image quota is exhausted for this account.', 'quota', 509);
   }
-  for (const image of html.matchAll(/<img\b[^>]*>/gi)) {
+  for (const image of html.matchAll(/<img\b[^>]*\bid\s*=[^>]*>/gi)) {
     if (htmlAttribute(image[0], 'id') !== 'img') continue;
     const src = htmlAttribute(image[0], 'src');
     if (!src) break;

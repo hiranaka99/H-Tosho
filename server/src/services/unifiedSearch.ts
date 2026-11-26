@@ -118,6 +118,7 @@ interface LaneState {
   /** hitomi/nhentai: numeric offset; ehentai: opaque provider cursor. */
   continuation: { offset?: number; cursor?: SearchCursor };
   buffer: Candidate[];
+  bufferHead: number;
   rank: number;
   retriesUsed: number;
 }
@@ -157,7 +158,9 @@ interface UnifiedSession {
   lastUsedAt: number;
 }
 
+const MAX_KEYS_PER_SESSION = 64;
 const sessions = new Map<SearchCursor, UnifiedSession>();
+const activeSessions = new Set<UnifiedSession>();
 
 function issueCursor(): SearchCursor {
   return randomBytes(24).toString('base64url');
@@ -168,32 +171,34 @@ function evictExpired(): void {
   // Dead sessions are kept (with their invalidation reason) until the idle
   // lifetime so a replayed cursor receives the specific error, not a generic
   // "expired".
-  for (const session of sessions.values()) {
+  for (const session of activeSessions) {
     if (t - session.lastUsedAt <= SESSION_IDLE_TTL_MS) continue;
     for (const key of session.keys) sessions.delete(key);
     session.keys.clear();
+    activeSessions.delete(session);
   }
-  if (sessions.size < MAX_SESSIONS * 2) return;
+  if (activeSessions.size <= MAX_SESSIONS) return;
   // Cap: drop least-recently-used sessions (their keys leave with them) until
   // back under the cap. Dead sessions only hold a replay error, so they go
   // first; dropping only alive ones let a burst of invalidated sessions keep
   // the map over the cap until the idle TTL.
-  const byAge = [...new Set(sessions.values())]
+  const byAge = [...activeSessions]
     .sort((a, b) => Number(!a.dead) - Number(!b.dead) || a.lastUsedAt - b.lastUsedAt);
   for (const session of byAge) {
-    if (sessions.size < MAX_SESSIONS * 2) break;
+    if (activeSessions.size <= MAX_SESSIONS) break;
     for (const key of session.keys) sessions.delete(key);
     session.keys.clear();
+    activeSessions.delete(session);
   }
 }
 
 // Account/site/exclusion cutover invalidates sessions immediately: old cursors
 // must not keep serving results from the previous account/settings.
 onEhentaiAccountChange(() => {
-  for (const session of sessions.values()) session.dead = 'The E-Hentai account changed; start the search again.';
+  for (const session of activeSessions) session.dead = 'The E-Hentai account changed; start the search again.';
 });
 onSettingChange('downloader', () => {
-  for (const session of sessions.values()) session.dead = 'Downloader settings changed; start the search again.';
+  for (const session of activeSessions) session.dead = 'Downloader settings changed; start the search again.';
 });
 
 function settingsFingerprint(): string {
@@ -250,7 +255,24 @@ function fingerprint(pub: PublicDoujinSearchResult): string | null {
 // ---------------- session lifecycle ----------------
 
 function makeLane(source: DoujinSource): LaneState {
-  return { source, phase: 'idle', retryable: false, continuation: {}, buffer: [], rank: 0, retriesUsed: 0 };
+  return { source, phase: 'idle', retryable: false, continuation: {}, buffer: [], bufferHead: 0, rank: 0, retriesUsed: 0 };
+}
+
+function laneAvailable(lane: LaneState): number {
+  return lane.buffer.length - lane.bufferHead;
+}
+
+function shiftLane(lane: LaneState): Candidate | undefined {
+  if (lane.bufferHead >= lane.buffer.length) return undefined;
+  const item = lane.buffer[lane.bufferHead++];
+  if (lane.bufferHead >= lane.buffer.length) {
+    lane.buffer.length = 0;
+    lane.bufferHead = 0;
+  } else if (lane.bufferHead >= 64) {
+    lane.buffer = lane.buffer.slice(lane.bufferHead);
+    lane.bufferHead = 0;
+  }
+  return item;
 }
 
 function newSession(query: string, principal: string | null, compiled: Record<DoujinSource, CompiledLaneQuery>): UnifiedSession {
@@ -300,8 +322,16 @@ function assertSessionLive(session: UnifiedSession, principal: string | null): v
 }
 
 function registerKey(session: UnifiedSession, cursor: SearchCursor): void {
+  activeSessions.add(session);
+  session.keys.delete(cursor);
   session.keys.add(cursor);
   sessions.set(cursor, session);
+  while (session.keys.size > MAX_KEYS_PER_SESSION) {
+    const oldest = session.keys.values().next().value;
+    if (oldest === undefined) break;
+    session.keys.delete(oldest);
+    sessions.delete(oldest);
+  }
 }
 
 // ---------------- lane fetching ----------------
@@ -338,25 +368,44 @@ function laneErrorInfo(error: unknown): { phase: LanePhase; message: string; ret
   return { phase: 'failed', message: 'The provider search failed. You can retry this source.', retryable: true };
 }
 
-function withDeadline<T>(promise: Promise<T>, ms: number, signal: AbortSignal): Promise<T> {
+function runWithDeadline<T>(ms: number, signal: AbortSignal, fn: (laneSignal: AbortSignal) => Promise<T>): Promise<T> {
+  if (signal.aborted) return Promise.reject(new DOMException('aborted', 'AbortError'));
+  const ac = new AbortController();
+  const onAbort = () => ac.abort(new DOMException('aborted', 'AbortError'));
+  signal.addEventListener('abort', onAbort, { once: true });
+  const timer = setTimeout(() => ac.abort(new DOMException('lane deadline', 'AbortError')), ms);
+  timer.unref?.();
+  let settled = false;
   return new Promise<T>((resolve, reject) => {
-    const fail = (error: Error) => {
+    const cleanup = () => {
       clearTimeout(timer);
       signal.removeEventListener('abort', onAbort);
-      reject(error);
     };
-    const timer = setTimeout(() => fail(new DOMException('lane deadline', 'AbortError')), ms);
-    const onAbort = () => fail(new DOMException('aborted', 'AbortError'));
-    if (signal.aborted) onAbort();
-    else signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        signal.removeEventListener('abort', onAbort);
-        resolve(value);
-      },
-      fail,
-    );
+    const onStop = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject((ac.signal.reason as Error) ?? new DOMException('aborted', 'AbortError'));
+    };
+    ac.signal.addEventListener('abort', onStop, { once: true });
+    Promise.resolve()
+      .then(() => fn(ac.signal))
+      .then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          ac.signal.removeEventListener('abort', onStop);
+          resolve(value);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          ac.signal.removeEventListener('abort', onStop);
+          reject(error);
+        },
+      );
   });
 }
 
@@ -378,7 +427,7 @@ function laneSkip(session: UnifiedSession, lane: LaneState): { phase: LanePhase;
 }
 
 /** Fetch one bounded chunk into a lane, after the applicability checks. */
-async function fetchLane(session: UnifiedSession, lane: LaneState, signal: AbortSignal): Promise<void> {
+async function fetchLane(session: UnifiedSession, lane: LaneState, signal: AbortSignal, pageLimit = DEFAULT_LIMIT): Promise<void> {
   const compiled = session.compiled[lane.source];
   const skip = laneSkip(session, lane);
   if (skip) {
@@ -388,17 +437,17 @@ async function fetchLane(session: UnifiedSession, lane: LaneState, signal: Abort
     return;
   }
   const provider = getDoujinProvider(lane.source)!;
-  const limit = Math.min(Math.max(1, DEFAULT_LIMIT), MAX_LIMIT);
+  const limit = Math.min(Math.max(1, pageLimit), MAX_LIMIT);
   const opts = lane.source === 'ehentai' && compiled.language ? { language: compiled.language } : undefined;
-  const fetchChunk = async (): Promise<SearchChunk<DoujinSearchResult>> => {
+  const fetchChunk = async (laneSignal: AbortSignal): Promise<SearchChunk<DoujinSearchResult>> => {
     if (provider.searchChunk) {
-      return provider.searchChunk(compiled.query, (lane.continuation.cursor as SearchCursor | undefined) ?? null, limit, 'default', opts, signal);
+      return provider.searchChunk(compiled.query, (lane.continuation.cursor as SearchCursor | undefined) ?? null, limit, 'default', opts, laneSignal);
     }
     // Offset-based sources (hitomi/nhentai): a bounded slice of the exact
     // page they already expose; the continuation is a server-held offset.
     const offset = lane.continuation.offset ?? 0;
-    const page = await provider.searchPage!(compiled.query, offset, limit, 'default');
-    const exhausted = offset + limit >= page.total;
+    const page = await provider.searchPage!(compiled.query, offset, limit, 'default', { exactTotal: false, signal: laneSignal });
+    const exhausted = offset + limit >= page.total || page.items.length === 0;
     return {
       items: page.items,
       nextCursor: exhausted ? null : String(offset + page.items.length),
@@ -407,7 +456,7 @@ async function fetchLane(session: UnifiedSession, lane: LaneState, signal: Abort
     };
   };
   try {
-    const chunk = await withDeadline(fetchChunk(), LANE_DEADLINE_MS, signal);
+    const chunk = await runWithDeadline(LANE_DEADLINE_MS, signal, fetchChunk);
     for (const item of chunk.items) {
       const pub = toPublicSearchResult(rewriteDoujinCover(item));
       if (!pub) continue;
@@ -492,7 +541,7 @@ const TERMINAL_PHASES: readonly string[] = ['exhausted', 'failed', 'unavailable'
 
 function allLanesSettled(session: UnifiedSession): boolean {
   return session.lanes.every((lane) =>
-    lane.buffer.length === 0 &&
+    laneAvailable(lane) === 0 &&
     (TERMINAL_PHASES.includes(lane.phase) || (lane.phase === 'success' && !hasContinuation(lane)))
   );
 }
@@ -503,8 +552,8 @@ export type UnifiedProgressListener = (progress: UnifiedSearchProgress) => void;
 /** Take up to `quota` fresh cards from the front of one lane's buffer. */
 function takeFromLane(session: UnifiedSession, lane: LaneState, quota: number, items: UnifiedSearchEntry[]): UnifiedSearchEntry[] {
   const taken: UnifiedSearchEntry[] = [];
-  while (taken.length < quota && lane.buffer.length) {
-    const { entry, fresh } = placeCandidate(session, lane.buffer.shift()!);
+  while (taken.length < quota && laneAvailable(lane) > 0) {
+    const { entry, fresh } = placeCandidate(session, shiftLane(lane)!);
     if (fresh && !session.delivered.has(entry.entryId)) {
       session.delivered.add(entry.entryId);
       taken.push(entry);
@@ -516,13 +565,14 @@ function takeFromLane(session: UnifiedSession, lane: LaneState, quota: number, i
 
 /** Updates for cards already delivered, excluding cards sent alongside them. */
 function drainUpdates(session: UnifiedSession, items: UnifiedSearchEntry[]): UnifiedSearchEntry[] {
+  const deliveredNow = items.length ? new Set(items.map((e) => e.entryId)) : null;
   const updates: UnifiedSearchEntry[] = [];
   for (const entryId of session.pendingUpdates) {
     const entry = session.entries.get(entryId);
     if (!entry) continue;
     // Variants of entries delivered in this same message are already
     // reflected in `items`; only announce updates for earlier deliveries.
-    if (items.some((e) => e.entryId === entryId)) continue;
+    if (deliveredNow?.has(entryId)) continue;
     updates.push(entry);
   }
   session.pendingUpdates.clear();
@@ -540,7 +590,7 @@ async function fetchIdleLanes(session: UnifiedSession, limit: number, signal: Ab
   const idle = session.lanes.filter((l) => l.phase === 'idle');
   if (!idle.length) return;
   if (!onProgress) {
-    await Promise.all(idle.map((lane) => fetchLane(session, lane, signal)));
+    await Promise.all(idle.map((lane) => fetchLane(session, lane, signal, limit)));
     return;
   }
   const running = new Set(idle.filter((lane) => !laneSkip(session, lane)));
@@ -556,10 +606,10 @@ async function fetchIdleLanes(session: UnifiedSession, limit: number, signal: Ab
   };
   // Skipped lanes settle without network work; announce them with the
   // lanes still searching so the client can show both straight away.
-  await Promise.all(idle.filter((lane) => !running.has(lane)).map((lane) => fetchLane(session, lane, signal)));
+  await Promise.all(idle.filter((lane) => !running.has(lane)).map((lane) => fetchLane(session, lane, signal, limit)));
   report([]);
   await Promise.all([...running].map(async (lane) => {
-    await fetchLane(session, lane, signal);
+    await fetchLane(session, lane, signal, limit);
     running.delete(lane);
     const fresh = lane.phase === 'success' || lane.phase === 'exhausted'
       ? takeFromLane(session, lane, Math.min(share, limit - items.length), items)
@@ -591,11 +641,11 @@ async function producePage(session: UnifiedSession, limit: number, signal: Abort
   }
 
   if (retryLane) {
-    await fetchLane(session, retryLane, signal);
+    await fetchLane(session, retryLane, signal, limit);
     const items: UnifiedSearchEntry[] = [];
     let taken = 0;
-    while (retryLane.buffer.length > 0 && taken < limit) {
-      const cand = retryLane.buffer.shift()!;
+    while (laneAvailable(retryLane) > 0 && taken < limit) {
+      const cand = shiftLane(retryLane)!;
       const { entry, fresh } = placeCandidate(session, cand);
       if (fresh && !session.delivered.has(entry.entryId)) {
         session.delivered.add(entry.entryId);
@@ -615,8 +665,8 @@ async function producePage(session: UnifiedSession, limit: number, signal: Abort
     let consumed = 0;
     for (const lane of session.lanes) {
       if (items.length >= limit) break;
-      if ((lane.phase === 'success' || lane.phase === 'exhausted') && lane.buffer.length) {
-        const cand = lane.buffer.shift()!;
+      if ((lane.phase === 'success' || lane.phase === 'exhausted') && laneAvailable(lane) > 0) {
+        const cand = shiftLane(lane)!;
         const { entry, fresh } = placeCandidate(session, cand);
         if (fresh && !session.delivered.has(entry.entryId)) {
           session.delivered.add(entry.entryId);
@@ -627,15 +677,15 @@ async function producePage(session: UnifiedSession, limit: number, signal: Abort
     }
     if (items.length >= limit || allLanesSettled(session)) break;
     // Buffers with leftovers are consumed on the next round without fetching.
-    const buffered = session.lanes.some((l) => (l.phase === 'success' || l.phase === 'exhausted') && l.buffer.length > 0);
+    const buffered = session.lanes.some((l) => (l.phase === 'success' || l.phase === 'exhausted') && laneAvailable(l) > 0);
     if (buffered) continue;
-    const needing = session.lanes.filter((l) => l.phase === 'success' && l.buffer.length === 0 && hasContinuation(l));
+    const needing = session.lanes.filter((l) => l.phase === 'success' && laneAvailable(l) === 0 && hasContinuation(l));
     if (!needing.length || extraChunks >= MAX_EXTRA_CHUNKS_PER_REQUEST) break;
     extraChunks += 1;
     const before = session.entries.size;
-    await Promise.all(needing.map((lane) => fetchLane(session, lane, signal)));
+    await Promise.all(needing.map((lane) => fetchLane(session, lane, signal, limit)));
     // Nothing consumed and the fetches added nothing: stop rather than spin.
-    if (!consumed && session.entries.size === before && needing.every((l) => l.buffer.length === 0 && l.phase !== 'success')) break;
+    if (!consumed && session.entries.size === before && needing.every((l) => laneAvailable(l) === 0 && l.phase !== 'success')) break;
   }
 
   return finishPage(session, items);
@@ -664,11 +714,11 @@ function finishPage(session: UnifiedSession, items: UnifiedSearchEntry[]): Unifi
   // A lane that never ran (unconfigured account, uncompilable query, input
   // that does not apply) cannot block an exact total; failed lanes can.
   const applicable = session.lanes.filter((l) => !['not-applicable', 'not-configured', 'unsupported-query'].includes(l.phase));
-  const allExhausted = applicable.length > 0 && applicable.every((l) => l.phase === 'exhausted' && l.buffer.length === 0);
+  const allExhausted = applicable.length > 0 && applicable.every((l) => l.phase === 'exhausted' && laneAvailable(l) === 0);
   // hasMore = another page can deliver new entries without an explicit retry.
   // Retryable failed lanes are surfaced through their status chips instead.
   const canYieldMore = session.lanes.some((l) =>
-    ((l.phase === 'success' || l.phase === 'exhausted') && l.buffer.length > 0) ||
+    ((l.phase === 'success' || l.phase === 'exhausted') && laneAvailable(l) > 0) ||
     (l.phase === 'success' && hasContinuation(l)));
   const hasMore = canYieldMore && session.entries.size < MAX_ENTRIES_PER_SESSION;
   const retryablePending = session.lanes.some((l) => l.retryable && (l.phase === 'failed' || l.phase === 'unavailable' || l.phase === 'rate-limited'));
@@ -708,7 +758,7 @@ async function produceUrlPage(source: DoujinSource, url: string, signal: AbortSi
   };
   let gallery: DoujinSearchResult;
   try {
-    gallery = await withDeadline(provider.getGallery(url), LANE_DEADLINE_MS, signal);
+    gallery = await runWithDeadline(LANE_DEADLINE_MS, signal, () => provider.getGallery(url));
   } catch (error) {
     const info = laneErrorInfo(error);
     states[source] = { phase: info.phase === 'rate-limited' ? 'rate-limited' : 'failed', message: info.message };

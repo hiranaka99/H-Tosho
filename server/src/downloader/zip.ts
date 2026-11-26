@@ -62,8 +62,8 @@ function encodeEntryWithPayload(
     throw new Error('Archive exceeds the 4 GiB CBZ limit; use Image folder format for galleries this large.');
   }
 
-  // Local file header (30 bytes + name).
-  const local = Buffer.alloc(30 + nameBuf.length);
+  // Local file header (30 bytes + name). Every byte is written below.
+  const local = Buffer.allocUnsafe(30 + nameBuf.length);
   local.writeUInt32LE(0x04034b50, 0); // signature
   local.writeUInt16LE(20, 4); // version needed to extract
   local.writeUInt16LE(0x0800, 6); // general purpose flags: UTF-8 name
@@ -77,8 +77,8 @@ function encodeEntryWithPayload(
   local.writeUInt16LE(0, 28); // extra field length
   nameBuf.copy(local, 30);
 
-  // Central directory record (46 bytes + name).
-  const central = Buffer.alloc(46 + nameBuf.length);
+  // Central directory record (46 bytes + name). Every byte is written below.
+  const central = Buffer.allocUnsafe(46 + nameBuf.length);
   central.writeUInt32LE(0x02014b50, 0); // signature
   central.writeUInt16LE(20, 4); // version made by
   central.writeUInt16LE(20, 6); // version needed to extract
@@ -156,7 +156,7 @@ const STORE_EXTENSIONS: Record<string, true> = {
 };
 
 function endOfCentralDirectory(count: number, centralStart: number, centralSize: number): Buffer {
-  const eocd = Buffer.alloc(22);
+  const eocd = Buffer.allocUnsafe(22);
   eocd.writeUInt32LE(0x06054b50, 0); // signature
   eocd.writeUInt16LE(0, 4); // disk number
   eocd.writeUInt16LE(0, 6); // disk with central dir
@@ -217,7 +217,8 @@ export async function buildZipFromFiles(
     throw error;
   }
   let failure: unknown;
-  let pending: Promise<Buffer> | null = null;
+  const READ_AHEAD = 4;
+  const pendingReads = new Map<number, Promise<Buffer>>();
   try {
     let offset = 0;
     const central: Buffer[] = [];
@@ -246,19 +247,21 @@ export async function buildZipFromFiles(
       await writeEntry(spec.local, spec.payload);
       central.push(spec.central);
     };
-    const readAhead = (index: number): Promise<Buffer> | null => {
-      if (index >= files.length) return null;
+    const enqueueRead = (index: number): void => {
+      if (index >= files.length || pendingReads.has(index) || signal?.aborted) return;
       const read = fs.promises.readFile(files[index].path);
-      read.catch(() => {}); // observed when awaited; never an unhandled rejection after an abort
-      return read;
+      read.catch(() => {}); // observed when awaited or settled below; never an unhandled rejection after an abort
+      pendingReads.set(index, read);
     };
 
-    pending = readAhead(0);
+    for (let i = 0; i < Math.min(READ_AHEAD, files.length); i++) enqueueRead(i);
     for (let index = 0; index < files.length; index++) {
       signal?.throwIfAborted();
       const f = files[index];
-      const data = await pending!;
-      pending = readAhead(index + 1);
+      enqueueRead(index);
+      const data = await pendingReads.get(index)!;
+      pendingReads.delete(index);
+      enqueueRead(index + READ_AHEAD);
       const ext = f.name.slice(f.name.lastIndexOf('.') + 1).toLowerCase();
       await append(f.name, data, !STORE_EXTENSIONS[ext]);
     }
@@ -275,8 +278,8 @@ export async function buildZipFromFiles(
   } catch (error) {
     failure = error;
   }
-  // Let an in-flight read-ahead settle before the staging area is torn down.
-  if (pending) await (pending as Promise<Buffer>).catch(() => undefined);
+  // Let any in-flight read-aheads settle before the staging area is torn down.
+  if (pendingReads.size > 0) await Promise.allSettled(pendingReads.values());
   try {
     await out.close();
   } catch (error) {
