@@ -622,7 +622,8 @@ test('restore Tasks show verified fields and send failed restores back to series
   await page.route('**/api/jobs/91', route => route.fulfill({ json: { job: completed, logs: [] } }));
   await page.route('**/api/jobs/92', route => route.fulfill({ json: { job: failed, logs: [] } }));
   await page.route('**/api/jobs/93', route => route.fulfill({ json: { job: archiveOnly, logs: [] } }));
-  await navigate(page, 'Tasks');
+  // Start with a fresh jobs cache so the sidebar's first read uses the fixture.
+  await page.goto('/jobs');
   // The failed restore needs attention, so Tasks opens there; the completed restores are under All.
   await page.getByRole('tab', { name: /^All/ }).click();
   await expect(page.getByText('Restored: Summary, Tags', { exact: true })).toBeVisible();

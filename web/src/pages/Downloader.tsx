@@ -80,7 +80,6 @@ const NativeSearchCard = React.memo(function NativeSearchCard({
   isFetching,
   translationNotice,
   searchInControl,
-  draftQueryRef,
   onDraftChange,
   onCommit,
   onSortChange,
@@ -91,37 +90,13 @@ const NativeSearchCard = React.memo(function NativeSearchCard({
   isFetching: boolean;
   translationNotice: { query: string; issues: string[] } | null;
   searchInControl: React.ReactNode;
-  draftQueryRef: React.MutableRefObject<string>;
   onDraftChange: (next: string) => void;
   onCommit: (raw: string) => void;
   onSortChange: (next: DoujinSort) => void;
 }) {
-  const [draftQuery, setDraftQuery] = React.useState(query);
-  const syncedQueryRef = React.useRef(query);
-  draftQueryRef.current = draftQuery;
-
-  React.useEffect(() => {
-    if (query !== syncedQueryRef.current) {
-      syncedQueryRef.current = query;
-      draftQueryRef.current = query;
-      setDraftQuery(query);
-    }
-  }, [query, draftQueryRef]);
-
-  React.useEffect(() => {
-    if (draftQuery === syncedQueryRef.current) return;
-    const timer = window.setTimeout(() => {
-      syncedQueryRef.current = draftQuery;
-      onDraftChange(draftQuery);
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [draftQuery, onDraftChange]);
-
   const runSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    syncedQueryRef.current = draftQuery;
-    draftQueryRef.current = draftQuery;
-    onCommit(draftQuery);
+    onCommit(query);
   };
 
   return (
@@ -130,8 +105,8 @@ const NativeSearchCard = React.memo(function NativeSearchCard({
         {searchInControl}
         <form onSubmit={runSearch} className="flex flex-col gap-2 sm:flex-row">
           <div className="flex min-w-0 flex-1 gap-2">
-            <GallerySearchInput value={draftQuery} onChange={setDraftQuery} source={source} label="Search galleries" describedBy="search-hint" placeholder="Keyword, tag, artist, gallery ID or URL…" clearLabel="Clear search input" className="h-11" />
-            <Button className="h-11 shrink-0" type="submit" disabled={isFetching || !draftQuery.trim()}>
+            <GallerySearchInput value={query} onChange={onDraftChange} source={source} label="Search galleries" describedBy="search-hint" placeholder="Keyword, tag, artist, gallery ID or URL…" clearLabel="Clear search input" className="h-11" />
+            <Button className="h-11 shrink-0" type="submit" disabled={isFetching || !query.trim()}>
               {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} Search
             </Button>
           </div>
@@ -151,7 +126,7 @@ const NativeSearchCard = React.memo(function NativeSearchCard({
           )}
         </form>
         <SearchHint id="search-hint" />
-        {translationNotice?.query === draftQuery && translationNotice.issues.length > 0 && <p role="status" aria-label="Search query translation" className="break-words text-sm text-muted">{translationNotice.issues.join(' ')} Review the query, then choose Search.</p>}
+        {translationNotice?.query === query && translationNotice.issues.length > 0 && <p role="status" aria-label="Search query translation" className="break-words text-sm text-muted">{translationNotice.issues.join(' ')} Review the query, then choose Search.</p>}
       </CardContent>
     </Card>
   );
@@ -201,15 +176,9 @@ export function Downloader() {
       sort: sortsFor(initialSource).some(option => option.value === saved?.sort) ? saved!.sort : 'default' };
   });
   const { source, query, searchKey, sort } = searchState;
-  const draftQueryRef = React.useRef(query);
-  const setQuery = React.useCallback((next: string) => {
-    draftQueryRef.current = next;
-    dispatchSearch({ type: 'input', query: next });
-  }, []);
   const onNativeDraft = React.useCallback((next: string) => dispatchSearch({ type: 'input', query: next }), []);
   const onNativeCommit = React.useCallback((raw: string) => {
     const trimmed = raw.trim();
-    dispatchSearch({ type: 'input', query: raw });
     if (trimmed) dispatchSearch({ type: 'commit', query: trimmed });
   }, []);
   const onNativeSort = React.useCallback((next: DoujinSort) => dispatchSearch({ type: 'sort', sort: next }), []);
@@ -220,7 +189,7 @@ export function Downloader() {
     return saved?.to === source ? { query: saved.output.query, issues: saved.issues } : null;
   });
   function rememberSearch() {
-    searches.current = { ...searches.current, [source]: { query: draftQueryRef.current, searchKey, sort } };
+    searches.current = { ...searches.current, [source]: { query, searchKey, sort } };
   }
   const deepLink = JSON.stringify([searchParams.get('source'), linkedQuery]);
   const previousDeepLink = React.useRef(deepLink);
@@ -235,7 +204,6 @@ export function Downloader() {
     rememberSearch();
     translation.current = null;
     setTranslationNotice(null);
-    draftQueryRef.current = nextQuery;
     dispatchSearch({ type: 'replace', state: { source: nextSource, query: nextQuery, searchKey: trimmed || null, sort: sortsFor(nextSource).some(option => option.value === sort) ? sort : 'default' } });
     setScope(nextSource);
     setSelected(null);
@@ -580,7 +548,6 @@ export function Downloader() {
     translation.current = null;
     setTranslationNotice(null);
     const nextSource = itemSource ?? source;
-    draftQueryRef.current = trimmed;
     dispatchSearch({ type: 'replace', state: { source: nextSource, query: trimmed, searchKey: trimmed, sort: sortsFor(nextSource).some(option => option.value === sort) ? sort : 'default' } });
     setScope(nextSource);
     setTab('search');
@@ -591,11 +558,9 @@ export function Downloader() {
   function switchSource(next: DoujinSource) {
     if (next === source) return;
     rememberSearch();
-    const currentQuery = draftQueryRef.current;
-    const translated = switchProviderSearch({ query: currentQuery, searchKey, sort }, source, next, translation.current);
+    const translated = switchProviderSearch({ query, searchKey, sort }, source, next, translation.current);
     translation.current = translated.link;
     setTranslationNotice({ query: translated.search.query, issues: translated.issues });
-    draftQueryRef.current = translated.search.query;
     dispatchSearch({ type: 'replace', state: { ...translated.search, source: next } });
     // A consumed deep link must not overwrite the restored draft on refresh.
     setSearchParams(current => {
@@ -609,15 +574,14 @@ export function Downloader() {
   /** Moving between scopes carries a typed-but-unsent query along instead of dropping it. */
   const changeScope = useStableHandler((next: SearchScope) => {
     if (next === scope) return;
-    const currentQuery = draftQueryRef.current;
     if (next === 'all') {
-      if (!unified.draft.trim() && currentQuery.trim()) unified.setDraft(currentQuery.trim());
+      if (!unified.draft.trim() && query.trim()) unified.setDraft(query.trim());
       setScope('all');
       return;
     }
-    const carried = scope === 'all' && !currentQuery.trim() && unified.draft.trim() ? unified.draft : null;
+    const carried = scope === 'all' && !query.trim() && unified.draft.trim() ? unified.draft : null;
     if (next !== source) switchSource(next);
-    if (carried) setQuery(carried);
+    if (carried) onNativeDraft(carried);
     setScope(next);
   });
   const scopeItems = React.useMemo(() => [{ id: 'all' as SearchScope, label: 'All sources' }, ...sources.map(item => ({ id: item.id as SearchScope, label: item.label }))], [sources]);
@@ -792,7 +756,6 @@ export function Downloader() {
         isFetching={isFetching}
         translationNotice={translationNotice}
         searchInControl={searchInControl}
-        draftQueryRef={draftQueryRef}
         onDraftChange={onNativeDraft}
         onCommit={onNativeCommit}
         onSortChange={onNativeSort}

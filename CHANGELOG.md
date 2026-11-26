@@ -1,5 +1,14 @@
 # Changelog
 
+## v4.3.2
+
+This patch makes large libraries, download queues, and metadata review more responsive.
+
+- **Faster library and metadata workflows.** Batch and cache repeated lookups for library matches, covers, recommendations, and provider metadata. Reduce database work and prune old metadata records in batches.
+- **More efficient downloads and search.** Reduce repeated provider requests and queue updates, streamline archive and merge work, and batch download progress updates in the browser.
+- **More responsive screens.** Reduce background work and unnecessary updates across Home, Libraries, Tasks, Settings, and the downloader.
+- **Identify cover review.** Covers already applied to Kavita are labeled as such and left out of the pending changes. Select **Apply it again** to reapply a cover.
+
 ## v4.3.1
 
 - Fix a startup database migration crash (`no such table: main.match_updates`) when upgrading

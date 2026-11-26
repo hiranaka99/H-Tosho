@@ -43,6 +43,7 @@ async function runFixtureCheck(page: Page, query: string) {
   await expect.poll(async () => (await (await page.request.get(`/api/jobs/${id}`)).json()).job.status, { timeout: 15_000 }).toBe('completed');
   await page.reload();
   await page.getByRole('button', { name: /^Manage watches/ }).click();
+  await expect(page.getByRole('dialog', { name: 'Manage watches' })).toBeVisible();
 }
 
 test('Following organizes watches, recovers revisions, checks paused watches and retains readable provenance', async ({ page }, testInfo) => {
