@@ -219,11 +219,11 @@ export default function App() {
     <div className="flex min-h-0 h-full flex-col overflow-hidden lg:flex-row">
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-lg focus:border focus:border-border-2 focus:bg-surface focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-primary focus:shadow-lg">Skip to content</a>
       <RecommendationLoader />
-      <header aria-hidden={navOpen && !isDesktop ? true : undefined} className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-sidebar px-3 pt-[env(safe-area-inset-top)] sm:px-4 lg:hidden">
-        {!isDesktop && <Brand />}
-        <Button ref={navToggleRef} size="icon" variant="ghost" aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="app-navigation" tabIndex={navOpen ? -1 : 0} onClick={() => setNavOpen((v) => !v)}>
+      <header aria-hidden={navOpen && !isDesktop ? true : undefined} className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-sidebar px-3 pt-[env(safe-area-inset-top)] sm:px-4 lg:hidden">
+        <Button ref={navToggleRef} size="icon" variant="ghost" className="shrink-0" aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="app-navigation" tabIndex={navOpen ? -1 : 0} onClick={() => setNavOpen((v) => !v)}>
           {navOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </Button>
+        {!isDesktop && <Brand />}
       </header>
       <div aria-hidden="true" data-state={navOpen ? 'open' : 'closed'} className="app-nav-scrim fixed inset-x-0 bottom-0 top-14 z-30 bg-black/40 lg:hidden" onClick={() => setNavOpen(false)} />
       <aside ref={sidebarRef} id="app-navigation" role={!isDesktop && navOpen ? 'dialog' : undefined} aria-modal={!isDesktop && navOpen ? true : undefined} aria-label="Navigation" onKeyDown={onNavKeyDown} onTransitionEnd={event => {

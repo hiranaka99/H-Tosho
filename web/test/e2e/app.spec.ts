@@ -82,6 +82,44 @@ test('login, lazy page navigation, deep links, theme and logout work', async ({ 
   expect(errors).toEqual([]);
 });
 
+test('mobile header places the navigation trigger on the left and brand on the right', async ({ page }, testInfo) => {
+  const isDesktop = testInfo.project.name === 'desktop';
+  if (isDesktop) await page.setViewportSize({ width: 768, height: 1024 });
+  const header = page.locator('header');
+  const toggle = header.getByRole('button', { name: 'Open navigation', exact: true });
+  const brandText = header.getByText('H-Tosho', { exact: true });
+  const brand = header.locator(':scope > div').filter({ has: page.getByText('H-Tosho', { exact: true }) });
+  await expect(toggle).toBeVisible();
+  await expect(brandText).toBeVisible();
+
+  const headerBox = await header.boundingBox();
+  const toggleBox = await toggle.boundingBox();
+  const brandBox = await brand.boundingBox();
+  expect(headerBox).not.toBeNull();
+  expect(toggleBox).not.toBeNull();
+  expect(brandBox).not.toBeNull();
+
+  expect(Math.round(toggleBox!.width)).toBeGreaterThanOrEqual(44);
+  expect(Math.round(toggleBox!.height)).toBeGreaterThanOrEqual(44);
+  expect(toggleBox!.x + toggleBox!.width).toBeLessThanOrEqual(brandBox!.x);
+  expect(toggleBox!.x - headerBox!.x).toBeLessThan(headerBox!.width / 4);
+  expect(brandBox!.x).toBeGreaterThan(headerBox!.x + headerBox!.width / 2);
+  expect((headerBox!.x + headerBox!.width) - (brandBox!.x + brandBox!.width)).toBeLessThanOrEqual(24);
+  expect(await header.evaluate(el => el.scrollWidth <= el.clientWidth)).toBeTruthy();
+
+  await toggle.click();
+  const drawer = page.getByRole('dialog', { name: 'Navigation', exact: true });
+  await expect(drawer).toBeVisible();
+  await expect.poll(async () => Math.round((await drawer.boundingBox())?.x ?? -1)).toBe(0);
+
+  await drawer.getByRole('button', { name: 'Close navigation', exact: true }).click();
+  await expect(drawer).toHaveCount(0);
+  await expect(page.locator('#app-navigation')).toBeHidden();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(toggle).toBeFocused();
+  if (isDesktop) await page.setViewportSize({ width: 1280, height: 720 });
+});
+
 test('unsaved settings can stay, discard, or save before navigating', async ({ page }) => {
   await navigate(page, 'Settings');
   const interval = page.getByLabel('Hours between background scans', { exact: true });
