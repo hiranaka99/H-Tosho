@@ -7,9 +7,11 @@ const mangaDexWork = '12345678-1234-4234-8234-123456789abc';
 const artist = (provider: string) => ({ providerId: provider, artistId: provider === 'anilist' ? '126726' : mangaDexArtist, name: provider === 'anilist' ? 'Yuu Ichinomiya' : 'Ichinomiya Yuu', aliases: [], url: provider === 'anilist' ? 'https://anilist.co/staff/126726' : `https://mangadex.org/author/${mangaDexArtist}` });
 const work = (provider: string, page = 1) => ({ providerId: provider, providerSeriesId: provider === 'anilist' ? String(400 + page) : mangaDexWork, title: page === 1 ? 'An unexpected catalogue title' : 'The work found on the second page', type: 'MANGA', year: 2020, coverUrl: '/__test__/artist-cover.svg?number=1' });
 let applyRequests: unknown[];
+let appliedCoverUrl: string | null;
 
 test.beforeEach(async ({ page }) => {
   applyRequests = [];
+  appliedCoverUrl = null;
   // Synthetic cover fixtures exercise image sizing without external providers.
   await page.route('**/__test__/artist-cover.svg?*', route => {
     const number = new URL(route.request().url()).searchParams.get('number') ?? '1';
@@ -24,6 +26,7 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/recommendations', route => route.fulfill({ json: { items: [], ownedKeys: [], dismissedKeys: [], mode: 'popular' } }));
   await page.route('**/api/series/11', route => route.fulfill({ json: { series: { id: 11, libraryId: 7, name: 'A difficult local gallery name' }, match: null, kavita: { summary: 'Original metadata', pencillers: [{ id: 1, name: 'Yuu Ichinomiya' }], writers: [], genres: [], tags: [] } } }));
   await page.route('**/api/series/11/identify', route => route.fulfill({ json: { candidates: [], best: null, searchedProviders: ['anilist', 'mangadex'], errors: {}, matched: false } }));
+  await page.route('**/api/series/11/applied-cover', route => route.fulfill({ json: { coverUrl: appliedCoverUrl, volumeCoverUrls: appliedCoverUrl ? [] : null } }));
   await page.route('**/api/series/11/apply', async route => { applyRequests.push(route.request().postDataJSON()); await route.fulfill({ json: { id: 99 } }); });
   await page.route('**/api/providers/*/artists?*', route => {
     const url = new URL(route.request().url()), provider = url.pathname.split('/')[3];
@@ -175,4 +178,23 @@ test('guided review leads with what will change and folds away what needs no dec
   await dialog.getByRole('button', { name: /^Apply/ }).click();
   await expect.poll(() => applyRequests.length).toBe(1);
   expect((applyRequests[0] as { excludedFields: string[] }).excludedFields).toContain('summary');
+});
+
+test('a cover H-Tosho already applied is not proposed as a change', async ({ page }) => {
+  appliedCoverUrl = work('anilist').coverUrl;
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: /An unexpected catalogue title/ }).first().click();
+  await expect(dialog.getByText('H-Tosho already applied this cover.')).toBeVisible();
+  await expect(dialog.getByText('Proposed · already applied')).toBeVisible();
+  const again = dialog.getByRole('checkbox', { name: 'Apply it again' });
+  await expect(again).not.toBeChecked();
+  const apply = dialog.getByRole('button', { name: /^Apply \d+ changes?$/ });
+  const count = Number((await apply.textContent())!.match(/\d+/)![0]);
+  // Opting back in counts the cover again.
+  await again.check();
+  await expect(dialog.getByRole('button', { name: new RegExp('^Apply ' + (count + 1) + ' change') })).toBeVisible();
+  await again.uncheck();
+  await apply.click();
+  await expect.poll(() => applyRequests.length).toBe(1);
+  expect((applyRequests[0] as { cover: boolean }).cover).toBe(false);
 });

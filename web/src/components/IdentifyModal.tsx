@@ -340,7 +340,8 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const [selectedTitle, setSelectedTitle] = React.useState<string | null>(null);
   const [tab, setTab] = React.useState('all');
   const [excluded, setExcluded] = React.useState<ReadonlySet<string>>(new Set());
-  const [coverEnabled, setCoverEnabled] = React.useState(true);
+  // null follows the default: replace the cover unless it is already applied.
+  const [coverChoice, setCoverChoice] = React.useState<boolean | null>(null);
   const protection = useQuery({ queryKey: ['field-policy', seriesId], queryFn: () => api.fieldPolicy(seriesId) });
   // Shares the sidebar badge's query, so the review threshold costs no extra request.
   const threshold = useQuery({ queryKey: ['low-confidence'], queryFn: api.lowConfidenceCount, staleTime: 60_000 }).data?.threshold;
@@ -361,7 +362,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   // A fresh selection starts with every syncable field opted in.
   React.useEffect(() => {
     setExcluded(new Set());
-    setCoverEnabled(true);
+    setCoverChoice(null);
     setSelectedTitle(null);
   }, [selectedId]);
 
@@ -455,6 +456,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
     mutationFn: () => api.unmatch(seriesId),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['series', seriesId] });
+      qc.invalidateQueries({ queryKey: ['applied-cover', seriesId] });
       qc.invalidateQueries({ queryKey: ['library-series'] });
       qc.invalidateQueries({ queryKey: ['libraries'] });
       qc.invalidateQueries({ queryKey: ['low-confidence'] });
@@ -500,6 +502,8 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
     queryFn: () => api.providerMetadata(selected!.providerId, selected!.providerSeriesId),
     enabled: !!selected,
   });
+  // Covers from an earlier apply, read fresh for each review: a restore can replace them.
+  const appliedCover = useQuery({ queryKey: ['applied-cover', seriesId], queryFn: () => api.appliedCover(seriesId), enabled: !!selected, staleTime: 0 });
   const resolvedTitle = selectedTitle ?? preview.data?.title ?? selected?.title ?? '';
 
   const k = current.metadata;
@@ -544,6 +548,13 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
     return { rows, coverCandidate: m?.coverUrl ?? selected.coverUrl };
   }, [selected, preview.data, resolvedTitle, current, k]);
 
+  // Covers H-Tosho already pushed from this same source are not a change. The
+  // checkbox also governs volume covers, so every proposed one must be applied too.
+  const appliedCovers = appliedCover.data;
+  const coverAlreadyApplied = !!preview.data?.coverUrl && preview.data.coverUrl === appliedCovers?.coverUrl
+    && (preview.data.volumeCovers ?? []).every((cover) => appliedCovers.volumeCoverUrls?.includes(cover.url) ?? false);
+  const coverEnabled = coverChoice ?? !coverAlreadyApplied;
+
   const doApply = (ids: { providerId: string; providerSeriesId: string }, opts?: { selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) => {
     apply.mutate({ ...ids, ...opts, excludedFields: [...effectiveExcluded], cover: coverEnabled && !protectedKeys.has('cover') });
   };
@@ -578,15 +589,15 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const savedArtists = React.useMemo(() => [...new Set([...(currentMetadata?.pencillers ?? []), ...(currentMetadata?.writers ?? []), ...(currentMetadata?.coverArtists ?? [])].map(person => person.name?.trim()).filter((name): name is string => !!name))], [currentMetadata]);
   const includedChanges = changedRows.filter(({ row, kind }) => kind === 'change' && !excluded.has(row.field!)).length;
   const skippedByUser = changedRows.filter(({ row, kind }) => kind === 'change' && excluded.has(row.field!)).length;
-  const sameCount = unchangedRows.filter(({ kind }) => kind === 'same').length;
   const coverLocked = protectedKeys.has('cover');
   const coverIncluded = !!diff?.coverCandidate && coverEnabled && !coverLocked;
   const totalChanges = includedChanges + (coverIncluded ? 1 : 0);
+  const sameCount = unchangedRows.filter(({ kind }) => kind === 'same').length + (coverAlreadyApplied && !coverIncluded && !coverLocked ? 1 : 0);
   const protectedCount = lockedRows.length + (coverLocked && diff?.coverCandidate ? 1 : 0);
   const reviewScore = selected ? (reviewingExistingMatch ? match?.matchScore : selected.score) : undefined;
   const scorePct = typeof reviewScore === 'number' ? Math.round(reviewScore * 100) : null;
   const lowScore = typeof reviewScore === 'number' && typeof threshold === 'number' && reviewScore < threshold;
-  const metadataReady = currentReady && preview.isSuccess;
+  const metadataReady = currentReady && preview.isSuccess && !appliedCover.isPending;
   const changeSummary = [
     totalChanges === 0 ? 'No changes' : plural(totalChanges, 'change'),
     sameCount ? `${sameCount} already ${sameCount === 1 ? 'matches' : 'match'}` : null,
@@ -803,7 +814,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                       <ArrowRight aria-hidden="true" className="mt-[5.5rem] h-4 w-4 shrink-0 text-muted sm:mt-[8.5rem]" />
                       <figure className="m-0 flex flex-col gap-1.5">
                         <CoverThumb src={diff.coverCandidate} alt="Proposed cover" onZoom={(s, a) => setZoomCover({ src: s, alt: a })} />
-                        <figcaption className="text-xs text-muted">{coverIncluded ? 'Proposed' : 'Proposed · not synced'}</figcaption>
+                        <figcaption className="text-xs text-muted">{coverIncluded ? 'Proposed' : coverAlreadyApplied && !coverLocked ? 'Proposed · already applied' : 'Proposed · not synced'}</figcaption>
                       </figure>
                     </div>
                     <div className="min-w-0 flex-1 space-y-2">
@@ -828,10 +839,13 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
                           <Button type="button" size="sm" variant="ghost" aria-label="Unlock Series and volume covers" disabled={protect.isPending || apply.isPending || !protection.isSuccess} onClick={() => protect.mutate('cover')} className="min-h-9 px-2 pointer-coarse:min-h-11"><LockOpen aria-hidden="true" className="h-3.5 w-3.5" />Unlock</Button>
                         </div>
                       ) : (
-                        <label className="flex min-h-11 w-fit cursor-pointer items-center gap-2 text-sm sm:min-h-9 pointer-coarse:min-h-11">
-                          <input type="checkbox" checked={coverEnabled} onChange={(e) => setCoverEnabled(e.target.checked)} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
-                          Replace cover
-                        </label>
+                        <div>
+                          {coverAlreadyApplied && <p className="text-sm text-muted">H-Tosho already applied this cover.</p>}
+                          <label className="flex min-h-11 w-fit cursor-pointer items-center gap-2 text-sm sm:min-h-9 pointer-coarse:min-h-11">
+                            <input type="checkbox" checked={coverEnabled} onChange={(e) => setCoverChoice(e.target.checked)} className="h-4 w-4 shrink-0 accent-[var(--color-primary)]" />
+                            {coverAlreadyApplied ? 'Apply it again' : 'Replace cover'}
+                          </label>
+                        </div>
                       )}
                     </div>
                   </div>

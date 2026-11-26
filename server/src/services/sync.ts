@@ -446,8 +446,10 @@ async function applyResolvedSeriesMatchRecorded(
       metadataJson: JSON.stringify(meta), errorMessage: result.errors.length ? result.errors.join('; ') : null });
     recordHistory(seriesId, name, result.errors.length ? 'failed' : opts.historyAction ?? 'updated', {
       providerId: opts.providerId, score: sentScore ?? existing?.matchScore ?? null, pushed: result.pushed,
-      coverUpdated: result.coverUpdated, volumeCoversUpdated: result.volumeCoversUpdated,
-      volumeCoverIds: result.volumeCoverIds,
+      coverUpdated: result.coverUpdated,
+      // What the identify dialog compares against to recognise an already-applied cover.
+      ...(result.coverUpdated && meta.coverUrl ? { coverUrl: meta.coverUrl, volumeCoverUrls: (meta.volumeCovers ?? []).map(cover => cover.url) } : {}),
+      volumeCoversUpdated: result.volumeCoversUpdated, volumeCoverIds: result.volumeCoverIds,
       errors: result.errors, warnings: result.warnings,
     });
   });

@@ -510,6 +510,9 @@ export const api = {
       metadata: SeriesMetadata | null;
       kavita: KavitaSeriesMetadata | null;
     }>(`/series/${id}`),
+  /** Provider covers H-Tosho last applied to this series, when still current. */
+  appliedCover: (id: number) =>
+    request<{ coverUrl: string | null; volumeCoverUrls: string[] | null }>(`/series/${id}/applied-cover`),
   identify: (id: number) => request<MatchOutcome>(`/series/${id}/identify`),
   providerArtists: (provider: ArtistProviderId, query: string, page: number) => request<ArtistSearchPage>(`/providers/${provider}/artists?${new URLSearchParams({ query, page: String(page) })}`),
   artistWorks: (provider: ArtistProviderId, artistId: string, page: number) => request<ArtistWorksPage>(`/providers/${provider}/artists/${encodeURIComponent(artistId)}/works?page=${page}`),

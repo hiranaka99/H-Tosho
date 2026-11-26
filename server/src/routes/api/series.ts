@@ -20,6 +20,7 @@ import { getCredentialMap, providerOrderFor } from '../../services/settings.js';
 import { jobQueue, type JobPayload } from '../../jobs/queue.js';
 import { autoMatch, fetchProviderMetadata } from '../../match/autoMatcher.js';
 import { rewriteMangaDexCoverUrl } from '../media.js';
+import { appliedSeriesCovers } from '../../services/appliedCover.js';
 import { mapLimit } from '../../lib/http.js';
 
 import { connectedClient, resolveJobContext, errMsg, intParam, kavitaCoverUrl } from './helpers.js';
@@ -190,6 +191,17 @@ api.get('/series/:id', async (c) => {
   } catch (e) {
     return c.json({ error: errMsg(e) }, 502);
   }
+});
+
+/** The provider cover H-Tosho last applied, in the same form the identify dialog previews. */
+api.get('/series/:id/applied-cover', (c) => {
+  const seriesId = intParam(c.req.param('id'));
+  if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
+  const applied = appliedSeriesCovers(seriesId);
+  return c.json({
+    coverUrl: rewriteMangaDexCoverUrl(applied?.coverUrl) ?? null,
+    volumeCoverUrls: applied?.volumeCoverUrls?.map((url) => rewriteMangaDexCoverUrl(url) ?? url) ?? null,
+  });
 });
 
 api.get('/series/:id/identify', async (c) => {
