@@ -1,7 +1,8 @@
 # Application ownership and maintenance
 
 Where each responsibility lives, and the rules each owner keeps. User-facing
-behaviour is documented in the [README](../README.md); release history is in the
+behaviour is documented in the [README](../README.md) and the
+[user guide](guide.md); release history is in the
 [changelog](../CHANGELOG.md).
 
 ## Contracts, jobs and persistence

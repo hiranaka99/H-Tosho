@@ -30,9 +30,13 @@ npm run dev
 ```
 
 `npm run dev` starts the Vite frontend with hot reload and a backend that reloads
-changed source files. See [Development checks](README.md#development-checks) in
-the README for details, and [docs/architecture.md](docs/architecture.md) and
-[GLOSSARY.md](GLOSSARY.md) for how the code is organized and the terms it uses.
+changed source files and applies pending migrations at startup, so source
+changes need no build or restart. `npm run build` produces the frontend, the
+backend, and the precompressed Brotli/gzip assets the production server uses.
+
+See [docs/architecture.md](docs/architecture.md) and [GLOSSARY.md](GLOSSARY.md)
+for how the code is organized and the terms it uses, and the
+[user guide](docs/guide.md) for how each feature behaves.
 
 ## Checks
 
@@ -49,7 +53,10 @@ npm run build
 The pre-commit hook formats staged files and runs lint, typecheck, and the tests.
 For interface changes, also run the browser tests with `npm run test:e2e` after
 installing Chromium once with
-`npm exec --workspace @h-tosho/web -- playwright install chromium`.
+`npm exec --workspace @h-tosho/web -- playwright install chromium`. They build
+the app and start an isolated server with a fresh temporary database, without
+download workers or scheduled jobs. `npm run screenshots` regenerates the README
+screenshots from the same isolated server, using fictional sample data.
 
 Tests must not contact real providers or download real galleries. Stub network
 calls the way the existing tests do.
@@ -64,6 +71,19 @@ calls the way the existing tests do.
   `npm run screenshots`.
 - Don't edit `CHANGELOG.md` or version numbers. They are updated when a release
   is prepared.
+
+## Releases
+
+Publishing a GitHub release (not just pushing a tag or saving a draft) runs the
+[release workflow](.github/workflows/docker-release.yml). It builds the tagged
+commit, pushes a linux/amd64 image to `ghcr.io/<owner>/h-tosho`, and attaches
+the in-app update bundle to the release. It signs in with the built-in
+`GITHUB_TOKEN`, so no repository secrets are needed.
+
+A stable release tagged `v2.14.0`, for example, publishes the image tags
+`v2.14.0`, `2.14.0`, and `latest`. Prereleases get their version tags but don't
+move `latest`. A new GHCR package starts out private; change its visibility in
+the package settings so others can pull it.
 
 By contributing, you agree that your contributions are licensed under the
 [MIT License](LICENSE).
