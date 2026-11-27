@@ -27,6 +27,10 @@ initDb();
 setKavitaConnection({ baseUrl: "https://kavita.example", apiKey: "test" });
 const originalFetch = globalThis.fetch;
 const originalProvider = doujinProviders.hitomi;
+// Keep a real event-loop turn available while Date and application timers are mocked.
+const realSetTimeout = globalThis.setTimeout;
+const yieldToIo = () =>
+  new Promise<void>((resolve) => realSetTimeout(resolve, 10));
 afterEach(() => {
   globalThis.fetch = originalFetch;
   doujinProviders.hitomi = originalProvider;
@@ -39,9 +43,11 @@ async function clock<T>(t: TestContext, run: () => Promise<T>): Promise<T> {
     done = true;
   });
   void result.catch(() => {});
-  const deadline = performance.now() + 5000;
+  const deadline = performance.now() + 15_000;
   while (!done && performance.now() < deadline) {
-    for (let flush = 0; flush < 20; flush++) await setImmediate();
+    // setImmediate alone can advance simulated timeouts before archive and
+    // download filesystem callbacks finish on slower runners.
+    await yieldToIo();
     if (done) return result;
     t.mock.timers.tick(5_000);
   }

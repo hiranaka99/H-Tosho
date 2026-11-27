@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { setImmediate } from "node:timers/promises";
 import { afterEach, test, type TestContext } from "node:test";
 import type { Job } from "../src/jobs/queue.js";
 import { parseComicInfo } from "../src/downloader/comicinfo.js";
@@ -23,6 +22,10 @@ const { setKavitaConnection, setDownloaderSettings, DEFAULT_DOWNLOADER } =
 initDb();
 setKavitaConnection({ baseUrl: "https://kavita.example", apiKey: "secret" });
 const originalFetch = globalThis.fetch;
+// Keep a real event-loop turn available while Date and application timers are mocked.
+const realSetTimeout = globalThis.setTimeout;
+const yieldToIo = () =>
+  new Promise<void>((resolve) => realSetTimeout(resolve, 10));
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
@@ -39,9 +42,11 @@ async function finishWithScanClock<T>(
   });
   // The caller asserts rejections after the virtual polling loop finishes.
   void result.catch(() => {});
-  const deadline = performance.now() + 5000;
+  const deadline = performance.now() + 15_000;
   while (!done && performance.now() < deadline) {
-    for (let flush = 0; flush < 20; flush++) await setImmediate();
+    // setImmediate alone can advance simulated timeouts before archive
+    // filesystem callbacks finish on slower runners.
+    await yieldToIo();
     if (done) return result;
     t.mock.timers.tick(5_000);
   }
