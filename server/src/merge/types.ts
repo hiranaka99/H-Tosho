@@ -3,13 +3,13 @@ import type { DownloadTask } from "../contracts/downloads.js";
 import type { JobContext, MergeSeriesCommand } from "../contracts/jobs.js";
 import type { MergeProtectionPreview } from "../contracts/mergeProtection.js";
 import type { DownloadPublicationTarget } from "../downloader/publishGuard.js";
-import type { Job, JobTypeLifecycleHook, LogFn } from "../jobs/queue.js";
+import type { JobTypeLifecycleHook } from "../jobs/lifecycle.js";
+import type { Job, LogFn } from "../jobs/queue.js";
+import type { MetadataHistoryClient } from "../services/metadataHistory.js";
 import type {
   KavitaChapterDto,
   KavitaLibrary,
   KavitaSeries,
-  KavitaSeriesDto,
-  KavitaSeriesMetadataDto,
 } from "../kavita/types.js";
 
 export type { DownloadPublicationTarget };
@@ -61,8 +61,11 @@ export interface MergeJobResult {
   verificationSkipped?: true;
 }
 
-/** Remote Kavita seam: read/write operations needed by Protected Merge and its metadata history snapshot. */
-export interface KavitaMergeClient {
+/**
+ * Remote Kavita seam: what Protected Merge reads and writes, plus the reads
+ * its metadata history journal needs (snapshot and cover observation).
+ */
+export interface KavitaMergeClient extends MetadataHistoryClient {
   getLibraries(): Promise<KavitaLibrary[]>;
   getSeries(libraryId: number): Promise<KavitaSeries[]>;
   getSeriesById(seriesId: number): Promise<KavitaSeries>;
@@ -75,8 +78,6 @@ export interface KavitaMergeClient {
     patch: { name: string }
   ): Promise<void>;
   isTaskRunning(): Promise<boolean>;
-  getSeriesDto(seriesId: number): Promise<KavitaSeriesDto>;
-  getSeriesMetadata(seriesId: number): Promise<KavitaSeriesMetadataDto>;
 }
 
 export interface KavitaMergeSession extends KavitaMergeClient {
@@ -137,7 +138,8 @@ export interface MergeJobPort {
   invalidateContextCache(jobIds: number | readonly number[]): void;
 }
 
-export interface MergeAuxPort {
+/** The local library index a merge keeps in step: duplicate detection and match discovery. */
+export interface MergeLibraryIndexPort {
   checkDownloadDuplicates(
     plans: { source: DoujinSource; galleryId: string; url?: string }[],
     sourceFiles?: string[]
@@ -151,7 +153,7 @@ export interface ProtectedMergeDeps {
   settings: MergeSettingsPort;
   downloads: MergeDownloadPort;
   jobs: MergeJobPort;
-  aux?: Partial<MergeAuxPort>;
+  libraryIndex?: Partial<MergeLibraryIndexPort>;
 }
 
 export interface ProtectedMergeTiming {
@@ -204,6 +206,6 @@ export interface ProtectedMerge {
   /** Late-index Field Policy recovery for callers that ALREADY hold `series:<id>` lock (never reacquires locks). */
   recoverSeriesWithinLock(seriesId: number): Promise<void>;
 
-  /** Narrow lifecycle hook registered on `jobQueue` for `'merge-series'`. */
+  /** Lifecycle hook for `'merge-series'` jobs, registered through `jobs/lifecycle.ts`. */
   readonly jobLifecycleHook: JobTypeLifecycleHook;
 }

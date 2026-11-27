@@ -22,6 +22,7 @@ import {
 import { getKavitaConnection } from "./settings.js";
 import { kavitaConnectionKey } from "./kavitaState.js";
 import { getFieldPolicy } from "./fieldPolicies.js";
+import type { CoverObservationClient } from "./coverObservations.js";
 import {
   coverJournal,
   coverHistoryBatch,
@@ -57,6 +58,9 @@ export type MetadataSnapshotClient = Pick<
   KavitaClient,
   "getSeriesDto" | "getSeriesMetadata"
 >;
+/** Snapshot reads plus the cover reads the operation's cover journal may make. */
+export type MetadataHistoryClient = MetadataSnapshotClient &
+  CoverObservationClient;
 
 export async function captureMetadataSnapshotWithRaw(
   client: MetadataSnapshotClient,
@@ -182,7 +186,7 @@ function unverifiedFields(
 
 /** The caller owns the series mutation boundary. Journal preparation fails closed. */
 export async function withMetadataHistory<T>(
-  client: MetadataSnapshotClient,
+  client: MetadataHistoryClient,
   seriesId: number,
   origin: string,
   desired: Record<string, unknown>,
@@ -211,13 +215,7 @@ export async function withMetadataHistory<T>(
     })
     .run();
   const files = new Set<string>();
-  const covers = coverJournal(
-    client as KavitaClient,
-    id,
-    seriesId,
-    before,
-    key
-  );
+  const covers = coverJournal(client, id, seriesId, before, key);
   let capturedBytes = 0;
   // Only this journal edits its operation's fieldsJson, so once 'cover' is recorded it stays recorded.
   let coverFieldRecorded = false;

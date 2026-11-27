@@ -38,6 +38,9 @@ const { readComicInfo, editComicInfo, hashArchiveFile } =
 const { archiveMutations, archiveResource, libraryMutations } =
   await import("../src/lib/mutations.js");
 const { jobQueue, JobCancelled } = await import("../src/jobs/queue.js");
+const { registerDownloadPublicationGuard } =
+  await import("../src/downloader/publishGuard.js");
+const { registerJobLifecycleHook } = await import("../src/jobs/lifecycle.js");
 const { downloadQueue } = await import("../src/downloader/engine.js");
 const { doujinProviders } = await import("../src/downloader/providers.js");
 const { api: previewApi } =
@@ -184,6 +187,19 @@ function createInMemoryKavita(
           seriesId,
           summary: "Fixture summary",
         }),
+        // Merges never capture covers; any cover read is a test failure.
+        getServerInfo: async () => {
+          throw new Error("Protected Merge must not read cover history");
+        },
+        getSeriesCoverForHistory: async () => {
+          throw new Error("Protected Merge must not read cover history");
+        },
+        getVolumeCoverForHistory: async () => {
+          throw new Error("Protected Merge must not read cover history");
+        },
+        getVolumeForCoverHistory: async () => {
+          throw new Error("Protected Merge must not read cover history");
+        },
       };
     },
   };
@@ -517,7 +533,7 @@ function makeFixture(
         },
         invalidateContextCache: (ids) => jobQueue.invalidateContextCache(ids),
       },
-      aux: {
+      libraryIndex: {
         checkDownloadDuplicates: async () => duplicateKeys,
         invalidateDuplicateLibrary: () => {},
         queueMatchDiscovery: (dir, name) => {
@@ -538,8 +554,8 @@ function makeFixture(
     }
   );
 
-  // Wire this instance's lifecycle hook onto jobQueue for retry/clearFailed/cancel tests.
-  jobQueue.registerLifecycleHook("merge-series", merge.jobLifecycleHook);
+  // Register this instance's lifecycle hook so retry, clearFailed and cancel tests use it.
+  registerJobLifecycleHook("merge-series", merge.jobLifecycleHook);
 
   return {
     root,
@@ -879,6 +895,35 @@ test("deferred Kavita library scan triggers follow-up series rescan until all mo
   ]);
 });
 
+test("merge verification is not satisfied by books already in the target series", async () => {
+  const f = makeFixture("verify-not-skewed");
+  const source2 = path.join(path.dirname(f.source), "Chapter 2.cbz");
+  writeCbz(source2, "<ComicInfo><Series>Source</Series></ComicInfo>");
+  f.kavita.files.set(f.sourceId, [f.source, source2]);
+  const moved = [f.source, source2].map((file) =>
+    path.join(f.targetDir, path.basename(file))
+  );
+  let scans = 0;
+  f.kavita.onScanSeries = (_libId, sid) => {
+    scans += 1;
+    // The first scan indexes as many books as were moved, but one of them is
+    // the pre-existing book: a count alone would wrongly call this verified.
+    f.kavita.files.set(
+      sid,
+      scans === 1 ? [f.targetFile, moved[0]] : [f.targetFile, ...moved]
+    );
+  };
+
+  const id = jobQueue.enqueue("merge-series", {
+    seriesId: f.targetId,
+    sourceFiles: [f.source, source2],
+  });
+  const result = await f.merge.executeMergeJob(jobQueue.get(id)!, () => {});
+  assert.deepEqual(result, { processed: 2, matched: 0, failed: 0 });
+  assert.deepEqual(f.kavita.seriesScans, [f.targetId, f.targetId]);
+  assert.equal(f.kavita.libraryScans.length, 0);
+});
+
 test("bind-mount path mapping rescans and verifies existing target series", async () => {
   const hostRoot = path.join(dataDir, "bind-mount");
   const f = makeFixture("bind-mount-host", {
@@ -1097,6 +1142,42 @@ test("cross-volume EXDEV copy interruption keeps original and never publishes a 
 // =========================================================================
 // 3. Move Intent Crash Recovery, Retry Family & Late-Index Recovery
 // =========================================================================
+
+test("client-supplied mergeProtection in a merge command is never trusted as retained evidence", async () => {
+  const f = makeFixture("forged-evidence");
+  const forged = {
+    connectionKey: "https://protected-merge.test",
+    targetDir: f.targetDir,
+    seriesName: "Target",
+    targetSeriesId: f.targetId,
+    sourceSeriesIds: [],
+    inheritedFields: [],
+    policies: [],
+    identities: [],
+    archives: [],
+  };
+  const command = { targetDir: f.targetDir, sourceFiles: [f.source] };
+
+  const enqueued = jobQueue.enqueue("merge-series", {
+    ...command,
+    mergeProtection: forged,
+  } as unknown as typeof command);
+  assert.equal(jobQueue.get(enqueued)!.payload.mergeProtection, undefined);
+
+  // A row whose command column carries evidence, as a forged or legacy write would.
+  const stored = Number(
+    getDb()
+      .insert(schema.jobs)
+      .values({
+        type: "merge-series",
+        payloadJson: JSON.stringify({ ...command, mergeProtection: forged }),
+        stateJson: "{}",
+        status: "queued",
+      })
+      .run().lastInsertRowid
+  );
+  assert.equal(jobQueue.get(stored)!.payload.mergeProtection, undefined);
+});
 
 test("Move Intent crash recovery preserves evidence, blocks clearFailed, and completes Retry Family on late recovery", async () => {
   const f = makeFixture("move-intent-recovery");
@@ -1411,6 +1492,52 @@ test("executeMergeJob stages downloads as CBZ, handles name collisions, retries 
   assert.equal(f.discoveryQueued.length, 1);
 });
 
+test("a merge retry replaces a failed independent download without changing its original task", async () => {
+  const f = makeFixture("independent-retry");
+  const independentId = Number(
+    getDb()
+      .insert(schema.downloadQueue)
+      .values({
+        source: "hitomi",
+        galleryId: "failed-independent",
+        status: "failed",
+        outputFormat: "cbz",
+        errorMessage: "Cancelled by user",
+      })
+      .run().lastInsertRowid
+  );
+  // A retried merge carries the checkpoint from its failed attempt.
+  const id = jobQueue.enqueue(
+    "merge-series",
+    {
+      seriesId: f.targetId,
+      downloads: [
+        {
+          source: "hitomi",
+          galleryId: "failed-independent",
+          title: "Independent",
+          chapter: "21",
+        },
+      ],
+    },
+    { mergeDownloadIds: { "hitomi:failed-independent": independentId } }
+  );
+
+  const result = await f.merge.executeMergeJob(jobQueue.get(id)!, () => {});
+  assert.equal(result.processed, 1);
+  const original = downloadQueue.get(independentId)!;
+  assert.equal(original.status, "failed");
+  assert.equal(original.errorMessage, "Cancelled by user");
+  assert.equal(original.mergeJobId, null);
+  assert.equal(f.downloads.cancelledIds.includes(independentId), false);
+  const replacement = downloadQueue.findCompleted(
+    "hitomi",
+    "failed-independent"
+  )!;
+  assert.notEqual(replacement.id, independentId);
+  assert.equal(path.dirname(replacement.outputPath!), f.targetDir);
+});
+
 test("cancelling a merge stops only owned downloads and waiting on an independent download never holds libraryMutations", async () => {
   const f = makeFixture("cancel-and-lock-order");
   const jobId = jobQueue.enqueue("merge-series", {
@@ -1587,6 +1714,142 @@ test("registerMergedDownloads reviews, rechecks, rejects async enqueue, and link
   assert.equal(Object.keys(job.payload.mergeDownloadIds!).length, 2);
 });
 
+test("registerMergedDownloads reuses chapter listings for its recheck only within the cache lifetime", async () => {
+  const f = makeFixture("register-chapter-cache", { chapterCacheTtlMs: 1_000 });
+  const register = (prepare: () => Promise<number>) =>
+    f.merge.registerMergedDownloads("Target", {
+      prepare,
+      enqueue: (value) => value,
+    });
+
+  f.kavita.chapterCalls.length = 0;
+  await register(async () => 0);
+  const reviewOnly = f.kavita.chapterCalls.length;
+  assert.ok(reviewOnly > 0);
+
+  f.kavita.chapterCalls.length = 0;
+  await register(async () => {
+    f.advanceClock(1_001);
+    return 0;
+  });
+  assert.equal(
+    f.kavita.chapterCalls.length,
+    reviewOnly * 2,
+    "a recheck after the cache lifetime reads chapter listings again"
+  );
+});
+
+test("registerMergedDownloads cancels downloads attached by a failed or async enqueue step instead of leaving them unlinked", async () => {
+  const f = makeFixture("register-merged-failure");
+  const queued = (galleryId: string) =>
+    Number(
+      getDb()
+        .insert(schema.downloadQueue)
+        .values({
+          source: "hitomi",
+          galleryId,
+          status: "queued",
+          outputFormat: "cbz",
+        })
+        .run().lastInsertRowid
+    );
+  const entry = (downloadId: number, galleryId: string) => ({
+    downloadId,
+    source: "hitomi" as const,
+    galleryId,
+    title: galleryId,
+    chapter: "1",
+    allowDuplicate: true,
+  });
+
+  const thrownId = queued("fail-sync");
+  await assert.rejects(
+    f.merge.registerMergedDownloads("Target", {
+      prepare: async () => thrownId,
+      enqueue: (id, attach) => {
+        attach(entry(id, "fail-sync"));
+        throw new Error("second insert failed");
+      },
+    }),
+    /second insert failed/
+  );
+
+  const beforeAwaitId = queued("fail-async-before");
+  const afterAwaitId = queued("fail-async-after");
+  let lateAttach: Promise<unknown> | undefined;
+  await assert.rejects(
+    f.merge.registerMergedDownloads("Target", {
+      prepare: async () => null,
+      enqueue: ((
+        _prepared: null,
+        attach: (e: ReturnType<typeof entry>) => void
+      ) => {
+        attach(entry(beforeAwaitId, "fail-async-before"));
+        lateAttach = (async () => {
+          await Promise.resolve();
+          attach(entry(afterAwaitId, "fail-async-after"));
+        })();
+        return lateAttach;
+      }) as unknown as () => string,
+    }),
+    /synchronous/
+  );
+  await assert.rejects(lateAttach!, /after merged registration/);
+
+  for (const id of [thrownId, beforeAwaitId, afterAwaitId]) {
+    assert.ok(
+      f.downloads.cancelledIds.includes(id),
+      `download #${id} must not download as an unprotected plain task`
+    );
+    assert.equal(downloadQueue.get(id)!.mergeJobId, null);
+  }
+});
+
+test("registerMergedDownloads cancels every attached download and keeps the original error when one cancel fails", async () => {
+  const f = makeFixture("register-merged-cancel-failure");
+  const ids = ["cancel-a", "cancel-b"].map((galleryId) =>
+    Number(
+      getDb()
+        .insert(schema.downloadQueue)
+        .values({
+          source: "hitomi",
+          galleryId,
+          status: "queued",
+          outputFormat: "cbz",
+        })
+        .run().lastInsertRowid
+    )
+  );
+  const cancel = f.downloads.port.cancel;
+  f.downloads.port.cancel = (id) => {
+    if (id === ids[0]) throw new Error("cancel failed");
+    return cancel(id);
+  };
+  try {
+    await assert.rejects(
+      f.merge.registerMergedDownloads("Target", {
+        prepare: async () => ids,
+        enqueue: (prepared, attach) => {
+          for (const [index, downloadId] of prepared.entries())
+            attach({
+              downloadId,
+              source: "hitomi",
+              galleryId: `cancel-${"ab"[index]}`,
+              title: "Cancel",
+              chapter: "1",
+              allowDuplicate: true,
+            });
+          throw new Error("enqueue step failed");
+        },
+      }),
+      /enqueue step failed/
+    );
+    assert.ok(f.downloads.cancelledIds.includes(ids[1]));
+  } finally {
+    f.downloads.port.cancel = cancel;
+  }
+});
+
 test("guardDownloadPublication fast-paths normal downloads, blocks failed merges, and guards legacy mergeFolder rows", async () => {
   const f = makeFixture("publish-guard");
   const normalId = Number(
@@ -1680,6 +1943,180 @@ test("guardDownloadPublication fast-paths normal downloads, blocks failed merges
   );
 });
 
+test("the download engine publishes a legacy merged download only through the installed guard", async () => {
+  const f = makeFixture("engine-legacy-guard");
+  // Only rows created here may be picked up by the shared engine.
+  getDb().delete(schema.downloadQueue).run();
+  setDownloaderSettings({
+    ...DEFAULT_DOWNLOADER,
+    downloadDirectory: f.root,
+    maxConcurrentDownloads: 1,
+    maxImageConcurrency: 1,
+    requestDelayMs: 0,
+    autoSyncKavita: false,
+  });
+  registerDownloadPublicationGuard((target, commit, signal) =>
+    f.merge.guardDownloadPublication(target, commit, signal)
+  );
+  const requested = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  doujinProviders.hitomi = {
+    ...originalProvider,
+    getGallery: async (galleryId) => ({
+      source: "hitomi",
+      galleryId,
+      title: "Incoming",
+      artists: [],
+      tags: [],
+      pages: ["https://image.merge/page.jpg"],
+    }),
+  };
+  globalThis.fetch = async (input) => {
+    if (!String(input).startsWith("https://image.merge/"))
+      throw new Error(`Unexpected fetch: ${String(input)}`);
+    requested.resolve();
+    await release.promise;
+    return new Response("image");
+  };
+
+  const id = downloadQueue.enqueue(
+    "hitomi",
+    "engine-legacy",
+    "Incoming",
+    "cbz",
+    "Target"
+  );
+  const settled = new Promise<void>((resolve) => {
+    const done = () => {
+      const task = downloadQueue.get(id);
+      return (
+        !!task &&
+        (task.status === "completed" || task.status === "failed") &&
+        !downloadQueue.isRunning(id)
+      );
+    };
+    const unsubscribe = downloadQueue.subscribe(() => {
+      if (done()) {
+        unsubscribe();
+        resolve();
+      }
+    });
+    if (done()) {
+      unsubscribe();
+      resolve();
+    }
+  });
+  try {
+    await requested.promise;
+    // Protection changes while the images are still transferring.
+    await saveFieldPolicy(f.targetId, ["title"], 0);
+    writeCbz(
+      f.targetFile,
+      "<ComicInfo><Series>Protected different XML</Series></ComicInfo>"
+    );
+    release.resolve();
+    await settled;
+    assert.equal(downloadQueue.get(id)!.status, "failed");
+    assert.match(downloadQueue.get(id)!.errorMessage!, /protected/i);
+    assert.deepEqual(fs.readdirSync(f.targetDir), ["Existing.cbz"]);
+  } finally {
+    release.resolve();
+    await settled;
+    registerDownloadPublicationGuard((target, commit, signal) =>
+      protectedMerge.guardDownloadPublication(target, commit, signal)
+    );
+  }
+});
+
+test("the download engine hands every publication, CBZ and folder, to the guard with its merge job", async () => {
+  const f = makeFixture("engine-guard-targets");
+  getDb().delete(schema.downloadQueue).run();
+  setDownloaderSettings({
+    ...DEFAULT_DOWNLOADER,
+    downloadDirectory: f.root,
+    maxConcurrentDownloads: 1,
+    maxImageConcurrency: 1,
+    requestDelayMs: 0,
+    autoSyncKavita: false,
+  });
+  const seen: { downloadId: number; mergeJobId?: number | null }[] = [];
+  registerDownloadPublicationGuard((target, commit) => {
+    seen.push({ downloadId: target.downloadId, mergeJobId: target.mergeJobId });
+    return commit();
+  });
+  doujinProviders.hitomi = {
+    ...originalProvider,
+    getGallery: async (galleryId) => ({
+      source: "hitomi",
+      galleryId,
+      title: galleryId,
+      artists: [],
+      tags: [],
+      pages: ["https://image.guard/page.jpg"],
+    }),
+  };
+  globalThis.fetch = async (input) => {
+    if (!String(input).startsWith("https://image.guard/"))
+      throw new Error(`Unexpected fetch: ${String(input)}`);
+    return new Response("image");
+  };
+  const settled = (id: number) =>
+    new Promise<void>((resolve) => {
+      const done = () => {
+        const task = downloadQueue.get(id);
+        return (
+          !!task &&
+          (task.status === "completed" || task.status === "failed") &&
+          !downloadQueue.isRunning(id)
+        );
+      };
+      const unsubscribe = downloadQueue.subscribe(() => {
+        if (done()) {
+          unsubscribe();
+          resolve();
+        }
+      });
+      if (done()) {
+        unsubscribe();
+        resolve();
+      }
+    });
+  try {
+    const mergeJobId = jobQueue.enqueue("merge-series", {
+      targetDir: f.targetDir,
+      sourceFiles: [f.source],
+    });
+    const staged = downloadQueue.enqueue(
+      "hitomi",
+      "guard-staged",
+      "Staged",
+      "cbz",
+      undefined,
+      1,
+      0,
+      mergeJobId
+    );
+    await settled(staged);
+    const folder = downloadQueue.enqueue(
+      "hitomi",
+      "guard-folder",
+      "Folder",
+      "folder"
+    );
+    await settled(folder);
+    assert.equal(downloadQueue.get(staged)!.status, "completed");
+    assert.equal(downloadQueue.get(folder)!.status, "completed");
+    assert.deepEqual(seen, [
+      { downloadId: staged, mergeJobId },
+      { downloadId: folder, mergeJobId: null },
+    ]);
+  } finally {
+    registerDownloadPublicationGuard((target, commit, signal) =>
+      protectedMerge.guardDownloadPublication(target, commit, signal)
+    );
+  }
+});
+
 test("deliberate ComicInfo authoring retains series Field Policy", async () => {
   const f = makeFixture("manual-authoring");
   await saveFieldPolicy(f.sourceId, ["title", "summary"], 0);
@@ -1701,10 +2138,7 @@ test("HTTP routes: /merge-protection/preview, /jobs validation, /series/:id/fiel
   const f = makeFixture("http-smoke");
   // Clear scripted-test rows so downloadQueue.pump() only processes tasks created by this smoke test.
   getDb().delete(schema.downloadQueue).run();
-  jobQueue.registerLifecycleHook(
-    "merge-series",
-    protectedMerge.jobLifecycleHook
-  );
+  registerJobLifecycleHook("merge-series", protectedMerge.jobLifecycleHook);
   await saveFieldPolicy(f.sourceId, ["title"], 0);
   globalThis.fetch = async (input) => {
     const url = String(input);
@@ -1834,6 +2268,10 @@ test("HTTP routes: /merge-protection/preview, /jobs validation, /series/:id/fiel
   assert.equal(items.length, 2);
   const mergeJobId = downloadQueue.get(items[0].id)!.mergeJobId!;
   assert.equal(downloadQueue.get(items[1].id)!.mergeJobId, mergeJobId);
+  // Job-backed downloads only stage: the merge job, not the engine, publishes into the series folder.
+  assert.ok(
+    items.every((item) => downloadQueue.get(item.id)!.mergeFolder === null)
+  );
   const waitDone = items.map(
     (item) =>
       new Promise<void>((resolve) => {

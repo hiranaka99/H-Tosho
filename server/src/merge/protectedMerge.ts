@@ -57,7 +57,7 @@ import {
   type AttachedMergeDownload,
   type DownloadPublicationTarget,
   type KavitaMergeSession,
-  type MergeAuxPort,
+  type MergeLibraryIndexPort,
   type MergeJobResult,
   type MergedDownloadRegistration,
   type ProtectedMerge,
@@ -83,7 +83,7 @@ const DEFAULT_TIMING: ResolvedMergeTiming = {
   sleep,
 };
 
-const DEFAULT_AUX: MergeAuxPort = {
+const DEFAULT_LIBRARY_INDEX: MergeLibraryIndexPort = {
   checkDownloadDuplicates: async () => new Set(),
   invalidateDuplicateLibrary: () => {},
   queueMatchDiscovery: () => {},
@@ -115,7 +115,10 @@ export function createProtectedMerge(
   timingOverrides?: ProtectedMergeTiming
 ): ProtectedMerge {
   const timing: ResolvedMergeTiming = { ...DEFAULT_TIMING, ...timingOverrides };
-  const aux: MergeAuxPort = { ...DEFAULT_AUX, ...deps.aux };
+  const libraryIndex: MergeLibraryIndexPort = {
+    ...DEFAULT_LIBRARY_INDEX,
+    ...deps.libraryIndex,
+  };
   const invalidateCache = (jobIds: number | readonly number[]) =>
     deps.jobs.invalidateContextCache(jobIds);
 
@@ -301,7 +304,7 @@ export function createProtectedMerge(
         downloads: deps.downloads,
         jobs: deps.jobs,
         settings: deps.settings,
-        aux,
+        libraryIndex,
       },
       timing,
       job,
@@ -631,7 +634,7 @@ export function createProtectedMerge(
     }
     if (job.payload.downloads?.length && verified) {
       try {
-        aux.queueMatchDiscovery(targetDir, renamedSeries ?? undefined);
+        libraryIndex.queueMatchDiscovery(targetDir, renamedSeries ?? undefined);
       } catch (error) {
         log(
           "warn",
@@ -915,19 +918,23 @@ export function createProtectedMerge(
       requireMergeAuthority(rechecked.preview);
 
       // Synchronous turn: zero await between download inserts and durable merge_job_id linkage.
+      // A download that was inserted but never linked would publish as an
+      // unprotected plain download, so every failure path cancels it.
       const attached: AttachedMergeDownload[] = [];
       let open = true;
       const attach = (entry: AttachedMergeDownload) => {
-        if (!open)
+        if (!open) {
+          deps.downloads.cancel(entry.downloadId);
           throw new ProtectedMergeError(
             "Cannot attach downloads after merged registration has committed",
             409
           );
+        }
         attached.push(entry);
       };
-      let result: SyncOnly<TResult>;
       try {
-        result = steps.enqueue(prepared, attach);
+        const result = steps.enqueue(prepared, attach);
+        open = false;
         if (
           result !== null &&
           typeof result === "object" &&
@@ -939,35 +946,44 @@ export function createProtectedMerge(
             409
           );
         }
-      } finally {
+        if (attached.length > 0) {
+          const plans = attached.map((entry) => ({
+            source: entry.source,
+            galleryId: entry.galleryId,
+            title: entry.title,
+            chapter: entry.chapter,
+            allowDuplicate: entry.allowDuplicate,
+            ...(entry.url ? { url: entry.url } : {}),
+          }));
+          const ids = Object.fromEntries(
+            attached.map((entry) => [
+              `${entry.source}:${entry.galleryId}`,
+              entry.downloadId,
+            ])
+          );
+          const jobId = deps.jobs.enqueueMergeJob(
+            {
+              targetDir: rechecked.state.targetDir,
+              seriesName: rechecked.state.seriesName,
+              downloads: plans,
+            },
+            { mergeProtection: rechecked.state, mergeDownloadIds: ids }
+          );
+          deps.downloads.attachToMergeJob(Object.values(ids), jobId);
+        }
+        return result;
+      } catch (error) {
         open = false;
+        // Try every cancel; one failure must not strand the rest or mask the cause.
+        for (const entry of attached) {
+          try {
+            deps.downloads.cancel(entry.downloadId);
+          } catch {
+            /* The original error is the one the caller needs. */
+          }
+        }
+        throw error;
       }
-      if (attached.length > 0) {
-        const plans = attached.map((entry) => ({
-          source: entry.source,
-          galleryId: entry.galleryId,
-          title: entry.title,
-          chapter: entry.chapter,
-          allowDuplicate: entry.allowDuplicate,
-          ...(entry.url ? { url: entry.url } : {}),
-        }));
-        const ids = Object.fromEntries(
-          attached.map((entry) => [
-            `${entry.source}:${entry.galleryId}`,
-            entry.downloadId,
-          ])
-        );
-        const jobId = deps.jobs.enqueueMergeJob(
-          {
-            targetDir: rechecked.state.targetDir,
-            seriesName: rechecked.state.seriesName,
-            downloads: plans,
-          },
-          { mergeProtection: rechecked.state, mergeDownloadIds: ids }
-        );
-        deps.downloads.attachToMergeJob(Object.values(ids), jobId);
-      }
-      return result;
     },
 
     async guardDownloadPublication<T>(
@@ -1053,7 +1069,7 @@ export function createProtectedMerge(
         ["*"],
         async () => {
           checkCancelled(job.id, signal);
-          aux.invalidateDuplicateLibrary();
+          libraryIndex.invalidateDuplicateLibrary();
           try {
             const command = parseJobCommand(job.type, job.payload);
             if (command.type !== "merge-series")
@@ -1111,7 +1127,7 @@ export function createProtectedMerge(
               chapterCache
             );
           } finally {
-            aux.invalidateDuplicateLibrary();
+            libraryIndex.invalidateDuplicateLibrary();
           }
         },
         signal

@@ -419,7 +419,9 @@ async function executeTypedJob(
         : runEditComicInfoJob(typed, log, signal);
     }
     case "merge-series":
-      return protectedMerge.executeMergeJob(job, log, signal);
+      // Dispatched before any series lock is taken: the merge takes its own
+      // locks in two phases and would deadlock inside one held here.
+      throw new Error("merge-series must not run inside series ownership");
     case "delete-series":
       return runDeleteSeriesJob(typed, log, signal);
     case "restore-metadata": {

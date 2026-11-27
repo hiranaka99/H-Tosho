@@ -3,7 +3,7 @@ import { JobCancelled } from "../jobs/lifecycle.js";
 import type { Job, LogFn } from "../jobs/queue.js";
 import { persistMergeState } from "./stateStore.js";
 import type {
-  MergeAuxPort,
+  MergeLibraryIndexPort,
   MergeDownloadPort,
   MergeJobPort,
   MergeSettingsPort,
@@ -16,7 +16,7 @@ export async function stageMergeDownloads(
     downloads: MergeDownloadPort;
     jobs: MergeJobPort;
     settings: MergeSettingsPort;
-    aux: MergeAuxPort;
+    libraryIndex: MergeLibraryIndexPort;
   },
   timing: ResolvedMergeTiming,
   job: Job,
@@ -138,7 +138,7 @@ export async function stageMergeDownloads(
       .map((c) => c.plan);
     const hasMatchByKey =
       plansToCheck.length > 0
-        ? await deps.aux.checkDownloadDuplicates(
+        ? await deps.libraryIndex.checkDownloadDuplicates(
             plansToCheck,
             job.payload.sourceFiles
           )

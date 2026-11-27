@@ -1,8 +1,4 @@
-import type {
-  JobExecutionState,
-  JobPayload,
-  JobType,
-} from "../contracts/jobs.js";
+import type { JobPayload, JobType } from "../contracts/jobs.js";
 import type { Job, JobStatus } from "./queue.js";
 import type { JobStateHydrator } from "./storage.js";
 
@@ -19,10 +15,9 @@ export class JobCancelled extends Error {
 /** Narrow job-type lifecycle seam keeping generic queue storage free of domain-specific state logic. */
 export interface JobTypeLifecycleHook {
   hydrateState?: JobStateHydrator;
-  initialState?(
-    payload: JobPayload,
-    executionState: JobExecutionState
-  ): Record<string, unknown> | undefined;
+  initialState?(payload: JobPayload): Record<string, unknown> | undefined;
+  /** Set to false when a failed job must never be re-run as a copy. Defaults to true. */
+  retryable?: boolean;
   stateForRetry?(failedJob: Job): Record<string, unknown> | undefined;
   canClearFailed?(row: {
     id: number;

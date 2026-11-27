@@ -1738,6 +1738,26 @@ export class DownloadQueue {
       path.join(base, ".htosho-download-")
     );
     const comicInfo = generateComicInfoXml(gallery, this.mergeOptions(row));
+    // Every publication, CBZ or folder, goes through the installed guard.
+    const publish = <T>(commit: () => Promise<T>): Promise<T> =>
+      guardDownloadPublication(
+        {
+          downloadId: row.id,
+          targetDir: dir,
+          previousOutputPath: row.outputPath,
+          mergeJobId: row.mergeJobId,
+          legacyMergeFolder: row.mergeFolder,
+        },
+        async () => {
+          if (ctx.cancelled) throw new Error("Cancelled by user");
+          if (ctx.paused) throw new DownloadPausedError();
+          if (ctx.shuttingDown) throw new DownloadShutdownError();
+          ctx.committing = true;
+          await fs.promises.mkdir(dir, { recursive: true });
+          return commit();
+        },
+        ctx.controller.signal
+      );
     try {
       if (row.outputFormat === "folder") {
         await mapLimit(images, 4, (img) => {
@@ -1756,21 +1776,21 @@ export class DownloadQueue {
         if (ctx.cancelled) throw new Error("Cancelled by user");
         if (ctx.paused) throw new DownloadPausedError();
         if (ctx.shuttingDown) throw new DownloadShutdownError();
-        ctx.committing = true;
-        await fs.promises.mkdir(dir, { recursive: true });
-        // Preserve unrelated files in an existing gallery folder. Each name is
-        // distinct, so replacements are independent; a little parallelism
-        // keeps large galleries from paying hundreds of serial rename trips.
-        await mapLimit(
-          [...images.map((img) => img.name), "ComicInfo.xml"],
-          4,
-          (name) =>
-            replacePublishedFile(
-              path.join(stagingDir, name),
-              path.join(dir, name)
-            )
-        );
-        return dir;
+        return await publish(async () => {
+          // Preserve unrelated files in an existing gallery folder. Each name is
+          // distinct, so replacements are independent; a little parallelism
+          // keeps large galleries from paying hundreds of serial rename trips.
+          await mapLimit(
+            [...images.map((img) => img.name), "ComicInfo.xml"],
+            4,
+            (name) =>
+              replacePublishedFile(
+                path.join(stagingDir, name),
+                path.join(dir, name)
+              )
+          );
+          return dir;
+        });
       }
 
       const file = destination;
@@ -1784,24 +1804,10 @@ export class DownloadQueue {
       if (ctx.cancelled) throw new Error("Cancelled by user");
       if (ctx.paused) throw new DownloadPausedError();
       if (ctx.shuttingDown) throw new DownloadShutdownError();
-      return await guardDownloadPublication(
-        {
-          downloadId: row.id,
-          targetDir: dir,
-          previousOutputPath: row.outputPath,
-          legacyMergeFolder: row.mergeFolder,
-        },
-        async () => {
-          if (ctx.cancelled) throw new Error("Cancelled by user");
-          if (ctx.paused) throw new DownloadPausedError();
-          if (ctx.shuttingDown) throw new DownloadShutdownError();
-          ctx.committing = true;
-          await fs.promises.mkdir(dir, { recursive: true });
-          await replacePublishedFile(stagedFile, file);
-          return file;
-        },
-        ctx.controller.signal
-      );
+      return await publish(async () => {
+        await replacePublishedFile(stagedFile, file);
+        return file;
+      });
     } finally {
       await fs.promises.rm(stagingDir, { recursive: true, force: true });
     }

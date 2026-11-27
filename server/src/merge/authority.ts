@@ -26,6 +26,7 @@ import {
   type KavitaMergeSession,
   type MergeSettingsPort,
 } from "./types.js";
+import { isPositiveId } from "../lib/guards.js";
 
 /** Resolve existing ancestors too: a not-yet-created child can still escape through a symlink. */
 export function canonicalMergePath(file: string): string {
@@ -39,9 +40,6 @@ export function canonicalMergePath(file: string): string {
   }
   return path.join(safeRealpath(ancestor), ...suffix);
 }
-
-const positiveId = (value: unknown): value is number =>
-  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 
 export function parseMergeProtectionRequest(
   value: unknown
@@ -63,13 +61,13 @@ export function parseMergeProtectionRequest(
   ) {
     throw new ProtectedMergeError("Unknown merge protection field", 400);
   }
-  if (body.seriesId !== undefined && !positiveId(body.seriesId))
+  if (body.seriesId !== undefined && !isPositiveId(body.seriesId))
     throw new ProtectedMergeError("Invalid target series", 400);
   if (
     body.sourceSeriesIds !== undefined &&
     (!Array.isArray(body.sourceSeriesIds) ||
       body.sourceSeriesIds.length > 500 ||
-      !body.sourceSeriesIds.every(positiveId) ||
+      !body.sourceSeriesIds.every(isPositiveId) ||
       new Set(body.sourceSeriesIds).size !== body.sourceSeriesIds.length)
   ) {
     throw new ProtectedMergeError(
@@ -222,9 +220,9 @@ export async function resolveMergeAuthority(
     )
   ).flat();
   if (
-    libraries.some((library) => !positiveId(library.id)) ||
+    libraries.some((library) => !isPositiveId(library.id)) ||
     all.some(
-      (series) => !positiveId(series.id) || !positiveId(series.libraryId)
+      (series) => !isPositiveId(series.id) || !isPositiveId(series.libraryId)
     ) ||
     new Set(libraries.map((library) => library.id)).size !== libraries.length ||
     new Set(all.map((series) => series.id)).size !== all.length

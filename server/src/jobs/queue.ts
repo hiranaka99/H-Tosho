@@ -1,19 +1,12 @@
 import { classifyJobError, type JobErrorCode } from "./errors.js";
 import { onSettingChange } from "../services/settings.js";
 import { readJobPayload } from "./storage.js";
-import {
-  JobCancelled,
-  getJobLifecycleHook,
-  registerJobLifecycleHook,
-  type JobStopReason,
-  type JobTypeLifecycleHook,
-} from "./lifecycle.js";
+import { JobCancelled, getJobLifecycleHook } from "./lifecycle.js";
 import { and, asc, desc, eq, gt, inArray } from "drizzle-orm";
 import { getDb, schema, type Db } from "../db/index.js";
 import { jobRecovery, type JobRecovery } from "./recovery.js";
 
 export { JobCancelled };
-export type { JobStopReason, JobTypeLifecycleHook };
 
 export { JOB_TYPES, isJobType } from "../contracts/jobs.js";
 export type {
@@ -375,11 +368,6 @@ class JobQueue {
     return payload.context;
   }
 
-  /** Register domain-specific state hydration, retry, clear, and stop hooks for one job type. */
-  registerLifecycleHook(type: JobType, hook: JobTypeLifecycleHook): void {
-    registerJobLifecycleHook(type, hook);
-  }
-
   /** Drop cached legacy projections after a job-type module updates `state_json` directly. */
   invalidateContextCache(jobIds: number | readonly number[]): void {
     if (typeof jobIds === "number") {
@@ -425,10 +413,7 @@ class JobQueue {
             .map((target) => target.id),
       };
     }
-    const hookInitial = getJobLifecycleHook(type)?.initialState?.(
-      payload,
-      payload
-    );
+    const hookInitial = getJobLifecycleHook(type)?.initialState?.(payload);
     const state = {
       context: payload.context,
       contextPendingSeriesIds: payload.contextPendingSeriesIds,
@@ -591,7 +576,7 @@ class JobQueue {
       if (Number(res.changes ?? 0) > 0) {
         this.log(id, "info", "Job cancelled before start");
         const hook = getJobLifecycleHook(job.type);
-        hook?.onSettled?.(id, "cancelled", "Cancelled before restore started");
+        hook?.onSettled?.(id, "cancelled", "Cancelled before start");
         hook?.onStopped?.(id, "cancelled");
         this.emitSettled({ id, type: job.type, status: "cancelled" });
         return true;
@@ -619,9 +604,10 @@ class JobQueue {
    */
   retryJob(id: number): number | null {
     const job = this.get(id);
-    if (!job || job.status !== "failed" || job.type === "restore-metadata")
-      return null;
-    const carriedState = getJobLifecycleHook(job.type)?.stateForRetry?.(job);
+    if (!job || job.status !== "failed") return null;
+    const hook = getJobLifecycleHook(job.type);
+    if (hook?.retryable === false) return null;
+    const carriedState = hook?.stateForRetry?.(job);
     const newId = this.enqueue(job.type, job.payload, carriedState);
     this.log(id, "info", `Retried as job #${newId}`);
     return newId;

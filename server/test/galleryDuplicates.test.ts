@@ -706,7 +706,7 @@ test("merge execution rechecks duplicates discovered after queueing before start
       },
       invalidateContextCache: (ids) => jobQueue.invalidateContextCache(ids),
     },
-    aux: {
+    libraryIndex: {
       checkDownloadDuplicates: async (plans, sourceFiles) => {
         const check = findDuplicateReports(
           await prepareDuplicateCheck(plans),

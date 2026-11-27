@@ -20,7 +20,7 @@ import {
   createProtectedMerge,
   type KavitaMergePort,
   type KavitaMergeSession,
-  type MergeAuxPort,
+  type MergeLibraryIndexPort,
   type MergeDownloadPort,
   type MergeJobPort,
   type MergeSettingsPort,
@@ -30,7 +30,7 @@ export { createProtectedMerge, ProtectedMergeError } from "./protectedMerge.js";
 export type * from "./types.js";
 
 /** Production HTTP adapter over live Kavita connection settings. */
-export function createHttpKavitaMergeAdapter(): KavitaMergePort {
+function createHttpKavitaMergeAdapter(): KavitaMergePort {
   return {
     connectionKey: () => kavitaConnectionKey(getKavitaConnection().baseUrl),
     current: (): KavitaMergeSession | null => {
@@ -53,6 +53,13 @@ export function createHttpKavitaMergeAdapter(): KavitaMergePort {
         isTaskRunning: () => client.isTaskRunning(),
         getSeriesDto: (seriesId) => client.getSeriesDto(seriesId),
         getSeriesMetadata: (seriesId) => client.getSeriesMetadata(seriesId),
+        getServerInfo: (signal) => client.getServerInfo(signal),
+        getSeriesCoverForHistory: (seriesId) =>
+          client.getSeriesCoverForHistory(seriesId),
+        getVolumeCoverForHistory: (volumeId) =>
+          client.getVolumeCoverForHistory(volumeId),
+        getVolumeForCoverHistory: (volumeId) =>
+          client.getVolumeForCoverHistory(volumeId),
       };
     },
   };
@@ -144,7 +151,7 @@ const productionJobs: MergeJobPort = {
   invalidateContextCache: (jobIds) => jobQueue.invalidateContextCache(jobIds),
 };
 
-const productionAux: MergeAuxPort = {
+const productionLibraryIndex: MergeLibraryIndexPort = {
   checkDownloadDuplicates: async (plans, sourceFiles) => {
     const identities = await prepareDuplicateCheck(plans);
     const check = findDuplicateReports(identities, sourceFiles);
@@ -164,7 +171,7 @@ export const protectedMerge = createProtectedMerge({
   settings: productionSettings,
   downloads: productionDownloads,
   jobs: productionJobs,
-  aux: productionAux,
+  libraryIndex: productionLibraryIndex,
 });
 
 registerJobLifecycleHook("merge-series", protectedMerge.jobLifecycleHook);

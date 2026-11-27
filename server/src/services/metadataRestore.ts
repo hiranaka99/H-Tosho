@@ -1126,6 +1126,8 @@ export function interruptMetadataRestore(): void {
 }
 
 registerJobLifecycleHook("restore-metadata", {
+  // An approved plan runs once; a failed restore needs a fresh preview, not a copy.
+  retryable: false,
   onSettled: (jobId, status, error) =>
     settleMetadataRestoreJob(jobId, status, error),
 });

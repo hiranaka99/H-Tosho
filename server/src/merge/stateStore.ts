@@ -12,11 +12,8 @@ import {
 } from "../jobs/storage.js";
 import { archiveResource } from "../lib/mutations.js";
 import { pathContains } from "../lib/paths.js";
+import { isPositiveId, isRecord } from "../lib/guards.js";
 
-const record = (value: unknown): value is Record<string, unknown> =>
-  !!value && typeof value === "object" && !Array.isArray(value);
-const positiveId = (value: unknown): value is number =>
-  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 const validFields = (value: unknown): boolean =>
   Array.isArray(value) &&
   (value as unknown[]).every(
@@ -36,15 +33,15 @@ export function hydrateMergeState(
 ): JobStateHydration {
   const combined = { ...rawPayload, ...persistedState };
   const state: Partial<JobExecutionState> = {};
-  if (record(combined.mergeDownloadIds)) {
+  if (isRecord(combined.mergeDownloadIds)) {
     state.mergeDownloadIds = Object.fromEntries(
       Object.entries(combined.mergeDownloadIds).filter(
-        (entry): entry is [string, number] => positiveId(entry[1])
+        (entry): entry is [string, number] => isPositiveId(entry[1])
       )
     );
   }
   if (
-    record(combined.chapters) &&
+    isRecord(combined.chapters) &&
     Object.values(combined.chapters).every((value) => typeof value === "string")
   ) {
     state.chapters = combined.chapters as Record<string, string>;
@@ -60,24 +57,24 @@ export function hydrateMergeState(
   if (persistedState.mergeProtection !== undefined) {
     const protection = persistedState.mergeProtection;
     if (
-      !record(protection) ||
+      !isRecord(protection) ||
       typeof protection.connectionKey !== "string" ||
       !protection.connectionKey ||
       typeof protection.targetDir !== "string" ||
       typeof protection.seriesName !== "string" ||
       !Array.isArray(protection.sourceSeriesIds) ||
-      !protection.sourceSeriesIds.every(positiveId) ||
+      !protection.sourceSeriesIds.every(isPositiveId) ||
       (protection.targetSeriesId !== undefined &&
-        !positiveId(protection.targetSeriesId)) ||
+        !isPositiveId(protection.targetSeriesId)) ||
       (protection.completedTargetSeriesId !== undefined &&
-        !positiveId(protection.completedTargetSeriesId)) ||
+        !isPositiveId(protection.completedTargetSeriesId)) ||
       (protection.rootJobId !== undefined &&
-        !positiveId(protection.rootJobId)) ||
+        !isPositiveId(protection.rootJobId)) ||
       (protection.moves !== undefined &&
         (!Array.isArray(protection.moves) ||
           !protection.moves.every(
             (move) =>
-              record(move) &&
+              isRecord(move) &&
               typeof move.source === "string" &&
               typeof move.destination === "string" &&
               typeof move.sha256 === "string" &&
@@ -88,8 +85,8 @@ export function hydrateMergeState(
       !Array.isArray(protection.policies) ||
       !protection.policies.every(
         (policy) =>
-          record(policy) &&
-          positiveId(policy.seriesId) &&
+          isRecord(policy) &&
+          isPositiveId(policy.seriesId) &&
           Number.isSafeInteger(policy.revision) &&
           Number(policy.revision) >= 0 &&
           validFields(policy.lockedFields)
@@ -97,18 +94,18 @@ export function hydrateMergeState(
       !Array.isArray(protection.identities) ||
       !protection.identities.every(
         (identity) =>
-          record(identity) &&
-          positiveId(identity.seriesId) &&
-          positiveId(identity.libraryId) &&
+          isRecord(identity) &&
+          isPositiveId(identity.seriesId) &&
+          isPositiveId(identity.libraryId) &&
           (identity.folderPath === undefined ||
             typeof identity.folderPath === "string")
       ) ||
       !Array.isArray(protection.archives) ||
       !protection.archives.every(
         (archive) =>
-          record(archive) &&
+          isRecord(archive) &&
           typeof archive.path === "string" &&
-          (archive.seriesId === undefined || positiveId(archive.seriesId))
+          (archive.seriesId === undefined || isPositiveId(archive.seriesId))
       )
     ) {
       validationError = "Invalid retained merge protection evidence";

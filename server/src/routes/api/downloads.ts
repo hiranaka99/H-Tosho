@@ -338,7 +338,8 @@ async function prepareDownload(
         undefined,
         sourceUrl
       );
-      checker?.noteQueued(identities[0], id);
+      // Link straight after the insert: if anything below throws, the merged
+      // registration then cancels this row instead of leaving it unprotected.
       attach?.({
         downloadId: id,
         source,
@@ -348,6 +349,7 @@ async function prepareDownload(
         allowDuplicate: body.allowDuplicate === true,
         url: sourceUrl,
       });
+      checker?.noteQueued(identities[0], id);
       return respond({ id, status: "queued" }, 202);
     };
   } catch (error) {
