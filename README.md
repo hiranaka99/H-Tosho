@@ -6,7 +6,7 @@ H-Tosho matches your manga and light novels against AniList, MangaDex, and
 MyAnimeList, shows you what would change, and applies only what you approve. It
 also finds and downloads doujinshi into your library.
 
-Works with Kavita v0.9 or newer · Current version: **v4.3.3** ·
+Works with Kavita v0.9 or newer · Current version: **v4.4.0** ·
 [Changelog](CHANGELOG.md)
 
 ![H-Tosho Libraries page showing five sample series with generated covers and their match status](docs/screenshots/libraries.png)
