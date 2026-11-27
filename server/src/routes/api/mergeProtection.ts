@@ -1,17 +1,19 @@
-import { Hono } from 'hono';
-import { connectedClient, errMsg } from './helpers.js';
-import { MergeProtectionError, parseMergeProtectionRequest, resolveMergeProtection } from '../../services/mergeProtection.js';
+import { Hono } from "hono";
+import { errMsg } from "./helpers.js";
+import { protectedMerge, ProtectedMergeError } from "../../merge/index.js";
 
 export const api = new Hono();
-api.post('/merge-protection/preview', async c => {
-  const client = connectedClient();
-  if (!client) return c.json({error:'Kavita not configured'},503);
+
+api.post("/merge-protection/preview", async (c) => {
   const body: unknown = await c.req.json().catch(() => null);
   try {
-    const result = await resolveMergeProtection(client, parseMergeProtectionRequest(body));
-    c.header('Cache-Control','no-store');
-    return c.json(result.preview);
+    const preview = await protectedMerge.preview(body);
+    c.header("Cache-Control", "no-store");
+    return c.json(preview);
   } catch (error) {
-    return c.json({error:errMsg(error)}, error instanceof MergeProtectionError ? error.status : 502);
+    return c.json(
+      { error: errMsg(error) },
+      error instanceof ProtectedMergeError ? error.status : 502
+    );
   }
 });
