@@ -1,5 +1,28 @@
 # Changelog
 
+## v4.4.0
+
+H-Tosho now runs on Node.js 26 and ships a prebuilt Docker image with every release. The project now has an MIT License, a security policy, and contribution guidelines.
+
+- **Node.js 26.** H-Tosho requires Node.js 26.13.1 or newer, the current security release of the Node.js 26 LTS line. The Docker image is built on `node:26-slim`.
+- **Prebuilt Docker image.** Each release publishes `ghcr.io/hiranaka99/h-tosho` for linux/amd64, and both Compose files use it. A new install only needs `docker-compose.yml`, not a clone of the repository. To build from source instead, for example on ARM, uncomment `build: .` and run `docker compose up -d --build`.
+- **License, security policy, and contributing guide.** H-Tosho is released under the MIT License. Report security problems privately as described in `SECURITY.md`. `CONTRIBUTING.md` covers setup and checks, and bug reports and feature requests use issue forms.
+- **New README screenshots.** They show fictional sample series with generated covers, and `npm run screenshots` regenerates them.
+
+### Upgrade notes
+
+- **Source installs:** install Node.js 26.13.1 or newer first. The repository's history was rewritten when it moved, so an existing checkout can't take this update from **App updates**. Update it once by hand from the H-Tosho folder:
+
+  ```bash
+  git fetch --force --tags origin
+  git checkout -B main v4.4.0
+  npm ci && npm run build
+  ```
+
+  Then restart H-Tosho. Your data in `server/data` (or `HTOSHO_DATA_DIR`) is kept, and later updates work from **App updates** again.
+
+- **Docker:** this release changes the `Dockerfile` and the Node.js version, so the image must be replaced once. Download the new [`docker-compose.yml`](https://github.com/hiranaka99/H-Tosho/blob/v4.4.0/docker-compose.yml) into your existing H-Tosho folder, re-add any library folder mounts, and run `docker compose pull && docker compose up -d`. Keeping the same folder keeps the same `h-tosho-data` volume. Don't run `docker compose down -v`.
+
 ## v4.3.3
 
 This patch fixes the mobile header and E-Hentai download retries, and hardens downloads that belong to a merge.

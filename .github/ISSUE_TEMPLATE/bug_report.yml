@@ -13,7 +13,7 @@ body:
     attributes:
       label: H-Tosho version
       description: Shown under the H-Tosho name in the sidebar.
-      placeholder: v4.3.3
+      placeholder: v4.4.0
     validations:
       required: true
   - type: dropdown
