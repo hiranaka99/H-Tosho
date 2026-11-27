@@ -1,4 +1,4 @@
-import * as fsp from 'node:fs/promises';
+import * as fsp from "node:fs/promises";
 
 /**
  * Small shared HTTP helpers for outbound calls to providers & Kavita.
@@ -25,7 +25,7 @@ export async function fetchJson<T = unknown>(
   url: string,
   init: RequestInit = {},
   timeoutMs = 15_000,
-  opts: FetchJsonOptions = {},
+  opts: FetchJsonOptions = {}
 ): Promise<HttpResponse<T>> {
   init.signal?.throwIfAborted();
   const controller = new AbortController();
@@ -33,8 +33,10 @@ export async function fetchJson<T = unknown>(
   try {
     const res = await fetch(url, {
       ...init,
-      signal: init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal,
-      redirect: 'follow',
+      signal: init.signal
+        ? AbortSignal.any([controller.signal, init.signal])
+        : controller.signal,
+      redirect: "follow",
     });
     const text = await res.text();
     let data: T;
@@ -46,7 +48,7 @@ export async function fetchJson<T = unknown>(
     if (!res.ok && !opts.raw) {
       // Strip the query string from the display URL — some endpoints carry
       // credentials in it.
-      throw new Error(`HTTP ${res.status} from ${url.split('?')[0]}`);
+      throw new Error(`HTTP ${res.status} from ${url.split("?")[0]}`);
     }
     return { status: res.status, data, headers: res.headers };
   } finally {
@@ -57,7 +59,7 @@ export async function fetchJson<T = unknown>(
 export async function fetchBuffer(
   url: string,
   init: RequestInit = {},
-  timeoutMs = 30_000,
+  timeoutMs = 30_000
 ): Promise<Buffer> {
   init.signal?.throwIfAborted();
   const controller = new AbortController();
@@ -65,8 +67,10 @@ export async function fetchBuffer(
   try {
     const res = await fetch(url, {
       ...init,
-      signal: init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal,
-      redirect: 'follow',
+      signal: init.signal
+        ? AbortSignal.any([controller.signal, init.signal])
+        : controller.signal,
+      redirect: "follow",
     });
     if (!res.ok) {
       void res.body?.cancel().catch(() => {});
@@ -92,41 +96,59 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     const abort = () => {
       clearTimeout(timer);
       const reason: unknown = signal?.reason;
-      reject(reason instanceof Error ? reason : new Error(typeof reason === 'string' && reason ? reason : 'Aborted'));
+      reject(
+        reason instanceof Error
+          ? reason
+          : new Error(typeof reason === "string" && reason ? reason : "Aborted")
+      );
     };
-    const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, ms);
-    signal?.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", abort, { once: true });
   });
 }
 
-const RETRYABLE_STATUS: Record<number, true> = { 429: true, 502: true, 503: true, 504: true };
+const RETRYABLE_STATUS: Record<number, true> = {
+  429: true,
+  502: true,
+  503: true,
+  504: true,
+};
 
 /** HTTP status error carrying any server-advised Retry-After delay (ms). */
 export class HttpStatusError extends Error {
   constructor(
     message: string,
     public readonly status: number,
-    public readonly retryAfterMs: number | null = null,
+    public readonly retryAfterMs: number | null = null
   ) {
     super(message);
-    this.name = 'HttpStatusError';
+    this.name = "HttpStatusError";
   }
 }
 
 /** Parse a Retry-After header (delay seconds or HTTP date) into ms; null when absent/invalid. */
-export function parseRetryAfterMs(headers: Headers | Record<string, string | string[] | undefined> | undefined, maxMs = 15_000): number | null {
+export function parseRetryAfterMs(
+  headers: Headers | Record<string, string | string[] | undefined> | undefined,
+  maxMs = 15_000
+): number | null {
   if (!headers) return null;
-  const raw = headers instanceof Headers
-    ? headers.get('retry-after')
-    : (() => {
-        const value = headers['retry-after'];
-        return Array.isArray(value) ? value[0] : value ?? null;
-      })();
+  const raw =
+    headers instanceof Headers
+      ? headers.get("retry-after")
+      : (() => {
+          const value = headers["retry-after"];
+          return Array.isArray(value) ? value[0] : (value ?? null);
+        })();
   if (!raw) return null;
   const secs = Number(raw);
   if (Number.isFinite(secs)) return Math.max(0, Math.min(secs * 1000, maxMs));
   const date = Date.parse(raw);
-  return Number.isNaN(date) ? null : Math.max(0, Math.min(date - Date.now(), maxMs));
+  return Number.isNaN(date)
+    ? null
+    : Math.max(0, Math.min(date - Date.now(), maxMs));
 }
 
 function retryAfterMs(headers: Headers | undefined): number | null {
@@ -144,7 +166,7 @@ export async function fetchJsonRetry<T = unknown>(
   init: RequestInit = {},
   timeoutMs = 15_000,
   opts: FetchJsonOptions = {},
-  attempts = 3,
+  attempts = 3
 ): Promise<HttpResponse<T>> {
   for (let attempt = 1; ; attempt++) {
     let res: HttpResponse<T>;
@@ -154,15 +176,21 @@ export async function fetchJsonRetry<T = unknown>(
     } catch (e) {
       init.signal?.throwIfAborted();
       if (attempt >= attempts) throw e;
-      await sleep(Math.min(500 * 2 ** (attempt - 1), 4000), init.signal ?? undefined);
+      await sleep(
+        Math.min(500 * 2 ** (attempt - 1), 4000),
+        init.signal ?? undefined
+      );
       continue;
     }
     if (RETRYABLE_STATUS[res.status] && attempt < attempts) {
-      await sleep(retryAfterMs(res.headers) ?? Math.min(500 * 2 ** (attempt - 1), 4000), init.signal ?? undefined);
+      await sleep(
+        retryAfterMs(res.headers) ?? Math.min(500 * 2 ** (attempt - 1), 4000),
+        init.signal ?? undefined
+      );
       continue;
     }
     if (!(res.status >= 200 && res.status < 300) && !opts.raw) {
-      throw new Error(`HTTP ${res.status} from ${url.split('?')[0]}`);
+      throw new Error(`HTTP ${res.status} from ${url.split("?")[0]}`);
     }
     return res;
   }
@@ -176,26 +204,29 @@ export async function fetchJsonRetry<T = unknown>(
 export async function mapLimit<T, R>(
   items: readonly T[],
   limit: number,
-  fn: (item: T, index: number) => Promise<R>,
+  fn: (item: T, index: number) => Promise<R>
 ): Promise<R[]> {
   const results = Array.from<R>({ length: items.length });
   let next = 0;
   let failed = false;
   let firstError: unknown;
-  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
-    for (;;) {
-      if (failed) return;
-      const i = next++;
-      if (i >= items.length) return;
-      try {
-        results[i] = await fn(items[i], i);
-      } catch (error) {
-        if (!failed) firstError = error;
-        failed = true;
-        return;
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(limit, items.length)) },
+    async () => {
+      for (;;) {
+        if (failed) return;
+        const i = next++;
+        if (i >= items.length) return;
+        try {
+          results[i] = await fn(items[i], i);
+        } catch (error) {
+          if (!failed) firstError = error;
+          failed = true;
+          return;
+        }
       }
     }
-  });
+  );
   await Promise.all(workers);
   if (failed) throw firstError;
   return results;
@@ -219,7 +250,7 @@ export async function fetchToFileStreaming(
   destPath: string,
   handlers: StreamProgressHandlers = {},
   timeoutMs = 30_000,
-  opts: FetchToFileOptions = {},
+  opts: FetchToFileOptions = {}
 ): Promise<number> {
   init.signal?.throwIfAborted();
   const partPath = `${destPath}.part`;
@@ -228,7 +259,7 @@ export async function fetchToFileStreaming(
   let fh: fsp.FileHandle | null = null;
   let closed = false;
   const openFile = async (): Promise<fsp.FileHandle> => {
-    fh = await fsp.open(partPath, 'w');
+    fh = await fsp.open(partPath, "w");
     return fh;
   };
   const closeFile = async (): Promise<void> => {
@@ -237,45 +268,64 @@ export async function fetchToFileStreaming(
     await fh.close();
   };
   const controller = new AbortController();
-  const signal = init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal;
+  const signal = init.signal
+    ? AbortSignal.any([controller.signal, init.signal])
+    : controller.signal;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   // Restart the idle window in place instead of allocating a timer per chunk.
   const armTimer = (): void => {
     timer.refresh();
   };
-  let reader: { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel?: () => Promise<unknown> } | null = null;
+  let reader: {
+    read(): Promise<{ done: boolean; value?: Uint8Array }>;
+    cancel?: () => Promise<unknown>;
+  } | null = null;
   try {
     signal.throwIfAborted();
-    const res = await fetch(url, { ...init, signal, redirect: 'follow' });
+    const res = await fetch(url, { ...init, signal, redirect: "follow" });
     if (!res.ok) {
       void res.body?.cancel().catch(() => {}); // free the socket for reuse
-      throw new HttpStatusError(`Download failed: HTTP ${res.status}`, res.status, parseRetryAfterMs(res.headers, 60_000));
+      throw new HttpStatusError(
+        `Download failed: HTTP ${res.status}`,
+        res.status,
+        parseRetryAfterMs(res.headers, 60_000)
+      );
     }
     armTimer(); // headers received — start the idle window for the body
     if (opts.rejectHtml) {
-      const mediaType = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
-      if (mediaType === 'text/html' || mediaType === 'application/xhtml+xml') {
+      const mediaType = (res.headers.get("content-type") ?? "")
+        .split(";")[0]
+        .trim()
+        .toLowerCase();
+      if (mediaType === "text/html" || mediaType === "application/xhtml+xml") {
         void res.body?.cancel().catch(() => {});
-        throw new Error('Download failed: unexpected HTML response instead of image');
+        throw new Error(
+          "Download failed: unexpected HTML response instead of image"
+        );
       }
     }
-    const lengthHeader = res.headers.get('content-length');
+    const lengthHeader = res.headers.get("content-length");
     const parsedLength = lengthHeader ? Number(lengthHeader) : NaN;
-    const totalBytes = Number.isFinite(parsedLength) && parsedLength > 0 ? parsedLength : null;
-    const hasEncoding = Boolean(res.headers.get('content-encoding'));
+    const totalBytes =
+      Number.isFinite(parsedLength) && parsedLength > 0 ? parsedLength : null;
+    const hasEncoding = Boolean(res.headers.get("content-encoding"));
     handlers.onAttemptStart?.();
 
     interface StreamReader {
       read(): Promise<{ done: boolean; value?: Uint8Array }>;
       cancel?: () => Promise<unknown>;
     }
-    const body = res.body as unknown as { getReader?: () => StreamReader } | null;
-    if (!body || typeof body.getReader !== 'function') {
+    const body = res.body as unknown as {
+      getReader?: () => StreamReader;
+    } | null;
+    if (!body || typeof body.getReader !== "function") {
       const buf = Buffer.from(await res.arrayBuffer());
       signal.throwIfAborted();
-      if (buf.length === 0) throw new Error('Empty response body (0 bytes)');
+      if (buf.length === 0) throw new Error("Empty response body (0 bytes)");
       if (totalBytes !== null && !hasEncoding && buf.length < totalBytes) {
-        throw new Error(`Incomplete download: received ${buf.length} of ${totalBytes} bytes`);
+        throw new Error(
+          `Incomplete download: received ${buf.length} of ${totalBytes} bytes`
+        );
       }
       await (await openFile()).write(buf);
       handlers.onProgress?.(buf.length, totalBytes ?? buf.length);
@@ -293,7 +343,10 @@ export async function fetchToFileStreaming(
     let pendingBytes = 0;
     const flush = async (): Promise<void> => {
       if (!pendingBytes) return;
-      const batch = pending.length === 1 ? pending[0] : Buffer.concat(pending, pendingBytes);
+      const batch =
+        pending.length === 1
+          ? pending[0]
+          : Buffer.concat(pending, pendingBytes);
       pending = [];
       pendingBytes = 0;
       await file.write(batch);
@@ -313,9 +366,11 @@ export async function fetchToFileStreaming(
       }
     }
     await flush();
-    if (written === 0) throw new Error('Empty response body (0 bytes)');
+    if (written === 0) throw new Error("Empty response body (0 bytes)");
     if (totalBytes !== null && !hasEncoding && written < totalBytes) {
-      throw new Error(`Incomplete download: received ${written} of ${totalBytes} bytes`);
+      throw new Error(
+        `Incomplete download: received ${written} of ${totalBytes} bytes`
+      );
     }
     await closeFile();
     await fsp.rename(partPath, destPath);

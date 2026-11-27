@@ -1,7 +1,17 @@
-import { getProvider } from '../providers/registry.js';
-import type { MetadataProvider, SearchResult, SeriesMetadata, MediaType } from '../providers/types.js';
-import { AUTO_MATCH_THRESHOLD, canonicalTitle, scoreCanonical, titleSearchParts } from './normalize.js';
-import type { KavitaSeries } from '../kavita/types.js';
+import { getProvider } from "../providers/registry.js";
+import type {
+  MetadataProvider,
+  SearchResult,
+  SeriesMetadata,
+  MediaType,
+} from "../providers/types.js";
+import {
+  AUTO_MATCH_THRESHOLD,
+  canonicalTitle,
+  scoreCanonical,
+  titleSearchParts,
+} from "./normalize.js";
+import type { KavitaSeries } from "../kavita/types.js";
 
 export interface CandidateMatch {
   providerId: string;
@@ -46,7 +56,10 @@ export interface AutoMatchOptions {
  * actually matches. Ties keep the display title. The series name is
  * canonicalized once per autoMatch call, not per candidate/alt title.
  */
-function bestVariant(seriesCanonical: string, r: SearchResult): { score: number; title: string } {
+function bestVariant(
+  seriesCanonical: string,
+  r: SearchResult
+): { score: number; title: string } {
   let score = scoreCanonical(seriesCanonical, canonicalTitle(r.title));
   let title = r.title;
   for (const alt of r.altTitles ?? []) {
@@ -67,12 +80,12 @@ function bestVariant(seriesCanonical: string, r: SearchResult): { score: number;
  * Kavita names like "Aizome - Fill With LOVE" still find their bare title.
  */
 export async function autoMatch(
-  series: Pick<KavitaSeries, 'name' | 'id'>,
-  options: AutoMatchOptions,
+  series: Pick<KavitaSeries, "name" | "id">,
+  options: AutoMatchOptions
 ): Promise<MatchOutcome> {
   const threshold = options.threshold ?? AUTO_MATCH_THRESHOLD;
   const order = (options.providerOrder ?? []).filter((id) =>
-    options.enabledProviders.includes(id),
+    options.enabledProviders.includes(id)
   );
   const query = options.query ?? series.name;
   // Canonicalize the series name once; bestVariant scores every candidate
@@ -82,15 +95,24 @@ export async function autoMatch(
   const searchedProviders: string[] = [];
   const errors: Record<string, string> = {};
 
-  const searchOneProvider = async (providerId: string, searchQuery: string): Promise<CandidateMatch[]> => {
+  const searchOneProvider = async (
+    providerId: string,
+    searchQuery: string
+  ): Promise<CandidateMatch[]> => {
     options.signal?.throwIfAborted();
     const provider = getProvider(providerId);
     if (!provider) return [];
-    if (options.type && !provider.supportedTypes.includes(options.type)) return [];
+    if (options.type && !provider.supportedTypes.includes(options.type))
+      return [];
     try {
       provider.setCredentials(options.credentials[providerId] ?? {});
-      const results = await provider.search(searchQuery, options.type, options.signal);
-      if (!searchedProviders.includes(providerId)) searchedProviders.push(providerId);
+      const results = await provider.search(
+        searchQuery,
+        options.type,
+        options.signal
+      );
+      if (!searchedProviders.includes(providerId))
+        searchedProviders.push(providerId);
       const out: CandidateMatch[] = [];
       for (const r of results) {
         if (!r.title) continue;
@@ -119,7 +141,9 @@ export async function autoMatch(
 
   const searchProviders = async (searchQuery: string): Promise<void> => {
     if (options.searchAll) {
-      const perProvider = await Promise.all(order.map((providerId) => searchOneProvider(providerId, searchQuery)));
+      const perProvider = await Promise.all(
+        order.map((providerId) => searchOneProvider(providerId, searchQuery))
+      );
       options.signal?.throwIfAborted();
       for (const list of perProvider) candidates.push(...list);
       return;
@@ -162,12 +186,14 @@ export async function autoMatch(
   // Exact score ties (e.g. two containment matches at 0.92) are broken by
   // token overlap with the series name, so a title sharing more of the query
   // wins regardless of provider priority or catalog merge order.
-  const queryTokens = new Set((query === series.name ? seriesCanonical : canonicalTitle(query)).split(' '));
+  const queryTokens = new Set(
+    (query === series.name ? seriesCanonical : canonicalTitle(query)).split(" ")
+  );
   const sharedTokenCount = new Map<string, number>();
   const sharedTokens = (c: CandidateMatch): number => {
     let n = sharedTokenCount.get(c.title);
     if (n === undefined) {
-      const tokens = new Set(canonicalTitle(c.title).split(' '));
+      const tokens = new Set(canonicalTitle(c.title).split(" "));
       n = 0;
       for (const w of queryTokens) if (tokens.has(w)) n++;
       sharedTokenCount.set(c.title, n);
@@ -193,7 +219,7 @@ export async function fetchProviderMetadata(
   providerId: string,
   providerSeriesId: string,
   credentials: Record<string, Record<string, string>>,
-  signal?: AbortSignal,
+  signal?: AbortSignal
 ): Promise<SeriesMetadata> {
   const provider = getProvider(providerId);
   if (!provider) throw new Error(`Unknown provider: ${providerId}`);
@@ -206,9 +232,11 @@ export async function fetchProviderMetadata(
  * was monkey-patched directly on the instance (e.g. test mocks) without its batch peer.
  */
 export function canBatchProviderMetadata(provider: MetadataProvider): boolean {
-  return typeof provider.getSeriesMetadataBatch === 'function'
-    && (Object.prototype.hasOwnProperty.call(provider, 'getSeriesMetadataBatch')
-      || !Object.prototype.hasOwnProperty.call(provider, 'getSeriesMetadata'));
+  return (
+    typeof provider.getSeriesMetadataBatch === "function" &&
+    (Object.prototype.hasOwnProperty.call(provider, "getSeriesMetadataBatch") ||
+      !Object.prototype.hasOwnProperty.call(provider, "getSeriesMetadata"))
+  );
 }
 
 export async function fetchProviderMetadataBatch(
@@ -216,7 +244,7 @@ export async function fetchProviderMetadataBatch(
   providerSeriesIds: string[],
   credentials: Record<string, Record<string, string>>,
   signal?: AbortSignal,
-  opts?: { skipVolumeCovers?: ReadonlySet<string> },
+  opts?: { skipVolumeCovers?: ReadonlySet<string> }
 ): Promise<Map<string, SeriesMetadata> | null> {
   const provider = getProvider(providerId);
   if (!provider) throw new Error(`Unknown provider: ${providerId}`);

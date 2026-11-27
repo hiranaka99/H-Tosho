@@ -1,8 +1,8 @@
-import { api } from './api';
+import { api } from "./api";
 
 /** Load once when the authenticated app opens; all pages share the same picks. */
 export const recommendationQuery = {
-  queryKey: ['recommendations'] as const,
+  queryKey: ["recommendations"] as const,
   queryFn: api.recommendations,
   staleTime: Infinity,
   gcTime: Infinity,

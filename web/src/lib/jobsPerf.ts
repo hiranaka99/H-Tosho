@@ -1,5 +1,5 @@
-import type { Job } from './api';
-import { toIsoUtc } from './utils';
+import type { Job } from "./api";
+import { toIsoUtc } from "./utils";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
@@ -11,7 +11,7 @@ const DAY_MS = 86_400_000;
  */
 export function createdAgoIntervalMs(
   createdAtIso: string | null | undefined,
-  nowMs = Date.now(),
+  nowMs = Date.now()
 ): number | null {
   if (!createdAtIso) return null;
   const then = new Date(toIsoUtc(createdAtIso)).getTime();

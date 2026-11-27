@@ -1,820 +1,3220 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tasks tab: five fixes vs live</title>
-<script>
-  // Follow the OS theme until the toggle is used (same approach as the app).
-  (function () { try { if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.classList.add('dark'); } catch (e) {} })();
-</script>
-<style>
-@font-face { font-family: 'Inter'; font-weight: 100 900; font-display: swap; src: url('./fonts/inter-var.woff2') format('woff2'); }
-@font-face { font-family: 'JetBrains Mono'; font-weight: 100 800; font-display: swap; src: url('../web/public/fonts/jetbrainsmono-var.woff2') format('woff2'); }
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tasks tab: five fixes vs live</title>
+    <script>
+      // Follow the OS theme until the toggle is used (same approach as the app).
+      (function () {
+        try {
+          if (matchMedia("(prefers-color-scheme: dark)").matches)
+            document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
+    <style>
+      @font-face {
+        font-family: "Inter";
+        font-weight: 100 900;
+        font-display: swap;
+        src: url("./fonts/inter-var.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "JetBrains Mono";
+        font-weight: 100 800;
+        font-display: swap;
+        src: url("../web/public/fonts/jetbrainsmono-var.woff2") format("woff2");
+      }
 
-/* ---- H-Tosho tokens, copied from web/src/index.css ---- */
-:root {
-  color-scheme: light;
-  --background:#fcf4f7; --sidebar:#fff8fb; --surface:#ffffff; --surface-2:#f7e8ef; --border:#eed9e3; --border-2:#d9b8c8;
-  --foreground:#392333; --muted:#795d70; --primary:#aa386a; --primary-hover:#902a57; --primary-button:#aa386a; --primary-button-hover:#902a57;
-  --success:#0b7d66; --warning:#aa6b15; --danger:#b8364c; --info:#79518f;
-  --control-shadow:rgb(92 35 64 / .12); --card-shadow:rgb(92 35 64 / .045);
-}
-:root.dark {
-  color-scheme: dark;
-  --background:#160f18; --sidebar:#1d1420; --surface:#251a29; --surface-2:#322335; --border:#453047; --border-2:#634760;
-  --foreground:#faeaf2; --muted:#c4a6ba; --primary:#f39cbd; --primary-hover:#ffc0d7; --primary-button:#b33b70; --primary-button-hover:#c0457d;
-  --success:#38cba6; --warning:#e5b454; --danger:#f07d8a; --info:#d3adeb;
-  --control-shadow:rgb(0 0 0 / .28); --card-shadow:rgb(0 0 0 / .12);
-}
-* { box-sizing: border-box; }
-html { background: var(--background); }
-body { margin: 0; font-family: 'Inter','Segoe UI',system-ui,sans-serif; background: var(--background); color: var(--foreground); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
-button { font: inherit; color: inherit; cursor: pointer; }
-h1,h2,h3,p,ul,dl,dd { margin: 0; }
-svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-svg.i.s12 { width: 12px; height: 12px; }
-svg.i.s20 { width: 20px; height: 20px; }
-.mono { font-family: 'JetBrains Mono','Cascadia Code',ui-monospace,monospace; }
-.muted { color: var(--muted); }
-.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+      /* ---- H-Tosho tokens, copied from web/src/index.css ---- */
+      :root {
+        color-scheme: light;
+        --background: #fcf4f7;
+        --sidebar: #fff8fb;
+        --surface: #ffffff;
+        --surface-2: #f7e8ef;
+        --border: #eed9e3;
+        --border-2: #d9b8c8;
+        --foreground: #392333;
+        --muted: #795d70;
+        --primary: #aa386a;
+        --primary-hover: #902a57;
+        --primary-button: #aa386a;
+        --primary-button-hover: #902a57;
+        --success: #0b7d66;
+        --warning: #aa6b15;
+        --danger: #b8364c;
+        --info: #79518f;
+        --control-shadow: rgb(92 35 64 / 0.12);
+        --card-shadow: rgb(92 35 64 / 0.045);
+      }
+      :root.dark {
+        color-scheme: dark;
+        --background: #160f18;
+        --sidebar: #1d1420;
+        --surface: #251a29;
+        --surface-2: #322335;
+        --border: #453047;
+        --border-2: #634760;
+        --foreground: #faeaf2;
+        --muted: #c4a6ba;
+        --primary: #f39cbd;
+        --primary-hover: #ffc0d7;
+        --primary-button: #b33b70;
+        --primary-button-hover: #c0457d;
+        --success: #38cba6;
+        --warning: #e5b454;
+        --danger: #f07d8a;
+        --info: #d3adeb;
+        --control-shadow: rgb(0 0 0 / 0.28);
+        --card-shadow: rgb(0 0 0 / 0.12);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        background: var(--background);
+      }
+      body {
+        margin: 0;
+        font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+        background: var(--background);
+        color: var(--foreground);
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+      button {
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+      }
+      h1,
+      h2,
+      h3,
+      p,
+      ul,
+      dl,
+      dd {
+        margin: 0;
+      }
+      svg.i {
+        width: 16px;
+        height: 16px;
+        flex: none;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      svg.i.s12 {
+        width: 12px;
+        height: 12px;
+      }
+      svg.i.s20 {
+        width: 20px;
+        height: 20px;
+      }
+      .mono {
+        font-family: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .sr {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+      :focus-visible {
+        outline: 2px solid var(--primary);
+        outline-offset: 2px;
+      }
 
-/* ---- Page chrome (this document, not the app) ---- */
-.top { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--background) 92%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
-.top-in { max-width: 1240px; margin: 0 auto; padding: 10px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-.top nav { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; min-width: 0; }
-.top nav a { color: var(--muted); text-decoration: none; padding: 4px 10px; border-radius: 8px; font-size: 13px; font-weight: 500; white-space: nowrap; }
-.top nav a:hover { background: var(--surface-2); color: var(--foreground); }
-.top .brand { font-weight: 600; letter-spacing: -.01em; }
-.wrap { max-width: 1240px; margin: 0 auto; padding: 0 24px 96px; }
-.hero { padding: 48px 0 32px; display: grid; gap: 28px; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: start; }
-.hero h1 { font-size: 34px; line-height: 1.1; letter-spacing: -.03em; font-weight: 650; max-width: 18ch; }
-.hero p.lead { margin-top: 14px; color: var(--muted); font-size: 16px; max-width: 58ch; }
-.hero .meta { margin-top: 18px; font-size: 12px; color: var(--muted); }
-.score { border: 1px solid var(--border); background: var(--surface); border-radius: 14px; padding: 18px; box-shadow: 0 2px 6px var(--card-shadow); }
-.score h2 { font-size: 13px; font-weight: 600; color: var(--muted); }
-.score .big { font-size: 40px; font-weight: 650; letter-spacing: -.03em; line-height: 1.1; margin-top: 6px; }
-.score .big small { font-size: 16px; color: var(--muted); font-weight: 500; }
-.score ul { list-style: none; padding: 0; margin-top: 12px; display: grid; gap: 6px; font-size: 13px; }
-.score li { display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid var(--border); padding-top: 6px; }
-.score li b { font-weight: 600; font-variant-numeric: tabular-nums; }
-.fix { padding: 56px 0 8px; scroll-margin-top: 64px; border-top: 1px solid var(--border); }
-.fix:first-of-type { border-top: 0; }
-.fix-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px; align-items: start; margin-bottom: 22px; }
-.fixn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; margin-right: 10px; border-radius: 8px; background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); font-size: 15px; vertical-align: 2px; }
-.sev { display: inline-block; vertical-align: 3px; font-size: 11px; font-weight: 500; letter-spacing: 0; border: 1px solid var(--border-2); border-radius: 999px; padding: 0 8px; font-size: 11px; letter-spacing: 0; text-transform: none; color: var(--muted); }
-.fix h2 { font-size: 24px; letter-spacing: -.02em; line-height: 1.25; font-weight: 650; }
-.fix-head p { color: var(--muted); max-width: 62ch; }
-.fix-head p + p { margin-top: 8px; }
-.fix-head strong { color: var(--foreground); font-weight: 600; }
-.changes { margin-top: 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px 28px; }
-.changes h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
-.changes ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
-.changes li { margin-bottom: 3px; }
-.changes code, .fix-head code { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; color: var(--foreground); }
+      /* ---- Page chrome (this document, not the app) ---- */
+      .top {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background: color-mix(in srgb, var(--background) 92%, transparent);
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid var(--border);
+      }
+      .top-in {
+        max-width: 1240px;
+        margin: 0 auto;
+        padding: 10px 24px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      .top nav {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+        flex: 1;
+        min-width: 0;
+      }
+      .top nav a {
+        color: var(--muted);
+        text-decoration: none;
+        padding: 4px 10px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 500;
+        white-space: nowrap;
+      }
+      .top nav a:hover {
+        background: var(--surface-2);
+        color: var(--foreground);
+      }
+      .top .brand {
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .wrap {
+        max-width: 1240px;
+        margin: 0 auto;
+        padding: 0 24px 96px;
+      }
+      .hero {
+        padding: 48px 0 32px;
+        display: grid;
+        gap: 28px;
+        grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+        align-items: start;
+      }
+      .hero h1 {
+        font-size: 34px;
+        line-height: 1.1;
+        letter-spacing: -0.03em;
+        font-weight: 650;
+        max-width: 18ch;
+      }
+      .hero p.lead {
+        margin-top: 14px;
+        color: var(--muted);
+        font-size: 16px;
+        max-width: 58ch;
+      }
+      .hero .meta {
+        margin-top: 18px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .score {
+        border: 1px solid var(--border);
+        background: var(--surface);
+        border-radius: 14px;
+        padding: 18px;
+        box-shadow: 0 2px 6px var(--card-shadow);
+      }
+      .score h2 {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--muted);
+      }
+      .score .big {
+        font-size: 40px;
+        font-weight: 650;
+        letter-spacing: -0.03em;
+        line-height: 1.1;
+        margin-top: 6px;
+      }
+      .score .big small {
+        font-size: 16px;
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .score ul {
+        list-style: none;
+        padding: 0;
+        margin-top: 12px;
+        display: grid;
+        gap: 6px;
+        font-size: 13px;
+      }
+      .score li {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        border-top: 1px solid var(--border);
+        padding-top: 6px;
+      }
+      .score li b {
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .fix {
+        padding: 56px 0 8px;
+        scroll-margin-top: 64px;
+        border-top: 1px solid var(--border);
+      }
+      .fix:first-of-type {
+        border-top: 0;
+      }
+      .fix-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 32px;
+        align-items: start;
+        margin-bottom: 22px;
+      }
+      .fixn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        margin-right: 10px;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--primary) 12%, transparent);
+        color: var(--primary);
+        font-size: 15px;
+        vertical-align: 2px;
+      }
+      .sev {
+        display: inline-block;
+        vertical-align: 3px;
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0;
+        border: 1px solid var(--border-2);
+        border-radius: 999px;
+        padding: 0 8px;
+        font-size: 11px;
+        letter-spacing: 0;
+        text-transform: none;
+        color: var(--muted);
+      }
+      .fix h2 {
+        font-size: 24px;
+        letter-spacing: -0.02em;
+        line-height: 1.25;
+        font-weight: 650;
+      }
+      .fix-head p {
+        color: var(--muted);
+        max-width: 62ch;
+      }
+      .fix-head p + p {
+        margin-top: 8px;
+      }
+      .fix-head strong {
+        color: var(--foreground);
+        font-weight: 600;
+      }
+      .changes {
+        margin-top: 18px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 12px 28px;
+      }
+      .changes h3 {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        margin-bottom: 6px;
+        font-weight: 600;
+      }
+      .changes ul {
+        margin: 0;
+        padding-left: 18px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .changes li {
+        margin-bottom: 3px;
+      }
+      .changes code,
+      .fix-head code {
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 12px;
+        background: var(--surface-2);
+        padding: 1px 5px;
+        border-radius: 4px;
+        color: var(--foreground);
+      }
 
-.pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
-.pair.stack { grid-template-columns: minmax(0, 1fr); }
-.pair.phones { grid-template-columns: repeat(2, 390px); justify-content: center; gap: 40px; }
-.col-label { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
-.col-label .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--border-2); }
-.col-label.new { color: var(--primary); } .col-label.new .dot { background: var(--primary); }
-.col-label.old { color: var(--muted); }
-.col-label .tools { margin-left: auto; display: flex; gap: 6px; align-items: center; text-transform: none; letter-spacing: 0; font-weight: 500; }
-.frame { position: relative; border: 1px solid var(--border-2); border-radius: 12px; background: var(--background); overflow: hidden; container-type: inline-size; }
-.frame.new { border-color: color-mix(in srgb, var(--primary) 55%, var(--border-2)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent); }
-.scroll { overflow: auto; overscroll-behavior: contain; }
-.frame-pad { padding: 16px; }
-.metric { display: inline-flex; gap: 6px; align-items: baseline; font-size: 12px; color: var(--muted); border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 2px 10px; }
-.metric b { color: var(--foreground); font-variant-numeric: tabular-nums; }
-.pill-btn { border: 1px solid var(--border-2); background: var(--surface); border-radius: 8px; padding: 3px 10px; font-size: 12px; font-weight: 500; }
-.pill-btn:hover { background: var(--surface-2); }
-.pill-btn[aria-pressed=true] { background: var(--primary-button); border-color: var(--primary-button); color: #fff; }
+      .pair {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 20px;
+        align-items: start;
+      }
+      .pair.stack {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .pair.phones {
+        grid-template-columns: repeat(2, 390px);
+        justify-content: center;
+        gap: 40px;
+      }
+      .col-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .col-label .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 99px;
+        background: var(--border-2);
+      }
+      .col-label.new {
+        color: var(--primary);
+      }
+      .col-label.new .dot {
+        background: var(--primary);
+      }
+      .col-label.old {
+        color: var(--muted);
+      }
+      .col-label .tools {
+        margin-left: auto;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        text-transform: none;
+        letter-spacing: 0;
+        font-weight: 500;
+      }
+      .frame {
+        position: relative;
+        border: 1px solid var(--border-2);
+        border-radius: 12px;
+        background: var(--background);
+        overflow: hidden;
+        container-type: inline-size;
+      }
+      .frame.new {
+        border-color: color-mix(in srgb, var(--primary) 55%, var(--border-2));
+        box-shadow: 0 0 0 3px
+          color-mix(in srgb, var(--primary) 12%, transparent);
+      }
+      .scroll {
+        overflow: auto;
+        overscroll-behavior: contain;
+      }
+      .frame-pad {
+        padding: 16px;
+      }
+      .metric {
+        display: inline-flex;
+        gap: 6px;
+        align-items: baseline;
+        font-size: 12px;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        background: var(--surface);
+        border-radius: 999px;
+        padding: 2px 10px;
+      }
+      .metric b {
+        color: var(--foreground);
+        font-variant-numeric: tabular-nums;
+      }
+      .pill-btn {
+        border: 1px solid var(--border-2);
+        background: var(--surface);
+        border-radius: 8px;
+        padding: 3px 10px;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      .pill-btn:hover {
+        background: var(--surface-2);
+      }
+      .pill-btn[aria-pressed="true"] {
+        background: var(--primary-button);
+        border-color: var(--primary-button);
+        color: #fff;
+      }
 
-/* ---- App primitives (mirrors web/src/components/ui.tsx) ---- */
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid transparent; background: none; font-size: 14px; font-weight: 500; line-height: 1.2; white-space: nowrap; transition: background-color .15s, transform .1s; }
-.btn:active { transform: scale(.98); }
-.btn.sm { padding: 0 10px; font-size: 12px; }
-.btn.outline { border-color: var(--border-2); background: var(--surface); box-shadow: 0 1px 2px var(--control-shadow); }
-.btn.outline:hover { background: var(--surface-2); }
-.btn.ghost { color: var(--muted); }
-.btn.ghost:hover { background: var(--surface-2); color: var(--foreground); }
-.btn.primary { background: var(--primary-button); color: #fff; box-shadow: 0 1px 2px var(--control-shadow); }
-.btn.primary:hover { background: var(--primary-button-hover); }
-.btn.danger { background: var(--danger); color: #fff; box-shadow: 0 1px 2px var(--control-shadow); }
-:root.dark .btn.danger { color: var(--background); }
-.btn.secondary { background: var(--surface-2); box-shadow: 0 1px 2px var(--control-shadow); }
-.btn.secondary:hover { background: color-mix(in srgb, var(--border) 60%, var(--surface-2)); }
-.btn.link { height: auto; padding: 2px 4px; color: var(--muted); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
-.btn.link:hover { color: var(--foreground); }
-.btn[disabled] { opacity: .5; pointer-events: none; }
-.badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 500; white-space: nowrap; line-height: 1.33; }
-.badge.success { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
-.badge.warning { background: color-mix(in srgb, var(--warning) 15%, transparent); color: var(--warning); }
-.badge.danger { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
-.badge.info { background: color-mix(in srgb, var(--info) 15%, transparent); color: var(--info); }
-.badge.muted { background: var(--surface-2); color: var(--muted); }
-@keyframes pulse { 50% { opacity: .5; } }
-.pulse { animation: pulse 1.6s ease-in-out infinite; }
-.card { border: 1px solid var(--border); background: var(--surface); border-radius: 12px; box-shadow: 0 2px 6px var(--card-shadow); min-width: 0; overflow: hidden; }
-.progress { height: 8px; width: 100%; overflow: hidden; border-radius: 99px; background: var(--surface-2); }
-.progress > i { display: block; height: 100%; width: 100%; transform-origin: left; background: var(--primary); border-radius: 99px; transition: transform .6s cubic-bezier(.16,1,.3,1); position: relative; overflow: hidden; }
-.progress > i::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgb(255 255 255 / .22), transparent); background-size: 200% 100%; animation: shimmer 1.5s linear infinite; }
-@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
-.field { display: block; width: 100%; height: 36px; border: 1px solid var(--border-2); background: var(--surface-2); border-radius: 8px; padding: 0 12px; color: var(--foreground); font: inherit; font-size: 14px; }
-.field::placeholder { color: var(--muted); }
-.field:focus { outline: none; border-color: var(--primary); background: var(--surface); }
-label.lbl { display: block; font-size: 12px; font-weight: 500; margin-bottom: 4px; }
-.sel { position: relative; }
-.sel .field { display: flex; align-items: center; justify-content: space-between; text-align: left; }
-.pageh { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
-.pageh .l { display: flex; gap: 12px; align-items: center; min-width: 0; }
-.pageh .ic { width: 40px; height: 40px; border-radius: 12px; background: color-mix(in srgb, var(--primary) 10%, transparent); color: var(--primary); display: flex; align-items: center; justify-content: center; flex: none; }
-.pageh h1 { font-size: 24px; font-weight: 600; letter-spacing: -.02em; line-height: 1.25; }
-.pageh p { color: var(--muted); font-size: 14px; margin-top: 2px; }
-.toast { position: absolute; right: 12px; bottom: 12px; z-index: 5; background: var(--surface); border: 1px solid var(--border-2); border-radius: 10px; padding: 10px 14px; box-shadow: 0 10px 24px var(--control-shadow); font-size: 13px; font-weight: 500; display: flex; gap: 8px; align-items: center; animation: toast-in .25s cubic-bezier(.16,1,.3,1) both; }
-.toast .i { color: var(--success); }
-@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+      /* ---- App primitives (mirrors web/src/components/ui.tsx) ---- */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        height: 36px;
+        padding: 0 12px;
+        border-radius: 8px;
+        border: 1px solid transparent;
+        background: none;
+        font-size: 14px;
+        font-weight: 500;
+        line-height: 1.2;
+        white-space: nowrap;
+        transition:
+          background-color 0.15s,
+          transform 0.1s;
+      }
+      .btn:active {
+        transform: scale(0.98);
+      }
+      .btn.sm {
+        padding: 0 10px;
+        font-size: 12px;
+      }
+      .btn.outline {
+        border-color: var(--border-2);
+        background: var(--surface);
+        box-shadow: 0 1px 2px var(--control-shadow);
+      }
+      .btn.outline:hover {
+        background: var(--surface-2);
+      }
+      .btn.ghost {
+        color: var(--muted);
+      }
+      .btn.ghost:hover {
+        background: var(--surface-2);
+        color: var(--foreground);
+      }
+      .btn.primary {
+        background: var(--primary-button);
+        color: #fff;
+        box-shadow: 0 1px 2px var(--control-shadow);
+      }
+      .btn.primary:hover {
+        background: var(--primary-button-hover);
+      }
+      .btn.danger {
+        background: var(--danger);
+        color: #fff;
+        box-shadow: 0 1px 2px var(--control-shadow);
+      }
+      :root.dark .btn.danger {
+        color: var(--background);
+      }
+      .btn.secondary {
+        background: var(--surface-2);
+        box-shadow: 0 1px 2px var(--control-shadow);
+      }
+      .btn.secondary:hover {
+        background: color-mix(in srgb, var(--border) 60%, var(--surface-2));
+      }
+      .btn.link {
+        height: auto;
+        padding: 2px 4px;
+        color: var(--muted);
+        font-size: 12px;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      .btn.link:hover {
+        color: var(--foreground);
+      }
+      .btn[disabled] {
+        opacity: 0.5;
+        pointer-events: none;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 12px;
+        font-weight: 500;
+        white-space: nowrap;
+        line-height: 1.33;
+      }
+      .badge.success {
+        background: color-mix(in srgb, var(--success) 15%, transparent);
+        color: var(--success);
+      }
+      .badge.warning {
+        background: color-mix(in srgb, var(--warning) 15%, transparent);
+        color: var(--warning);
+      }
+      .badge.danger {
+        background: color-mix(in srgb, var(--danger) 15%, transparent);
+        color: var(--danger);
+      }
+      .badge.info {
+        background: color-mix(in srgb, var(--info) 15%, transparent);
+        color: var(--info);
+      }
+      .badge.muted {
+        background: var(--surface-2);
+        color: var(--muted);
+      }
+      @keyframes pulse {
+        50% {
+          opacity: 0.5;
+        }
+      }
+      .pulse {
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+      .card {
+        border: 1px solid var(--border);
+        background: var(--surface);
+        border-radius: 12px;
+        box-shadow: 0 2px 6px var(--card-shadow);
+        min-width: 0;
+        overflow: hidden;
+      }
+      .progress {
+        height: 8px;
+        width: 100%;
+        overflow: hidden;
+        border-radius: 99px;
+        background: var(--surface-2);
+      }
+      .progress > i {
+        display: block;
+        height: 100%;
+        width: 100%;
+        transform-origin: left;
+        background: var(--primary);
+        border-radius: 99px;
+        transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+        position: relative;
+        overflow: hidden;
+      }
+      .progress > i::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          rgb(255 255 255 / 0.22),
+          transparent
+        );
+        background-size: 200% 100%;
+        animation: shimmer 1.5s linear infinite;
+      }
+      @keyframes shimmer {
+        from {
+          background-position: 200% 0;
+        }
+        to {
+          background-position: -200% 0;
+        }
+      }
+      .field {
+        display: block;
+        width: 100%;
+        height: 36px;
+        border: 1px solid var(--border-2);
+        background: var(--surface-2);
+        border-radius: 8px;
+        padding: 0 12px;
+        color: var(--foreground);
+        font: inherit;
+        font-size: 14px;
+      }
+      .field::placeholder {
+        color: var(--muted);
+      }
+      .field:focus {
+        outline: none;
+        border-color: var(--primary);
+        background: var(--surface);
+      }
+      label.lbl {
+        display: block;
+        font-size: 12px;
+        font-weight: 500;
+        margin-bottom: 4px;
+      }
+      .sel {
+        position: relative;
+      }
+      .sel .field {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        text-align: left;
+      }
+      .pageh {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .pageh .l {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        min-width: 0;
+      }
+      .pageh .ic {
+        width: 40px;
+        height: 40px;
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--primary) 10%, transparent);
+        color: var(--primary);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex: none;
+      }
+      .pageh h1 {
+        font-size: 24px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        line-height: 1.25;
+      }
+      .pageh p {
+        color: var(--muted);
+        font-size: 14px;
+        margin-top: 2px;
+      }
+      .toast {
+        position: absolute;
+        right: 12px;
+        bottom: 12px;
+        z-index: 5;
+        background: var(--surface);
+        border: 1px solid var(--border-2);
+        border-radius: 10px;
+        padding: 10px 14px;
+        box-shadow: 0 10px 24px var(--control-shadow);
+        font-size: 13px;
+        font-weight: 500;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        animation: toast-in 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+      }
+      .toast .i {
+        color: var(--success);
+      }
+      @keyframes toast-in {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+      }
 
-/* ---- LIVE row (mirrors Jobs.tsx lines 453-472) ---- */
-.lrow { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 12px; align-items: flex-start; min-width: 0; }
-.lrow:first-child { border-top: 0; }
-.lrow.failed { background: color-mix(in srgb, var(--danger) 5%, transparent); }
-.lrow.sel { background: color-mix(in srgb, var(--primary) 5%, transparent); }
-.cover-wrap { position: relative; flex: none; }
-.cover { aspect-ratio: 3/4; width: 64px; border-radius: 6px; background: var(--surface-2); display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; color: var(--muted); overflow: hidden; }
-.cover-wrap .more { position: absolute; right: 4px; bottom: 4px; background: rgb(0 0 0 / .7); color: #fff; font-size: 10px; line-height: 14px; padding: 1px 4px; border-radius: 4px; font-weight: 500; }
-@container (min-width: 640px) { .cover { width: 96px; } .cover.lg { width: 112px; } }
-.lbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-@container (min-width: 768px) { .lbody { flex-direction: row; align-items: flex-start; justify-content: space-between; gap: 16px; } }
-.lmain { min-width: 0; flex: 1; }
-.lmain h2 { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
-.lmain .meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
-.lmain .sum { font-size: 14px; color: var(--muted); margin-top: 4px; }
-.lmain .sum.err { color: var(--danger); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.lmain .prog { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.lmain .prog .progress { max-width: 320px; }
-.lmain .prog span { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.lside { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex: none; }
-@container (min-width: 768px) { .lside { justify-content: flex-end; } }
-.lmeta-time { }
+      /* ---- LIVE row (mirrors Jobs.tsx lines 453-472) ---- */
+      .lrow {
+        padding: 12px 16px;
+        border-top: 1px solid var(--border);
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        min-width: 0;
+      }
+      .lrow:first-child {
+        border-top: 0;
+      }
+      .lrow.failed {
+        background: color-mix(in srgb, var(--danger) 5%, transparent);
+      }
+      .lrow.sel {
+        background: color-mix(in srgb, var(--primary) 5%, transparent);
+      }
+      .cover-wrap {
+        position: relative;
+        flex: none;
+      }
+      .cover {
+        aspect-ratio: 3/4;
+        width: 64px;
+        border-radius: 6px;
+        background: var(--surface-2);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--muted);
+        overflow: hidden;
+      }
+      .cover-wrap .more {
+        position: absolute;
+        right: 4px;
+        bottom: 4px;
+        background: rgb(0 0 0 / 0.7);
+        color: #fff;
+        font-size: 10px;
+        line-height: 14px;
+        padding: 1px 4px;
+        border-radius: 4px;
+        font-weight: 500;
+      }
+      @container (min-width: 640px) {
+        .cover {
+          width: 96px;
+        }
+        .cover.lg {
+          width: 112px;
+        }
+      }
+      .lbody {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      @container (min-width: 768px) {
+        .lbody {
+          flex-direction: row;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 16px;
+        }
+      }
+      .lmain {
+        min-width: 0;
+        flex: 1;
+      }
+      .lmain h2 {
+        font-size: 14px;
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+      .lmain .meta {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 4px;
+      }
+      .lmain .sum {
+        font-size: 14px;
+        color: var(--muted);
+        margin-top: 4px;
+      }
+      .lmain .sum.err {
+        color: var(--danger);
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .lmain .prog {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .lmain .prog .progress {
+        max-width: 320px;
+      }
+      .lmain .prog span {
+        font-size: 12px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .lside {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        flex: none;
+      }
+      @container (min-width: 768px) {
+        .lside {
+          justify-content: flex-end;
+        }
+      }
+      .lmeta-time {
+      }
 
-/* LIVE page-level filters */
-.lfilters { border-bottom: 1px solid var(--border); padding: 12px; display: grid; gap: 12px; }
-@container (min-width: 640px) { .lfilters { padding: 16px; } .lf-grid { grid-template-columns: 180px minmax(0, 1fr) !important; } }
-.lf-grid { display: grid; grid-template-columns: 1fr; gap: 12px; align-items: end; }
-.lf-count { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--muted); }
-.lf-count p { padding: 8px 0; }
-.lf-count .disc { display: inline-flex; align-items: center; gap: 4px; padding: 8px 0; }
-.search-wrap { position: relative; }
-.search-wrap .i { position: absolute; left: 12px; top: 10px; color: var(--muted); }
-.search-wrap .field { padding-left: 36px; }
+      /* LIVE page-level filters */
+      .lfilters {
+        border-bottom: 1px solid var(--border);
+        padding: 12px;
+        display: grid;
+        gap: 12px;
+      }
+      @container (min-width: 640px) {
+        .lfilters {
+          padding: 16px;
+        }
+        .lf-grid {
+          grid-template-columns: 180px minmax(0, 1fr) !important;
+        }
+      }
+      .lf-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+        align-items: end;
+      }
+      .lf-count {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .lf-count p {
+        padding: 8px 0;
+      }
+      .lf-count .disc {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 8px 0;
+      }
+      .search-wrap {
+        position: relative;
+      }
+      .search-wrap .i {
+        position: absolute;
+        left: 12px;
+        top: 10px;
+        color: var(--muted);
+      }
+      .search-wrap .field {
+        padding-left: 36px;
+      }
 
-/* LIVE detail panel */
-.ldetail { display: flex; flex-direction: column; background: var(--surface); height: 100%; min-height: 0; }
-.ld-head { display: flex; gap: 12px; align-items: flex-start; border-bottom: 1px solid var(--border); padding: 20px 56px 20px 20px; flex: none; position: relative; }
-.ld-head h2 { font-size: 18px; font-weight: 600; letter-spacing: -.01em; line-height: 1.3; }
-.ld-head .desc { font-size: 14px; color: var(--muted); margin-top: 4px; }
-.ld-x { position: absolute; right: 14px; top: 14px; border: 0; background: none; color: var(--muted); border-radius: 8px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; }
-.ld-x:hover { background: var(--surface-2); color: var(--foreground); }
-.ld-body { padding: 20px; display: grid; gap: 24px; align-content: start; min-height: 0; overflow: auto; flex: 1; }
-.ld-body h3 { font-size: 14px; font-weight: 600; }
-.ld-body section { display: grid; gap: 8px; }
-.ld-fail { border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); background: color-mix(in srgb, var(--danger) 5%, transparent); border-radius: 8px; padding: 12px; }
-.ld-fail h3 { color: var(--danger); margin-bottom: 8px; }
-.ld-fail p { white-space: pre-wrap; overflow-wrap: anywhere; }
-.ld-rec { margin-top: 0; border: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 60%, transparent); border-radius: 6px; padding: 12px; display: grid; gap: 8px; }
-.ld-rec p { color: var(--muted); }
-details.disc { border-top: 1px solid var(--border); }
-details.disc > summary { list-style: none; cursor: pointer; padding: 10px 0; font-size: 14px; font-weight: 500; color: var(--muted); display: flex; align-items: center; gap: 6px; }
-details.disc > summary::-webkit-details-marker { display: none; }
-details.disc > summary .i { transition: transform .15s; }
-details.disc[open] > summary .i { transform: rotate(90deg); }
-details.disc > div { padding: 0 0 12px; }
-.logcon { display: grid; gap: 12px; }
-.logcon .bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
-.logcon h3 { display: flex; gap: 8px; align-items: center; font-size: 14px; }
-.logcon h3 small { font-weight: 400; font-size: 12px; color: var(--muted); }
-.logbox { height: 288px; overflow-y: auto; border: 1px solid var(--border); background: var(--background); border-radius: 8px; padding: 12px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; }
-.logbox .e { margin-bottom: 8px; }
-.logbox .e .h { display: flex; gap: 8px; margin-bottom: 2px; }
-.logbox .e time { color: color-mix(in srgb, var(--muted) 70%, transparent); }
-.logbox .lv { text-transform: uppercase; }
-.lv.info { color: var(--muted); } .lv.warn { color: var(--warning); } .lv.error { color: var(--danger); } .lv.success { color: var(--success); }
-.scrim { position: absolute; inset: 0; background: rgb(0 0 0 / .5); z-index: 3; animation: fade .2s ease both; }
-@keyframes fade { from { opacity: 0; } }
-.drawer { position: absolute; top: 0; right: 0; bottom: 0; width: min(640px, 58%); z-index: 4; border-left: 1px solid var(--border); box-shadow: -20px 0 40px rgb(0 0 0 / .25); animation: slide .3s cubic-bezier(.16,1,.3,1) both; display: flex; }
-.drawer > * { flex: 1; min-width: 0; }
-@keyframes slide { from { transform: translateX(24px); opacity: 0; } }
+      /* LIVE detail panel */
+      .ldetail {
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        height: 100%;
+        min-height: 0;
+      }
+      .ld-head {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        border-bottom: 1px solid var(--border);
+        padding: 20px 56px 20px 20px;
+        flex: none;
+        position: relative;
+      }
+      .ld-head h2 {
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        line-height: 1.3;
+      }
+      .ld-head .desc {
+        font-size: 14px;
+        color: var(--muted);
+        margin-top: 4px;
+      }
+      .ld-x {
+        position: absolute;
+        right: 14px;
+        top: 14px;
+        border: 0;
+        background: none;
+        color: var(--muted);
+        border-radius: 8px;
+        width: 32px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .ld-x:hover {
+        background: var(--surface-2);
+        color: var(--foreground);
+      }
+      .ld-body {
+        padding: 20px;
+        display: grid;
+        gap: 24px;
+        align-content: start;
+        min-height: 0;
+        overflow: auto;
+        flex: 1;
+      }
+      .ld-body h3 {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .ld-body section {
+        display: grid;
+        gap: 8px;
+      }
+      .ld-fail {
+        border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+        background: color-mix(in srgb, var(--danger) 5%, transparent);
+        border-radius: 8px;
+        padding: 12px;
+      }
+      .ld-fail h3 {
+        color: var(--danger);
+        margin-bottom: 8px;
+      }
+      .ld-fail p {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .ld-rec {
+        margin-top: 0;
+        border: 1px solid var(--border);
+        background: color-mix(in srgb, var(--surface) 60%, transparent);
+        border-radius: 6px;
+        padding: 12px;
+        display: grid;
+        gap: 8px;
+      }
+      .ld-rec p {
+        color: var(--muted);
+      }
+      details.disc {
+        border-top: 1px solid var(--border);
+      }
+      details.disc > summary {
+        list-style: none;
+        cursor: pointer;
+        padding: 10px 0;
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      details.disc > summary::-webkit-details-marker {
+        display: none;
+      }
+      details.disc > summary .i {
+        transition: transform 0.15s;
+      }
+      details.disc[open] > summary .i {
+        transform: rotate(90deg);
+      }
+      details.disc > div {
+        padding: 0 0 12px;
+      }
+      .logcon {
+        display: grid;
+        gap: 12px;
+      }
+      .logcon .bar {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+      .logcon h3 {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        font-size: 14px;
+      }
+      .logcon h3 small {
+        font-weight: 400;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .logbox {
+        height: 288px;
+        overflow-y: auto;
+        border: 1px solid var(--border);
+        background: var(--background);
+        border-radius: 8px;
+        padding: 12px;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 12px;
+      }
+      .logbox .e {
+        margin-bottom: 8px;
+      }
+      .logbox .e .h {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 2px;
+      }
+      .logbox .e time {
+        color: color-mix(in srgb, var(--muted) 70%, transparent);
+      }
+      .logbox .lv {
+        text-transform: uppercase;
+      }
+      .lv.info {
+        color: var(--muted);
+      }
+      .lv.warn {
+        color: var(--warning);
+      }
+      .lv.error {
+        color: var(--danger);
+      }
+      .lv.success {
+        color: var(--success);
+      }
+      .scrim {
+        position: absolute;
+        inset: 0;
+        background: rgb(0 0 0 / 0.5);
+        z-index: 3;
+        animation: fade 0.2s ease both;
+      }
+      @keyframes fade {
+        from {
+          opacity: 0;
+        }
+      }
+      .drawer {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: min(640px, 58%);
+        z-index: 4;
+        border-left: 1px solid var(--border);
+        box-shadow: -20px 0 40px rgb(0 0 0 / 0.25);
+        animation: slide 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+        display: flex;
+      }
+      .drawer > * {
+        flex: 1;
+        min-width: 0;
+      }
+      @keyframes slide {
+        from {
+          transform: translateX(24px);
+          opacity: 0;
+        }
+      }
 
-/* ---- PROPOSED components ---- */
-.prow { position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 16px 12px 16px; border-top: 1px solid var(--border); min-height: 68px; cursor: pointer; }
-.prow:first-child { border-top: 0; }
-.prow:hover { background: color-mix(in srgb, var(--surface-2) 55%, transparent); }
-.prow.failed { background: color-mix(in srgb, var(--danger) 5%, transparent); }
-.prow.sel { background: color-mix(in srgb, var(--primary) 7%, transparent); }
-.prow.sel { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--primary) 55%, transparent); }
-.thumb, .chip { width: 40px; flex: none; position: relative; }
-.thumb .c { aspect-ratio: 3/4; border-radius: 4px; background: var(--surface-2); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: var(--muted); }
-.thumb .more { position: absolute; right: -4px; bottom: -4px; background: rgb(0 0 0 / .75); color: #fff; font-size: 10px; line-height: 14px; padding: 0 4px; border-radius: 4px; }
-.chip .c { height: 40px; border-radius: 10px; background: var(--surface-2); color: var(--muted); display: flex; align-items: center; justify-content: center; }
-.prow.failed .chip .c { color: var(--danger); }
-.prow.running .chip .c { color: var(--primary); }
-.pmain { min-width: 0; }
-.pmain h2 { font-size: 14px; font-weight: 400; line-height: 1.35; overflow-wrap: anywhere; }
-.rowtitle { border: 0; background: none; padding: 0; font-weight: 600; text-align: left; border-radius: 4px; }
-.rowtitle:hover { text-decoration: underline; text-underline-offset: 3px; }
-.pmain h2 .tgt { color: var(--muted); }
-.pmain .psum { font-size: 13px; color: var(--muted); margin-top: 1px; line-height: 1.4; }
-.pmain .psum.err { color: var(--danger); }
-.pmain .psum a, .pmain .psum .lnk { color: var(--primary); text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; padding: 0; font: inherit; }
-.pmain .prog { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.pmain .prog .progress { max-width: 240px; height: 6px; }
-.pmain .prog span { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.pside { display: flex; align-items: center; gap: 12px; justify-content: flex-end; }
-.pst { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; min-width: 76px; }
-.pst time { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.ok-check { color: var(--success); display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; }
-@container (max-width: 560px) {
-  .prow { grid-template-columns: 32px minmax(0, 1fr); gap: 4px 12px; align-items: start; padding: 12px; }
-  .thumb, .chip { width: 32px; grid-row: 1 / span 2; }
-  .chip .c { height: 32px; }
-  .pside { grid-column: 2; justify-content: space-between; }
-  .pst { flex-direction: row; align-items: center; gap: 8px; min-width: 0; }
-}
-.tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--border); padding: 4px 2px 0; position: relative; scrollbar-width: none; }
-.tabs::-webkit-scrollbar { display: none; }
-.tab { border-radius: 0; position: relative; flex: none; min-height: 40px; padding: 0 5px; border: 0; background: none; color: var(--muted); font-size: 13px; font-weight: 500; display: inline-flex; gap: 5px; align-items: center; border-bottom: 2px solid transparent; margin-bottom: -1px; }
-.tab:hover { color: var(--foreground); }
-.tab[aria-selected=true] { color: var(--primary); border-bottom-color: var(--primary); }
-.tab .n { font-size: 12px; font-variant-numeric: tabular-nums; border-radius: 99px; padding: 0 5px; background: var(--surface-2); color: var(--muted); line-height: 18px; }
-.tab[aria-selected=true] .n { background: color-mix(in srgb, var(--primary) 14%, transparent); color: var(--primary); }
-.tab .n.alert { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
-.pbar { display: flex; gap: 8px; padding: 12px; align-items: center; }
-.pbar .search-wrap { flex: 1; min-width: 0; }
-.iconbtn { width: 36px; padding: 0; }
-.ptoolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; background: color-mix(in srgb, var(--danger) 5%, transparent); }
-.empty { text-align: center; padding: 40px 24px; display: grid; gap: 6px; justify-items: center; }
-.empty .ico { width: 40px; height: 40px; border-radius: 12px; background: var(--surface-2); color: var(--muted); display: flex; align-items: center; justify-content: center; margin-bottom: 4px; }
-.empty .ico.ok { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
-.empty h3 { font-size: 15px; font-weight: 600; }
-.empty p { color: var(--muted); max-width: 34ch; font-size: 13px; }
+      /* ---- PROPOSED components ---- */
+      .prow {
+        position: relative;
+        display: grid;
+        grid-template-columns: 40px minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+        padding: 12px 16px 12px 16px;
+        border-top: 1px solid var(--border);
+        min-height: 68px;
+        cursor: pointer;
+      }
+      .prow:first-child {
+        border-top: 0;
+      }
+      .prow:hover {
+        background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+      }
+      .prow.failed {
+        background: color-mix(in srgb, var(--danger) 5%, transparent);
+      }
+      .prow.sel {
+        background: color-mix(in srgb, var(--primary) 7%, transparent);
+      }
+      .prow.sel {
+        box-shadow: inset 0 0 0 1.5px
+          color-mix(in srgb, var(--primary) 55%, transparent);
+      }
+      .thumb,
+      .chip {
+        width: 40px;
+        flex: none;
+        position: relative;
+      }
+      .thumb .c {
+        aspect-ratio: 3/4;
+        border-radius: 4px;
+        background: var(--surface-2);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--muted);
+      }
+      .thumb .more {
+        position: absolute;
+        right: -4px;
+        bottom: -4px;
+        background: rgb(0 0 0 / 0.75);
+        color: #fff;
+        font-size: 10px;
+        line-height: 14px;
+        padding: 0 4px;
+        border-radius: 4px;
+      }
+      .chip .c {
+        height: 40px;
+        border-radius: 10px;
+        background: var(--surface-2);
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .prow.failed .chip .c {
+        color: var(--danger);
+      }
+      .prow.running .chip .c {
+        color: var(--primary);
+      }
+      .pmain {
+        min-width: 0;
+      }
+      .pmain h2 {
+        font-size: 14px;
+        font-weight: 400;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+      .rowtitle {
+        border: 0;
+        background: none;
+        padding: 0;
+        font-weight: 600;
+        text-align: left;
+        border-radius: 4px;
+      }
+      .rowtitle:hover {
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      .pmain h2 .tgt {
+        color: var(--muted);
+      }
+      .pmain .psum {
+        font-size: 13px;
+        color: var(--muted);
+        margin-top: 1px;
+        line-height: 1.4;
+      }
+      .pmain .psum.err {
+        color: var(--danger);
+      }
+      .pmain .psum a,
+      .pmain .psum .lnk {
+        color: var(--primary);
+        text-decoration: underline;
+        text-underline-offset: 3px;
+        background: none;
+        border: 0;
+        padding: 0;
+        font: inherit;
+      }
+      .pmain .prog {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 6px;
+      }
+      .pmain .prog .progress {
+        max-width: 240px;
+        height: 6px;
+      }
+      .pmain .prog span {
+        font-size: 12px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .pside {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        justify-content: flex-end;
+      }
+      .pst {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 1px;
+        min-width: 76px;
+      }
+      .pst time {
+        font-size: 12px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .ok-check {
+        color: var(--success);
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      @container (max-width: 560px) {
+        .prow {
+          grid-template-columns: 32px minmax(0, 1fr);
+          gap: 4px 12px;
+          align-items: start;
+          padding: 12px;
+        }
+        .thumb,
+        .chip {
+          width: 32px;
+          grid-row: 1 / span 2;
+        }
+        .chip .c {
+          height: 32px;
+        }
+        .pside {
+          grid-column: 2;
+          justify-content: space-between;
+        }
+        .pst {
+          flex-direction: row;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+        }
+      }
+      .tabs {
+        display: flex;
+        overflow-x: auto;
+        border-bottom: 1px solid var(--border);
+        padding: 4px 2px 0;
+        position: relative;
+        scrollbar-width: none;
+      }
+      .tabs::-webkit-scrollbar {
+        display: none;
+      }
+      .tab {
+        border-radius: 0;
+        position: relative;
+        flex: none;
+        min-height: 40px;
+        padding: 0 5px;
+        border: 0;
+        background: none;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 500;
+        display: inline-flex;
+        gap: 5px;
+        align-items: center;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+      }
+      .tab:hover {
+        color: var(--foreground);
+      }
+      .tab[aria-selected="true"] {
+        color: var(--primary);
+        border-bottom-color: var(--primary);
+      }
+      .tab .n {
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        border-radius: 99px;
+        padding: 0 5px;
+        background: var(--surface-2);
+        color: var(--muted);
+        line-height: 18px;
+      }
+      .tab[aria-selected="true"] .n {
+        background: color-mix(in srgb, var(--primary) 14%, transparent);
+        color: var(--primary);
+      }
+      .tab .n.alert {
+        background: color-mix(in srgb, var(--danger) 15%, transparent);
+        color: var(--danger);
+      }
+      .pbar {
+        display: flex;
+        gap: 8px;
+        padding: 12px;
+        align-items: center;
+      }
+      .pbar .search-wrap {
+        flex: 1;
+        min-width: 0;
+      }
+      .iconbtn {
+        width: 36px;
+        padding: 0;
+      }
+      .ptoolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border);
+        font-size: 13px;
+        background: color-mix(in srgb, var(--danger) 5%, transparent);
+      }
+      .empty {
+        text-align: center;
+        padding: 40px 24px;
+        display: grid;
+        gap: 6px;
+        justify-items: center;
+      }
+      .empty .ico {
+        width: 40px;
+        height: 40px;
+        border-radius: 12px;
+        background: var(--surface-2);
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 4px;
+      }
+      .empty .ico.ok {
+        background: color-mix(in srgb, var(--success) 15%, transparent);
+        color: var(--success);
+      }
+      .empty h3 {
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .empty p {
+        color: var(--muted);
+        max-width: 34ch;
+        font-size: 13px;
+      }
 
-/* PROPOSED inspector */
-.insp { display: flex; flex-direction: column; background: var(--surface); height: 100%; min-height: 0; min-width: 0; }
-.in-head { display: flex; gap: 12px; align-items: flex-start; padding: 16px; border-bottom: 1px solid var(--border); position: relative; }
-.in-head .tt { min-width: 0; flex: 1; padding-right: 28px; }
-.in-head h2 { font-size: 16px; font-weight: 600; letter-spacing: -.01em; line-height: 1.3; overflow-wrap: anywhere; }
-.in-head .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.in-head .badge { margin-top: 8px; }
-.in-body { padding: 16px; display: grid; gap: 16px; align-content: start; overflow: auto; flex: 1; min-height: 0; }
-.what { border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border)); border-radius: 8px; padding: 14px; background: color-mix(in srgb, var(--danger) 4%, var(--surface)); display: grid; gap: 8px; }
-.what h3 { font-size: 16px; font-weight: 600; letter-spacing: -.01em; line-height: 1.3; }
-.what p { color: var(--muted); font-size: 14px; }
-.what p b { color: var(--foreground); font-weight: 600; }
-.what .path { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; background: var(--surface-2); color: var(--foreground); border-radius: 6px; padding: 6px 8px; overflow-wrap: anywhere; }
-.what .acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
-.what .hint { font-size: 13px; }
-.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.facts div { min-width: 0; }
-.facts dt { font-size: 12px; color: var(--muted); }
-.facts dd { font-size: 20px; font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.25; }
-.facts dd small { font-size: 12px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
-.in-body .progress { height: 8px; }
-.in-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
-.plog { border: 1px solid var(--border); border-radius: 8px; background: var(--background); height: 220px; overflow-y: auto; padding: 8px 10px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; line-height: 1.7; }
-.plog .l { display: flex; gap: 8px; border-radius: 4px; padding: 0 4px; margin: 0 -4px; }
-.plog .l time { color: var(--muted); flex: none; opacity: .85; }
-.plog .l .lv { flex: none; width: 5ch; text-transform: uppercase; }
-.plog .l.error { background: color-mix(in srgb, var(--danger) 10%, transparent); }
-.plog .l.warn { background: color-mix(in srgb, var(--warning) 9%, transparent); }
-.plog .l span.m { min-width: 0; overflow-wrap: anywhere; }
-.logtools { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 13px; font-weight: 600; }
-.logtools .r { display: flex; gap: 4px; align-items: center; font-weight: 400; }
-.split { display: grid; grid-template-columns: minmax(0, 1fr) 440px; min-height: 0; }
-.split > .listcol { min-width: 0; border-right: 1px solid var(--border); }
-@container (max-width: 860px) { .split { grid-template-columns: 1fr; } .split > .listcol { border-right: 0; } .split > .inspcol { display: none; } }
-.kbd { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; border: 1px solid var(--border-2); box-shadow: 0 1px 0 var(--border-2); border-radius: 4px; padding: 0 5px; background: var(--surface); color: var(--muted); }
-.confirm { margin-top: 10px; border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 6%, transparent); border-radius: 8px; padding: 12px; display: grid; gap: 10px; position: relative; overflow: hidden; max-width: 520px; }
-.confirm p { font-size: 13px; }
-.confirm .acts { display: flex; gap: 8px; flex-wrap: wrap; }
-.confirm .timer { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--danger); width: 100%; transform-origin: left; animation: shrink 6s linear forwards; }
-@keyframes shrink { to { transform: scaleX(0); } }
-.btn.stop-ghost { color: var(--muted); }
-.btn.stop-ghost:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
-.note { font-size: 12px; color: var(--muted); margin-top: 10px; max-width: 80ch; }
-.appshell { display: grid; gap: 16px; }
-footer.pg { margin-top: 72px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
-@media (max-width: 960px) {
-  .hero, .fix-head, .pair { grid-template-columns: minmax(0, 1fr); }
-  .pair.phones { grid-template-columns: minmax(0, 390px); }
-}
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
-</style>
-</head>
-<body>
-<header class="top"><div class="top-in">
-  <span class="brand">Tasks tab · five fixes vs live</span>
-  <nav aria-label="Fixes">
-    <a href="#fix1">1 Stop safely</a><a href="#fix2">2 Row anatomy</a><a href="#fix3">3 Failure path</a><a href="#fix4">4 Filters &amp; mobile</a><a href="#fix5">5 Inspector</a>
-  </nav>
-  <button class="pill-btn" id="themeBtn" type="button">Toggle theme</button>
-</div></header>
-
-<main class="wrap">
-  <section class="hero">
-    <div>
-      <h1>The Tasks tab, as it ships and as it could.</h1>
-      <p class="lead">An Impeccable critique of <code>web/src/pages/Jobs.tsx</code> found five priority issues. Each section below puts a recreation of the live tab beside a working version of the fix, using the app's own tokens and the same ten sample tasks. Both sides are interactive. Nothing here touches the real code.</p>
-      <p class="meta">Live = a recreation of the current tab built from the component source and checked against screenshots of the running app on mock data. Proposed = the fix. Covers are placeholders on both sides. Use the toggle to check light and dark.</p>
-    </div>
-    <aside class="score" aria-label="Critique summary">
-      <h2>Design health (Nielsen)</h2>
-      <div class="big">23<small> / 40 · Acceptable</small></div>
-      <ul>
-        <li><span>Priority issues</span><b>3 × P1 · 2 × P2</b></li>
-        <li><span>Detector (Jobs.tsx source)</span><b>0 findings</b></li>
-        <li><span>Detector (live page)</span><b>1 advisory, 1 borderline</b></li>
-        <li><span>Failed badge contrast, row selected</span><b>4.49 : 1</b></li>
-        <li><span>Row buttons at ≥1024px</span><b>36px tall</b></li>
-        <li><span>Tab stops, 10 rows</span><b>14</b></li>
-      </ul>
-    </aside>
-  </section>
-
-  <!-- ============ FIX 1 ============ -->
-  <section class="fix" id="fix1">
-    <div class="fix-head">
-      <div>
-        <h2><span class="fixn">1</span>Stopping a task should take two deliberate steps <span class="sev">P1 · harden</span></h2>
+      /* PROPOSED inspector */
+      .insp {
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        height: 100%;
+        min-height: 0;
+        min-width: 0;
+      }
+      .in-head {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        padding: 16px;
+        border-bottom: 1px solid var(--border);
+        position: relative;
+      }
+      .in-head .tt {
+        min-width: 0;
+        flex: 1;
+        padding-right: 28px;
+      }
+      .in-head h2 {
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+      }
+      .in-head .sub {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+      .in-head .badge {
+        margin-top: 8px;
+      }
+      .in-body {
+        padding: 16px;
+        display: grid;
+        gap: 16px;
+        align-content: start;
+        overflow: auto;
+        flex: 1;
+        min-height: 0;
+      }
+      .what {
+        border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+        border-radius: 8px;
+        padding: 14px;
+        background: color-mix(in srgb, var(--danger) 4%, var(--surface));
+        display: grid;
+        gap: 8px;
+      }
+      .what h3 {
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        line-height: 1.3;
+      }
+      .what p {
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .what p b {
+        color: var(--foreground);
+        font-weight: 600;
+      }
+      .what .path {
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 12px;
+        background: var(--surface-2);
+        color: var(--foreground);
+        border-radius: 6px;
+        padding: 6px 8px;
+        overflow-wrap: anywhere;
+      }
+      .what .acts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 4px;
+      }
+      .what .hint {
+        font-size: 13px;
+      }
+      .facts {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .facts div {
+        min-width: 0;
+      }
+      .facts dt {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .facts dd {
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.25;
+      }
+      .facts dd small {
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--muted);
+        letter-spacing: 0;
+      }
+      .in-body .progress {
+        height: 8px;
+      }
+      .in-foot {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 16px;
+        border-top: 1px solid var(--border);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .plog {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--background);
+        height: 220px;
+        overflow-y: auto;
+        padding: 8px 10px;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 12px;
+        line-height: 1.7;
+      }
+      .plog .l {
+        display: flex;
+        gap: 8px;
+        border-radius: 4px;
+        padding: 0 4px;
+        margin: 0 -4px;
+      }
+      .plog .l time {
+        color: var(--muted);
+        flex: none;
+        opacity: 0.85;
+      }
+      .plog .l .lv {
+        flex: none;
+        width: 5ch;
+        text-transform: uppercase;
+      }
+      .plog .l.error {
+        background: color-mix(in srgb, var(--danger) 10%, transparent);
+      }
+      .plog .l.warn {
+        background: color-mix(in srgb, var(--warning) 9%, transparent);
+      }
+      .plog .l span.m {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .logtools {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .logtools .r {
+        display: flex;
+        gap: 4px;
+        align-items: center;
+        font-weight: 400;
+      }
+      .split {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 440px;
+        min-height: 0;
+      }
+      .split > .listcol {
+        min-width: 0;
+        border-right: 1px solid var(--border);
+      }
+      @container (max-width: 860px) {
+        .split {
+          grid-template-columns: 1fr;
+        }
+        .split > .listcol {
+          border-right: 0;
+        }
+        .split > .inspcol {
+          display: none;
+        }
+      }
+      .kbd {
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 11px;
+        border: 1px solid var(--border-2);
+        box-shadow: 0 1px 0 var(--border-2);
+        border-radius: 4px;
+        padding: 0 5px;
+        background: var(--surface);
+        color: var(--muted);
+      }
+      .confirm {
+        margin-top: 10px;
+        border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+        background: color-mix(in srgb, var(--danger) 6%, transparent);
+        border-radius: 8px;
+        padding: 12px;
+        display: grid;
+        gap: 10px;
+        position: relative;
+        overflow: hidden;
+        max-width: 520px;
+      }
+      .confirm p {
+        font-size: 13px;
+      }
+      .confirm .acts {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .confirm .timer {
+        position: absolute;
+        left: 0;
+        bottom: 0;
+        height: 2px;
+        background: var(--danger);
+        width: 100%;
+        transform-origin: left;
+        animation: shrink 6s linear forwards;
+      }
+      @keyframes shrink {
+        to {
+          transform: scaleX(0);
+        }
+      }
+      .btn.stop-ghost {
+        color: var(--muted);
+      }
+      .btn.stop-ghost:hover {
+        color: var(--danger);
+        background: color-mix(in srgb, var(--danger) 8%, transparent);
+      }
+      .note {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 10px;
+        max-width: 80ch;
+      }
+      .appshell {
+        display: grid;
+        gap: 16px;
+      }
+      footer.pg {
+        margin-top: 72px;
+        padding-top: 20px;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 12px;
+      }
+      @media (max-width: 960px) {
+        .hero,
+        .fix-head,
+        .pair {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .pair.phones {
+          grid-template-columns: minmax(0, 390px);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="top">
+      <div class="top-in">
+        <span class="brand">Tasks tab · five fixes vs live</span>
+        <nav aria-label="Fixes">
+          <a href="#fix1">1 Stop safely</a><a href="#fix2">2 Row anatomy</a
+          ><a href="#fix3">3 Failure path</a
+          ><a href="#fix4">4 Filters &amp; mobile</a
+          ><a href="#fix5">5 Inspector</a>
+        </nav>
+        <button class="pill-btn" id="themeBtn" type="button">
+          Toggle theme
+        </button>
       </div>
-      <div>
-        <p><strong>Live:</strong> Cancel is the heaviest control in the row, fires on one click, and in the details panel it's the first focusable element, so Enter right after opening Details kills the job. The app's own copy says cancelled work is not undone.</p>
-        <p><strong>Proposed:</strong> a quiet “Stop” that opens an inline confirm which says what is kept. Focus lands on “Keep running”. It reverts on its own after 6 seconds.</p>
-      </div>
-    </div>
-    <div class="pair stack">
-      <div><div class="col-label old"><span class="dot"></span>Live <span class="tools"><button class="pill-btn" data-reset="f1">Reset</button></span></div><div class="frame" id="f1-live"></div></div>
-      <div><div class="col-label new"><span class="dot"></span>Proposed <span class="tools"><button class="pill-btn" data-reset="f1">Reset</button></span></div><div class="frame new" id="f1-new"></div></div>
-    </div>
-    <div class="changes">
-      <div><h3>What changed</h3><ul><li>Outline “Cancel” becomes ghost “Stop”, danger tint on hover only.</li><li>Inline confirm states what is kept: <em>“The 42 of 118 series already processed keep their new metadata.”</em></li><li>Default focus on “Keep running”; Esc or 6 s timeout reverts.</li><li>Label is “Stop task”, so it never collides with a dialog's own Cancel.</li></ul></div>
-      <div><h3>Code it touches</h3><ul><li><code>actions()</code> at <code>Jobs.tsx:407-415</code>, shared by list and panel.</li><li>Dialog <code>onOpenAutoFocus</code> at <code>:477</code> to focus the title, never an action.</li><li>One small <code>ConfirmInline</code> component, no new dependency.</li></ul></div>
-    </div>
-  </section>
+    </header>
 
-  <!-- ============ FIX 2 ============ -->
-  <section class="fix" id="fix2">
-    <div class="fix-head">
-      <div>
-        <h2><span class="fixn">2</span>Lead with the verb; give covers back their space <span class="sev">P1 · layout</span></h2>
-      </div>
-      <div>
-        <p><strong>Live:</strong> each row is ~153px tall on desktop: a 96×128 cover tile (empty on five of these ten rows) beside three lines of text. The noun is the bold title, so two rows read “Manga” and the verb is 12px muted. Four identical green “Completed” pills repeat.</p>
-        <p><strong>Proposed:</strong> About half the height. Verb first, target second. Glyph chip when there's no series. Completed is a quiet check, and pills are kept for exceptions.</p>
-      </div>
-    </div>
-    <div class="pair stack">
-      <div><div class="col-label old"><span class="dot"></span>Live <span class="tools"><span class="metric">visible without scrolling <b id="f2-live-n">–</b>/10</span></span></div><div class="frame" id="f2-live"></div></div>
-      <div><div class="col-label new"><span class="dot"></span>Proposed <span class="tools"><span class="metric">visible without scrolling <b id="f2-new-n">–</b>/10</span></span></div><div class="frame new" id="f2-new"></div></div>
-    </div>
-    <div class="changes">
-      <div><h3>What changed</h3><ul><li>Cover only when a series exists, at 40×54. Otherwise a type glyph (scan, match, merge, watch, edit, delete).</li><li>Title = <strong>action</strong> in 600 weight + target in regular muted weight.</li><li>Result line carries the number that matters: <em>19 matched · <u>4 failed</u></em>, with the failed count linked.</li><li>Right column: status, then relative time, then one action. “Details” goes away: the title is the button.</li><li>Selection gets a primary outline and tint. The failed tint survives selection.</li></ul></div>
-      <div><h3>Code it touches</h3><ul><li>Row markup at <code>Jobs.tsx:453-472</code>; <code>JobCover</code>/<code>SeriesCover</code> at <code>:82-106</code>.</li><li><code>jobTarget()</code> stays; add <code>jobGlyph(type)</code> and split target from verb.</li><li><code>JobStatus</code> at <code>:228</code> returns a check for clean completions.</li></ul></div>
-    </div>
-  </section>
+    <main class="wrap">
+      <section class="hero">
+        <div>
+          <h1>The Tasks tab, as it ships and as it could.</h1>
+          <p class="lead">
+            An Impeccable critique of <code>web/src/pages/Jobs.tsx</code> found
+            five priority issues. Each section below puts a recreation of the
+            live tab beside a working version of the fix, using the app's own
+            tokens and the same ten sample tasks. Both sides are interactive.
+            Nothing here touches the real code.
+          </p>
+          <p class="meta">
+            Live = a recreation of the current tab built from the component
+            source and checked against screenshots of the running app on mock
+            data. Proposed = the fix. Covers are placeholders on both sides. Use
+            the toggle to check light and dark.
+          </p>
+        </div>
+        <aside class="score" aria-label="Critique summary">
+          <h2>Design health (Nielsen)</h2>
+          <div class="big">23<small> / 40 · Acceptable</small></div>
+          <ul>
+            <li><span>Priority issues</span><b>3 × P1 · 2 × P2</b></li>
+            <li><span>Detector (Jobs.tsx source)</span><b>0 findings</b></li>
+            <li>
+              <span>Detector (live page)</span><b>1 advisory, 1 borderline</b>
+            </li>
+            <li>
+              <span>Failed badge contrast, row selected</span><b>4.49 : 1</b>
+            </li>
+            <li><span>Row buttons at ≥1024px</span><b>36px tall</b></li>
+            <li><span>Tab stops, 10 rows</span><b>14</b></li>
+          </ul>
+        </aside>
+      </section>
 
-  <!-- ============ FIX 3 ============ -->
-  <section class="fix" id="fix3">
-    <div class="fix-head">
-      <div>
-        <h2><span class="fixn">3</span>When a task fails, say what happened and what to do first <span class="sev">P1 · clarify</span></h2>
-      </div>
-      <div>
-        <p><strong>Live:</strong> the panel opens on a generic “Stopped with an error”, then Retry and Clear side by side, then a raw stack trace, and only then the sentence that explains it. The app knows to wait 60 seconds and makes you count. On a permissions error there's no guidance at all, and Retry is offered anyway.</p>
-        <p><strong>Proposed:</strong> a “what happened” card first, with the one action that fits. The raw error moves into a disclosure.</p>
-      </div>
-    </div>
-    <div class="pair" style="margin-bottom:12px"><div></div><div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:-8px"><span class="muted" style="font-size:12px">Scenario</span><button class="pill-btn" aria-pressed="true" data-f3="146">Rate limited · #146</button><button class="pill-btn" aria-pressed="false" data-f3="139">Permission denied · #139</button></div></div>
-    <div class="pair">
-      <div><div class="col-label old"><span class="dot"></span>Live panel</div><div class="frame scroll" id="f3-live" style="height:640px"></div></div>
-      <div><div class="col-label new"><span class="dot"></span>Proposed panel</div><div class="frame new scroll" id="f3-new" style="height:640px"></div></div>
-    </div>
-    <div class="changes">
-      <div><h3>What changed</h3><ul><li>Plain-language headline, then one sentence of consequence. “Nothing was changed” only where the job verifies it.</li><li>One primary action per cause: <em>Retry in 0:42</em> counts down; permissions offers <em>Open Settings → Libraries</em> and demotes Retry.</li><li>Raw message and trace become “Error details” with Copy.</li><li>Logs open by default for failures, one line per entry, error lines tinted.</li><li>“Clear task” becomes a ghost “Remove from history” in the footer, away from Retry.</li></ul></div>
-      <div><h3>Code it touches</h3><ul><li>Panel body at <code>Jobs.tsx:487-508</code>, <code>RecoveryActions</code> at <code>:238</code>, <code>jobOutcome()</code> generic fallback at <code>:146</code>.</li><li>Needs server-side recovery mapping for more error classes (<code>job.recovery</code> already exists for rate limits). The EACCES copy here is proposed, not shipped.</li><li><code>jobSummary()</code> fallback “Open details for the error.” at <code>:187</code> when no message is recorded.</li></ul></div>
-    </div>
-  </section>
+      <!-- ============ FIX 1 ============ -->
+      <section class="fix" id="fix1">
+        <div class="fix-head">
+          <div>
+            <h2>
+              <span class="fixn">1</span>Stopping a task should take two
+              deliberate steps <span class="sev">P1 · harden</span>
+            </h2>
+          </div>
+          <div>
+            <p>
+              <strong>Live:</strong> Cancel is the heaviest control in the row,
+              fires on one click, and in the details panel it's the first
+              focusable element, so Enter right after opening Details kills the
+              job. The app's own copy says cancelled work is not undone.
+            </p>
+            <p>
+              <strong>Proposed:</strong> a quiet “Stop” that opens an inline
+              confirm which says what is kept. Focus lands on “Keep running”. It
+              reverts on its own after 6 seconds.
+            </p>
+          </div>
+        </div>
+        <div class="pair stack">
+          <div>
+            <div class="col-label old">
+              <span class="dot"></span>Live
+              <span class="tools"
+                ><button class="pill-btn" data-reset="f1">Reset</button></span
+              >
+            </div>
+            <div class="frame" id="f1-live"></div>
+          </div>
+          <div>
+            <div class="col-label new">
+              <span class="dot"></span>Proposed
+              <span class="tools"
+                ><button class="pill-btn" data-reset="f1">Reset</button></span
+              >
+            </div>
+            <div class="frame new" id="f1-new"></div>
+          </div>
+        </div>
+        <div class="changes">
+          <div>
+            <h3>What changed</h3>
+            <ul>
+              <li>
+                Outline “Cancel” becomes ghost “Stop”, danger tint on hover
+                only.
+              </li>
+              <li>
+                Inline confirm states what is kept:
+                <em
+                  >“The 42 of 118 series already processed keep their new
+                  metadata.”</em
+                >
+              </li>
+              <li>
+                Default focus on “Keep running”; Esc or 6 s timeout reverts.
+              </li>
+              <li>
+                Label is “Stop task”, so it never collides with a dialog's own
+                Cancel.
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3>Code it touches</h3>
+            <ul>
+              <li>
+                <code>actions()</code> at <code>Jobs.tsx:407-415</code>, shared
+                by list and panel.
+              </li>
+              <li>
+                Dialog <code>onOpenAutoFocus</code> at <code>:477</code> to
+                focus the title, never an action.
+              </li>
+              <li>
+                One small <code>ConfirmInline</code> component, no new
+                dependency.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </section>
 
-  <!-- ============ FIX 4 ============ -->
-  <section class="fix" id="fix4">
-    <div class="fix-head">
-      <div>
-        <h2><span class="fixn">4</span>Counts you can see, one vocabulary, a phone that shows tasks first <span class="sev">P2 · clarify + adapt</span></h2>
-      </div>
-      <div>
-        <p><strong>Live:</strong> status counts hide inside a select, the page says both “tasks” and “activity”, the sidebar says “Failed tasks · 2” while the filter says “Needs attention (3)”, and the default is All. On a phone the first task starts about 430px down.</p>
-        <p><strong>Proposed:</strong> tabs with counts (the app's own SegmentedTabs pattern), landing on Needs attention when anything needs attention. Search and a filter button share one row. Clear moves into the view it applies to.</p>
-      </div>
-    </div>
-    <div class="pair phones">
-      <div><div class="col-label old"><span class="dot"></span>Live · 390px <span class="tools"><span class="metric">first task at <b id="f4-live-y">–</b>px</span></span></div><div class="frame scroll" id="f4-live" style="height:700px"></div></div>
-      <div><div class="col-label new"><span class="dot"></span>Proposed · 390px <span class="tools"><span class="metric">first task at <b id="f4-new-y">–</b>px</span></span></div><div class="frame new scroll" id="f4-new" style="height:700px"></div></div>
-    </div>
-    <div style="display:flex;justify-content:center;margin-top:12px"><label class="metric" style="cursor:pointer"><input type="checkbox" id="f4-clean"> Preview: no failures (shows the per-tab empty states)</label></div>
-    <div class="changes">
-      <div><h3>What changed</h3><ul><li>Select → tabs: <em>All 10 · Active 2 · Needs attention 3 · Finished 5</em>. Finished now excludes items already counted as needing attention, so the numbers add up (live: 10 / 2 / 3 / 6).</li><li>Default tab is Needs attention if above zero, else Active, else All.</li><li>“Clear failed tasks” moves into the Needs attention view as “Clear 2 failed”.</li><li>Per-tab empty copy that says what the state means.</li><li>Sidebar label “Failed tasks” → “Needs attention” to match.</li></ul></div>
-      <div><h3>Code it touches</h3><ul><li><code>FILTERS</code> and the filter card at <code>Jobs.tsx:12-17, 438-449</code>; default at <code>:334</code>.</li><li><code>SegmentedTabs</code> already exists in <code>ui.tsx:305</code>.</li><li>Empty states at <code>:452</code>; sidebar copy in <code>SidebarStatus.tsx</code>.</li></ul></div>
-    </div>
-  </section>
+      <!-- ============ FIX 2 ============ -->
+      <section class="fix" id="fix2">
+        <div class="fix-head">
+          <div>
+            <h2>
+              <span class="fixn">2</span>Lead with the verb; give covers back
+              their space <span class="sev">P1 · layout</span>
+            </h2>
+          </div>
+          <div>
+            <p>
+              <strong>Live:</strong> each row is ~153px tall on desktop: a
+              96×128 cover tile (empty on five of these ten rows) beside three
+              lines of text. The noun is the bold title, so two rows read
+              “Manga” and the verb is 12px muted. Four identical green
+              “Completed” pills repeat.
+            </p>
+            <p>
+              <strong>Proposed:</strong> About half the height. Verb first,
+              target second. Glyph chip when there's no series. Completed is a
+              quiet check, and pills are kept for exceptions.
+            </p>
+          </div>
+        </div>
+        <div class="pair stack">
+          <div>
+            <div class="col-label old">
+              <span class="dot"></span>Live
+              <span class="tools"
+                ><span class="metric"
+                  >visible without scrolling <b id="f2-live-n">–</b>/10</span
+                ></span
+              >
+            </div>
+            <div class="frame" id="f2-live"></div>
+          </div>
+          <div>
+            <div class="col-label new">
+              <span class="dot"></span>Proposed
+              <span class="tools"
+                ><span class="metric"
+                  >visible without scrolling <b id="f2-new-n">–</b>/10</span
+                ></span
+              >
+            </div>
+            <div class="frame new" id="f2-new"></div>
+          </div>
+        </div>
+        <div class="changes">
+          <div>
+            <h3>What changed</h3>
+            <ul>
+              <li>
+                Cover only when a series exists, at 40×54. Otherwise a type
+                glyph (scan, match, merge, watch, edit, delete).
+              </li>
+              <li>
+                Title = <strong>action</strong> in 600 weight + target in
+                regular muted weight.
+              </li>
+              <li>
+                Result line carries the number that matters:
+                <em>19 matched · <u>4 failed</u></em
+                >, with the failed count linked.
+              </li>
+              <li>
+                Right column: status, then relative time, then one action.
+                “Details” goes away: the title is the button.
+              </li>
+              <li>
+                Selection gets a primary outline and tint. The failed tint
+                survives selection.
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3>Code it touches</h3>
+            <ul>
+              <li>
+                Row markup at <code>Jobs.tsx:453-472</code>;
+                <code>JobCover</code>/<code>SeriesCover</code> at
+                <code>:82-106</code>.
+              </li>
+              <li>
+                <code>jobTarget()</code> stays; add
+                <code>jobGlyph(type)</code> and split target from verb.
+              </li>
+              <li>
+                <code>JobStatus</code> at <code>:228</code> returns a check for
+                clean completions.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </section>
 
-  <!-- ============ FIX 5 ============ -->
-  <section class="fix" id="fix5">
-    <div class="fix-head">
-      <div>
-        <h2><span class="fixn">5</span>Watch a running task without losing the list <span class="sev">P2 · adapt</span></h2>
-      </div>
-      <div>
-        <p><strong>Live:</strong> Details opens a modal drawer that dims and locks the list. A running task's logs are collapsed (they're only open for failures), there's no ETA, and each row has three tab stops with no keyboard way to step through tasks.</p>
-        <p><strong>Proposed:</strong> from 1280px, a non-modal inspector beside the list. It's live: progress, ETA, a freshness stamp and tailing logs. ↑ ↓ move selection, Esc clears it.</p>
-      </div>
-    </div>
-    <div class="pair stack">
-      <div><div class="col-label old"><span class="dot"></span>Live <span class="tools muted">click “Details” on any row</span></div><div class="frame" id="f5-live" style="height:560px"></div></div>
-      <div><div class="col-label new"><span class="dot"></span>Proposed <span class="tools muted"><span class="kbd">↑</span><span class="kbd">↓</span> move · <span class="kbd">Esc</span> clear</span></div><div class="frame new" id="f5-new" style="height:560px"></div></div>
-    </div>
-    <div class="changes">
-      <div><h3>What changed</h3><ul><li>≥1280px: 440px sticky inspector, list stays interactive, no scrim. 1024-1279px keeps today's overlay without the scrim. Phones get a bottom sheet.</li><li>Running view: <em>42 of 118 · 36% · ~12 min left</em>, “Updated 2s ago”, logs open and following. Stop is a quiet link that uses fix 1.</li><li>Roving tabindex: one tab stop for the list instead of 14. ↑ ↓ select, Enter opens, Esc clears.</li><li>Rows don't re-sort under the pointer while it's over the list.</li></ul></div>
-      <div><h3>Code it touches</h3><ul><li><code>Dialog</code> at <code>Jobs.tsx:476-511</code>: becomes a layout column at <code>lg</code>, the existing dialog stays below it.</li><li>Log default at <code>:507</code>: open when active or failed.</li><li>Poll sort at <code>:421-424</code>: freeze order while hovered.</li></ul></div>
-    </div>
-  </section>
+      <!-- ============ FIX 3 ============ -->
+      <section class="fix" id="fix3">
+        <div class="fix-head">
+          <div>
+            <h2>
+              <span class="fixn">3</span>When a task fails, say what happened
+              and what to do first <span class="sev">P1 · clarify</span>
+            </h2>
+          </div>
+          <div>
+            <p>
+              <strong>Live:</strong> the panel opens on a generic “Stopped with
+              an error”, then Retry and Clear side by side, then a raw stack
+              trace, and only then the sentence that explains it. The app knows
+              to wait 60 seconds and makes you count. On a permissions error
+              there's no guidance at all, and Retry is offered anyway.
+            </p>
+            <p>
+              <strong>Proposed:</strong> a “what happened” card first, with the
+              one action that fits. The raw error moves into a disclosure.
+            </p>
+          </div>
+        </div>
+        <div class="pair" style="margin-bottom: 12px">
+          <div></div>
+          <div
+            style="
+              display: flex;
+              gap: 8px;
+              justify-content: flex-end;
+              align-items: center;
+              margin-top: -8px;
+            "
+          >
+            <span class="muted" style="font-size: 12px">Scenario</span
+            ><button class="pill-btn" aria-pressed="true" data-f3="146">
+              Rate limited · #146</button
+            ><button class="pill-btn" aria-pressed="false" data-f3="139">
+              Permission denied · #139
+            </button>
+          </div>
+        </div>
+        <div class="pair">
+          <div>
+            <div class="col-label old"><span class="dot"></span>Live panel</div>
+            <div class="frame scroll" id="f3-live" style="height: 640px"></div>
+          </div>
+          <div>
+            <div class="col-label new">
+              <span class="dot"></span>Proposed panel
+            </div>
+            <div
+              class="frame new scroll"
+              id="f3-new"
+              style="height: 640px"
+            ></div>
+          </div>
+        </div>
+        <div class="changes">
+          <div>
+            <h3>What changed</h3>
+            <ul>
+              <li>
+                Plain-language headline, then one sentence of consequence.
+                “Nothing was changed” only where the job verifies it.
+              </li>
+              <li>
+                One primary action per cause: <em>Retry in 0:42</em> counts
+                down; permissions offers <em>Open Settings → Libraries</em> and
+                demotes Retry.
+              </li>
+              <li>Raw message and trace become “Error details” with Copy.</li>
+              <li>
+                Logs open by default for failures, one line per entry, error
+                lines tinted.
+              </li>
+              <li>
+                “Clear task” becomes a ghost “Remove from history” in the
+                footer, away from Retry.
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3>Code it touches</h3>
+            <ul>
+              <li>
+                Panel body at <code>Jobs.tsx:487-508</code>,
+                <code>RecoveryActions</code> at <code>:238</code>,
+                <code>jobOutcome()</code> generic fallback at <code>:146</code>.
+              </li>
+              <li>
+                Needs server-side recovery mapping for more error classes (<code
+                  >job.recovery</code
+                >
+                already exists for rate limits). The EACCES copy here is
+                proposed, not shipped.
+              </li>
+              <li>
+                <code>jobSummary()</code> fallback “Open details for the error.”
+                at <code>:187</code> when no message is recorded.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </section>
 
-  <footer class="pg">Prepared from an Impeccable critique of the Tasks tab (design review plus detector scan). Sample data mirrors a mock API used to screenshot the live tab; names and counts are illustrative.</footer>
-</main>
+      <!-- ============ FIX 4 ============ -->
+      <section class="fix" id="fix4">
+        <div class="fix-head">
+          <div>
+            <h2>
+              <span class="fixn">4</span>Counts you can see, one vocabulary, a
+              phone that shows tasks first
+              <span class="sev">P2 · clarify + adapt</span>
+            </h2>
+          </div>
+          <div>
+            <p>
+              <strong>Live:</strong> status counts hide inside a select, the
+              page says both “tasks” and “activity”, the sidebar says “Failed
+              tasks · 2” while the filter says “Needs attention (3)”, and the
+              default is All. On a phone the first task starts about 430px down.
+            </p>
+            <p>
+              <strong>Proposed:</strong> tabs with counts (the app's own
+              SegmentedTabs pattern), landing on Needs attention when anything
+              needs attention. Search and a filter button share one row. Clear
+              moves into the view it applies to.
+            </p>
+          </div>
+        </div>
+        <div class="pair phones">
+          <div>
+            <div class="col-label old">
+              <span class="dot"></span>Live · 390px
+              <span class="tools"
+                ><span class="metric"
+                  >first task at <b id="f4-live-y">–</b>px</span
+                ></span
+              >
+            </div>
+            <div class="frame scroll" id="f4-live" style="height: 700px"></div>
+          </div>
+          <div>
+            <div class="col-label new">
+              <span class="dot"></span>Proposed · 390px
+              <span class="tools"
+                ><span class="metric"
+                  >first task at <b id="f4-new-y">–</b>px</span
+                ></span
+              >
+            </div>
+            <div
+              class="frame new scroll"
+              id="f4-new"
+              style="height: 700px"
+            ></div>
+          </div>
+        </div>
+        <div style="display: flex; justify-content: center; margin-top: 12px">
+          <label class="metric" style="cursor: pointer"
+            ><input type="checkbox" id="f4-clean" /> Preview: no failures (shows
+            the per-tab empty states)</label
+          >
+        </div>
+        <div class="changes">
+          <div>
+            <h3>What changed</h3>
+            <ul>
+              <li>
+                Select → tabs:
+                <em>All 10 · Active 2 · Needs attention 3 · Finished 5</em>.
+                Finished now excludes items already counted as needing
+                attention, so the numbers add up (live: 10 / 2 / 3 / 6).
+              </li>
+              <li>
+                Default tab is Needs attention if above zero, else Active, else
+                All.
+              </li>
+              <li>
+                “Clear failed tasks” moves into the Needs attention view as
+                “Clear 2 failed”.
+              </li>
+              <li>Per-tab empty copy that says what the state means.</li>
+              <li>
+                Sidebar label “Failed tasks” → “Needs attention” to match.
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3>Code it touches</h3>
+            <ul>
+              <li>
+                <code>FILTERS</code> and the filter card at
+                <code>Jobs.tsx:12-17, 438-449</code>; default at
+                <code>:334</code>.
+              </li>
+              <li>
+                <code>SegmentedTabs</code> already exists in
+                <code>ui.tsx:305</code>.
+              </li>
+              <li>
+                Empty states at <code>:452</code>; sidebar copy in
+                <code>SidebarStatus.tsx</code>.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </section>
 
-<script>
-/* ============ icons ============ */
-const P = {
-  check: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
-  circle: '<circle cx="12" cy="12" r="10"/>',
-  activity: '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
-  xc: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
-  warn: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
-  ban: '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',
-  retry: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
-  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
-  list: '<path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/>',
-  sliders: '<path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/>',
-  chev: '<path d="m9 18 6-6-6-6"/>',
-  chevd: '<path d="m6 9 6 6 6-6"/>',
-  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
-  trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
-  scan: '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/>',
-  merge: '<path d="m8 6 4-4 4 4"/><path d="M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22"/><path d="m20 22-5-5"/>',
-  eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
-  edit: '<path d="M12.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v9.5"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M13.378 15.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"/>',
-  sync: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
-  down: '<path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/>',
-  copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
-  term: '<path d="M12 19h8"/><path d="m4 17 6-6-6-6"/>',
-  down2: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
-  pencil: '<path d="M12.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v9.5"/>',
-};
-const ic = (n, c = '') => `<svg class="i ${c}" viewBox="0 0 24 24" aria-hidden="true">${P[n] || ''}</svg>`;
-const GLYPH = { 'match-library': 'sync', 'match-unmatched': 'sync', 'sync-series': 'sync', 'scan-downloaded': 'scan', 'scan-new': 'scan', 'apply-series': 'check', 'merge-series': 'merge', 'delete-series': 'trash', 'edit-comicinfo': 'edit', 'check-watched-searches': 'eye' };
-const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      <!-- ============ FIX 5 ============ -->
+      <section class="fix" id="fix5">
+        <div class="fix-head">
+          <div>
+            <h2>
+              <span class="fixn">5</span>Watch a running task without losing the
+              list <span class="sev">P2 · adapt</span>
+            </h2>
+          </div>
+          <div>
+            <p>
+              <strong>Live:</strong> Details opens a modal drawer that dims and
+              locks the list. A running task's logs are collapsed (they're only
+              open for failures), there's no ETA, and each row has three tab
+              stops with no keyboard way to step through tasks.
+            </p>
+            <p>
+              <strong>Proposed:</strong> from 1280px, a non-modal inspector
+              beside the list. It's live: progress, ETA, a freshness stamp and
+              tailing logs. ↑ ↓ move selection, Esc clears it.
+            </p>
+          </div>
+        </div>
+        <div class="pair stack">
+          <div>
+            <div class="col-label old">
+              <span class="dot"></span>Live
+              <span class="tools muted">click “Details” on any row</span>
+            </div>
+            <div class="frame" id="f5-live" style="height: 560px"></div>
+          </div>
+          <div>
+            <div class="col-label new">
+              <span class="dot"></span>Proposed
+              <span class="tools muted"
+                ><span class="kbd">↑</span><span class="kbd">↓</span> move ·
+                <span class="kbd">Esc</span> clear</span
+              >
+            </div>
+            <div class="frame new" id="f5-new" style="height: 560px"></div>
+          </div>
+        </div>
+        <div class="changes">
+          <div>
+            <h3>What changed</h3>
+            <ul>
+              <li>
+                ≥1280px: 440px sticky inspector, list stays interactive, no
+                scrim. 1024-1279px keeps today's overlay without the scrim.
+                Phones get a bottom sheet.
+              </li>
+              <li>
+                Running view: <em>42 of 118 · 36% · ~12 min left</em>, “Updated
+                2s ago”, logs open and following. Stop is a quiet link that uses
+                fix 1.
+              </li>
+              <li>
+                Roving tabindex: one tab stop for the list instead of 14. ↑ ↓
+                select, Enter opens, Esc clears.
+              </li>
+              <li>
+                Rows don't re-sort under the pointer while it's over the list.
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3>Code it touches</h3>
+            <ul>
+              <li>
+                <code>Dialog</code> at <code>Jobs.tsx:476-511</code>: becomes a
+                layout column at <code>lg</code>, the existing dialog stays
+                below it.
+              </li>
+              <li>
+                Log default at <code>:507</code>: open when active or failed.
+              </li>
+              <li>
+                Poll sort at <code>:421-424</code>: freeze order while hovered.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </section>
 
-/* ============ sample data (same as the mock API used to screenshot the live tab) ============ */
-const JOBS = [
-  { id: 148, type: 'match-library', label: 'Match library', target: 'Manga', ptarget: 'Manga · 118 series', status: 'running', cur: 42, total: 118, ago: '6m ago', dur: '6m 30s elapsed', series: [], summary: null, outcome: '42 of 118 items processed so far.', purpose: 'Find and apply metadata matches for every series in the library', created: '10:02:14', started: '10:02:14', finished: '—' },
-  { id: 147, type: 'scan-downloaded', label: 'Find matches for downloaded gallery', plabel: 'Match downloaded gallery', target: 'Blue Archive Anthology', status: 'queued', cur: 0, total: 0, ago: '2m ago', dur: 'Waiting to start', series: [{ id: 311, name: 'Blue Archive Anthology' }], summary: null, outcome: 'Waiting to start. No work has been performed yet.', purpose: 'Import the completed download into Kavita and find metadata candidates to review on Home', created: '10:06:02', started: '—', finished: '—' },
-  { id: 146, type: 'sync-series', label: 'Sync series', target: "Frieren: Beyond Journey's End", status: 'failed', cur: 0, total: 1, ago: '55m ago', dur: '1m 0s', series: [{ id: 87, name: "Frieren: Beyond Journey's End" }], summary: 'The metadata provider rate-limited this request. Wait a minute, then retry.', psummary: 'MangaUpdates rate-limited this request', outcome: 'Stopped with an error. Check logs for any work performed before the failure.', purpose: 'Re-match and update series metadata and covers', created: '09:13:07', started: '09:13:07', finished: '09:14:07',
-    err: 'MangaUpdates returned HTTP 429 (rate limited)\nRetry-After: 60\n    at fetchSeries (providers/mangaupdates.ts:88)',
-    recovery: { explanation: 'The metadata provider rate-limited this request. Wait a minute, then retry.', action: 'Open provider settings' },
-    what: { head: 'MangaUpdates is rate-limiting H-Tosho.', body: 'It asked us to <b>wait 60 seconds</b> before the next request. Nothing was written to Kavita for this series.', primary: 'retry-timer', secondary: 'Open provider settings' } },
-  { id: 145, type: 'match-unmatched', label: 'Match unmatched', target: 'Manga', ptarget: 'Manga · unmatched series', status: 'completed', warn: true, cur: 23, total: 23, ago: '2h ago', dur: '8m 0s', series: [], summary: '19 matched · 4 failed', matched: 19, failed: 4, outcome: '23 series processed · 19 metadata matches applied successfully · 4 series needing attention.', purpose: 'Find and apply metadata matches for unmatched series', created: '08:09:40', started: '08:09:40', finished: '08:17:40' },
-  { id: 139, type: 'edit-comicinfo', label: 'Edit ComicInfo', target: 'Vinland Saga', status: 'failed', cur: 0, total: 1, ago: '2d ago', dur: '1m 0s', series: [{ id: 33, name: 'Vinland Saga' }], summary: "EACCES: permission denied, open '/data/manga/Vinland Saga/v01.cbz'", psummary: "Couldn't write to v01.cbz", outcome: 'Stopped with an error. Check logs for any work performed before the failure.', purpose: 'Rewrite ComicInfo.xml in the selected archive', created: 'Nov 20 07:12:11', started: 'Nov 20 07:12:11', finished: 'Nov 20 07:12:12',
-    err: "EACCES: permission denied, open '/data/manga/Vinland Saga/v01.cbz'",
-    recovery: null,
-    what: { head: "H-Tosho can't write to this file.", path: '/data/manga/Vinland Saga/v01.cbz', body: 'The operating system refused write access. Kavita can still read the series; H-Tosho can\'t edit it.', hint: 'Check that your Docker library folder is mounted read-write and matches the path Kavita uses.', primary: 'Open Settings → Libraries', secondary: 'Retry' } },
-  { id: 144, type: 'check-watched-searches', label: 'Check watched searches', target: 'All watched searches', status: 'completed', cur: 8, total: 8, ago: '3h ago', dur: '1m 12s', series: [], summary: '3 new galleries', link: 'View in Following', outcome: '8 saved searches checked · 3 new galleries found · 1 Discord notifications sent.', purpose: 'Check saved searches for new galleries', created: '07:07:02', started: '07:07:02', finished: '07:08:14' },
-  { id: 143, type: 'apply-series', label: 'Apply & Sync', target: 'Delicious in Dungeon', status: 'completed', cur: 1, total: 1, ago: '5h ago', dur: '4s', series: [{ id: 54, name: 'Delicious in Dungeon' }], summary: null, outcome: 'Updated fields: Title, Description, Tags · series cover updated.', purpose: 'Apply the reviewed metadata candidate and selected fields', created: '05:06:00', started: '05:06:00', finished: '05:06:04' },
-  { id: 142, type: 'merge-series', label: 'Merge series', target: 'Manga · 3 series', status: 'completed', cur: 3, total: 3, ago: '1d ago', dur: '2m 3s', series: [{ id: 12, name: 'Kaguya-sama Vol 1' }, { id: 13, name: 'Kaguya-sama Vol 2' }, { id: 14, name: 'Kaguya-sama Vol 3' }], summary: '3 archives merged', outcome: '3 archives moved into the destination series.', purpose: 'Move archives into one series folder and update chapter metadata', created: 'Nov 21 09:12:00', started: 'Nov 21 09:12:00', finished: 'Nov 21 09:14:03' },
-  { id: 141, type: 'scan-new', label: 'Scan new series', target: 'All libraries', status: 'completed', cur: 3, total: 3, ago: '1d ago', dur: '3m 0s', series: [], summary: '5 matched', outcome: '3 libraries scanned · 6 series processed · 5 metadata matches applied successfully.', purpose: 'Refresh Kavita libraries and match newly discovered series', created: 'Nov 21 08:56:00', started: 'Nov 21 08:56:00', finished: 'Nov 21 08:59:00' },
-  { id: 140, type: 'delete-series', label: 'Delete series', target: 'Old Duplicate', status: 'cancelled', cur: 0, total: 1, ago: '2d ago', dur: '1m 0s', series: [{ id: 9, name: 'Old Duplicate' }], summary: null, outcome: 'Cancelled. Work already performed is not undone.', purpose: 'Delete the series folder and request a Kavita rescan', created: 'Nov 20 08:50:00', started: 'Nov 20 08:50:00', finished: 'Nov 20 08:51:00' },
-];
-const J = id => JOBS.find(j => j.id === id);
-const isActive = j => j.status === 'running' || j.status === 'queued';
-const needs = j => j.status === 'failed' || (j.status === 'completed' && j.warn);
-const prio = j => j.status === 'running' ? 0 : j.status === 'queued' ? 1 : needs(j) ? 2 : 3;
-const ordered = list => [...list].sort((a, b) => prio(a) - prio(b) || b.id - a.id);
-const LOGS = id => ['Starting job', 'Loading series', 'Querying AniList', 'Querying MangaUpdates', 'Scoring candidates', 'Low-confidence candidate skipped', 'Writing metadata', 'Done'].map((m, i) => ({ t: `10:0${i}:1${i}`, lv: i === 5 ? 'warn' : (i === 7 && id === 146) || (i === 7 && id === 139) ? 'error' : 'info', m: i === 7 && (id === 146 || id === 139) ? 'Job failed: see error details' : m }));
+      <footer class="pg">
+        Prepared from an Impeccable critique of the Tasks tab (design review
+        plus detector scan). Sample data mirrors a mock API used to screenshot
+        the live tab; names and counts are illustrative.
+      </footer>
+    </main>
 
-/* ============ helpers ============ */
-const $ = (s, r = document) => r.querySelector(s);
-const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-function toast(frame, text) { $$('.toast', frame).forEach(t => t.remove()); const t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); t.innerHTML = ic('check') + esc(text); frame.appendChild(t); setTimeout(() => t.remove(), 3500); }
-function statusBadge(j) {
-  if (j.status === 'running') return `<span class="badge info">${ic('activity', 's12 pulse')} Running</span>`;
-  if (j.status === 'queued') return `<span class="badge muted">${ic('circle', 's12')} Queued</span>`;
-  if (j.status === 'completed') return j.warn ? `<span class="badge warning">${ic('warn', 's12')} Completed with warnings</span>` : `<span class="badge success">${ic('check', 's12')} Completed</span>`;
-  if (j.status === 'cancelled') return `<span class="badge muted">${ic('ban', 's12')} Cancelled</span>`;
-  return `<span class="badge danger">${ic('xc', 's12')} Failed</span>`;
-}
+    <script>
+      /* ============ icons ============ */
+      const P = {
+        check: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+        circle: '<circle cx="12" cy="12" r="10"/>',
+        activity:
+          '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
+        xc: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+        warn: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+        ban: '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',
+        retry:
+          '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+        search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+        list: '<path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/>',
+        sliders: '<path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/>',
+        chev: '<path d="m9 18 6-6-6-6"/>',
+        chevd: '<path d="m6 9 6 6 6-6"/>',
+        x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+        trash:
+          '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+        scan: '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/>',
+        merge:
+          '<path d="m8 6 4-4 4 4"/><path d="M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22"/><path d="m20 22-5-5"/>',
+        eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
+        edit: '<path d="M12.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v9.5"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M13.378 15.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"/>',
+        sync: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+        down: '<path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/>',
+        copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+        term: '<path d="M12 19h8"/><path d="m4 17 6-6-6-6"/>',
+        down2: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+        pencil:
+          '<path d="M12.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v9.5"/>',
+      };
+      const ic = (n, c = "") =>
+        `<svg class="i ${c}" viewBox="0 0 24 24" aria-hidden="true">${P[n] || ""}</svg>`;
+      const GLYPH = {
+        "match-library": "sync",
+        "match-unmatched": "sync",
+        "sync-series": "sync",
+        "scan-downloaded": "scan",
+        "scan-new": "scan",
+        "apply-series": "check",
+        "merge-series": "merge",
+        "delete-series": "trash",
+        "edit-comicinfo": "edit",
+        "check-watched-searches": "eye",
+      };
+      const esc = (s) =>
+        String(s).replace(
+          /[&<>"]/g,
+          (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]
+        );
 
-/* ============ LIVE renderers (mirror Jobs.tsx) ============ */
-function liveCover(j, lg) {
-  const s = j.series[0];
-  return `<div class="cover-wrap" title="${s ? esc(s.name) : ''}"><div class="cover ${lg ? 'lg' : ''}" aria-hidden="true">${s ? esc(s.name.charAt(0).toUpperCase()) : ic('list', 's20')}</div>${j.series.length > 1 ? `<span class="more" aria-hidden="true">+${j.series.length - 1}</span>` : ''}</div>`;
-}
-function liveActions(j, compact, opts = {}) {
-  if (j.status === 'failed') return (j.type !== 'restore-metadata' ? `<button class="btn outline ${compact ? 'sm' : ''}">${ic('retry')} ${compact ? 'Retry' : 'Retry task'}</button>` : '') + (!compact ? `<button class="btn outline">${ic('trash')} Clear task</button>` : '');
-  if (isActive(j)) return `<button class="btn outline ${compact ? 'sm' : ''}" ${opts.cancelAttr || ''}>${ic('ban')} ${compact ? 'Cancel' : 'Cancel task'}</button>`;
-  return '';
-}
-function liveRow(j, o = {}) {
-  const sum = j.summary;
-  return `<article class="lrow ${o.sel ? 'sel' : j.status === 'failed' ? 'failed' : ''}" data-id="${j.id}">
+      /* ============ sample data (same as the mock API used to screenshot the live tab) ============ */
+      const JOBS = [
+        {
+          id: 148,
+          type: "match-library",
+          label: "Match library",
+          target: "Manga",
+          ptarget: "Manga · 118 series",
+          status: "running",
+          cur: 42,
+          total: 118,
+          ago: "6m ago",
+          dur: "6m 30s elapsed",
+          series: [],
+          summary: null,
+          outcome: "42 of 118 items processed so far.",
+          purpose:
+            "Find and apply metadata matches for every series in the library",
+          created: "10:02:14",
+          started: "10:02:14",
+          finished: "—",
+        },
+        {
+          id: 147,
+          type: "scan-downloaded",
+          label: "Find matches for downloaded gallery",
+          plabel: "Match downloaded gallery",
+          target: "Blue Archive Anthology",
+          status: "queued",
+          cur: 0,
+          total: 0,
+          ago: "2m ago",
+          dur: "Waiting to start",
+          series: [{ id: 311, name: "Blue Archive Anthology" }],
+          summary: null,
+          outcome: "Waiting to start. No work has been performed yet.",
+          purpose:
+            "Import the completed download into Kavita and find metadata candidates to review on Home",
+          created: "10:06:02",
+          started: "—",
+          finished: "—",
+        },
+        {
+          id: 146,
+          type: "sync-series",
+          label: "Sync series",
+          target: "Frieren: Beyond Journey's End",
+          status: "failed",
+          cur: 0,
+          total: 1,
+          ago: "55m ago",
+          dur: "1m 0s",
+          series: [{ id: 87, name: "Frieren: Beyond Journey's End" }],
+          summary:
+            "The metadata provider rate-limited this request. Wait a minute, then retry.",
+          psummary: "MangaUpdates rate-limited this request",
+          outcome:
+            "Stopped with an error. Check logs for any work performed before the failure.",
+          purpose: "Re-match and update series metadata and covers",
+          created: "09:13:07",
+          started: "09:13:07",
+          finished: "09:14:07",
+          err: "MangaUpdates returned HTTP 429 (rate limited)\nRetry-After: 60\n    at fetchSeries (providers/mangaupdates.ts:88)",
+          recovery: {
+            explanation:
+              "The metadata provider rate-limited this request. Wait a minute, then retry.",
+            action: "Open provider settings",
+          },
+          what: {
+            head: "MangaUpdates is rate-limiting H-Tosho.",
+            body: "It asked us to <b>wait 60 seconds</b> before the next request. Nothing was written to Kavita for this series.",
+            primary: "retry-timer",
+            secondary: "Open provider settings",
+          },
+        },
+        {
+          id: 145,
+          type: "match-unmatched",
+          label: "Match unmatched",
+          target: "Manga",
+          ptarget: "Manga · unmatched series",
+          status: "completed",
+          warn: true,
+          cur: 23,
+          total: 23,
+          ago: "2h ago",
+          dur: "8m 0s",
+          series: [],
+          summary: "19 matched · 4 failed",
+          matched: 19,
+          failed: 4,
+          outcome:
+            "23 series processed · 19 metadata matches applied successfully · 4 series needing attention.",
+          purpose: "Find and apply metadata matches for unmatched series",
+          created: "08:09:40",
+          started: "08:09:40",
+          finished: "08:17:40",
+        },
+        {
+          id: 139,
+          type: "edit-comicinfo",
+          label: "Edit ComicInfo",
+          target: "Vinland Saga",
+          status: "failed",
+          cur: 0,
+          total: 1,
+          ago: "2d ago",
+          dur: "1m 0s",
+          series: [{ id: 33, name: "Vinland Saga" }],
+          summary:
+            "EACCES: permission denied, open '/data/manga/Vinland Saga/v01.cbz'",
+          psummary: "Couldn't write to v01.cbz",
+          outcome:
+            "Stopped with an error. Check logs for any work performed before the failure.",
+          purpose: "Rewrite ComicInfo.xml in the selected archive",
+          created: "Nov 20 07:12:11",
+          started: "Nov 20 07:12:11",
+          finished: "Nov 20 07:12:12",
+          err: "EACCES: permission denied, open '/data/manga/Vinland Saga/v01.cbz'",
+          recovery: null,
+          what: {
+            head: "H-Tosho can't write to this file.",
+            path: "/data/manga/Vinland Saga/v01.cbz",
+            body: "The operating system refused write access. Kavita can still read the series; H-Tosho can't edit it.",
+            hint: "Check that your Docker library folder is mounted read-write and matches the path Kavita uses.",
+            primary: "Open Settings → Libraries",
+            secondary: "Retry",
+          },
+        },
+        {
+          id: 144,
+          type: "check-watched-searches",
+          label: "Check watched searches",
+          target: "All watched searches",
+          status: "completed",
+          cur: 8,
+          total: 8,
+          ago: "3h ago",
+          dur: "1m 12s",
+          series: [],
+          summary: "3 new galleries",
+          link: "View in Following",
+          outcome:
+            "8 saved searches checked · 3 new galleries found · 1 Discord notifications sent.",
+          purpose: "Check saved searches for new galleries",
+          created: "07:07:02",
+          started: "07:07:02",
+          finished: "07:08:14",
+        },
+        {
+          id: 143,
+          type: "apply-series",
+          label: "Apply & Sync",
+          target: "Delicious in Dungeon",
+          status: "completed",
+          cur: 1,
+          total: 1,
+          ago: "5h ago",
+          dur: "4s",
+          series: [{ id: 54, name: "Delicious in Dungeon" }],
+          summary: null,
+          outcome:
+            "Updated fields: Title, Description, Tags · series cover updated.",
+          purpose: "Apply the reviewed metadata candidate and selected fields",
+          created: "05:06:00",
+          started: "05:06:00",
+          finished: "05:06:04",
+        },
+        {
+          id: 142,
+          type: "merge-series",
+          label: "Merge series",
+          target: "Manga · 3 series",
+          status: "completed",
+          cur: 3,
+          total: 3,
+          ago: "1d ago",
+          dur: "2m 3s",
+          series: [
+            { id: 12, name: "Kaguya-sama Vol 1" },
+            { id: 13, name: "Kaguya-sama Vol 2" },
+            { id: 14, name: "Kaguya-sama Vol 3" },
+          ],
+          summary: "3 archives merged",
+          outcome: "3 archives moved into the destination series.",
+          purpose:
+            "Move archives into one series folder and update chapter metadata",
+          created: "Nov 21 09:12:00",
+          started: "Nov 21 09:12:00",
+          finished: "Nov 21 09:14:03",
+        },
+        {
+          id: 141,
+          type: "scan-new",
+          label: "Scan new series",
+          target: "All libraries",
+          status: "completed",
+          cur: 3,
+          total: 3,
+          ago: "1d ago",
+          dur: "3m 0s",
+          series: [],
+          summary: "5 matched",
+          outcome:
+            "3 libraries scanned · 6 series processed · 5 metadata matches applied successfully.",
+          purpose: "Refresh Kavita libraries and match newly discovered series",
+          created: "Nov 21 08:56:00",
+          started: "Nov 21 08:56:00",
+          finished: "Nov 21 08:59:00",
+        },
+        {
+          id: 140,
+          type: "delete-series",
+          label: "Delete series",
+          target: "Old Duplicate",
+          status: "cancelled",
+          cur: 0,
+          total: 1,
+          ago: "2d ago",
+          dur: "1m 0s",
+          series: [{ id: 9, name: "Old Duplicate" }],
+          summary: null,
+          outcome: "Cancelled. Work already performed is not undone.",
+          purpose: "Delete the series folder and request a Kavita rescan",
+          created: "Nov 20 08:50:00",
+          started: "Nov 20 08:50:00",
+          finished: "Nov 20 08:51:00",
+        },
+      ];
+      const J = (id) => JOBS.find((j) => j.id === id);
+      const isActive = (j) => j.status === "running" || j.status === "queued";
+      const needs = (j) =>
+        j.status === "failed" || (j.status === "completed" && j.warn);
+      const prio = (j) =>
+        j.status === "running"
+          ? 0
+          : j.status === "queued"
+            ? 1
+            : needs(j)
+              ? 2
+              : 3;
+      const ordered = (list) =>
+        [...list].sort((a, b) => prio(a) - prio(b) || b.id - a.id);
+      const LOGS = (id) =>
+        [
+          "Starting job",
+          "Loading series",
+          "Querying AniList",
+          "Querying MangaUpdates",
+          "Scoring candidates",
+          "Low-confidence candidate skipped",
+          "Writing metadata",
+          "Done",
+        ].map((m, i) => ({
+          t: `10:0${i}:1${i}`,
+          lv:
+            i === 5
+              ? "warn"
+              : (i === 7 && id === 146) || (i === 7 && id === 139)
+                ? "error"
+                : "info",
+          m:
+            i === 7 && (id === 146 || id === 139)
+              ? "Job failed: see error details"
+              : m,
+        }));
+
+      /* ============ helpers ============ */
+      const $ = (s, r = document) => r.querySelector(s);
+      const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+      function toast(frame, text) {
+        $$(".toast", frame).forEach((t) => t.remove());
+        const t = document.createElement("div");
+        t.className = "toast";
+        t.setAttribute("role", "status");
+        t.innerHTML = ic("check") + esc(text);
+        frame.appendChild(t);
+        setTimeout(() => t.remove(), 3500);
+      }
+      function statusBadge(j) {
+        if (j.status === "running")
+          return `<span class="badge info">${ic("activity", "s12 pulse")} Running</span>`;
+        if (j.status === "queued")
+          return `<span class="badge muted">${ic("circle", "s12")} Queued</span>`;
+        if (j.status === "completed")
+          return j.warn
+            ? `<span class="badge warning">${ic("warn", "s12")} Completed with warnings</span>`
+            : `<span class="badge success">${ic("check", "s12")} Completed</span>`;
+        if (j.status === "cancelled")
+          return `<span class="badge muted">${ic("ban", "s12")} Cancelled</span>`;
+        return `<span class="badge danger">${ic("xc", "s12")} Failed</span>`;
+      }
+
+      /* ============ LIVE renderers (mirror Jobs.tsx) ============ */
+      function liveCover(j, lg) {
+        const s = j.series[0];
+        return `<div class="cover-wrap" title="${s ? esc(s.name) : ""}"><div class="cover ${lg ? "lg" : ""}" aria-hidden="true">${s ? esc(s.name.charAt(0).toUpperCase()) : ic("list", "s20")}</div>${j.series.length > 1 ? `<span class="more" aria-hidden="true">+${j.series.length - 1}</span>` : ""}</div>`;
+      }
+      function liveActions(j, compact, opts = {}) {
+        if (j.status === "failed")
+          return (
+            (j.type !== "restore-metadata"
+              ? `<button class="btn outline ${compact ? "sm" : ""}">${ic("retry")} ${compact ? "Retry" : "Retry task"}</button>`
+              : "") +
+            (!compact
+              ? `<button class="btn outline">${ic("trash")} Clear task</button>`
+              : "")
+          );
+        if (isActive(j))
+          return `<button class="btn outline ${compact ? "sm" : ""}" ${opts.cancelAttr || ""}>${ic("ban")} ${compact ? "Cancel" : "Cancel task"}</button>`;
+        return "";
+      }
+      function liveRow(j, o = {}) {
+        const sum = j.summary;
+        return `<article class="lrow ${o.sel ? "sel" : j.status === "failed" ? "failed" : ""}" data-id="${j.id}">
     ${liveCover(j)}
     <div class="lbody"><div class="lmain">
       <h2>${esc(j.target)}</h2>
-      <p class="meta">${esc(j.label)} · <time>${j.ago}</time>${j.status !== 'queued' ? ` · ${esc(j.dur)}` : ''}</p>
-      ${sum ? `<p class="sum ${j.status === 'failed' ? 'err' : ''}">${esc(sum)}</p>` : ''}
-      ${j.status === 'running' ? `<div class="prog"><div class="progress"><i style="transform:scaleX(${j.cur / j.total})"></i></div><span data-pc>${j.cur} / ${j.total}</span></div>` : ''}
+      <p class="meta">${esc(j.label)} · <time>${j.ago}</time>${j.status !== "queued" ? ` · ${esc(j.dur)}` : ""}</p>
+      ${sum ? `<p class="sum ${j.status === "failed" ? "err" : ""}">${esc(sum)}</p>` : ""}
+      ${j.status === "running" ? `<div class="prog"><div class="progress"><i style="transform:scaleX(${j.cur / j.total})"></i></div><span data-pc>${j.cur} / ${j.total}</span></div>` : ""}
     </div>
     <div class="lside">${statusBadge(j)}${liveActions(j, true, o)}<button class="btn ghost sm" data-details="${j.id}" aria-label="View details for task #${j.id}: ${esc(j.target)}">Details</button></div></div>
   </article>`;
-}
-function liveLogs(id) {
-  const logs = LOGS(id);
-  return `<section class="logcon"><div class="bar"><h3>${ic('term')} Logs <small>${logs.length} / ${logs.length}</small></h3><div style="display:flex;gap:8px"><button class="btn outline sm">${ic('copy')} Copy</button><button class="btn outline sm">${ic('down')} Download</button></div></div>
-  <div class="bar"><label style="display:flex;gap:8px;align-items:center;font-size:12px;font-weight:500">Severity <span class="field" style="width:auto;height:36px;display:inline-flex;align-items:center;gap:24px;font-weight:400;font-size:14px">All levels ${ic('chevd')}</span></label><label style="display:flex;gap:8px;align-items:center;font-size:14px"><input type="checkbox" checked style="accent-color:var(--primary);width:16px;height:16px"> Follow logs</label></div>
-  <div class="logbox" tabindex="0">${logs.map(l => `<div class="e"><div class="h"><time>${l.t}</time><span class="lv ${l.lv}">${l.lv}</span></div><p>${esc(l.m)}</p></div>`).join('')}</div></section>`;
-}
-function liveDisclosure(label, inner, open) { return `<details class="disc" ${open ? 'open' : ''}><summary>${ic('chev')} ${label}</summary><div>${inner}</div></details>`; }
-function liveDetail(j, opts = {}) {
-  const logsOpen = j.status === 'failed';
-  return `<div class="ldetail">
-    <div class="ld-head">${liveCover(j, true)}<div style="min-width:0;flex:1"><h2>${esc(j.target)}</h2><p class="desc">${esc(j.label)} · Task #${j.id}</p><div style="margin-top:12px">${statusBadge(j)}</div></div>${opts.close ? `<button class="ld-x" data-close aria-label="Close">${ic('x')}</button>` : ''}</div>
+      }
+      function liveLogs(id) {
+        const logs = LOGS(id);
+        return `<section class="logcon"><div class="bar"><h3>${ic("term")} Logs <small>${logs.length} / ${logs.length}</small></h3><div style="display:flex;gap:8px"><button class="btn outline sm">${ic("copy")} Copy</button><button class="btn outline sm">${ic("down")} Download</button></div></div>
+  <div class="bar"><label style="display:flex;gap:8px;align-items:center;font-size:12px;font-weight:500">Severity <span class="field" style="width:auto;height:36px;display:inline-flex;align-items:center;gap:24px;font-weight:400;font-size:14px">All levels ${ic("chevd")}</span></label><label style="display:flex;gap:8px;align-items:center;font-size:14px"><input type="checkbox" checked style="accent-color:var(--primary);width:16px;height:16px"> Follow logs</label></div>
+  <div class="logbox" tabindex="0">${logs.map((l) => `<div class="e"><div class="h"><time>${l.t}</time><span class="lv ${l.lv}">${l.lv}</span></div><p>${esc(l.m)}</p></div>`).join("")}</div></section>`;
+      }
+      function liveDisclosure(label, inner, open) {
+        return `<details class="disc" ${open ? "open" : ""}><summary>${ic("chev")} ${label}</summary><div>${inner}</div></details>`;
+      }
+      function liveDetail(j, opts = {}) {
+        const logsOpen = j.status === "failed";
+        return `<div class="ldetail">
+    <div class="ld-head">${liveCover(j, true)}<div style="min-width:0;flex:1"><h2>${esc(j.target)}</h2><p class="desc">${esc(j.label)} · Task #${j.id}</p><div style="margin-top:12px">${statusBadge(j)}</div></div>${opts.close ? `<button class="ld-x" data-close aria-label="Close">${ic("x")}</button>` : ""}</div>
     <div class="ld-body">
       <section><h3>Summary</h3><p>${esc(j.outcome)}</p></section>
-      ${isActive(j) && j.status === 'running' ? `<section><div class="progress"><i style="transform:scaleX(${j.cur / j.total})"></i></div><p class="muted" style="font-size:12px">${esc(j.dur)}</p></section>` : ''}
-      ${isActive(j) || j.status === 'failed' ? `<div style="display:flex;gap:8px;flex-wrap:wrap">${liveActions(j, false, opts)}</div>` : ''}
-      ${j.err ? `<section class="ld-fail" role="alert"><h3>Failure</h3><p>${esc(j.err)}</p></section>` : ''}
-      ${j.recovery ? `<div class="ld-rec"><p>${esc(j.recovery.explanation)}</p><div><button class="btn outline sm">${esc(j.recovery.action)}</button></div></div>` : ''}
-      ${liveDisclosure('Timing', `<p style="margin-top:8px">${esc(j.dur)}</p><dl style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;font-size:14px">${[['Created', j.created], ['Started', j.started], ['Finished', j.finished]].map(([a, b]) => `<div><dt class="muted" style="font-size:12px">${a}</dt><dd style="margin-top:4px">${b}</dd></div>`).join('')}</dl>`)}
-      ${liveDisclosure('Technical details', `<p class="mono muted" style="font-size:12px;padding:12px 0">${j.type} · Task #${j.id}</p>`)}
+      ${isActive(j) && j.status === "running" ? `<section><div class="progress"><i style="transform:scaleX(${j.cur / j.total})"></i></div><p class="muted" style="font-size:12px">${esc(j.dur)}</p></section>` : ""}
+      ${isActive(j) || j.status === "failed" ? `<div style="display:flex;gap:8px;flex-wrap:wrap">${liveActions(j, false, opts)}</div>` : ""}
+      ${j.err ? `<section class="ld-fail" role="alert"><h3>Failure</h3><p>${esc(j.err)}</p></section>` : ""}
+      ${j.recovery ? `<div class="ld-rec"><p>${esc(j.recovery.explanation)}</p><div><button class="btn outline sm">${esc(j.recovery.action)}</button></div></div>` : ""}
+      ${liveDisclosure(
+        "Timing",
+        `<p style="margin-top:8px">${esc(j.dur)}</p><dl style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;font-size:14px">${[
+          ["Created", j.created],
+          ["Started", j.started],
+          ["Finished", j.finished],
+        ]
+          .map(
+            ([a, b]) =>
+              `<div><dt class="muted" style="font-size:12px">${a}</dt><dd style="margin-top:4px">${b}</dd></div>`
+          )
+          .join("")}</dl>`
+      )}
+      ${liveDisclosure("Technical details", `<p class="mono muted" style="font-size:12px;padding:12px 0">${j.type} · Task #${j.id}</p>`)}
       ${liveDisclosure(`Logs (8)`, `<div style="padding-top:12px">${liveLogs(j.id)}</div>`, logsOpen)}
     </div></div>`;
-}
-function liveHeader(withClear = true) {
-  return `<div class="pageh"><div class="l"><div class="ic">${ic('list', 's20')}</div><div><h1>Tasks</h1><p>Background work and recent results.</p></div></div>${withClear ? `<button class="btn outline">${ic('trash')} Clear failed tasks</button>` : ''}</div>`;
-}
-function liveFilters(extraTop) {
-  return `<div class="lfilters"><div class="lf-grid"><div><label class="lbl">Status</label><div class="sel"><span class="field" style="display:flex;align-items:center;justify-content:space-between">All activity (10) ${ic('chevd')}</span></div></div><div><label class="lbl">Search activity</label><div class="search-wrap">${ic('search')}<input class="field" type="search" placeholder="Task, target, result, or ID…"></div></div></div>
-  <div class="lf-count"><p>10 of 10 tasks</p><span class="disc">Task type ${ic('chevd', 's12')}</span></div></div>`;
-}
+      }
+      function liveHeader(withClear = true) {
+        return `<div class="pageh"><div class="l"><div class="ic">${ic("list", "s20")}</div><div><h1>Tasks</h1><p>Background work and recent results.</p></div></div>${withClear ? `<button class="btn outline">${ic("trash")} Clear failed tasks</button>` : ""}</div>`;
+      }
+      function liveFilters(extraTop) {
+        return `<div class="lfilters"><div class="lf-grid"><div><label class="lbl">Status</label><div class="sel"><span class="field" style="display:flex;align-items:center;justify-content:space-between">All activity (10) ${ic("chevd")}</span></div></div><div><label class="lbl">Search activity</label><div class="search-wrap">${ic("search")}<input class="field" type="search" placeholder="Task, target, result, or ID…"></div></div></div>
+  <div class="lf-count"><p>10 of 10 tasks</p><span class="disc">Task type ${ic("chevd", "s12")}</span></div></div>`;
+      }
 
-/* ============ PROPOSED renderers ============ */
-function pThumb(j) {
-  const s = j.series[0];
-  if (s) return `<div class="thumb" aria-hidden="true"><div class="c">${esc(s.name.replace(/^[^A-Za-z0-9]+/, '').charAt(0).toUpperCase())}</div>${j.series.length > 1 ? `<span class="more">+${j.series.length - 1}</span>` : ''}</div>`;
-  return `<div class="chip" aria-hidden="true"><div class="c">${ic(GLYPH[j.type] || 'list', 's20')}</div></div>`;
-}
-function pStatus(j) {
-  if (j.status === 'completed' && !j.warn) return `<span class="ok-check">${ic('check', 's12')}<span class="sr">Completed</span><span aria-hidden="true">Done</span></span>`;
-  if (j.status === 'running') return statusBadge(j);
-  return statusBadge(j);
-}
-function pRow(j, o = {}) {
-  const verb = j.plabel || j.label;
-  const tgt = j.ptarget || j.target;
-  let sum = '';
-  if (j.status === 'failed') sum = `<p class="psum err">${esc(j.psummary || j.summary || 'No error message recorded')}</p>`;
-  else if (j.warn) sum = `<p class="psum">${j.matched} matched · <button class="lnk" data-open="${j.id}">${j.failed} failed</button></p>`;
-  else if (j.summary) sum = `<p class="psum">${esc(j.summary)}${j.link ? ` · <button class="lnk">${esc(j.link)}</button>` : ''}</p>`;
-  const prog = j.status === 'running' ? `<div class="prog"><div class="progress"><i style="transform:scaleX(${j.cur / j.total})"></i></div><span data-pc>${j.cur} / ${j.total}</span></div>` : '';
-  const act = j.status === 'failed' && j.type !== 'restore-metadata' && !(o.noAction) ? `<button class="btn outline sm" tabindex="-1">${ic('retry')} Retry</button>` : isActive(j) ? `<button class="btn ghost sm stop-ghost" tabindex="-1">Stop</button>` : '';
-  return `<article class="prow ${o.sel ? 'sel' : ''} ${j.status}" data-id="${j.id}" role="option" aria-selected="${o.sel ? 'true' : 'false'}">
+      /* ============ PROPOSED renderers ============ */
+      function pThumb(j) {
+        const s = j.series[0];
+        if (s)
+          return `<div class="thumb" aria-hidden="true"><div class="c">${esc(
+            s.name
+              .replace(/^[^A-Za-z0-9]+/, "")
+              .charAt(0)
+              .toUpperCase()
+          )}</div>${j.series.length > 1 ? `<span class="more">+${j.series.length - 1}</span>` : ""}</div>`;
+        return `<div class="chip" aria-hidden="true"><div class="c">${ic(GLYPH[j.type] || "list", "s20")}</div></div>`;
+      }
+      function pStatus(j) {
+        if (j.status === "completed" && !j.warn)
+          return `<span class="ok-check">${ic("check", "s12")}<span class="sr">Completed</span><span aria-hidden="true">Done</span></span>`;
+        if (j.status === "running") return statusBadge(j);
+        return statusBadge(j);
+      }
+      function pRow(j, o = {}) {
+        const verb = j.plabel || j.label;
+        const tgt = j.ptarget || j.target;
+        let sum = "";
+        if (j.status === "failed")
+          sum = `<p class="psum err">${esc(j.psummary || j.summary || "No error message recorded")}</p>`;
+        else if (j.warn)
+          sum = `<p class="psum">${j.matched} matched · <button class="lnk" data-open="${j.id}">${j.failed} failed</button></p>`;
+        else if (j.summary)
+          sum = `<p class="psum">${esc(j.summary)}${j.link ? ` · <button class="lnk">${esc(j.link)}</button>` : ""}</p>`;
+        const prog =
+          j.status === "running"
+            ? `<div class="prog"><div class="progress"><i style="transform:scaleX(${j.cur / j.total})"></i></div><span data-pc>${j.cur} / ${j.total}</span></div>`
+            : "";
+        const act =
+          j.status === "failed" && j.type !== "restore-metadata" && !o.noAction
+            ? `<button class="btn outline sm" tabindex="-1">${ic("retry")} Retry</button>`
+            : isActive(j)
+              ? `<button class="btn ghost sm stop-ghost" tabindex="-1">Stop</button>`
+              : "";
+        return `<article class="prow ${o.sel ? "sel" : ""} ${j.status}" data-id="${j.id}" role="option" aria-selected="${o.sel ? "true" : "false"}">
     ${pThumb(j)}
     <div class="pmain"><h2><button class="rowtitle" data-open="${j.id}" aria-label="Open task #${j.id}: ${esc(verb)}, ${esc(tgt)}">${esc(verb)}</button> <span class="tgt">${esc(tgt)}</span></h2>${sum}${prog}</div>
     <div class="pside"><div class="pst">${pStatus(j)}<time>${j.ago}</time></div>${act}</div>
   </article>`;
-}
-function pLogs(id, extra = []) {
-  const logs = [...LOGS(id), ...extra];
-  return logs.map(l => `<div class="l ${l.lv}"><time>${l.t}</time><span class="lv ${l.lv}">${l.lv}</span><span class="m">${esc(l.m)}</span></div>`).join('');
-}
-function pInspector(j, o = {}) {
-  const fail = j.status === 'failed';
-  const verb = j.plabel || j.label;
-  const body = [];
-  if (fail && j.what) {
-    const w = j.what;
-    const primary = w.primary === 'retry-timer' ? `<button class="btn primary" data-retry disabled>${ic('retry')} <span data-retry-label>Retry in 0:42</span></button>` : `<button class="btn primary">${esc(w.primary)}</button>`;
-    const secondary = w.secondary === 'Retry' ? `<button class="btn outline">${ic('retry')} Retry</button>` : `<button class="btn outline">${esc(w.secondary)}</button>`;
-    body.push(`<section class="what" role="alert"><h3>${esc(w.head)}</h3>${w.path ? `<div class="path">${esc(w.path)}</div>` : ''}<p>${w.body}</p>${w.hint ? `<p class="hint">${esc(w.hint)}</p>` : ''}<div class="acts">${primary}${secondary}</div></section>`);
-    body.push(`<details class="disc"><summary>${ic('chev')} Error details</summary><div><div class="logbox" style="height:auto;max-height:140px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;margin-top:4px">${esc(j.err)}</div><div style="margin-top:8px"><button class="btn ghost sm">${ic('copy')} Copy</button></div></div></details>`);
-  } else if (j.status === 'running') {
-    body.push(`<section><dl class="facts"><div><dt>Processed</dt><dd><span data-p-cur>${j.cur}</span><small> of ${j.total}</small></dd></div><div><dt>Done</dt><dd data-p-pct>${Math.round(j.cur / j.total * 100)}%</dd></div><div><dt>Remaining</dt><dd data-p-eta>~12 <small>min</small></dd></div></dl><div class="progress" style="margin-top:12px"><i data-p-bar style="transform:scaleX(${j.cur / j.total})"></i></div></section>`);
-    body.push(`<p class="muted" style="font-size:13px">${esc(j.purpose)}.</p>`);
-  } else {
-    body.push(`<section><h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600;margin-bottom:4px">Result</h3><p>${esc(j.outcome)}</p></section>`);
-    body.push(`<p class="muted" style="font-size:13px">${esc(j.purpose)}.</p>`);
-    if (j.status === 'queued') body.push(`<div><button class="btn ghost stop-ghost">Stop task</button></div>`);
-  }
-  const showLogs = fail || j.status === 'running';
-  body.push(`<section><div class="logtools"><span>Logs <span class="muted" style="font-weight:400">${showLogs ? '' : '· collapsed'}</span></span><span class="r">${j.status === 'running' ? `<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" checked style="accent-color:var(--primary)" data-follow> Follow</label>` : ''}<button class="btn ghost sm">${ic('copy')} Copy</button><button class="btn ghost sm">${ic('down')} Save</button></span></div>${showLogs ? `<div class="plog" tabindex="0" data-plog aria-label="Task log entries">${pLogs(j.id)}</div>` : ''}</section>`);
-  if (!showLogs) body.push(`<details class="disc"><summary>${ic('chev')} Timing &amp; technical details</summary><div><dl style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;font-size:13px;margin-top:4px">${[['Created', j.created], ['Started', j.started], ['Finished', j.finished]].map(([a, b]) => `<div><dt class="muted" style="font-size:12px">${a}</dt><dd>${b}</dd></div>`).join('')}</dl><p class="mono muted" style="font-size:12px;margin-top:10px">${j.type} · Task #${j.id}</p></div></details>`);
-  const sub = `${esc(j.label)} · Task #${j.id} · ${esc(j.ago)}`;
-  const foot = fail ? `<div class="in-foot"><span>Remove this failed task and its logs from history.</span><button class="btn ghost sm">${ic('trash')} Remove from history</button></div>` : j.status === 'running' ? `<div class="in-foot"><span data-p-updated>Updated just now</span><span data-stop-slot><button class="btn link" data-stop>Stop task</button></span></div>` : '';
-  return `<div class="insp">
-    <div class="in-head">${pThumbLg(j)}<div class="tt"><h2>${esc(verb)}</h2><p class="sub" style="font-size:13px;color:var(--foreground);margin-top:2px">${esc(j.ptarget || j.target)}</p><p class="sub">${sub}</p><div>${statusBadge(j)}</div></div>${o.close ? `<button class="ld-x" data-close aria-label="Close inspector" style="top:10px;right:10px">${ic('x')}</button>` : ''}</div>
-    <div class="in-body">${body.join('')}</div>${foot}</div>`;
-}
-function pThumbLg(j) {
-  const s = j.series[0];
-  if (s) return `<div class="thumb" style="width:44px" aria-hidden="true"><div class="c" style="font-size:15px">${esc(s.name.replace(/^[^A-Za-z0-9]+/, '').charAt(0).toUpperCase())}</div></div>`;
-  return `<div class="chip" style="width:44px" aria-hidden="true"><div class="c" style="height:44px">${ic(GLYPH[j.type] || 'list', 's20')}</div></div>`;
-}
+      }
+      function pLogs(id, extra = []) {
+        const logs = [...LOGS(id), ...extra];
+        return logs
+          .map(
+            (l) =>
+              `<div class="l ${l.lv}"><time>${l.t}</time><span class="lv ${l.lv}">${l.lv}</span><span class="m">${esc(l.m)}</span></div>`
+          )
+          .join("");
+      }
+      function pInspector(j, o = {}) {
+        const fail = j.status === "failed";
+        const verb = j.plabel || j.label;
+        const body = [];
+        if (fail && j.what) {
+          const w = j.what;
+          const primary =
+            w.primary === "retry-timer"
+              ? `<button class="btn primary" data-retry disabled>${ic("retry")} <span data-retry-label>Retry in 0:42</span></button>`
+              : `<button class="btn primary">${esc(w.primary)}</button>`;
+          const secondary =
+            w.secondary === "Retry"
+              ? `<button class="btn outline">${ic("retry")} Retry</button>`
+              : `<button class="btn outline">${esc(w.secondary)}</button>`;
+          body.push(
+            `<section class="what" role="alert"><h3>${esc(w.head)}</h3>${w.path ? `<div class="path">${esc(w.path)}</div>` : ""}<p>${w.body}</p>${w.hint ? `<p class="hint">${esc(w.hint)}</p>` : ""}<div class="acts">${primary}${secondary}</div></section>`
+          );
+          body.push(
+            `<details class="disc"><summary>${ic("chev")} Error details</summary><div><div class="logbox" style="height:auto;max-height:140px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;margin-top:4px">${esc(j.err)}</div><div style="margin-top:8px"><button class="btn ghost sm">${ic("copy")} Copy</button></div></div></details>`
+          );
+        } else if (j.status === "running") {
+          body.push(
+            `<section><dl class="facts"><div><dt>Processed</dt><dd><span data-p-cur>${j.cur}</span><small> of ${j.total}</small></dd></div><div><dt>Done</dt><dd data-p-pct>${Math.round((j.cur / j.total) * 100)}%</dd></div><div><dt>Remaining</dt><dd data-p-eta>~12 <small>min</small></dd></div></dl><div class="progress" style="margin-top:12px"><i data-p-bar style="transform:scaleX(${j.cur / j.total})"></i></div></section>`
+          );
+          body.push(
+            `<p class="muted" style="font-size:13px">${esc(j.purpose)}.</p>`
+          );
+        } else {
+          body.push(
+            `<section><h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600;margin-bottom:4px">Result</h3><p>${esc(j.outcome)}</p></section>`
+          );
+          body.push(
+            `<p class="muted" style="font-size:13px">${esc(j.purpose)}.</p>`
+          );
+          if (j.status === "queued")
+            body.push(
+              `<div><button class="btn ghost stop-ghost">Stop task</button></div>`
+            );
+        }
+        const showLogs = fail || j.status === "running";
+        body.push(
+          `<section><div class="logtools"><span>Logs <span class="muted" style="font-weight:400">${showLogs ? "" : "· collapsed"}</span></span><span class="r">${j.status === "running" ? `<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" checked style="accent-color:var(--primary)" data-follow> Follow</label>` : ""}<button class="btn ghost sm">${ic("copy")} Copy</button><button class="btn ghost sm">${ic("down")} Save</button></span></div>${showLogs ? `<div class="plog" tabindex="0" data-plog aria-label="Task log entries">${pLogs(j.id)}</div>` : ""}</section>`
+        );
+        if (!showLogs)
+          body.push(
+            `<details class="disc"><summary>${ic("chev")} Timing &amp; technical details</summary><div><dl style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;font-size:13px;margin-top:4px">${[
+              ["Created", j.created],
+              ["Started", j.started],
+              ["Finished", j.finished],
+            ]
+              .map(
+                ([a, b]) =>
+                  `<div><dt class="muted" style="font-size:12px">${a}</dt><dd>${b}</dd></div>`
+              )
+              .join(
+                ""
+              )}</dl><p class="mono muted" style="font-size:12px;margin-top:10px">${j.type} · Task #${j.id}</p></div></details>`
+          );
+        const sub = `${esc(j.label)} · Task #${j.id} · ${esc(j.ago)}`;
+        const foot = fail
+          ? `<div class="in-foot"><span>Remove this failed task and its logs from history.</span><button class="btn ghost sm">${ic("trash")} Remove from history</button></div>`
+          : j.status === "running"
+            ? `<div class="in-foot"><span data-p-updated>Updated just now</span><span data-stop-slot><button class="btn link" data-stop>Stop task</button></span></div>`
+            : "";
+        return `<div class="insp">
+    <div class="in-head">${pThumbLg(j)}<div class="tt"><h2>${esc(verb)}</h2><p class="sub" style="font-size:13px;color:var(--foreground);margin-top:2px">${esc(j.ptarget || j.target)}</p><p class="sub">${sub}</p><div>${statusBadge(j)}</div></div>${o.close ? `<button class="ld-x" data-close aria-label="Close inspector" style="top:10px;right:10px">${ic("x")}</button>` : ""}</div>
+    <div class="in-body">${body.join("")}</div>${foot}</div>`;
+      }
+      function pThumbLg(j) {
+        const s = j.series[0];
+        if (s)
+          return `<div class="thumb" style="width:44px" aria-hidden="true"><div class="c" style="font-size:15px">${esc(
+            s.name
+              .replace(/^[^A-Za-z0-9]+/, "")
+              .charAt(0)
+              .toUpperCase()
+          )}</div></div>`;
+        return `<div class="chip" style="width:44px" aria-hidden="true"><div class="c" style="height:44px">${ic(GLYPH[j.type] || "list", "s20")}</div></div>`;
+      }
 
-/* ============ FIX 1 ============ */
-let f1 = { live: 'running', new: 'running', confirm: false };
-function renderF1() {
-  const j = J(148);
-  const liveJob = { ...j, status: f1.live, summary: null };
-  const newJob = { ...j, status: f1.new, summary: null };
-  $('#f1-live').innerHTML = `<div class="card" style="border-radius:0;border:0">${liveRow(liveJob, { cancelAttr: 'data-cancel' })}</div>`;
-  const rowHTML = liveRow(newJob).replace(/<button class="btn outline sm" >.*?<\/button>/s, '');
-  let stopHTML = '';
-  if (f1.new === 'running') stopHTML = `<button class="btn ghost sm stop-ghost" data-stop aria-expanded="${f1.confirm}">Stop task</button>`;
-  $('#f1-new').innerHTML = `<div class="card" style="border-radius:0;border:0">${rowHTML.replace(/(<div class="lside">)(<span class="badge.*?<\/span>)/s, `$1$2${stopHTML}`)}${f1.confirm ? `<div style="padding:0 16px 14px 124px"><div class="confirm" role="alertdialog" aria-label="Confirm stop task"><p><b>Stop this task?</b> The 42 of 118 series already processed keep their new metadata. Nothing else will be matched.</p><div class="acts"><button class="btn outline sm" data-keep>Keep running</button><button class="btn danger sm" data-confirm-stop>Stop task</button></div><span class="timer"></span></div></div>` : ''}</div>`;
-  if (f1.confirm) { const k = $('[data-keep]', $('#f1-new')); k && k.focus(); }
-}
-let f1timer;
-document.addEventListener('click', e => {
-  const t = e.target.closest('[data-cancel],[data-stop],[data-keep],[data-confirm-stop],[data-reset]');
-  if (!t) return;
-  if (t.matches('[data-cancel]')) { f1.live = 'cancelled'; renderF1(); toast($('#f1-live'), 'Cancellation requested'); }
-  else if (t.matches('[data-stop]') && $('#f1-new').contains(t)) { f1.confirm = !f1.confirm; clearTimeout(f1timer); if (f1.confirm) f1timer = setTimeout(() => { f1.confirm = false; renderF1(); }, 6000); renderF1(); }
-  else if (t.matches('[data-keep]')) { f1.confirm = false; clearTimeout(f1timer); renderF1(); $('[data-stop]', $('#f1-new'))?.focus(); }
-  else if (t.matches('[data-confirm-stop]')) { f1.confirm = false; f1.new = 'cancelled'; clearTimeout(f1timer); renderF1(); toast($('#f1-new'), 'Stop requested'); }
-  else if (t.matches('[data-reset="f1"]')) { f1 = { live: 'running', new: 'running', confirm: false }; clearTimeout(f1timer); renderF1(); }
-});
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && f1.confirm) { f1.confirm = false; clearTimeout(f1timer); renderF1(); $('[data-stop]', $('#f1-new'))?.focus(); } });
+      /* ============ FIX 1 ============ */
+      let f1 = { live: "running", new: "running", confirm: false };
+      function renderF1() {
+        const j = J(148);
+        const liveJob = { ...j, status: f1.live, summary: null };
+        const newJob = { ...j, status: f1.new, summary: null };
+        $("#f1-live").innerHTML =
+          `<div class="card" style="border-radius:0;border:0">${liveRow(liveJob, { cancelAttr: "data-cancel" })}</div>`;
+        const rowHTML = liveRow(newJob).replace(
+          /<button class="btn outline sm" >.*?<\/button>/s,
+          ""
+        );
+        let stopHTML = "";
+        if (f1.new === "running")
+          stopHTML = `<button class="btn ghost sm stop-ghost" data-stop aria-expanded="${f1.confirm}">Stop task</button>`;
+        $("#f1-new").innerHTML =
+          `<div class="card" style="border-radius:0;border:0">${rowHTML.replace(/(<div class="lside">)(<span class="badge.*?<\/span>)/s, `$1$2${stopHTML}`)}${f1.confirm ? `<div style="padding:0 16px 14px 124px"><div class="confirm" role="alertdialog" aria-label="Confirm stop task"><p><b>Stop this task?</b> The 42 of 118 series already processed keep their new metadata. Nothing else will be matched.</p><div class="acts"><button class="btn outline sm" data-keep>Keep running</button><button class="btn danger sm" data-confirm-stop>Stop task</button></div><span class="timer"></span></div></div>` : ""}</div>`;
+        if (f1.confirm) {
+          const k = $("[data-keep]", $("#f1-new"));
+          k && k.focus();
+        }
+      }
+      let f1timer;
+      document.addEventListener("click", (e) => {
+        const t = e.target.closest(
+          "[data-cancel],[data-stop],[data-keep],[data-confirm-stop],[data-reset]"
+        );
+        if (!t) return;
+        if (t.matches("[data-cancel]")) {
+          f1.live = "cancelled";
+          renderF1();
+          toast($("#f1-live"), "Cancellation requested");
+        } else if (t.matches("[data-stop]") && $("#f1-new").contains(t)) {
+          f1.confirm = !f1.confirm;
+          clearTimeout(f1timer);
+          if (f1.confirm)
+            f1timer = setTimeout(() => {
+              f1.confirm = false;
+              renderF1();
+            }, 6000);
+          renderF1();
+        } else if (t.matches("[data-keep]")) {
+          f1.confirm = false;
+          clearTimeout(f1timer);
+          renderF1();
+          $("[data-stop]", $("#f1-new"))?.focus();
+        } else if (t.matches("[data-confirm-stop]")) {
+          f1.confirm = false;
+          f1.new = "cancelled";
+          clearTimeout(f1timer);
+          renderF1();
+          toast($("#f1-new"), "Stop requested");
+        } else if (t.matches('[data-reset="f1"]')) {
+          f1 = { live: "running", new: "running", confirm: false };
+          clearTimeout(f1timer);
+          renderF1();
+        }
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && f1.confirm) {
+          f1.confirm = false;
+          clearTimeout(f1timer);
+          renderF1();
+          $("[data-stop]", $("#f1-new"))?.focus();
+        }
+      });
 
-/* ============ FIX 2 ============ */
-function countVisible(frame, sel) {
-  const h = frame.clientHeight, top = frame.getBoundingClientRect().top;
-  return $$(sel, frame).filter(r => r.getBoundingClientRect().bottom - top <= h + 1).length;
-}
-function renderF2() {
-  const list = ordered(JOBS);
-  const selId = 146;
-  const live = $('#f2-live'), nw = $('#f2-new');
-  live.classList.add('scroll'); nw.classList.add('scroll');
-  live.style.height = nw.style.height = '480px';
-  live.innerHTML = `<div class="card" style="border:0;border-radius:0">${list.map(j => liveRow(j, { sel: j.id === selId })).join('')}</div>`;
-  nw.innerHTML = `<div class="card" style="border:0;border-radius:0" role="listbox" aria-label="Tasks">${list.map(j => pRow(j, { sel: j.id === selId })).join('')}</div>`;
-  requestAnimationFrame(() => { $('#f2-live-n').textContent = countVisible(live, '.lrow'); $('#f2-new-n').textContent = countVisible(nw, '.prow'); });
-}
+      /* ============ FIX 2 ============ */
+      function countVisible(frame, sel) {
+        const h = frame.clientHeight,
+          top = frame.getBoundingClientRect().top;
+        return $$(sel, frame).filter(
+          (r) => r.getBoundingClientRect().bottom - top <= h + 1
+        ).length;
+      }
+      function renderF2() {
+        const list = ordered(JOBS);
+        const selId = 146;
+        const live = $("#f2-live"),
+          nw = $("#f2-new");
+        live.classList.add("scroll");
+        nw.classList.add("scroll");
+        live.style.height = nw.style.height = "480px";
+        live.innerHTML = `<div class="card" style="border:0;border-radius:0">${list.map((j) => liveRow(j, { sel: j.id === selId })).join("")}</div>`;
+        nw.innerHTML = `<div class="card" style="border:0;border-radius:0" role="listbox" aria-label="Tasks">${list.map((j) => pRow(j, { sel: j.id === selId })).join("")}</div>`;
+        requestAnimationFrame(() => {
+          $("#f2-live-n").textContent = countVisible(live, ".lrow");
+          $("#f2-new-n").textContent = countVisible(nw, ".prow");
+        });
+      }
 
-/* ============ FIX 3 ============ */
-let f3 = { id: 146, left: 42, timer: null };
-function renderF3() {
-  const j = J(f3.id);
-  $('#f3-live').innerHTML = liveDetail(j);
-  $('#f3-new').innerHTML = pInspector(j);
-  $$('[data-f3]').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.f3 === f3.id)));
-  clearInterval(f3.timer); f3.left = 42;
-  const btn = $('[data-retry]', $('#f3-new'));
-  if (btn) { const lab = $('[data-retry-label]', btn); const tick = () => { if (f3.left <= 0) { btn.disabled = false; lab.textContent = 'Retry now'; clearInterval(f3.timer); } else lab.textContent = `Retry in 0:${String(f3.left).padStart(2, '0')}`; f3.left--; }; tick(); f3.timer = setInterval(tick, 1000); }
-}
-document.addEventListener('click', e => { const b = e.target.closest('[data-f3]'); if (b) { f3.id = +b.dataset.f3; renderF3(); } });
+      /* ============ FIX 3 ============ */
+      let f3 = { id: 146, left: 42, timer: null };
+      function renderF3() {
+        const j = J(f3.id);
+        $("#f3-live").innerHTML = liveDetail(j);
+        $("#f3-new").innerHTML = pInspector(j);
+        $$("[data-f3]").forEach((b) =>
+          b.setAttribute("aria-pressed", String(+b.dataset.f3 === f3.id))
+        );
+        clearInterval(f3.timer);
+        f3.left = 42;
+        const btn = $("[data-retry]", $("#f3-new"));
+        if (btn) {
+          const lab = $("[data-retry-label]", btn);
+          const tick = () => {
+            if (f3.left <= 0) {
+              btn.disabled = false;
+              lab.textContent = "Retry now";
+              clearInterval(f3.timer);
+            } else
+              lab.textContent = `Retry in 0:${String(f3.left).padStart(2, "0")}`;
+            f3.left--;
+          };
+          tick();
+          f3.timer = setInterval(tick, 1000);
+        }
+      }
+      document.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-f3]");
+        if (b) {
+          f3.id = +b.dataset.f3;
+          renderF3();
+        }
+      });
 
-/* ============ FIX 4 ============ */
-let f4 = { tab: null, clean: false, userPicked: false };
-function f4jobs() { return f4.clean ? JOBS.filter(j => j.status !== 'failed' && !j.warn) : JOBS; }
-function f4counts() { const l = f4jobs(); return { all: l.length, active: l.filter(isActive).length, needs: l.filter(needs).length, done: l.filter(j => !isActive(j) && !needs(j)).length }; }
-const EMPTY = {
-  needs: ['All clear', 'Nothing needs attention. Recent tasks finished cleanly.', true],
-  active: ['Nothing is running', 'Scans and matching you start from Libraries show up here.'],
-  done: ['No finished tasks yet', 'Completed and cancelled tasks are kept here for review.'],
-  all: ['No tasks yet', 'Scans, matching and other background work appear here.'],
-};
-function renderF4() {
-  const c = f4counts();
-  if (!f4.userPicked) f4.tab = c.needs > 0 ? 'needs' : c.active > 0 ? 'active' : 'all';
-  const tab = f4.tab;
-  /* live (static, as shipped) */
-  const rows = ordered(JOBS).map(j => liveRow(j)).join('');
-  $('#f4-live').innerHTML = `<div style="padding:16px;display:grid;gap:16px">${liveHeader()}<div class="card">${liveFilters()}<div>${rows}</div></div></div>`;
-  /* proposed */
-  const shown = ordered(f4jobs()).filter(j => tab === 'all' || (tab === 'active' && isActive(j)) || (tab === 'needs' && needs(j)) || (tab === 'done' && !isActive(j) && !needs(j)));
-  const tabs = [['all', 'All', c.all], ['active', 'Active', c.active], ['needs', 'Needs attention', c.needs], ['done', 'Finished', c.done]];
-  const failedN = f4jobs().filter(j => j.status === 'failed').length;
-  const empty = EMPTY[tab];
-  $('#f4-new').innerHTML = `<div style="padding:12px;display:grid;gap:12px"><div class="pageh"><div class="l"><div class="ic">${ic('list', 's20')}</div><div><h1 style="font-size:22px">Tasks</h1></div></div></div>
-    <div class="card"><div class="tabs" role="tablist" aria-label="Task status">${tabs.map(([id, l, n]) => `<button class="tab" role="tab" aria-selected="${tab === id}" data-tab="${id}">${l} <span class="n ${id === 'needs' && n ? 'alert' : ''}">${n}</span></button>`).join('')}</div>
-    <div class="pbar"><div class="search-wrap">${ic('search')}<input class="field" type="search" placeholder="Search tasks…" aria-label="Search tasks"></div><button class="btn outline iconbtn" aria-label="Filter by task type">${ic('sliders')}</button></div>
-    ${tab === 'needs' && failedN ? `<div class="ptoolbar"><span>${failedN} failed · ${c.needs - failedN} with warnings</span><button class="btn ghost sm">${ic('trash')} Clear ${failedN} failed</button></div>` : ''}
-    <div role="tabpanel">${shown.length ? shown.map(j => pRow(j)).join('') : `<div class="empty"><div class="ico ${empty[2] ? 'ok' : ''}">${ic(empty[2] ? 'check' : 'list', 's20')}</div><h3>${empty[0]}</h3><p>${empty[1]}</p></div>`}</div></div></div>`;
-  requestAnimationFrame(() => {
-    const y = (f, s) => { const r = $(s, f); return r ? Math.round(r.getBoundingClientRect().top - f.getBoundingClientRect().top + f.scrollTop) : '–'; };
-    $('#f4-live-y').textContent = y($('#f4-live'), '.lrow');
-    $('#f4-new-y').textContent = y($('#f4-new'), '.prow') === '–' ? (() => { const e = $('.empty', $('#f4-new')); return e ? Math.round(e.getBoundingClientRect().top - $('#f4-new').getBoundingClientRect().top) : '–'; })() : y($('#f4-new'), '.prow');
-  });
-}
-document.addEventListener('click', e => { const t = e.target.closest('[data-tab]'); if (t) { f4.tab = t.dataset.tab; f4.userPicked = true; renderF4(); const n = $(`[data-tab="${f4.tab}"]`, $('#f4-new')); n && n.focus(); } });
-document.addEventListener('keydown', e => {
-  const t = e.target.closest && e.target.closest('[role=tab]'); if (!t || !$('#f4-new').contains(t)) return;
-  const ids = ['all', 'active', 'needs', 'done']; let i = ids.indexOf(f4.tab);
-  if (e.key === 'ArrowRight') i = (i + 1) % 4; else if (e.key === 'ArrowLeft') i = (i + 3) % 4; else if (e.key === 'Home') i = 0; else if (e.key === 'End') i = 3; else return;
-  e.preventDefault(); f4.tab = ids[i]; f4.userPicked = true; renderF4(); $(`[data-tab="${f4.tab}"]`, $('#f4-new')).focus();
-});
-$('#f4-clean').addEventListener('change', e => { f4.clean = e.target.checked; f4.userPicked = f4.clean; if (f4.clean) f4.tab = 'needs'; renderF4(); });
+      /* ============ FIX 4 ============ */
+      let f4 = { tab: null, clean: false, userPicked: false };
+      function f4jobs() {
+        return f4.clean
+          ? JOBS.filter((j) => j.status !== "failed" && !j.warn)
+          : JOBS;
+      }
+      function f4counts() {
+        const l = f4jobs();
+        return {
+          all: l.length,
+          active: l.filter(isActive).length,
+          needs: l.filter(needs).length,
+          done: l.filter((j) => !isActive(j) && !needs(j)).length,
+        };
+      }
+      const EMPTY = {
+        needs: [
+          "All clear",
+          "Nothing needs attention. Recent tasks finished cleanly.",
+          true,
+        ],
+        active: [
+          "Nothing is running",
+          "Scans and matching you start from Libraries show up here.",
+        ],
+        done: [
+          "No finished tasks yet",
+          "Completed and cancelled tasks are kept here for review.",
+        ],
+        all: [
+          "No tasks yet",
+          "Scans, matching and other background work appear here.",
+        ],
+      };
+      function renderF4() {
+        const c = f4counts();
+        if (!f4.userPicked)
+          f4.tab = c.needs > 0 ? "needs" : c.active > 0 ? "active" : "all";
+        const tab = f4.tab;
+        /* live (static, as shipped) */
+        const rows = ordered(JOBS)
+          .map((j) => liveRow(j))
+          .join("");
+        $("#f4-live").innerHTML =
+          `<div style="padding:16px;display:grid;gap:16px">${liveHeader()}<div class="card">${liveFilters()}<div>${rows}</div></div></div>`;
+        /* proposed */
+        const shown = ordered(f4jobs()).filter(
+          (j) =>
+            tab === "all" ||
+            (tab === "active" && isActive(j)) ||
+            (tab === "needs" && needs(j)) ||
+            (tab === "done" && !isActive(j) && !needs(j))
+        );
+        const tabs = [
+          ["all", "All", c.all],
+          ["active", "Active", c.active],
+          ["needs", "Needs attention", c.needs],
+          ["done", "Finished", c.done],
+        ];
+        const failedN = f4jobs().filter((j) => j.status === "failed").length;
+        const empty = EMPTY[tab];
+        $("#f4-new").innerHTML =
+          `<div style="padding:12px;display:grid;gap:12px"><div class="pageh"><div class="l"><div class="ic">${ic("list", "s20")}</div><div><h1 style="font-size:22px">Tasks</h1></div></div></div>
+    <div class="card"><div class="tabs" role="tablist" aria-label="Task status">${tabs.map(([id, l, n]) => `<button class="tab" role="tab" aria-selected="${tab === id}" data-tab="${id}">${l} <span class="n ${id === "needs" && n ? "alert" : ""}">${n}</span></button>`).join("")}</div>
+    <div class="pbar"><div class="search-wrap">${ic("search")}<input class="field" type="search" placeholder="Search tasks…" aria-label="Search tasks"></div><button class="btn outline iconbtn" aria-label="Filter by task type">${ic("sliders")}</button></div>
+    ${tab === "needs" && failedN ? `<div class="ptoolbar"><span>${failedN} failed · ${c.needs - failedN} with warnings</span><button class="btn ghost sm">${ic("trash")} Clear ${failedN} failed</button></div>` : ""}
+    <div role="tabpanel">${shown.length ? shown.map((j) => pRow(j)).join("") : `<div class="empty"><div class="ico ${empty[2] ? "ok" : ""}">${ic(empty[2] ? "check" : "list", "s20")}</div><h3>${empty[0]}</h3><p>${empty[1]}</p></div>`}</div></div></div>`;
+        requestAnimationFrame(() => {
+          const y = (f, s) => {
+            const r = $(s, f);
+            return r
+              ? Math.round(
+                  r.getBoundingClientRect().top -
+                    f.getBoundingClientRect().top +
+                    f.scrollTop
+                )
+              : "–";
+          };
+          $("#f4-live-y").textContent = y($("#f4-live"), ".lrow");
+          $("#f4-new-y").textContent =
+            y($("#f4-new"), ".prow") === "–"
+              ? (() => {
+                  const e = $(".empty", $("#f4-new"));
+                  return e
+                    ? Math.round(
+                        e.getBoundingClientRect().top -
+                          $("#f4-new").getBoundingClientRect().top
+                      )
+                    : "–";
+                })()
+              : y($("#f4-new"), ".prow");
+        });
+      }
+      document.addEventListener("click", (e) => {
+        const t = e.target.closest("[data-tab]");
+        if (t) {
+          f4.tab = t.dataset.tab;
+          f4.userPicked = true;
+          renderF4();
+          const n = $(`[data-tab="${f4.tab}"]`, $("#f4-new"));
+          n && n.focus();
+        }
+      });
+      document.addEventListener("keydown", (e) => {
+        const t = e.target.closest && e.target.closest("[role=tab]");
+        if (!t || !$("#f4-new").contains(t)) return;
+        const ids = ["all", "active", "needs", "done"];
+        let i = ids.indexOf(f4.tab);
+        if (e.key === "ArrowRight") i = (i + 1) % 4;
+        else if (e.key === "ArrowLeft") i = (i + 3) % 4;
+        else if (e.key === "Home") i = 0;
+        else if (e.key === "End") i = 3;
+        else return;
+        e.preventDefault();
+        f4.tab = ids[i];
+        f4.userPicked = true;
+        renderF4();
+        $(`[data-tab="${f4.tab}"]`, $("#f4-new")).focus();
+      });
+      $("#f4-clean").addEventListener("change", (e) => {
+        f4.clean = e.target.checked;
+        f4.userPicked = f4.clean;
+        if (f4.clean) f4.tab = "needs";
+        renderF4();
+      });
 
-/* ============ FIX 5 ============ */
-let f5live = { open: null }, f5 = { sel: 148, stopConfirm: false, sinceUpdate: 0, extra: [] };
-function renderF5live() {
-  const list = ordered(JOBS);
-  const fr = $('#f5-live');
-  fr.innerHTML = `<div class="scroll" style="height:100%"><div style="padding:16px;display:grid;gap:12px;">${liveHeader(false)}<div class="card">${list.map(j => liveRow(j, { sel: j.id === f5live.open })).join('')}</div></div></div>` +
-    (f5live.open ? `<div class="scrim" data-close></div><div class="drawer">${liveDetail(J(f5live.open), { close: true })}</div>` : '');
-}
-document.addEventListener('click', e => {
-  const fr = $('#f5-live');
-  const d = e.target.closest('[data-details]');
-  if (d && fr.contains(d)) { f5live.open = +d.dataset.details; renderF5live(); $('[data-close].ld-x', fr)?.focus(); return; }
-  if (e.target.closest('[data-close]') && fr.contains(e.target)) { f5live.open = null; renderF5live(); }
-});
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && f5live.open && !f1.confirm) { f5live.open = null; renderF5live(); } });
+      /* ============ FIX 5 ============ */
+      let f5live = { open: null },
+        f5 = { sel: 148, stopConfirm: false, sinceUpdate: 0, extra: [] };
+      function renderF5live() {
+        const list = ordered(JOBS);
+        const fr = $("#f5-live");
+        fr.innerHTML =
+          `<div class="scroll" style="height:100%"><div style="padding:16px;display:grid;gap:12px;">${liveHeader(false)}<div class="card">${list.map((j) => liveRow(j, { sel: j.id === f5live.open })).join("")}</div></div></div>` +
+          (f5live.open
+            ? `<div class="scrim" data-close></div><div class="drawer">${liveDetail(J(f5live.open), { close: true })}</div>`
+            : "");
+      }
+      document.addEventListener("click", (e) => {
+        const fr = $("#f5-live");
+        const d = e.target.closest("[data-details]");
+        if (d && fr.contains(d)) {
+          f5live.open = +d.dataset.details;
+          renderF5live();
+          $("[data-close].ld-x", fr)?.focus();
+          return;
+        }
+        if (e.target.closest("[data-close]") && fr.contains(e.target)) {
+          f5live.open = null;
+          renderF5live();
+        }
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && f5live.open && !f1.confirm) {
+          f5live.open = null;
+          renderF5live();
+        }
+      });
 
-function renderF5(keepScroll) {
-  const fr = $('#f5-new');
-  const list = ordered(JOBS);
-  const sel = f5.sel ? J(f5.sel) : null;
-  const ls = $('.listscroll', fr)?.scrollTop || 0;
-  fr.innerHTML = `<div class="split" style="height:100%"><div class="listcol scroll listscroll" style="height:100%"><div style="padding:16px;display:grid;gap:12px"><div class="pageh"><div class="l"><div class="ic">${ic('list', 's20')}</div><div><h1>Tasks</h1><p>Background work and recent results.</p></div></div></div><div class="card" role="listbox" aria-label="Tasks" tabindex="0" aria-activedescendant="${f5.sel ? 'f5r' + f5.sel : ''}" id="f5list">${list.map(j => pRow(j, { sel: j.id === f5.sel, noAction: true }).replace('<article ', `<article id="f5r${j.id}" `)).join('')}</div></div></div>
-    <div class="inspcol" style="height:100%;min-height:0">${sel ? pInspector(sel, { close: true }) : `<div class="empty" style="height:100%;align-content:center"><div class="ico">${ic('list', 's20')}</div><h3>Select a task</h3><p>Use <span class="kbd">↑</span> <span class="kbd">↓</span> to move through the list. Details appear here, and the list stays live.</p></div>`}</div></div>`;
-  const l2 = $('.listscroll', fr); if (l2) l2.scrollTop = ls;
-  const pl = $('[data-plog]', fr); if (pl) pl.scrollTop = pl.scrollHeight;
-  if (f5.stopConfirm && sel && sel.status === 'running') mountStopConfirm();
-}
-function mountStopConfirm() {
-  const slot = $('[data-stop-slot]', $('#f5-new')); if (!slot) return;
-  const body = $('.in-body', $('#f5-new'));
-  const c = document.createElement('div'); c.className = 'confirm'; c.setAttribute('role', 'alertdialog');
-  c.innerHTML = `<p><b>Stop this task?</b> The ${J(148).cur} of 118 series already processed keep their new metadata.</p><div class="acts"><button class="btn outline sm" data-f5keep>Keep running</button><button class="btn danger sm" data-f5stop>Stop task</button></div>`;
-  body.prepend(c); $('[data-f5keep]', c).focus();
-}
-document.addEventListener('click', e => {
-  const fr = $('#f5-new'); if (!fr.contains(e.target)) return;
-  const row = e.target.closest('.prow');
-  if (e.target.closest('[data-close]')) { f5.sel = null; f5.stopConfirm = false; renderF5(); return; }
-  if (e.target.closest('[data-stop]')) { f5.stopConfirm = true; renderF5(); return; }
-  if (e.target.closest('[data-f5keep]')) { f5.stopConfirm = false; renderF5(); return; }
-  if (e.target.closest('[data-f5stop]')) { const j = J(148); j.status = 'cancelled'; f5.stopConfirm = false; renderF5(); toast(fr, 'Stop requested'); setTimeout(() => { j.status = 'running'; renderF5(); renderF5live(); renderF2(); }, 4500); return; }
-  if (row) { f5.sel = +row.dataset.id; f5.stopConfirm = false; renderF5(); $('#f5list', fr)?.focus({ preventScroll: true }); }
-});
-document.addEventListener('keydown', e => {
-  const fr = $('#f5-new'); if (!fr.contains(document.activeElement)) return;
-  const list = ordered(JOBS); let i = list.findIndex(j => j.id === f5.sel);
-  if (e.key === 'ArrowDown') { i = Math.min(list.length - 1, i + 1); } else if (e.key === 'ArrowUp') { i = Math.max(0, i - 1); } else if (e.key === 'Escape' && !f5.stopConfirm) { f5.sel = null; renderF5(); $('#f5list', fr)?.focus({ preventScroll: true }); return; } else if (e.key === 'Escape') { f5.stopConfirm = false; renderF5(); return; } else return;
-  if (document.activeElement.closest('.inspcol') && document.activeElement.tagName === 'INPUT') return;
-  e.preventDefault(); f5.sel = list[Math.max(0, i)].id; f5.stopConfirm = false; renderF5();
-  const f = $('#f5list', fr); f?.focus({ preventScroll: true }); $('#f5r' + f5.sel, fr)?.scrollIntoView({ block: 'nearest' });
-});
-/* live-updating running task (simulated poll every 2.5s) */
-const BASE_ELAPSED = 390;
-let tickN = 0;
-setInterval(() => {
-  f5.sinceUpdate++;
-  $$('[data-p-updated]').forEach(el => el.textContent = f5.sinceUpdate < 2 ? 'Updated just now' : `Updated ${f5.sinceUpdate}s ago`);
-}, 1000);
-setInterval(() => {
-  const j = J(148); if (j.status !== 'running') return;
-  if (j.cur < j.total) j.cur += 1; tickN++; f5.sinceUpdate = 0;
-  const pct = Math.round(j.cur / j.total * 100);
-  const elapsed = BASE_ELAPSED + tickN * 2.5, eta = Math.max(1, Math.round(((j.total - j.cur) / j.cur) * elapsed / 60));
-  $$('[data-pc]').forEach(el => { if (el.closest('[data-id="148"]')) el.textContent = `${j.cur} / ${j.total}`; });
-  $$('.lrow[data-id="148"] .progress > i, .prow[data-id="148"] .progress > i').forEach(el => el.style.transform = `scaleX(${j.cur / j.total})`);
-  const insp = $('#f5-new'); if (!insp) return;
-  const set = (s, v, html) => { const el = $(s, insp); if (el) html ? el.innerHTML = v : el.textContent = v; };
-  if (f5.sel === 148) {
-    set('[data-p-cur]', j.cur); set('[data-p-pct]', pct + '%'); set('[data-p-eta]', `~${eta} <small>min</small>`, true);
-    const bar = $('[data-p-bar]', insp); if (bar) bar.style.transform = `scaleX(${j.cur / j.total})`;
-    const log = $('[data-plog]', insp);
-    if (log) { const follow = $('[data-follow]', insp)?.checked !== false; const d = document.createElement('div'); d.className = 'l ' + (tickN % 7 === 0 ? 'warn' : 'info'); const n = j.cur; d.innerHTML = `<time>10:${String(9 + Math.floor(tickN / 24)).padStart(2, '0')}:${String((tickN * 2.5 | 0) % 60).padStart(2, '0')}</time><span class="lv ${tickN % 7 === 0 ? 'warn' : 'info'}">${tickN % 7 === 0 ? 'warn' : 'info'}</span><span class="m">${tickN % 7 === 0 ? `Low-confidence candidate skipped (series #${200 + n})` : `Matched series #${200 + n}`}</span>`; log.appendChild(d); if (follow) log.scrollTop = log.scrollHeight; }
-  }
-}, 2500);
+      function renderF5(keepScroll) {
+        const fr = $("#f5-new");
+        const list = ordered(JOBS);
+        const sel = f5.sel ? J(f5.sel) : null;
+        const ls = $(".listscroll", fr)?.scrollTop || 0;
+        fr.innerHTML = `<div class="split" style="height:100%"><div class="listcol scroll listscroll" style="height:100%"><div style="padding:16px;display:grid;gap:12px"><div class="pageh"><div class="l"><div class="ic">${ic("list", "s20")}</div><div><h1>Tasks</h1><p>Background work and recent results.</p></div></div></div><div class="card" role="listbox" aria-label="Tasks" tabindex="0" aria-activedescendant="${f5.sel ? "f5r" + f5.sel : ""}" id="f5list">${list.map((j) => pRow(j, { sel: j.id === f5.sel, noAction: true }).replace("<article ", `<article id="f5r${j.id}" `)).join("")}</div></div></div>
+    <div class="inspcol" style="height:100%;min-height:0">${sel ? pInspector(sel, { close: true }) : `<div class="empty" style="height:100%;align-content:center"><div class="ico">${ic("list", "s20")}</div><h3>Select a task</h3><p>Use <span class="kbd">↑</span> <span class="kbd">↓</span> to move through the list. Details appear here, and the list stays live.</p></div>`}</div></div>`;
+        const l2 = $(".listscroll", fr);
+        if (l2) l2.scrollTop = ls;
+        const pl = $("[data-plog]", fr);
+        if (pl) pl.scrollTop = pl.scrollHeight;
+        if (f5.stopConfirm && sel && sel.status === "running")
+          mountStopConfirm();
+      }
+      function mountStopConfirm() {
+        const slot = $("[data-stop-slot]", $("#f5-new"));
+        if (!slot) return;
+        const body = $(".in-body", $("#f5-new"));
+        const c = document.createElement("div");
+        c.className = "confirm";
+        c.setAttribute("role", "alertdialog");
+        c.innerHTML = `<p><b>Stop this task?</b> The ${J(148).cur} of 118 series already processed keep their new metadata.</p><div class="acts"><button class="btn outline sm" data-f5keep>Keep running</button><button class="btn danger sm" data-f5stop>Stop task</button></div>`;
+        body.prepend(c);
+        $("[data-f5keep]", c).focus();
+      }
+      document.addEventListener("click", (e) => {
+        const fr = $("#f5-new");
+        if (!fr.contains(e.target)) return;
+        const row = e.target.closest(".prow");
+        if (e.target.closest("[data-close]")) {
+          f5.sel = null;
+          f5.stopConfirm = false;
+          renderF5();
+          return;
+        }
+        if (e.target.closest("[data-stop]")) {
+          f5.stopConfirm = true;
+          renderF5();
+          return;
+        }
+        if (e.target.closest("[data-f5keep]")) {
+          f5.stopConfirm = false;
+          renderF5();
+          return;
+        }
+        if (e.target.closest("[data-f5stop]")) {
+          const j = J(148);
+          j.status = "cancelled";
+          f5.stopConfirm = false;
+          renderF5();
+          toast(fr, "Stop requested");
+          setTimeout(() => {
+            j.status = "running";
+            renderF5();
+            renderF5live();
+            renderF2();
+          }, 4500);
+          return;
+        }
+        if (row) {
+          f5.sel = +row.dataset.id;
+          f5.stopConfirm = false;
+          renderF5();
+          $("#f5list", fr)?.focus({ preventScroll: true });
+        }
+      });
+      document.addEventListener("keydown", (e) => {
+        const fr = $("#f5-new");
+        if (!fr.contains(document.activeElement)) return;
+        const list = ordered(JOBS);
+        let i = list.findIndex((j) => j.id === f5.sel);
+        if (e.key === "ArrowDown") {
+          i = Math.min(list.length - 1, i + 1);
+        } else if (e.key === "ArrowUp") {
+          i = Math.max(0, i - 1);
+        } else if (e.key === "Escape" && !f5.stopConfirm) {
+          f5.sel = null;
+          renderF5();
+          $("#f5list", fr)?.focus({ preventScroll: true });
+          return;
+        } else if (e.key === "Escape") {
+          f5.stopConfirm = false;
+          renderF5();
+          return;
+        } else return;
+        if (
+          document.activeElement.closest(".inspcol") &&
+          document.activeElement.tagName === "INPUT"
+        )
+          return;
+        e.preventDefault();
+        f5.sel = list[Math.max(0, i)].id;
+        f5.stopConfirm = false;
+        renderF5();
+        const f = $("#f5list", fr);
+        f?.focus({ preventScroll: true });
+        $("#f5r" + f5.sel, fr)?.scrollIntoView({ block: "nearest" });
+      });
+      /* live-updating running task (simulated poll every 2.5s) */
+      const BASE_ELAPSED = 390;
+      let tickN = 0;
+      setInterval(() => {
+        f5.sinceUpdate++;
+        $$("[data-p-updated]").forEach(
+          (el) =>
+            (el.textContent =
+              f5.sinceUpdate < 2
+                ? "Updated just now"
+                : `Updated ${f5.sinceUpdate}s ago`)
+        );
+      }, 1000);
+      setInterval(() => {
+        const j = J(148);
+        if (j.status !== "running") return;
+        if (j.cur < j.total) j.cur += 1;
+        tickN++;
+        f5.sinceUpdate = 0;
+        const pct = Math.round((j.cur / j.total) * 100);
+        const elapsed = BASE_ELAPSED + tickN * 2.5,
+          eta = Math.max(
+            1,
+            Math.round((((j.total - j.cur) / j.cur) * elapsed) / 60)
+          );
+        $$("[data-pc]").forEach((el) => {
+          if (el.closest('[data-id="148"]'))
+            el.textContent = `${j.cur} / ${j.total}`;
+        });
+        $$(
+          '.lrow[data-id="148"] .progress > i, .prow[data-id="148"] .progress > i'
+        ).forEach((el) => (el.style.transform = `scaleX(${j.cur / j.total})`));
+        const insp = $("#f5-new");
+        if (!insp) return;
+        const set = (s, v, html) => {
+          const el = $(s, insp);
+          if (el) html ? (el.innerHTML = v) : (el.textContent = v);
+        };
+        if (f5.sel === 148) {
+          set("[data-p-cur]", j.cur);
+          set("[data-p-pct]", pct + "%");
+          set("[data-p-eta]", `~${eta} <small>min</small>`, true);
+          const bar = $("[data-p-bar]", insp);
+          if (bar) bar.style.transform = `scaleX(${j.cur / j.total})`;
+          const log = $("[data-plog]", insp);
+          if (log) {
+            const follow = $("[data-follow]", insp)?.checked !== false;
+            const d = document.createElement("div");
+            d.className = "l " + (tickN % 7 === 0 ? "warn" : "info");
+            const n = j.cur;
+            d.innerHTML = `<time>10:${String(9 + Math.floor(tickN / 24)).padStart(2, "0")}:${String(((tickN * 2.5) | 0) % 60).padStart(2, "0")}</time><span class="lv ${tickN % 7 === 0 ? "warn" : "info"}">${tickN % 7 === 0 ? "warn" : "info"}</span><span class="m">${tickN % 7 === 0 ? `Low-confidence candidate skipped (series #${200 + n})` : `Matched series #${200 + n}`}</span>`;
+            log.appendChild(d);
+            if (follow) log.scrollTop = log.scrollHeight;
+          }
+        }
+      }, 2500);
 
-/* ============ theme toggle + boot ============ */
-$('#themeBtn').addEventListener('click', () => { document.documentElement.classList.toggle('dark'); });
-renderF1(); renderF2(); renderF3(); renderF4(); renderF5live(); renderF5();
-addEventListener('resize', () => { renderF2(); renderF4(); });
-document.fonts && document.fonts.ready.then(() => { renderF2(); renderF4(); });
-</script>
-</body>
+      /* ============ theme toggle + boot ============ */
+      $("#themeBtn").addEventListener("click", () => {
+        document.documentElement.classList.toggle("dark");
+      });
+      renderF1();
+      renderF2();
+      renderF3();
+      renderF4();
+      renderF5live();
+      renderF5();
+      addEventListener("resize", () => {
+        renderF2();
+        renderF4();
+      });
+      document.fonts &&
+        document.fonts.ready.then(() => {
+          renderF2();
+          renderF4();
+        });
+    </script>
+  </body>
 </html>

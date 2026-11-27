@@ -1,12 +1,12 @@
-import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
-import { eq } from 'drizzle-orm';
-import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
-import type { Context, MiddlewareHandler } from 'hono';
-import { getConnInfo } from '@hono/node-server/conninfo';
-import { getDb, schema } from '../db/index.js';
+import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import type { Context, MiddlewareHandler } from "hono";
+import { getConnInfo } from "@hono/node-server/conninfo";
+import { getDb, schema } from "../db/index.js";
 
-const AUTH_KEY = 'app-auth';
-const COOKIE_NAME = 'htosho_session';
+const AUTH_KEY = "app-auth";
+const COOKIE_NAME = "htosho_session";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60_000;
 const MAX_SESSIONS = 1000;
 const PASSWORD_MIN_LENGTH = 8;
@@ -36,14 +36,18 @@ const FAILURE_WINDOW_MS = 15 * 60_000;
 const FREE_FAILED_ATTEMPTS = 5;
 const MAX_LOCKOUT_MS = 5 * 60_000;
 const MAX_TRACKED_CLIENTS = 10_000;
-interface FailureRecord { count: number; firstAt: number; lockedUntil: number }
+interface FailureRecord {
+  count: number;
+  firstAt: number;
+  lockedUntil: number;
+}
 const failures = new Map<string, FailureRecord>();
 
 function clientKey(c: Context): string {
   try {
-    return getConnInfo(c).remote.address ?? 'unknown';
+    return getConnInfo(c).remote.address ?? "unknown";
   } catch {
-    return 'unknown'; // non-socket adapters (tests, app.request)
+    return "unknown"; // non-socket adapters (tests, app.request)
   }
 }
 
@@ -60,7 +64,10 @@ function lockoutRemaining(key: string, now = Date.now()): number {
 
 function recordFailure(key: string, now = Date.now()): void {
   let record = failures.get(key);
-  if (!record || (now - record.firstAt > FAILURE_WINDOW_MS && now >= record.lockedUntil)) {
+  if (
+    !record ||
+    (now - record.firstAt > FAILURE_WINDOW_MS && now >= record.lockedUntil)
+  ) {
     if (!record && failures.size >= MAX_TRACKED_CLIENTS) {
       const oldest = failures.keys().next().value;
       if (oldest !== undefined) failures.delete(oldest);
@@ -70,13 +77,20 @@ function recordFailure(key: string, now = Date.now()): void {
   }
   record.count++;
   const excess = record.count - FREE_FAILED_ATTEMPTS;
-  if (excess > 0) record.lockedUntil = now + Math.min(1000 * 2 ** (excess - 1), MAX_LOCKOUT_MS);
+  if (excess > 0)
+    record.lockedUntil =
+      now + Math.min(1000 * 2 ** (excess - 1), MAX_LOCKOUT_MS);
 }
 
 function tooManyAttempts(c: Context, remainingMs: number) {
   const seconds = Math.ceil(remainingMs / 1000);
-  c.header('Retry-After', String(seconds));
-  return c.json({ error: `Too many failed attempts. Try again in ${seconds} second${seconds === 1 ? '' : 's'}.` }, 429);
+  c.header("Retry-After", String(seconds));
+  return c.json(
+    {
+      error: `Too many failed attempts. Try again in ${seconds} second${seconds === 1 ? "" : "s"}.`,
+    },
+    429
+  );
 }
 
 /** Test hook: forget all failed-attempt state. */
@@ -93,14 +107,22 @@ let setupInProgress = false;
  * writer of the 'app-auth' key (grep-verified), so it keeps the cache in sync.
  */
 let cachedCredentials: StoredCredentials | null | undefined;
- 
+
 function credentials(): StoredCredentials | null {
   if (cachedCredentials !== undefined) return cachedCredentials;
-  const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, AUTH_KEY)).get();
+  const row = getDb()
+    .select()
+    .from(schema.keyValueStore)
+    .where(eq(schema.keyValueStore.key, AUTH_KEY))
+    .get();
   if (!row) return null;
   try {
     const parsed = JSON.parse(row.valueJson) as Partial<StoredCredentials>;
-    if (typeof parsed.username === 'string' && typeof parsed.salt === 'string' && typeof parsed.passwordHash === 'string') {
+    if (
+      typeof parsed.username === "string" &&
+      typeof parsed.salt === "string" &&
+      typeof parsed.passwordHash === "string"
+    ) {
       cachedCredentials = parsed as StoredCredentials;
     }
     return cachedCredentials ?? null;
@@ -118,24 +140,37 @@ function hashPassword(password: string, salt: Buffer): Promise<Buffer> {
   });
 }
 
-async function storeCredentials(username: string, password: string): Promise<void> {
+async function storeCredentials(
+  username: string,
+  password: string
+): Promise<void> {
   const salt = randomBytes(16);
-  const passwordHash = (await hashPassword(password, salt)).toString('base64');
+  const passwordHash = (await hashPassword(password, salt)).toString("base64");
   const value: StoredCredentials = {
     username,
-    salt: salt.toString('base64'),
+    salt: salt.toString("base64"),
     passwordHash,
   };
-  getDb().insert(schema.keyValueStore)
+  getDb()
+    .insert(schema.keyValueStore)
     .values({ key: AUTH_KEY, valueJson: JSON.stringify(value) })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(value) } })
+    .onConflictDoUpdate({
+      target: schema.keyValueStore.key,
+      set: { valueJson: JSON.stringify(value) },
+    })
     .run();
   cachedCredentials = value;
 }
 
-async function validPassword(password: string, stored: StoredCredentials): Promise<boolean> {
-  const expected = Buffer.from(stored.passwordHash, 'base64');
-  const actual = await hashPassword(password, Buffer.from(stored.salt, 'base64'));
+async function validPassword(
+  password: string,
+  stored: StoredCredentials
+): Promise<boolean> {
+  const expected = Buffer.from(stored.passwordHash, "base64");
+  const actual = await hashPassword(
+    password,
+    Buffer.from(stored.salt, "base64")
+  );
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
@@ -163,14 +198,18 @@ function setSession(c: Context, username: string): void {
       sessions.delete(oldest);
     }
   }
-  const token = randomBytes(32).toString('base64url');
+  const token = randomBytes(32).toString("base64url");
   sessions.set(token, { username, expiresAt: now + SESSION_TTL_MS });
-  const forwardedProto = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim();
+  const forwardedProto = c.req
+    .header("x-forwarded-proto")
+    ?.split(",")[0]
+    ?.trim();
   setCookie(c, COOKIE_NAME, token, {
     httpOnly: true,
-    sameSite: 'Strict',
-    secure: new URL(c.req.url).protocol === 'https:' || forwardedProto === 'https',
-    path: '/',
+    sameSite: "Strict",
+    secure:
+      new URL(c.req.url).protocol === "https:" || forwardedProto === "https",
+    path: "/",
     maxAge: Math.floor(SESSION_TTL_MS / 1000),
   });
 }
@@ -178,24 +217,35 @@ function setSession(c: Context, username: string): void {
 function clearSession(c: Context): void {
   const token = getCookie(c, COOKIE_NAME);
   if (token) sessions.delete(token);
-  deleteCookie(c, COOKIE_NAME, { path: '/' });
+  deleteCookie(c, COOKIE_NAME, { path: "/" });
 }
 
-function validateCredentialsInput(username: unknown, password: unknown): string | null {
-  if (typeof username !== 'string' || !username.trim()) return 'Username is required';
-  if (username.trim().length > 100) return 'Username must be 100 characters or fewer';
-  if (typeof password !== 'string' || password.length < PASSWORD_MIN_LENGTH) return `Password must be at least ${PASSWORD_MIN_LENGTH} characters`;
-  if (password.length > 1024) return 'Password is too long';
+function validateCredentialsInput(
+  username: unknown,
+  password: unknown
+): string | null {
+  if (typeof username !== "string" || !username.trim())
+    return "Username is required";
+  if (username.trim().length > 100)
+    return "Username must be 100 characters or fewer";
+  if (typeof password !== "string" || password.length < PASSWORD_MIN_LENGTH)
+    return `Password must be at least ${PASSWORD_MIN_LENGTH} characters`;
+  if (password.length > 1024) return "Password is too long";
   return null;
 }
 
 export const requireAuth: MiddlewareHandler = async (c, next) => {
-  if (c.req.path === '/api/auth/status' || c.req.path === '/api/auth/setup' || c.req.path === '/api/auth/login') {
+  if (
+    c.req.path === "/api/auth/status" ||
+    c.req.path === "/api/auth/setup" ||
+    c.req.path === "/api/auth/login"
+  ) {
     await next();
     return;
   }
-  if (!credentials()) return c.json({ error: 'Setup required' }, 403);
-  if (!authenticatedUsername(c)) return c.json({ error: 'Authentication required' }, 401);
+  if (!credentials()) return c.json({ error: "Setup required" }, 403);
+  if (!authenticatedUsername(c))
+    return c.json({ error: "Authentication required" }, 401);
   await next();
 };
 
@@ -208,12 +258,20 @@ export function currentPrincipal(c: Context): string | null {
 export function authStatus(c: Context) {
   const stored = credentials();
   const username = authenticatedUsername(c);
-  return c.json({ setupRequired: stored === null, authenticated: username !== null, username });
+  return c.json({
+    setupRequired: stored === null,
+    authenticated: username !== null,
+    username,
+  });
 }
 
 export async function setup(c: Context) {
-  const body = await c.req.json().catch(() => null) as { username?: unknown; password?: unknown } | null;
-  if (credentials() || setupInProgress) return c.json({ error: 'Setup has already been completed' }, 409);
+  const body = (await c.req.json().catch(() => null)) as {
+    username?: unknown;
+    password?: unknown;
+  } | null;
+  if (credentials() || setupInProgress)
+    return c.json({ error: "Setup has already been completed" }, 409);
   const error = validateCredentialsInput(body?.username, body?.password);
   if (error) return c.json({ error }, 400);
   const username = (body!.username as string).trim();
@@ -231,14 +289,22 @@ export async function setup(c: Context) {
 
 export async function login(c: Context) {
   const stored = credentials();
-  if (!stored) return c.json({ error: 'Setup required' }, 403);
+  if (!stored) return c.json({ error: "Setup required" }, 403);
   const key = clientKey(c);
   const locked = lockoutRemaining(key);
   if (locked > 0) return tooManyAttempts(c, locked);
-  const body = await c.req.json().catch(() => null) as { username?: unknown; password?: unknown } | null;
-  if (typeof body?.username !== 'string' || typeof body.password !== 'string' || body.username.trim() !== stored.username || !(await validPassword(body.password, stored))) {
+  const body = (await c.req.json().catch(() => null)) as {
+    username?: unknown;
+    password?: unknown;
+  } | null;
+  if (
+    typeof body?.username !== "string" ||
+    typeof body.password !== "string" ||
+    body.username.trim() !== stored.username ||
+    !(await validPassword(body.password, stored))
+  ) {
     recordFailure(key);
-    return c.json({ error: 'Invalid username or password' }, 401);
+    return c.json({ error: "Invalid username or password" }, 401);
   }
   failures.delete(key);
   setSession(c, stored.username);
@@ -252,17 +318,25 @@ export function logout(c: Context) {
 
 export async function changeCredentials(c: Context) {
   const stored = credentials();
-  if (!stored) return c.json({ error: 'Setup required' }, 403);
+  if (!stored) return c.json({ error: "Setup required" }, 403);
   const key = clientKey(c);
   const locked = lockoutRemaining(key);
   if (locked > 0) return tooManyAttempts(c, locked);
-  const body = await c.req.json().catch(() => null) as { currentPassword?: unknown; username?: unknown; password?: unknown } | null;
-  if (typeof body?.currentPassword !== 'string' || !(await validPassword(body.currentPassword, stored))) {
+  const body = (await c.req.json().catch(() => null)) as {
+    currentPassword?: unknown;
+    username?: unknown;
+    password?: unknown;
+  } | null;
+  if (
+    typeof body?.currentPassword !== "string" ||
+    !(await validPassword(body.currentPassword, stored))
+  ) {
     recordFailure(key);
-    return c.json({ error: 'Current password is incorrect' }, 401);
+    return c.json({ error: "Current password is incorrect" }, 401);
   }
   failures.delete(key);
-  const username = body.username === undefined ? stored.username : body.username;
+  const username =
+    body.username === undefined ? stored.username : body.username;
   const password = body.password;
   const error = validateCredentialsInput(username, password);
   if (error) return c.json({ error }, 400);

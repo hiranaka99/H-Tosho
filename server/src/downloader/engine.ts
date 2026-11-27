@@ -1,29 +1,75 @@
-import { pathContains } from '../lib/paths.js';
-import { archiveMutations, archiveResource, libraryMutations } from '../lib/mutations.js';
-import { downloadPages } from './transfer.js';
-import { DownloadPausedError, DownloadShutdownError, wakePaused, type RunContext, type LiveFields } from './runtime.js';
-import { isTransientError, retryTransient, classifyDownloadError, errorRetryAfterMs } from './requests.js';
-import { downloadState, MAX_AUTO_RETRIES, type DownloadTask, type DownloadStatus, type DownloadErrorCode } from '../contracts/downloads.js';
-export type { DownloadTask, DownloadStatus } from '../contracts/downloads.js';
-import { queueDownloadedMatchDiscovery } from '../services/downloadDiscovery.js';
-import { recordGalleryIdentity, invalidateDuplicateLibrary, noteDownloadedArchive, resolveDuplicateGallery } from '../services/galleryDuplicates.js';
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { getDb, getTmpDir, schema } from '../db/index.js';
-import { mapLimit } from '../lib/http.js';
-import { generateComicInfoXml } from './comicinfo.js';
-import { buildZipFromFiles } from './zip.js';
-import { galleryFilesystemName, sanitizeFilename } from './util.js';
-import { getDoujinProvider } from './providers.js';
-import type { DoujinGallery } from './types.js';
-import type { DoujinSource } from '../contracts/doujin.js';
-import { getDownloaderSettings, getKavitaConnection, type DownloaderSettings } from '../services/settings.js';
-import { recordGalleryTags } from '../services/recommendations.js';
-import { jobQueue } from '../jobs/queue.js';
-import { KavitaClient } from '../kavita/client.js';
-import { resolveMergeProtection, requireMergeProtection } from '../services/mergeProtection.js';
+import { pathContains } from "../lib/paths.js";
+import {
+  archiveMutations,
+  archiveResource,
+  libraryMutations,
+} from "../lib/mutations.js";
+import { downloadPages } from "./transfer.js";
+import {
+  DownloadPausedError,
+  DownloadShutdownError,
+  wakePaused,
+  type RunContext,
+  type LiveFields,
+} from "./runtime.js";
+import {
+  isTransientError,
+  retryTransient,
+  classifyDownloadError,
+  errorRetryAfterMs,
+} from "./requests.js";
+import {
+  downloadState,
+  MAX_AUTO_RETRIES,
+  type DownloadTask,
+  type DownloadStatus,
+  type DownloadErrorCode,
+} from "../contracts/downloads.js";
+export type { DownloadTask, DownloadStatus } from "../contracts/downloads.js";
+import { queueDownloadedMatchDiscovery } from "../services/downloadDiscovery.js";
+import {
+  recordGalleryIdentity,
+  invalidateDuplicateLibrary,
+  noteDownloadedArchive,
+  resolveDuplicateGallery,
+} from "../services/galleryDuplicates.js";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { getDb, getTmpDir, schema } from "../db/index.js";
+import { mapLimit } from "../lib/http.js";
+import { generateComicInfoXml } from "./comicinfo.js";
+import { buildZipFromFiles } from "./zip.js";
+import { galleryFilesystemName, sanitizeFilename } from "./util.js";
+import { getDoujinProvider } from "./providers.js";
+import type { DoujinGallery } from "./types.js";
+import type { DoujinSource } from "../contracts/doujin.js";
+import {
+  getDownloaderSettings,
+  getKavitaConnection,
+  type DownloaderSettings,
+} from "../services/settings.js";
+import { recordGalleryTags } from "../services/recommendations.js";
+import { jobQueue } from "../jobs/queue.js";
+import { KavitaClient } from "../kavita/client.js";
+import {
+  resolveMergeProtection,
+  requireMergeProtection,
+} from "../services/mergeProtection.js";
 
 /**
  * Doujinshi download queue engine.
@@ -66,14 +112,20 @@ const STAGING_MTIME_MARGIN_MS = 10_000;
  * publish step. Keep the previous file until the staged replacement has been
  * put in place, and restore it if that step fails.
  */
-async function replacePublishedFile(staged: string, destination: string): Promise<void> {
+async function replacePublishedFile(
+  staged: string,
+  destination: string
+): Promise<void> {
   let backup: string | null = null;
   try {
     await fs.promises.access(destination);
-    backup = path.join(path.dirname(destination), `.${path.basename(destination)}.htosho-backup-${randomUUID()}`);
+    backup = path.join(
+      path.dirname(destination),
+      `.${path.basename(destination)}.htosho-backup-${randomUUID()}`
+    );
     await fs.promises.rename(destination, backup);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   try {
     await fs.promises.rename(staged, destination);
@@ -85,7 +137,10 @@ async function replacePublishedFile(staged: string, destination: string): Promis
 }
 
 /** Live task subscriber; `serialized()` is the shared, memoized JSON of `task`. */
-export type TaskListener = (task: DownloadTask, serialized: () => string) => void;
+export type TaskListener = (
+  task: DownloadTask,
+  serialized: () => string
+) => void;
 
 interface DownloadRow {
   id: number;
@@ -132,20 +187,31 @@ function rowToTask(row: DownloadRow): DownloadTask {
     currentFile: row.currentFile,
     bytesCurrent: row.bytesCurrent ?? 0,
     bytesTotal: row.bytesTotal ?? 0,
-    outputFormat: (row.outputFormat as 'cbz' | 'folder') ?? 'cbz',
+    outputFormat: (row.outputFormat as "cbz" | "folder") ?? "cbz",
     outputPath: row.outputPath,
     mergeFolder: row.mergeFolder ?? null,
     chapterNumber: row.chapterNumber ?? null,
     mergeJobId: row.mergeJobId ?? null,
     priority: row.priority ?? 0,
-    phase: row.phase === 'resolving' || row.phase === 'downloading' || row.phase === 'packing' ? row.phase : null,
+    phase:
+      row.phase === "resolving" ||
+      row.phase === "downloading" ||
+      row.phase === "packing"
+        ? row.phase
+        : null,
     errorMessage: row.errorMessage,
     errorCode: row.errorCode as DownloadErrorCode | null,
     retryAt: row.retryAt,
     retryCount: row.retryCount,
     attempt: row.attempt,
     revision: row.revision,
-    state: downloadState({ status: row.status as DownloadStatus, errorCode: row.errorCode as DownloadErrorCode | null, retryAt: row.retryAt, retryCount: row.retryCount, phase: row.phase }),
+    state: downloadState({
+      status: row.status as DownloadStatus,
+      errorCode: row.errorCode as DownloadErrorCode | null,
+      retryAt: row.retryAt,
+      retryCount: row.retryCount,
+      phase: row.phase,
+    }),
     startedAt: row.startedAt,
     finishedAt: row.finishedAt,
     createdAt: row.createdAt,
@@ -190,7 +256,7 @@ export class DownloadQueue {
     getDb()
       .update(schema.downloadQueue)
       .set({
-        status: 'queued',
+        status: "queued",
         speed: null,
         currentFile: null,
         phase: null,
@@ -200,11 +266,19 @@ export class DownloadQueue {
         startedAt: null,
         revision: sql`${schema.downloadQueue.revision} + 1`,
       })
-      .where(eq(schema.downloadQueue.status, 'downloading'))
+      .where(eq(schema.downloadQueue.status, "downloading"))
       .run();
     // Cooldowns are durable; restart does not strand retryable failures.
-    for (const row of getDb().select().from(schema.downloadQueue).where(eq(schema.downloadQueue.status, 'failed')).all()) {
-      if (row.retryAt) this.armRetry(row.id, Math.max(0, Date.parse(row.retryAt) - Date.now()));
+    for (const row of getDb()
+      .select()
+      .from(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.status, "failed"))
+      .all()) {
+      if (row.retryAt)
+        this.armRetry(
+          row.id,
+          Math.max(0, Date.parse(row.retryAt) - Date.now())
+        );
     }
     void this.cleanupOrphanedWork();
     void this.pump();
@@ -255,17 +329,28 @@ export class DownloadQueue {
         db
           .select({ id: schema.downloadQueue.id })
           .from(schema.downloadQueue)
-          .where(ne(schema.downloadQueue.status, 'completed'))
+          .where(ne(schema.downloadQueue.status, "completed"))
           .all()
-          .map((row) => String(row.id)),
+          .map((row) => String(row.id))
       );
-      const downloadsTmp = path.join(getTmpDir(), 'downloads');
+      const downloadsTmp = path.join(getTmpDir(), "downloads");
       try {
-        const entries = await fs.promises.readdir(downloadsTmp, { withFileTypes: true });
+        const entries = await fs.promises.readdir(downloadsTmp, {
+          withFileTypes: true,
+        });
         for (const entry of entries) {
           if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-          if (keptIds.has(entry.name) || this.activeRuns.has(Number(entry.name))) continue;
-          await fs.promises.rm(path.join(downloadsTmp, entry.name), { recursive: true, force: true }).catch(() => {});
+          if (
+            keptIds.has(entry.name) ||
+            this.activeRuns.has(Number(entry.name))
+          )
+            continue;
+          await fs.promises
+            .rm(path.join(downloadsTmp, entry.name), {
+              recursive: true,
+              force: true,
+            })
+            .catch(() => {});
         }
       } catch {
         /* tmp dir may not exist yet */
@@ -274,10 +359,16 @@ export class DownloadQueue {
       if (downloadDir) {
         const base = path.resolve(downloadDir);
         try {
-          const entries = await fs.promises.readdir(base, { withFileTypes: true });
+          const entries = await fs.promises.readdir(base, {
+            withFileTypes: true,
+          });
           for (const entry of entries) {
             if (!entry.isDirectory()) continue;
-            if (!entry.name.startsWith('.htosho-download-') && !entry.name.startsWith('.htosho-zip-')) continue;
+            if (
+              !entry.name.startsWith(".htosho-download-") &&
+              !entry.name.startsWith(".htosho-zip-")
+            )
+              continue;
             // Downloads resumed at startup stage here concurrently. With no
             // run active nothing can be live; otherwise only a directory last
             // modified clearly before this process started (margin covers
@@ -285,9 +376,12 @@ export class DownloadQueue {
             const full = path.join(base, entry.name);
             if (this.activeRuns.size > 0) {
               const st = await fs.promises.stat(full).catch(() => null);
-              if (!st || st.mtimeMs >= this.startedAt - STAGING_MTIME_MARGIN_MS) continue;
+              if (!st || st.mtimeMs >= this.startedAt - STAGING_MTIME_MARGIN_MS)
+                continue;
             }
-            await fs.promises.rm(full, { recursive: true, force: true }).catch(() => {});
+            await fs.promises
+              .rm(full, { recursive: true, force: true })
+              .catch(() => {});
           }
         } catch {
           /* output dir may not exist yet */
@@ -297,7 +391,6 @@ export class DownloadQueue {
       /* orphan cleanup is strictly best-effort */
     }
   }
-
 
   // ---------------- Live update fan-out (SSE) ----------------
 
@@ -347,12 +440,12 @@ export class DownloadQueue {
     source: DoujinSource,
     galleryId: string,
     title: string | null,
-    outputFormat?: 'cbz' | 'folder',
+    outputFormat?: "cbz" | "folder",
     mergeFolder?: string,
     chapterNumber?: number,
     priority?: number,
     mergeJobId?: number,
-    sourceUrl?: string,
+    sourceUrl?: string
   ): number {
     const db = getDb();
     const createdRow = db
@@ -361,7 +454,7 @@ export class DownloadQueue {
         source,
         galleryId,
         title,
-        status: 'queued',
+        status: "queued",
         progressCurrent: 0,
         progressTotal: 0,
         outputFormat: outputFormat ?? this.settingsProvider().format,
@@ -382,7 +475,11 @@ export class DownloadQueue {
 
   /** Raw read from SQLite (no live overlay). */
   private readRow(id: number): DownloadTask | null {
-    const row = getDb().select().from(schema.downloadQueue).where(eq(schema.downloadQueue.id, id)).get();
+    const row = getDb()
+      .select()
+      .from(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.id, id))
+      .get();
     return row ? rowToTask(row) : null;
   }
 
@@ -417,31 +514,59 @@ export class DownloadQueue {
    */
   listForManager(completedLimit = 100): DownloadTask[] {
     const db = getDb();
-    const open = db.select().from(schema.downloadQueue)
-      .where(inArray(schema.downloadQueue.status, ['queued', 'downloading', 'paused', 'failed']))
+    const open = db
+      .select()
+      .from(schema.downloadQueue)
+      .where(
+        inArray(schema.downloadQueue.status, [
+          "queued",
+          "downloading",
+          "paused",
+          "failed",
+        ])
+      )
       .orderBy(desc(schema.downloadQueue.id))
       .limit(2000)
       .all();
-    const completed = db.select().from(schema.downloadQueue)
-      .where(eq(schema.downloadQueue.status, 'completed'))
-      .orderBy(desc(schema.downloadQueue.finishedAt), desc(schema.downloadQueue.id))
+    const completed = db
+      .select()
+      .from(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.status, "completed"))
+      .orderBy(
+        desc(schema.downloadQueue.finishedAt),
+        desc(schema.downloadQueue.id)
+      )
       .limit(completedLimit)
       .all();
-    return [...open, ...completed].sort((a, b) => b.id - a.id).map((row) => this.overlayLive(rowToTask(row)));
+    return [...open, ...completed]
+      .sort((a, b) => b.id - a.id)
+      .map((row) => this.overlayLive(rowToTask(row)));
   }
 
   /** One page of completed history, newest finish first, with the full count. */
-  completedHistory(offset: number, limit: number): { items: DownloadTask[]; total: number } {
+  completedHistory(
+    offset: number,
+    limit: number
+  ): { items: DownloadTask[]; total: number } {
     const db = getDb();
-    const items = db.select().from(schema.downloadQueue)
-      .where(eq(schema.downloadQueue.status, 'completed'))
-      .orderBy(desc(schema.downloadQueue.finishedAt), desc(schema.downloadQueue.id))
+    const items = db
+      .select()
+      .from(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.status, "completed"))
+      .orderBy(
+        desc(schema.downloadQueue.finishedAt),
+        desc(schema.downloadQueue.id)
+      )
       .limit(limit)
       .offset(offset)
       .all()
       .map((row) => this.overlayLive(rowToTask(row)));
-    const total = db.select({ n: count() }).from(schema.downloadQueue)
-      .where(eq(schema.downloadQueue.status, 'completed')).get()?.n ?? 0;
+    const total =
+      db
+        .select({ n: count() })
+        .from(schema.downloadQueue)
+        .where(eq(schema.downloadQueue.status, "completed"))
+        .get()?.n ?? 0;
     return { items, total };
   }
 
@@ -462,12 +587,14 @@ export class DownloadQueue {
   }
 
   /** Capture the freshest page/byte counts (without stale speed/phase) before leaving a live run. */
-  private snapshotProgress(id: number): {
-    progressCurrent: number;
-    progressTotal: number;
-    bytesCurrent: number;
-    bytesTotal: number;
-  } | undefined {
+  private snapshotProgress(id: number):
+    | {
+        progressCurrent: number;
+        progressTotal: number;
+        bytesCurrent: number;
+        bytesTotal: number;
+      }
+    | undefined {
     const live = this.live.get(id);
     if (!live) return undefined;
     return {
@@ -482,27 +609,32 @@ export class DownloadQueue {
     id: number,
     status: DownloadStatus,
     knownAttempt?: number,
-    extraSet: Partial<typeof schema.downloadQueue.$inferInsert> = {},
+    extraSet: Partial<typeof schema.downloadQueue.$inferInsert> = {}
   ): DownloadTask | null {
     const db = getDb();
     const rev = this.revisionExpr(id);
-    const progress = status !== 'downloading' ? this.snapshotProgress(id) : undefined;
+    const progress =
+      status !== "downloading" ? this.snapshotProgress(id) : undefined;
     let updatedRow: DownloadRow | undefined;
-    if (status === 'downloading') {
+    if (status === "downloading") {
       const currentAttempt = knownAttempt ?? this.get(id)?.attempt ?? 0;
-      updatedRow = db.update(schema.downloadQueue)
+      updatedRow = db
+        .update(schema.downloadQueue)
         .set({
           status,
           startedAt: new Date().toISOString(),
-          attempt: this.activeRuns.has(id) ? currentAttempt : currentAttempt + 1,
+          attempt: this.activeRuns.has(id)
+            ? currentAttempt
+            : currentAttempt + 1,
           ...extraSet,
           revision: rev,
         })
         .where(eq(schema.downloadQueue.id, id))
         .returning()
         .get();
-    } else if (status === 'completed' || status === 'failed') {
-      updatedRow = db.update(schema.downloadQueue)
+    } else if (status === "completed" || status === "failed") {
+      updatedRow = db
+        .update(schema.downloadQueue)
         .set({
           status,
           finishedAt: new Date().toISOString(),
@@ -517,10 +649,11 @@ export class DownloadQueue {
         .returning()
         .get();
     } else {
-      updatedRow = db.update(schema.downloadQueue)
+      updatedRow = db
+        .update(schema.downloadQueue)
         .set({
           status,
-          speed: status === 'paused' ? 0 : null,
+          speed: status === "paused" ? 0 : null,
           currentFile: null,
           phase: null,
           ...progress,
@@ -532,18 +665,24 @@ export class DownloadQueue {
         .get();
     }
     const task = updatedRow ? rowToTask(updatedRow) : null;
-    this.syncLive(id, status === 'downloading', task);
+    this.syncLive(id, status === "downloading", task);
     return task;
   }
 
   /** Reload a task from the DB, update the in-memory cache only for active runs, and broadcast it. */
-  private syncLive(id: number, keepLive = false, preloadedTask?: DownloadTask | null): void {
+  private syncLive(
+    id: number,
+    keepLive = false,
+    preloadedTask?: DownloadTask | null
+  ): void {
     const t = preloadedTask !== undefined ? preloadedTask : this.readRow(id);
     if (t) {
       if (keepLive) {
         const previous = this.live.get(id);
         if (previous) {
-          Object.assign(t, pickLiveFields(previous), { revision: Math.max(t.revision, previous.revision + 1) });
+          Object.assign(t, pickLiveFields(previous), {
+            revision: Math.max(t.revision, previous.revision + 1),
+          });
           this.persistProgress(id, t);
         }
         t.state = downloadState(t);
@@ -567,13 +706,18 @@ export class DownloadQueue {
    * subscribers and persist to SQLite — each on its own throttle so high-frequency
    * byte-level updates stay smooth without overloading the database.
    */
-  private updateProgress(id: number, patch: LiveFields, opts?: { force?: boolean; forceBroadcast?: boolean }): void {
+  private updateProgress(
+    id: number,
+    patch: LiveFields,
+    opts?: { force?: boolean; forceBroadcast?: boolean }
+  ): void {
     const run = this.activeRuns.get(id);
-    if (run && (run.cancelled || run.paused || run.shuttingDown || run.stopped)) return;
+    if (run && (run.cancelled || run.paused || run.shuttingDown || run.stopped))
+      return;
     let snap = this.live.get(id);
     if (!snap) {
       const base = this.readRow(id);
-      if (!base || base.status !== 'downloading') return;
+      if (!base || base.status !== "downloading") return;
       snap = { ...base };
     }
     const merged = { ...snap, ...patch, revision: snap.revision + 1 };
@@ -616,7 +760,7 @@ export class DownloadQueue {
     if (!task) return false;
     const run = this.activeRuns.get(id);
     if (run?.committing) return false;
-    if (task.status === 'queued' || task.status === 'downloading') {
+    if (task.status === "queued" || task.status === "downloading") {
       if (run) {
         run.paused = true;
         run.stopped = true;
@@ -624,7 +768,7 @@ export class DownloadQueue {
         run.controller.abort(new DownloadPausedError());
         wakePaused(run);
       }
-      this.setStatus(id, 'paused');
+      this.setStatus(id, "paused");
       return true;
     }
     return false;
@@ -634,12 +778,12 @@ export class DownloadQueue {
   resume(id: number): boolean {
     const task = this.get(id);
     if (!task) return false;
-    if (task.status === 'paused') {
-      this.setStatus(id, 'queued');
+    if (task.status === "paused") {
+      this.setStatus(id, "queued");
       void this.pump();
       return true;
     }
-    if (task.status === 'failed') return this.retry(id);
+    if (task.status === "failed") return this.retry(id);
     return false;
   }
 
@@ -649,24 +793,30 @@ export class DownloadQueue {
     const queuedRows = db
       .select({ id: schema.downloadQueue.id })
       .from(schema.downloadQueue)
-      .where(eq(schema.downloadQueue.status, 'queued'))
+      .where(eq(schema.downloadQueue.status, "queued"))
       .all();
     let count = 0;
     if (queuedRows.length > 0) {
       const ids = queuedRows.map((row) => row.id);
       // RETURNING yields exactly the rows this sweep paused — no per-row re-read.
       const paused = runIdChunks(ids, (chunk) =>
-        db.update(schema.downloadQueue)
+        db
+          .update(schema.downloadQueue)
           .set({
-            status: 'paused',
+            status: "paused",
             speed: 0,
             currentFile: null,
             phase: null,
             revision: sql`${schema.downloadQueue.revision} + 1`,
           })
-          .where(and(inArray(schema.downloadQueue.id, chunk), eq(schema.downloadQueue.status, 'queued')))
+          .where(
+            and(
+              inArray(schema.downloadQueue.id, chunk),
+              eq(schema.downloadQueue.status, "queued")
+            )
+          )
           .returning()
-          .all(),
+          .all()
       );
       for (const id of ids) {
         this.live.delete(id);
@@ -681,7 +831,7 @@ export class DownloadQueue {
     const downloadingRows = db
       .select({ id: schema.downloadQueue.id })
       .from(schema.downloadQueue)
-      .where(eq(schema.downloadQueue.status, 'downloading'))
+      .where(eq(schema.downloadQueue.status, "downloading"))
       .all();
     for (const { id } of downloadingRows) {
       if (this.pause(id)) count++;
@@ -695,22 +845,28 @@ export class DownloadQueue {
     const pausedRows = db
       .select({ id: schema.downloadQueue.id })
       .from(schema.downloadQueue)
-      .where(eq(schema.downloadQueue.status, 'paused'))
+      .where(eq(schema.downloadQueue.status, "paused"))
       .all();
     if (!pausedRows.length) return 0;
     const ids = pausedRows.map((row) => row.id);
     const queued = runIdChunks(ids, (chunk) =>
-      db.update(schema.downloadQueue)
+      db
+        .update(schema.downloadQueue)
         .set({
-          status: 'queued',
+          status: "queued",
           speed: null,
           currentFile: null,
           phase: null,
           revision: sql`${schema.downloadQueue.revision} + 1`,
         })
-        .where(and(inArray(schema.downloadQueue.id, chunk), eq(schema.downloadQueue.status, 'paused')))
+        .where(
+          and(
+            inArray(schema.downloadQueue.id, chunk),
+            eq(schema.downloadQueue.status, "paused")
+          )
+        )
         .returning()
-        .all(),
+        .all()
     );
     for (const id of ids) this.live.delete(id);
     for (const row of queued) this.broadcast(rowToTask(row));
@@ -722,18 +878,29 @@ export class DownloadQueue {
   retryFailed(): number {
     const db = getDb();
     const rows = db
-      .select({ id: schema.downloadQueue.id, outputPath: schema.downloadQueue.outputPath })
+      .select({
+        id: schema.downloadQueue.id,
+        outputPath: schema.downloadQueue.outputPath,
+      })
       .from(schema.downloadQueue)
       .where(
         and(
-          eq(schema.downloadQueue.status, 'failed'),
+          eq(schema.downloadQueue.status, "failed"),
           isNull(schema.downloadQueue.retryAt),
-          or(isNull(schema.downloadQueue.errorCode), ne(schema.downloadQueue.errorCode, 'cancelled')),
-        ),
+          or(
+            isNull(schema.downloadQueue.errorCode),
+            ne(schema.downloadQueue.errorCode, "cancelled")
+          )
+        )
       )
       .all();
     const eligible = rows.filter(
-      (row) => !this.activeRuns.has(row.id) && !(row.outputPath && archiveMutations.isBusy(archiveResource(row.outputPath))),
+      (row) =>
+        !this.activeRuns.has(row.id) &&
+        !(
+          row.outputPath &&
+          archiveMutations.isBusy(archiveResource(row.outputPath))
+        )
     );
     if (!eligible.length) return 0;
     const ids = eligible.map((row) => row.id);
@@ -746,9 +913,10 @@ export class DownloadQueue {
       this.live.delete(id);
     }
     const requeued = runIdChunks(ids, (chunk) =>
-      db.update(schema.downloadQueue)
+      db
+        .update(schema.downloadQueue)
         .set({
-          status: 'queued',
+          status: "queued",
           speed: null,
           currentFile: null,
           phase: null,
@@ -762,7 +930,7 @@ export class DownloadQueue {
         })
         .where(inArray(schema.downloadQueue.id, chunk))
         .returning()
-        .all(),
+        .all()
     );
     for (const row of requeued) this.broadcast(rowToTask(row));
     void this.pump();
@@ -772,19 +940,28 @@ export class DownloadQueue {
   /** Move a queued task ahead of every other queued download. */
   prioritize(id: number): boolean {
     const task = this.get(id);
-    if (!task || task.status !== 'queued') return false;
+    if (!task || task.status !== "queued") return false;
     const db = getDb();
     const top = db
       .select({ priority: schema.downloadQueue.priority })
       .from(schema.downloadQueue)
-      .where(eq(schema.downloadQueue.status, 'queued'))
+      .where(eq(schema.downloadQueue.status, "queued"))
       .orderBy(desc(schema.downloadQueue.priority))
       .limit(1)
       .get();
-    const nextPriority = Math.max((top?.priority ?? 0) + 1, (task.priority ?? 0) + 1);
-    const updated = db.update(schema.downloadQueue)
+    const nextPriority = Math.max(
+      (top?.priority ?? 0) + 1,
+      (task.priority ?? 0) + 1
+    );
+    const updated = db
+      .update(schema.downloadQueue)
       .set({ priority: nextPriority, revision: this.revisionExpr(id) })
-      .where(and(eq(schema.downloadQueue.id, id), eq(schema.downloadQueue.status, 'queued')))
+      .where(
+        and(
+          eq(schema.downloadQueue.id, id),
+          eq(schema.downloadQueue.status, "queued")
+        )
+      )
       .returning()
       .get();
     if (updated) this.broadcast(rowToTask(updated));
@@ -793,7 +970,7 @@ export class DownloadQueue {
 
   /** A failed task may still be waiting for its automatic retry timer. */
   hasPendingRetry(id: number): boolean {
-    return this.get(id)?.state.type === 'retry-wait';
+    return this.get(id)?.state.type === "retry-wait";
   }
 
   /** Cancel: stop an in-flight job and mark it failed/cancelled. */
@@ -803,14 +980,17 @@ export class DownloadQueue {
     const retryTimer = this.retryTimers.get(id);
     // A durable retry deadline counts even before start() re-arms its timer
     // (startup recovery cancels interrupted merge downloads that early).
-    if (task.status === 'failed' && (retryTimer || task.state.type === 'retry-wait')) {
+    if (
+      task.status === "failed" &&
+      (retryTimer || task.state.type === "retry-wait")
+    ) {
       if (retryTimer) clearTimeout(retryTimer);
       this.retryTimers.delete(id);
       const updated = getDb()
         .update(schema.downloadQueue)
         .set({
-          errorMessage: 'Cancelled by user',
-          errorCode: 'cancelled',
+          errorMessage: "Cancelled by user",
+          errorCode: "cancelled",
           retryAt: null,
           speed: 0,
           currentFile: null,
@@ -826,13 +1006,17 @@ export class DownloadQueue {
       return true;
     }
     if (this.activeRuns.get(id)?.committing) return false;
-    if (task.status === 'queued' || task.status === 'downloading' || task.status === 'paused') {
+    if (
+      task.status === "queued" ||
+      task.status === "downloading" ||
+      task.status === "paused"
+    ) {
       const run = this.activeRuns.get(id);
       if (run) {
         run.cancelled = true;
         run.paused = false;
         run.stopped = true;
-        run.controller.abort(new Error('Cancelled by user'));
+        run.controller.abort(new Error("Cancelled by user"));
         // A worker parked on the pause gate must exit promptly.
         wakePaused(run);
       }
@@ -840,10 +1024,10 @@ export class DownloadQueue {
       const updated = getDb()
         .update(schema.downloadQueue)
         .set({
-          status: 'failed',
+          status: "failed",
           finishedAt: new Date().toISOString(),
-          errorMessage: 'Cancelled by user',
-          errorCode: 'cancelled',
+          errorMessage: "Cancelled by user",
+          errorCode: "cancelled",
           retryAt: null,
           speed: 0,
           currentFile: null,
@@ -872,23 +1056,28 @@ export class DownloadQueue {
     id: number,
     message: string,
     retryAfterMs: number | null = null,
-    extraSet: Partial<typeof schema.downloadQueue.$inferInsert> = {},
+    extraSet: Partial<typeof schema.downloadQueue.$inferInsert> = {}
   ): DownloadTask | null {
     const count = (this.get(id)?.retryCount ?? 0) + 1;
     if (count > MAX_AUTO_RETRIES) {
-      return this.setStatus(id, 'failed', undefined, {
+      return this.setStatus(id, "failed", undefined, {
         errorMessage: message,
         retryAt: null,
         ...extraSet,
       });
     }
-    const baseDelay = AUTO_RETRY_DELAYS_MS[count - 1] ?? AUTO_RETRY_DELAYS_MS[AUTO_RETRY_DELAYS_MS.length - 1];
-    const delayMs = retryAfterMs !== null ? Math.min(Math.max(baseDelay, retryAfterMs), MAX_AUTO_RETRY_DELAY_MS) : baseDelay;
+    const baseDelay =
+      AUTO_RETRY_DELAYS_MS[count - 1] ??
+      AUTO_RETRY_DELAYS_MS[AUTO_RETRY_DELAYS_MS.length - 1];
+    const delayMs =
+      retryAfterMs !== null
+        ? Math.min(Math.max(baseDelay, retryAfterMs), MAX_AUTO_RETRY_DELAY_MS)
+        : baseDelay;
     const progress = this.snapshotProgress(id);
     const updated = getDb()
       .update(schema.downloadQueue)
       .set({
-        status: 'failed',
+        status: "failed",
         finishedAt: new Date().toISOString(),
         errorMessage: message,
         retryAt: new Date(Date.now() + delayMs).toISOString(),
@@ -916,11 +1105,11 @@ export class DownloadQueue {
       this.retryTimers.delete(id);
       if (this.shuttingDown) return;
       const t = this.readRow(id);
-      if (!t || t.state.type !== 'retry-wait') return; // user retried or deleted meanwhile
+      if (!t || t.state.type !== "retry-wait") return; // user retried or deleted meanwhile
       const updated = getDb()
         .update(schema.downloadQueue)
         .set({
-          status: 'queued',
+          status: "queued",
           speed: null,
           currentFile: null,
           phase: null,
@@ -945,10 +1134,15 @@ export class DownloadQueue {
   retry(id: number): boolean {
     const task = this.get(id);
     if (!task) return false;
-    if (task.status !== 'failed' && task.status !== 'completed') return false;
+    if (task.status !== "failed" && task.status !== "completed") return false;
     // A cancelled run can remain in-flight until its current request unwinds.
     // Starting another writer against the same scratch directory would race it.
-    if (this.activeRuns.has(id) || (task.outputPath && archiveMutations.isBusy(archiveResource(task.outputPath)))) return false;
+    if (
+      this.activeRuns.has(id) ||
+      (task.outputPath &&
+        archiveMutations.isBusy(archiveResource(task.outputPath)))
+    )
+      return false;
     const pending = this.retryTimers.get(id);
     if (pending) {
       clearTimeout(pending);
@@ -959,7 +1153,7 @@ export class DownloadQueue {
     const updated = getDb()
       .update(schema.downloadQueue)
       .set({
-        status: 'queued',
+        status: "queued",
         speed: null,
         currentFile: null,
         phase: null,
@@ -982,8 +1176,16 @@ export class DownloadQueue {
   /** Delete a task and its scratch directory. Active callers must cancel first. */
   remove(id: number): boolean {
     const task = this.get(id);
-    if (!task || this.isRunning(id) || ['queued', 'downloading', 'paused'].includes(task.status)) return false;
-    getDb().delete(schema.downloadQueue).where(eq(schema.downloadQueue.id, id)).run();
+    if (
+      !task ||
+      this.isRunning(id) ||
+      ["queued", "downloading", "paused"].includes(task.status)
+    )
+      return false;
+    getDb()
+      .delete(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.id, id))
+      .run();
     this.live.delete(id);
     this.lastBroadcast.delete(id);
     this.lastWrite.delete(id);
@@ -993,8 +1195,13 @@ export class DownloadQueue {
       this.retryTimers.delete(id);
     }
     void fs.promises
-      .rm(path.join(getTmpDir(), 'downloads', String(id)), { recursive: true, force: true })
-      .catch((err) => console.warn('[h-tosho] failed to remove download scratch dir:', err));
+      .rm(path.join(getTmpDir(), "downloads", String(id)), {
+        recursive: true,
+        force: true,
+      })
+      .catch((err) =>
+        console.warn("[h-tosho] failed to remove download scratch dir:", err)
+      );
     this.broadcastRemovals([id]);
     return true;
   }
@@ -1002,8 +1209,11 @@ export class DownloadQueue {
   /** Delete all completed tasks. */
   clearCompleted(): number {
     const db = getDb();
-    const removed = db.delete(schema.downloadQueue).where(eq(schema.downloadQueue.status, 'completed'))
-      .returning({ id: schema.downloadQueue.id }).all();
+    const removed = db
+      .delete(schema.downloadQueue)
+      .where(eq(schema.downloadQueue.status, "completed"))
+      .returning({ id: schema.downloadQueue.id })
+      .all();
     for (const { id } of removed) {
       this.live.delete(id);
       this.lastBroadcast.delete(id);
@@ -1019,7 +1229,12 @@ export class DownloadQueue {
     const candidates = db
       .select({ id: schema.downloadQueue.id })
       .from(schema.downloadQueue)
-      .where(and(eq(schema.downloadQueue.status, 'failed'), eq(schema.downloadQueue.errorCode, 'cancelled')))
+      .where(
+        and(
+          eq(schema.downloadQueue.status, "failed"),
+          eq(schema.downloadQueue.errorCode, "cancelled")
+        )
+      )
       .all()
       .filter((row) => !this.activeRuns.has(row.id));
     if (!candidates.length) return 0;
@@ -1029,7 +1244,7 @@ export class DownloadQueue {
         .delete(schema.downloadQueue)
         .where(inArray(schema.downloadQueue.id, chunk))
         .returning({ id: schema.downloadQueue.id })
-        .all(),
+        .all()
     );
     for (const { id } of removed) {
       this.live.delete(id);
@@ -1041,8 +1256,13 @@ export class DownloadQueue {
         this.retryTimers.delete(id);
       }
       void fs.promises
-        .rm(path.join(getTmpDir(), 'downloads', String(id)), { recursive: true, force: true })
-        .catch((err) => console.warn('[h-tosho] failed to remove download scratch dir:', err));
+        .rm(path.join(getTmpDir(), "downloads", String(id)), {
+          recursive: true,
+          force: true,
+        })
+        .catch((err) =>
+          console.warn("[h-tosho] failed to remove download scratch dir:", err)
+        );
     }
     this.broadcastRemovals(removed.map((row) => row.id));
     return removed.length;
@@ -1052,7 +1272,13 @@ export class DownloadQueue {
     const row = getDb()
       .select()
       .from(schema.downloadQueue)
-      .where(and(eq(schema.downloadQueue.source, source), eq(schema.downloadQueue.galleryId, galleryId), eq(schema.downloadQueue.status, 'completed')))
+      .where(
+        and(
+          eq(schema.downloadQueue.source, source),
+          eq(schema.downloadQueue.galleryId, galleryId),
+          eq(schema.downloadQueue.status, "completed")
+        )
+      )
       .orderBy(desc(schema.downloadQueue.id))
       .limit(1)
       .get();
@@ -1071,8 +1297,18 @@ export class DownloadQueue {
         and(
           eq(schema.downloadQueue.source, source),
           eq(schema.downloadQueue.galleryId, galleryId),
-          or(inArray(schema.downloadQueue.status, ['queued', 'downloading', 'paused']), and(eq(schema.downloadQueue.status, 'failed'), isNotNull(schema.downloadQueue.retryAt))),
-        ),
+          or(
+            inArray(schema.downloadQueue.status, [
+              "queued",
+              "downloading",
+              "paused",
+            ]),
+            and(
+              eq(schema.downloadQueue.status, "failed"),
+              isNotNull(schema.downloadQueue.retryAt)
+            )
+          )
+        )
       )
       .orderBy(desc(schema.downloadQueue.id))
       .limit(1)
@@ -1081,7 +1317,12 @@ export class DownloadQueue {
   }
 
   /** Every completed gallery (newest first) — powers the "already downloaded" badges. */
-  completedGalleries(): { source: string; galleryId: string; title: string | null; finishedAt: string | null }[] {
+  completedGalleries(): {
+    source: string;
+    galleryId: string;
+    title: string | null;
+    finishedAt: string | null;
+  }[] {
     return getDb()
       .select({
         source: schema.downloadQueue.source,
@@ -1090,7 +1331,7 @@ export class DownloadQueue {
         finishedAt: schema.downloadQueue.finishedAt,
       })
       .from(schema.downloadQueue)
-      .where(eq(schema.downloadQueue.status, 'completed'))
+      .where(eq(schema.downloadQueue.status, "completed"))
       .orderBy(desc(schema.downloadQueue.id))
       .all();
   }
@@ -1106,14 +1347,20 @@ export class DownloadQueue {
       .from(schema.downloadQueue)
       .where(
         activeIds.length > 0
-          ? and(eq(schema.downloadQueue.status, 'queued'), notInArray(schema.downloadQueue.id, activeIds))
-          : eq(schema.downloadQueue.status, 'queued'),
+          ? and(
+              eq(schema.downloadQueue.status, "queued"),
+              notInArray(schema.downloadQueue.id, activeIds)
+            )
+          : eq(schema.downloadQueue.status, "queued")
       )
-      .orderBy(desc(schema.downloadQueue.priority), asc(schema.downloadQueue.id))
+      .orderBy(
+        desc(schema.downloadQueue.priority),
+        asc(schema.downloadQueue.id)
+      )
       .limit(1)
       .get();
     if (!row) return null;
-    this.setStatus(row.id, 'downloading', row.attempt);
+    this.setStatus(row.id, "downloading", row.attempt);
     return row;
   }
 
@@ -1121,14 +1368,20 @@ export class DownloadQueue {
     if (this.pumping || this.shuttingDown) return;
     this.pumping = true;
     try {
-      const maxConcurrent = Math.max(1, this.settingsProvider().maxConcurrentDownloads || 1);
+      const maxConcurrent = Math.max(
+        1,
+        this.settingsProvider().maxConcurrentDownloads || 1
+      );
       while (!this.shuttingDown && this.running < maxConcurrent) {
         const next = this.claimNext();
         if (!next) break;
         this.running++;
         const runPromise = this.process(next)
           .catch((error) => {
-            console.warn(`[h-tosho] unexpected error in download worker #${next.id}:`, error);
+            console.warn(
+              `[h-tosho] unexpected error in download worker #${next.id}:`,
+              error
+            );
           })
           .finally(() => {
             this.runPromises.delete(runPromise);
@@ -1145,19 +1398,46 @@ export class DownloadQueue {
   // ---------------- Execution ----------------
 
   /** Discover a merged series only once every sibling has settled. */
-  private discoverCompletedDownload(id: number, seriesName?: string, knownTask?: DownloadTask | null): void {
+  private discoverCompletedDownload(
+    id: number,
+    seriesName?: string,
+    knownTask?: DownloadTask | null
+  ): void {
     const task = knownTask !== undefined ? knownTask : this.readRow(id);
     if (!task || task.mergeJobId != null) return;
-    let outputPath = task.status === 'completed' ? task.outputPath : null;
+    let outputPath = task.status === "completed" ? task.outputPath : null;
     if (task.mergeFolder) {
-      const siblings = getDb().select().from(schema.downloadQueue).where(eq(schema.downloadQueue.mergeFolder, task.mergeFolder)).all();
-      if (siblings.some(sibling => ['queued', 'downloading', 'paused'].includes(sibling.status)
-        || sibling.retryAt || this.activeRuns.has(sibling.id))) return;
-      outputPath ??= siblings.find(sibling => sibling.status === 'completed' && sibling.outputPath)?.outputPath ?? null;
+      const siblings = getDb()
+        .select()
+        .from(schema.downloadQueue)
+        .where(eq(schema.downloadQueue.mergeFolder, task.mergeFolder))
+        .all();
+      if (
+        siblings.some(
+          (sibling) =>
+            ["queued", "downloading", "paused"].includes(sibling.status) ||
+            sibling.retryAt ||
+            this.activeRuns.has(sibling.id)
+        )
+      )
+        return;
+      outputPath ??=
+        siblings.find(
+          (sibling) => sibling.status === "completed" && sibling.outputPath
+        )?.outputPath ?? null;
     }
     if (!outputPath) return;
-    try { queueDownloadedMatchDiscovery(task.mergeFolder ? path.dirname(outputPath) : outputPath, task.mergeFolder ?? seriesName ?? task.title ?? undefined); }
-    catch (error) { console.warn('[h-tosho] Could not queue download match discovery:', error instanceof Error ? error.message : error); }
+    try {
+      queueDownloadedMatchDiscovery(
+        task.mergeFolder ? path.dirname(outputPath) : outputPath,
+        task.mergeFolder ?? seriesName ?? task.title ?? undefined
+      );
+    } catch (error) {
+      console.warn(
+        "[h-tosho] Could not queue download match discovery:",
+        error instanceof Error ? error.message : error
+      );
+    }
   }
 
   private async process(row: DownloadRow): Promise<void> {
@@ -1173,11 +1453,11 @@ export class DownloadQueue {
     this.activeRuns.set(row.id, ctx);
     // Per-task scratch space: pages stream to disk here so only the in-flight
     // images (bounded by maxImageConcurrency) live in RAM.
-    const tmpDir = path.join(getTmpDir(), 'downloads', String(row.id));
+    const tmpDir = path.join(getTmpDir(), "downloads", String(row.id));
     let discoverySeriesName: string | undefined;
     let finalTask: DownloadTask | null | undefined;
     const checkRunStop = (): void => {
-      if (ctx.cancelled) throw new Error('Cancelled by user');
+      if (ctx.cancelled) throw new Error("Cancelled by user");
       if (ctx.paused) throw new DownloadPausedError();
       if (ctx.shuttingDown) throw new DownloadShutdownError();
     };
@@ -1186,35 +1466,84 @@ export class DownloadQueue {
         checkRunStop();
         const settings = this.settingsProvider();
         if (!settings.downloadDirectory) {
-          throw new Error('No download directory configured. Set an output folder in Settings first.');
+          throw new Error(
+            "No download directory configured. Set an output folder in Settings first."
+          );
         }
         const provider = getDoujinProvider(row.source);
         if (!provider) throw new Error(`Unknown source: ${row.source}`);
 
         // Resolve the full gallery (metadata + image list).
-        this.updateProgress(row.id, { phase: 'resolving', progressCurrent: 0, progressTotal: 0, speed: 0, currentFile: 'Resolving gallery…', bytesCurrent: 0, bytesTotal: 0 }, { force: true });
+        this.updateProgress(
+          row.id,
+          {
+            phase: "resolving",
+            progressCurrent: 0,
+            progressTotal: 0,
+            speed: 0,
+            currentFile: "Resolving gallery…",
+            bytesCurrent: 0,
+            bytesTotal: 0,
+          },
+          { force: true }
+        );
         // The frozen canonical URL (sourceUrl) wins over re-derivation from
         // the current account/site settings: a site cutover must not rewrite
         // queued work.
         const idOrUrl = row.sourceUrl ?? row.galleryId;
-        const gallery = await retryTransient(() => resolveDuplicateGallery(row.source as DoujinSource, idOrUrl, true), 4, [2000, 10000, 30000], ctx.controller.signal);
+        const gallery = await retryTransient(
+          () =>
+            resolveDuplicateGallery(row.source as DoujinSource, idOrUrl, true),
+          4,
+          [2000, 10000, 30000],
+          ctx.controller.signal
+        );
         discoverySeriesName = gallery.series ?? gallery.title;
         checkRunStop();
         recordGalleryIdentity(gallery);
         const total = gallery.pages.length;
-        if (!total) throw new Error('Gallery has no downloadable pages.');
-        this.updateProgress(row.id, { phase: 'downloading', progressCurrent: 0, progressTotal: total, speed: 0, currentFile: null, bytesCurrent: 0, bytesTotal: 0 }, { force: true });
+        if (!total) throw new Error("Gallery has no downloadable pages.");
+        this.updateProgress(
+          row.id,
+          {
+            phase: "downloading",
+            progressCurrent: 0,
+            progressTotal: total,
+            speed: 0,
+            currentFile: null,
+            bytesCurrent: 0,
+            bytesTotal: 0,
+          },
+          { force: true }
+        );
 
         const destination = this.outputDestination(row, gallery, settings);
         const publish = async () => {
           checkRunStop();
           // Download all pages with bounded concurrency + rate limiting (streamed for live progress).
-          const images = await downloadPages(gallery, row.id, settings, ctx, tmpDir, (id, patch, options) => this.updateProgress(id, patch, options));
+          const images = await downloadPages(
+            gallery,
+            row.id,
+            settings,
+            ctx,
+            tmpDir,
+            (id, patch, options) => this.updateProgress(id, patch, options)
+          );
           checkRunStop();
 
           // Write to disk (cbz or folder) and record the output path.
-          this.updateProgress(row.id, { phase: 'packing', currentFile: 'Packing archive…' }, { force: true });
-          const outputPath = await this.writeOutput(row, gallery, images, settings, ctx);
+          this.updateProgress(
+            row.id,
+            { phase: "packing", currentFile: "Packing archive…" },
+            { force: true }
+          );
+          const outputPath = await this.writeOutput(
+            row,
+            gallery,
+            images,
+            settings,
+            ctx
+          );
 
           // The output is final: the scratch pages are no longer needed. On failure
           // or pause the tmpDir is deliberately kept so a retry/resume continues from partial data.
@@ -1222,14 +1551,15 @@ export class DownloadQueue {
           // observes a completed task whose scratch dir is still on disk.
           await fs.promises.rm(tmpDir, { recursive: true, force: true });
 
-          if (row.outputFormat !== 'folder') await noteDownloadedArchive(outputPath, gallery);
+          if (row.outputFormat !== "folder")
+            await noteDownloadedArchive(outputPath, gallery);
           else invalidateDuplicateLibrary();
           const finalBytes = this.live.get(row.id)?.bytesCurrent ?? 0;
           const completedRow = getDb()
             .update(schema.downloadQueue)
             .set({
               outputPath,
-              status: 'completed',
+              status: "completed",
               finishedAt: new Date().toISOString(),
               progressCurrent: total,
               progressTotal: total,
@@ -1255,9 +1585,12 @@ export class DownloadQueue {
         const old = row.outputPath ? archiveResource(row.outputPath) : null;
         const next = archiveResource(destination);
         // Existing folder reservations already conflict with overlapping folder operations.
-        if (row.mergeFolder || old && (pathContains(old, next) || pathContains(next, old))) await publish();
+        if (
+          row.mergeFolder ||
+          (old && (pathContains(old, next) || pathContains(next, old)))
+        )
+          await publish();
         else await archiveMutations.run([next], publish, ctx.controller.signal);
-
       } catch (e) {
         ctx.stopped = true;
         wakePaused(ctx);
@@ -1268,7 +1601,13 @@ export class DownloadQueue {
           if (progress) {
             const pausedRow = getDb()
               .update(schema.downloadQueue)
-              .set({ ...progress, speed: 0, currentFile: null, phase: null, revision: this.revisionExpr(row.id) })
+              .set({
+                ...progress,
+                speed: 0,
+                currentFile: null,
+                phase: null,
+                revision: this.revisionExpr(row.id),
+              })
               .where(eq(schema.downloadQueue.id, row.id))
               .returning()
               .get();
@@ -1280,7 +1619,7 @@ export class DownloadQueue {
           const shutdownRow = getDb()
             .update(schema.downloadQueue)
             .set({
-              status: 'queued',
+              status: "queued",
               speed: null,
               currentFile: null,
               phase: null,
@@ -1297,12 +1636,17 @@ export class DownloadQueue {
           const errorCode = classifyDownloadError(e, false);
           const progress = this.snapshotProgress(row.id);
           if (isTransientError(e)) {
-            finalTask = this.scheduleAutoRetry(row.id, message, errorRetryAfterMs(e), {
-              errorCode,
-              ...progress,
-            });
+            finalTask = this.scheduleAutoRetry(
+              row.id,
+              message,
+              errorRetryAfterMs(e),
+              {
+                errorCode,
+                ...progress,
+              }
+            );
           } else {
-            finalTask = this.setStatus(row.id, 'failed', undefined, {
+            finalTask = this.setStatus(row.id, "failed", undefined, {
               errorMessage: message,
               errorCode,
               retryAt: null,
@@ -1320,14 +1664,21 @@ export class DownloadQueue {
         // Defensive: no worker may stay parked on the pause gate after the run ends.
         wakePaused(ctx);
         this.activeRuns.delete(row.id);
-        if (!ctx.paused && !ctx.shuttingDown) this.discoverCompletedDownload(row.id, discoverySeriesName, finalTask);
-        const final = finalTask !== undefined ? finalTask : this.readRow(row.id);
+        if (!ctx.paused && !ctx.shuttingDown)
+          this.discoverCompletedDownload(
+            row.id,
+            discoverySeriesName,
+            finalTask
+          );
+        const final =
+          finalTask !== undefined ? finalTask : this.readRow(row.id);
         if (final) this.broadcast(final);
       }
     };
     const previous = row.outputPath ? archiveResource(row.outputPath) : null;
     try {
-      if (previous && !row.mergeFolder) await archiveMutations.run([previous], perform, ctx.controller.signal);
+      if (previous && !row.mergeFolder)
+        await archiveMutations.run([previous], perform, ctx.controller.signal);
       else await perform();
     } catch (error) {
       // Cancellation/pause/shutdown can reject a reservation before perform() enters its cleanup block.
@@ -1342,7 +1693,6 @@ export class DownloadQueue {
     }
   }
 
-
   /**
    * Write the finished gallery under the configured download location. By default
    * each gallery gets its own subfolder; merged downloads (mergeFolder set) share
@@ -1351,13 +1701,27 @@ export class DownloadQueue {
    *   <downloadLocation>/<Merged Series>/ch01 <Chapter>.cbz  (merged cbz)
    *   <downloadLocation>/<Doujin Name>/001.jpg, …           (folder)
    */
-  private outputDestination(row: DownloadRow, gallery: DoujinGallery, settings: DownloaderSettings): string {
-    if (row.mergeFolder && row.outputFormat === 'folder') throw new Error('Merged downloads require CBZ output');
+  private outputDestination(
+    row: DownloadRow,
+    gallery: DoujinGallery,
+    settings: DownloaderSettings
+  ): string {
+    if (row.mergeFolder && row.outputFormat === "folder")
+      throw new Error("Merged downloads require CBZ output");
     const base = path.resolve(settings.downloadDirectory);
-    const name = galleryFilesystemName(gallery.title, row.source, gallery.galleryId);
-    const dir = row.mergeFolder ? path.join(base, sanitizeFilename(row.mergeFolder, 'merged')) : path.join(base, name);
-    if (row.outputFormat === 'folder') return dir;
-    const prefix = row.chapterNumber != null ? `ch${String(row.chapterNumber).padStart(2, '0')} ` : '';
+    const name = galleryFilesystemName(
+      gallery.title,
+      row.source,
+      gallery.galleryId
+    );
+    const dir = row.mergeFolder
+      ? path.join(base, sanitizeFilename(row.mergeFolder, "merged"))
+      : path.join(base, name);
+    if (row.outputFormat === "folder") return dir;
+    const prefix =
+      row.chapterNumber != null
+        ? `ch${String(row.chapterNumber).padStart(2, "0")} `
+        : "";
     return path.join(dir, `${prefix}${name}.cbz`);
   }
 
@@ -1366,31 +1730,40 @@ export class DownloadQueue {
     gallery: DoujinGallery,
     images: { name: string; path: string }[],
     settings: DownloaderSettings,
-    ctx: RunContext,
+    ctx: RunContext
   ): Promise<string> {
-    if (row.mergeFolder && row.outputFormat === 'folder') {
-      throw new Error('Merged downloads require CBZ output');
+    if (row.mergeFolder && row.outputFormat === "folder") {
+      throw new Error("Merged downloads require CBZ output");
     }
     const base = path.resolve(settings.downloadDirectory);
     const destination = this.outputDestination(row, gallery, settings);
-    const dir = row.outputFormat === 'folder' ? destination : path.dirname(destination);
-    if (ctx.cancelled) throw new Error('Cancelled by user');
+    const dir =
+      row.outputFormat === "folder" ? destination : path.dirname(destination);
+    if (ctx.cancelled) throw new Error("Cancelled by user");
     if (ctx.paused) throw new DownloadPausedError();
     if (ctx.shuttingDown) throw new DownloadShutdownError();
     await fs.promises.mkdir(base, { recursive: true });
     // Stage on the destination volume; cancellation never touches published files.
-    const stagingDir = await fs.promises.mkdtemp(path.join(base, '.htosho-download-'));
+    const stagingDir = await fs.promises.mkdtemp(
+      path.join(base, ".htosho-download-")
+    );
     const comicInfo = generateComicInfoXml(gallery, this.mergeOptions(row));
     try {
-      if (row.outputFormat === 'folder') {
+      if (row.outputFormat === "folder") {
         await mapLimit(images, 4, (img) => {
-          if (ctx.cancelled) throw new Error('Cancelled by user');
+          if (ctx.cancelled) throw new Error("Cancelled by user");
           if (ctx.paused) throw new DownloadPausedError();
           if (ctx.shuttingDown) throw new DownloadShutdownError();
-          return fs.promises.copyFile(img.path, path.join(stagingDir, img.name));
+          return fs.promises.copyFile(
+            img.path,
+            path.join(stagingDir, img.name)
+          );
         });
-        await fs.promises.writeFile(path.join(stagingDir, 'ComicInfo.xml'), comicInfo);
-        if (ctx.cancelled) throw new Error('Cancelled by user');
+        await fs.promises.writeFile(
+          path.join(stagingDir, "ComicInfo.xml"),
+          comicInfo
+        );
+        if (ctx.cancelled) throw new Error("Cancelled by user");
         if (ctx.paused) throw new DownloadPausedError();
         if (ctx.shuttingDown) throw new DownloadShutdownError();
         ctx.committing = true;
@@ -1398,32 +1771,72 @@ export class DownloadQueue {
         // Preserve unrelated files in an existing gallery folder. Each name is
         // distinct, so replacements are independent; a little parallelism
         // keeps large galleries from paying hundreds of serial rename trips.
-        await mapLimit([...images.map((img) => img.name), 'ComicInfo.xml'], 4, (name) =>
-          replacePublishedFile(path.join(stagingDir, name), path.join(dir, name)));
+        await mapLimit(
+          [...images.map((img) => img.name), "ComicInfo.xml"],
+          4,
+          (name) =>
+            replacePublishedFile(
+              path.join(stagingDir, name),
+              path.join(dir, name)
+            )
+        );
         return dir;
       }
 
       const file = destination;
-      const stagedFile = path.join(stagingDir, 'archive.cbz');
-      await buildZipFromFiles(images, stagedFile, [{ name: 'ComicInfo.xml', data: Buffer.from(comicInfo, 'utf8') }], ctx.controller.signal);
-      if (ctx.cancelled) throw new Error('Cancelled by user');
+      const stagedFile = path.join(stagingDir, "archive.cbz");
+      await buildZipFromFiles(
+        images,
+        stagedFile,
+        [{ name: "ComicInfo.xml", data: Buffer.from(comicInfo, "utf8") }],
+        ctx.controller.signal
+      );
+      if (ctx.cancelled) throw new Error("Cancelled by user");
       if (ctx.paused) throw new DownloadPausedError();
       if (ctx.shuttingDown) throw new DownloadShutdownError();
       const publish = async () => {
         const current = this.readRow(row.id);
-        const mergeJob = current?.mergeJobId != null ? jobQueue.get(current.mergeJobId) : null;
-        if (mergeJob && (mergeJob.validationError || mergeJob.status==='failed' || mergeJob.status==='cancelled')) throw new Error(mergeJob.status==='cancelled' ? 'Cancelled by user' : 'Merge job cannot authorize this download publication; retry the merge after reviewing its failure');
+        const mergeJob =
+          current?.mergeJobId != null ? jobQueue.get(current.mergeJobId) : null;
+        if (
+          mergeJob &&
+          (mergeJob.validationError ||
+            mergeJob.status === "failed" ||
+            mergeJob.status === "cancelled")
+        )
+          throw new Error(
+            mergeJob.status === "cancelled"
+              ? "Cancelled by user"
+              : "Merge job cannot authorize this download publication; retry the merge after reviewing its failure"
+          );
         if (row.mergeFolder || mergeJob) {
           const conn = getKavitaConnection();
-          if (!conn.baseUrl || !conn.apiKey) throw new Error('Kavita is required to verify merged download protection');
-          const client = new KavitaClient(conn.baseUrl,conn.apiKey);
-          const request = mergeJob ? {seriesId:mergeJob.payload.seriesId,targetDir:mergeJob.payload.targetDir,sourceFiles:mergeJob.payload.sourceFiles,sourceSeriesIds:mergeJob.payload.sourceSeriesIds,seriesName:mergeJob.payload.seriesName}
-            : {targetDir:dir,seriesName:row.mergeFolder!};
-          const checked = await resolveMergeProtection(client,request,mergeJob?.payload.mergeProtection);
+          if (!conn.baseUrl || !conn.apiKey)
+            throw new Error(
+              "Kavita is required to verify merged download protection"
+            );
+          const client = new KavitaClient(conn.baseUrl, conn.apiKey);
+          const request = mergeJob
+            ? {
+                seriesId: mergeJob.payload.seriesId,
+                targetDir: mergeJob.payload.targetDir,
+                sourceFiles: mergeJob.payload.sourceFiles,
+                sourceSeriesIds: mergeJob.payload.sourceSeriesIds,
+                seriesName: mergeJob.payload.seriesName,
+              }
+            : { targetDir: dir, seriesName: row.mergeFolder! };
+          const checked = await resolveMergeProtection(
+            client,
+            request,
+            mergeJob?.payload.mergeProtection
+          );
           requireMergeProtection(checked.preview);
-          if (mergeJob) jobQueue.updateMergeState(mergeJob.id,{mergeProtection:checked.state});
+          if (mergeJob)
+            jobQueue.updateMergeState(mergeJob.id, {
+              mergeProtection: checked.state,
+            });
         }
-        if (ctx.cancelled) throw new Error('Cancelled by user');
+        if (ctx.cancelled) throw new Error("Cancelled by user");
         if (ctx.paused) throw new DownloadPausedError();
         if (ctx.shuttingDown) throw new DownloadShutdownError();
         ctx.committing = true;
@@ -1434,7 +1847,20 @@ export class DownloadQueue {
       // Legacy direct-merge tasks acquire library BEFORE archive ownership and
       // only after pages/packing finish. New jobs publish protected targets in
       // the executor; their downloads only publish independent staging files.
-      if (row.mergeFolder) return await libraryMutations.run(['*'],()=>archiveMutations.run([archiveResource(dir),...(row.outputPath ? [archiveResource(row.outputPath)] : [])],publish,ctx.controller.signal),ctx.controller.signal);
+      if (row.mergeFolder)
+        return await libraryMutations.run(
+          ["*"],
+          () =>
+            archiveMutations.run(
+              [
+                archiveResource(dir),
+                ...(row.outputPath ? [archiveResource(row.outputPath)] : []),
+              ],
+              publish,
+              ctx.controller.signal
+            ),
+          ctx.controller.signal
+        );
       return await publish();
     } finally {
       await fs.promises.rm(stagingDir, { recursive: true, force: true });
@@ -1442,16 +1868,18 @@ export class DownloadQueue {
   }
 
   /** ComicInfo overrides for merged downloads: shared series name + manual chapter number. */
-  private mergeOptions(row: DownloadRow): { seriesName?: string; number?: string } | undefined {
+  private mergeOptions(
+    row: DownloadRow
+  ): { seriesName?: string; number?: string } | undefined {
     if (!row.mergeFolder && row.chapterNumber == null) return undefined;
     return {
       ...(row.mergeFolder ? { seriesName: row.mergeFolder } : {}),
-      ...(row.chapterNumber != null ? { number: String(row.chapterNumber) } : {}),
+      ...(row.chapterNumber != null
+        ? { number: String(row.chapterNumber) }
+        : {}),
     };
   }
-
 }
-
 
 function pickLiveFields(t: DownloadTask): LiveFields {
   return {
@@ -1469,6 +1897,11 @@ function pickLiveFields(t: DownloadTask): LiveFields {
 /** Shared singleton wired to live settings at construction time. */
 export const downloadQueue = new DownloadQueue(() => getDownloaderSettings());
 
-jobQueue.registerMergeDownloadCanceller(jobId=>{
-  for (const task of getDb().select({id:schema.downloadQueue.id}).from(schema.downloadQueue).where(eq(schema.downloadQueue.mergeJobId,jobId)).all()) downloadQueue.cancel(task.id);
+jobQueue.registerMergeDownloadCanceller((jobId) => {
+  for (const task of getDb()
+    .select({ id: schema.downloadQueue.id })
+    .from(schema.downloadQueue)
+    .where(eq(schema.downloadQueue.mergeJobId, jobId))
+    .all())
+    downloadQueue.cancel(task.id);
 });

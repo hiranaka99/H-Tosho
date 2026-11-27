@@ -1,51 +1,109 @@
-import * as React from 'react';
-import { Search, Loader2, Download as DownloadIcon, Pause, XCircle, CheckCircle2, RotateCcw, Check, Circle, Bookmark, AlertTriangle, EllipsisVertical, EyeOff, Sparkles } from 'lucide-react';
-import { type DoujinSource, type DoujinSearchResult } from '../../lib/api';
-import { useGalleryDownloadStatus } from '../../lib/DownloadsContext';
-import { cn, timeAgo, toIsoUtc } from '../../lib/utils';
-import { Button, Badge } from '../../components/ui';
-import { PageCountPill } from '../../components/PageCountPill';
+import * as React from "react";
+import {
+  Search,
+  Loader2,
+  Download as DownloadIcon,
+  Pause,
+  XCircle,
+  CheckCircle2,
+  RotateCcw,
+  Check,
+  Circle,
+  Bookmark,
+  AlertTriangle,
+  EllipsisVertical,
+  EyeOff,
+  Sparkles,
+} from "lucide-react";
+import { type DoujinSource, type DoujinSearchResult } from "../../lib/api";
+import { useGalleryDownloadStatus } from "../../lib/DownloadsContext";
+import { cn, timeAgo, toIsoUtc } from "../../lib/utils";
+import { Button, Badge } from "../../components/ui";
+import { PageCountPill } from "../../components/PageCountPill";
 
-import { SOURCE_COLORS, SOURCE_LABELS, type DownloadSetup } from './state';
-import { OWNERSHIP_LABELS, type GalleryOwnership } from './ownership';
+import { SOURCE_COLORS, SOURCE_LABELS, type DownloadSetup } from "./state";
+import { OWNERSHIP_LABELS, type GalleryOwnership } from "./ownership";
 /** Source is named in text; the dot is the only colour so the label never fights the brand rose. */
 export function SourceBadge({ source }: { source: DoujinSource }) {
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-foreground">
-      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: SOURCE_COLORS[source] }} />
+      <span
+        aria-hidden="true"
+        className="h-1.5 w-1.5 rounded-full"
+        style={{ backgroundColor: SOURCE_COLORS[source] }}
+      />
       {SOURCE_LABELS[source]}
     </span>
   );
 }
 
 const OWNERSHIP_STYLE = {
-  'in-library': 'border-success/40 bg-surface text-success',
-  downloaded: 'border-border-2 bg-surface text-foreground',
-  'possible-duplicate': 'border-warning/50 bg-surface text-warning',
-  'better-edition': 'border-primary/50 bg-surface text-primary',
+  "in-library": "border-success/40 bg-surface text-success",
+  downloaded: "border-border-2 bg-surface text-foreground",
+  "possible-duplicate": "border-warning/50 bg-surface text-warning",
+  "better-edition": "border-primary/50 bg-surface text-primary",
 } as const;
 
 /** Ownership as text plus icon, never colour alone; the title carries the full meaning. */
-export function OwnershipChip({ type, className }: { type: Exclude<GalleryOwnership['type'], 'available'>; className?: string }) {
+export function OwnershipChip({
+  type,
+  className,
+}: {
+  type: Exclude<GalleryOwnership["type"], "available">;
+  className?: string;
+}) {
   const { label, help } = OWNERSHIP_LABELS[type];
-  const Icon = type === 'in-library' ? CheckCircle2 : type === 'downloaded' ? Bookmark : type === 'better-edition' ? Sparkles : AlertTriangle;
+  const Icon =
+    type === "in-library"
+      ? CheckCircle2
+      : type === "downloaded"
+        ? Bookmark
+        : type === "better-edition"
+          ? Sparkles
+          : AlertTriangle;
   return (
-    <span title={help} className={cn('inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium', OWNERSHIP_STYLE[type], className)}>
-      <Icon aria-hidden="true" className="h-3 w-3 shrink-0" /><span className="truncate">{label}</span>
+    <span
+      title={help}
+      className={cn(
+        "inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium",
+        OWNERSHIP_STYLE[type],
+        className
+      )}
+    >
+      <Icon aria-hidden="true" className="h-3 w-3 shrink-0" />
+      <span className="truncate">{label}</span>
     </span>
   );
 }
 
-export const Cover = React.memo(function Cover({ url, title, className, priority = false }: { url?: string | null; title: string; className?: string; priority?: boolean }) {
+export const Cover = React.memo(function Cover({
+  url,
+  title,
+  className,
+  priority = false,
+}: {
+  url?: string | null;
+  title: string;
+  className?: string;
+  priority?: boolean;
+}) {
   const [failed, setFailed] = React.useState(false);
   React.useEffect(() => setFailed(false), [url]);
-  const size = className ?? 'h-40 w-full';
+  const size = className ?? "h-40 w-full";
   if (!url || failed) {
     // No preview is a quiet absence, not an error: the title's initial stands in for the cover.
-    const initial = Array.from(title.trim())[0]?.toLocaleUpperCase() ?? '';
+    const initial = Array.from(title.trim())[0]?.toLocaleUpperCase() ?? "";
     return (
-      <div aria-hidden="true" className={cn('@container flex select-none items-center justify-center bg-surface-2 text-primary/25', size)}>
-        <span className="text-[clamp(0.75rem,38cqi,5rem)] font-semibold leading-none">{initial}</span>
+      <div
+        aria-hidden="true"
+        className={cn(
+          "@container flex select-none items-center justify-center bg-surface-2 text-primary/25",
+          size
+        )}
+      >
+        <span className="text-[clamp(0.75rem,38cqi,5rem)] font-semibold leading-none">
+          {initial}
+        </span>
       </div>
     );
   }
@@ -54,11 +112,11 @@ export const Cover = React.memo(function Cover({ url, title, className, priority
       src={url}
       alt={title}
       referrerPolicy="no-referrer"
-      loading={priority ? 'eager' : 'lazy'}
+      loading={priority ? "eager" : "lazy"}
       decoding="async"
-      fetchPriority={priority ? 'high' : undefined}
+      fetchPriority={priority ? "high" : undefined}
       onError={() => setFailed(true)}
-      className={cn('object-cover', size)}
+      className={cn("object-cover", size)}
     />
   );
 });
@@ -73,17 +131,58 @@ export function formatDate(iso?: string | null): string | undefined {
 
 export function DownloadStatusBadge({ status }: { status: string }) {
   const map: Record<string, React.ReactNode> = {
-    queued: <Badge tone="muted"><Circle className="h-3 w-3" /> Queued</Badge>,
-    downloading: <Badge tone="info"><Loader2 className="h-3 w-3 animate-spin" /> Downloading</Badge>,
-    completed: <Badge tone="success"><CheckCircle2 className="h-3 w-3" /> Completed</Badge>,
-    failed: <Badge tone="danger"><XCircle className="h-3 w-3" /> Failed</Badge>,
-    'retry-wait': <Badge tone="warning"><RotateCcw className="h-3 w-3" /> Retry scheduled</Badge>,
-    cancelled: <Badge tone="muted"><XCircle className="h-3 w-3" /> Cancelled</Badge>,
-    resolving: <Badge tone="info"><Loader2 className="h-3 w-3 animate-spin" /> Resolving</Badge>,
-    packing: <Badge tone="info"><Loader2 className="h-3 w-3 animate-spin" /> Packing archive</Badge>,
+    queued: (
+      <Badge tone="muted">
+        <Circle className="h-3 w-3" /> Queued
+      </Badge>
+    ),
+    downloading: (
+      <Badge tone="info">
+        <Loader2 className="h-3 w-3 animate-spin" /> Downloading
+      </Badge>
+    ),
+    completed: (
+      <Badge tone="success">
+        <CheckCircle2 className="h-3 w-3" /> Completed
+      </Badge>
+    ),
+    failed: (
+      <Badge tone="danger">
+        <XCircle className="h-3 w-3" /> Failed
+      </Badge>
+    ),
+    "retry-wait": (
+      <Badge tone="warning">
+        <RotateCcw className="h-3 w-3" /> Retry scheduled
+      </Badge>
+    ),
+    cancelled: (
+      <Badge tone="muted">
+        <XCircle className="h-3 w-3" /> Cancelled
+      </Badge>
+    ),
+    resolving: (
+      <Badge tone="info">
+        <Loader2 className="h-3 w-3 animate-spin" /> Resolving
+      </Badge>
+    ),
+    packing: (
+      <Badge tone="info">
+        <Loader2 className="h-3 w-3 animate-spin" /> Packing archive
+      </Badge>
+    ),
     // Paused is the user's choice, not a warning: neutral, so amber stays with retries.
-    paused: <Badge tone="default"><Pause className="h-3 w-3" /> Paused</Badge> };
-  return <span key={status} className="downloader-task-status inline-flex">{map[status] ?? <Badge>{status}</Badge>}</span>;
+    paused: (
+      <Badge tone="default">
+        <Pause className="h-3 w-3" /> Paused
+      </Badge>
+    ),
+  };
+  return (
+    <span key={status} className="downloader-task-status inline-flex">
+      {map[status] ?? <Badge>{status}</Badge>}
+    </span>
+  );
 }
 
 // ---------------- Gallery card ----------------
@@ -96,13 +195,20 @@ interface GalleryCardProps {
   item: DoujinSearchResult;
   onOpen: (item: DoujinSearchResult) => void;
   onDownload: (item: DoujinSearchResult) => void;
-  downloadSetup: DownloadSetup['status'];
+  downloadSetup: DownloadSetup["status"];
   starting?: boolean;
   ownership: GalleryOwnership;
-  selection?: { mode: 'select' | 'browse'; selected: boolean; onToggle: (item: DoujinSearchResult) => void };
-  review?: { state: 'pending' | 'reviewed' | 'unreviewed'; onChange: (item: DoujinSearchResult, reviewed: boolean) => void };
+  selection?: {
+    mode: "select" | "browse";
+    selected: boolean;
+    onToggle: (item: DoujinSearchResult) => void;
+  };
+  review?: {
+    state: "pending" | "reviewed" | "unreviewed";
+    onChange: (item: DoujinSearchResult, reviewed: boolean) => void;
+  };
   feedback?: { pending: boolean; onOpen: (item: DoujinSearchResult) => void };
-  display?: 'full' | 'recommendation' | 'discovery';
+  display?: "full" | "recommendation" | "discovery";
   /** Render the download action as an outline button so a shelf of cards stays calm. */
   quietAction?: boolean;
   /** Denser tile for shelves: always vertical, tighter padding, one-line Artist label. */
@@ -119,129 +225,268 @@ interface GalleryCardProps {
   onOriginSelect?: (searchId: number) => void;
 }
 
-export interface WatchOrigin { searchId: number; label: string; query: string; foundAt: string; removed: boolean }
+export interface WatchOrigin {
+  searchId: number;
+  label: string;
+  query: string;
+  foundAt: string;
+  removed: boolean;
+}
 
 /** A single namespaced term (`artist:some_name`, `artist:"some name"`) reads as its value; anything else stays verbatim. */
 export function readableWatchLabel(label: string): string {
   const match = /^[a-z]+:(?:"([^"]+)"|([^\s"]+))$/i.exec(label.trim());
-  return match ? (match[1] ?? match[2]).replace(/_/g, ' ') : label;
+  return match ? (match[1] ?? match[2]).replace(/_/g, " ") : label;
 }
 
-function sameGalleryCardProps(prev: GalleryCardProps, next: GalleryCardProps): boolean {
+function sameGalleryCardProps(
+  prev: GalleryCardProps,
+  next: GalleryCardProps
+): boolean {
   if (
-    prev.item !== next.item
-    || prev.downloadSetup !== next.downloadSetup
-    || prev.starting !== next.starting
-    || prev.display !== next.display
-    || prev.quietAction !== next.quietAction
-    || prev.compact !== next.compact
-    || prev.priority !== next.priority
-    || prev.ownership.type !== next.ownership.type
-    || prev.selection?.mode !== next.selection?.mode
-    || prev.selection?.selected !== next.selection?.selected
-    || prev.review?.state !== next.review?.state
-    || prev.feedback?.pending !== next.feedback?.pending
-    || Boolean(prev.feedback) !== Boolean(next.feedback)
-    || Boolean(prev.review) !== Boolean(next.review)
-    || prev.onOpen !== next.onOpen
-    || prev.onDownload !== next.onDownload
-    || prev.selection?.onToggle !== next.selection?.onToggle
-    || prev.review?.onChange !== next.review?.onChange
-    || prev.feedback?.onOpen !== next.feedback?.onOpen
-    || prev.onOriginSelect !== next.onOriginSelect
-    || prev.origin?.searchId !== next.origin?.searchId
-    || prev.origin?.label !== next.origin?.label
-    || prev.origin?.foundAt !== next.origin?.foundAt
-    || prev.origin?.removed !== next.origin?.removed
-  ) return false;
+    prev.item !== next.item ||
+    prev.downloadSetup !== next.downloadSetup ||
+    prev.starting !== next.starting ||
+    prev.display !== next.display ||
+    prev.quietAction !== next.quietAction ||
+    prev.compact !== next.compact ||
+    prev.priority !== next.priority ||
+    prev.ownership.type !== next.ownership.type ||
+    prev.selection?.mode !== next.selection?.mode ||
+    prev.selection?.selected !== next.selection?.selected ||
+    prev.review?.state !== next.review?.state ||
+    prev.feedback?.pending !== next.feedback?.pending ||
+    Boolean(prev.feedback) !== Boolean(next.feedback) ||
+    Boolean(prev.review) !== Boolean(next.review) ||
+    prev.onOpen !== next.onOpen ||
+    prev.onDownload !== next.onDownload ||
+    prev.selection?.onToggle !== next.selection?.onToggle ||
+    prev.review?.onChange !== next.review?.onChange ||
+    prev.feedback?.onOpen !== next.feedback?.onOpen ||
+    prev.onOriginSelect !== next.onOriginSelect ||
+    prev.origin?.searchId !== next.origin?.searchId ||
+    prev.origin?.label !== next.origin?.label ||
+    prev.origin?.foundAt !== next.origin?.foundAt ||
+    prev.origin?.removed !== next.origin?.removed
+  )
+    return false;
   const prevReasons = prev.reasons;
   const nextReasons = next.reasons;
   if (prevReasons !== nextReasons) {
-    if (!prevReasons || !nextReasons || prevReasons.length !== nextReasons.length) return false;
-    if (!prevReasons.every((reason, i) => reason === nextReasons[i])) return false;
+    if (
+      !prevReasons ||
+      !nextReasons ||
+      prevReasons.length !== nextReasons.length
+    )
+      return false;
+    if (!prevReasons.every((reason, i) => reason === nextReasons[i]))
+      return false;
   }
   const prevExtra = prev.provenance?.extraSources;
   const nextExtra = next.provenance?.extraSources;
   if (prevExtra === nextExtra) return true;
-  if (!prevExtra || !nextExtra || prevExtra.length !== nextExtra.length) return false;
+  if (!prevExtra || !nextExtra || prevExtra.length !== nextExtra.length)
+    return false;
   return prevExtra.every((source, i) => source === nextExtra[i]);
 }
 
-function summarizeRecommendationReasons(reasons?: string[]): { summary: string; full: string } | null {
+function summarizeRecommendationReasons(
+  reasons?: string[]
+): { summary: string; full: string } | null {
   if (!reasons?.length) return null;
   const parsed = reasons
     .map((reason) => {
-      const sep = reason.indexOf(' ');
+      const sep = reason.indexOf(" ");
       if (sep <= 0) return null;
       const kind = reason.slice(0, sep);
       const value = reason.slice(sep + 1).trim();
       // Only the reason kinds the ranking produces; anything else would render an empty line.
-      return value && (kind === 'artist' || kind === 'series' || kind === 'tag') ? { kind, value } : null;
+      return value && (kind === "artist" || kind === "series" || kind === "tag")
+        ? { kind, value }
+        : null;
     })
-    .filter((entry): entry is { kind: string; value: string } => entry !== null);
+    .filter(
+      (entry): entry is { kind: string; value: string } => entry !== null
+    );
   if (!parsed.length) return null;
   const priority: Record<string, number> = { artist: 0, series: 1, tag: 2 };
   parsed.sort((a, b) => priority[a.kind] - priority[b.kind]);
-  const full = parsed.map((entry) => `${entry.kind === 'artist' ? 'Artist' : entry.kind === 'series' ? 'Series' : 'Tag'}: ${entry.value}`).join(' · ');
+  const full = parsed
+    .map(
+      (entry) =>
+        `${entry.kind === "artist" ? "Artist" : entry.kind === "series" ? "Series" : "Tag"}: ${entry.value}`
+    )
+    .join(" · ");
   const lead = parsed[0];
-  if (lead.kind === 'artist') {
-    const extraTag = parsed.find((entry) => entry.kind === 'tag');
-    return { summary: extraTag ? `Because you like ${lead.value} · ${extraTag.value}` : `Because you like ${lead.value}`, full };
+  if (lead.kind === "artist") {
+    const extraTag = parsed.find((entry) => entry.kind === "tag");
+    return {
+      summary: extraTag
+        ? `Because you like ${lead.value} · ${extraTag.value}`
+        : `Because you like ${lead.value}`,
+      full,
+    };
   }
-  if (lead.kind === 'series') {
-    const extraTag = parsed.find((entry) => entry.kind === 'tag');
-    return { summary: extraTag ? `Series: ${lead.value} · ${extraTag.value}` : `Series: ${lead.value}`, full };
+  if (lead.kind === "series") {
+    const extraTag = parsed.find((entry) => entry.kind === "tag");
+    return {
+      summary: extraTag
+        ? `Series: ${lead.value} · ${extraTag.value}`
+        : `Series: ${lead.value}`,
+      full,
+    };
   }
-  const topTags = parsed.filter((entry) => entry.kind === 'tag').slice(0, 2).map((entry) => entry.value);
-  return { summary: `Because you like ${topTags.join(', ')}`, full };
+  const topTags = parsed
+    .filter((entry) => entry.kind === "tag")
+    .slice(0, 2)
+    .map((entry) => entry.value);
+  return { summary: `Because you like ${topTags.join(", ")}`, full };
 }
 
-export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDownload, downloadSetup, starting = false, ownership, selection, review, feedback, display = 'full', quietAction = false, compact = false, provenance, reasons, priority = false, origin, onOriginSelect }: GalleryCardProps) {
-  const selectMode = selection?.mode === 'select', selected = selection?.selected ?? false;
-  const onToggleSelect = selection?.onToggle, onReview = review?.onChange;
-  const reviewed = review?.state === 'reviewed', reviewPending = review?.state === 'pending';
-  const onFeedback = feedback?.onOpen, dismissing = feedback?.pending ?? false;
-  const libraryMatch = ownership.type === 'in-library' ? 'owned' : ownership.type === 'possible-duplicate' ? 'possible' : undefined;
-  const showSource = display !== 'recommendation', showTags = display === 'full';
-  const reasonLine = display === 'recommendation' ? summarizeRecommendationReasons(reasons) : null;
-  const ownershipType = ownership.type === 'available' ? null : ownership.type;
+export const GalleryCard = React.memo(function GalleryCard({
+  item,
+  onOpen,
+  onDownload,
+  downloadSetup,
+  starting = false,
+  ownership,
+  selection,
+  review,
+  feedback,
+  display = "full",
+  quietAction = false,
+  compact = false,
+  provenance,
+  reasons,
+  priority = false,
+  origin,
+  onOriginSelect,
+}: GalleryCardProps) {
+  const selectMode = selection?.mode === "select",
+    selected = selection?.selected ?? false;
+  const onToggleSelect = selection?.onToggle,
+    onReview = review?.onChange;
+  const reviewed = review?.state === "reviewed",
+    reviewPending = review?.state === "pending";
+  const onFeedback = feedback?.onOpen,
+    dismissing = feedback?.pending ?? false;
+  const libraryMatch =
+    ownership.type === "in-library"
+      ? "owned"
+      : ownership.type === "possible-duplicate"
+        ? "possible"
+        : undefined;
+  const showSource = display !== "recommendation",
+    showTags = display === "full";
+  const reasonLine =
+    display === "recommendation"
+      ? summarizeRecommendationReasons(reasons)
+      : null;
+  const ownershipType = ownership.type === "available" ? null : ownership.type;
   const tags = item.tags.slice(0, 4);
-  const inLibrary = libraryMatch === 'owned';
-  const alreadyOwned = ownership.type === 'downloaded' || inLibrary;
+  const inLibrary = libraryMatch === "owned";
+  const alreadyOwned = ownership.type === "downloaded" || inLibrary;
   const taskStatus = useGalleryDownloadStatus(item.source, item.galleryId);
   const active = starting || taskStatus !== undefined;
   // In an inbox, Download and Dismiss are the two triage verbs and carry equal weight.
   const triage = Boolean(onReview);
-  const originText = origin ? `via ${origin.label}${origin.removed ? ' · removed watch' : ''} · ${timeAgo(origin.foundAt)}` : '';
+  const originText = origin
+    ? `via ${origin.label}${origin.removed ? " · removed watch" : ""} · ${timeAgo(origin.foundAt)}`
+    : "";
   return (
     <article
       data-gallery-motion-id={`${item.source}:${item.galleryId}`}
       className={cn(
-        'ui-card ui-card-interactive @container group flex min-w-0 flex-col overflow-hidden rounded-xl border transition-colors duration-200',
-        selected ? 'border-primary bg-primary/10 ring-2 ring-primary' : 'border-border bg-surface hover:border-border-2',
+        "ui-card ui-card-interactive @container group flex min-w-0 flex-col overflow-hidden rounded-xl border transition-colors duration-200",
+        selected
+          ? "border-primary bg-primary/10 ring-2 ring-primary"
+          : "border-border bg-surface hover:border-border-2"
       )}
     >
-      <button type="button" onClick={() => (selectMode ? onToggleSelect?.(item) : onOpen(item))} className={cn('min-w-0 text-left', compact ? 'block' : 'grid grid-cols-[5rem_minmax(0,1fr)] min-[420px]:block')} aria-label={selectMode ? `${selected ? 'Deselect' : 'Select'} ${item.title}` : `View details for ${item.title}`} aria-pressed={selectMode ? selected : undefined}>
+      <button
+        type="button"
+        onClick={() => (selectMode ? onToggleSelect?.(item) : onOpen(item))}
+        className={cn(
+          "min-w-0 text-left",
+          compact
+            ? "block"
+            : "grid grid-cols-[5rem_minmax(0,1fr)] min-[420px]:block"
+        )}
+        aria-label={
+          selectMode
+            ? `${selected ? "Deselect" : "Select"} ${item.title}`
+            : `View details for ${item.title}`
+        }
+        aria-pressed={selectMode ? selected : undefined}
+      >
         <div className="relative overflow-hidden">
-          <Cover url={item.coverUrl} title={item.title} className="downloader-cover aspect-[3/4] w-full" priority={priority} />
-          <PageCountPill pageCount={item.pageCount} className={cn('absolute right-2', selectMode || selected ? 'bottom-2' : 'top-2')} />
-          {ownershipType && !selectMode && !selected && <OwnershipChip type={ownershipType} className="pointer-events-none absolute bottom-2 left-2 max-w-[calc(100%-1rem)] max-[419px]:hidden" />}
+          <Cover
+            url={item.coverUrl}
+            title={item.title}
+            className="downloader-cover aspect-[3/4] w-full"
+            priority={priority}
+          />
+          <PageCountPill
+            pageCount={item.pageCount}
+            className={cn(
+              "absolute right-2",
+              selectMode || selected ? "bottom-2" : "top-2"
+            )}
+          />
+          {ownershipType && !selectMode && !selected && (
+            <OwnershipChip
+              type={ownershipType}
+              className="pointer-events-none absolute bottom-2 left-2 max-w-[calc(100%-1rem)] max-[419px]:hidden"
+            />
+          )}
           {(selectMode || selected) && (
-            <span className={cn('pointer-events-none absolute left-2 top-2 z-[2] inline-flex h-8 w-8 items-center justify-center rounded-md border', selected ? 'border-primary-button bg-primary-button text-white' : 'border-border-2 bg-surface text-muted')} aria-hidden="true">
-              {selected ? <Check className="downloader-selection-check h-5 w-5" /> : <span className="h-4 w-4 rounded-sm border-2 border-current" />}
+            <span
+              className={cn(
+                "pointer-events-none absolute left-2 top-2 z-[2] inline-flex h-8 w-8 items-center justify-center rounded-md border",
+                selected
+                  ? "border-primary-button bg-primary-button text-white"
+                  : "border-border-2 bg-surface text-muted"
+              )}
+              aria-hidden="true"
+            >
+              {selected ? (
+                <Check className="downloader-selection-check h-5 w-5" />
+              ) : (
+                <span className="h-4 w-4 rounded-sm border-2 border-current" />
+              )}
             </span>
           )}
-          {!selectMode && !selected && <div className="pointer-events-none absolute inset-0 flex items-end justify-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-            <span className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-surface/95 px-3 py-1 text-xs font-medium text-foreground shadow-[0_1px_2px_var(--control-shadow)]">
-              <Search className="h-3 w-3" /> Details
-            </span>
-          </div>}
+          {!selectMode && !selected && (
+            <div className="pointer-events-none absolute inset-0 flex items-end justify-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+              <span className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-surface/95 px-3 py-1 text-xs font-medium text-foreground shadow-[0_1px_2px_var(--control-shadow)]">
+                <Search className="h-3 w-3" /> Details
+              </span>
+            </div>
+          )}
         </div>
-        <div className={cn('flex min-w-0 flex-col', compact ? 'gap-1 p-2.5 pb-0' : 'gap-2 p-3 pb-0')}>
-          <p className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]" title={item.title}>{item.title}</p>
+        <div
+          className={cn(
+            "flex min-w-0 flex-col",
+            compact ? "gap-1 p-2.5 pb-0" : "gap-2 p-3 pb-0"
+          )}
+        >
+          <p
+            className="min-h-10 overflow-hidden text-sm font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]"
+            title={item.title}
+          >
+            {item.title}
+          </p>
           {item.artists.length > 0 && (
-            <p className="truncate text-xs font-medium text-foreground" title={`Artists: ${item.artists.join(', ')}`}>
-              {!compact && <span className="text-muted">Artist{item.artists.length > 1 ? 's' : ''} · </span>}{item.artists.join(', ')}
+            <p
+              className="truncate text-xs font-medium text-foreground"
+              title={`Artists: ${item.artists.join(", ")}`}
+            >
+              {!compact && (
+                <span className="text-muted">
+                  Artist{item.artists.length > 1 ? "s" : ""} ·{" "}
+                </span>
+              )}
+              {item.artists.join(", ")}
             </p>
           )}
           {reasonLine && (
@@ -249,41 +494,218 @@ export const GalleryCard = React.memo(function GalleryCard({ item, onOpen, onDow
               {reasonLine.summary}
             </p>
           )}
-          {showTags && tags.length > 0 && <div className="flex max-h-12 flex-wrap gap-1 overflow-hidden" aria-label="Tags">{tags.map((tag, i) => <span key={i} className="max-w-full truncate rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{tag}</span>)}</div>}
+          {showTags && tags.length > 0 && (
+            <div
+              className="flex max-h-12 flex-wrap gap-1 overflow-hidden"
+              aria-label="Tags"
+            >
+              {tags.map((tag, i) => (
+                <span
+                  key={i}
+                  className="max-w-full truncate rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </button>
-      <div className={cn('mt-auto flex min-w-0 flex-col gap-2', compact ? 'p-2.5' : 'p-3')}>
+      <div
+        className={cn(
+          "mt-auto flex min-w-0 flex-col gap-2",
+          compact ? "p-2.5" : "p-3"
+        )}
+      >
         {(showSource || ownershipType || provenance || reviewed) && (
           <div className="flex min-h-6 flex-wrap items-center gap-2">
-            {reviewed && <span className="inline-flex items-center gap-1 rounded-full border border-border-2 px-2 py-0.5 text-xs font-medium text-muted"><EyeOff aria-hidden="true" className="h-3 w-3" />Dismissed</span>}
+            {reviewed && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-border-2 px-2 py-0.5 text-xs font-medium text-muted">
+                <EyeOff aria-hidden="true" className="h-3 w-3" />
+                Dismissed
+              </span>
+            )}
             {/* Select mode moves the chip off the cover so it never hides behind the checkbox. */}
-            {ownershipType && <OwnershipChip type={ownershipType} className={selectMode || selected ? undefined : 'min-[420px]:hidden'} />}
+            {ownershipType && (
+              <OwnershipChip
+                type={ownershipType}
+                className={
+                  selectMode || selected ? undefined : "min-[420px]:hidden"
+                }
+              />
+            )}
             {showSource && <SourceBadge source={item.source} />}
             {provenance && provenance.extraSources.length > 0 && (
-              <span className="flex min-w-0 flex-wrap items-center gap-1" aria-label={`Also found on ${provenance.extraSources.map((s) => SOURCE_LABELS[s]).join(', ')}`}>
+              <span
+                className="flex min-w-0 flex-wrap items-center gap-1"
+                aria-label={`Also found on ${provenance.extraSources.map((s) => SOURCE_LABELS[s]).join(", ")}`}
+              >
                 <span className="text-xs text-muted">Also on:</span>
-                {provenance.extraSources.map((s) => <SourceBadge key={s} source={s} />)}
+                {provenance.extraSources.map((s) => (
+                  <SourceBadge key={s} source={s} />
+                ))}
               </span>
             )}
           </div>
         )}
         {origin && (
-          <button type="button" data-watch-origin
+          <button
+            type="button"
+            data-watch-origin
             className="-my-1 flex min-h-8 min-w-0 items-center text-left text-xs text-muted underline-offset-4 hover:text-primary hover:underline max-lg:min-h-11 pointer-coarse:min-h-11"
-            onClick={() => onOriginSelect?.(origin.searchId)} aria-label={`${originText}. Show only finds from this watch`} title={`Show only finds from ${origin.label} · ${origin.query}`}>
-            <span className="truncate">via <span className="font-medium text-foreground">{readableWatchLabel(origin.label)}</span>{origin.removed ? ' · removed watch' : ''} · <time dateTime={origin.foundAt}>{timeAgo(origin.foundAt)}</time></span>
+            onClick={() => onOriginSelect?.(origin.searchId)}
+            aria-label={`${originText}. Show only finds from this watch`}
+            title={`Show only finds from ${origin.label} · ${origin.query}`}
+          >
+            <span className="truncate">
+              via{" "}
+              <span className="font-medium text-foreground">
+                {readableWatchLabel(origin.label)}
+              </span>
+              {origin.removed ? " · removed watch" : ""} ·{" "}
+              <time dateTime={origin.foundAt}>{timeAgo(origin.foundAt)}</time>
+            </span>
           </button>
         )}
         <div className="flex min-w-0 items-stretch gap-2">
-          {selectMode ? <>
-            <Button size="sm" variant="outline" className="min-w-0 flex-1 px-2" onClick={() => onOpen(item)} aria-label={`View details for ${item.title}`}>Details</Button>
-          </> : <Button size="sm" variant={quietAction || triage || alreadyOwned || libraryMatch === 'possible' ? 'outline' : 'default'} className={cn('max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 px-2', triage && 'h-auto min-h-11 basis-0 px-1.5')} onClick={() => onDownload(item)} disabled={active || alreadyOwned || downloadSetup === 'loading' || downloadSetup === 'error'} aria-label={starting && !taskStatus ? `Checking duplicates for ${item.title}` : active ? `${item.title} is ${taskStatus ?? 'starting'}` : alreadyOwned ? `${item.title} already in library` : libraryMatch === 'possible' ? `Review possible duplicate of ${item.title}` : downloadSetup === 'missing' ? `Set output folder before downloading ${item.title}` : `Download ${item.title}`}>
-            {!onReview && (taskStatus === 'paused' ? <Pause className="h-3.5 w-3.5 shrink-0" /> : taskStatus === 'queued' ? <Circle className="h-3.5 w-3.5 shrink-0" /> : active ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : alreadyOwned ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <DownloadIcon className="h-3.5 w-3.5 shrink-0" />)}
-            <span>{taskStatus === 'retry-wait' ? 'Retry scheduled' : taskStatus === 'queued' ? 'Queued' : taskStatus === 'paused' ? 'Paused' : starting && !taskStatus ? 'Checking…' : active ? 'Downloading' : inLibrary ? 'In library' : alreadyOwned ? 'Downloaded' : libraryMatch === 'possible' ? 'Review duplicate' : downloadSetup === 'missing' && !triage ? 'Set folder' : 'Download'}</span>
-          </Button>}
+          {selectMode ? (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                className="min-w-0 flex-1 px-2"
+                onClick={() => onOpen(item)}
+                aria-label={`View details for ${item.title}`}
+              >
+                Details
+              </Button>
+            </>
+          ) : (
+            <Button
+              size="sm"
+              variant={
+                quietAction ||
+                triage ||
+                alreadyOwned ||
+                libraryMatch === "possible"
+                  ? "outline"
+                  : "default"
+              }
+              className={cn(
+                "max-lg:min-h-11 pointer-coarse:min-h-11 min-w-0 flex-1 px-2",
+                triage && "h-auto min-h-11 basis-0 px-1.5"
+              )}
+              onClick={() => onDownload(item)}
+              disabled={
+                active ||
+                alreadyOwned ||
+                downloadSetup === "loading" ||
+                downloadSetup === "error"
+              }
+              aria-label={
+                starting && !taskStatus
+                  ? `Checking duplicates for ${item.title}`
+                  : active
+                    ? `${item.title} is ${taskStatus ?? "starting"}`
+                    : alreadyOwned
+                      ? `${item.title} already in library`
+                      : libraryMatch === "possible"
+                        ? `Review possible duplicate of ${item.title}`
+                        : downloadSetup === "missing"
+                          ? `Set output folder before downloading ${item.title}`
+                          : `Download ${item.title}`
+              }
+            >
+              {!onReview &&
+                (taskStatus === "paused" ? (
+                  <Pause className="h-3.5 w-3.5 shrink-0" />
+                ) : taskStatus === "queued" ? (
+                  <Circle className="h-3.5 w-3.5 shrink-0" />
+                ) : active ? (
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                ) : alreadyOwned ? (
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                ) : (
+                  <DownloadIcon className="h-3.5 w-3.5 shrink-0" />
+                ))}
+              <span>
+                {taskStatus === "retry-wait"
+                  ? "Retry scheduled"
+                  : taskStatus === "queued"
+                    ? "Queued"
+                    : taskStatus === "paused"
+                      ? "Paused"
+                      : starting && !taskStatus
+                        ? "Checking…"
+                        : active
+                          ? "Downloading"
+                          : inLibrary
+                            ? "In library"
+                            : alreadyOwned
+                              ? "Downloaded"
+                              : libraryMatch === "possible"
+                                ? "Review duplicate"
+                                : downloadSetup === "missing" && !triage
+                                  ? "Set folder"
+                                  : "Download"}
+              </span>
+            </Button>
+          )}
           {/* One button flips between Dismiss and Restore so keyboard focus stays put across the change. */}
-          {!selectMode && onReview && <Button size="sm" variant="outline" data-review-action={reviewed ? 'restore' : 'dismiss'} className="relative h-auto min-h-11 min-w-0 flex-1 basis-0 px-1.5" disabled={reviewPending} onClick={() => onReview(item, !reviewed)} aria-label={reviewed ? `Return ${item.title} to inbox` : `Dismiss ${item.title}`} title={reviewed ? 'Return to Inbox' : 'Remove from Inbox; it stays in All finds'}><span className={cn('inline-flex items-center gap-1.5', reviewPending && 'invisible')}>{reviewed && <RotateCcw aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}{reviewed ? 'Restore' : 'Dismiss'}</span>{reviewPending && <Loader2 aria-hidden="true" className="absolute h-3.5 w-3.5 animate-spin" />}</Button>}
-          {onFeedback && <Button size="icon" variant="outline" className="max-lg:min-h-11 max-lg:min-w-11 pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 text-muted" disabled={dismissing} onClick={() => onFeedback(item)} aria-label={`Tune recommendations for ${item.title}`} title="Tune recommendations"><EllipsisVertical className="h-4 w-4" /></Button>}
+          {!selectMode && onReview && (
+            <Button
+              size="sm"
+              variant="outline"
+              data-review-action={reviewed ? "restore" : "dismiss"}
+              className="relative h-auto min-h-11 min-w-0 flex-1 basis-0 px-1.5"
+              disabled={reviewPending}
+              onClick={() => onReview(item, !reviewed)}
+              aria-label={
+                reviewed
+                  ? `Return ${item.title} to inbox`
+                  : `Dismiss ${item.title}`
+              }
+              title={
+                reviewed
+                  ? "Return to Inbox"
+                  : "Remove from Inbox; it stays in All finds"
+              }
+            >
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1.5",
+                  reviewPending && "invisible"
+                )}
+              >
+                {reviewed && (
+                  <RotateCcw
+                    aria-hidden="true"
+                    className="h-3.5 w-3.5 shrink-0"
+                  />
+                )}
+                {reviewed ? "Restore" : "Dismiss"}
+              </span>
+              {reviewPending && (
+                <Loader2
+                  aria-hidden="true"
+                  className="absolute h-3.5 w-3.5 animate-spin"
+                />
+              )}
+            </Button>
+          )}
+          {onFeedback && (
+            <Button
+              size="icon"
+              variant="outline"
+              className="max-lg:min-h-11 max-lg:min-w-11 pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 text-muted"
+              disabled={dismissing}
+              onClick={() => onFeedback(item)}
+              aria-label={`Tune recommendations for ${item.title}`}
+              title="Tune recommendations"
+            >
+              <EllipsisVertical className="h-4 w-4" />
+            </Button>
+          )}
         </div>
       </div>
     </article>

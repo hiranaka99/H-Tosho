@@ -1,19 +1,33 @@
-import * as React from 'react';
-import { useNavigate } from 'react-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Clock, Download, Pause, Play, XCircle, Ban, RotateCcw } from 'lucide-react';
-import { api, type Job, type DownloadTask } from '../lib/api';
-import { toast } from '../lib/toast';
-import { useDownloadActions, useDownloadTasks, useDownloadsSelector, needsAttention as downloadNeedsAttention } from '../lib/DownloadsContext';
-import { jobsPollInterval } from '../lib/jobsQuery';
-import { formatBytes, formatSpeed } from '../lib/format';
-import { jobLabel } from '../lib/utils';
-import { needsAttention } from '../lib/jobStatus';
-import { ProgressBar } from './ui';
+import * as React from "react";
+import { useNavigate } from "react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Loader2,
+  Clock,
+  Download,
+  Pause,
+  Play,
+  XCircle,
+  Ban,
+  RotateCcw,
+} from "lucide-react";
+import { api, type Job, type DownloadTask } from "../lib/api";
+import { toast } from "../lib/toast";
+import {
+  useDownloadActions,
+  useDownloadTasks,
+  useDownloadsSelector,
+  needsAttention as downloadNeedsAttention,
+} from "../lib/DownloadsContext";
+import { jobsPollInterval } from "../lib/jobsQuery";
+import { formatBytes, formatSpeed } from "../lib/format";
+import { jobLabel } from "../lib/utils";
+import { needsAttention } from "../lib/jobStatus";
+import { ProgressBar } from "./ui";
 
 const JobRow = React.memo(function JobRow({ job }: { job: Job }) {
   const qc = useQueryClient();
-  const running = job.status === 'running';
+  const running = job.status === "running";
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-1.5">
@@ -22,13 +36,28 @@ const JobRow = React.memo(function JobRow({ job }: { job: Job }) {
         ) : (
           <Clock className="h-3.5 w-3.5 shrink-0 text-muted" />
         )}
-        <span className="min-w-0 flex-1 truncate text-xs font-medium" title={jobLabel(job.type, job.payload)}>
+        <span
+          className="min-w-0 flex-1 truncate text-xs font-medium"
+          title={jobLabel(job.type, job.payload)}
+        >
           {jobLabel(job.type, job.payload)}
         </span>
         {running && (
           <button
             type="button"
-            onClick={() => void api.cancelJob(job.id).then(() => qc.invalidateQueries({ queryKey: ['jobs'] })).catch((error) => toast({ tone: 'danger', title: 'Could not cancel job', description: error instanceof Error ? error.message : String(error) }))}
+            onClick={() =>
+              void api
+                .cancelJob(job.id)
+                .then(() => qc.invalidateQueries({ queryKey: ["jobs"] }))
+                .catch((error) =>
+                  toast({
+                    tone: "danger",
+                    title: "Could not cancel job",
+                    description:
+                      error instanceof Error ? error.message : String(error),
+                  })
+                )
+            }
             aria-label={`Cancel ${jobLabel(job.type, job.payload)}`}
             className="ui-button-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-danger"
           >
@@ -39,7 +68,11 @@ const JobRow = React.memo(function JobRow({ job }: { job: Job }) {
       {running &&
         (job.progressTotal > 0 ? (
           <>
-            <ProgressBar value={job.progressCurrent} max={job.progressTotal} className="h-1.5" />
+            <ProgressBar
+              value={job.progressCurrent}
+              max={job.progressTotal}
+              className="h-1.5"
+            />
             <span className="text-xs leading-none text-muted">
               {job.progressCurrent}/{job.progressTotal}
             </span>
@@ -54,50 +87,91 @@ const JobRow = React.memo(function JobRow({ job }: { job: Job }) {
 });
 
 function TaskIcon({ task }: { task: DownloadTask }) {
-  if (task.state?.type === 'retry-wait') return <RotateCcw className="h-3.5 w-3.5 shrink-0 text-warning" />;
-  if (task.status === 'downloading') return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" />;
-  if (task.status === 'queued') return <Clock className="h-3.5 w-3.5 shrink-0 text-muted" />;
-  if (task.status === 'failed') return <XCircle className="h-3.5 w-3.5 shrink-0 text-danger" />;
+  if (task.state?.type === "retry-wait")
+    return <RotateCcw className="h-3.5 w-3.5 shrink-0 text-warning" />;
+  if (task.status === "downloading")
+    return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" />;
+  if (task.status === "queued")
+    return <Clock className="h-3.5 w-3.5 shrink-0 text-muted" />;
+  if (task.status === "failed")
+    return <XCircle className="h-3.5 w-3.5 shrink-0 text-danger" />;
   return <Pause className="h-3.5 w-3.5 shrink-0 text-warning" />;
 }
 
-const DownloadRow = React.memo(function DownloadRow({ task, onAction }: { task: DownloadTask; onAction: (op: 'pause' | 'resume' | 'cancel', id: number) => void }) {
-  const busy = task.status === 'downloading';
-  const packing = task.state?.type === 'packing';
-  const resolving = busy && task.phase === 'resolving';
-  const retryWait = task.state?.type === 'retry-wait';
-  const pct = task.progressTotal > 0 ? Math.round((task.progressCurrent / task.progressTotal) * 100) : null;
+const DownloadRow = React.memo(function DownloadRow({
+  task,
+  onAction,
+}: {
+  task: DownloadTask;
+  onAction: (op: "pause" | "resume" | "cancel", id: number) => void;
+}) {
+  const busy = task.status === "downloading";
+  const packing = task.state?.type === "packing";
+  const resolving = busy && task.phase === "resolving";
+  const retryWait = task.state?.type === "retry-wait";
+  const pct =
+    task.progressTotal > 0
+      ? Math.round((task.progressCurrent / task.progressTotal) * 100)
+      : null;
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-1.5">
         <TaskIcon task={task} />
-        <span className="min-w-0 flex-1 truncate text-xs" title={task.title ?? ''}>
+        <span
+          className="min-w-0 flex-1 truncate text-xs"
+          title={task.title ?? ""}
+        >
           {task.title ?? `Gallery ${task.galleryId}`}
         </span>
         {busy && !packing && (
-          <button type="button" onClick={() => onAction('pause', task.id)} aria-label={`Pause ${task.title ?? `Gallery ${task.galleryId}`}`} className="ui-button-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground">
+          <button
+            type="button"
+            onClick={() => onAction("pause", task.id)}
+            aria-label={`Pause ${task.title ?? `Gallery ${task.galleryId}`}`}
+            className="ui-button-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground"
+          >
             <Pause className="h-3.5 w-3.5" />
           </button>
         )}
-        {task.status === 'paused' && (
-          <button type="button" onClick={() => onAction('resume', task.id)} aria-label={`Resume ${task.title ?? `Gallery ${task.galleryId}`}`} className="ui-button-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground">
+        {task.status === "paused" && (
+          <button
+            type="button"
+            onClick={() => onAction("resume", task.id)}
+            aria-label={`Resume ${task.title ?? `Gallery ${task.galleryId}`}`}
+            className="ui-button-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-foreground"
+          >
             <Play className="h-3.5 w-3.5" />
           </button>
         )}
-        {(busy || task.status === 'queued' || retryWait) && !packing && (
-          <button type="button" onClick={() => onAction('cancel', task.id)} aria-label={`Cancel ${task.title ?? `Gallery ${task.galleryId}`}`} className="ui-button-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-danger">
+        {(busy || task.status === "queued" || retryWait) && !packing && (
+          <button
+            type="button"
+            onClick={() => onAction("cancel", task.id)}
+            aria-label={`Cancel ${task.title ?? `Gallery ${task.galleryId}`}`}
+            className="ui-button-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-danger"
+          >
             <XCircle className="h-3.5 w-3.5" />
           </button>
         )}
       </div>
       {busy && (
         <>
-          <ProgressBar value={packing ? 1 : task.progressCurrent} max={packing ? 1 : task.progressTotal} className="h-1.5" />
+          <ProgressBar
+            value={packing ? 1 : task.progressCurrent}
+            max={packing ? 1 : task.progressTotal}
+            className="h-1.5"
+          />
           <span className="text-xs leading-none text-muted">
-            {packing ? 'Packing…' : resolving || pct === null ? 'Resolving…' : (
+            {packing ? (
+              "Packing…"
+            ) : resolving || pct === null ? (
+              "Resolving…"
+            ) : (
               <>
                 {`${pct}%`}
-                {typeof task.bytesCurrent === 'number' && (task.bytesCurrent > 0 || (task.bytesTotal ?? 0) > 0) && ` · ${formatBytes(task.bytesCurrent)}`}
+                {typeof task.bytesCurrent === "number" &&
+                  (task.bytesCurrent > 0 || (task.bytesTotal ?? 0) > 0) &&
+                  ` · ${formatBytes(task.bytesCurrent)}`}
                 {formatSpeed(task.speed) && ` · ${formatSpeed(task.speed)}`}
               </>
             )}
@@ -111,12 +185,20 @@ const DownloadRow = React.memo(function DownloadRow({ task, onAction }: { task: 
   );
 });
 
-const isShownTask = (t: DownloadTask) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused' || t.state?.type === 'retry-wait';
+const isShownTask = (t: DownloadTask) =>
+  t.status === "downloading" ||
+  t.status === "queued" ||
+  t.status === "paused" ||
+  t.state?.type === "retry-wait";
 
 /** Counts only: structurally shared, so progress ticks never re-render the sidebar shell. */
 const selectDownloadCounts = (tasks: DownloadTask[]) => {
   const shown = tasks.filter(isShownTask);
-  return { shown: shown.length, downloading: shown.some((t) => t.status === 'downloading'), failed: tasks.filter(downloadNeedsAttention).length };
+  return {
+    shown: shown.length,
+    downloading: shown.some((t) => t.status === "downloading"),
+    failed: tasks.filter(downloadNeedsAttention).length,
+  };
 };
 const NO_DOWNLOAD_COUNTS = { shown: 0, downloading: false, failed: 0 };
 
@@ -124,13 +206,25 @@ const NO_DOWNLOAD_COUNTS = { shown: 0, downloading: false, failed: 0 };
 function SidebarDownloadRows() {
   const { tasks } = useDownloadTasks();
   const { pause, resume, cancel } = useDownloadActions();
-  const shownTasks = React.useMemo(() => tasks.filter(isShownTask).slice(0, 6), [tasks]);
-  const onTaskAction = React.useCallback((op: 'pause' | 'resume' | 'cancel', id: number) => {
-    if (op === 'pause') pause(id);
-    else if (op === 'resume') resume(id);
-    else cancel(id);
-  }, [pause, resume, cancel]);
-  return <>{shownTasks.map((task) => <DownloadRow key={task.id} task={task} onAction={onTaskAction} />)}</>;
+  const shownTasks = React.useMemo(
+    () => tasks.filter(isShownTask).slice(0, 6),
+    [tasks]
+  );
+  const onTaskAction = React.useCallback(
+    (op: "pause" | "resume" | "cancel", id: number) => {
+      if (op === "pause") pause(id);
+      else if (op === "resume") resume(id);
+      else cancel(id);
+    },
+    [pause, resume, cancel]
+  );
+  return (
+    <>
+      {shownTasks.map((task) => (
+        <DownloadRow key={task.id} task={task} onAction={onTaskAction} />
+      ))}
+    </>
+  );
 }
 
 /**
@@ -143,63 +237,120 @@ export function SidebarStatus({ live = true }: { live?: boolean }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { data: jobs = [] } = useQuery({
-    queryKey: ['jobs'],
+    queryKey: ["jobs"],
     queryFn: api.jobs,
     // The app-wide ['jobs'] poller (always mounted). Other observers of this key
     // must not set their own interval: each observer runs its own timer.
     refetchInterval: jobsPollInterval,
   });
-  const downloads = useDownloadsSelector(selectDownloadCounts) ?? NO_DOWNLOAD_COUNTS;
-  const activeJobs = React.useMemo(() => jobs.filter((j) => j.status === 'running' || j.status === 'queued'), [jobs]);
-  const previousJobs = React.useRef<Map<number, { status: string; type: string }> | null>(null);
+  const downloads =
+    useDownloadsSelector(selectDownloadCounts) ?? NO_DOWNLOAD_COUNTS;
+  const activeJobs = React.useMemo(
+    () => jobs.filter((j) => j.status === "running" || j.status === "queued"),
+    [jobs]
+  );
+  const previousJobs = React.useRef<Map<
+    number,
+    { status: string; type: string }
+  > | null>(null);
   React.useEffect(() => {
     // A short apply can finish between polls without ever appearing as active.
     // Refresh only the queries affected by the settled job types.
     const previous = previousJobs.current;
-    const current = new Map(jobs.map((j) => [j.id, { status: j.status, type: j.type }]));
+    const current = new Map(
+      jobs.map((j) => [j.id, { status: j.status, type: j.type }])
+    );
     if (previous) {
       const settledTypes = new Set<string>();
       for (const j of jobs) {
-        if (['completed', 'failed', 'cancelled'].includes(j.status) && previous.get(j.id)?.status !== j.status) {
+        if (
+          ["completed", "failed", "cancelled"].includes(j.status) &&
+          previous.get(j.id)?.status !== j.status
+        ) {
           settledTypes.add(j.type);
         }
       }
       for (const [id, prev] of previous) {
-        if ((prev.status === 'running' || prev.status === 'queued') && !current.has(id)) {
+        if (
+          (prev.status === "running" || prev.status === "queued") &&
+          !current.has(id)
+        ) {
           settledTypes.add(prev.type);
         }
       }
       if (settledTypes.size > 0) {
-        const onlyWatched = settledTypes.size === 1 && settledTypes.has('check-watched-searches');
-        if (settledTypes.has('check-watched-searches')) {
-          void qc.invalidateQueries({ queryKey: ['watched-gallery-feed'] });
-          void qc.invalidateQueries({ queryKey: ['watched-searches'] });
+        const onlyWatched =
+          settledTypes.size === 1 && settledTypes.has("check-watched-searches");
+        if (settledTypes.has("check-watched-searches")) {
+          void qc.invalidateQueries({ queryKey: ["watched-gallery-feed"] });
+          void qc.invalidateQueries({ queryKey: ["watched-searches"] });
         }
         if (!onlyWatched) {
-          void qc.invalidateQueries({ queryKey: ['library-series'] });
-          void qc.invalidateQueries({ queryKey: ['libraries'] });
-          void qc.invalidateQueries({ queryKey: ['low-confidence'] });
-          void qc.invalidateQueries({ queryKey: ['home-matches'] });
-          void qc.invalidateQueries({ queryKey: ['home-activity'] });
-          void qc.invalidateQueries({ queryKey: ['downloads-library'] });
+          void qc.invalidateQueries({ queryKey: ["library-series"] });
+          void qc.invalidateQueries({ queryKey: ["libraries"] });
+          void qc.invalidateQueries({ queryKey: ["low-confidence"] });
+          void qc.invalidateQueries({ queryKey: ["home-matches"] });
+          void qc.invalidateQueries({ queryKey: ["home-activity"] });
+          void qc.invalidateQueries({ queryKey: ["downloads-library"] });
         }
       }
     }
     previousJobs.current = current;
   }, [jobs, qc]);
-  const attentionJobs = React.useMemo(() => jobs.filter(needsAttention), [jobs]);
-  if (activeJobs.length === 0 && downloads.shown === 0 && attentionJobs.length === 0 && downloads.failed === 0) return null;
+  const attentionJobs = React.useMemo(
+    () => jobs.filter(needsAttention),
+    [jobs]
+  );
+  if (
+    activeJobs.length === 0 &&
+    downloads.shown === 0 &&
+    attentionJobs.length === 0 &&
+    downloads.failed === 0
+  )
+    return null;
 
   return (
     <div className="flex max-h-1/2 min-h-0 flex-col gap-3 overflow-y-auto border-t border-border p-3">
       <nav aria-label="Activity shortcuts" className="flex flex-col gap-1">
-        {activeJobs.length > 0 && <button type="button" onClick={() => { void navigate('/jobs?filter=active'); }} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-primary hover:bg-surface-2">Active tasks · {activeJobs.length}</button>}
-        {attentionJobs.length > 0 && <button type="button" onClick={() => { void navigate('/jobs?filter=failed'); }} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Needs attention · {attentionJobs.length}</button>}
-        {downloads.failed > 0 && <button type="button" onClick={() => { void navigate('/downloader?tab=downloads&status=failed'); }} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Failed downloads · {downloads.failed}</button>}
+        {activeJobs.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              void navigate("/jobs?filter=active");
+            }}
+            className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-primary hover:bg-surface-2"
+          >
+            Active tasks · {activeJobs.length}
+          </button>
+        )}
+        {attentionJobs.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              void navigate("/jobs?filter=failed");
+            }}
+            className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2"
+          >
+            Needs attention · {attentionJobs.length}
+          </button>
+        )}
+        {downloads.failed > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              void navigate("/downloader?tab=downloads&status=failed");
+            }}
+            className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2"
+          >
+            Failed downloads · {downloads.failed}
+          </button>
+        )}
       </nav>
       {activeJobs.length > 0 && (
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted">Running & queued</span>
+          <span className="text-xs font-medium uppercase tracking-wide text-muted">
+            Running & queued
+          </span>
           {activeJobs.map((j) => (
             <JobRow key={j.id} job={j} />
           ))}
@@ -207,14 +358,21 @@ export function SidebarStatus({ live = true }: { live?: boolean }) {
       )}
       {downloads.shown > 0 && (
         <div className="flex flex-col gap-2">
-          <button type="button" onClick={() => { void navigate('/downloader?tab=downloads&status=active'); }} title="Open active downloads" className="group flex items-center gap-1.5 text-left">
+          <button
+            type="button"
+            onClick={() => {
+              void navigate("/downloader?tab=downloads&status=active");
+            }}
+            title="Open active downloads"
+            className="group flex items-center gap-1.5 text-left"
+          >
             {downloads.downloading ? (
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" />
             ) : (
               <Download className="h-3.5 w-3.5 shrink-0 text-muted" />
             )}
             <span className="min-w-0 flex-1 truncate text-xs font-medium uppercase tracking-wide text-muted group-hover:text-foreground">
-              Downloads{downloads.shown > 1 ? ` · ${downloads.shown}` : ''}
+              Downloads{downloads.shown > 1 ? ` · ${downloads.shown}` : ""}
             </span>
           </button>
           {live && <SidebarDownloadRows />}

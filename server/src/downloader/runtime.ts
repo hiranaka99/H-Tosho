@@ -1,18 +1,18 @@
-import type { DownloadTask } from '../contracts/downloads.js';
+import type { DownloadTask } from "../contracts/downloads.js";
 
 /** Sentinel error thrown when an active download unwinds because the user paused it. */
 export class DownloadPausedError extends Error {
   constructor() {
-    super('Download paused');
-    this.name = 'DownloadPausedError';
+    super("Download paused");
+    this.name = "DownloadPausedError";
   }
 }
 
 /** Sentinel error thrown when an active download unwinds for a clean server shutdown. */
 export class DownloadShutdownError extends Error {
   constructor() {
-    super('Server shutting down');
-    this.name = 'DownloadShutdownError';
+    super("Server shutting down");
+    this.name = "DownloadShutdownError";
   }
 }
 
@@ -37,5 +37,13 @@ export function wakePaused(run: RunContext): void {
 }
 
 /** Volatile progress fields that update faster than the throttled DB write. */
-type LiveFieldKeys = 'progressCurrent' | 'progressTotal' | 'speed' | 'currentFile' | 'bytesCurrent' | 'bytesTotal' | 'revision' | 'phase';
+type LiveFieldKeys =
+  | "progressCurrent"
+  | "progressTotal"
+  | "speed"
+  | "currentFile"
+  | "bytesCurrent"
+  | "bytesTotal"
+  | "revision"
+  | "phase";
 export type LiveFields = Partial<Pick<DownloadTask, LiveFieldKeys>>;

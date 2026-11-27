@@ -1,8 +1,16 @@
-import { KavitaClient } from '../kavita/client.js';
-import type { KavitaSeries } from '../kavita/types.js';
-import { mapLimit } from '../lib/http.js';
-import { clearCachedSeriesMetadataForSignals, getCachedSeriesMetadataForSignals, setCachedSeriesMetadataForSignals } from './seriesMetadataCache.js';
-import { getKavitaConnection, getRecommendationSettings, onSettingChange } from './settings.js';
+import { KavitaClient } from "../kavita/client.js";
+import type { KavitaSeries } from "../kavita/types.js";
+import { mapLimit } from "../lib/http.js";
+import {
+  clearCachedSeriesMetadataForSignals,
+  getCachedSeriesMetadataForSignals,
+  setCachedSeriesMetadataForSignals,
+} from "./seriesMetadataCache.js";
+import {
+  getKavitaConnection,
+  getRecommendationSettings,
+  onSettingChange,
+} from "./settings.js";
 
 export interface KavitaSeriesSignal {
   id?: number;
@@ -25,8 +33,12 @@ export interface KavitaSeriesSignal {
 
 const SERIES_LIMIT = 600;
 const TTL_MS = 30 * 60_000;
-let connectionKey = '';
-let listing: { at: number; series: KavitaSeries[]; excludedLibraryPaths: string[] } | null = null;
+let connectionKey = "";
+let listing: {
+  at: number;
+  series: KavitaSeries[];
+  excludedLibraryPaths: string[];
+} | null = null;
 const metadata = new Map<number, { at: number; signal: KavitaSeriesSignal }>();
 /** Series edited since the listing was read; re-read individually instead of re-listing every library. */
 const staleListingSeries = new Set<number>();
@@ -54,8 +66,8 @@ export function clearRecommendationSignals(): void {
   staleListingSeries.clear();
 }
 
-onSettingChange('kavita-connection', () => {
-  connectionKey = '';
+onSettingChange("kavita-connection", () => {
+  connectionKey = "";
   listing = null;
   staleListingSeries.clear();
   metadata.clear();
@@ -67,7 +79,9 @@ async function refreshStaleListingSeries(client: KavitaClient): Promise<void> {
   const current = listing;
   const ids = [...staleListingSeries];
   staleListingSeries.clear();
-  const positions = new Map(current.series.map((series, index) => [series.id, index]));
+  const positions = new Map(
+    current.series.map((series, index) => [series.id, index])
+  );
   const sampled = ids.filter((id) => positions.has(id));
   try {
     const fresh = await mapLimit(sampled, 4, (id) => client.getSeriesById(id));
@@ -82,7 +96,10 @@ async function refreshStaleListingSeries(client: KavitaClient): Promise<void> {
 }
 
 /** Round-robin sampling prevents the first large library starving later libraries. */
-export function balancedSeries(libraries: KavitaSeries[][], limit = SERIES_LIMIT): KavitaSeries[] {
+export function balancedSeries(
+  libraries: KavitaSeries[][],
+  limit = SERIES_LIMIT
+): KavitaSeries[] {
   const result: KavitaSeries[] = [];
   const seen = new Set<number>();
   for (let offset = 0; result.length < limit; offset++) {
@@ -106,7 +123,11 @@ export async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
   const conn = getKavitaConnection();
   if (!conn.baseUrl || !conn.apiKey) return [];
   const excluded = new Set(getRecommendationSettings().excludedLibraryIds);
-  const key = JSON.stringify([conn.baseUrl, conn.apiKey, [...excluded].sort((a, b) => a - b)]);
+  const key = JSON.stringify([
+    conn.baseUrl,
+    conn.apiKey,
+    [...excluded].sort((a, b) => a - b),
+  ]);
   if (connectionKey !== key) {
     connectionKey = key;
     listing = null;
@@ -117,21 +138,30 @@ export async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
     staleListingSeries.clear();
     try {
       const allLibraries = await client.getLibraries();
-      const libraries = allLibraries.filter((library) => !excluded.has(library.id));
+      const libraries = allLibraries.filter(
+        (library) => !excluded.has(library.id)
+      );
       const excludedLibraryPaths = allLibraries
         .filter((library) => excluded.has(library.id))
-        .flatMap((library) => library.paths ?? (library.path ? [library.path] : []));
+        .flatMap(
+          (library) => library.paths ?? (library.path ? [library.path] : [])
+        );
       let failed = false;
       const lists = await mapLimit(libraries, 4, async (library) => {
-        try { return await client.getSeries(library.id); }
-        catch { failed = true; return []; }
+        try {
+          return await client.getSeries(library.id);
+        } catch {
+          failed = true;
+          return [];
+        }
       });
       const series = balancedSeries(lists);
       listing = { at: failed ? 0 : Date.now(), series, excludedLibraryPaths };
       const retained = new Set(series.map((item) => item.id));
-      for (const id of metadata.keys()) if (!retained.has(id)) metadata.delete(id);
+      for (const id of metadata.keys())
+        if (!retained.has(id)) metadata.delete(id);
     } catch (error) {
-      console.warn('[recommendations] Kavita library scan skipped:', error);
+      console.warn("[recommendations] Kavita library scan skipped:", error);
       return [];
     }
   }
@@ -148,19 +178,31 @@ export async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
       lastAdded: series.lastAdded,
     };
     const cached = metadata.get(series.id);
-    if (cached && Date.now() - cached.at < TTL_MS && cached.signal.name === series.name) {
+    if (
+      cached &&
+      Date.now() - cached.at < TTL_MS &&
+      cached.signal.name === series.name
+    ) {
       return { ...cached.signal, ...engagement };
     }
     try {
       const preloaded = getCachedSeriesMetadataForSignals(series.id, TTL_MS);
-      const meta = preloaded ?? await client.getSeriesMetadata(series.id);
+      const meta = preloaded ?? (await client.getSeriesMetadata(series.id));
       if (!preloaded) setCachedSeriesMetadataForSignals(series.id, meta);
-      const genres = (meta.genres ?? []).map((tag) => tag.title?.trim() ?? '').filter(Boolean);
-      const rawTags = (meta.tags ?? []).map((tag) => tag.title?.trim() ?? '').filter(Boolean);
+      const genres = (meta.genres ?? [])
+        .map((tag) => tag.title?.trim() ?? "")
+        .filter(Boolean);
+      const rawTags = (meta.tags ?? [])
+        .map((tag) => tag.title?.trim() ?? "")
+        .filter(Boolean);
       const seenArtists = new Set<string>();
       const artists: string[] = [];
-      for (const person of [...(meta.pencillers ?? []), ...(meta.inkers ?? []), ...(meta.writers ?? [])]) {
-        const name = person.name?.trim() ?? '';
+      for (const person of [
+        ...(meta.pencillers ?? []),
+        ...(meta.inkers ?? []),
+        ...(meta.writers ?? []),
+      ]) {
+        const name = person.name?.trim() ?? "";
         if (!name || seenArtists.has(name.toLowerCase())) continue;
         seenArtists.add(name.toLowerCase());
         artists.push(name);
@@ -177,7 +219,15 @@ export async function buildKavitaSignals(): Promise<KavitaSeriesSignal[]> {
       metadata.set(series.id, { at: Date.now(), signal });
       return signal;
     } catch {
-      return cached?.signal ? { ...cached.signal, ...engagement } : { ...engagement, name: series.name, tags: [], genres: [], artists: [] };
+      return cached?.signal
+        ? { ...cached.signal, ...engagement }
+        : {
+            ...engagement,
+            name: series.name,
+            tags: [],
+            genres: [],
+            artists: [],
+          };
     }
   });
 }

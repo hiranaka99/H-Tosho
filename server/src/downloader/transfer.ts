@@ -1,9 +1,9 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import type { DoujinGallery } from './types.js';
-import type { DownloaderSettings } from '../services/settings.js';
-import { mapLimit, sleep } from '../lib/http.js';
-import { extFromUrl, padPage } from './util.js';
+import fs from "node:fs";
+import path from "node:path";
+import type { DoujinGallery } from "./types.js";
+import type { DownloaderSettings } from "../services/settings.js";
+import { mapLimit, sleep } from "../lib/http.js";
+import { extFromUrl, padPage } from "./util.js";
 import {
   errorRetryAfterMs,
   fetchCandidatesToFileWithRetry,
@@ -11,22 +11,36 @@ import {
   isTransientError,
   jitterDelay,
   resolvePageCandidates,
-} from './requests.js';
-import { DownloadPausedError, DownloadShutdownError, wakePaused, type RunContext, type LiveFields } from './runtime.js';
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0';
+} from "./requests.js";
+import {
+  DownloadPausedError,
+  DownloadShutdownError,
+  wakePaused,
+  type RunContext,
+  type LiveFields,
+} from "./runtime.js";
+const UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0";
 export async function downloadPages(
   gallery: DoujinGallery,
   taskId: number,
   settings: DownloaderSettings,
   ctx: RunContext,
   tmpDir: string,
-  updateProgress: (id: number, patch: LiveFields, options?: { force?: boolean; forceBroadcast?: boolean }) => void,
+  updateProgress: (
+    id: number,
+    patch: LiveFields,
+    options?: { force?: boolean; forceBroadcast?: boolean }
+  ) => void
 ): Promise<{ name: string; path: string }[]> {
   const pages = gallery.pages;
   const total = pages.length;
   const concurrency = Math.max(1, settings.maxImageConcurrency || 1);
   const delay = Math.max(0, settings.requestDelayMs || 0);
-  const pageHeaders: Record<string, string> = { 'User-Agent': UA, ...gallery.requestHeaders };
+  const pageHeaders: Record<string, string> = {
+    "User-Agent": UA,
+    ...gallery.requestHeaders,
+  };
   await fs.promises.mkdir(tmpDir, { recursive: true });
   const out = Array.from<{ name: string; path: string }>({ length: total });
 
@@ -34,14 +48,18 @@ export async function downloadPages(
   // a sidecar so a resumed run never re-derives names from the static page
   // reference — E-Hentai viewer URLs end in .jpg even when the H@H image they
   // resolve to is a different format.
-  const namesPath = path.join(tmpDir, 'page-names.json');
+  const namesPath = path.join(tmpDir, "page-names.json");
   const readNames = async (): Promise<Record<string, string>> => {
     try {
-      const parsed: unknown = JSON.parse(await fs.promises.readFile(namesPath, 'utf8'));
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const parsed: unknown = JSON.parse(
+        await fs.promises.readFile(namesPath, "utf8")
+      );
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         const names: Record<string, string> = {};
-        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-          if (typeof value === 'string' && value.length > 0) names[key] = value;
+        for (const [key, value] of Object.entries(
+          parsed as Record<string, unknown>
+        )) {
+          if (typeof value === "string" && value.length > 0) names[key] = value;
         }
         return names;
       }
@@ -55,7 +73,10 @@ export async function downloadPages(
   let namesFlushTimer: ReturnType<typeof setTimeout> | null = null;
   let namesWriteChain: Promise<void> = Promise.resolve();
   const flushPageNames = (): Promise<void> => {
-    if (namesFlushTimer) { clearTimeout(namesFlushTimer); namesFlushTimer = null; }
+    if (namesFlushTimer) {
+      clearTimeout(namesFlushTimer);
+      namesFlushTimer = null;
+    }
     if (!namesDirty) return namesWriteChain;
     namesDirty = false;
     const payload = JSON.stringify(savedNames);
@@ -74,7 +95,9 @@ export async function downloadPages(
     savedNames[String(index)] = name;
     namesDirty = true;
     if (!namesFlushTimer) {
-      namesFlushTimer = setTimeout(() => { void flushPageNames(); }, 750);
+      namesFlushTimer = setTimeout(() => {
+        void flushPageNames();
+      }, 750);
       namesFlushTimer.unref?.();
     }
   };
@@ -91,7 +114,8 @@ export async function downloadPages(
   let prefixLen = 0;
   try {
     const existingNames = new Set(await fs.promises.readdir(tmpDir));
-    while (prefixLen < total && existingNames.has(String(prefixLen))) prefixLen++;
+    while (prefixLen < total && existingNames.has(String(prefixLen)))
+      prefixLen++;
   } catch {
     /* empty or unreadable scratch dir — start from page 0 */
   }
@@ -111,7 +135,12 @@ export async function downloadPages(
     }
   }
   for (const [i] of resumedSizes) {
-    out[i] = { name: savedNames[String(i)] ?? `${padPage(i + 1, total)}.${extFromUrl(pages[i])}`, path: path.join(tmpDir, String(i)) };
+    out[i] = {
+      name:
+        savedNames[String(i)] ??
+        `${padPage(i + 1, total)}.${extFromUrl(pages[i])}`,
+      path: path.join(tmpDir, String(i)),
+    };
   }
 
   // Per-run byte-level accounting used to derive a live bytes-current/total.
@@ -186,7 +215,10 @@ export async function downloadPages(
   const estimateTotal = (): number => {
     const completedCount = bs.completed.size;
     const avg = completedCount > 0 ? bs.actualSum / completedCount : 0;
-    const unknownCount = Math.max(0, total - completedCount - bs.knownPendingCount);
+    const unknownCount = Math.max(
+      0,
+      total - completedCount - bs.knownPendingCount
+    );
     const est = bs.actualSum + bs.knownPendingSum + unknownCount * avg;
     return Math.max(Math.round(est), Math.round(currentBytes()));
   };
@@ -222,10 +254,13 @@ export async function downloadPages(
   const report = (forceBroadcast: boolean): void => {
     const now = Date.now();
     if (!forceBroadcast && now - lastReport < 100) {
-      trailingReport ??= setTimeout(() => {
-        trailingReport = null;
-        report(false);
-      }, 100 - (now - lastReport));
+      trailingReport ??= setTimeout(
+        () => {
+          trailingReport = null;
+          report(false);
+        },
+        100 - (now - lastReport)
+      );
       return;
     }
     if (trailingReport) {
@@ -243,11 +278,15 @@ export async function downloadPages(
         bytesCurrent: Math.round(currentBytes()),
         bytesTotal: estimateTotal(),
       },
-      { forceBroadcast },
+      { forceBroadcast }
     );
   };
 
-  const onChunk = (i: number, received: number, totalBytes: number | null): void => {
+  const onChunk = (
+    i: number,
+    received: number,
+    totalBytes: number | null
+  ): void => {
     if (totalBytes && totalBytes > 0) setKnown(i, totalBytes);
     setInflight(i, received);
     touchPage(i);
@@ -265,12 +304,13 @@ export async function downloadPages(
   // Emit resumed progress immediately so the UI shows already-saved pages/bytes
   // right away instead of flashing 0 of N until the next page finishes.
   if (resumedSizes.size > 0) {
-    lastFileName = resumedSizes.size < total ? `Page ${resumedSizes.size}/${total}` : null;
+    lastFileName =
+      resumedSizes.size < total ? `Page ${resumedSizes.size}/${total}` : null;
     report(true);
   }
 
   const checkStop = (): void => {
-    if (ctx.cancelled) throw new Error('Cancelled by user');
+    if (ctx.cancelled) throw new Error("Cancelled by user");
     if (ctx.paused) throw new DownloadPausedError();
     if (ctx.shuttingDown) throw new DownloadShutdownError();
   };
@@ -285,7 +325,9 @@ export async function downloadPages(
         // Park until resume()/cancel() settles the pause gate — event-driven,
         // so a paused run costs no polling timers and wakes the instant it
         // is resumed or cancelled.
-        await new Promise<void>((resolve) => ctx.pauseSignal.waiters.push(resolve));
+        await new Promise<void>((resolve) =>
+          ctx.pauseSignal.waiters.push(resolve)
+        );
         checkStop();
         if (ctx.stopped) return;
         continue;
@@ -312,7 +354,8 @@ export async function downloadPages(
               onAttemptStart: () => {
                 setInflight(i, 0);
               },
-              onProgress: (received, totalBytes) => onChunk(i, received, totalBytes),
+              onProgress: (received, totalBytes) =>
+                onChunk(i, received, totalBytes),
             });
             size = result.bytes;
             ext = result.ext;
@@ -324,13 +367,17 @@ export async function downloadPages(
             if (ctx.stopped) return;
             const refreshable = isRouteRefreshableError(err);
             const transient = isTransientError(err);
-            if ((!refreshable && !transient) || attempt >= maxAttempts - 1) break;
+            if ((!refreshable && !transient) || attempt >= maxAttempts - 1)
+              break;
             if (refreshable && !transient) {
               // Stale H@H node (404/410): switch nodes via `?nl=` promptly without a long wait.
               continue;
             }
             const advised = errorRetryAfterMs(err);
-            const waitMs = advised !== null ? Math.max(advised, 250) : jitterDelay(backoff[attempt] ?? backoff[backoff.length - 1]);
+            const waitMs =
+              advised !== null
+                ? Math.max(advised, 250)
+                : jitterDelay(backoff[attempt] ?? backoff[backoff.length - 1]);
             await sleep(waitMs, ctx.controller.signal);
           }
         }
@@ -351,13 +398,19 @@ export async function downloadPages(
             if (!refreshable && !transient) break;
             if (!refreshable) {
               const advised = errorRetryAfterMs(lastErr);
-              const waitMs = advised !== null ? Math.max(advised, 250) : jitterDelay(15_000);
+              const waitMs =
+                advised !== null ? Math.max(advised, 250) : jitterDelay(15_000);
               await sleep(waitMs, ctx.controller.signal);
             }
             checkStop();
             if (ctx.stopped) return;
           }
-          const candidates = await resolvePageCandidates(gallery, i, force, ctx.controller.signal);
+          const candidates = await resolvePageCandidates(
+            gallery,
+            i,
+            force,
+            ctx.controller.signal
+          );
           if (candidates.length > 0) {
             checkStop();
             if (ctx.stopped) return;
@@ -370,10 +423,11 @@ export async function downloadPages(
                   onAttemptStart: () => {
                     setInflight(i, 0);
                   },
-                  onProgress: (received, totalBytes) => onChunk(i, received, totalBytes),
+                  onProgress: (received, totalBytes) =>
+                    onChunk(i, received, totalBytes),
                 },
                 ctx.controller.signal,
-                force ? 0 : preferredMirror,
+                force ? 0 : preferredMirror
               );
               size = result.bytes;
               usedUrl = result.url;
@@ -388,28 +442,36 @@ export async function downloadPages(
         if (size != null) ext = extFromUrl(usedUrl ?? pages[i]);
       }
 
-      if (size == null) throw lastErr instanceof Error ? lastErr : new Error(`Failed to download page ${i + 1}`);
+      if (size == null)
+        throw lastErr instanceof Error
+          ? lastErr
+          : new Error(`Failed to download page ${i + 1}`);
       const name = `${padPage(i + 1, total)}.${ext || extFromUrl(pages[i])}`;
       out[i] = { name, path: filePath };
       recordPageName(i, name);
       onPageDone(i, size);
-      if (delay > 0 && nextIndex < total) await sleep(delay, ctx.controller.signal);
+      if (delay > 0 && nextIndex < total)
+        await sleep(delay, ctx.controller.signal);
     }
   };
 
-  const workers = Array.from({ length: Math.min(concurrency, total) }, () => worker().catch((error) => {
-    ctx.stopped = true;
-    ctx.controller.abort(error);
-    wakePaused(ctx);
-    throw error;
-  }));
+  const workers = Array.from({ length: Math.min(concurrency, total) }, () =>
+    worker().catch((error) => {
+      ctx.stopped = true;
+      ctx.controller.abort(error);
+      wakePaused(ctx);
+      throw error;
+    })
+  );
   const settled = await Promise.allSettled(workers);
   if (trailingReport) {
     clearTimeout(trailingReport);
     trailingReport = null;
   }
   await flushPageNames();
-  const failed = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  const failed = settled.find(
+    (result): result is PromiseRejectedResult => result.status === "rejected"
+  );
   if (failed) throw failed.reason;
   updateProgress(
     taskId,
@@ -421,7 +483,7 @@ export async function downloadPages(
       bytesCurrent: Math.round(currentBytes()),
       bytesTotal: estimateTotal(),
     },
-    { force: true },
+    { force: true }
   );
   return out;
 }

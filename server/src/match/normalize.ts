@@ -7,44 +7,51 @@
 /** Remove trailing volume/chapter/issue markers: "Vol. 3", "Chapter 12", "#5", "12", "(12)", "Part 2" */
 export function stripVolumeMarkers(title: string): string {
   return title
-    .replace(/\s*(?:vol(?:ume)?\.?\s*\d+\.?|chapter\s*\d+\.?|ch\.?\s*\d+\.?|episode\s*\d+\.?|ep\.?\s*\d+\.?|part\s*\d+\.?|issue\s*\d+\.?|no\.\s*\d+\.?)\b.*$/i, '')
-    .replace(/\s*\(\d{1,4}\)\s*$/, '')
-    .replace(/\s*\[\d{1,4}\]\s*$/, '')
-    .replace(/\s*#\s*\d+$/, '')
-    .replace(/\s+\d{1,4}$/, '');
+    .replace(
+      /\s*(?:vol(?:ume)?\.?\s*\d+\.?|chapter\s*\d+\.?|ch\.?\s*\d+\.?|episode\s*\d+\.?|ep\.?\s*\d+\.?|part\s*\d+\.?|issue\s*\d+\.?|no\.\s*\d+\.?)\b.*$/i,
+      ""
+    )
+    .replace(/\s*\(\d{1,4}\)\s*$/, "")
+    .replace(/\s*\[\d{1,4}\]\s*$/, "")
+    .replace(/\s*#\s*\d+$/, "")
+    .replace(/\s+\d{1,4}$/, "");
 }
 
 /** Lowercase, remove punctuation, collapse whitespace, strip quotes/brackets. */
 export function normalizeTitle(raw: string): string {
   return raw
     .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '') // strip diacritics
-    .replace(/&/g, ' and ')
-    .replace(/['"\u2018\u2019\u201c\u201d]/g, '')
-    .replace(/\[[^\]]*\]/g, ' ')
-    .replace(/\{[^}]*\}/g, ' ')
-    .replace(/\([^)]*\)/g, ' ')
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\s+/g, ' ')
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "") // strip diacritics
+    .replace(/&/g, " and ")
+    .replace(/['"\u2018\u2019\u201c\u201d]/g, "")
+    .replace(/\[[^\]]*\]/g, " ")
+    .replace(/\{[^}]*\}/g, " ")
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
 /** Common romanized-variant aliases for cross-provider equivalence. */
 const ALIASES: Record<string, string> = {
-  'no': '', 'the': '', 'a': '', 'an': '',
-  'gaiden': 'side story',
-  'monogatari': 'story',
-  'denki': 'electric',
-  'sai': '',
+  no: "",
+  the: "",
+  a: "",
+  an: "",
+  gaiden: "side story",
+  monogatari: "story",
+  denki: "electric",
+  sai: "",
 };
 
 export function canonicalize(normalized: string): string {
-  const words = normalized.split(' ')
+  const words = normalized
+    .split(" ")
     .map((w) => (ALIASES[w] !== undefined ? ALIASES[w] : w))
     .filter((w) => w.length > 0)
     .sort();
-  return words.join(' ');
+  return words.join(" ");
 }
 
 /**
@@ -55,8 +62,17 @@ export function levenshtein(a: string, b: string): number {
   let start = 0;
   let aEnd = a.length;
   let bEnd = b.length;
-  while (start < aEnd && start < bEnd && a.charCodeAt(start) === b.charCodeAt(start)) start++;
-  while (aEnd > start && bEnd > start && a.charCodeAt(aEnd - 1) === b.charCodeAt(bEnd - 1)) {
+  while (
+    start < aEnd &&
+    start < bEnd &&
+    a.charCodeAt(start) === b.charCodeAt(start)
+  )
+    start++;
+  while (
+    aEnd > start &&
+    bEnd > start &&
+    a.charCodeAt(aEnd - 1) === b.charCodeAt(bEnd - 1)
+  ) {
     aEnd--;
     bEnd--;
   }
@@ -145,8 +161,8 @@ export function scoreCanonical(a: string, b: string): number {
   if (!a || !b) return 0;
   if (a === b) return 1;
 
-  const ta = new Set(a.split(' '));
-  const tb = new Set(b.split(' '));
+  const ta = new Set(a.split(" "));
+  const tb = new Set(b.split(" "));
 
   // Token containment: every token of the shorter title appears in the other.
   // (Substring containment is unsafe: titles that normalize to fragments like
@@ -170,8 +186,14 @@ export function scoreCanonical(a: string, b: string): number {
  *  - token Jaccard
  *  - Levenshtein similarity
  */
-export function titleScore(kavitaTitle: string, candidateTitle: string): number {
-  return scoreCanonical(canonicalTitle(kavitaTitle), canonicalTitle(candidateTitle));
+export function titleScore(
+  kavitaTitle: string,
+  candidateTitle: string
+): number {
+  return scoreCanonical(
+    canonicalTitle(kavitaTitle),
+    canonicalTitle(candidateTitle)
+  );
 }
 
 /** Minimum combined score to accept an automatic match. */

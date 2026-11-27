@@ -9,34 +9,38 @@
  * stage without extra dependencies.
  */
 
-import { createHash } from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { deflateRawSync } from 'node:zlib';
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { deflateRawSync } from "node:zlib";
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const BUNDLE_NAME = 'h-tosho-update-bundle.zip';
-const MANIFEST_NAME = 'h-tosho-update-manifest.json';
+const REPO_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  ".."
+);
+const BUNDLE_NAME = "h-tosho-update-bundle.zip";
+const MANIFEST_NAME = "h-tosho-update-manifest.json";
 
 function sha256Hex(input) {
-  return createHash('sha256').update(input).digest('hex');
+  return createHash("sha256").update(input).digest("hex");
 }
 
 function readJson(filePath) {
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
 function parseMinNodeVersion(range) {
-  if (typeof range !== 'string') return null;
-  const match = />=\s*v?(\d+\.\d+\.\d+)/.exec(range) ?? /v?(\d+\.\d+\.\d+)/.exec(range);
+  if (typeof range !== "string") return null;
+  const match =
+    />=\s*v?(\d+\.\d+\.\d+)/.exec(range) ?? /v?(\d+\.\d+\.\d+)/.exec(range);
   return match ? match[1] : null;
 }
 
 /** Deterministic SHA-256 of Dockerfile with normalized LF line endings. */
 export function computeDockerfileHash(rootDir = REPO_ROOT) {
-  const raw = fs.readFileSync(path.join(rootDir, 'Dockerfile'), 'utf8');
-  return sha256Hex(raw.replace(/\r\n/g, '\n'));
+  const raw = fs.readFileSync(path.join(rootDir, "Dockerfile"), "utf8");
+  return sha256Hex(raw.replace(/\r\n/g, "\n"));
 }
 
 /**
@@ -45,9 +49,9 @@ export function computeDockerfileHash(rootDir = REPO_ROOT) {
  * changes do not alter this hash because web/dist is shipped prebuilt.
  */
 export function computeRuntimeDepsHash(rootDir = REPO_ROOT) {
-  const serverPkg = readJson(path.join(rootDir, 'server', 'package.json'));
+  const serverPkg = readJson(path.join(rootDir, "server", "package.json"));
   const directDeps = serverPkg.dependencies ?? {};
-  const lockPath = path.join(rootDir, 'package-lock.json');
+  const lockPath = path.join(rootDir, "package-lock.json");
   const lock = fs.existsSync(lockPath) ? readJson(lockPath) : null;
   const packages = lock?.packages ?? {};
 
@@ -59,7 +63,9 @@ export function computeRuntimeDepsHash(rootDir = REPO_ROOT) {
     const depName = queue.shift();
     if (!depName || visited.has(depName)) continue;
     visited.add(depName);
-    const entry = packages[`server/node_modules/${depName}`] ?? packages[`node_modules/${depName}`];
+    const entry =
+      packages[`server/node_modules/${depName}`] ??
+      packages[`node_modules/${depName}`];
     if (!entry) {
       resolved[depName] = { declared: directDeps[depName] ?? null };
       continue;
@@ -76,17 +82,24 @@ export function computeRuntimeDepsHash(rootDir = REPO_ROOT) {
   }
 
   const canonical = JSON.stringify({
-    direct: Object.keys(directDeps).sort().map((k) => [k, directDeps[k]]),
-    resolved: Object.keys(resolved).sort().map((k) => [k, resolved[k]]),
+    direct: Object.keys(directDeps)
+      .sort()
+      .map((k) => [k, directDeps[k]]),
+    resolved: Object.keys(resolved)
+      .sort()
+      .map((k) => [k, resolved[k]]),
   });
   return sha256Hex(canonical);
 }
 
-export function buildRuntimeManifest({ rootDir = REPO_ROOT, inDocker = false } = {}) {
-  const rootPkg = readJson(path.join(rootDir, 'package.json'));
-  const serverPkg = readJson(path.join(rootDir, 'server', 'package.json'));
+export function buildRuntimeManifest({
+  rootDir = REPO_ROOT,
+  inDocker = false,
+} = {}) {
+  const rootPkg = readJson(path.join(rootDir, "package.json"));
+  const serverPkg = readJson(path.join(rootDir, "server", "package.json"));
   return {
-    version: String(serverPkg.version ?? rootPkg.version ?? '0.0.0'),
+    version: String(serverPkg.version ?? rootPkg.version ?? "0.0.0"),
     nodeVersion: process.versions.node,
     minNodeVersion: parseMinNodeVersion(rootPkg.engines?.node),
     platform: process.platform,
@@ -103,7 +116,7 @@ const CRC_TABLE = (() => {
   const table = new Uint32Array(256);
   for (let i = 0; i < 256; i++) {
     let c = i;
-    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
     table[i] = c >>> 0;
   }
   return table;
@@ -111,7 +124,8 @@ const CRC_TABLE = (() => {
 
 function crc32(buf) {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++)
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 
@@ -120,11 +134,17 @@ function createZipBuffer(entries) {
   const centrals = [];
   let offset = 0;
   const date = new Date();
-  const dosTime = ((date.getHours() & 0x1f) << 11) | ((date.getMinutes() & 0x3f) << 5) | (Math.floor(date.getSeconds() / 2) & 0x1f);
-  const dosDate = (((Math.max(1980, date.getFullYear()) - 1980) & 0x7f) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+  const dosTime =
+    ((date.getHours() & 0x1f) << 11) |
+    ((date.getMinutes() & 0x3f) << 5) |
+    (Math.floor(date.getSeconds() / 2) & 0x1f);
+  const dosDate =
+    (((Math.max(1980, date.getFullYear()) - 1980) & 0x7f) << 9) |
+    ((date.getMonth() + 1) << 5) |
+    date.getDate();
 
   for (const { name, data } of entries) {
-    const nameBuf = Buffer.from(name, 'utf8');
+    const nameBuf = Buffer.from(name, "utf8");
     const crc = crc32(data);
     const deflated = deflateRawSync(data, { level: 6 });
     const useDeflate = deflated.length < data.length;
@@ -186,26 +206,36 @@ function createZipBuffer(entries) {
 
 function collectFiles(rootDir, relDir, out) {
   const full = path.join(rootDir, relDir);
-  if (!fs.existsSync(full)) throw new Error(`Required build directory missing: ${relDir}`);
-  for (const entry of fs.readdirSync(full, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+  if (!fs.existsSync(full))
+    throw new Error(`Required build directory missing: ${relDir}`);
+  for (const entry of fs
+    .readdirSync(full, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name))) {
     const rel = `${relDir}/${entry.name}`;
     if (entry.isDirectory()) collectFiles(rootDir, rel, out);
-    else if (entry.isFile()) out.push({ name: rel, data: fs.readFileSync(path.join(rootDir, rel)) });
+    else if (entry.isFile())
+      out.push({ name: rel, data: fs.readFileSync(path.join(rootDir, rel)) });
   }
 }
 
 export function buildReleaseBundle({ rootDir = REPO_ROOT, outDir, tag }) {
-  const rootPkg = readJson(path.join(rootDir, 'package.json'));
-  const serverPkg = readJson(path.join(rootDir, 'server', 'package.json'));
-  const version = String(serverPkg.version ?? rootPkg.version ?? '0.0.0');
+  const rootPkg = readJson(path.join(rootDir, "package.json"));
+  const serverPkg = readJson(path.join(rootDir, "server", "package.json"));
+  const version = String(serverPkg.version ?? rootPkg.version ?? "0.0.0");
   const resolvedTag = tag || `v${version}`;
 
   const entries = [
-    { name: 'package.json', data: fs.readFileSync(path.join(rootDir, 'package.json')) },
-    { name: 'server/package.json', data: fs.readFileSync(path.join(rootDir, 'server', 'package.json')) },
+    {
+      name: "package.json",
+      data: fs.readFileSync(path.join(rootDir, "package.json")),
+    },
+    {
+      name: "server/package.json",
+      data: fs.readFileSync(path.join(rootDir, "server", "package.json")),
+    },
   ];
-  collectFiles(rootDir, 'server/dist', entries);
-  collectFiles(rootDir, 'web/dist', entries);
+  collectFiles(rootDir, "server/dist", entries);
+  collectFiles(rootDir, "web/dist", entries);
 
   const zipBuf = createZipBuffer(entries);
   const bundleSha256 = sha256Hex(zipBuf);
@@ -223,43 +253,62 @@ export function buildReleaseBundle({ rootDir = REPO_ROOT, outDir, tag }) {
     bundleAssetName: BUNDLE_NAME,
     bundleSha256,
     bundleSize: zipBuf.length,
-    requiresImageReplacement: process.env.HTOSHO_REQUIRE_IMAGE_REPLACEMENT === '1',
+    requiresImageReplacement:
+      process.env.HTOSHO_REQUIRE_IMAGE_REPLACEMENT === "1",
     imageReplacementReason: process.env.HTOSHO_IMAGE_REPLACEMENT_REASON || null,
   };
   const manifestPath = path.join(outDir, MANIFEST_NAME);
-  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(
+    manifestPath,
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf8"
+  );
   return { bundlePath, manifestPath, manifest };
 }
 
 function main() {
   const args = process.argv.slice(2);
-  const writeIdx = args.indexOf('--write-runtime-manifest');
+  const writeIdx = args.indexOf("--write-runtime-manifest");
   if (writeIdx !== -1) {
     const outPath = args[writeIdx + 1];
-    if (!outPath) throw new Error('--write-runtime-manifest requires an output path');
-    const inDocker = args.includes('--in-docker') || process.env.HTOSHO_IN_DOCKER === '1';
+    if (!outPath)
+      throw new Error("--write-runtime-manifest requires an output path");
+    const inDocker =
+      args.includes("--in-docker") || process.env.HTOSHO_IN_DOCKER === "1";
     const manifest = buildRuntimeManifest({ inDocker });
     fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
-    fs.writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-    console.log(`[update-bundle] wrote runtime manifest for v${manifest.version} to ${outPath}`);
+    fs.writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    console.log(
+      `[update-bundle] wrote runtime manifest for v${manifest.version} to ${outPath}`
+    );
     return;
   }
 
-  const bundleIdx = args.indexOf('--build-bundle');
+  const bundleIdx = args.indexOf("--build-bundle");
   if (bundleIdx !== -1) {
     const outDir = args[bundleIdx + 1];
-    if (!outDir) throw new Error('--build-bundle requires an output directory');
-    const tagIdx = args.indexOf('--tag');
+    if (!outDir) throw new Error("--build-bundle requires an output directory");
+    const tagIdx = args.indexOf("--tag");
     const tag = tagIdx !== -1 ? args[tagIdx + 1] : undefined;
-    const { bundlePath, manifestPath, manifest } = buildReleaseBundle({ outDir, tag });
-    console.log(`[update-bundle] built ${bundlePath} (${manifest.bundleSize} bytes, sha256=${manifest.bundleSha256.slice(0, 12)}…) and ${manifestPath}`);
+    const { bundlePath, manifestPath, manifest } = buildReleaseBundle({
+      outDir,
+      tag,
+    });
+    console.log(
+      `[update-bundle] built ${bundlePath} (${manifest.bundleSize} bytes, sha256=${manifest.bundleSha256.slice(0, 12)}…) and ${manifestPath}`
+    );
     return;
   }
 
-  console.error('Usage: node scripts/update-bundle.mjs --write-runtime-manifest <path> [--in-docker] | --build-bundle <outDir> [--tag <vX.Y.Z>]');
+  console.error(
+    "Usage: node scripts/update-bundle.mjs --write-runtime-manifest <path> [--in-docker] | --build-bundle <outDir> [--tag <vX.Y.Z>]"
+  );
   process.exit(1);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   main();
 }

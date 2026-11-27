@@ -44,50 +44,50 @@
   "provider-myanimelist": "#3b82f6"
 "typography":
   "headline":
-    "fontFamily": "\"Montserrat\", \"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Montserrat", "Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "1.5rem"
     "lineHeight": "2rem"
     "fontWeight": 600
     "letterSpacing": "-0.025em"
   "title":
-    "fontFamily": "\"Montserrat\", \"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Montserrat", "Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "0.875rem"
     "lineHeight": "1.25rem"
     "fontWeight": 600
     "letterSpacing": "-0.025em"
   "dialog-title":
-    "fontFamily": "\"Montserrat\", \"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Montserrat", "Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "1rem"
     "lineHeight": "1.5rem"
     "fontWeight": 600
     "letterSpacing": "-0.025em"
   "body":
-    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "0.875rem"
     "lineHeight": "1.25rem"
     "fontWeight": 400
   "label":
-    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "0.75rem"
     "lineHeight": "1rem"
     "fontWeight": 500
   "micro-label":
-    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "0.625rem"
     "lineHeight": "0.875rem"
     "fontWeight": 500
   "button":
-    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "0.875rem"
     "lineHeight": 1.25
     "fontWeight": 500
   "metric":
-    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "1.875rem"
     "lineHeight": "2.25rem"
     "fontWeight": 600
   "mono":
-    "fontFamily": "\"JetBrains Mono\", \"Cascadia Code\", ui-monospace, monospace"
+    "fontFamily": '"JetBrains Mono", "Cascadia Code", ui-monospace, monospace'
     "fontSize": "0.75rem"
     "lineHeight": "1rem"
     "fontWeight": 400
@@ -198,6 +198,7 @@
 # Design System: H-Tosho
 
 <!-- impeccable:design-map -->
+
 Name: H-Tosho
 Colors: primary: primary #aa386a; neutral: background #fcf4f7; semantic: success #066350; provider: provider-anilist #02b968; primary: primary-hover #902a57; primary: primary-button #aa386a (+34 more in the sidecar)
 Fonts: Montserrat (headline, title, dialog-title); Roboto (body, label, micro-label, button, metric); JetBrains Mono (mono)
@@ -205,32 +206,33 @@ Spacing: 1 0.25rem, 2 0.5rem, 3 0.75rem, 4 1rem, 5 1.25rem, 8 2rem, 0.5 0.125rem
 Radius: sm 0.25rem, md 0.375rem, lg 0.5rem, xl 0.75rem, 2xl 1rem
 North Star: "The Sakura Library"
 Rules:
+
 - The The Two Pink Roles Rule. Use the semantic primary token for text, indicators, and translucent highlights; use primary-button for filled actions with white text.
 - The The Local Feedback Rule. Press feedback stays on the control.
 - The The Single Focus Rule. Use the shared keyboard focus outline.
-Elevation:
+  Elevation:
 - Control at rest: 0 1px 2px var(--control-shadow)
 - Raised control on hover: 0 3px 8px var(--control-shadow)
 - Card at rest: 0 2px 6px var(--card-shadow)
 - Interactive card on hover: 0 4px 14px var(--control-shadow)
 - Toast: the installed Tailwind large shadow; dialog: the installed Tailwind 2xl shadow.
-Don't:
+  Don't:
 - Don't use the pale dark-theme primary color as a white-text filled-button background.
 - Don't add a second focus ring on top of the global keyboard focus outline.
 - Don't hard-code light-theme surface or text colors into app components.
 - Don't load application fonts from a runtime CDN.
 - Don't apply pointer hover lift to touch controls or retain transforms under reduced motion.
 - Don't treat external cover art or the screenshot sample counts as product-owned assets or measured results.
-Do:
+  Do:
 - Do use semantic CSS variables so surfaces, text, borders, and states follow the selected theme.
 - Do preserve the separate primary and primary-button roles, especially in dark mode.
 - Do use existing button, field, card, badge, tab, and disclosure primitives for consistent states.
 - Do retain visible keyboard focus, labeled icon actions, and text labels alongside status colors.
 - Do preserve the 44px minimum touch target rules and the reduced-motion behavior.
 - (+2 more)
-Map: src/index.css
-Map: src/components/ui.tsx
-Map: src/App.tsx
-Map: src/pages/
-Map: .impeccable/design.json
-Full: .impeccable/design-full.md (read a section when you need its detail)
+  Map: src/index.css
+  Map: src/components/ui.tsx
+  Map: src/App.tsx
+  Map: src/pages/
+  Map: .impeccable/design.json
+  Full: .impeccable/design-full.md (read a section when you need its detail)

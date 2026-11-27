@@ -1,4 +1,4 @@
-import path from 'node:path';
+import path from "node:path";
 
 /**
  * Shared helpers for the doujinshi downloader: filename sanitization,
@@ -7,25 +7,35 @@ import path from 'node:path';
  */
 
 /** Strip path separators + illegal filename characters and trim. */
-export function sanitizeFilename(name: string, fallback = 'Gallery'): string {
-  let out = String(name ?? '')
-    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .replace(/^[.\s]+|[.\s]+$/g, '')
+export function sanitizeFilename(name: string, fallback = "Gallery"): string {
+  let out = String(name ?? "")
+    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[.\s]+|[.\s]+$/g, "")
     .trim();
   if (!out) out = fallback;
   // Avoid filesystem path traversal via ".." or leading dots.
-  out = out.replace(/\.\.+/g, '.');
-  if (out.startsWith('.')) out = out.replace(/^\.+/, '');
+  out = out.replace(/\.\.+/g, ".");
+  if (out.startsWith(".")) out = out.replace(/^\.+/, "");
   if (!out) out = fallback;
   if (out.length > 220) out = out.slice(0, 220).trim();
   return out;
 }
 
 /** Stable, readable filesystem name that cannot collide across galleries. */
-export function galleryFilesystemName(title: string, source: string, galleryId: string): string {
-  const base = sanitizeFilename(title || `Gallery ${galleryId}`, `Gallery-${galleryId}`);
-  const identity = sanitizeFilename(`${source}-${galleryId}`, 'gallery').slice(0, 80);
+export function galleryFilesystemName(
+  title: string,
+  source: string,
+  galleryId: string
+): string {
+  const base = sanitizeFilename(
+    title || `Gallery ${galleryId}`,
+    `Gallery-${galleryId}`
+  );
+  const identity = sanitizeFilename(`${source}-${galleryId}`, "gallery").slice(
+    0,
+    80
+  );
   const suffix = ` [${identity}]`;
   const maxBaseLength = Math.max(1, 220 - suffix.length);
   return `${base.slice(0, maxBaseLength).trim()}${suffix}`;
@@ -36,7 +46,7 @@ export function galleryFilesystemName(title: string, source: string, galleryId: 
  * containing `var galleryinfo = { ... };`).
  */
 export function extractJsonObject(text: string): unknown {
-  const start = text.indexOf('{');
+  const start = text.indexOf("{");
   if (start < 0) return null;
   let depth = 0;
   let inString = false;
@@ -45,7 +55,7 @@ export function extractJsonObject(text: string): unknown {
     const ch = text[i];
     if (inString) {
       if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
+      else if (ch === "\\") escaped = true;
       else if (ch === '"') inString = false;
       continue;
     }
@@ -53,8 +63,8 @@ export function extractJsonObject(text: string): unknown {
       inString = true;
       continue;
     }
-    if (ch === '{') depth++;
-    else if (ch === '}') {
+    if (ch === "{") depth++;
+    else if (ch === "}") {
       depth--;
       if (depth === 0) {
         try {
@@ -70,35 +80,40 @@ export function extractJsonObject(text: string): unknown {
 
 /** Decode the most common HTML entities present in scraped titles/tags. */
 export function decodeHtmlEntities(s: string): string {
-  return String(s ?? '').replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (match, entity: string) => {
-    if (entity[0] === '#') {
-      const hex = entity[1] === 'x' || entity[1] === 'X';
-      const code = parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+  return String(s ?? "").replace(
+    /&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g,
+    (match, entity: string) => {
+      if (entity[0] === "#") {
+        const hex = entity[1] === "x" || entity[1] === "X";
+        const code = parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+        return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+      }
+      switch (entity) {
+        case "amp":
+          return "&";
+        case "lt":
+          return "<";
+        case "gt":
+          return ">";
+        case "quot":
+          return '"';
+        case "apos":
+        case "#39":
+          return "'";
+        case "nbsp":
+          return " ";
+        default:
+          return match;
+      }
     }
-    switch (entity) {
-      case 'amp':
-        return '&';
-      case 'lt':
-        return '<';
-      case 'gt':
-        return '>';
-      case 'quot':
-        return '"';
-      case 'apos':
-      case '#39':
-        return "'";
-      case 'nbsp':
-        return ' ';
-      default:
-        return match;
-    }
-  });
+  );
 }
 
 /** Remove HTML tags from a fragment. */
 export function stripTags(s: string): string {
-  return decodeHtmlEntities(String(s ?? '').replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+  return decodeHtmlEntities(String(s ?? "").replace(/<[^>]*>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /** First capture group of a regex match, or null. */
@@ -108,16 +123,19 @@ export function cap(text: string, re: RegExp, group = 1): string | null {
 }
 
 /** File extension (lowercase, no dot) from a URL or filename. */
-export function extFromUrl(url: string, fallback = 'jpg'): string {
-  const clean = url.split('?')[0].split('#')[0];
-  const ext = path.extname(clean).replace(/^\./, '').toLowerCase();
+export function extFromUrl(url: string, fallback = "jpg"): string {
+  const clean = url.split("?")[0].split("#")[0];
+  const ext = path.extname(clean).replace(/^\./, "").toLowerCase();
   if (!ext || ext.length > 5) return fallback;
   return ext;
 }
 
 /** Parse an integer gallery id out of an id/URL string. */
-export function extractGalleryId(input: string, urlPattern: RegExp): string | null {
-  const trimmed = String(input ?? '').trim();
+export function extractGalleryId(
+  input: string,
+  urlPattern: RegExp
+): string | null {
+  const trimmed = String(input ?? "").trim();
   if (/^\d+$/.test(trimmed)) return trimmed;
   const m = urlPattern.exec(trimmed);
   if (m) return m[1];
@@ -127,7 +145,7 @@ export function extractGalleryId(input: string, urlPattern: RegExp): string | nu
 /** Zero-pad a page number for stable ordering inside archives. */
 export function padPage(index: number, total: number): string {
   const width = total >= 1000 ? 4 : total >= 100 ? 3 : 2;
-  return String(index).padStart(width, '0');
+  return String(index).padStart(width, "0");
 }
 
 /**
@@ -139,18 +157,18 @@ export function padPage(index: number, total: number): string {
  *     and a short `±HH` offset, which is not valid ISO on its own).
  */
 export function toIsoDate(raw: unknown): string | undefined {
-  if (raw == null || raw === '') return undefined;
+  if (raw == null || raw === "") return undefined;
   let d: Date;
-  if (typeof raw === 'number' && Number.isFinite(raw)) {
+  if (typeof raw === "number" && Number.isFinite(raw)) {
     // Treat small numbers as unix seconds, large ones as milliseconds.
     const ms = raw < 1e12 ? raw * 1000 : raw;
     d = new Date(ms);
   } else if (raw instanceof Date) {
     d = raw;
-  } else if (typeof raw === 'string') {
-    let norm = raw.trim().replace(' ', 'T');
+  } else if (typeof raw === "string") {
+    let norm = raw.trim().replace(" ", "T");
     // Only expand an offset on a time; a date-only YYYY-MM-DD ends in -DD.
-    norm = norm.replace(/(\d{2}:\d{2}(?::\d{2})?)([+-]\d{2})$/, '$1$2:00');
+    norm = norm.replace(/(\d{2}:\d{2}(?::\d{2})?)([+-]\d{2})$/, "$1$2:00");
     d = new Date(norm);
   } else {
     return undefined;

@@ -11,9 +11,9 @@ Works with **Kavita v0.9.x or newer**. Current version: **v4.3.2** ·
 
 ![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
 
-*The actual interface with a sample library. Covers are from the official VIZ
+_The actual interface with a sample library. Covers are from the official VIZ
 shop; counts, match results, and metadata are example data.
-[Screenshot details and cover credits](docs/screenshots/README.md).*
+[Screenshot details and cover credits](docs/screenshots/README.md)._
 
 [Install](#install) · [First setup](#first-setup) ·
 [Use your library](#use-your-library) · [Discover and download](#discover-and-download) ·
@@ -137,9 +137,9 @@ Replace the paths on the left with folders on your Docker host. Restart with
 same folder as H-Tosho sees it:
 
 | Folder shown by Kavita | Folder available to H-Tosho |
-| --- | --- |
-| `/media/Manga` | `/mnt/manga` |
-| `/media/Doujinshi` | `/mnt/downloads` |
+| ---------------------- | --------------------------- |
+| `/media/Manga`         | `/mnt/manga`                |
+| `/media/Doujinshi`     | `/mnt/downloads`            |
 
 Choose **Save folders**. Leave a mapping empty if Kavita's path is already
 accessible from H-Tosho. Map every root you need when a library has several
@@ -179,8 +179,8 @@ With this example, use `/mnt/downloads` as H-Tosho's output folder.
 
 ![Dark-theme metadata preview for Spy x Family, showing current and proposed fields, cover art, and apply controls](docs/screenshots/metadata-preview.png)
 
-*Review the title, description, creators, tags, and cover before applying them.
-This preview uses sample metadata and real cover art.*
+_Review the title, description, creators, tags, and cover before applying them.
+This preview uses sample metadata and real cover art._
 
 If the suggested match is wrong, paste the series' AniList, MangaDex, or
 MyAnimeList URL under **Use a provider URL** and choose **Load**.
@@ -393,13 +393,13 @@ and use the merge action. On phones, sorting and selection are under
 
 Open **Discover** to access five tabs:
 
-| Tab | What to do here |
-| --- | --- |
-| **Search** | Search Hitomi.la or nHentai by keyword, tag, artist, or gallery ID. Preview a result, then download it or select several. |
+| Tab                | What to do here                                                                                                                                                                                             |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Search**         | Search Hitomi.la or nHentai by keyword, tag, artist, or gallery ID. Preview a result, then download it or select several.                                                                                   |
 | **Unified search** | Run one query across Hitomi.la, nHentai, and E-Hentai/ExHentai at once. Repeated editions appear once with every real source listed; a failed source leaves the others visible and offers a one-time retry. |
-| **For you** | Browse up to twelve picks, select the Kavita libraries that inform your preferences, and use **Refresh picks** for another set. |
-| **Following** | Manage saved searches and browse new finds in **Recently added**. |
-| **Downloads** | Track progress, pause or resume downloads, retry failures, and view completed downloads. |
+| **For you**        | Browse up to twelve picks, select the Kavita libraries that inform your preferences, and use **Refresh picks** for another set.                                                                             |
+| **Following**      | Manage saved searches and browse new finds in **Recently added**.                                                                                                                                           |
+| **Downloads**      | Track progress, pause or resume downloads, retry failures, and view completed downloads.                                                                                                                    |
 
 Before downloading, open **Settings → Downloader** and choose your output
 folder and format. **CBZ** puts each gallery in an archive; **Folder** saves its
@@ -551,14 +551,14 @@ download galleries.
 
 ## Help
 
-| Problem | What to check |
-| --- | --- |
-| **Kavita will not connect** | Test the connection in Settings. Check the server address and admin Auth Key. In Docker, use an address reachable from the container. |
-| **A title will not change, or a CBZ cannot be edited** | Check write permissions and **Kavita library folders**. The mapped path must point to the same files Kavita uses. Open the job for the specific warning. |
-| **The cover has not updated** | Wait for **Apply & Sync** to finish. Check **Tasks** for cover-upload errors, then refresh the library. |
-| **A download failed** | Open **Downloads → Needs attention** for the error. Check the output folder and source settings, then retry. An nHentai API key can help with rate limits. |
-| **A unified search shows a source as failed** | The other sources' results stay usable. Use that source's one-time **Retry**; for E-Hentai/ExHentai, re-test or re-save the account in Settings → Downloader. Saving a different account restarts in-flight unified searches. |
-| **A watch has no new results** | Its first check is silent. Check the saved query and interval, or use **Check now**. Old uploads are suppressed when their date is known. |
+| Problem                                                | What to check                                                                                                                                                                                                                 |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Kavita will not connect**                            | Test the connection in Settings. Check the server address and admin Auth Key. In Docker, use an address reachable from the container.                                                                                         |
+| **A title will not change, or a CBZ cannot be edited** | Check write permissions and **Kavita library folders**. The mapped path must point to the same files Kavita uses. Open the job for the specific warning.                                                                      |
+| **The cover has not updated**                          | Wait for **Apply & Sync** to finish. Check **Tasks** for cover-upload errors, then refresh the library.                                                                                                                       |
+| **A download failed**                                  | Open **Downloads → Needs attention** for the error. Check the output folder and source settings, then retry. An nHentai API key can help with rate limits.                                                                    |
+| **A unified search shows a source as failed**          | The other sources' results stay usable. Use that source's one-time **Retry**; for E-Hentai/ExHentai, re-test or re-save the account in Settings → Downloader. Saving a different account restarts in-flight unified searches. |
+| **A watch has no new results**                         | Its first check is silent. Check the saved query and interval, or use **Check now**. Old uploads are suppressed when their date is known.                                                                                     |
 
 **Tasks** contains the results and logs for scans, matches, merges, edits, and
 watched-search checks. Failed jobs offer retry and, where available, a link to

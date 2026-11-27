@@ -18,7 +18,8 @@ export function shouldEnableIdentify(input: IdentifyGatingInput): boolean {
   if (input.hasInitialCandidate && input.selected) return false;
   if (input.autoReview) {
     if (input.autoReviewDone && input.selected) return false;
-    if (!input.autoReviewDone && input.hasMatch && !input.currentError) return false;
+    if (!input.autoReviewDone && input.hasMatch && !input.currentError)
+      return false;
   }
   return true;
 }
