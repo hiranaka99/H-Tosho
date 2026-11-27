@@ -1,10 +1,22 @@
-import crypto from 'node:crypto';
-import vm from 'node:vm';
-import { hitomiNozomiPath, hitomiStateForTerm, normalizeHitomiQuery, parseHitomiSearch } from './hitomiSearch.js';
-import { fetchBuffer, mapLimit } from '../lib/http.js';
-import { getDownloaderSettings } from '../services/settings.js';
-import { stripTags, toIsoDate } from './util.js';
-import type { DoujinGallery, DoujinProvider, DoujinSearchOptions, DoujinSearchResult, DoujinSuggestion, DoujinSort } from './types.js';
+import crypto from "node:crypto";
+import vm from "node:vm";
+import {
+  hitomiNozomiPath,
+  hitomiStateForTerm,
+  normalizeHitomiQuery,
+  parseHitomiSearch,
+} from "./hitomiSearch.js";
+import { fetchBuffer, mapLimit } from "../lib/http.js";
+import { getDownloaderSettings } from "../services/settings.js";
+import { stripTags, toIsoDate } from "./util.js";
+import type {
+  DoujinGallery,
+  DoujinProvider,
+  DoujinSearchOptions,
+  DoujinSearchResult,
+  DoujinSuggestion,
+  DoujinSort,
+} from "./types.js";
 
 /**
  * Hitomi.la provider.
@@ -37,25 +49,35 @@ import type { DoujinGallery, DoujinProvider, DoujinSearchOptions, DoujinSearchRe
  * hitomi.la Referer header, which the provider attaches via `requestHeaders`.
  */
 
-const BASE = 'https://hitomi.la';
-const CDN = 'gold-usergeneratedcontent.net';
+const BASE = "https://hitomi.la";
+const CDN = "gold-usergeneratedcontent.net";
 const API_BASE = `https://ltn.${CDN}`;
 // Tag-autocomplete index. GET {TAG_INDEX}/{field}/{c1}/{c2}...json returns an
 // array of [name, count, namespace] triples for the character-prefix query — this
 // is exactly what powers the live site's search dropdown (see search.js).
-const TAG_INDEX = 'https://tagindex.hitomi.la';
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0';
+const TAG_INDEX = "https://tagindex.hitomi.la";
+const UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 H-Tosho/1.0";
 /** Accept the site's reader, gallery, and title-slug URLs, with an exact host. */
 function galleryIdFromInput(input: string): string | null {
   const value = input.trim();
   if (/^\d+$/.test(value)) return value;
   try {
     const url = new URL(value);
-    if (url.hostname !== 'hitomi.la' || !['https:', 'http:'].includes(url.protocol)) return null;
-    return url.pathname.match(/^\/(?:reader|galleries)\/(\d+)\.html$/)?.[1]
-      ?? url.pathname.match(/^\/[^/]+\/[^/]+-(\d+)\.html$/)?.[1]
-      ?? url.pathname.match(/^\/(\d+)\/?$/)?.[1] ?? null;
-  } catch { return null; }
+    if (
+      url.hostname !== "hitomi.la" ||
+      !["https:", "http:"].includes(url.protocol)
+    )
+      return null;
+    return (
+      url.pathname.match(/^\/(?:reader|galleries)\/(\d+)\.html$/)?.[1] ??
+      url.pathname.match(/^\/[^/]+\/[^/]+-(\d+)\.html$/)?.[1] ??
+      url.pathname.match(/^\/(\d+)\/?$/)?.[1] ??
+      null
+    );
+  } catch {
+    return null;
+  }
 }
 
 const MAX_NODE_SIZE = 464;
@@ -68,8 +90,8 @@ const GG_CACHE_TTL_MS = 20 * 1000;
 
 function headers(): Record<string, string> {
   return {
-    'User-Agent': UA,
-    Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+    "User-Agent": UA,
+    Accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
     Referer: `${BASE}/`,
   };
 }
@@ -89,11 +111,15 @@ let ggLoading: Promise<GG> | null = null;
 
 /** Load the live CDN routing table, honoring a short cache unless `force`. */
 async function loadGG(force = false): Promise<GG> {
-  if (!force && ggCache && Date.now() - ggCache.at < GG_CACHE_TTL_MS) return ggCache.value;
+  if (!force && ggCache && Date.now() - ggCache.at < GG_CACHE_TTL_MS)
+    return ggCache.value;
   if (ggLoading) return ggLoading;
   ggLoading = loadFreshGG();
-  try { return await ggLoading; }
-  finally { ggLoading = null; }
+  try {
+    return await ggLoading;
+  } finally {
+    ggLoading = null;
+  }
 }
 
 async function loadFreshGG(): Promise<GG> {
@@ -103,16 +129,23 @@ async function loadFreshGG(): Promise<GG> {
   const context = vm.createContext({ gg: {} as Partial<GG> });
   vm.runInContext(code, context, { timeout: 500 });
   const gg = context.gg as GG;
-  if (typeof gg.m !== 'function' || typeof gg.s !== 'function' || typeof gg.b !== 'string') {
-    throw new Error('Failed to parse Hitomi gg.js CDN routing table.');
+  if (
+    typeof gg.m !== "function" ||
+    typeof gg.s !== "function" ||
+    typeof gg.b !== "string"
+  ) {
+    throw new Error("Failed to parse Hitomi gg.js CDN routing table.");
   }
   ggCache = { value: gg, at: Date.now() };
   return gg;
 }
 
 async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
-  const buf = await fetchBuffer(url, { headers: headers(), ...(signal ? { signal } : {}) });
-  return buf.toString('utf8');
+  const buf = await fetchBuffer(url, {
+    headers: headers(),
+    ...(signal ? { signal } : {}),
+  });
+  return buf.toString("utf8");
 }
 
 // ---------------------------------------------------------------------------
@@ -132,13 +165,13 @@ function subdomainNumber(gg: GG, hash: string): number | null {
 }
 
 /** Subdomain for a compressed rendition: 'a{n}' (avif) or 'w{n}' (webp). */
-function subdomainPrefix(gg: GG, hash: string, dir: 'avif' | 'webp'): string {
-  const letter = dir === 'avif' ? 'a' : 'w';
+function subdomainPrefix(gg: GG, hash: string, dir: "avif" | "webp"): string {
+  const letter = dir === "avif" ? "a" : "w";
   const n = subdomainNumber(gg, hash);
   return n === null ? letter : `${letter}${n}`;
 }
 
-function imageUrl(gg: GG, hash: string, ext: 'avif' | 'webp'): string {
+function imageUrl(gg: GG, hash: string, ext: "avif" | "webp"): string {
   const prefix = subdomainPrefix(gg, hash, ext);
   return `https://${prefix}.${CDN}/${gg.b}${gg.s(hash)}/${hash}.${ext}`;
 }
@@ -150,7 +183,7 @@ function imageUrl(gg: GG, hash: string, ext: 'avif' | 'webp'): string {
  */
 function originalUrl(gg: GG, hash: string, ext: string): string {
   const n = subdomainNumber(gg, hash);
-  const host = n === null ? 'a' : String(n);
+  const host = n === null ? "a" : String(n);
   return `https://${host}.${CDN}/${gg.b}${gg.s(hash)}/${hash}.${ext}`;
 }
 
@@ -158,9 +191,9 @@ function originalUrl(gg: GG, hash: string, ext: string): string {
 export interface HitomiPageRef {
   hash: string;
   /** Preferred compressed extension ('avif' | 'webp'), when the file has one. */
-  ext?: 'avif' | 'webp';
+  ext?: "avif" | "webp";
   /** Fallback compressed extension (used when the primary fails to download). */
-  fallbackExt?: 'avif' | 'webp';
+  fallbackExt?: "avif" | "webp";
   /** Original-format extension for files with no webp/avif rendition. */
   origExt?: string;
 }
@@ -173,28 +206,33 @@ export interface HitomiPageRef {
  */
 export async function buildHitomiPageUrl(
   ref: HitomiPageRef,
-  opts?: { forceGgRefresh?: boolean; preloadedGg?: GG },
+  opts?: { forceGgRefresh?: boolean; preloadedGg?: GG }
 ): Promise<string> {
   const gg = opts?.preloadedGg ?? (await loadGG(opts?.forceGgRefresh));
   if (ref.ext) return imageUrl(gg, ref.hash, ref.ext);
   // Original format — no compressed rendition; bare numeric subdomain.
-  return originalUrl(gg, ref.hash, ref.origExt ?? 'jpg');
+  return originalUrl(gg, ref.hash, ref.origExt ?? "jpg");
 }
 
 /** Rebuild a cached Hitomi image URL against the current rotating CDN route. */
-export async function refreshHitomiImageUrl(url: string): Promise<string | null> {
+export async function refreshHitomiImageUrl(
+  url: string
+): Promise<string | null> {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     return null;
   }
-  if (!parsed.hostname.endsWith('.gold-usergeneratedcontent.net')) return null;
+  if (!parsed.hostname.endsWith(".gold-usergeneratedcontent.net")) return null;
   const match = /\/([0-9a-f]{64})\.(avif|webp)$/i.exec(parsed.pathname);
   if (!match) return null;
   return buildHitomiPageUrl(
-    { hash: match[1].toLowerCase(), ext: match[2].toLowerCase() as 'avif' | 'webp' },
-    { forceGgRefresh: true },
+    {
+      hash: match[1].toLowerCase(),
+      ext: match[2].toLowerCase() as "avif" | "webp",
+    },
+    { forceGgRefresh: true }
   );
 }
 
@@ -227,8 +265,8 @@ interface HitomiGalleryInfo {
 }
 
 function parseGalleryInfo(text: string): HitomiGalleryInfo {
-  const start = text.indexOf('{');
-  if (start < 0) throw new Error('Could not locate galleryinfo object.');
+  const start = text.indexOf("{");
+  if (start < 0) throw new Error("Could not locate galleryinfo object.");
   // Find the matching closing brace (balanced, string-aware).
   let depth = 0;
   let inString = false;
@@ -237,18 +275,19 @@ function parseGalleryInfo(text: string): HitomiGalleryInfo {
     const ch = text[i];
     if (inString) {
       if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
+      else if (ch === "\\") escaped = true;
       else if (ch === '"') inString = false;
       continue;
     }
     if (ch === '"') inString = true;
-    else if (ch === '{') depth++;
-    else if (ch === '}') {
+    else if (ch === "{") depth++;
+    else if (ch === "}") {
       depth--;
-      if (depth === 0) return JSON.parse(text.slice(start, i + 1)) as HitomiGalleryInfo;
+      if (depth === 0)
+        return JSON.parse(text.slice(start, i + 1)) as HitomiGalleryInfo;
     }
   }
-  throw new Error('Could not parse galleryinfo object.');
+  throw new Error("Could not parse galleryinfo object.");
 }
 
 /** A single entry from a galleryinfo tag list (tags/artists/characters/groups/parodys). */
@@ -263,8 +302,8 @@ interface HitomiTagEntry {
 }
 
 function tagValue(t: HitomiTagEntry | string): string {
-  if (typeof t === 'string') return t;
-  return String(t.tag ?? t.artist ?? t.character ?? t.group ?? '');
+  if (typeof t === "string") return t;
+  return String(t.tag ?? t.artist ?? t.character ?? t.group ?? "");
 }
 
 /**
@@ -273,9 +312,9 @@ function tagValue(t: HitomiTagEntry | string): string {
  * have no area and are searched as plain keywords.
  */
 function tagNamespace(t: HitomiTagEntry | string): string | undefined {
-  if (typeof t === 'string') return undefined;
-  if (t.female) return 'female';
-  if (t.male) return 'male';
+  if (typeof t === "string") return undefined;
+  if (t.female) return "female";
+  if (t.male) return "male";
   return undefined;
 }
 
@@ -285,15 +324,18 @@ function tagNamespace(t: HitomiTagEntry | string): string | undefined {
  * `/{id}` path 404s on the live site, so prefer the API's `galleryurl` field.
  */
 function galleryUrlFor(info: { galleryurl?: unknown }, id: string): string {
-  const path = typeof info.galleryurl === 'string' && info.galleryurl ? info.galleryurl : `/${id}`;
-  return `${BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  const path =
+    typeof info.galleryurl === "string" && info.galleryurl
+      ? info.galleryurl
+      : `/${id}`;
+  return `${BASE}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 function coverUrlFor(gg: GG, files: HitomiFile[]): string | undefined {
   const f = files?.[0];
   if (!f) return undefined;
-  if (f.haswebp) return imageUrl(gg, f.hash, 'webp');
-  if (f.hasavif) return imageUrl(gg, f.hash, 'avif');
+  if (f.haswebp) return imageUrl(gg, f.hash, "webp");
+  if (f.hasavif) return imageUrl(gg, f.hash, "avif");
   return undefined;
 }
 
@@ -302,7 +344,9 @@ function coverUrlFor(gg: GG, files: HitomiFile[]): string | undefined {
 // ---------------------------------------------------------------------------
 
 function hashTerm(term: string): Uint8Array {
-  return new Uint8Array(crypto.createHash('sha256').update(term, 'utf8').digest().subarray(0, 4));
+  return new Uint8Array(
+    crypto.createHash("sha256").update(term, "utf8").digest().subarray(0, 4)
+  );
 }
 
 /** Per-request upper bounds so a stalled CDN connection cannot pin a search forever. */
@@ -323,19 +367,39 @@ function discardBody(r: Response): void {
 
 function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('Aborted'));
+  if (signal.aborted)
+    return Promise.reject(
+      signal.reason instanceof Error ? signal.reason : new Error("Aborted")
+    );
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error('Aborted'));
-    signal.addEventListener('abort', onAbort, { once: true });
+    const onAbort = () =>
+      reject(
+        signal.reason instanceof Error ? signal.reason : new Error("Aborted")
+      );
+    signal.addEventListener("abort", onAbort, { once: true });
     promise.then(
-      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
-      (error) => { signal.removeEventListener('abort', onAbort); reject(error instanceof Error ? error : new Error(String(error))); },
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     );
   });
 }
 
-async function rangeFetch(url: string, start: number, end: number, signal?: AbortSignal): Promise<Buffer> {
-  const r = await fetch(url, { headers: { ...headers(), Range: `bytes=${start}-${end}` }, signal: requestSignal(RANGE_TIMEOUT_MS, signal) });
+async function rangeFetch(
+  url: string,
+  start: number,
+  end: number,
+  signal?: AbortSignal
+): Promise<Buffer> {
+  const r = await fetch(url, {
+    headers: { ...headers(), Range: `bytes=${start}-${end}` },
+    signal: requestSignal(RANGE_TIMEOUT_MS, signal),
+  });
   if (r.status !== 200 && r.status !== 206) {
     discardBody(r);
     throw new Error(`Hitomi range request failed (HTTP ${r.status})`);
@@ -358,7 +422,8 @@ function decodeNode(data: Buffer): BTreeNode {
   for (let i = 0; i < nKeys; i++) {
     const ks = dv.getInt32(pos, false);
     pos += 4;
-    if (!ks || ks > 32) throw new Error('Malformed Hitomi B-tree node key size.');
+    if (!ks || ks > 32)
+      throw new Error("Malformed Hitomi B-tree node key size.");
     keys.push(new Uint8Array(data.buffer, data.byteOffset + pos, ks));
     pos += ks;
   }
@@ -393,15 +458,20 @@ let galleriesIndexVersion: { value: string; at: number } | null = null;
 let versionInflight: Promise<string> | null = null;
 
 async function getGalleriesIndexVersion(signal?: AbortSignal): Promise<string> {
-  if (galleriesIndexVersion && Date.now() - galleriesIndexVersion.at < 30_000) return galleriesIndexVersion.value;
+  if (galleriesIndexVersion && Date.now() - galleriesIndexVersion.at < 30_000)
+    return galleriesIndexVersion.value;
   if (!versionInflight) {
-    versionInflight = fetchText(`${API_BASE}/galleriesindex/version?_=${Date.now()}`)
+    versionInflight = fetchText(
+      `${API_BASE}/galleriesindex/version?_=${Date.now()}`
+    )
       .then((v) => {
         const value = v.trim();
         galleriesIndexVersion = { value, at: Date.now() };
         return value;
       })
-      .finally(() => { versionInflight = null; });
+      .finally(() => {
+        versionInflight = null;
+      });
   }
   return raceAbort(versionInflight, signal);
 }
@@ -417,7 +487,12 @@ const btreeNodeCache = new Map<string, BTreeNode>();
 const btreeNodeInflight = new Map<string, Promise<BTreeNode>>();
 const BTREE_NODE_CACHE_MAX = 256;
 
-async function loadBTreeNode(indexUrl: string, version: string, addr: bigint, signal?: AbortSignal): Promise<BTreeNode> {
+async function loadBTreeNode(
+  indexUrl: string,
+  version: string,
+  addr: bigint,
+  signal?: AbortSignal
+): Promise<BTreeNode> {
   const nodeKey = `${version}:${addr}`;
   const cached = btreeNodeCache.get(nodeKey);
   if (cached) {
@@ -427,7 +502,11 @@ async function loadBTreeNode(indexUrl: string, version: string, addr: bigint, si
   }
   let pending = btreeNodeInflight.get(nodeKey);
   if (!pending) {
-    pending = rangeFetch(indexUrl, Number(addr), Number(addr) + MAX_NODE_SIZE - 1)
+    pending = rangeFetch(
+      indexUrl,
+      Number(addr),
+      Number(addr) + MAX_NODE_SIZE - 1
+    )
       .then((buf) => {
         const node = decodeNode(buf);
         if (btreeNodeCache.size >= BTREE_NODE_CACHE_MAX) {
@@ -438,7 +517,8 @@ async function loadBTreeNode(indexUrl: string, version: string, addr: bigint, si
         return node;
       })
       .finally(() => {
-        if (btreeNodeInflight.get(nodeKey) === pending) btreeNodeInflight.delete(nodeKey);
+        if (btreeNodeInflight.get(nodeKey) === pending)
+          btreeNodeInflight.delete(nodeKey);
       });
     btreeNodeInflight.set(nodeKey, pending);
   }
@@ -446,7 +526,11 @@ async function loadBTreeNode(indexUrl: string, version: string, addr: bigint, si
 }
 
 /** Resolve the gallery ids that exactly match a single keyword term. */
-async function getGalleryIdsForTerm(term: string, version: string, signal?: AbortSignal): Promise<number[]> {
+async function getGalleryIdsForTerm(
+  term: string,
+  version: string,
+  signal?: AbortSignal
+): Promise<number[]> {
   const key = hashTerm(term);
   const indexUrl = `${API_BASE}/galleriesindex/galleries.${version}.index`;
   const dataUrl = `${API_BASE}/galleriesindex/galleries.${version}.data`;
@@ -509,7 +593,9 @@ interface NozomiFilter {
 /** Build the `.nozomi` URL for a filter (mirrors get_galleryids_from_nozomi). */
 function nozomiUrl(f: NozomiFilter): string {
   const tail = `${f.tag}-${f.language}`;
-  return f.area ? `${API_BASE}/n/${f.area}/${tail}.nozomi` : `${API_BASE}/n/${tail}.nozomi`;
+  return f.area
+    ? `${API_BASE}/n/${f.area}/${tail}.nozomi`
+    : `${API_BASE}/n/${tail}.nozomi`;
 }
 
 /** Parse a nozomi payload: big-endian int32 gallery-id list. */
@@ -521,7 +607,11 @@ function parseNozomiIds(buf: Buffer): number[] {
 }
 
 /** Fetch the big-endian int32 gallery-id list from a nozomi filter. */
-async function fetchNozomiIds(f: NozomiFilter, strict = false, signal?: AbortSignal): Promise<number[]> {
+async function fetchNozomiIds(
+  f: NozomiFilter,
+  strict = false,
+  signal?: AbortSignal
+): Promise<number[]> {
   return fetchNozomiUrl(nozomiUrl(f), strict, signal);
 }
 
@@ -534,8 +624,14 @@ async function fetchNozomiIds(f: NozomiFilter, strict = false, signal?: AbortSig
  */
 const NOZOMI_CACHE_TTL_MS = 60_000;
 const NOZOMI_CACHE_MAX_IDS = 3_000_000;
-const nozomiCache = new Map<string, { at: number; ids: number[]; set?: Set<number> }>();
-const nozomiInflight = new Map<string, Promise<{ status: number; ids: number[] }>>();
+const nozomiCache = new Map<
+  string,
+  { at: number; ids: number[]; set?: Set<number> }
+>();
+const nozomiInflight = new Map<
+  string,
+  Promise<{ status: number; ids: number[] }>
+>();
 let nozomiCacheIds = 0;
 
 function cacheNozomi(url: string, ids: number[]): void {
@@ -545,7 +641,10 @@ function cacheNozomi(url: string, ids: number[]): void {
     nozomiCache.delete(url);
     nozomiCacheIds -= existing.ids.length;
   }
-  while (nozomiCache.size && nozomiCacheIds + ids.length > NOZOMI_CACHE_MAX_IDS) {
+  while (
+    nozomiCache.size &&
+    nozomiCacheIds + ids.length > NOZOMI_CACHE_MAX_IDS
+  ) {
     const [oldestKey, oldest] = nozomiCache.entries().next().value!;
     nozomiCache.delete(oldestKey);
     nozomiCacheIds -= oldest.ids.length;
@@ -554,17 +653,24 @@ function cacheNozomi(url: string, ids: number[]): void {
   nozomiCacheIds += ids.length;
 }
 
-async function loadNozomi(url: string, signal?: AbortSignal): Promise<{ status: number; ids: number[] }> {
+async function loadNozomi(
+  url: string,
+  signal?: AbortSignal
+): Promise<{ status: number; ids: number[] }> {
   const cached = nozomiCache.get(url);
   if (cached) {
-    if (Date.now() - cached.at < NOZOMI_CACHE_TTL_MS) return { status: 200, ids: cached.ids };
+    if (Date.now() - cached.at < NOZOMI_CACHE_TTL_MS)
+      return { status: 200, ids: cached.ids };
     nozomiCache.delete(url);
     nozomiCacheIds -= cached.ids.length;
   }
   let pending = nozomiInflight.get(url);
   if (!pending) {
     pending = (async () => {
-      const r = await fetch(url, { headers: { ...headers() }, signal: requestSignal(NOZOMI_TIMEOUT_MS) });
+      const r = await fetch(url, {
+        headers: { ...headers() },
+        signal: requestSignal(NOZOMI_TIMEOUT_MS),
+      });
       if (r.status !== 200) {
         discardBody(r);
         return { status: r.status, ids: [] as number[] };
@@ -581,11 +687,16 @@ async function loadNozomi(url: string, signal?: AbortSignal): Promise<{ status: 
 }
 
 /** The ids of one `.nozomi` index (a shared cached array — never mutate it). */
-async function fetchNozomiUrl(url: string, strict = false, signal?: AbortSignal): Promise<number[]> {
+async function fetchNozomiUrl(
+  url: string,
+  strict = false,
+  signal?: AbortSignal
+): Promise<number[]> {
   try {
     const { status, ids } = await loadNozomi(url, signal);
     if (status !== 200) {
-      if (strict && status !== 404) throw new Error(`Hitomi exclusion index HTTP ${status}`);
+      if (strict && status !== 404)
+        throw new Error(`Hitomi exclusion index HTTP ${status}`);
       return [];
     }
     return ids;
@@ -595,7 +706,11 @@ async function fetchNozomiUrl(url: string, strict = false, signal?: AbortSignal)
   }
 }
 
-async function getNozomiSet(url: string, strict = false, signal?: AbortSignal): Promise<Set<number>> {
+async function getNozomiSet(
+  url: string,
+  strict = false,
+  signal?: AbortSignal
+): Promise<Set<number>> {
   const ids = await fetchNozomiUrl(url, strict, signal);
   const entry = nozomiCache.get(url);
   if (entry && entry.ids === ids) {
@@ -621,17 +736,18 @@ function shuffleInPlace(ids: number[]): void {
  * language: (no area, tag "index") cases.
  */
 function nozomiFilterFromTerm(term: string): NozomiFilter | null {
-  const [ns, ...rest] = term.split(':');
+  const [ns, ...rest] = term.split(":");
   // The `.nozomi` endpoint is case-sensitive (its indices are built from
   // lowercased tags), so normalize the area and tag value to lowercase.
-  const val = rest.join(':').toLowerCase();
+  const val = rest.join(":").toLowerCase();
   if (!val) return null;
   const area = ns.toLowerCase();
-  if (area === 'female' || area === 'male') return { area: 'tag', tag: term.toLowerCase(), language: 'all' };
-  if (area === 'language') return { area: undefined, tag: 'index', language: val };
-  return { area, tag: val, language: 'all' };
+  if (area === "female" || area === "male")
+    return { area: "tag", tag: term.toLowerCase(), language: "all" };
+  if (area === "language")
+    return { area: undefined, tag: "index", language: val };
+  return { area, tag: val, language: "all" };
 }
-
 
 /** AND-intersect a list of id sets (empty result if any set is empty). */
 function intersectIds(sets: number[][]): number[] {
@@ -662,10 +778,10 @@ function tokenizeQuery(query: string): { ns?: string; val: string }[] {
     .split(/\s+/)
     .filter(Boolean)
     .map((t) => {
-      const ci = t.indexOf(':');
-      if (ci <= 0) return { val: t.replace(/_/g, ' ') };
+      const ci = t.indexOf(":");
+      if (ci <= 0) return { val: t.replace(/_/g, " ") };
       // Keep the namespace intact; de-underscore only the tag value.
-      return { ns: t.slice(0, ci), val: t.slice(ci + 1).replace(/_/g, ' ') };
+      return { ns: t.slice(0, ci), val: t.slice(ci + 1).replace(/_/g, " ") };
     });
 }
 
@@ -693,19 +809,37 @@ async function searchGalleryIds(
   sort?: DoujinSort,
   strictExclusions = false,
   defaultLanguage?: string,
-  signal?: AbortSignal,
+  signal?: AbortSignal
 ): Promise<number[]> {
-  const { state, positive, negative, groups } = parseHitomiSearch(query, sort, defaultLanguage);
-  const resolveList = (term: string) => term.includes(':')
-    ? fetchNozomiUrl(`${API_BASE}${hitomiNozomiPath(hitomiStateForTerm(term, state))}`, false, signal)
-    : getGalleryIdsForTerm(term, version, signal);
-  const resolveSet = (term: string) => term.includes(':')
-    ? getNozomiSet(`${API_BASE}${hitomiNozomiPath(hitomiStateForTerm(term, state))}`, false, signal)
-    : getGalleryIdsForTerm(term, version, signal).then((list) => new Set(list));
+  const { state, positive, negative, groups } = parseHitomiSearch(
+    query,
+    sort,
+    defaultLanguage
+  );
+  const resolveList = (term: string) =>
+    term.includes(":")
+      ? fetchNozomiUrl(
+          `${API_BASE}${hitomiNozomiPath(hitomiStateForTerm(term, state))}`,
+          false,
+          signal
+        )
+      : getGalleryIdsForTerm(term, version, signal);
+  const resolveSet = (term: string) =>
+    term.includes(":")
+      ? getNozomiSet(
+          `${API_BASE}${hitomiNozomiPath(hitomiStateForTerm(term, state))}`,
+          false,
+          signal
+        )
+      : getGalleryIdsForTerm(term, version, signal).then(
+          (list) => new Set(list)
+        );
   // The first positive namespace determines the ranking index on the website.
   // May be a shared cached array: never reorder it in place (the filter loop
   // always builds a fresh array, which is what gets reversed/shuffled).
-  const useIndexRanking = !positive.length || (!positive[0].includes(':') && state.orderbykey !== 'added');
+  const useIndexRanking =
+    !positive.length ||
+    (!positive[0].includes(":") && state.orderbykey !== "added");
   const basePromise = useIndexRanking
     ? fetchNozomiUrl(`${API_BASE}${hitomiNozomiPath(state)}`, false, signal)
     : resolveList(positive[0]);
@@ -713,36 +847,47 @@ async function searchGalleryIds(
   const [ids, allowed, alternatives, excludedSets, banned] = await Promise.all([
     basePromise,
     Promise.all(remainingPositive.map(resolveSet)),
-    Promise.all(groups.map(async (group) => {
-      const lists = await Promise.all(group.map(resolveList));
-      const union = new Set<number>();
-      for (const list of lists) {
-        for (const id of list) union.add(id);
-      }
-      return union;
-    })),
+    Promise.all(
+      groups.map(async (group) => {
+        const lists = await Promise.all(group.map(resolveList));
+        const union = new Set<number>();
+        for (const list of lists) {
+          for (const id of list) union.add(id);
+        }
+        return union;
+      })
+    ),
     Promise.all(negative.map(resolveSet)),
-    raceAbort(bannedIdSet(strictExclusions ? '' : query, version, strictExclusions), signal),
+    raceAbort(
+      bannedIdSet(strictExclusions ? "" : query, version, strictExclusions),
+      signal
+    ),
   ]);
   if (!ids.length) return [];
   for (let i = 0; i < allowed.length; i++) if (!allowed[i].size) return [];
-  for (let i = 0; i < alternatives.length; i++) if (!alternatives[i].size) return [];
+  for (let i = 0; i < alternatives.length; i++)
+    if (!alternatives[i].size) return [];
 
   const nonEmptyExcluded = excludedSets.filter((s) => s.size > 0);
   const kept: number[] = [];
   outer: for (let i = 0; i < ids.length; i++) {
     const id = ids[i];
     if (banned?.has(id)) continue;
-    for (let j = 0; j < allowed.length; j++) if (!allowed[j].has(id)) continue outer;
-    for (let j = 0; j < alternatives.length; j++) if (!alternatives[j].has(id)) continue outer;
-    for (let j = 0; j < nonEmptyExcluded.length; j++) if (nonEmptyExcluded[j].has(id)) continue outer;
+    for (let j = 0; j < allowed.length; j++)
+      if (!allowed[j].has(id)) continue outer;
+    for (let j = 0; j < alternatives.length; j++)
+      if (!alternatives[j].has(id)) continue outer;
+    for (let j = 0; j < nonEmptyExcluded.length; j++)
+      if (nonEmptyExcluded[j].has(id)) continue outer;
     kept.push(id);
   }
   // Order only the survivors: filtering preserves order, so reversing or
   // shuffling afterwards gives the same distribution as doing it on the full
   // index, without touching the (often hundreds of thousands of) discarded ids.
-  if (state.direction === 'asc' || state.direction === 'ascending') kept.reverse();
-  else if (state.direction === 'random' || state.direction === 'rand') shuffleInPlace(kept);
+  if (state.direction === "asc" || state.direction === "ascending")
+    kept.reverse();
+  else if (state.direction === "random" || state.direction === "rand")
+    shuffleInPlace(kept);
   return kept;
 }
 
@@ -759,13 +904,19 @@ async function searchGalleryIds(
  * Multi-word entries AND-intersect their terms, mirroring how search combines
  * them — "aoi kajitsu" excludes galleries tagged with both, not either word.
  */
-async function resolveBannedEntry(entry: string, version: string, strict = false): Promise<number[]> {
+async function resolveBannedEntry(
+  entry: string,
+  version: string,
+  strict = false
+): Promise<number[]> {
   const terms = tokenizeQuery(entry);
   if (!terms.length) return [];
   const sets = await Promise.all(
     terms.map(async (t) => {
       const f = t.ns ? nozomiFilterFromTerm(`${t.ns}:${t.val}`) : null;
-      return f ? fetchNozomiIds(f, strict) : getGalleryIdsForTerm(t.val.toLowerCase(), version);
+      return f
+        ? fetchNozomiIds(f, strict)
+        : getGalleryIdsForTerm(t.val.toLowerCase(), version);
     })
   );
   return intersectIds(sets);
@@ -783,7 +934,8 @@ async function resolveBannedEntry(entry: string, version: string, strict = false
  * failure must fail open on the next search instead of silently disabling a
  * ban until the index changes.
  */
-let bannedCache: { version: string; entries: Map<string, number[]> } | null = null;
+let bannedCache: { version: string; entries: Map<string, number[]> } | null =
+  null;
 /**
  * Merged exclusion sets for the current index version, keyed by the exact list
  * of applicable entries. Rebuilding a Set over up to ~1M ids on every search is
@@ -791,11 +943,16 @@ let bannedCache: { version: string; entries: Map<string, number[]> } | null = nu
  * to a cached (non-empty) id list, so a transient failure is never frozen in.
  * Callers treat the returned set as read-only.
  */
-let bannedMerged: { version: string; sets: Map<string, Set<number>> } | null = null;
+let bannedMerged: { version: string; sets: Map<string, Set<number>> } | null =
+  null;
 const BANNED_MERGED_MAX = 2;
 const BANNED_RESOLVE_CONCURRENCY = 4;
 
-async function bannedIdSet(query: string, version: string, strict = false): Promise<Set<number> | null> {
+async function bannedIdSet(
+  query: string,
+  version: string,
+  strict = false
+): Promise<Set<number> | null> {
   let rawTags: unknown;
   try {
     rawTags = getDownloaderSettings().hitomiBannedTags;
@@ -804,7 +961,8 @@ async function bannedIdSet(query: string, version: string, strict = false): Prom
   }
   if (!Array.isArray(rawTags) || !rawTags.length) return null;
 
-  const termKey = (t: { ns?: string; val: string }) => (t.ns ? `${t.ns.toLowerCase()}:${t.val}` : t.val.toLowerCase());
+  const termKey = (t: { ns?: string; val: string }) =>
+    t.ns ? `${t.ns.toLowerCase()}:${t.val}` : t.val.toLowerCase();
   const queryTerms = new Set(tokenizeQuery(query).map(termKey));
 
   if (!bannedCache || bannedCache.version !== version) {
@@ -817,12 +975,17 @@ async function bannedIdSet(query: string, version: string, strict = false): Prom
   const merged = bannedMerged.sets;
   const active: string[] = [];
   for (const raw of rawTags) {
-    const entry = String(raw ?? '').trim();
+    const entry = String(raw ?? "").trim();
     if (!entry) continue;
     const terms = tokenizeQuery(entry);
     // Explicitly searched (every term of the entry appears verbatim) — this
     // ban doesn't apply to the current query.
-    if (!strict && terms.length && terms.every((t) => queryTerms.has(termKey(t)))) continue;
+    if (
+      !strict &&
+      terms.length &&
+      terms.every((t) => queryTerms.has(termKey(t)))
+    )
+      continue;
     active.push(entry);
   }
   if (!active.length) return null;
@@ -840,30 +1003,46 @@ async function bannedIdSet(query: string, version: string, strict = false): Prom
   const cold = [...new Set(active.filter((entry) => !entries.has(entry)))];
   let firstError: unknown = null;
   let next = 0;
-  await Promise.all(Array.from({ length: Math.min(BANNED_RESOLVE_CONCURRENCY, cold.length) }, async () => {
-    while (next < cold.length && !(strict && firstError)) {
-      const entry = cold[next++];
-      try {
-        const ids = await resolveBannedEntry(entry, version, strict);
-        if (ids.length) entries.set(entry, ids);
-      } catch (error) {
-        // Strict callers fail closed; manual search can still fail open.
-        if (strict) firstError ??= error;
+  await Promise.all(
+    Array.from(
+      { length: Math.min(BANNED_RESOLVE_CONCURRENCY, cold.length) },
+      async () => {
+        while (next < cold.length && !(strict && firstError)) {
+          const entry = cold[next++];
+          try {
+            const ids = await resolveBannedEntry(entry, version, strict);
+            if (ids.length) entries.set(entry, ids);
+          } catch (error) {
+            // Strict callers fail closed; manual search can still fail open.
+            if (strict) firstError ??= error;
+          }
+        }
       }
-    }
-  }));
-  if (strict && firstError) throw (firstError instanceof Error ? firstError : new Error(typeof firstError === 'string' ? firstError : JSON.stringify(firstError) ?? 'Unknown error'));
+    )
+  );
+  if (strict && firstError)
+    throw firstError instanceof Error
+      ? firstError
+      : new Error(
+          typeof firstError === "string"
+            ? firstError
+            : (JSON.stringify(firstError) ?? "Unknown error")
+        );
 
   const banned = new Set<number>();
   let complete = true;
   for (const entry of active) {
     const ids = entries.get(entry);
-    if (!ids) { complete = false; continue; }
+    if (!ids) {
+      complete = false;
+      continue;
+    }
     for (const id of ids) banned.add(id);
   }
   if (!banned.size) return null;
   if (complete) {
-    while (merged.size >= BANNED_MERGED_MAX) merged.delete(merged.keys().next().value!);
+    while (merged.size >= BANNED_MERGED_MAX)
+      merged.delete(merged.keys().next().value!);
     merged.set(activeKey, banned);
   }
   return banned;
@@ -881,7 +1060,10 @@ interface TagSuggestion {
 
 const TAG_SUGGEST_CACHE_TTL_MS = 5 * 60_000;
 const TAG_SUGGEST_CACHE_MAX = 256;
-const tagSuggestCache = new Map<string, { at: number; items: TagSuggestion[] }>();
+const tagSuggestCache = new Map<
+  string,
+  { at: number; items: TagSuggestion[] }
+>();
 const tagSuggestInflight = new Map<string, Promise<TagSuggestion[] | null>>();
 
 /**
@@ -889,13 +1071,21 @@ const tagSuggestInflight = new Map<string, Promise<TagSuggestion[] | null>>();
  * `get_suggestions_for_query`: each character of the (lowercased) term becomes a
  * path segment under `{field}`, yielding `[name, count, namespace]` triples.
  */
-async function fetchTagSuggestions(field: string, term: string, signal?: AbortSignal): Promise<TagSuggestion[]> {
-  const encoded = term.toLowerCase().replace(/_/g, ' ');
-  const chars = encoded.split('').map((c) => (c === ' ' ? '_' : c === '/' ? 'slash' : c === '.' ? 'dot' : c));
+async function fetchTagSuggestions(
+  field: string,
+  term: string,
+  signal?: AbortSignal
+): Promise<TagSuggestion[]> {
+  const encoded = term.toLowerCase().replace(/_/g, " ");
+  const chars = encoded
+    .split("")
+    .map((c) =>
+      c === " " ? "_" : c === "/" ? "slash" : c === "." ? "dot" : c
+    );
 
   let url = `${TAG_INDEX}/${field}`;
-  if (chars.length > 0) url += '/' + chars.join('/');
-  url += '.json';
+  if (chars.length > 0) url += "/" + chars.join("/");
+  url += ".json";
 
   const cached = tagSuggestCache.get(url);
   if (cached && Date.now() - cached.at < TAG_SUGGEST_CACHE_TTL_MS) {
@@ -909,7 +1099,10 @@ async function fetchTagSuggestions(field: string, term: string, signal?: AbortSi
   if (!pending) {
     pending = (async () => {
       try {
-        const r = await fetch(url, { headers: { ...headers() }, signal: requestSignal(SUGGEST_TIMEOUT_MS) });
+        const r = await fetch(url, {
+          headers: { ...headers() },
+          signal: requestSignal(SUGGEST_TIMEOUT_MS),
+        });
         if (r.status !== 200) {
           discardBody(r);
           return null;
@@ -920,8 +1113,12 @@ async function fetchTagSuggestions(field: string, term: string, signal?: AbortSi
         for (const item of data) {
           if (!Array.isArray(item) || item.length < 3) continue;
           const [name, count, ns] = item as [string, number, string];
-          if (typeof name !== 'string') continue;
-          out.push({ name, count: typeof count === 'number' ? count : 0, ns: String(ns) });
+          if (typeof name !== "string") continue;
+          out.push({
+            name,
+            count: typeof count === "number" ? count : 0,
+            ns: String(ns),
+          });
         }
         if (tagSuggestCache.size >= TAG_SUGGEST_CACHE_MAX) {
           const oldest = tagSuggestCache.keys().next().value;
@@ -933,7 +1130,8 @@ async function fetchTagSuggestions(field: string, term: string, signal?: AbortSi
         return null;
       }
     })().finally(() => {
-      if (tagSuggestInflight.get(url) === pending) tagSuggestInflight.delete(url);
+      if (tagSuggestInflight.get(url) === pending)
+        tagSuggestInflight.delete(url);
     });
     tagSuggestInflight.set(url, pending);
   }
@@ -954,17 +1152,35 @@ const EXCLUDED_GALLERY_TYPES: Record<string, true> = { imageset: true };
 let imageSetIndex: { version: string; ids: Promise<Set<number>> } | null = null;
 async function imageSetIds(version: string): Promise<Set<number>> {
   if (imageSetIndex?.version === version) return imageSetIndex.ids;
-  const ids = fetchNozomiIds({ area: 'type', tag: 'imageset', language: 'all' }, true).then(list => new Set(list));
+  const ids = fetchNozomiIds(
+    { area: "type", tag: "imageset", language: "all" },
+    true
+  ).then((list) => new Set(list));
   imageSetIndex = { version, ids };
-  try { return await ids; }
-  catch (error) { if (imageSetIndex?.ids === ids) imageSetIndex = null; throw error; }
+  try {
+    return await ids;
+  } catch (error) {
+    if (imageSetIndex?.ids === ids) imageSetIndex = null;
+    throw error;
+  }
 }
 
 // Keep one ranking snapshot across page requests, including a random shuffle.
 // Match the frontend's five-minute search cache and bound retained catalog IDs.
-const searchPageCache = new Map<string, { expiresAt: number; ids: Promise<number[]>; count: number }>();
-async function pagedSearchIds(query: string, sort?: DoujinSort, signal?: AbortSignal): Promise<number[]> {
-  const key = JSON.stringify([normalizeHitomiQuery(query), sort ?? 'default', getDownloaderSettings().hitomiBannedTags]);
+const searchPageCache = new Map<
+  string,
+  { expiresAt: number; ids: Promise<number[]>; count: number }
+>();
+async function pagedSearchIds(
+  query: string,
+  sort?: DoujinSort,
+  signal?: AbortSignal
+): Promise<number[]> {
+  const key = JSON.stringify([
+    normalizeHitomiQuery(query),
+    sort ?? "default",
+    getDownloaderSettings().hitomiBannedTags,
+  ]);
   const cached = searchPageCache.get(key);
   if (cached && cached.expiresAt > Date.now()) {
     searchPageCache.delete(key);
@@ -972,43 +1188,65 @@ async function pagedSearchIds(query: string, sort?: DoujinSort, signal?: AbortSi
     return raceAbort(cached.ids, signal);
   }
   searchPageCache.delete(key);
-  while (searchPageCache.size >= 4) searchPageCache.delete(searchPageCache.keys().next().value!);
+  while (searchPageCache.size >= 4)
+    searchPageCache.delete(searchPageCache.keys().next().value!);
   const ids = (async () => {
     const version = await getGalleriesIndexVersion();
-    const [ranked, imageSets] = await Promise.all([searchGalleryIds(query, version, sort), imageSetIds(version)]);
-    return ranked.filter(id => !imageSets.has(id));
+    const [ranked, imageSets] = await Promise.all([
+      searchGalleryIds(query, version, sort),
+      imageSetIds(version),
+    ]);
+    return ranked.filter((id) => !imageSets.has(id));
   })();
   const entry = { expiresAt: Date.now() + 5 * 60_000, ids, count: 0 };
   searchPageCache.set(key, entry);
   try {
     const result = await raceAbort(ids, signal);
     entry.count = result.length;
-    while (searchPageCache.size > 1 && [...searchPageCache.values()].reduce((sum, item) => sum + item.count, 0) > 2_000_000) {
+    while (
+      searchPageCache.size > 1 &&
+      [...searchPageCache.values()].reduce((sum, item) => sum + item.count, 0) >
+        2_000_000
+    ) {
       searchPageCache.delete(searchPageCache.keys().next().value!);
     }
     return result;
   } catch (error) {
-    if (!signal?.aborted && searchPageCache.get(key) === entry) searchPageCache.delete(key);
+    if (!signal?.aborted && searchPageCache.get(key) === entry)
+      searchPageCache.delete(key);
     throw error;
   }
 }
 
-const tagInfoCache = new Map<string, { name: string; ns: string; count: number } | null>();
+const tagInfoCache = new Map<
+  string,
+  { name: string; ns: string; count: number } | null
+>();
 const TAG_INFO_CACHE_MAX = 1024;
 
-async function resolveHitomiTagInfo(rawName: string): Promise<{ name: string; ns: string; count: number } | null> {
-  const key = rawName.trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
+async function resolveHitomiTagInfo(
+  rawName: string
+): Promise<{ name: string; ns: string; count: number } | null> {
+  const key = rawName
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ");
   if (!key) return null;
   if (tagInfoCache.has(key)) return tagInfoCache.get(key) ?? null;
-  const suggestions = await fetchTagSuggestions('global', key);
+  const suggestions = await fetchTagSuggestions("global", key);
   const tagMatches = suggestions.filter(
-    (s) => s.name.trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ') === key
-      && (s.ns === 'female' || s.ns === 'male' || s.ns === 'tag'),
+    (s) =>
+      s.name.trim().toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ") ===
+        key &&
+      (s.ns === "female" || s.ns === "male" || s.ns === "tag")
   );
   // Prefer highest gallery count when a tag exists in multiple areas (e.g. female vs male).
   tagMatches.sort((a, b) => b.count - a.count);
   const match = tagMatches[0] ?? null;
-  const resolved = match ? { name: match.name, ns: match.ns, count: match.count } : null;
+  const resolved = match
+    ? { name: match.name, ns: match.ns, count: match.count }
+    : null;
   if (tagInfoCache.size >= TAG_INFO_CACHE_MAX) {
     const oldest = tagInfoCache.keys().next().value;
     if (oldest !== undefined) tagInfoCache.delete(oldest);
@@ -1020,42 +1258,61 @@ async function resolveHitomiTagInfo(rawName: string): Promise<{ name: string; ns
 const HITOMI_HYDRATE_CONCURRENCY = 12;
 const galleryInfoInflight = new Map<string, Promise<HitomiGalleryInfo>>();
 
-async function loadGalleryInfo(id: number | string, signal?: AbortSignal): Promise<HitomiGalleryInfo> {
+async function loadGalleryInfo(
+  id: number | string,
+  signal?: AbortSignal
+): Promise<HitomiGalleryInfo> {
   const key = String(id);
   let pending = galleryInfoInflight.get(key);
   if (!pending) {
     pending = fetchText(`${API_BASE}/galleries/${key}.js`)
       .then(parseGalleryInfo)
       .finally(() => {
-        if (galleryInfoInflight.get(key) === pending) galleryInfoInflight.delete(key);
+        if (galleryInfoInflight.get(key) === pending)
+          galleryInfoInflight.delete(key);
       });
     galleryInfoInflight.set(key, pending);
   }
   return raceAbort(pending, signal);
 }
 
-async function hydrateSearchIds(ids: number[], limit: number, opts?: DoujinSearchOptions, signal?: AbortSignal): Promise<DoujinSearchResult[]> {
+async function hydrateSearchIds(
+  ids: number[],
+  limit: number,
+  opts?: DoujinSearchOptions,
+  signal?: AbortSignal
+): Promise<DoujinSearchResult[]> {
   const target = Math.max(limit, 1);
   const rawSkip = Math.max(opts?.skip ?? 0, 0);
-  const start = opts?.wrapSkip && ids.length > 0
-    ? (ids.length > target ? rawSkip % (ids.length - target + 1) : 0)
-    : Math.min(rawSkip, ids.length);
+  const start =
+    opts?.wrapSkip && ids.length > 0
+      ? ids.length > target
+        ? rawSkip % (ids.length - target + 1)
+        : 0
+      : Math.min(rawSkip, ids.length);
   const scanLimit = Math.min(ids.length - start, target * 4);
   const excludedTypes = new Set(Object.keys(EXCLUDED_GALLERY_TYPES));
-  for (const type of opts?.excludeTypes ?? []) excludedTypes.add(type.toLowerCase().replace(/[^a-z]/g, ''));
+  for (const type of opts?.excludeTypes ?? [])
+    excludedTypes.add(type.toLowerCase().replace(/[^a-z]/g, ""));
   const out: DoujinSearchResult[] = [];
   let ggPromise: ReturnType<typeof loadGG> | null = null;
   const getGG = () => (ggPromise ??= loadGG());
-  for (let index = 0; index < scanLimit && out.length < target; ) {
+  for (let index = 0; index < scanLimit && out.length < target;) {
     signal?.throwIfAborted();
-    const waveSize = Math.min(scanLimit - index, Math.min(25, Math.max(4, Math.ceil((target - out.length) * 1.25))));
+    const waveSize = Math.min(
+      scanLimit - index,
+      Math.min(25, Math.max(4, Math.ceil((target - out.length) * 1.25)))
+    );
     const batch = ids.slice(start + index, start + index + waveSize);
     index += waveSize;
     await mapLimit(batch, HITOMI_HYDRATE_CONCURRENCY, async (id) => {
       if (signal?.aborted) return;
       try {
         const info = await loadGalleryInfo(id, signal);
-        const type = typeof info.type === 'string' ? info.type.toLowerCase().replace(/[^a-z]/g, '') : '';
+        const type =
+          typeof info.type === "string"
+            ? info.type.toLowerCase().replace(/[^a-z]/g, "")
+            : "";
         if (excludedTypes.has(type)) return;
         const gg = await getGG();
         const files: HitomiFile[] = info.files ?? [];
@@ -1068,17 +1325,36 @@ async function hydrateSearchIds(ids: number[], limit: number, opts?: DoujinSearc
           tags.push(name);
           tagNamespaces.push(tagNamespace(t));
         }
-        const parodies = (info.parodys ?? info.parody ?? []).map(tagValue).filter(Boolean).slice(0, 8);
-        const groups = (info.groups ?? []).map(tagValue).filter(Boolean).slice(0, 8);
+        const parodies = (info.parodys ?? info.parody ?? [])
+          .map(tagValue)
+          .filter(Boolean)
+          .slice(0, 8);
+        const groups = (info.groups ?? [])
+          .map(tagValue)
+          .filter(Boolean)
+          .slice(0, 8);
         out.push({
-          source: 'hitomi', galleryId: String(id), title: stripTags(info.title ?? '') || `Gallery ${id}`,
-          coverUrl: coverUrlFor(gg, files), language: typeof info.language === 'string' && info.language ? info.language : undefined,
+          source: "hitomi",
+          galleryId: String(id),
+          title: stripTags(info.title ?? "") || `Gallery ${id}`,
+          coverUrl: coverUrlFor(gg, files),
+          language:
+            typeof info.language === "string" && info.language
+              ? info.language
+              : undefined,
           tags,
-          ...(tagNamespaces.some((ns) => ns !== undefined) ? { tagNamespaces } : {}),
-          artists: (info.artists ?? []).map(tagValue).filter(Boolean).slice(0, 8),
+          ...(tagNamespaces.some((ns) => ns !== undefined)
+            ? { tagNamespaces }
+            : {}),
+          artists: (info.artists ?? [])
+            .map(tagValue)
+            .filter(Boolean)
+            .slice(0, 8),
           ...(parodies.length ? { parodies } : {}),
           ...(groups.length ? { groups } : {}),
-          pageCount: files.length || undefined, url: galleryUrlFor(info, String(id)), uploadedAt: toIsoDate(info.date),
+          pageCount: files.length || undefined,
+          url: galleryUrlFor(info, String(id)),
+          uploadedAt: toIsoDate(info.date),
         });
       } catch (error) {
         if (signal?.aborted) throw error;
@@ -1086,17 +1362,37 @@ async function hydrateSearchIds(ids: number[], limit: number, opts?: DoujinSearc
       }
     });
   }
-  const byId = new Map(out.map(result => [result.galleryId, result]));
-  return ids.slice(start, start + scanLimit).map(id => byId.get(String(id))).filter((result): result is DoujinSearchResult => !!result).slice(0, target);
+  const byId = new Map(out.map((result) => [result.galleryId, result]));
+  return ids
+    .slice(start, start + scanLimit)
+    .map((id) => byId.get(String(id)))
+    .filter((result): result is DoujinSearchResult => !!result)
+    .slice(0, target);
 }
 
 export const hitomiProvider: DoujinProvider = {
-  id: 'hitomi',
-  name: 'Hitomi.la',
-  color: '#ff5722',
-  meta: { sorts: ['default', 'popular', 'popular-today', 'popular-week', 'popular-year', 'date-published', 'random'], paging: 'offset' },
+  id: "hitomi",
+  name: "Hitomi.la",
+  color: "#ff5722",
+  meta: {
+    sorts: [
+      "default",
+      "popular",
+      "popular-today",
+      "popular-week",
+      "popular-year",
+      "date-published",
+      "random",
+    ],
+    paging: "offset",
+  },
 
-  async search(query: string, limit = 24, sort?: DoujinSort, opts?: DoujinSearchOptions): Promise<DoujinSearchResult[]> {
+  async search(
+    query: string,
+    limit = 24,
+    sort?: DoujinSort,
+    opts?: DoujinSearchOptions
+  ): Promise<DoujinSearchResult[]> {
     const q = query.trim();
     if (!q) return [];
 
@@ -1106,13 +1402,15 @@ export const hitomiProvider: DoujinProvider = {
       const g = await this.getGallery(directId);
       return [
         {
-          source: 'hitomi',
+          source: "hitomi",
           galleryId: g.galleryId,
           title: g.title,
           coverUrl: g.coverUrl,
           language: g.language,
           tags: g.tags,
-          ...(g.tagNamespaces?.some((ns) => ns !== undefined) ? { tagNamespaces: g.tagNamespaces } : {}),
+          ...(g.tagNamespaces?.some((ns) => ns !== undefined)
+            ? { tagNamespaces: g.tagNamespaces }
+            : {}),
           artists: g.artists,
           ...(g.parodies?.length ? { parodies: g.parodies } : {}),
           ...(g.groups?.length ? { groups: g.groups } : {}),
@@ -1124,32 +1422,55 @@ export const hitomiProvider: DoujinProvider = {
     }
 
     const version = await getGalleriesIndexVersion();
-    let ids = await searchGalleryIds(q, version, sort, opts?.strictExclusions, opts?.language);
-    if (opts?.excludeIds?.size) ids = ids.filter((id) => !opts.excludeIds!.has(id));
+    let ids = await searchGalleryIds(
+      q,
+      version,
+      sort,
+      opts?.strictExclusions,
+      opts?.language
+    );
+    if (opts?.excludeIds?.size)
+      ids = ids.filter((id) => !opts.excludeIds!.has(id));
     if (!ids.length) return [];
 
     return hydrateSearchIds(ids, limit, opts);
   },
 
-  async searchPage(query: string, offset: number, limit: number, sort?: DoujinSort, opts?: { exactTotal?: boolean; signal?: AbortSignal }) {
+  async searchPage(
+    query: string,
+    offset: number,
+    limit: number,
+    sort?: DoujinSort,
+    opts?: { exactTotal?: boolean; signal?: AbortSignal }
+  ) {
     if (galleryIdFromInput(query)) {
       const items = await this.search(query, 1, sort);
       return { items: offset ? [] : items, total: items.length };
     }
     const ids = await pagedSearchIds(query, sort, opts?.signal);
-    const items = await hydrateSearchIds(ids.slice(offset, offset + limit), limit, undefined, opts?.signal);
-    if (offset < ids.length && !items.length) throw new Error('Could not load this Hitomi results page. Please retry.');
+    const items = await hydrateSearchIds(
+      ids.slice(offset, offset + limit),
+      limit,
+      undefined,
+      opts?.signal
+    );
+    if (offset < ids.length && !items.length)
+      throw new Error("Could not load this Hitomi results page. Please retry.");
     return { items, total: ids.length };
   },
 
-  async filterRecommendations(items: DoujinSearchResult[]): Promise<DoujinSearchResult[]> {
+  async filterRecommendations(
+    items: DoujinSearchResult[]
+  ): Promise<DoujinSearchResult[]> {
     if (!getDownloaderSettings().hitomiBannedTags.length) return items;
     const version = await getGalleriesIndexVersion();
-    const banned = await bannedIdSet('', version, true);
+    const banned = await bannedIdSet("", version, true);
     return items.filter((item) => !banned?.has(Number(item.galleryId)));
   },
 
-  resolveTagInfo(name: string): Promise<{ name: string; ns: string; count: number } | null> {
+  resolveTagInfo(
+    name: string
+  ): Promise<{ name: string; ns: string; count: number } | null> {
     return resolveHitomiTagInfo(name);
   },
 
@@ -1159,22 +1480,36 @@ export const hitomiProvider: DoujinProvider = {
    * a character-prefix query. If the seed contains a colon (e.g. "artist:charu"),
    * the part before it scopes the lookup to that namespace; otherwise 'global'.
    */
-  async suggest(query: string, limit = 10, context?: string, signal?: AbortSignal): Promise<DoujinSuggestion[]> {
-    const q = normalizeHitomiQuery(query).replace(/^-/, '');
+  async suggest(
+    query: string,
+    limit = 10,
+    context?: string,
+    signal?: AbortSignal
+  ): Promise<DoujinSuggestion[]> {
+    const q = normalizeHitomiQuery(query).replace(/^-/, "");
     if (!q) return [];
 
-    let field = 'global';
+    let field = "global";
     let term = q;
-    if (q.includes(':')) {
-      const [ns, ...rest] = q.split(':');
+    if (q.includes(":")) {
+      const [ns, ...rest] = q.split(":");
       if (ns) field = ns;
-      term = rest.join(':');
+      term = rest.join(":");
     }
     if (/^(?:sort|order)by(?:key|direction)?:/.test(q)) {
-      const values = /^(?:sort|order)by:$/.test(`${field}:`) ? ['date', 'datepublished', 'popular', 'random']
-        : field.endsWith('bydirection') ? ['asc', 'desc', 'random']
-        : /\b(?:sort|order)by:popular/i.test(context ?? '') ? ['today', 'week', 'month', 'year'] : ['added', 'published'];
-      return values.slice(0, limit).map(name => ({ source: 'hitomi', type: field, name, filter: `${field}:${name}` }));
+      const values = /^(?:sort|order)by:$/.test(`${field}:`)
+        ? ["date", "datepublished", "popular", "random"]
+        : field.endsWith("bydirection")
+          ? ["asc", "desc", "random"]
+          : /\b(?:sort|order)by:popular/i.test(context ?? "")
+            ? ["today", "week", "month", "year"]
+            : ["added", "published"];
+      return values.slice(0, limit).map((name) => ({
+        source: "hitomi",
+        type: field,
+        name,
+        filter: `${field}:${name}`,
+      }));
     }
 
     const suggestions = await fetchTagSuggestions(field, term, signal);
@@ -1182,9 +1517,9 @@ export const hitomiProvider: DoujinProvider = {
     for (const s of suggestions.slice(0, Math.max(limit, 1))) {
       // Filter fragment is `ns:tag_name` with spaces as underscores, which the
       // search() nozomi path understands (e.g. "artist:charu", "language:english").
-      const filter = `${s.ns}:${s.name.replace(/\s/g, '_')}`;
+      const filter = `${s.ns}:${s.name.replace(/\s/g, "_")}`;
       out.push({
-        source: 'hitomi',
+        source: "hitomi",
         type: s.ns,
         name: s.name,
         count: s.count,
@@ -1196,14 +1531,16 @@ export const hitomiProvider: DoujinProvider = {
 
   async getGallery(idOrUrl: string): Promise<DoujinGallery> {
     const id = galleryIdFromInput(idOrUrl);
-    if (!id) throw new Error('Could not parse a Hitomi gallery ID from the input.');
+    if (!id)
+      throw new Error("Could not parse a Hitomi gallery ID from the input.");
 
     // The gallery JSON and the gg.js routing table are independent fetches (gg
     // is only consumed after the files list is parsed), so load them in
     // parallel; both must succeed for the gallery to resolve.
     const [info, gg] = await Promise.all([loadGalleryInfo(id), loadGG()]);
     const files: HitomiFile[] = info.files ?? [];
-    if (!files.length) throw new Error(`Could not find any images for Hitomi gallery ${id}.`);
+    if (!files.length)
+      throw new Error(`Could not find any images for Hitomi gallery ${id}.`);
 
     // Per-page refs capture just enough (hash + renditions) to rebuild a fresh
     // image URL at download time. The static `pages`/`pageFallbacks` below are
@@ -1214,13 +1551,13 @@ export const hitomiProvider: DoujinProvider = {
       if (!f?.hash) continue;
       const ref: HitomiPageRef = { hash: f.hash };
       if (f.hasavif) {
-        ref.ext = 'avif';
-        if (f.haswebp) ref.fallbackExt = 'webp';
+        ref.ext = "avif";
+        if (f.haswebp) ref.fallbackExt = "webp";
       } else if (f.haswebp) {
-        ref.ext = 'webp';
+        ref.ext = "webp";
       } else {
         // Original format — no compressed rendition; keep the original extension.
-        ref.origExt = f.name.split('.').pop()?.toLowerCase() ?? 'jpg';
+        ref.origExt = f.name.split(".").pop()?.toLowerCase() ?? "jpg";
       }
       refs.push(ref);
     }
@@ -1232,21 +1569,30 @@ export const hitomiProvider: DoujinProvider = {
     for (const ref of refs) {
       if (ref.ext) {
         pages.push(imageUrl(gg, ref.hash, ref.ext));
-        pageFallbacks.push(ref.fallbackExt && ref.fallbackExt !== ref.ext ? imageUrl(gg, ref.hash, ref.fallbackExt) : null);
+        pageFallbacks.push(
+          ref.fallbackExt && ref.fallbackExt !== ref.ext
+            ? imageUrl(gg, ref.hash, ref.fallbackExt)
+            : null
+        );
       } else {
         // Original format — bare numeric subdomain (no letter prefix).
-        pages.push(originalUrl(gg, ref.hash, ref.origExt ?? 'jpg'));
+        pages.push(originalUrl(gg, ref.hash, ref.origExt ?? "jpg"));
         pageFallbacks.push(null);
       }
     }
 
-    const title = stripTags(info.title ?? '') || `Gallery ${id}`;
+    const title = stripTags(info.title ?? "") || `Gallery ${id}`;
     const artists = (info.artists ?? []).map(tagValue).filter(Boolean);
     const characters = (info.characters ?? []).map(tagValue).filter(Boolean);
     const groups = (info.groups ?? []).map(tagValue).filter(Boolean);
-    const parodies = (info.parodys ?? info.parody ?? []).map(tagValue).filter(Boolean);
+    const parodies = (info.parodys ?? info.parody ?? [])
+      .map(tagValue)
+      .filter(Boolean);
     const series = parodies[0] ?? undefined;
-    const language = typeof info.language === 'string' && info.language ? info.language : undefined;
+    const language =
+      typeof info.language === "string" && info.language
+        ? info.language
+        : undefined;
     // Tags keep their search area (female/male) so the UI can build a namespaced
     // query per tag; unflagged tags stay plain keywords.
     const tags: string[] = [];
@@ -1261,7 +1607,7 @@ export const hitomiProvider: DoujinProvider = {
     const uploadedAt = toIsoDate(info.date);
 
     return {
-      source: 'hitomi',
+      source: "hitomi",
       galleryId: id,
       title,
       coverUrl: coverUrlFor(gg, files),
@@ -1308,7 +1654,7 @@ export const hitomiProvider: DoujinProvider = {
 /** Async fallback builder (fresh routing table) for the live resolver. */
 async function buildHitomiPageFallbackUrlLive(
   ref: HitomiPageRef,
-  opts?: { forceGgRefresh?: boolean; preloadedGg?: GG },
+  opts?: { forceGgRefresh?: boolean; preloadedGg?: GG }
 ): Promise<string | null> {
   if (!ref.fallbackExt || ref.fallbackExt === ref.ext) return null;
   const gg = opts?.preloadedGg ?? (await loadGG(opts?.forceGgRefresh));

@@ -44,50 +44,50 @@
   "provider-myanimelist": "#3b82f6"
 "typography":
   "headline":
-    "fontFamily": "\"Montserrat\", \"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Montserrat", "Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "1.5rem"
     "lineHeight": "2rem"
     "fontWeight": 600
     "letterSpacing": "-0.025em"
   "title":
-    "fontFamily": "\"Montserrat\", \"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Montserrat", "Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "0.875rem"
     "lineHeight": "1.25rem"
     "fontWeight": 600
     "letterSpacing": "-0.025em"
   "dialog-title":
-    "fontFamily": "\"Montserrat\", \"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Montserrat", "Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "1rem"
     "lineHeight": "1.5rem"
     "fontWeight": 600
     "letterSpacing": "-0.025em"
   "body":
-    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "0.875rem"
     "lineHeight": "1.25rem"
     "fontWeight": 400
   "label":
-    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "0.75rem"
     "lineHeight": "1rem"
     "fontWeight": 500
   "micro-label":
-    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "0.625rem"
     "lineHeight": "0.875rem"
     "fontWeight": 500
   "button":
-    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "0.875rem"
     "lineHeight": 1.25
     "fontWeight": 500
   "metric":
-    "fontFamily": "\"Roboto\", \"Segoe UI\", system-ui, -apple-system, sans-serif"
+    "fontFamily": '"Roboto", "Segoe UI", system-ui, -apple-system, sans-serif'
     "fontSize": "1.875rem"
     "lineHeight": "2.25rem"
     "fontWeight": 600
   "mono":
-    "fontFamily": "\"JetBrains Mono\", \"Cascadia Code\", ui-monospace, monospace"
+    "fontFamily": '"JetBrains Mono", "Cascadia Code", ui-monospace, monospace'
     "fontSize": "0.75rem"
     "lineHeight": "1rem"
     "fontWeight": 400
@@ -210,6 +210,7 @@ This file records the implemented frontend, with descriptive language confirmed 
 The document follows the [DESIGN.md format](https://raw.githubusercontent.com/google-labs-code/design.md/main/docs/spec.md). Its companion [.impeccable/design.json](.impeccable/design.json) holds shadows, motion, breakpoints, narrative, and ten standalone component specimens. Generated tonal ramps are preview metadata, not additional app tokens; the specimens illustrate styles without replacing the React components' interaction behavior.
 
 **Key Characteristics:**
+
 - Sakura Rose accents, Blush Paper surfaces, and Plum Ink neutrals.
 - Montserrat headings, compact Roboto interface typography, and JetBrains Mono for technical output.
 - Tonal layering, fine borders, and subtle structural shadows.

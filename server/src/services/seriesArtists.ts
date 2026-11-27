@@ -1,17 +1,22 @@
-import type { KavitaSeriesMetadataDto } from '../kavita/types.js';
-import { invalidateRecommendationSeries } from './recommendationSignals.js';
-import { onSettingChange } from './settings.js';
-import { invalidateSeriesCoverCache } from './seriesCoverCache.js';
+import type { KavitaSeriesMetadataDto } from "../kavita/types.js";
+import { invalidateRecommendationSeries } from "./recommendationSignals.js";
+import { onSettingChange } from "./settings.js";
+import { invalidateSeriesCoverCache } from "./seriesCoverCache.js";
 import {
   clearCachedSeriesMetadataForSignals,
   getCachedSeriesMetadataForSignals,
   setCachedSeriesMetadataForSignals,
   type CachedKavitaMetadata,
-} from './seriesMetadataCache.js';
+} from "./seriesMetadataCache.js";
 
 /** Minimal client surface the cache needs — satisfied by KavitaClient. */
 export interface MetadataSource {
-  getSeriesMetadata(seriesId: number): Promise<Pick<KavitaSeriesMetadataDto, 'pencillers' | 'inkers' | 'writers'> & Partial<Pick<KavitaSeriesMetadataDto, 'tags'>>>;
+  getSeriesMetadata(
+    seriesId: number
+  ): Promise<
+    Pick<KavitaSeriesMetadataDto, "pencillers" | "inkers" | "writers"> &
+      Partial<Pick<KavitaSeriesMetadataDto, "tags">>
+  >;
 }
 
 /**
@@ -55,7 +60,11 @@ const refreshing = new Set<number>();
 /** Bumped on invalidation so a read that started before a metadata write cannot cache the old values. */
 const generations = new Map<number, number>();
 let connectionEpoch = 0;
-onSettingChange('kavita-connection', () => { cache.clear(); inflight.clear(); connectionEpoch++; });
+onSettingChange("kavita-connection", () => {
+  cache.clear();
+  inflight.clear();
+  connectionEpoch++;
+});
 
 /** Insert as most recently used, evicting the oldest entries past the cap. */
 function setCacheEntry(id: number, entry: Entry): void {
@@ -78,23 +87,34 @@ export function invalidateSeriesArtists(seriesId: number): void {
   invalidateSeriesCoverCache(seriesId);
 }
 
-function summarizeSeriesMetadata(meta: CachedKavitaMetadata): SeriesSearchMetadata {
+function summarizeSeriesMetadata(
+  meta: CachedKavitaMetadata
+): SeriesSearchMetadata {
   const artists = artistNames(meta);
   const seen = new Set<string>();
-  const tags = meta.tags === undefined ? null : (meta.tags ?? []).flatMap(tag => {
-    const title = tag.title?.trim();
-    if (!title || seen.has(title.toLowerCase())) return [];
-    seen.add(title.toLowerCase());
-    return [title];
-  });
+  const tags =
+    meta.tags === undefined
+      ? null
+      : (meta.tags ?? []).flatMap((tag) => {
+          const title = tag.title?.trim();
+          if (!title || seen.has(title.toLowerCase())) return [];
+          seen.add(title.toLowerCase());
+          return [title];
+        });
   return { artists, tags };
 }
 
 /** Roles treated as "artist" for search purposes, in display priority order. */
-function artistNames(meta: Pick<KavitaSeriesMetadataDto, 'pencillers' | 'inkers' | 'writers'>): string[] {
+function artistNames(
+  meta: Pick<KavitaSeriesMetadataDto, "pencillers" | "inkers" | "writers">
+): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const person of [...(meta.pencillers ?? []), ...(meta.inkers ?? []), ...(meta.writers ?? [])]) {
+  for (const person of [
+    ...(meta.pencillers ?? []),
+    ...(meta.inkers ?? []),
+    ...(meta.writers ?? []),
+  ]) {
     const name = person.name?.trim();
     if (!name) continue;
     const key = name.toLowerCase();
@@ -106,14 +126,24 @@ function artistNames(meta: Pick<KavitaSeriesMetadataDto, 'pencillers' | 'inkers'
 }
 
 function isNotFound(e: unknown): boolean {
-  return e instanceof Error && e.message.includes('HTTP 404');
+  return e instanceof Error && e.message.includes("HTTP 404");
 }
 
 /** Read one series' metadata, caching definitive answers unless the connection or series changed meanwhile. Never throws. */
-async function readOne(client: MetadataSource, id: number, epoch: number): Promise<SeriesSearchMetadata> {
+async function readOne(
+  client: MetadataSource,
+  id: number,
+  epoch: number
+): Promise<SeriesSearchMetadata> {
   const generation = generations.get(id) ?? 0;
-  const remember = (entry: SeriesSearchMetadata, rawMeta?: CachedKavitaMetadata) => {
-    if (epoch === connectionEpoch && generation === (generations.get(id) ?? 0)) {
+  const remember = (
+    entry: SeriesSearchMetadata,
+    rawMeta?: CachedKavitaMetadata
+  ) => {
+    if (
+      epoch === connectionEpoch &&
+      generation === (generations.get(id) ?? 0)
+    ) {
       const now = Date.now();
       setCacheEntry(id, { ...entry, at: now });
       if (rawMeta) setCachedSeriesMetadataForSignals(id, rawMeta, now);
@@ -132,12 +162,18 @@ async function readOne(client: MetadataSource, id: number, epoch: number): Promi
 }
 
 /** Run `task` over `items` with at most `concurrency` running at once. */
-async function runPool<T>(items: readonly T[], concurrency: number, task: (item: T) => Promise<void>): Promise<void> {
+async function runPool<T>(
+  items: readonly T[],
+  concurrency: number,
+  task: (item: T) => Promise<void>
+): Promise<void> {
   let next = 0;
   async function worker(): Promise<void> {
     while (next < items.length) await task(items[next++]);
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
+  );
 }
 
 /**
@@ -150,12 +186,19 @@ async function runPool<T>(items: readonly T[], concurrency: number, task: (item:
  * are cached as empty so they are not re-fetched on every poll; other errors
  * are not cached and retry next time.
  */
-export async function kavitaSeriesSearchMetadata(client: MetadataSource, seriesIds: number[]): Promise<Map<number, SeriesSearchMetadata>> {
+export async function kavitaSeriesSearchMetadata(
+  client: MetadataSource,
+  seriesIds: number[]
+): Promise<Map<number, SeriesSearchMetadata>> {
   const epoch = connectionEpoch;
   const out = new Map<number, SeriesSearchMetadata>();
   const stale: number[] = [];
   const joining: [number, Promise<SeriesSearchMetadata>][] = [];
-  const pending: { id: number; flight: Flight; resolve: (value: SeriesSearchMetadata) => void }[] = [];
+  const pending: {
+    id: number;
+    flight: Flight;
+    resolve: (value: SeriesSearchMetadata) => void;
+  }[] = [];
   const now = Date.now();
   for (const id of new Set(seriesIds)) {
     const hit = cache.get(id);
@@ -178,15 +221,23 @@ export async function kavitaSeriesSearchMetadata(client: MetadataSource, seriesI
       continue;
     }
     let resolve!: (value: SeriesSearchMetadata) => void;
-    const flight: Flight = { epoch, promise: new Promise<SeriesSearchMetadata>((r) => { resolve = r; }) };
+    const flight: Flight = {
+      epoch,
+      promise: new Promise<SeriesSearchMetadata>((r) => {
+        resolve = r;
+      }),
+    };
     inflight.set(id, flight);
     pending.push({ id, flight, resolve });
   }
   if (stale.length > 0) {
     for (const id of stale) refreshing.add(id);
     // Gentler than a blocking fill: this competes with nothing the user waits on.
-    void runPool(stale, BACKGROUND_CONCURRENCY, async (id) => { await readOne(client, id, epoch); })
-      .finally(() => { for (const id of stale) refreshing.delete(id); });
+    void runPool(stale, BACKGROUND_CONCURRENCY, async (id) => {
+      await readOne(client, id, epoch);
+    }).finally(() => {
+      for (const id of stale) refreshing.delete(id);
+    });
   }
   await Promise.all([
     runPool(pending, CONCURRENCY, async ({ id, flight, resolve }) => {
@@ -195,7 +246,9 @@ export async function kavitaSeriesSearchMetadata(client: MetadataSource, seriesI
       out.set(id, result);
       resolve(result);
     }),
-    ...joining.map(async ([id, promise]) => { out.set(id, await promise); }),
+    ...joining.map(async ([id, promise]) => {
+      out.set(id, await promise);
+    }),
   ]);
   return out;
 }

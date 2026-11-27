@@ -1,17 +1,29 @@
-import type { KavitaSeriesMetadataDto } from '../kavita/types.js';
-import { onSettingChange } from './settings.js';
+import type { KavitaSeriesMetadataDto } from "../kavita/types.js";
+import { onSettingChange } from "./settings.js";
 
-export type CachedKavitaMetadata = Pick<KavitaSeriesMetadataDto, 'pencillers' | 'inkers' | 'writers'>
-  & Partial<Pick<KavitaSeriesMetadataDto, 'tags' | 'genres' | 'language' | 'webLinks'>>;
+export type CachedKavitaMetadata = Pick<
+  KavitaSeriesMetadataDto,
+  "pencillers" | "inkers" | "writers"
+> &
+  Partial<
+    Pick<KavitaSeriesMetadataDto, "tags" | "genres" | "language" | "webLinks">
+  >;
 
 const MAX_CACHE_ENTRIES = 50_000;
-const fullMetaCache = new Map<number, { at: number; meta: CachedKavitaMetadata }>();
+const fullMetaCache = new Map<
+  number,
+  { at: number; meta: CachedKavitaMetadata }
+>();
 
-onSettingChange('kavita-connection', () => {
+onSettingChange("kavita-connection", () => {
   fullMetaCache.clear();
 });
 
-export function setCachedSeriesMetadataForSignals(id: number, meta: CachedKavitaMetadata, at = Date.now()): void {
+export function setCachedSeriesMetadataForSignals(
+  id: number,
+  meta: CachedKavitaMetadata,
+  at = Date.now()
+): void {
   fullMetaCache.delete(id);
   fullMetaCache.set(id, { at, meta });
   while (fullMetaCache.size > MAX_CACHE_ENTRIES) {
@@ -21,7 +33,10 @@ export function setCachedSeriesMetadataForSignals(id: number, meta: CachedKavita
   }
 }
 
-export function getCachedSeriesMetadataForSignals(seriesId: number, maxAgeMs: number): CachedKavitaMetadata | null {
+export function getCachedSeriesMetadataForSignals(
+  seriesId: number,
+  maxAgeMs: number
+): CachedKavitaMetadata | null {
   const hit = fullMetaCache.get(seriesId);
   if (!hit || Date.now() - hit.at >= maxAgeMs) return null;
   fullMetaCache.delete(seriesId);

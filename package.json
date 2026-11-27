@@ -15,6 +15,8 @@
   "scripts": {
     "dev": "concurrently -k -n server,web -c cyan,magenta \"npm run dev --workspace @h-tosho/server\" \"npm run dev --workspace @h-tosho/web\"",
     "build": "npm run build --workspace @h-tosho/web && npm run build --workspace @h-tosho/server",
+    "format": "prettier --ignore-unknown --write .",
+    "format:check": "prettier --ignore-unknown --check .",
     "lint": "oxlint --type-aware",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "start": "npm run build && node server/dist/index.js",

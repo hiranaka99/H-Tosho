@@ -5,13 +5,29 @@
     <link rel="icon" type="image/png" href="/h-tosho-icon.png?v=26b1c759" />
     <link rel="apple-touch-icon" href="/h-tosho-icon.png?v=26b1c759" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="preload" as="font" type="font/woff2" href="/fonts/roboto-latin-var.woff2" crossorigin />
-    <link rel="preload" as="font" type="font/woff2" href="/fonts/montserrat-latin-var.woff2" crossorigin />
+    <link
+      rel="preload"
+      as="font"
+      type="font/woff2"
+      href="/fonts/roboto-latin-var.woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      as="font"
+      type="font/woff2"
+      href="/fonts/montserrat-latin-var.woff2"
+      crossorigin
+    />
     <!-- Apply the stored theme (or OS preference) before first paint to avoid a flash. -->
     <script>
       try {
-        var t = localStorage.getItem('h-tosho:theme');
-        if (t === 'dark' || (!t && matchMedia('(prefers-color-scheme: dark)').matches)) document.documentElement.classList.add('dark');
+        var t = localStorage.getItem("h-tosho:theme");
+        if (
+          t === "dark" ||
+          (!t && matchMedia("(prefers-color-scheme: dark)").matches)
+        )
+          document.documentElement.classList.add("dark");
       } catch (e) {}
     </script>
     <title>H-Tosho</title>

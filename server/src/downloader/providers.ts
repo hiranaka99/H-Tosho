@@ -1,8 +1,12 @@
-import { hitomiProvider } from './hitomi.js';
-import { nhentaiProvider } from './nhentai.js';
-import { ehentaiProvider } from './ehentai.js';
-import type { DoujinProvider } from './types.js';
-import { isEhentaiSite, type DoujinSource, type EhentaiSite } from '../contracts/doujin.js';
+import { hitomiProvider } from "./hitomi.js";
+import { nhentaiProvider } from "./nhentai.js";
+import { ehentaiProvider } from "./ehentai.js";
+import type { DoujinProvider } from "./types.js";
+import {
+  isEhentaiSite,
+  type DoujinSource,
+  type EhentaiSite,
+} from "../contracts/doujin.js";
 
 /** Registry of all supported doujinshi sources. */
 export const doujinProviders: Record<DoujinSource, DoujinProvider> = {
@@ -23,15 +27,25 @@ export function listDoujinProviders(ehentaiSite?: string): Array<{
   name: string;
   color: string;
   sorts: string[];
-  paging: 'offset' | 'cursor';
+  paging: "offset" | "cursor";
   site?: EhentaiSite;
   displayName?: string;
 }> {
   return Object.values(doujinProviders).map((p) => {
-    const base = { id: p.id, name: p.name, color: p.color, sorts: p.meta.sorts, paging: p.meta.paging };
-    if (p.id === 'ehentai') {
-      const site = isEhentaiSite(ehentaiSite) ? ehentaiSite : 'e-hentai';
-      return { ...base, site, displayName: site === 'exhentai' ? 'ExHentai' : 'E-Hentai' };
+    const base = {
+      id: p.id,
+      name: p.name,
+      color: p.color,
+      sorts: p.meta.sorts,
+      paging: p.meta.paging,
+    };
+    if (p.id === "ehentai") {
+      const site = isEhentaiSite(ehentaiSite) ? ehentaiSite : "e-hentai";
+      return {
+        ...base,
+        site,
+        displayName: site === "exhentai" ? "ExHentai" : "E-Hentai",
+      };
     }
     return base;
   });

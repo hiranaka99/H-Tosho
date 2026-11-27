@@ -19,11 +19,11 @@
  * editions stay separate rather than being merged.
  */
 
-import { randomBytes } from 'node:crypto';
-import { doujinProviders, getDoujinProvider } from '../downloader/providers.js';
-import type { DoujinSearchResult } from '../downloader/types.js';
-import { EhentaiUpstreamError } from '../downloader/ehentaiClient.js';
-import { EHENTAI_LANGUAGES } from '../downloader/ehentai.js';
+import { randomBytes } from "node:crypto";
+import { doujinProviders, getDoujinProvider } from "../downloader/providers.js";
+import type { DoujinSearchResult } from "../downloader/types.js";
+import { EhentaiUpstreamError } from "../downloader/ehentaiClient.js";
+import { EHENTAI_LANGUAGES } from "../downloader/ehentai.js";
 import {
   parseEhentaiGalleryUrl,
   toPublicSearchResult,
@@ -38,12 +38,23 @@ import {
   type UnifiedSearchEntry,
   type UnifiedSearchPage,
   type UnifiedSearchProgress,
-} from '../contracts/doujin.js';
-import { getAccountRevision, getEhentaiAccountSite, isAccountConfigured, onEhentaiAccountChange } from './ehentaiAccount.js';
-import { getDownloaderSettings, onSettingChange } from './settings.js';
-import { rewriteDoujinCover } from '../routes/media.js';
-import { compileEhentai, compileHitomi, compileNhentai, parseCommonQuery, type CompiledLaneQuery } from './unifiedQuery.js';
-import { unifiedTitleKey } from './unifiedTitle.js';
+} from "../contracts/doujin.js";
+import {
+  getAccountRevision,
+  getEhentaiAccountSite,
+  isAccountConfigured,
+  onEhentaiAccountChange,
+} from "./ehentaiAccount.js";
+import { getDownloaderSettings, onSettingChange } from "./settings.js";
+import { rewriteDoujinCover } from "../routes/media.js";
+import {
+  compileEhentai,
+  compileHitomi,
+  compileNhentai,
+  parseCommonQuery,
+  type CompiledLaneQuery,
+} from "./unifiedQuery.js";
+import { unifiedTitleKey } from "./unifiedTitle.js";
 
 // ---------------- limits ----------------
 
@@ -63,46 +74,53 @@ const SOURCE_ORDER = Object.keys(doujinProviders) as DoujinSource[];
 
 export class UnifiedQueryError extends Error {}
 export class UnifiedSessionError extends Error {
-  constructor(message: string, public readonly kind: 'expired' | 'invalidated' | 'stale') {
+  constructor(
+    message: string,
+    public readonly kind: "expired" | "invalidated" | "stale"
+  ) {
     super(message);
-    this.name = 'UnifiedSessionError';
+    this.name = "UnifiedSessionError";
   }
 }
 
 // ---------------- raw query classification (P2.1: URLs/IDs are not keywords) ----------------
 
 type RawClassification =
-  | { kind: 'normal' }
-  | { kind: 'url'; source: DoujinSource; url: string }
-  | { kind: 'ambiguous-id' };
+  | { kind: "normal" }
+  | { kind: "url"; source: DoujinSource; url: string }
+  | { kind: "ambiguous-id" };
 
 function classifyRawQuery(raw: string): RawClassification {
   const input = raw.trim();
   const eh = parseEhentaiGalleryUrl(input);
-  if (eh) return { kind: 'url', source: 'ehentai', url: eh.url };
-  if (/^https?:\/\/(www\.)?hitomi\.la\/(?:g|doujinshi|manga|cg)\/\d+\/?$/i.test(input)) {
-    return { kind: 'url', source: 'hitomi', url: input };
+  if (eh) return { kind: "url", source: "ehentai", url: eh.url };
+  if (
+    /^https?:\/\/(www\.)?hitomi\.la\/(?:g|doujinshi|manga|cg)\/\d+\/?$/i.test(
+      input
+    )
+  ) {
+    return { kind: "url", source: "hitomi", url: input };
   }
   if (/^https?:\/\/(www\.)?nhentai\.net\/g\/\d+\/(?:[^/]+\/?)?$/i.test(input)) {
-    return { kind: 'url', source: 'nhentai', url: input };
+    return { kind: "url", source: "nhentai", url: input };
   }
   // A bare numeric id is ambiguous: every source uses numeric ids.
-  if (/^\d{1,7}$/.test(input)) return { kind: 'ambiguous-id' };
-  return { kind: 'normal' };
+  if (/^\d{1,7}$/.test(input)) return { kind: "ambiguous-id" };
+  return { kind: "normal" };
 }
 
 // ---------------- lanes ----------------
 
 type LanePhase =
-  | 'idle'
-  | 'success'
-  | 'exhausted'
-  | 'failed'
-  | 'unavailable'
-  | 'not-configured'
-  | 'rate-limited'
-  | 'unsupported-query'
-  | 'not-applicable';
+  | "idle"
+  | "success"
+  | "exhausted"
+  | "failed"
+  | "unavailable"
+  | "not-configured"
+  | "rate-limited"
+  | "unsupported-query"
+  | "not-applicable";
 
 interface Candidate {
   pub: PublicDoujinSearchResult;
@@ -163,7 +181,7 @@ const sessions = new Map<SearchCursor, UnifiedSession>();
 const activeSessions = new Set<UnifiedSession>();
 
 function issueCursor(): SearchCursor {
-  return randomBytes(24).toString('base64url');
+  return randomBytes(24).toString("base64url");
 }
 
 function evictExpired(): void {
@@ -182,8 +200,9 @@ function evictExpired(): void {
   // back under the cap. Dead sessions only hold a replay error, so they go
   // first; dropping only alive ones let a burst of invalidated sessions keep
   // the map over the cap until the idle TTL.
-  const byAge = [...activeSessions]
-    .sort((a, b) => Number(!a.dead) - Number(!b.dead) || a.lastUsedAt - b.lastUsedAt);
+  const byAge = [...activeSessions].sort(
+    (a, b) => Number(!a.dead) - Number(!b.dead) || a.lastUsedAt - b.lastUsedAt
+  );
   for (const session of byAge) {
     if (activeSessions.size <= MAX_SESSIONS) break;
     for (const key of session.keys) sessions.delete(key);
@@ -195,15 +214,21 @@ function evictExpired(): void {
 // Account/site/exclusion cutover invalidates sessions immediately: old cursors
 // must not keep serving results from the previous account/settings.
 onEhentaiAccountChange(() => {
-  for (const session of activeSessions) session.dead = 'The E-Hentai account changed; start the search again.';
+  for (const session of activeSessions)
+    session.dead = "The E-Hentai account changed; start the search again.";
 });
-onSettingChange('downloader', () => {
-  for (const session of activeSessions) session.dead = 'Downloader settings changed; start the search again.';
+onSettingChange("downloader", () => {
+  for (const session of activeSessions)
+    session.dead = "Downloader settings changed; start the search again.";
 });
 
 function settingsFingerprint(): string {
   const s = getDownloaderSettings();
-  return JSON.stringify([s.nhentaiBannedTags, s.hitomiBannedTags, s.ehentaiBannedTags]);
+  return JSON.stringify([
+    s.nhentaiBannedTags,
+    s.hitomiBannedTags,
+    s.ehentaiBannedTags,
+  ]);
 }
 
 // ---------------- identity & fingerprinting (P2.3) ----------------
@@ -216,24 +241,63 @@ function identityKey(source: DoujinSource, galleryId: string): string {
 
 /** Strict normalization: NFKC, lowercase, letters (incl. CJK/Cyrillic)/digits only. */
 function normalizeText(value: string): string {
-  return value.normalize('NFKC').toLowerCase().replace(/[^0-9a-z\u0400-\u04ff\u3040-\u30ff\uac00-\ud7af\u3130-\u318f\u4e00-\u9fff\uf900-\ufaff]+/g, '');
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(
+      /[^0-9a-z\u0400-\u04ff\u3040-\u30ff\uac00-\ud7af\u3130-\u318f\u4e00-\u9fff\uf900-\ufaff]+/g,
+      ""
+    );
 }
 
 const LANGUAGE_CODES_TO_NAMES: Record<string, string> = {
-  en: 'english', ja: 'japanese', ko: 'korean', zh: 'chinese', es: 'spanish', fr: 'french',
-  de: 'german', it: 'italian', pt: 'portuguese', ru: 'russian', tr: 'turkish', id: 'indonesian',
-  vi: 'vietnamese', th: 'thai', pl: 'polish', nl: 'dutch', he: 'hebrew', hu: 'hungarian',
-  cs: 'czech', sv: 'swedish', el: 'greek', uk: 'ukrainian', da: 'danish', no: 'norwegian',
-  fi: 'finnish', et: 'estonian', sk: 'slovak', sl: 'slovenian', lt: 'lithuanian', lv: 'latvian',
-  sr: 'serbian', ro: 'romanian', hr: 'croatian', bg: 'bulgarian', ar: 'arabic', fa: 'persian',
-  hi: 'hindi', af: 'afrikaans', ca: 'catalan', mn: 'mongolian',
+  en: "english",
+  ja: "japanese",
+  ko: "korean",
+  zh: "chinese",
+  es: "spanish",
+  fr: "french",
+  de: "german",
+  it: "italian",
+  pt: "portuguese",
+  ru: "russian",
+  tr: "turkish",
+  id: "indonesian",
+  vi: "vietnamese",
+  th: "thai",
+  pl: "polish",
+  nl: "dutch",
+  he: "hebrew",
+  hu: "hungarian",
+  cs: "czech",
+  sv: "swedish",
+  el: "greek",
+  uk: "ukrainian",
+  da: "danish",
+  no: "norwegian",
+  fi: "finnish",
+  et: "estonian",
+  sk: "slovak",
+  sl: "slovenian",
+  lt: "lithuanian",
+  lv: "latvian",
+  sr: "serbian",
+  ro: "romanian",
+  hr: "croatian",
+  bg: "bulgarian",
+  ar: "arabic",
+  fa: "persian",
+  hi: "hindi",
+  af: "afrikaans",
+  ca: "catalan",
+  mn: "mongolian",
 };
 
 function normalizeLanguage(value: string | null | undefined): string | null {
   if (!value) return null;
-  const v = value.trim().toLowerCase().replace(/\s+/g, ' ');
+  const v = value.trim().toLowerCase().replace(/\s+/g, " ");
   if (LANGUAGE_CODES_TO_NAMES[v]) return LANGUAGE_CODES_TO_NAMES[v];
-  return v.replace(/s$/, '') === 'ukranian' ? 'ukrainian' : v || null;
+  return v.replace(/s$/, "") === "ukranian" ? "ukrainian" : v || null;
 }
 
 /**
@@ -255,7 +319,16 @@ function fingerprint(pub: PublicDoujinSearchResult): string | null {
 // ---------------- session lifecycle ----------------
 
 function makeLane(source: DoujinSource): LaneState {
-  return { source, phase: 'idle', retryable: false, continuation: {}, buffer: [], bufferHead: 0, rank: 0, retriesUsed: 0 };
+  return {
+    source,
+    phase: "idle",
+    retryable: false,
+    continuation: {},
+    buffer: [],
+    bufferHead: 0,
+    rank: 0,
+    retriesUsed: 0,
+  };
 }
 
 function laneAvailable(lane: LaneState): number {
@@ -275,7 +348,11 @@ function shiftLane(lane: LaneState): Candidate | undefined {
   return item;
 }
 
-function newSession(query: string, principal: string | null, compiled: Record<DoujinSource, CompiledLaneQuery>): UnifiedSession {
+function newSession(
+  query: string,
+  principal: string | null,
+  compiled: Record<DoujinSource, CompiledLaneQuery>
+): UnifiedSession {
   const session: UnifiedSession = {
     context: {
       query,
@@ -305,19 +382,34 @@ function newSession(query: string, principal: string | null, compiled: Record<Do
 }
 
 /** Verify the session still matches the live account/settings/principal. */
-function assertSessionLive(session: UnifiedSession, principal: string | null): void {
-  if (session.dead) throw new UnifiedSessionError(session.dead, 'invalidated');
+function assertSessionLive(
+  session: UnifiedSession,
+  principal: string | null
+): void {
+  if (session.dead) throw new UnifiedSessionError(session.dead, "invalidated");
   if (session.context.principal !== principal) {
-    throw new UnifiedSessionError('This search belongs to another session. Start again.', 'invalidated');
+    throw new UnifiedSessionError(
+      "This search belongs to another session. Start again.",
+      "invalidated"
+    );
   }
   if (session.context.ehentaiSite !== getEhentaiAccountSite()) {
-    throw new UnifiedSessionError('The E-Hentai account site changed; start the search again.', 'invalidated');
+    throw new UnifiedSessionError(
+      "The E-Hentai account site changed; start the search again.",
+      "invalidated"
+    );
   }
   if (session.context.accountRevision !== getAccountRevision()) {
-    throw new UnifiedSessionError('The E-Hentai account changed; start the search again.', 'invalidated');
+    throw new UnifiedSessionError(
+      "The E-Hentai account changed; start the search again.",
+      "invalidated"
+    );
   }
   if (session.context.settingsFingerprint !== settingsFingerprint()) {
-    throw new UnifiedSessionError('Downloader settings changed; start the search again.', 'invalidated');
+    throw new UnifiedSessionError(
+      "Downloader settings changed; start the search again.",
+      "invalidated"
+    );
   }
 }
 
@@ -336,7 +428,9 @@ function registerKey(session: UnifiedSession, cursor: SearchCursor): void {
 
 // ---------------- lane fetching ----------------
 
-function compileLanes(query: CommonSearchQuery): Record<DoujinSource, CompiledLaneQuery> {
+function compileLanes(
+  query: CommonSearchQuery
+): Record<DoujinSource, CompiledLaneQuery> {
   return {
     hitomi: compileHitomi(query),
     nhentai: compileNhentai(query),
@@ -344,51 +438,99 @@ function compileLanes(query: CommonSearchQuery): Record<DoujinSource, CompiledLa
   };
 }
 
-function laneErrorInfo(error: unknown): { phase: LanePhase; message: string; retryable: boolean } {
+function laneErrorInfo(error: unknown): {
+  phase: LanePhase;
+  message: string;
+  retryable: boolean;
+} {
   if (error instanceof EhentaiUpstreamError) {
     switch (error.kind) {
-      case 'rate-limited':
-        return { phase: 'rate-limited', message: 'E-Hentai is rate-limiting searches. Try again in a few minutes.', retryable: true };
-      case 'quota':
-        return { phase: 'rate-limited', message: 'The E-Hentai quota is exhausted for this account.', retryable: false };
-      case 'denied':
-        return { phase: 'failed', message: 'The E-Hentai session was rejected. Re-test or re-save the account in Settings → Downloader.', retryable: false };
-      case 'unavailable':
-      case 'timeout':
-        return { phase: 'unavailable', message: 'E-Hentai is unreachable right now.', retryable: true };
-      case 'parse':
-        return { phase: 'failed', message: 'E-Hentai returned an unexpected response.', retryable: true };
-      case 'blocked':
+      case "rate-limited":
+        return {
+          phase: "rate-limited",
+          message:
+            "E-Hentai is rate-limiting searches. Try again in a few minutes.",
+          retryable: true,
+        };
+      case "quota":
+        return {
+          phase: "rate-limited",
+          message: "The E-Hentai quota is exhausted for this account.",
+          retryable: false,
+        };
+      case "denied":
+        return {
+          phase: "failed",
+          message:
+            "The E-Hentai session was rejected. Re-test or re-save the account in Settings → Downloader.",
+          retryable: false,
+        };
+      case "unavailable":
+      case "timeout":
+        return {
+          phase: "unavailable",
+          message: "E-Hentai is unreachable right now.",
+          retryable: true,
+        };
+      case "parse":
+        return {
+          phase: "failed",
+          message: "E-Hentai returned an unexpected response.",
+          retryable: true,
+        };
+      case "blocked":
       default:
-        return { phase: 'failed', message: 'The E-Hentai search failed.', retryable: true };
+        return {
+          phase: "failed",
+          message: "The E-Hentai search failed.",
+          retryable: true,
+        };
     }
   }
-  if (error instanceof DOMException && error.name === 'AbortError') {
-    return { phase: 'unavailable', message: 'The search timed out.', retryable: true };
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return {
+      phase: "unavailable",
+      message: "The search timed out.",
+      retryable: true,
+    };
   }
-  return { phase: 'failed', message: 'The provider search failed. You can retry this source.', retryable: true };
+  return {
+    phase: "failed",
+    message: "The provider search failed. You can retry this source.",
+    retryable: true,
+  };
 }
 
-function runWithDeadline<T>(ms: number, signal: AbortSignal, fn: (laneSignal: AbortSignal) => Promise<T>): Promise<T> {
-  if (signal.aborted) return Promise.reject(new DOMException('aborted', 'AbortError'));
+function runWithDeadline<T>(
+  ms: number,
+  signal: AbortSignal,
+  fn: (laneSignal: AbortSignal) => Promise<T>
+): Promise<T> {
+  if (signal.aborted)
+    return Promise.reject(new DOMException("aborted", "AbortError"));
   const ac = new AbortController();
-  const onAbort = () => ac.abort(new DOMException('aborted', 'AbortError'));
-  signal.addEventListener('abort', onAbort, { once: true });
-  const timer = setTimeout(() => ac.abort(new DOMException('lane deadline', 'AbortError')), ms);
+  const onAbort = () => ac.abort(new DOMException("aborted", "AbortError"));
+  signal.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(
+    () => ac.abort(new DOMException("lane deadline", "AbortError")),
+    ms
+  );
   timer.unref?.();
   let settled = false;
   return new Promise<T>((resolve, reject) => {
     const cleanup = () => {
       clearTimeout(timer);
-      signal.removeEventListener('abort', onAbort);
+      signal.removeEventListener("abort", onAbort);
     };
     const onStop = () => {
       if (settled) return;
       settled = true;
       cleanup();
-      reject((ac.signal.reason as Error) ?? new DOMException('aborted', 'AbortError'));
+      reject(
+        (ac.signal.reason as Error) ?? new DOMException("aborted", "AbortError")
+      );
     };
-    ac.signal.addEventListener('abort', onStop, { once: true });
+    ac.signal.addEventListener("abort", onStop, { once: true });
     Promise.resolve()
       .then(() => fn(ac.signal))
       .then(
@@ -396,39 +538,60 @@ function runWithDeadline<T>(ms: number, signal: AbortSignal, fn: (laneSignal: Ab
           if (settled) return;
           settled = true;
           cleanup();
-          ac.signal.removeEventListener('abort', onStop);
+          ac.signal.removeEventListener("abort", onStop);
           resolve(value);
         },
         (error) => {
           if (settled) return;
           settled = true;
           cleanup();
-          ac.signal.removeEventListener('abort', onStop);
+          ac.signal.removeEventListener("abort", onStop);
           reject(error instanceof Error ? error : new Error(String(error)));
-        },
+        }
       );
   });
 }
 
 const hasContinuation = (lane: LaneState): boolean =>
-  lane.continuation.offset !== undefined || lane.continuation.cursor !== undefined;
+  lane.continuation.offset !== undefined ||
+  lane.continuation.cursor !== undefined;
 
 /** Why a lane cannot reach its provider for this query (null = it can run).
  *  Unconfigured accounts and uncompilable queries never touch the network. */
-function laneSkip(session: UnifiedSession, lane: LaneState): { phase: LanePhase; message: string } | null {
+function laneSkip(
+  session: UnifiedSession,
+  lane: LaneState
+): { phase: LanePhase; message: string } | null {
   const compiled = session.compiled[lane.source];
-  if (compiled.unsupported) return { phase: 'unsupported-query', message: compiled.unsupported };
-  if (lane.source === 'ehentai' && !isAccountConfigured()) {
-    return { phase: 'not-configured', message: 'Save your E-Hentai/ExHentai account under Settings → Downloader to search it here.' };
+  if (compiled.unsupported)
+    return { phase: "unsupported-query", message: compiled.unsupported };
+  if (lane.source === "ehentai" && !isAccountConfigured()) {
+    return {
+      phase: "not-configured",
+      message:
+        "Save your E-Hentai/ExHentai account under Settings → Downloader to search it here.",
+    };
   }
-  if (lane.source === 'ehentai' && compiled.language && !EHENTAI_LANGUAGES.has(compiled.language)) {
-    return { phase: 'unsupported-query', message: `E-Hentai/ExHentai does not support the language “${compiled.language}”.` };
+  if (
+    lane.source === "ehentai" &&
+    compiled.language &&
+    !EHENTAI_LANGUAGES.has(compiled.language)
+  ) {
+    return {
+      phase: "unsupported-query",
+      message: `E-Hentai/ExHentai does not support the language “${compiled.language}”.`,
+    };
   }
   return null;
 }
 
 /** Fetch one bounded chunk into a lane, after the applicability checks. */
-async function fetchLane(session: UnifiedSession, lane: LaneState, signal: AbortSignal, pageLimit = DEFAULT_LIMIT): Promise<void> {
+async function fetchLane(
+  session: UnifiedSession,
+  lane: LaneState,
+  signal: AbortSignal,
+  pageLimit = DEFAULT_LIMIT
+): Promise<void> {
   const compiled = session.compiled[lane.source];
   const skip = laneSkip(session, lane);
   if (skip) {
@@ -439,15 +602,33 @@ async function fetchLane(session: UnifiedSession, lane: LaneState, signal: Abort
   }
   const provider = getDoujinProvider(lane.source)!;
   const limit = Math.min(Math.max(1, pageLimit), MAX_LIMIT);
-  const opts = lane.source === 'ehentai' && compiled.language ? { language: compiled.language } : undefined;
-  const fetchChunk = async (laneSignal: AbortSignal): Promise<SearchChunk<DoujinSearchResult>> => {
+  const opts =
+    lane.source === "ehentai" && compiled.language
+      ? { language: compiled.language }
+      : undefined;
+  const fetchChunk = async (
+    laneSignal: AbortSignal
+  ): Promise<SearchChunk<DoujinSearchResult>> => {
     if (provider.searchChunk) {
-      return provider.searchChunk(compiled.query, lane.continuation.cursor ?? null, limit, 'default', opts, laneSignal);
+      return provider.searchChunk(
+        compiled.query,
+        lane.continuation.cursor ?? null,
+        limit,
+        "default",
+        opts,
+        laneSignal
+      );
     }
     // Offset-based sources (hitomi/nhentai): a bounded slice of the exact
     // page they already expose; the continuation is a server-held offset.
     const offset = lane.continuation.offset ?? 0;
-    const page = await provider.searchPage!(compiled.query, offset, limit, 'default', { exactTotal: false, signal: laneSignal });
+    const page = await provider.searchPage!(
+      compiled.query,
+      offset,
+      limit,
+      "default",
+      { exactTotal: false, signal: laneSignal }
+    );
     const exhausted = offset + limit >= page.total || page.items.length === 0;
     return {
       items: page.items,
@@ -463,8 +644,13 @@ async function fetchLane(session: UnifiedSession, lane: LaneState, signal: Abort
       if (!pub) continue;
       lane.buffer.push({ pub, rank: ++lane.rank });
     }
-    lane.continuation = chunk.nextCursor === null ? {} : lane.source === 'ehentai' ? { cursor: chunk.nextCursor } : { offset: Number(chunk.nextCursor) };
-    lane.phase = chunk.exhausted ? 'exhausted' : 'success';
+    lane.continuation =
+      chunk.nextCursor === null
+        ? {}
+        : lane.source === "ehentai"
+          ? { cursor: chunk.nextCursor }
+          : { offset: Number(chunk.nextCursor) };
+    lane.phase = chunk.exhausted ? "exhausted" : "success";
     lane.retryable = false;
   } catch (error) {
     const info = laneErrorInfo(error);
@@ -476,7 +662,10 @@ async function fetchLane(session: UnifiedSession, lane: LaneState, signal: Abort
 
 // ---------------- grouping / placement ----------------
 
-function toVariant(pub: PublicDoujinSearchResult, rank: number): GalleryVariant {
+function toVariant(
+  pub: PublicDoujinSearchResult,
+  rank: number
+): GalleryVariant {
   return {
     source: pub.source,
     galleryId: pub.galleryId,
@@ -492,15 +681,26 @@ function toVariant(pub: PublicDoujinSearchResult, rank: number): GalleryVariant 
   };
 }
 
-function createEntry(session: UnifiedSession, cand: Candidate): UnifiedSearchEntry {
+function createEntry(
+  session: UnifiedSession,
+  cand: Candidate
+): UnifiedSearchEntry {
   session.seq += 1;
   const entryId = `e${session.seq.toString(36)}-${cand.pub.source}`;
-  const entry: UnifiedSearchEntry = { entryId, primary: cand.pub, variants: [toVariant(cand.pub, cand.rank)] };
+  const entry: UnifiedSearchEntry = {
+    entryId,
+    primary: cand.pub,
+    variants: [toVariant(cand.pub, cand.rank)],
+  };
   session.entries.set(entryId, entry);
   return entry;
 }
 
-function addVariant(session: UnifiedSession, entryId: string, cand: Candidate): void {
+function addVariant(
+  session: UnifiedSession,
+  entryId: string,
+  cand: Candidate
+): void {
   const entry = session.entries.get(entryId);
   if (!entry) return;
   entry.variants.push(toVariant(cand.pub, cand.rank));
@@ -511,7 +711,10 @@ function addVariant(session: UnifiedSession, entryId: string, cand: Candidate): 
  * Place one candidate: exact identity coalesces first, then the strict
  * fingerprint. Returns the (possibly pre-existing) entry.
  */
-function placeCandidate(session: UnifiedSession, cand: Candidate): { entry: UnifiedSearchEntry; fresh: boolean } {
+function placeCandidate(
+  session: UnifiedSession,
+  cand: Candidate
+): { entry: UnifiedSearchEntry; fresh: boolean } {
   const ident = identityKey(cand.pub.source, cand.pub.galleryId);
   const existingId = session.identityToEntry.get(ident);
   if (existingId) {
@@ -538,12 +741,22 @@ function placeCandidate(session: UnifiedSession, cand: Candidate): { entry: Unif
 
 // ---------------- page production ----------------
 
-const TERMINAL_PHASES: readonly string[] = ['exhausted', 'failed', 'unavailable', 'not-configured', 'rate-limited', 'unsupported-query', 'not-applicable'];
+const TERMINAL_PHASES: readonly string[] = [
+  "exhausted",
+  "failed",
+  "unavailable",
+  "not-configured",
+  "rate-limited",
+  "unsupported-query",
+  "not-applicable",
+];
 
 function allLanesSettled(session: UnifiedSession): boolean {
-  return session.lanes.every((lane) =>
-    laneAvailable(lane) === 0 &&
-    (TERMINAL_PHASES.includes(lane.phase) || (lane.phase === 'success' && !hasContinuation(lane)))
+  return session.lanes.every(
+    (lane) =>
+      laneAvailable(lane) === 0 &&
+      (TERMINAL_PHASES.includes(lane.phase) ||
+        (lane.phase === "success" && !hasContinuation(lane)))
   );
 }
 
@@ -551,7 +764,12 @@ function allLanesSettled(session: UnifiedSession): boolean {
 export type UnifiedProgressListener = (progress: UnifiedSearchProgress) => void;
 
 /** Take up to `quota` fresh cards from the front of one lane's buffer. */
-function takeFromLane(session: UnifiedSession, lane: LaneState, quota: number, items: UnifiedSearchEntry[]): UnifiedSearchEntry[] {
+function takeFromLane(
+  session: UnifiedSession,
+  lane: LaneState,
+  quota: number,
+  items: UnifiedSearchEntry[]
+): UnifiedSearchEntry[] {
   const taken: UnifiedSearchEntry[] = [];
   while (taken.length < quota && laneAvailable(lane) > 0) {
     const { entry, fresh } = placeCandidate(session, shiftLane(lane)!);
@@ -565,8 +783,13 @@ function takeFromLane(session: UnifiedSession, lane: LaneState, quota: number, i
 }
 
 /** Updates for cards already delivered, excluding cards sent alongside them. */
-function drainUpdates(session: UnifiedSession, items: UnifiedSearchEntry[]): UnifiedSearchEntry[] {
-  const deliveredNow = items.length ? new Set(items.map((e) => e.entryId)) : null;
+function drainUpdates(
+  session: UnifiedSession,
+  items: UnifiedSearchEntry[]
+): UnifiedSearchEntry[] {
+  const deliveredNow = items.length
+    ? new Set(items.map((e) => e.entryId))
+    : null;
   const updates: UnifiedSearchEntry[] = [];
   for (const entryId of session.pendingUpdates) {
     const entry = session.entries.get(entryId);
@@ -587,11 +810,19 @@ function drainUpdates(session: UnifiedSession, items: UnifiedSearchEntry[]): Uni
  * placed and reported the moment that lane answers, so a slow provider never
  * holds back a fast one; the page loop then tops up from the leftovers.
  */
-async function fetchIdleLanes(session: UnifiedSession, limit: number, signal: AbortSignal, items: UnifiedSearchEntry[], onProgress?: UnifiedProgressListener): Promise<void> {
-  const idle = session.lanes.filter((l) => l.phase === 'idle');
+async function fetchIdleLanes(
+  session: UnifiedSession,
+  limit: number,
+  signal: AbortSignal,
+  items: UnifiedSearchEntry[],
+  onProgress?: UnifiedProgressListener
+): Promise<void> {
+  const idle = session.lanes.filter((l) => l.phase === "idle");
   if (!idle.length) return;
   if (!onProgress) {
-    await Promise.all(idle.map((lane) => fetchLane(session, lane, signal, limit)));
+    await Promise.all(
+      idle.map((lane) => fetchLane(session, lane, signal, limit))
+    );
     return;
   }
   const running = new Set(idle.filter((lane) => !laneSkip(session, lane)));
@@ -607,19 +838,37 @@ async function fetchIdleLanes(session: UnifiedSession, limit: number, signal: Ab
   };
   // Skipped lanes settle without network work; announce them with the
   // lanes still searching so the client can show both straight away.
-  await Promise.all(idle.filter((lane) => !running.has(lane)).map((lane) => fetchLane(session, lane, signal, limit)));
+  await Promise.all(
+    idle
+      .filter((lane) => !running.has(lane))
+      .map((lane) => fetchLane(session, lane, signal, limit))
+  );
   report([]);
-  await Promise.all([...running].map(async (lane) => {
-    await fetchLane(session, lane, signal, limit);
-    running.delete(lane);
-    const fresh = lane.phase === 'success' || lane.phase === 'exhausted'
-      ? takeFromLane(session, lane, Math.min(share, limit - items.length), items)
-      : [];
-    report(fresh);
-  }));
+  await Promise.all(
+    [...running].map(async (lane) => {
+      await fetchLane(session, lane, signal, limit);
+      running.delete(lane);
+      const fresh =
+        lane.phase === "success" || lane.phase === "exhausted"
+          ? takeFromLane(
+              session,
+              lane,
+              Math.min(share, limit - items.length),
+              items
+            )
+          : [];
+      report(fresh);
+    })
+  );
 }
 
-async function producePage(session: UnifiedSession, limit: number, signal: AbortSignal, retrySource?: DoujinSource, onProgress?: UnifiedProgressListener): Promise<UnifiedSearchPage> {
+async function producePage(
+  session: UnifiedSession,
+  limit: number,
+  signal: AbortSignal,
+  retrySource?: DoujinSource,
+  onProgress?: UnifiedProgressListener
+): Promise<UnifiedSearchPage> {
   session.lastUsedAt = Date.now();
   assertSessionLive(session, session.context.principal);
 
@@ -630,9 +879,16 @@ async function producePage(session: UnifiedSession, limit: number, signal: Abort
   let retryLane: LaneState | null = null;
   if (retrySource) {
     const lane = session.lanes.find((l) => l.source === retrySource);
-    if (lane && (lane.phase === 'failed' || lane.phase === 'unavailable' || lane.phase === 'rate-limited') && lane.retryable && lane.retriesUsed < LANE_RETRY_LIMIT) {
+    if (
+      lane &&
+      (lane.phase === "failed" ||
+        lane.phase === "unavailable" ||
+        lane.phase === "rate-limited") &&
+      lane.retryable &&
+      lane.retriesUsed < LANE_RETRY_LIMIT
+    ) {
       lane.retriesUsed += 1;
-      lane.phase = 'idle';
+      lane.phase = "idle";
       lane.message = undefined;
       lane.retryable = false;
       retryLane = lane;
@@ -666,7 +922,10 @@ async function producePage(session: UnifiedSession, limit: number, signal: Abort
     let consumed = 0;
     for (const lane of session.lanes) {
       if (items.length >= limit) break;
-      if ((lane.phase === 'success' || lane.phase === 'exhausted') && laneAvailable(lane) > 0) {
+      if (
+        (lane.phase === "success" || lane.phase === "exhausted") &&
+        laneAvailable(lane) > 0
+      ) {
         const cand = shiftLane(lane)!;
         const { entry, fresh } = placeCandidate(session, cand);
         if (fresh && !session.delivered.has(entry.entryId)) {
@@ -678,51 +937,94 @@ async function producePage(session: UnifiedSession, limit: number, signal: Abort
     }
     if (items.length >= limit || allLanesSettled(session)) break;
     // Buffers with leftovers are consumed on the next round without fetching.
-    const buffered = session.lanes.some((l) => (l.phase === 'success' || l.phase === 'exhausted') && laneAvailable(l) > 0);
+    const buffered = session.lanes.some(
+      (l) =>
+        (l.phase === "success" || l.phase === "exhausted") &&
+        laneAvailable(l) > 0
+    );
     if (buffered) continue;
-    const needing = session.lanes.filter((l) => l.phase === 'success' && laneAvailable(l) === 0 && hasContinuation(l));
+    const needing = session.lanes.filter(
+      (l) =>
+        l.phase === "success" && laneAvailable(l) === 0 && hasContinuation(l)
+    );
     if (!needing.length || extraChunks >= MAX_EXTRA_CHUNKS_PER_REQUEST) break;
     extraChunks += 1;
     const before = session.entries.size;
-    await Promise.all(needing.map((lane) => fetchLane(session, lane, signal, limit)));
+    await Promise.all(
+      needing.map((lane) => fetchLane(session, lane, signal, limit))
+    );
     // Nothing consumed and the fetches added nothing: stop rather than spin.
-    if (!consumed && session.entries.size === before && needing.every((l) => laneAvailable(l) === 0 && l.phase !== 'success')) break;
+    if (
+      !consumed &&
+      session.entries.size === before &&
+      needing.every((l) => laneAvailable(l) === 0 && l.phase !== "success")
+    )
+      break;
   }
 
   return finishPage(session, items);
 }
 
 /** Public lane states; lanes in `searching` are still waiting on their provider. */
-function laneStatuses(session: UnifiedSession, searching: ReadonlySet<LaneState> = new Set()): ProviderSearchStatus[] {
+function laneStatuses(
+  session: UnifiedSession,
+  searching: ReadonlySet<LaneState> = new Set()
+): ProviderSearchStatus[] {
   return session.lanes.map((lane): ProviderSearchStatus => {
-    if (searching.has(lane)) return { source: lane.source, status: 'searching', retryable: false };
+    if (searching.has(lane))
+      return { source: lane.source, status: "searching", retryable: false };
     return {
       source: lane.source,
-      status: lane.phase === 'idle' ? 'success' : lane.phase,
+      status: lane.phase === "idle" ? "success" : lane.phase,
       ...(lane.message ? { message: lane.message } : {}),
       retryable: lane.retryable,
       // Only lanes that actually ran can be followed; E-Hentai has no watch support.
-      ...((lane.phase === 'idle' || lane.phase === 'success' || lane.phase === 'exhausted') && lane.source !== 'ehentai' && session.compiled[lane.source].query.trim()
-        ? { watchQuery: session.compiled[lane.source].query.trim() } : {}),
+      ...((lane.phase === "idle" ||
+        lane.phase === "success" ||
+        lane.phase === "exhausted") &&
+      lane.source !== "ehentai" &&
+      session.compiled[lane.source].query.trim()
+        ? { watchQuery: session.compiled[lane.source].query.trim() }
+        : {}),
     };
   });
 }
 
-function finishPage(session: UnifiedSession, items: UnifiedSearchEntry[]): UnifiedSearchPage {
+function finishPage(
+  session: UnifiedSession,
+  items: UnifiedSearchEntry[]
+): UnifiedSearchPage {
   const updates = drainUpdates(session, items);
   const providers = laneStatuses(session);
 
   // A lane that never ran (unconfigured account, uncompilable query, input
   // that does not apply) cannot block an exact total; failed lanes can.
-  const applicable = session.lanes.filter((l) => !['not-applicable', 'not-configured', 'unsupported-query'].includes(l.phase));
-  const allExhausted = applicable.length > 0 && applicable.every((l) => l.phase === 'exhausted' && laneAvailable(l) === 0);
+  const applicable = session.lanes.filter(
+    (l) =>
+      !["not-applicable", "not-configured", "unsupported-query"].includes(
+        l.phase
+      )
+  );
+  const allExhausted =
+    applicable.length > 0 &&
+    applicable.every((l) => l.phase === "exhausted" && laneAvailable(l) === 0);
   // hasMore = another page can deliver new entries without an explicit retry.
   // Retryable failed lanes are surfaced through their status chips instead.
-  const canYieldMore = session.lanes.some((l) =>
-    ((l.phase === 'success' || l.phase === 'exhausted') && laneAvailable(l) > 0) ||
-    (l.phase === 'success' && hasContinuation(l)));
-  const hasMore = canYieldMore && session.entries.size < MAX_ENTRIES_PER_SESSION;
-  const retryablePending = session.lanes.some((l) => l.retryable && (l.phase === 'failed' || l.phase === 'unavailable' || l.phase === 'rate-limited'));
+  const canYieldMore = session.lanes.some(
+    (l) =>
+      ((l.phase === "success" || l.phase === "exhausted") &&
+        laneAvailable(l) > 0) ||
+      (l.phase === "success" && hasContinuation(l))
+  );
+  const hasMore =
+    canYieldMore && session.entries.size < MAX_ENTRIES_PER_SESSION;
+  const retryablePending = session.lanes.some(
+    (l) =>
+      l.retryable &&
+      (l.phase === "failed" ||
+        l.phase === "unavailable" ||
+        l.phase === "rate-limited")
+  );
   const nextCursor = hasMore || retryablePending ? issueCursor() : null;
   const response: UnifiedSearchPage = {
     items,
@@ -750,25 +1052,50 @@ function finishPage(session: UnifiedSession, items: UnifiedSearchEntry[]): Unifi
 
 // ---------------- URL/ID resolution (single-provider, no broadcast) ----------------
 
-async function produceUrlPage(source: DoujinSource, url: string, signal: AbortSignal): Promise<UnifiedSearchPage> {
+async function produceUrlPage(
+  source: DoujinSource,
+  url: string,
+  signal: AbortSignal
+): Promise<UnifiedSearchPage> {
   const provider = getDoujinProvider(source)!;
   const states: Record<DoujinSource, { phase: LanePhase; message?: string }> = {
-    hitomi: { phase: 'not-applicable', message: 'This is a gallery URL for another source; it only resolves on its own provider.' },
-    nhentai: { phase: 'not-applicable', message: 'This is a gallery URL for another source; it only resolves on its own provider.' },
-    ehentai: { phase: 'not-applicable', message: 'This is a gallery URL for another source; it only resolves on its own provider.' },
+    hitomi: {
+      phase: "not-applicable",
+      message:
+        "This is a gallery URL for another source; it only resolves on its own provider.",
+    },
+    nhentai: {
+      phase: "not-applicable",
+      message:
+        "This is a gallery URL for another source; it only resolves on its own provider.",
+    },
+    ehentai: {
+      phase: "not-applicable",
+      message:
+        "This is a gallery URL for another source; it only resolves on its own provider.",
+    },
   };
   let gallery: DoujinSearchResult;
   try {
-    gallery = await runWithDeadline(LANE_DEADLINE_MS, signal, () => provider.getGallery(url));
+    gallery = await runWithDeadline(LANE_DEADLINE_MS, signal, () =>
+      provider.getGallery(url)
+    );
   } catch (error) {
     const info = laneErrorInfo(error);
-    states[source] = { phase: info.phase === 'rate-limited' ? 'rate-limited' : 'failed', message: info.message };
+    states[source] = {
+      phase: info.phase === "rate-limited" ? "rate-limited" : "failed",
+      message: info.message,
+    };
     throw new UnifiedQueryError(info.message);
   }
   const pub = toPublicSearchResult(rewriteDoujinCover(gallery));
-  if (!pub) throw new UnifiedQueryError('The gallery could not be resolved.');
-  states[source] = { phase: 'exhausted' };
-  const entry: UnifiedSearchEntry = { entryId: `e1-${source}`, primary: pub, variants: [toVariant(pub, 1)] };
+  if (!pub) throw new UnifiedQueryError("The gallery could not be resolved.");
+  states[source] = { phase: "exhausted" };
+  const entry: UnifiedSearchEntry = {
+    entryId: `e1-${source}`,
+    primary: pub,
+    variants: [toVariant(pub, 1)],
+  };
   return {
     items: [entry],
     updates: [],
@@ -799,27 +1126,48 @@ export interface UnifiedSearchRequest {
  * `onProgress` streams a new search's first page per provider (see
  * fetchIdleLanes); continuations and URL lookups never report progress.
  */
-export async function runUnifiedSearch(req: UnifiedSearchRequest, signal: AbortSignal, onProgress?: UnifiedProgressListener): Promise<UnifiedSearchPage> {
+export async function runUnifiedSearch(
+  req: UnifiedSearchRequest,
+  signal: AbortSignal,
+  onProgress?: UnifiedProgressListener
+): Promise<UnifiedSearchPage> {
   evictExpired();
 
   if (!req.cursor) {
-    if (!req.query?.trim()) throw new UnifiedQueryError('Enter a search query.');
+    if (!req.query?.trim())
+      throw new UnifiedQueryError("Enter a search query.");
     const classification = classifyRawQuery(req.query);
-    if (classification.kind === 'ambiguous-id') {
-      throw new UnifiedQueryError('A bare numeric ID is ambiguous — every source uses numeric IDs. Choose that source under Search in, or paste the full gallery URL.');
+    if (classification.kind === "ambiguous-id") {
+      throw new UnifiedQueryError(
+        "A bare numeric ID is ambiguous — every source uses numeric IDs. Choose that source under Search in, or paste the full gallery URL."
+      );
     }
-    if (classification.kind === 'url') {
+    if (classification.kind === "url") {
       return produceUrlPage(classification.source, classification.url, signal);
     }
     const parsed = parseCommonQuery(req.query);
-    if (parsed.error || !parsed.query) throw new UnifiedQueryError(parsed.error ?? 'Enter a search query.');
-    const session = newSession(req.query, req.principal, compileLanes(parsed.query));
-    return producePage(session, req.limit ?? DEFAULT_LIMIT, signal, undefined, onProgress);
+    if (parsed.error || !parsed.query)
+      throw new UnifiedQueryError(parsed.error ?? "Enter a search query.");
+    const session = newSession(
+      req.query,
+      req.principal,
+      compileLanes(parsed.query)
+    );
+    return producePage(
+      session,
+      req.limit ?? DEFAULT_LIMIT,
+      signal,
+      undefined,
+      onProgress
+    );
   }
 
   const session = sessions.get(req.cursor);
   if (!session) {
-    throw new UnifiedSessionError('This search session has expired. Your query is kept — start the search again.', 'expired');
+    throw new UnifiedSessionError(
+      "This search session has expired. Your query is kept — start the search again.",
+      "expired"
+    );
   }
   assertSessionLive(session, req.principal);
   if (session.inflight) return session.inflight;
@@ -828,10 +1176,21 @@ export async function runUnifiedSearch(req: UnifiedSearchRequest, signal: AbortS
     return session.lastResponse;
   }
   if (session.nextCursor !== req.cursor) {
-    throw new UnifiedSessionError('This continuation is stale. Start the search again to avoid skipping results.', 'stale');
+    throw new UnifiedSessionError(
+      "This continuation is stale. Start the search again to avoid skipping results.",
+      "stale"
+    );
   }
-  const retrySource = req.retry && (SOURCE_ORDER as string[]).includes(req.retry) ? (req.retry as DoujinSource) : undefined;
-  const work = producePage(session, req.limit ?? DEFAULT_LIMIT, signal, retrySource);
+  const retrySource =
+    req.retry && (SOURCE_ORDER as string[]).includes(req.retry)
+      ? (req.retry as DoujinSource)
+      : undefined;
+  const work = producePage(
+    session,
+    req.limit ?? DEFAULT_LIMIT,
+    signal,
+    retrySource
+  );
   session.inflight = work;
   try {
     return await work;

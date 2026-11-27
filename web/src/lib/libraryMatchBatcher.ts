@@ -1,4 +1,4 @@
-import type { DoujinSearchResult, DuplicateReport } from './api';
+import type { DoujinSearchResult, DuplicateReport } from "./api";
 
 /** POST /api/downloads/library-matches accepts at most this many galleries per request. */
 export const LIBRARY_MATCH_CHUNK = 100;
@@ -16,7 +16,7 @@ export function selectUncheckedGalleries(
   items: readonly DoujinSearchResult[],
   cache: ReadonlyMap<string, LibraryMatchCacheEntry>,
   now: number,
-  ttlMs: number,
+  ttlMs: number
 ): DoujinSearchResult[][] {
   const seen = new Set<string>();
   const missing: DoujinSearchResult[] = [];
@@ -38,7 +38,7 @@ export function selectUncheckedGalleries(
 /** Evict oldest entries in Map insertion order until `cache.size <= maxEntries`. */
 export function pruneLibraryMatchCache<T extends { fetchedAt: number }>(
   cache: Map<string, T>,
-  maxEntries: number,
+  maxEntries: number
 ): void {
   const limit = Math.max(0, maxEntries);
   while (cache.size > limit) {

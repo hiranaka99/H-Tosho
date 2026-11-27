@@ -1,6 +1,10 @@
-import * as React from 'react';
-import type { DownloadActionsApi, DownloadTasksApi, GalleryStatusStore } from './DownloadsContext';
-import type { AuthContextValue } from './AuthContext';
+import * as React from "react";
+import type {
+  DownloadActionsApi,
+  DownloadTasksApi,
+  GalleryStatusStore,
+} from "./DownloadsContext";
+import type { AuthContextValue } from "./AuthContext";
 
 /**
  * Context objects for providers whose modules import app UI or page code
@@ -13,7 +17,10 @@ import type { AuthContextValue } from './AuthContext';
  * the update (such as a lazily loaded dialog) reads an empty context, and the
  * page breaks until a full reload.
  */
-export const DownloadActionsContext = React.createContext<DownloadActionsApi | null>(null);
-export const DownloadTasksContext = React.createContext<DownloadTasksApi | null>(null);
-export const GalleryStatusContext = React.createContext<GalleryStatusStore | null>(null);
+export const DownloadActionsContext =
+  React.createContext<DownloadActionsApi | null>(null);
+export const DownloadTasksContext =
+  React.createContext<DownloadTasksApi | null>(null);
+export const GalleryStatusContext =
+  React.createContext<GalleryStatusStore | null>(null);
 export const AuthContext = React.createContext<AuthContextValue | null>(null);

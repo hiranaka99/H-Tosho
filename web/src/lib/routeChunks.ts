@@ -14,18 +14,19 @@ function memoImport<T>(load: () => Promise<T>): () => Promise<T> {
   };
 }
 
-export const loadHome = memoImport(() => import('../pages/Home'));
-export const loadLibraries = memoImport(() => import('../pages/Libraries'));
-export const loadDownloader = memoImport(() => import('../pages/Downloader'));
-export const loadJobs = memoImport(() => import('../pages/Jobs'));
-export const loadSettings = memoImport(() => import('../pages/Settings'));
+export const loadHome = memoImport(() => import("../pages/Home"));
+export const loadLibraries = memoImport(() => import("../pages/Libraries"));
+export const loadDownloader = memoImport(() => import("../pages/Downloader"));
+export const loadJobs = memoImport(() => import("../pages/Jobs"));
+export const loadSettings = memoImport(() => import("../pages/Settings"));
 
 /** Loader for the page a pathname renders (unknown paths redirect to Home). */
 export function routeChunkFor(pathname: string): () => Promise<unknown> {
-  if (pathname === '/libraries' || pathname.startsWith('/libraries/')) return loadLibraries;
-  if (pathname === '/downloader') return loadDownloader;
-  if (pathname === '/jobs') return loadJobs;
-  if (pathname === '/settings') return loadSettings;
+  if (pathname === "/libraries" || pathname.startsWith("/libraries/"))
+    return loadLibraries;
+  if (pathname === "/downloader") return loadDownloader;
+  if (pathname === "/jobs") return loadJobs;
+  if (pathname === "/settings") return loadSettings;
   return loadHome;
 }
 

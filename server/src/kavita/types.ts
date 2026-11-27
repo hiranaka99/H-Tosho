@@ -8,10 +8,10 @@
  */
 
 /** Minimum Kavita *server* version H-Tosho can talk to (the v0.9 REST API). */
-export const KAVITA_MIN_SERVER_VERSION = '0.9.0';
+export const KAVITA_MIN_SERVER_VERSION = "0.9.0";
 
 /** Reference OpenAPI contract the DTOs were generated from (not a server version). */
-export const KAVITA_OPENAPI_VERSION = '0.9.0.22';
+export const KAVITA_OPENAPI_VERSION = "0.9.0.22";
 
 export enum KavitaLibraryType {
   Manga = 0,
@@ -214,7 +214,7 @@ export interface KavitaUploadCoverFileDto {
   lockCover: boolean;
 }
 
-export type MediaFormat = 'manga' | 'comic' | 'book' | 'image' | 'other';
+export type MediaFormat = "manga" | "comic" | "book" | "image" | "other";
 
 export interface KavitaServerInfo {
   version: string;
@@ -275,7 +275,10 @@ export interface KavitaVolume {
   number?: number;
 }
 
-export interface KavitaCoverImage { data: Buffer; contentType: string }
+export interface KavitaCoverImage {
+  data: Buffer;
+  contentType: string;
+}
 export interface KavitaVolumeCoverDto {
   id: number;
   seriesId: number;
@@ -287,30 +290,88 @@ export interface KavitaVolumeCoverDto {
 }
 
 export function parseVolumeCoverDto(value: unknown): KavitaVolumeCoverDto {
-  if (!value || typeof value !== 'object' || Array.isArray(value)
-    || !('id' in value) || typeof value.id !== 'number' || !Number.isSafeInteger(value.id) || value.id <= 0
-    || !('seriesId' in value) || typeof value.seriesId !== 'number' || !Number.isSafeInteger(value.seriesId) || value.seriesId <= 0
-    || !('createdUtc' in value) || typeof value.createdUtc !== 'string' || !Number.isFinite(Date.parse(value.createdUtc))
-    || !('coverImage' in value) || (value.coverImage !== null && typeof value.coverImage !== 'string')
-    || !('chapters' in value) || !Array.isArray(value.chapters) || value.chapters.length > 2000
-    || ('coverImageLocked' in value && value.coverImageLocked !== undefined && typeof value.coverImageLocked !== 'boolean')
-    || ('name' in value && value.name !== null && value.name !== undefined && typeof value.name !== 'string')) throw new Error('Kavita volume-cover identity is unavailable or malformed');
-  const chapters: KavitaVolumeCoverDto['chapters'] = [];
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !("id" in value) ||
+    typeof value.id !== "number" ||
+    !Number.isSafeInteger(value.id) ||
+    value.id <= 0 ||
+    !("seriesId" in value) ||
+    typeof value.seriesId !== "number" ||
+    !Number.isSafeInteger(value.seriesId) ||
+    value.seriesId <= 0 ||
+    !("createdUtc" in value) ||
+    typeof value.createdUtc !== "string" ||
+    !Number.isFinite(Date.parse(value.createdUtc)) ||
+    !("coverImage" in value) ||
+    (value.coverImage !== null && typeof value.coverImage !== "string") ||
+    !("chapters" in value) ||
+    !Array.isArray(value.chapters) ||
+    value.chapters.length > 2000 ||
+    ("coverImageLocked" in value &&
+      value.coverImageLocked !== undefined &&
+      typeof value.coverImageLocked !== "boolean") ||
+    ("name" in value &&
+      value.name !== null &&
+      value.name !== undefined &&
+      typeof value.name !== "string")
+  )
+    throw new Error("Kavita volume-cover identity is unavailable or malformed");
+  const chapters: KavitaVolumeCoverDto["chapters"] = [];
   let fileCount = 0;
   for (const chapter of value.chapters as unknown[]) {
-    if (!chapter || typeof chapter !== 'object' || Array.isArray(chapter) || !('id' in chapter) || typeof chapter.id !== 'number' || !Number.isSafeInteger(chapter.id) || chapter.id <= 0
-      || !('files' in chapter) || !Array.isArray(chapter.files)) throw new Error('Kavita volume chapter identity is malformed');
+    if (
+      !chapter ||
+      typeof chapter !== "object" ||
+      Array.isArray(chapter) ||
+      !("id" in chapter) ||
+      typeof chapter.id !== "number" ||
+      !Number.isSafeInteger(chapter.id) ||
+      chapter.id <= 0 ||
+      !("files" in chapter) ||
+      !Array.isArray(chapter.files)
+    )
+      throw new Error("Kavita volume chapter identity is malformed");
     const files: { id?: number; filePath: string }[] = [];
     for (const file of chapter.files as unknown[]) {
-      if (++fileCount > 10000 || !file || typeof file !== 'object' || Array.isArray(file) || !('filePath' in file) || typeof file.filePath !== 'string' || !file.filePath
-        || ('id' in file && file.id !== undefined && (typeof file.id !== 'number' || !Number.isSafeInteger(file.id) || file.id < 0))) throw new Error('Kavita volume file identity is malformed or exceeds the cover identity budget');
-      files.push({ filePath: file.filePath, ...('id' in file && typeof file.id === 'number' ? { id: file.id } : {}) });
+      if (
+        ++fileCount > 10000 ||
+        !file ||
+        typeof file !== "object" ||
+        Array.isArray(file) ||
+        !("filePath" in file) ||
+        typeof file.filePath !== "string" ||
+        !file.filePath ||
+        ("id" in file &&
+          file.id !== undefined &&
+          (typeof file.id !== "number" ||
+            !Number.isSafeInteger(file.id) ||
+            file.id < 0))
+      )
+        throw new Error(
+          "Kavita volume file identity is malformed or exceeds the cover identity budget"
+        );
+      files.push({
+        filePath: file.filePath,
+        ...("id" in file && typeof file.id === "number" ? { id: file.id } : {}),
+      });
     }
     chapters.push({ id: chapter.id, files });
   }
-  return { id: value.id, seriesId: value.seriesId, createdUtc: value.createdUtc, coverImage: value.coverImage,
-    name: 'name' in value && typeof value.name === 'string' ? value.name : null,
-    ...('coverImageLocked' in value && typeof value.coverImageLocked === 'boolean' ? { coverImageLocked: value.coverImageLocked } : {}), chapters };
+  return {
+    id: value.id,
+    seriesId: value.seriesId,
+    createdUtc: value.createdUtc,
+    coverImage: value.coverImage,
+    name: "name" in value && typeof value.name === "string" ? value.name : null,
+    ...("coverImageLocked" in value &&
+    typeof value.coverImageLocked === "boolean"
+      ? { coverImageLocked: value.coverImageLocked }
+      : {}),
+    chapters,
+  };
 }
 
 /** H-Tosho's patch model; the client merges it into Kavita's current DTOs. */

@@ -1,15 +1,17 @@
-import type { DoujinSource } from './doujin.js';
-export const NOTIFICATION_MODES = ['in-app', 'immediate'] as const;
-export type NotificationMode = typeof NOTIFICATION_MODES[number];
+import type { DoujinSource } from "./doujin.js";
+export const NOTIFICATION_MODES = ["in-app", "immediate"] as const;
+export type NotificationMode = (typeof NOTIFICATION_MODES)[number];
 
 /** One cadence list for the global default and per-watch overrides. */
-export const FOLLOWING_INTERVAL_MINUTES = [5, 15, 30, 60, 180, 360, 720, 1440] as const;
+export const FOLLOWING_INTERVAL_MINUTES = [
+  5, 15, 30, 60, 180, 360, 720, 1440,
+] as const;
 export type FollowingInterval = (typeof FOLLOWING_INTERVAL_MINUTES)[number];
 export const FOLLOWING_SEARCH_LIMIT = 50;
 export const FOLLOWING_TARGET_LIMIT = 100;
 
 export interface CheckWatchedSearchesCommand {
-  mode?: 'manual' | 'due';
+  mode?: "manual" | "due";
   watchIds?: number[];
 }
 
@@ -95,20 +97,33 @@ export interface WatchedGalleryFeed {
   historyCount: number;
   /** Unreviewed finds that are better editions of owned galleries (same filters). */
   betterEditionCount: number;
-  watches: { id: number; query: string; source: DoujinSource; watchLabel: string; folderId: number | null; removed: boolean }[];
+  watches: {
+    id: number;
+    query: string;
+    source: DoujinSource;
+    watchLabel: string;
+    folderId: number | null;
+    removed: boolean;
+  }[];
 }
 
 export interface FollowingFeedOptions {
-  view?: 'inbox' | 'history';
+  view?: "inbox" | "history";
   source?: string;
   searchId?: number;
-  folderId?: number | 'unfiled';
+  folderId?: number | "unfiled";
   offset?: number;
   limit?: number;
 }
 
-export function effectiveFollowingInterval(globalMinutes: number, pausedAt: string | null, intervalMinutes: FollowingInterval | null): number {
-  return globalMinutes === 0 || pausedAt !== null ? 0 : intervalMinutes ?? globalMinutes;
+export function effectiveFollowingInterval(
+  globalMinutes: number,
+  pausedAt: string | null,
+  intervalMinutes: FollowingInterval | null
+): number {
+  return globalMinutes === 0 || pausedAt !== null
+    ? 0
+    : (intervalMinutes ?? globalMinutes);
 }
 
 /** An artist the user collects but does not follow yet, with the evidence behind the suggestion. */

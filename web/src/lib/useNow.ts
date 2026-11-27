@@ -1,6 +1,10 @@
-import * as React from 'react';
+import * as React from "react";
 
-interface Clock { now: number; listeners: Set<() => void>; timer: number | null }
+interface Clock {
+  now: number;
+  listeners: Set<() => void>;
+  timer: number | null;
+}
 
 /** One timer per interval length, shared by every subscriber; paused while the tab is hidden. */
 const clocks = new Map<number, Clock>();
@@ -20,7 +24,8 @@ function tick(clock: Clock) {
 }
 
 function start(intervalMs: number, clock: Clock) {
-  if (clock.timer !== null || clock.listeners.size === 0 || document.hidden) return;
+  if (clock.timer !== null || clock.listeners.size === 0 || document.hidden)
+    return;
   clock.timer = window.setInterval(() => tick(clock), intervalMs);
 }
 
@@ -34,10 +39,13 @@ let visibilityBound = false;
 function bindVisibility() {
   if (visibilityBound) return;
   visibilityBound = true;
-  document.addEventListener('visibilitychange', () => {
+  document.addEventListener("visibilitychange", () => {
     for (const [intervalMs, clock] of clocks) {
       if (document.hidden) stop(clock);
-      else if (clock.listeners.size) { tick(clock); start(intervalMs, clock); }
+      else if (clock.listeners.size) {
+        tick(clock);
+        start(intervalMs, clock);
+      }
     }
   });
 }
@@ -48,18 +56,24 @@ function bindVisibility() {
  * elapsed counters) can tick without re-rendering their parents.
  */
 export function useNow(intervalMs: number, enabled = true): number {
-  const subscribe = React.useCallback((listener: () => void) => {
-    if (!enabled) return () => {};
-    bindVisibility();
-    const clock = clockFor(intervalMs);
-    if (clock.timer === null) clock.now = Date.now(); // Fresh value when a clock (re)starts.
-    clock.listeners.add(listener);
-    start(intervalMs, clock);
-    return () => {
-      clock.listeners.delete(listener);
-      if (clock.listeners.size === 0) stop(clock);
-    };
-  }, [intervalMs, enabled]);
-  const getSnapshot = React.useCallback(() => clockFor(intervalMs).now, [intervalMs]);
+  const subscribe = React.useCallback(
+    (listener: () => void) => {
+      if (!enabled) return () => {};
+      bindVisibility();
+      const clock = clockFor(intervalMs);
+      if (clock.timer === null) clock.now = Date.now(); // Fresh value when a clock (re)starts.
+      clock.listeners.add(listener);
+      start(intervalMs, clock);
+      return () => {
+        clock.listeners.delete(listener);
+        if (clock.listeners.size === 0) stop(clock);
+      };
+    },
+    [intervalMs, enabled]
+  );
+  const getSnapshot = React.useCallback(
+    () => clockFor(intervalMs).now,
+    [intervalMs]
+  );
   return React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

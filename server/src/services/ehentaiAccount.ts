@@ -16,19 +16,23 @@
  * an authorization change.
  */
 
-import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { eq } from 'drizzle-orm';
-import { DATA_DIR, getDb, schema } from '../db/index.js';
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { eq } from "drizzle-orm";
+import { DATA_DIR, getDb, schema } from "../db/index.js";
 import {
-  parseEhentaiSession, parseEhentaiSite,
-  type EhentaiAccountView, type EhentaiAccessState, type EhentaiSessionInput, type EhentaiSiteAccess,
-} from '../contracts/ehentai.js';
-import { isEhentaiSite, type EhentaiSite } from '../contracts/doujin.js';
+  parseEhentaiSession,
+  parseEhentaiSite,
+  type EhentaiAccountView,
+  type EhentaiAccessState,
+  type EhentaiSessionInput,
+  type EhentaiSiteAccess,
+} from "../contracts/ehentai.js";
+import { isEhentaiSite, type EhentaiSite } from "../contracts/doujin.js";
 
-const STORE_KEY = 'ehentai_account';
-const KEY_FILE = path.join(DATA_DIR, 'ehentai-account.key');
+const STORE_KEY = "ehentai_account";
+const KEY_FILE = path.join(DATA_DIR, "ehentai-account.key");
 
 export class EhentaiAccountError extends Error {}
 /** A save/delete arrived with a stale revision. */
@@ -38,8 +42,10 @@ export class EhentaiAccountConflict extends Error {}
  *  plaintext. */
 export class EhentaiAccountCryptoError extends Error {
   constructor() {
-    super('E-Hentai account encryption key is missing or corrupted. The stored session cannot be decrypted; re-save your account cookies in Settings.');
-    this.name = 'EhentaiAccountCryptoError';
+    super(
+      "E-Hentai account encryption key is missing or corrupted. The stored session cannot be decrypted; re-save your account cookies in Settings."
+    );
+    this.name = "EhentaiAccountCryptoError";
   }
 }
 
@@ -51,7 +57,7 @@ interface StoredRecord {
   access: { eHentai: EhentaiSiteAccess; exHentai: EhentaiSiteAccess };
 }
 
-const untested: EhentaiSiteAccess = { state: 'untested', testedAt: null };
+const untested: EhentaiSiteAccess = { state: "untested", testedAt: null };
 
 // ---------------- key material ----------------
 
@@ -65,12 +71,13 @@ function loadKey(): Buffer {
   try {
     key = fs.readFileSync(KEY_FILE);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new EhentaiAccountCryptoError();
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+      throw new EhentaiAccountCryptoError();
     key = crypto.randomBytes(32);
     try {
-      fs.writeFileSync(KEY_FILE, key, { flag: 'wx', mode: 0o600 });
+      fs.writeFileSync(KEY_FILE, key, { flag: "wx", mode: 0o600 });
     } catch (createError) {
-      if ((createError as NodeJS.ErrnoException).code === 'EEXIST') {
+      if ((createError as NodeJS.ErrnoException).code === "EEXIST") {
         // A concurrent startup created it first; use it.
         key = fs.readFileSync(KEY_FILE);
       } else {
@@ -88,21 +95,41 @@ function loadKey(): Buffer {
   return key;
 }
 
-function encrypt(key: Buffer, session: EhentaiSessionInput): StoredRecord['envelope'] {
+function encrypt(
+  key: Buffer,
+  session: EhentaiSessionInput
+): StoredRecord["envelope"] {
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(session), 'utf8'), cipher.final()]);
-  return { iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64') };
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(session), "utf8"),
+    cipher.final(),
+  ]);
+  return {
+    iv: iv.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    ciphertext: ciphertext.toString("base64"),
+  };
 }
 
-function decrypt(key: Buffer, envelope: StoredRecord['envelope']): EhentaiSessionInput | null {
+function decrypt(
+  key: Buffer,
+  envelope: StoredRecord["envelope"]
+): EhentaiSessionInput | null {
   if (!envelope) return null;
   try {
-    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64'));
-    decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
-    const plaintext = Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, 'base64')), decipher.final()]);
-    const value: unknown = JSON.parse(plaintext.toString('utf8'));
-    if (!value || typeof value !== 'object') return null;
+    const decipher = crypto.createDecipheriv(
+      "aes-256-gcm",
+      key,
+      Buffer.from(envelope.iv, "base64")
+    );
+    decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(envelope.ciphertext, "base64")),
+      decipher.final(),
+    ]);
+    const value: unknown = JSON.parse(plaintext.toString("utf8"));
+    if (!value || typeof value !== "object") return null;
     const parsed = parseEhentaiSession(value);
     if (parsed.error || !parsed.session) return null;
     return parsed.session;
@@ -114,13 +141,31 @@ function decrypt(key: Buffer, envelope: StoredRecord['envelope']): EhentaiSessio
 // ---------------- record read/write ----------------
 
 function parseAccess(raw: unknown): EhentaiSiteAccess {
-  if (!raw || typeof raw !== 'object') return { ...untested };
+  if (!raw || typeof raw !== "object") return { ...untested };
   const value = raw as Record<string, unknown>;
-  const state = typeof value.state === 'string' && ['untested', 'verified', 'denied', 'content-warning', 'quota-limited', 'unavailable', 'rate-limited'].includes(value.state) ? value.state : 'untested';
+  const state =
+    typeof value.state === "string" &&
+    [
+      "untested",
+      "verified",
+      "denied",
+      "content-warning",
+      "quota-limited",
+      "unavailable",
+      "rate-limited",
+    ].includes(value.state)
+      ? value.state
+      : "untested";
   return {
     state: state as EhentaiAccessState,
-    testedAt: typeof value.testedAt === 'string' && value.testedAt ? value.testedAt : null,
-    message: typeof value.message === 'string' && value.message ? value.message.slice(0, 500) : undefined,
+    testedAt:
+      typeof value.testedAt === "string" && value.testedAt
+        ? value.testedAt
+        : null,
+    message:
+      typeof value.message === "string" && value.message
+        ? value.message.slice(0, 500)
+        : undefined,
   };
 }
 
@@ -131,8 +176,12 @@ let cachedRecord: {
   session?: EhentaiSessionInput | null;
 } | null = null;
 
-function loadRecordEntry(): { record: StoredRecord; readDecrypted: () => EhentaiSessionInput | null } {
-  const row = getDb().select({ valueJson: schema.keyValueStore.valueJson })
+function loadRecordEntry(): {
+  record: StoredRecord;
+  readDecrypted: () => EhentaiSessionInput | null;
+} {
+  const row = getDb()
+    .select({ valueJson: schema.keyValueStore.valueJson })
     .from(schema.keyValueStore)
     .where(eq(schema.keyValueStore.key, STORE_KEY))
     .get();
@@ -144,7 +193,8 @@ function loadRecordEntry(): { record: StoredRecord; readDecrypted: () => Ehentai
       readDecrypted: () => {
         if (!entry.record.envelope) return null;
         const key = loadKey();
-        if (entry.key === key && entry.session !== undefined) return entry.session;
+        if (entry.key === key && entry.session !== undefined)
+          return entry.session;
         const session = decrypt(key, entry.record.envelope);
         entry.key = key;
         entry.session = session;
@@ -154,7 +204,12 @@ function loadRecordEntry(): { record: StoredRecord; readDecrypted: () => Ehentai
   }
   let record: StoredRecord;
   if (raw === null) {
-    record = { revision: 0, site: 'e-hentai', envelope: null, access: { eHentai: { ...untested }, exHentai: { ...untested } } };
+    record = {
+      revision: 0,
+      site: "e-hentai",
+      envelope: null,
+      access: { eHentai: { ...untested }, exHentai: { ...untested } },
+    };
   } else {
     let parsedRaw: unknown;
     try {
@@ -165,13 +220,25 @@ function loadRecordEntry(): { record: StoredRecord; readDecrypted: () => Ehentai
       throw new EhentaiAccountCryptoError();
     }
     const stored = parsedRaw as Record<string, unknown>;
-    const storedAccess = (stored.access as Record<string, unknown> | undefined) ?? {};
+    const storedAccess =
+      (stored.access as Record<string, unknown> | undefined) ?? {};
     record = {
-      revision: typeof stored.revision === 'number' && Number.isSafeInteger(stored.revision) && stored.revision >= 0 ? stored.revision : 0,
-      site: isEhentaiSite(stored.site) ? stored.site : 'e-hentai',
-      envelope: stored.envelope && typeof stored.envelope === 'object' && typeof (stored.envelope as Record<string, unknown>).iv === 'string'
-        && typeof (stored.envelope as Record<string, unknown>).tag === 'string'
-        && typeof (stored.envelope as Record<string, unknown>).ciphertext === 'string' ? stored.envelope as StoredRecord['envelope'] : null,
+      revision:
+        typeof stored.revision === "number" &&
+        Number.isSafeInteger(stored.revision) &&
+        stored.revision >= 0
+          ? stored.revision
+          : 0,
+      site: isEhentaiSite(stored.site) ? stored.site : "e-hentai",
+      envelope:
+        stored.envelope &&
+        typeof stored.envelope === "object" &&
+        typeof (stored.envelope as Record<string, unknown>).iv === "string" &&
+        typeof (stored.envelope as Record<string, unknown>).tag === "string" &&
+        typeof (stored.envelope as Record<string, unknown>).ciphertext ===
+          "string"
+          ? (stored.envelope as StoredRecord["envelope"])
+          : null,
       access: {
         eHentai: parseAccess(storedAccess.eHentai),
         exHentai: parseAccess(storedAccess.exHentai),
@@ -185,7 +252,8 @@ function loadRecordEntry(): { record: StoredRecord; readDecrypted: () => Ehentai
     readDecrypted: () => {
       if (!entry.record.envelope) return null;
       const key = loadKey();
-      if (entry.key === key && entry.session !== undefined) return entry.session;
+      if (entry.key === key && entry.session !== undefined)
+        return entry.session;
       const session = decrypt(key, entry.record.envelope);
       entry.key = key;
       entry.session = session;
@@ -198,24 +266,42 @@ function loadRecord(): StoredRecord {
   return loadRecordEntry().record;
 }
 
-function saveRecord(record: StoredRecord, session?: EhentaiSessionInput | null): void {
+function saveRecord(
+  record: StoredRecord,
+  session?: EhentaiSessionInput | null
+): void {
   const raw = JSON.stringify(record);
   getDb()
     .insert(schema.keyValueStore)
     .values({ key: STORE_KEY, valueJson: raw })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: raw } })
+    .onConflictDoUpdate({
+      target: schema.keyValueStore.key,
+      set: { valueJson: raw },
+    })
     .run();
-  cachedRecord = session !== undefined
-    ? { raw, record, key: cachedKey ?? undefined, session }
-    : { raw, record };
+  cachedRecord =
+    session !== undefined
+      ? { raw, record, key: cachedKey ?? undefined, session }
+      : { raw, record };
 }
 
-function requireRevision(record: StoredRecord, expectedRevision: unknown): void {
-  if (typeof expectedRevision !== 'number' || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
-    throw new EhentaiAccountError('expectedRevision must be a nonnegative integer');
+function requireRevision(
+  record: StoredRecord,
+  expectedRevision: unknown
+): void {
+  if (
+    typeof expectedRevision !== "number" ||
+    !Number.isSafeInteger(expectedRevision) ||
+    expectedRevision < 0
+  ) {
+    throw new EhentaiAccountError(
+      "expectedRevision must be a nonnegative integer"
+    );
   }
   if (expectedRevision !== record.revision) {
-    throw new EhentaiAccountConflict(`Account revision is ${record.revision}; the client still expected ${expectedRevision}. Reload and try again.`);
+    throw new EhentaiAccountConflict(
+      `Account revision is ${record.revision}; the client still expected ${expectedRevision}. Reload and try again.`
+    );
   }
 }
 
@@ -228,7 +314,9 @@ const accountListeners = new Set<AccountListener>();
  *  Used to invalidate preflight, media, and unified-search caches. */
 export function onEhentaiAccountChange(listener: AccountListener): () => void {
   accountListeners.add(listener);
-  return () => { accountListeners.delete(listener); };
+  return () => {
+    accountListeners.delete(listener);
+  };
 }
 
 function notifyAccountChange(): void {
@@ -284,7 +372,11 @@ export function getAccountRevision(): number {
  * decrypts lazily (throwing EhentaiAccountCryptoError like getStoredSession),
  * so callers can map record and decryption failures separately.
  */
-export function getEhentaiAccountSnapshot(): { site: EhentaiSite; revision: number; readSession: () => EhentaiSessionInput | null } {
+export function getEhentaiAccountSnapshot(): {
+  site: EhentaiSite;
+  revision: number;
+  readSession: () => EhentaiSessionInput | null;
+} {
   const { record, readDecrypted } = loadRecordEntry();
   return {
     site: record.site,
@@ -293,15 +385,23 @@ export function getEhentaiAccountSnapshot(): { site: EhentaiSite; revision: numb
   };
 }
 
-function viewFrom(record: StoredRecord, readDecrypted?: () => EhentaiSessionInput | null): EhentaiAccountView {
+function viewFrom(
+  record: StoredRecord,
+  readDecrypted?: () => EhentaiSessionInput | null
+): EhentaiAccountView {
   let hasIgneous = false;
   let sessionError: string | null = null;
   if (record.envelope) {
     try {
-      const session = readDecrypted ? readDecrypted() : decrypt(loadKey(), record.envelope);
+      const session = readDecrypted
+        ? readDecrypted()
+        : decrypt(loadKey(), record.envelope);
       hasIgneous = session?.igneous !== undefined;
     } catch (error) {
-      sessionError = error instanceof Error ? error.message : 'The stored E-Hentai session cannot be decrypted.';
+      sessionError =
+        error instanceof Error
+          ? error.message
+          : "The stored E-Hentai session cannot be decrypted.";
     }
   }
   return {
@@ -325,7 +425,9 @@ export interface EhentaiSaveInput {
 
 /** Save the site selection and/or a complete session replacement. Bumps the
  *  revision, persists, and invalidates account-scoped runtime state. */
-export function saveEhentaiAccount(input: EhentaiSaveInput): EhentaiAccountView {
+export function saveEhentaiAccount(
+  input: EhentaiSaveInput
+): EhentaiAccountView {
   const { record, readDecrypted } = loadRecordEntry();
   requireRevision(record, input.expectedRevision);
   const site = parseEhentaiSite(input.site, record.site);
@@ -340,7 +442,8 @@ export function saveEhentaiAccount(input: EhentaiSaveInput): EhentaiAccountView 
       ipb_pass_hash: input.session.ipb_pass_hash,
       igneous: input.session.igneous,
     });
-    if (parsed.error || !parsed.session) throw new EhentaiAccountError(parsed.error ?? 'Invalid session');
+    if (parsed.error || !parsed.session)
+      throw new EhentaiAccountError(parsed.error ?? "Invalid session");
     nextSession = parsed.session;
     envelope = encrypt(loadKey(), parsed.session);
   }
@@ -352,13 +455,22 @@ export function saveEhentaiAccount(input: EhentaiSaveInput): EhentaiAccountView 
   };
   saveRecord(next, nextSession);
   notifyAccountChange();
-  return viewFrom(next, nextSession !== undefined ? () => nextSession! : (next.envelope === record.envelope ? readDecrypted : undefined));
+  return viewFrom(
+    next,
+    nextSession !== undefined
+      ? () => nextSession!
+      : next.envelope === record.envelope
+        ? readDecrypted
+        : undefined
+  );
 }
 
 /** Remove the stored session, reset access evidence, advance the revision,
  *  and invalidate account-scoped runtime state. Site selection and all
  *  unrelated settings/history are preserved. */
-export function removeEhentaiAccount(expectedRevision: number): EhentaiAccountView {
+export function removeEhentaiAccount(
+  expectedRevision: number
+): EhentaiAccountView {
   const record = loadRecord();
   requireRevision(record, expectedRevision);
   const next: StoredRecord = {

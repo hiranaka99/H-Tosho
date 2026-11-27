@@ -10,7 +10,10 @@ export interface CachedSeriesCover {
 
 const seriesCoverCache = new Map<string, CachedSeriesCover>();
 let seriesCoverCacheBytes = 0;
-export const seriesCoverInflight = new Map<string, Promise<CachedSeriesCover>>();
+export const seriesCoverInflight = new Map<
+  string,
+  Promise<CachedSeriesCover>
+>();
 
 function deleteSeriesCoverEntry(key: string): void {
   const existing = seriesCoverCache.get(key);
@@ -19,7 +22,9 @@ function deleteSeriesCoverEntry(key: string): void {
   seriesCoverCacheBytes -= existing.data.length;
 }
 
-export function getSeriesCoverEntry(key: string): CachedSeriesCover | undefined {
+export function getSeriesCoverEntry(
+  key: string
+): CachedSeriesCover | undefined {
   const entry = seriesCoverCache.get(key);
   if (!entry) return undefined;
   seriesCoverCache.delete(key);
@@ -27,10 +32,17 @@ export function getSeriesCoverEntry(key: string): CachedSeriesCover | undefined 
   return entry;
 }
 
-export function setSeriesCoverEntry(key: string, entry: CachedSeriesCover): void {
+export function setSeriesCoverEntry(
+  key: string,
+  entry: CachedSeriesCover
+): void {
   deleteSeriesCoverEntry(key);
   if (entry.data.length > COVER_CACHE_MAX_BYTES) return;
-  while (seriesCoverCache.size >= COVER_CACHE_MAX_ENTRIES || (seriesCoverCacheBytes + entry.data.length > COVER_CACHE_MAX_BYTES && seriesCoverCache.size > 0)) {
+  while (
+    seriesCoverCache.size >= COVER_CACHE_MAX_ENTRIES ||
+    (seriesCoverCacheBytes + entry.data.length > COVER_CACHE_MAX_BYTES &&
+      seriesCoverCache.size > 0)
+  ) {
     const oldest = seriesCoverCache.keys().next().value;
     if (oldest === undefined) break;
     deleteSeriesCoverEntry(oldest);

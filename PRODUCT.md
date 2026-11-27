@@ -95,8 +95,7 @@ and the repository:
 - The existing stack is a React/TypeScript/Vite frontend with Tailwind CSS and
   a Node.js/Hono backend using SQLite. This is an established codebase.
 - For development, run `npm run dev` from the repository root. Vite serves the
-  web app on port 5173 and proxies API/media requests to the backend on port
-  8787. The web app entry is `web/index.html`.
+  web app on port 5173 and proxies API/media requests to the backend on port 8787. The web app entry is `web/index.html`.
 
 These implementation details describe the current app rather than a promise
 that provider behavior, ports, or dependency versions will never change.

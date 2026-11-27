@@ -1,11 +1,15 @@
-import * as React from 'react';
-import { api, type DoujinSearchResult, type DuplicateReport } from '../../lib/api';
+import * as React from "react";
+import {
+  api,
+  type DoujinSearchResult,
+  type DuplicateReport,
+} from "../../lib/api";
 import {
   LIBRARY_MATCH_CHUNK,
   pruneLibraryMatchCache,
   selectUncheckedGalleries,
   type LibraryMatchCacheEntry,
-} from '../../lib/libraryMatchBatcher';
+} from "../../lib/libraryMatchBatcher";
 
 const MAX_CACHE_ENTRIES = 1000;
 const matchCache = new Map<string, LibraryMatchCacheEntry>();
@@ -29,7 +33,7 @@ export function clearLibraryMatchCache(): void {
  */
 export function useLibraryMatchReports(
   items: readonly DoujinSearchResult[],
-  options?: { resetKey?: string | null; ttlMs?: number },
+  options?: { resetKey?: string | null; ttlMs?: number }
 ): ReadonlyMap<string, DuplicateReport> {
   const resetKey = options?.resetKey ?? null;
   const ttlMs = options?.ttlMs ?? 60_000;
@@ -53,7 +57,7 @@ export function useLibraryMatchReports(
       seen.add(key);
       keys.push(key);
     }
-    return keys.join(',');
+    return keys.join(",");
   }, [items]);
 
   React.useEffect(() => {
@@ -65,7 +69,12 @@ export function useLibraryMatchReports(
       lastResetKey = resetKey;
     }
 
-    const unchecked = selectUncheckedGalleries(itemsRef.current, matchCache, Date.now(), ttlMs);
+    const unchecked = selectUncheckedGalleries(
+      itemsRef.current,
+      matchCache,
+      Date.now(),
+      ttlMs
+    );
     const pending: DoujinSearchResult[] = [];
     for (const chunk of unchecked) {
       for (const item of chunk) {
@@ -107,7 +116,9 @@ export function useLibraryMatchReports(
     }
   }, [itemsKey, resetKey, ttlMs]);
 
-  const prevResultRef = React.useRef<ReadonlyMap<string, DuplicateReport>>(new Map());
+  const prevResultRef = React.useRef<ReadonlyMap<string, DuplicateReport>>(
+    new Map()
+  );
   const nextResult = new Map<string, DuplicateReport>();
   const now = Date.now();
   for (const item of items) {

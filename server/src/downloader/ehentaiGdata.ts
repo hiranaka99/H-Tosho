@@ -16,26 +16,38 @@ export function parseEhentaiGdata(body: string): EhentaiGdataEntry[] | null {
   } catch {
     return null;
   }
-  if (!data || typeof data !== 'object' || !('gmetadata' in data) || !Array.isArray(data.gmetadata)) return null;
+  if (
+    !data ||
+    typeof data !== "object" ||
+    !("gmetadata" in data) ||
+    !Array.isArray(data.gmetadata)
+  )
+    return null;
   const entries: EhentaiGdataEntry[] = [];
   for (const rawItem of data.gmetadata as unknown[]) {
-    if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) return null;
+    if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem))
+      return null;
     const item = rawItem as Record<string, unknown>;
     const fields = new Map<string, string>();
     for (const [key, value] of Object.entries(item)) {
-      if (typeof value === 'string' || typeof value === 'number') fields.set(key, String(value));
+      if (typeof value === "string" || typeof value === "number")
+        fields.set(key, String(value));
     }
-    const tags: EhentaiGdataEntry['tags'] = [];
+    const tags: EhentaiGdataEntry["tags"] = [];
     if (Array.isArray(item.tags)) {
       for (const tag of item.tags as unknown[]) {
-        if (typeof tag !== 'string' || !tag.trim()) continue;
-        const colon = tag.indexOf(':');
-        tags.push({ namespace: colon >= 0 ? tag.slice(0, colon) : 'other', value: tag.slice(colon + 1) });
+        if (typeof tag !== "string" || !tag.trim()) continue;
+        const colon = tag.indexOf(":");
+        tags.push({
+          namespace: colon >= 0 ? tag.slice(0, colon) : "other",
+          value: tag.slice(colon + 1),
+        });
       }
     }
-    const error = typeof item.error === 'string' ? item.error : null;
-    const gid = fields.get('gid') ?? null;
-    const token = typeof item.token === 'string' ? item.token.toLowerCase() : null;
+    const error = typeof item.error === "string" ? item.error : null;
+    const gid = fields.get("gid") ?? null;
+    const token =
+      typeof item.token === "string" ? item.token.toLowerCase() : null;
     if (!error && (!gid || !token)) return null;
     entries.push({ gid, token, fields, tags, error });
   }
@@ -43,9 +55,12 @@ export function parseEhentaiGdata(body: string): EhentaiGdataEntry[] | null {
 }
 
 /** Counts arrive as strings; absent/empty values must not become zero. */
-export function gdataNumber(entry: EhentaiGdataEntry, field: string): number | null {
+export function gdataNumber(
+  entry: EhentaiGdataEntry,
+  field: string
+): number | null {
   const raw = entry.fields.get(field);
-  if (raw === undefined || raw.trim() === '') return null;
+  if (raw === undefined || raw.trim() === "") return null;
   const value = Number(raw);
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }

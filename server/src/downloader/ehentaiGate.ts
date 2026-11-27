@@ -23,8 +23,8 @@ export class RequestAbortedError extends Error {
   constructor() {
     // Deliberately not matched by the transient-error patterns in
     // requests.ts: an abort is an intentional stop, not a network blip.
-    super('Request cancelled');
-    this.name = 'AbortError';
+    super("Request cancelled");
+    this.name = "AbortError";
   }
 }
 
@@ -55,17 +55,17 @@ function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      signal?.removeEventListener('abort', onAbort);
+      signal?.removeEventListener("abort", onAbort);
       resolve();
     }, ms);
     const onAbort = (): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
+      signal?.removeEventListener("abort", onAbort);
       reject(abortError());
     };
-    signal?.addEventListener('abort', onAbort, { once: true });
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -98,8 +98,10 @@ function createLane(minGapMs: number, maxConcurrent: number): GateLane {
       if (head.signal?.aborted) {
         slotWaiters.shift();
         try {
-          head.signal?.removeEventListener('abort', head.onAbort);
-        } catch { /* already detached */ }
+          head.signal?.removeEventListener("abort", head.onAbort);
+        } catch {
+          /* already detached */
+        }
         head.reject(abortError());
         continue;
       }
@@ -121,7 +123,7 @@ function createLane(minGapMs: number, maxConcurrent: number): GateLane {
       const onAbort = (): void => {
         if (settled) return;
         settled = true;
-        signal?.removeEventListener('abort', onAbort);
+        signal?.removeEventListener("abort", onAbort);
         reject(abortError());
       };
       const entry: SlotWaiter = {
@@ -129,19 +131,19 @@ function createLane(minGapMs: number, maxConcurrent: number): GateLane {
         resolve: (): void => {
           if (settled) return;
           settled = true;
-          signal?.removeEventListener('abort', onAbort);
+          signal?.removeEventListener("abort", onAbort);
           resolve();
         },
         reject: (error: Error): void => {
           if (settled) return;
           settled = true;
-          signal?.removeEventListener('abort', onAbort);
+          signal?.removeEventListener("abort", onAbort);
           reject(error);
         },
         onAbort,
       };
       slotWaiters.push(entry);
-      signal?.addEventListener('abort', onAbort, { once: true });
+      signal?.addEventListener("abort", onAbort, { once: true });
     });
   }
 
@@ -217,7 +219,12 @@ function createLane(minGapMs: number, maxConcurrent: number): GateLane {
     minGapMs,
     acquire(signal?: AbortSignal): Promise<() => void> {
       if (signal?.aborted) return Promise.reject(abortError());
-      const waiter: HeadWaiter = { signal, settled: false, resolve: () => undefined, reject: () => undefined };
+      const waiter: HeadWaiter = {
+        signal,
+        settled: false,
+        resolve: () => undefined,
+        reject: () => undefined,
+      };
       // The executor runs synchronously, so settlement functions are bound
       // before the pump can observe the waiter.
       const promise = new Promise<() => void>((resolve, reject) => {
@@ -237,7 +244,8 @@ function createLane(minGapMs: number, maxConcurrent: number): GateLane {
       return promise;
     },
     setCooldown(untilMs: number): void {
-      if (Number.isFinite(untilMs) && untilMs > cooldownUntil) cooldownUntil = untilMs;
+      if (Number.isFinite(untilMs) && untilMs > cooldownUntil)
+        cooldownUntil = untilMs;
     },
     cooldownRemainingMs(): number {
       return Math.max(0, cooldownUntil - Date.now());
@@ -276,7 +284,11 @@ export interface LaneConfig {
 }
 
 let gate: EhentaiGate | null = null;
-let laneOverride: { html?: LaneConfig; api?: LaneConfig; image?: LaneConfig } | null = null;
+let laneOverride: {
+  html?: LaneConfig;
+  api?: LaneConfig;
+  image?: LaneConfig;
+} | null = null;
 
 /** The shared gate across every E-Hentai-family workflow in this process. */
 export function getEhentaiGate(): EhentaiGate {
@@ -296,7 +308,11 @@ export function getEhentaiGate(): EhentaiGate {
 /** Replace the shared gate (tests). Drops all pacing/cooldown state.
  *  `override` temporarily narrows per-lane pacing for fast tests; omitted
  *  lanes keep the production defaults. */
-export function resetEhentaiGate(override?: { html?: LaneConfig; api?: LaneConfig; image?: LaneConfig }): void {
+export function resetEhentaiGate(override?: {
+  html?: LaneConfig;
+  api?: LaneConfig;
+  image?: LaneConfig;
+}): void {
   gate = null;
   laneOverride = override ?? null;
 }
