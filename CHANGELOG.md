@@ -1,5 +1,14 @@
 # Changelog
 
+## v4.3.3
+
+This patch fixes the mobile header and E-Hentai download retries, and hardens downloads that belong to a merge.
+
+- **Mobile navigation toggle on the left.** On phones the menu button now sits to the left of the H-Tosho name, and closing the drawer returns focus to it.
+- **E-Hentai retries no longer fail with `ENOENT`.** A failed page request could delete the next attempt's partial file just before it was saved. Retries now wait for the earlier attempt's cleanup.
+- **Safer merged downloads.** Downloads that belong to a merge, including folder-output downloads, always go through Protected Merge before they are published. If adding them to a merge fails, every download already linked to it is cancelled instead of continuing as a plain download.
+- **Clearer restore status.** A metadata restore cancelled before it starts shows "Cancelled before start".
+
 ## v4.3.2
 
 This patch makes large libraries, download queues, and metadata review more responsive.
