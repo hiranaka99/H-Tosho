@@ -117,11 +117,10 @@ No additional binding voice or brand requirements were established during init.
 - `server/src/`: integration, metadata, matching, download, persistence, and job
   behavior.
 - `docs/screenshots/libraries.png`, `metadata-preview.png`, and
-  `libraries-mobile.png`: screenshots of the actual v2.5.0 interface rendered
-  with isolated sample data; the README records their context and cover credits.
-- `docs/screenshots/README.md`: identifies example counts, confidence scores,
-  connection state, and metadata as sample data. Covers belong to their rights
-  holders and are included in documentation screenshots, not shipped app assets.
+  `libraries-mobile.png`: screenshots of the actual interface rendered with
+  fictional sample series and generated covers (`npm run screenshots`).
+- `docs/screenshots/README.md`: identifies series, artists, covers, counts,
+  confidence scores, connection state, and metadata as fictional sample data.
 
 No customer testimonials, adoption figures, or performance benchmarks were
 established in this initialization. Do not present sample data as measured proof.

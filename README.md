@@ -9,11 +9,11 @@ recommendations, and watched searches for new releases.
 Works with **Kavita v0.9.x or newer**. Current version: **v4.3.3** ·
 [Release notes](CHANGELOG.md)
 
-![H-Tosho Libraries showing real covers for Spy x Family, Chainsaw Man, Demon Slayer, Dandadan, and Kaiju No. 8](docs/screenshots/libraries.png)
+![H-Tosho Libraries page showing five sample series with generated covers and their match status](docs/screenshots/libraries.png)
 
-_The actual interface with a sample library. Covers are from the official VIZ
-shop; counts, match results, and metadata are example data.
-[Screenshot details and cover credits](docs/screenshots/README.md)._
+_The actual interface with a sample library. Series, artists, covers, counts,
+match results, and metadata are fictional examples.
+[About these screenshots](docs/screenshots/README.md)._
 
 [Install](#install) · [First setup](#first-setup) ·
 [Use your library](#use-your-library) · [Discover and download](#discover-and-download) ·
@@ -177,10 +177,10 @@ With this example, use `/mnt/downloads` as H-Tosho's output folder.
 4. Choose **Apply & Sync**. H-Tosho applies your selection in the background;
    **Tasks** shows its progress and any warnings.
 
-![Dark-theme metadata preview for Spy x Family, showing current and proposed fields, cover art, and apply controls](docs/screenshots/metadata-preview.png)
+![Dark-theme metadata preview for the sample series Moonlit Courier, showing current and proposed fields, cover art, and apply controls](docs/screenshots/metadata-preview.png)
 
 _Review the title, description, creators, tags, and cover before applying them.
-This preview uses sample metadata and real cover art._
+This preview uses sample metadata and generated cover art._
 
 If the suggested match is wrong, paste the series' AniList, MangaDex, or
 MyAnimeList URL under **Use a provider URL** and choose **Load**.
@@ -385,7 +385,7 @@ and use the merge action. On phones, sorting and selection are under
 <summary>See the mobile interface</summary>
 
 <p>The same library tools are available on a phone, with navigation in the menu.</p>
-<img src="docs/screenshots/libraries-mobile.png" alt="H-Tosho mobile library view with Chainsaw Man and Dandadan covers" width="360">
+<img src="docs/screenshots/libraries-mobile.png" alt="H-Tosho mobile library view with two sample series" width="360">
 
 </details>
 
@@ -600,7 +600,19 @@ to reach it over your network. Sign in with your H-Tosho account on each device.
 
 Found a problem? [Open an issue](https://github.com/hiranaka99/H-Tosho/issues)
 with your H-Tosho version, what you expected, and the relevant job error. Remove
-passwords, Auth Keys, and webhook URLs from anything you share.
+passwords, Auth Keys, and webhook URLs from anything you share. Report security
+vulnerabilities privately instead, as described in [SECURITY.md](SECURITY.md).
+
+## Disclaimer
+
+H-Tosho is self-hosted software. It does not host, mirror, or distribute any
+content; it only connects to the services you configure. Some supported sources
+contain adult material. Use H-Tosho only where you are of legal age and where
+that content is lawful. You are responsible for following each site's terms of
+service and the copyright laws that apply to you.
+
+H-Tosho is an independent project and is not affiliated with Kavita, AniList,
+MangaDex, MyAnimeList, E-Hentai, nHentai, or Hitomi.la.
 
 ## Development checks
 
@@ -617,6 +629,8 @@ For desktop and mobile browser checks, install Chromium once with
 `npm exec --workspace @h-tosho/web -- playwright install chromium`, then run
 `npm run test:e2e`. This builds the app and starts an isolated server with a
 fresh temporary database, without download workers or scheduled jobs.
+`npm run screenshots` regenerates the README screenshots in `docs/screenshots`
+from the same isolated server, using fictional sample series and covers.
 
 ## Publishing Docker images
 
@@ -632,3 +646,7 @@ under the package's **Package settings** if others should be able to pull it.
 A stable release tagged `v2.14.0`, for example, publishes `v2.14.0`, `2.14.0`,
 and `latest`. Prereleases publish their version tags without updating `latest`.
 Build progress and failures appear in the repository's **Actions** tab.
+
+## License
+
+H-Tosho is released under the [MIT License](LICENSE).
