@@ -621,13 +621,14 @@ fresh temporary database, without download workers or scheduled jobs.
 ## Publishing Docker images
 
 The [Docker release workflow](.github/workflows/docker-release.yml) builds the
-release's tagged commit and publishes a Linux AMD64 image to Docker Hub as
-`<DOCKERHUB_USERNAME>/h-tosho` whenever a GitHub release is **published**.
+release's tagged commit and publishes a Linux AMD64 image to the GitHub Container
+Registry as `ghcr.io/<owner>/h-tosho` whenever a GitHub release is **published**.
 Commit and push the workflow before publishing the next release; pushing a tag
 alone or saving a draft release does not trigger it.
 
-The workflow uses the repository secrets `DOCKERHUB_USERNAME` and
-`DOCKERHUB_TOKEN`. The token must have write access to the Docker Hub repository.
+The workflow signs in with the built-in `GITHUB_TOKEN`, so it needs no repository
+secrets. The first push creates the package as private; change its visibility
+under the package's **Package settings** if others should be able to pull it.
 A stable release tagged `v2.14.0`, for example, publishes `v2.14.0`, `2.14.0`,
 and `latest`. Prereleases publish their version tags without updating `latest`.
 Build progress and failures appear in the repository's **Actions** tab.
