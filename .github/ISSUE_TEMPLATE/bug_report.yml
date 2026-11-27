@@ -1,0 +1,71 @@
+name: Bug report
+description: Something in H-Tosho doesn't work as expected.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please don't include sexually explicit images or links, and remove passwords, Kavita Auth Keys, E-Hentai cookies, API keys, and webhook URLs from anything you paste.
+
+        Security vulnerabilities should be reported privately instead; see SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: H-Tosho version
+      description: Shown under the H-Tosho name in the sidebar.
+      placeholder: v4.3.3
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is H-Tosho installed?
+      options:
+        - Docker, prebuilt image
+        - Docker, built from a local checkout
+        - Without Docker (npm)
+    validations:
+      required: true
+  - type: input
+    id: kavita
+    attributes:
+      label: Kavita version
+      description: Leave empty if the problem doesn't involve Kavita.
+      placeholder: 0.9.1
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open …
+        2. Choose …
+        3. See …
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Job error or logs
+      description: The error from the job in **Tasks**, or the relevant container or server log lines.
+      render: text
+  - type: checkboxes
+    id: safe
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed passwords, Auth Keys, cookies, API keys, and webhook URLs.
+          required: true
+        - label: This report contains no sexually explicit images or links.
+          required: true

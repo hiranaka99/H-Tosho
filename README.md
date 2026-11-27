@@ -62,13 +62,19 @@ match results, and metadata are fictional examples.
 
 ### Docker
 
-Install Docker with Docker Compose, then download or clone this repository:
+Install Docker with Docker Compose, then download
+[`docker-compose.yml`](docker-compose.yml) into a new folder and start H-Tosho:
 
 ```bash
-git clone https://github.com/hiranaka99/H-Tosho.git
-cd H-Tosho
-docker compose up -d --build
+mkdir h-tosho && cd h-tosho
+curl -fsSLO https://raw.githubusercontent.com/hiranaka99/H-Tosho/main/docker-compose.yml
+docker compose up -d
 ```
+
+This runs the prebuilt image `ghcr.io/hiranaka99/h-tosho`, published for
+**linux/amd64** with every release. On other platforms, such as ARM, or to run
+your own changes, clone the repository instead, uncomment `build: .` in
+`docker-compose.yml`, and start with `docker compose up -d --build`.
 
 Open **http://localhost:8787**. If Docker runs on another machine, use that
 machine's address with port `8787`.
@@ -153,10 +159,11 @@ candidates in background jobs. Review discovered matches on **Home** before usin
 matching is disabled; download completion does not apply metadata matches.
 
 Prefer app data and downloads in local folders? The included
-[bind-mount example](docker-compose.example.yml) uses `./data` and `./downloads`:
+[bind-mount example](docker-compose.example.yml) uses `./data` and `./downloads`.
+Download it next to `docker-compose.yml` and start it with:
 
 ```bash
-docker compose -f docker-compose.example.yml up -d --build
+docker compose -f docker-compose.example.yml up -d
 ```
 
 With this example, use `/mnt/downloads` as H-Tosho's output folder.
@@ -578,7 +585,7 @@ To update a Docker installation manually (or when an image replacement is requir
 # Prebuilt image
 docker compose pull && docker compose up -d
 
-# Local Git checkout
+# Local Git checkout with `build: .` enabled
 git pull
 docker compose up -d --build
 ```

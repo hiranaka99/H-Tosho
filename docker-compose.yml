@@ -1,7 +1,10 @@
 services:
   h-tosho:
-    build: .
-    image: h-tosho:latest
+    # Prebuilt image for linux/amd64 from the GitHub Container Registry. To build
+    # from a local checkout instead (for example on ARM), uncomment `build: .`
+    # and start with `docker compose up -d --build`.
+    image: ghcr.io/hiranaka99/h-tosho:latest
+    # build: .
     container_name: h-tosho
     ports:
       - "8787:8787"
