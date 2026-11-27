@@ -50,8 +50,8 @@ The owner confirmed four durable requirements: preserve Kavita integration,
 review before applying metadata, local data persistence, and desktop/mobile web
 support. No additional product-specific requirements were requested.
 
-Existing capabilities and implementation facts are documented in README.md
-and the repository:
+Existing capabilities and implementation facts are documented in README.md,
+`docs/guide.md`, and the repository:
 
 - Metadata providers are AniList, MangaDex, and MyAnimeList; provider credentials
   and availability depend on the chosen source. The README targets Kavita
@@ -111,7 +111,8 @@ No additional binding voice or brand requirements were established during init.
 
 ## Evidence on Hand
 
-- `README.md`: product capabilities, installation, setup, workflows, and help.
+- `README.md`: product summary, installation, setup, configuration, and help.
+- `docs/guide.md`: detailed workflows for every feature.
 - `CHANGELOG.md`: recorded release changes.
 - `web/src/App.tsx` and `web/src/pages/`: implemented navigation and workflows.
 - `server/src/`: integration, metadata, matching, download, persistence, and job
