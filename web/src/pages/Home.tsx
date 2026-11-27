@@ -242,6 +242,9 @@ export function Home() {
   const dismissSingle = React.useCallback((target: DoujinSearchResult) => {
     void dismissFindsRef.current([target]);
   }, []);
+  const handleStartDownload = React.useCallback((item: DoujinSearchResult) => {
+    void doStartDownload(item);
+  }, [doStartDownload]);
   const inboxCount = feed.data?.inboxCount ?? discoveryItems.length;
   const kavitaMissing = matches.data?.configured === false;
   // Polled every minute by the sidebar's LowConfidenceBadge.
@@ -290,7 +293,7 @@ export function Home() {
       : !recommendationItems.length ? <div className="rounded-xl border border-border bg-surface"><EmptyState compact icon={<Sparkles className="h-5 w-5" />} title="No recommendations yet" description={<>Try Refresh picks, or <Link to="/downloader" className="font-medium text-primary underline underline-offset-4">browse Discover</Link> to find galleries and build your preferences.</>} /></div>
       : <ul aria-label="Recommended galleries" className="-m-1 flex snap-x snap-mandatory gap-3 overflow-x-auto p-1 xl:grid xl:grid-cols-6 xl:overflow-visible">{recommendationItems.map((item, index) => {
         const key = `${item.source}:${item.galleryId}`;
-        return <li key={key} className="w-40 shrink-0 snap-start xl:w-auto [&>article]:h-full"><GalleryCard item={item} priority={recsFirst && index < PRIORITY_COVERS} onOpen={setSelected} onDownload={doStartDownload} downloadSetup={setup.status} starting={pendingKeys.has(key)} display="recommendation" quietAction compact reasons={item.reasons} ownership={ownershipFor(key)} /></li>;
+        return <li key={key} className="w-40 shrink-0 snap-start xl:w-auto [&>article]:h-full"><GalleryCard item={item} priority={recsFirst && index < PRIORITY_COVERS} onOpen={setSelected} onDownload={handleStartDownload} downloadSetup={setup.status} starting={pendingKeys.has(key)} display="recommendation" quietAction compact reasons={item.reasons} ownership={ownershipFor(key)} /></li>;
       })}</ul>}
   </section>;
 
@@ -383,7 +386,7 @@ export function Home() {
         : <><ul className="mt-4 divide-y divide-border">{discoveryItems.map((item, index) => {
           const key = `${item.source}:${item.galleryId}`;
           return <FollowingRow key={key} item={item} label={feed.data?.items[index]?.watchLabel} ownership={ownershipFor(key)} starting={pendingKeys.has(key)} reviewing={reviewingKeys.has(key)} setupStatus={setup.status} priority={index < 2}
-            onOpen={setSelected} onDownload={doStartDownload} onDismiss={dismissSingle} />;
+            onOpen={setSelected} onDownload={handleStartDownload} onDismiss={dismissSingle} />;
         })}</ul>{inboxCount > discoveryItems.length && <p className="mt-3 text-xs text-muted">Showing {discoveryItems.length} of {inboxCount}. The rest are waiting in Following.</p>}</>}
     </section>
   </div>;
@@ -423,7 +426,7 @@ export function Home() {
     <React.Suspense fallback={null}>
       {review && <CandidateReview key={review.seriesId} item={review} onClose={() => { setReview(null); void qc.invalidateQueries({ queryKey: ['home-matches'] }); }} />}
       {updateReview && <UpdateReview key={updateReview.seriesId} item={updateReview} onClose={() => { setUpdateReview(null); void qc.invalidateQueries({ queryKey: ['home-updates'] }); }} />}
-      {selected && <GalleryDetailModal item={selected} onClose={() => setSelected(null)} onDownload={() => void doStartDownload(selected)} checking={pendingKeys.has(`${selected.source}:${selected.galleryId}`)} downloaded={owned.has(`${selected.source}:${selected.galleryId}`) || inLibrary.has(`${selected.source}:${selected.galleryId}`)} inLibrary={inLibrary.has(`${selected.source}:${selected.galleryId}`)} libraryMatch={reportsByKey.get(`${selected.source}:${selected.galleryId}`)?.matches.find(match => match.confirmed && match.status === 'In library')} setup={setup} onSearchTag={(fragment, source) => navigate(`/downloader?tab=search&source=${source ?? selected.source}&q=${encodeURIComponent(fragment)}`)} />}
+      {selected && <GalleryDetailModal item={selected} onClose={() => setSelected(null)} onDownload={() => void doStartDownload(selected)} checking={pendingKeys.has(`${selected.source}:${selected.galleryId}`)} downloaded={owned.has(`${selected.source}:${selected.galleryId}`) || inLibrary.has(`${selected.source}:${selected.galleryId}`)} inLibrary={inLibrary.has(`${selected.source}:${selected.galleryId}`)} libraryMatch={reportsByKey.get(`${selected.source}:${selected.galleryId}`)?.matches.find(match => match.confirmed && match.status === 'In library')} setup={setup} onSearchTag={(fragment, source) => { void navigate(`/downloader?tab=search&source=${source ?? selected.source}&q=${encodeURIComponent(fragment)}`); }} />}
     </React.Suspense>
     {duplicateDialog}
   </div>;

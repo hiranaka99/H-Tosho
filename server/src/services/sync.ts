@@ -8,11 +8,8 @@ import { eq } from 'drizzle-orm';
 import path from 'node:path';
 import { getDb, schema } from '../db/index.js';
 import { KavitaClient } from '../kavita/client.js';
-import {
-  type SeriesMetadataPayload,
-} from '../kavita/types.js';
 import type { SeriesMetadata, VolumeCover } from '../providers/types.js';
-import type { KavitaLibrary, KavitaVolume, KavitaSeries, KavitaSeriesMetadataDto } from '../kavita/types.js';
+import type { KavitaLibrary, KavitaVolume, KavitaSeries, KavitaSeriesMetadataDto, SeriesMetadataPayload } from '../kavita/types.js';
 import { fetchProviderMetadata } from '../match/autoMatcher.js';
 import { listCbzFilesAsync, resolveSeriesHostDirAsync, setSeriesTitleInCbzFiles } from '../lib/cbz.js';
 import { mapLimit } from '../lib/http.js';

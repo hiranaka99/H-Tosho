@@ -158,7 +158,7 @@ export function parseMalArtistWorks(html: string): SearchResult[] {
 }
 
 export function searchMalArtists(query: string, page = 1): Promise<ArtistSearchPage> {
-  return get(`/people.php?${new URLSearchParams({ q: query, show: String((page - 1) * 50) })}`, `search:${page}`, html => parseMalArtistSearch(html, page));
+  return get(`/people.php?${new URLSearchParams({ q: query, show: String((page - 1) * 50) }).toString()}`, `search:${page}`, html => parseMalArtistSearch(html, page));
 }
 export function getMalArtist(id: string): Promise<ProviderArtist> {
   return get(`/people/${id}`, 'artist', html => parseMalArtist(html, id));

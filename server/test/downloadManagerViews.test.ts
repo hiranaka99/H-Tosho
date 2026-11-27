@@ -39,7 +39,7 @@ test('the manager list never drops active or failed tasks behind a long complete
   assert.ok(ids.includes(paused), 'paused work stays visible');
   assert.equal(list.filter((task) => task.status === 'completed').length, 3, 'completed history is capped');
   // The newest finishes are the ones kept.
-  assert.deepEqual(list.filter((task) => task.status === 'completed').map((task) => task.outputPath).sort(), ['/out/0.cbz', '/out/1.cbz', '/out/2.cbz']);
+  assert.deepEqual(list.filter((task) => task.status === 'completed').map((task) => task.outputPath).sort((a, b) => ((a ?? '') < (b ?? '') ? -1 : (a ?? '') > (b ?? '') ? 1 : 0)), ['/out/0.cbz', '/out/1.cbz', '/out/2.cbz']);
 });
 
 test('completed history pages by finish time and reports the full count', () => {

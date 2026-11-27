@@ -1,5 +1,11 @@
-import { PUBLICATION_STATUS as CANDIDATE_STATUS, mergeTagLists, releaseYear } from '../../../server/src/contracts/metadata';
-import { PROTECTABLE_FIELDS, type FieldPolicy, type ProtectedField } from '../../../server/src/contracts/metadata';
+import {
+  PROTECTABLE_FIELDS,
+  PUBLICATION_STATUS as CANDIDATE_STATUS,
+  mergeTagLists,
+  releaseYear,
+  type FieldPolicy,
+  type ProtectedField,
+} from '../../../server/src/contracts/metadata';
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Search, Sparkles, AlertTriangle, ArrowLeft, ArrowRight, Link2, Unlink, ChevronRight, Users, History, Lock, LockOpen } from 'lucide-react';
@@ -386,14 +392,14 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
     }
   }, [selectedId, browseArtists]);
 
-  const reviewCandidate = (candidate: MatchCandidate, fromList = false, existing = false) => {
+  const reviewCandidate = React.useCallback((candidate: MatchCandidate, fromList = false, existing = false) => {
     savedListScroll.current = candidateList.current?.scrollTop ?? 0;
     savedDialogScroll.current = dialogScroll.current?.scrollTop ?? 0;
     savedCandidateKey.current = fromList ? `${candidate.providerId}:${candidate.providerSeriesId}` : null;
     savedReviewOrigin.current = existing ? 'existing' : fromList ? 'list' : 'manual';
     setReviewingExistingMatch(existing);
     setSelected(candidate);
-  };
+  }, []);
 
   const effectiveHasMatch = Boolean(match?.providerId && match.providerSeriesId) || (hasMatch && currentLoading);
   const identify = useQuery({
@@ -449,8 +455,8 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
     onSuccess: () => {
       // A queued job has not changed Kavita yet. Keep showing Kavita's cover;
       // SidebarStatus refreshes the series list when the job settles.
-      qc.invalidateQueries({ queryKey: ['series', seriesId] });
-      qc.invalidateQueries({ queryKey: ['jobs'] });
+      void qc.invalidateQueries({ queryKey: ['series', seriesId] });
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
       toast({ tone: 'info', title: 'Sync queued', description: 'Cover stays unchanged until sync finishes. Check Tasks for errors.' });
       if (onNext) onNext();
       else onClose();
@@ -470,11 +476,11 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const unmatch = useMutation({
     mutationFn: () => api.unmatch(seriesId),
     onSuccess: (res) => {
-      qc.invalidateQueries({ queryKey: ['series', seriesId] });
-      qc.invalidateQueries({ queryKey: ['applied-cover', seriesId] });
-      qc.invalidateQueries({ queryKey: ['library-series'] });
-      qc.invalidateQueries({ queryKey: ['libraries'] });
-      qc.invalidateQueries({ queryKey: ['low-confidence'] });
+      void qc.invalidateQueries({ queryKey: ['series', seriesId] });
+      void qc.invalidateQueries({ queryKey: ['applied-cover', seriesId] });
+      void qc.invalidateQueries({ queryKey: ['library-series'] });
+      void qc.invalidateQueries({ queryKey: ['libraries'] });
+      void qc.invalidateQueries({ queryKey: ['low-confidence'] });
       setConfirmUnmatch(false);
       toast({ tone: 'success', title: res.removed ? 'Unmatched' : 'No match to remove', description: current.name });
     },
@@ -504,16 +510,20 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
     return [...filtered].sort((a, b) => pinned(b) - pinned(a) || b.score - a.score);
   }, [alternatives, tab, manualKey]);
   const openedExisting = React.useRef(false);
+  const hasExistingMatch = Boolean(match);
+  const matchProviderId = match?.providerId;
+  const matchProviderSeriesId = match?.providerSeriesId;
+  const matchScore = match?.matchScore;
   React.useEffect(() => {
     if (!autoReview || openedExisting.current) return;
-    if (match?.providerId && match.providerSeriesId) {
+    if (matchProviderId && matchProviderSeriesId) {
       openedExisting.current = true;
       setAutoReviewDone(true);
-      reviewCandidate({ providerId: match.providerId, providerSeriesId: match.providerSeriesId, title: current.name, type: 'unknown', score: match.matchScore ?? 0 }, false, true);
-    } else if (!currentLoading && !match) {
+      reviewCandidate({ providerId: matchProviderId, providerSeriesId: matchProviderSeriesId, title: current.name, type: 'unknown', score: matchScore ?? 0 }, false, true);
+    } else if (!currentLoading && !hasExistingMatch) {
       setAutoReviewDone(true);
     }
-  }, [autoReview, currentLoading, match?.providerId, match?.providerSeriesId, current.name, match?.matchScore]);
+  }, [autoReview, currentLoading, hasExistingMatch, matchProviderId, matchProviderSeriesId, current.name, matchScore, reviewCandidate]);
 
   // Full aggregated metadata for the selected candidate — fetched through the
   // same path Apply & Sync uses, so the diff previews exactly what will push.
@@ -531,7 +541,7 @@ export function IdentifyModal({ seriesId, current, currentLoading, currentError,
   const diff = React.useMemo(() => {
     if (!selected) return null;
     const m = preview.data;
-    const candStatus = m?.status != null ? (CANDIDATE_STATUS[m.status as keyof typeof CANDIDATE_STATUS] ?? null) : null;
+    const candStatus = m?.status != null ? (CANDIDATE_STATUS[m.status] ?? null) : null;
     const rows: DiffRow[] = [
       { label: PROTECT_LABELS.title, current: current.name, candidate: resolvedTitle, field: 'title' },
       {

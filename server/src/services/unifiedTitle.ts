@@ -71,7 +71,7 @@ export function censorshipEdition(titles: readonly string[], tags: readonly stri
 /** Remove censorship release labels so two editions of one work share a title. */
 export function withoutCensorshipLabels(title: string): string {
   return title.normalize('NFKC')
-    .replace(/\s*[\[(【]\s*(?:un[ -]?censored|de[ -]?censored|censored)(?:\s+(?:ver(?:sion)?\.?|edition|release))?(?:\s+by\s+[^\])】]+)?\s*[\])】]/gi, ' ')
+    .replace(/\s*[[(【]\s*(?:un[ -]?censored|de[ -]?censored|censored)(?:\s+(?:ver(?:sion)?\.?|edition|release))?(?:\s+by\s+[^\])】]+)?\s*[\])】]/gi, ' ')
     .replace(/\s+[-–—|]\s+(?:un[ -]?censored|de[ -]?censored|censored)(?:\s+(?:ver(?:sion)?\.?|edition|release))?\s*$/i, '')
     .replace(/\s+/g, ' ').trim();
 }
@@ -86,7 +86,7 @@ export function unifiedTitleKey(title: string, artists: string[], language: stri
     return releaseLabel(text) || languageLabels.has(text.replace(/\s+(?:translation|translated)$/, ''));
   };
   let core = title.normalize('NFKC').replace(
-    /\[([^\[\]]*)\]|\(([^()]*)\)|【([^【】]*)】/gu,
+    /\[([^[\]]*)\]|\(([^()]*)\)|【([^【】]*)】/gu,
     (whole, square: string | undefined, round: string | undefined, corner: string | undefined) => annotation(square ?? round ?? corner ?? '') ? ' ' : whole,
   );
   // Catalogue grammar, independent of artist spelling or the search query:
@@ -106,7 +106,7 @@ export function unifiedTitleKey(title: string, artists: string[], language: stri
   core = [...retained, core].join(' ');
   // Also recognize an explicitly separated edition suffix, not ordinary words
   // in titles such as "Uncensored Love".
-  const suffix = /\s+[-–—|]\s+([^\[\]()【】]+)\s*$/u.exec(core);
+  const suffix = /\s+[-–—|]\s+([^[\]()【】]+)\s*$/u.exec(core);
   if (suffix && releaseLabel(suffix[1])) core = core.slice(0, suffix.index);
   const normalized = compact(core);
   return normalized ? `${edition}:${normalized}` : '';

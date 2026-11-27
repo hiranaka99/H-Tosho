@@ -8,10 +8,12 @@ import { getKavitaConnection } from './settings.js';
 export class FieldPolicyConflict extends Error {}
 const connection = () => kavitaConnectionKey(getKavitaConnection().baseUrl);
 
+const isProtectable = (field: unknown): field is typeof PROTECTABLE_FIELDS[number] => typeof field === 'string' && PROTECTABLE_FIELDS.some(f => f === field);
+
 function parseFieldPolicyRow(row: typeof schema.seriesFieldPolicies.$inferSelect): FieldPolicy {
   const fields: unknown = JSON.parse(row.lockedFieldsJson);
-  if (!Array.isArray(fields) || fields.some(field => !PROTECTABLE_FIELDS.includes(field)) || row.revision < 1) throw new Error('Stored field protection is invalid; repair it before syncing');
-  return { lockedFields: PROTECTABLE_FIELDS.filter(field => fields.includes(field)), revision: row.revision };
+  if (!Array.isArray(fields) || !(fields as unknown[]).every(isProtectable) || row.revision < 1) throw new Error('Stored field protection is invalid; repair it before syncing');
+  return { lockedFields: PROTECTABLE_FIELDS.filter(field => (fields as unknown[]).includes(field)), revision: row.revision };
 }
 
 export function getFieldPolicy(seriesId: number): FieldPolicy {
@@ -39,7 +41,7 @@ export function getFieldPolicies(seriesIds: number[]): Map<number, FieldPolicy> 
 }
 
 export function saveFieldPolicy(seriesId: number, fields: unknown, expectedRevision: unknown): Promise<FieldPolicy> {
-  if (!Array.isArray(fields) || fields.some(field => !PROTECTABLE_FIELDS.includes(field))
+  if (!Array.isArray(fields) || !(fields as unknown[]).every(isProtectable)
       || !Number.isSafeInteger(expectedRevision) || Number(expectedRevision) < 0) throw new Error('Invalid field policy');
   const key = connection();
   if (!key) throw new Error('Kavita not configured');
@@ -47,7 +49,7 @@ export function saveFieldPolicy(seriesId: number, fields: unknown, expectedRevis
     if (connection() !== key) throw new FieldPolicyConflict('Kavita connection changed; reload protection settings');
     const current = getFieldPolicy(seriesId);
     if (current.revision !== expectedRevision) throw new FieldPolicyConflict('Protection settings changed; reload and try again');
-    const lockedFields = PROTECTABLE_FIELDS.filter(field => fields.includes(field));
+    const lockedFields = PROTECTABLE_FIELDS.filter(field => (fields as unknown[]).includes(field));
     const revision = current.revision + 1;
     const values = { connectionKey: key, seriesId, lockedFieldsJson: JSON.stringify(lockedFields), revision, updatedAt: new Date().toISOString() };
     getDb().insert(schema.seriesFieldPolicies).values(values).onConflictDoUpdate({

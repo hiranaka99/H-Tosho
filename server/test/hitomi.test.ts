@@ -413,7 +413,7 @@ test('ranking indexes are cached briefly and reordering never mutates the cached
   const shuffled = await hitomiProvider.search('cat orderby:random', 24);
   const again = await hitomiProvider.search('cat', 24);
   assert.ok(!fetchedUrls.some(url => url.endsWith('/n/index-english.nozomi')), 'a fresh ranking index is served from the cache');
-  assert.deepEqual(ascending.map(r => r.galleryId), [...first.map(r => r.galleryId)].reverse());
+  assert.deepEqual(ascending.map(r => r.galleryId), first.map(r => r.galleryId).reverse());
   assert.deepEqual(shuffled.map(r => r.galleryId).sort(), first.map(r => r.galleryId).sort());
   assert.deepEqual(again.map(r => r.galleryId), first.map(r => r.galleryId));
 });

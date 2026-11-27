@@ -11,7 +11,7 @@ import * as zlib from 'node:zlib';
 let table: number[] | null = null;
 function crcTable(): number[] {
   if (table) return table;
-  table = new Array(256);
+  table = Array.from<number>({ length: 256 });
   for (let n = 0; n < 256; n++) {
     let c = n;
     for (let k = 0; k < 8; k++) {

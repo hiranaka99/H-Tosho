@@ -21,7 +21,7 @@ import { downloadLibraryStates } from '../../services/downloadLibraryState.js';
 import { connectedClient, errMsg, intParam } from './helpers.js';
 export const api = new Hono();
 api.post('/downloads/library-matches', async (c) => {
-  const body = await c.req.json() as { items?: unknown[] } | null;
+  const body = await c.req.json<{ items?: unknown[] } | null>();
   if (!body || !Array.isArray(body.items) || !body.items.length || body.items.length > 100) return c.json({ error: 'Provide 1–100 galleries to check.' }, 400);
   const items = [];
   for (const raw of body.items) {
@@ -36,7 +36,7 @@ api.post('/downloads/library-matches', async (c) => {
 });
 
 api.post('/downloads/duplicates', async (c) => {
-  const body = await c.req.json() as { items?: { source: DoujinSource; galleryId: string; url?: string }[]; refreshLibrary?: boolean } | null;
+  const body = await c.req.json<{ items?: { source: DoujinSource; galleryId: string; url?: string }[]; refreshLibrary?: boolean } | null>();
   if (!body || !Array.isArray(body.items) || !body.items.length || body.items.length > 100 || body.items.some(item => !item || getDoujinProvider(item.source)?.id !== item.source || typeof item.galleryId !== 'string' || !item.galleryId.trim() || (item.url !== undefined && typeof item.url !== 'string'))) return c.json({ error: 'Provide 1–100 supported galleries to check.' }, 400);
   const items: { source: DoujinSource; galleryId: string; url?: string }[] = [];
   for (const item of body.items) {
@@ -87,7 +87,9 @@ function commitMergeGroup(group: MergeDownloadGroup): void {
 async function prepareDownload(body: DownloadInput, group?: MergeDownloadGroup): Promise<Response | ((checker?: DuplicateChecker) => Response)> {
   const respond = (value: unknown, status: number) => Response.json(value, { status });
   if (!body || typeof body !== 'object' || typeof body.source !== 'string' || typeof body.galleryId !== 'string' || !body.source || !body.galleryId.trim()) return respond({ error: 'source and galleryId are required' }, 400);
-  if (getDoujinProvider(body.source)?.id !== body.source) return respond({ error: `Unknown source: ${body.source}` }, 400);
+  const provider = getDoujinProvider(body.source);
+  if (provider?.id !== body.source) return respond({ error: `Unknown source: ${body.source}` }, 400);
+  const source = provider.id;
   // The canonical gallery URL is frozen at enqueue time: the queued task keeps
   // resolving this origin even if the account/site changes later.
   let sourceUrl: string | undefined;
@@ -114,32 +116,32 @@ async function prepareDownload(body: DownloadInput, group?: MergeDownloadGroup):
   if (mergeFolder && body.chapter !== undefined && (typeof body.chapter !== 'number' || !Number.isFinite(body.chapter) || body.chapter <= 0)) return respond({error:'Merged chapter numbers must be positive numbers or blank'},400);
   // Duplicate guard: a completed task for this gallery already exists. Re-downloading
   // is possible via the queue's Retry action, which re-runs the stored task.
-  const done = downloadQueue.findCompleted(body.source as DoujinSource, body.galleryId);
+  const done = downloadQueue.findCompleted(source, body.galleryId);
   if (done) return respond({ error: 'already-downloaded', message: 'A completed task for this gallery already exists — use Retry in the Download Manager to re-download it.', finishedAt: done.finishedAt ?? null }, 409);
   // Also block duplicates that are queued/downloading/paused (retrying one of
   // those goes through the task's own Retry action, not a new enqueue).
-  const active = downloadQueue.findActive(body.source as DoujinSource, body.galleryId);
+  const active = downloadQueue.findActive(source, body.galleryId);
   if (active) return respond({ error: 'already-queued', message: 'This gallery is already queued or downloading.', status: active.status }, 409);
-  const owned = getDb().select().from(schema.ownedGalleries).where(and(eq(schema.ownedGalleries.source, body.source), eq(schema.ownedGalleries.galleryId, body.galleryId))).get();
+  const owned = getDb().select().from(schema.ownedGalleries).where(and(eq(schema.ownedGalleries.source, source), eq(schema.ownedGalleries.galleryId, body.galleryId))).get();
   if (owned) return respond({ error: 'already-downloaded', message: 'This gallery is already owned, even if its download history was cleared.' }, 409);
   if (!downloaderSettings.downloadDirectory.trim()) return respond({ error: 'Set an output folder in Downloader settings before starting a download.' }, 400);
   // Queue priority: higher runs first; ties keep FIFO order. Defaults to 0.
   const priority = typeof body.priority === 'number' && Number.isFinite(body.priority) ? Math.trunc(body.priority) : 0;
   try {
-    const identities = await prepareDuplicateCheck([{ source: body.source as DoujinSource, galleryId: body.galleryId, ...(sourceUrl ? { url: sourceUrl } : {}) }]);
+    const identities = await prepareDuplicateCheck([{ source, galleryId: body.galleryId, ...(sourceUrl ? { url: sourceUrl } : {}) }]);
     // A batch passes one checker shared by all of its items (see /downloads/merged).
     return (checker?: DuplicateChecker) => {
       // Another request can finish its preflight while the batch is resolving.
-      if (downloadQueue.findCompleted(body.source as DoujinSource, body.galleryId)
-        || getDb().select().from(schema.ownedGalleries).where(and(eq(schema.ownedGalleries.source, body.source), eq(schema.ownedGalleries.galleryId, body.galleryId))).get()) return respond({ error: 'already-downloaded' }, 409);
-      if (downloadQueue.findActive(body.source as DoujinSource, body.galleryId)) return respond({ error: 'already-queued' }, 409);
+      if (downloadQueue.findCompleted(source, body.galleryId)
+        || getDb().select().from(schema.ownedGalleries).where(and(eq(schema.ownedGalleries.source, source), eq(schema.ownedGalleries.galleryId, body.galleryId))).get()) return respond({ error: 'already-downloaded' }, 409);
+      if (downloadQueue.findActive(source, body.galleryId)) return respond({ error: 'already-queued' }, 409);
       const check = checker ? checker.check(identities) : findDuplicateReports(identities);
       if (body.allowDuplicate !== true && check.reports.some(report => report.matches.length)) return respond({ error: 'possible-duplicate', ...check }, 409);
-      const id = downloadQueue.enqueue(body.source as DoujinSource, body.galleryId, identities[0].title, outputFormat, group ? undefined : mergeFolder, chapter, priority, undefined, sourceUrl);
+      const id = downloadQueue.enqueue(source, body.galleryId, identities[0].title, outputFormat, group ? undefined : mergeFolder, chapter, priority, undefined, sourceUrl);
       checker?.noteQueued(identities[0], id);
       if (group) {
-        group.plans.push({source:body.source as DoujinSource,galleryId:body.galleryId,title:identities[0].title,chapter:chapter === undefined ? '' : String(chapter),allowDuplicate:body.allowDuplicate === true,url:sourceUrl});
-        group.ids[`${body.source}:${body.galleryId}`] = id;
+        group.plans.push({source,galleryId:body.galleryId,title:identities[0].title,chapter:chapter === undefined ? '' : String(chapter),allowDuplicate:body.allowDuplicate === true,url:sourceUrl});
+        group.ids[`${source}:${body.galleryId}`] = id;
       }
       return respond({ id, status: 'queued' }, 202);
     };
@@ -148,7 +150,7 @@ async function prepareDownload(body: DownloadInput, group?: MergeDownloadGroup):
 
 /** Enqueue a gallery download. */
 api.post('/downloads', async (c) => {
-  const body = await c.req.json() as DownloadInput | null;
+  const body = await c.req.json<DownloadInput | null>();
   if (!body || typeof body !== 'object') return c.json({ error: 'source and galleryId are required' }, 400);
   if (body.mergeFolder && (body.format ?? getDownloaderSettings().format) === 'folder') return c.json({error:'Merged downloads require CBZ output'},400);
   try {
@@ -169,16 +171,24 @@ api.post('/downloads', async (c) => {
 
 /** Prepare the entire merged selection before any chapter can complete. */
 api.post('/downloads/merged', async (c) => {
-  const body = await c.req.json();
-  if (typeof body?.mergeFolder !== 'string' || !body.mergeFolder.trim() || /[\\/]/.test(body.mergeFolder)) return c.json({ error: 'mergeFolder must be a plain folder name' }, 400);
-  if (!Array.isArray(body.items) || !body.items.length || body.items.length > 100
-    || body.items.some((item: DownloadInput) => !item || typeof item.source !== 'string' || typeof item.galleryId !== 'string')
-    || new Set(body.items.map((item: DownloadInput) => `${item.source}:${item.galleryId}`)).size !== body.items.length) return c.json({ error: 'Provide 1–100 distinct galleries.' }, 400);
+  const rawBody = await c.req.json<unknown>();
+  const body = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) ? (rawBody as { mergeFolder?: unknown; items?: unknown }) : null;
+  if (!body || typeof body.mergeFolder !== 'string' || !body.mergeFolder.trim() || /[\\/]/.test(body.mergeFolder)) return c.json({ error: 'mergeFolder must be a plain folder name' }, 400);
+  const mergeFolder = body.mergeFolder;
+  if (!Array.isArray(body.items) || !body.items.length || body.items.length > 100) return c.json({ error: 'Provide 1–100 distinct galleries.' }, 400);
+  const validItems: DownloadInput[] = [];
+  for (const entry of body.items as unknown[]) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return c.json({ error: 'Provide 1–100 distinct galleries.' }, 400);
+    const item = entry as Partial<DownloadInput>;
+    if (typeof item.source !== 'string' || typeof item.galleryId !== 'string') return c.json({ error: 'Provide 1–100 distinct galleries.' }, 400);
+    validItems.push(item as DownloadInput);
+  }
+  if (new Set(validItems.map((item) => `${item.source}:${item.galleryId}`)).size !== validItems.length) return c.json({ error: 'Provide 1–100 distinct galleries.' }, 400);
   const chapterCache = new MergeChapterCache();
   let group: MergeDownloadGroup;
-  try { group = await prepareMergeGroup(body.mergeFolder.trim(), chapterCache); }
+  try { group = await prepareMergeGroup(mergeFolder.trim(), chapterCache); }
   catch(error) { return c.json({error:errMsg(error)},error instanceof MergeProtectionError ? error.status : 502); }
-  const prepared = await mapLimit(body.items as DownloadInput[], 3, item => prepareDownload({ ...item, format: 'cbz', mergeFolder: body.mergeFolder },group));
+  const prepared = await mapLimit(validItems, 3, item => prepareDownload({ ...item, format: 'cbz', mergeFolder },group));
   try {
     const checked = await resolveMergeProtection(connectedClient()!, { targetDir: group.protection.targetDir, seriesName: group.protection.seriesName }, group.protection, { chapterCache });
     requireMergeProtection(checked.preview);
@@ -191,7 +201,7 @@ api.post('/downloads/merged', async (c) => {
   const responses = prepared.map(item => typeof item === 'function' ? item(checker) : item);
   commitMergeGroup(group);
   const items = await Promise.all(responses.map(async (response, index) => ({
-    source: body.items[index].source, galleryId: body.items[index].galleryId, ...(await response.json() as Record<string, unknown>),
+    source: validItems[index].source, galleryId: validItems[index].galleryId, ...(await response.json() as Record<string, unknown>),
   })));
   return c.json({ items }, 202);
 });
@@ -255,7 +265,7 @@ api.get('/downloads/gallery-files', async (c) => {
 /** Open SSE streams, ended on server shutdown so the HTTP server can close promptly. */
 const eventStreams = new Set<() => void>();
 export function closeDownloadEventStreams(): void {
-  for (const close of [...eventStreams]) close();
+  for (const close of Array.from(eventStreams)) close();
 }
 
 /**

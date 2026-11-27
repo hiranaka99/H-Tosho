@@ -24,8 +24,8 @@ import { doujinProviders, getDoujinProvider } from '../downloader/providers.js';
 import type { DoujinSearchResult } from '../downloader/types.js';
 import { EhentaiUpstreamError } from '../downloader/ehentaiClient.js';
 import { EHENTAI_LANGUAGES } from '../downloader/ehentai.js';
-import { parseEhentaiGalleryUrl } from '../contracts/doujin.js';
 import {
+  parseEhentaiGalleryUrl,
   toPublicSearchResult,
   type CommonSearchQuery,
   type DoujinSource,
@@ -358,6 +358,7 @@ function laneErrorInfo(error: unknown): { phase: LanePhase; message: string; ret
         return { phase: 'unavailable', message: 'E-Hentai is unreachable right now.', retryable: true };
       case 'parse':
         return { phase: 'failed', message: 'E-Hentai returned an unexpected response.', retryable: true };
+      case 'blocked':
       default:
         return { phase: 'failed', message: 'The E-Hentai search failed.', retryable: true };
     }
@@ -403,7 +404,7 @@ function runWithDeadline<T>(ms: number, signal: AbortSignal, fn: (laneSignal: Ab
           settled = true;
           cleanup();
           ac.signal.removeEventListener('abort', onStop);
-          reject(error);
+          reject(error instanceof Error ? error : new Error(String(error)));
         },
       );
   });
@@ -441,7 +442,7 @@ async function fetchLane(session: UnifiedSession, lane: LaneState, signal: Abort
   const opts = lane.source === 'ehentai' && compiled.language ? { language: compiled.language } : undefined;
   const fetchChunk = async (laneSignal: AbortSignal): Promise<SearchChunk<DoujinSearchResult>> => {
     if (provider.searchChunk) {
-      return provider.searchChunk(compiled.query, (lane.continuation.cursor as SearchCursor | undefined) ?? null, limit, 'default', opts, laneSignal);
+      return provider.searchChunk(compiled.query, lane.continuation.cursor ?? null, limit, 'default', opts, laneSignal);
     }
     // Offset-based sources (hitomi/nhentai): a bounded slice of the exact
     // page they already expose; the continuation is a server-held offset.
@@ -697,7 +698,7 @@ function laneStatuses(session: UnifiedSession, searching: ReadonlySet<LaneState>
     if (searching.has(lane)) return { source: lane.source, status: 'searching', retryable: false };
     return {
       source: lane.source,
-      status: (lane.phase === 'idle' ? 'success' : lane.phase) as ProviderLaneStatus,
+      status: lane.phase === 'idle' ? 'success' : lane.phase,
       ...(lane.message ? { message: lane.message } : {}),
       retryable: lane.retryable,
       // Only lanes that actually ran can be followed; E-Hentai has no watch support.

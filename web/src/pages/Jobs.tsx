@@ -31,6 +31,7 @@ const EMPTY_COPY: Record<JobFilter, { title: string; description: string }> = {
 const LOG_COLOR: Record<string, string> = { info: 'text-muted', warn: 'text-warning', warning: 'text-warning', error: 'text-danger', success: 'text-success' };
 const controlClass = 'max-lg:min-h-11 pointer-coarse:min-h-11';
 const INSPECTOR_QUERY = '(min-width: 1280px)';
+const EMPTY_JOBS: Job[] = [];
 
 const JOB_GLYPH: Record<string, LucideIcon> = {
   'scan-matchable': ScanLine,
@@ -69,7 +70,8 @@ function fieldLabel(key: string): string {
 function readableValue(value: unknown): string {
   if (value === null || value === undefined) return '—';
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-  if (typeof value !== 'object') return String(value);
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
+  if (typeof value !== 'object') return '';
   if (Array.isArray(value)) return value.map(readableValue).join('; ') || 'None';
   return Object.entries(value).map(([key, item]) => `${fieldLabel(key)}: ${readableValue(item)}`).join(' · ') || 'None';
 }
@@ -83,15 +85,15 @@ function jobTarget(job: Job): string {
   if (job.type === 'scan-downloaded' && typeof payload.seriesName === 'string') return payload.seriesName;
   const name = payload.title ?? payload.name ?? payload.path ?? payload.targetDir ?? payload.target ?? payload.query;
   if (name !== undefined && name !== null) return readableValue(name);
-  if (payload.seriesId !== undefined) return `Series #${payload.seriesId} · name not recorded`;
+  if (typeof payload.seriesId === 'number' || typeof payload.seriesId === 'string') return `Series #${payload.seriesId} · name not recorded`;
   if (Array.isArray(payload.seriesIds) && payload.seriesIds.length) return `${payload.seriesIds.length} series · names not recorded`;
-  if (payload.libraryId !== undefined) return `Library #${payload.libraryId} · name not recorded`;
+  if (typeof payload.libraryId === 'number' || typeof payload.libraryId === 'string') return `Library #${payload.libraryId} · name not recorded`;
   return job.type === 'check-watched-searches' ? 'All watched searches' : 'All libraries';
 }
 
 function jobSeries(job: Job): { id: number; name: string }[] {
   const targets = job.context?.series ?? [];
-  const ids = [job.payload.seriesId, ...(Array.isArray(job.payload.seriesIds) ? job.payload.seriesIds : [])];
+  const ids = [job.payload.seriesId, ...(Array.isArray(job.payload.seriesIds) ? (job.payload.seriesIds as unknown[]) : [])];
   const series = new Map(targets.map((target) => [target.id, target]));
   for (const id of ids) {
     if (typeof id === 'number' && Number.isSafeInteger(id) && id > 0 && !series.has(id)) {
@@ -204,9 +206,9 @@ function jobOutcome(job: Job): string {
     parts.push(`ComicInfo.xml rewritten in ${result.processed} ${result.processed === 1 ? 'archive' : 'archives'}`);
   } else if (job.type === 'merge-series' && typeof result.processed === 'number') {
     parts.push(`${result.processed} archives moved into the destination series`);
-    if (result.failed) parts.push(`${result.failed} archives could not be moved`);
+    if (typeof result.failed === 'number' && result.failed > 0) parts.push(`${result.failed} archives could not be moved`);
   } else if (job.type === 'clear-overrides') {
-    parts.push(result.cleared ? `${result.cleared} library overrides cleared` : 'Library settings overrides cleared');
+    parts.push(typeof result.cleared === 'number' && result.cleared > 0 ? `${result.cleared} library overrides cleared` : 'Library settings overrides cleared');
   } else {
     for (const [key, label] of [['libraries', 'libraries scanned'], ['processed', 'series processed'], ['matched', 'metadata matches applied successfully'], ['failed', 'series needing attention'], ['pruned', 'stale series records removed']]) if (typeof result[key] === 'number' && (key !== 'failed' && key !== 'pruned' || result[key] > 0)) parts.push(`${result[key]} ${label}`);
   }
@@ -293,12 +295,12 @@ function StructuredValue({ value }: { value: unknown }) {
   if (value === null || value === undefined) return <p className="text-sm text-muted">None</p>;
   if (Array.isArray(value)) return value.length ? (
     <ul className="space-y-2">
-      {value.map((item, index) => <li key={index} className="rounded-md border border-border p-2"><StructuredValue value={item} /></li>)}
+      {(value as unknown[]).map((item, index) => <li key={index} className="rounded-md border border-border p-2"><StructuredValue value={item} /></li>)}
     </ul>
   ) : <p className="text-sm text-muted">None</p>;
   if (typeof value === 'object') return Object.keys(value).length ? (
     <dl className="space-y-3">
-      {Object.entries(value).map(([key, item]) => (
+      {Object.entries(value as Record<string, unknown>).map(([key, item]) => (
         <div key={key} className={cn('min-w-0', /warning|error/i.test(key) && 'rounded-md border border-warning/30 bg-warning/5 p-3')}>
           <dt className="mb-1 break-words text-xs font-medium text-muted">{fieldLabel(key)}</dt>
           <dd className="min-w-0"><StructuredValue value={item} /></dd>
@@ -601,7 +603,7 @@ export function Jobs() {
     // Polled by the always-mounted SidebarStatus (jobsPollInterval); a second
     // interval here would run its own timer and double the requests.
   });
-  const jobs = jobsQuery.data ?? [];
+  const jobs = jobsQuery.data ?? EMPTY_JOBS;
   // Resolved once from the first load so tabs never jump while a task finishes.
   const autoFilter = React.useRef<JobFilter | null>(null);
   if (autoFilter.current === null && jobsQuery.data) autoFilter.current = defaultFilter(jobsQuery.data);
@@ -717,7 +719,7 @@ export function Jobs() {
       if (job.status === 'failed') failedOnly++;
     }
     return {
-      statusCounts: { all: jobs.length, active: activeCount, failed: attentionCount, done: doneCount } as Record<JobFilter, number>,
+      statusCounts: { all: jobs.length, active: activeCount, failed: attentionCount, done: doneCount },
       failedCount: failedOnly,
       warningCount: attentionCount - failedOnly,
     };

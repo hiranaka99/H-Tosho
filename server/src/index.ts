@@ -81,7 +81,7 @@ function main(): void {
       const intervalMs = intervalHours * 3_600_000;
       const lastScan = jobCreatedAtMs(jobQueue.latestCreatedAt('scan-new') ?? undefined);
       const delay = lastScan ? Math.min(intervalMs, Math.max(0, lastScan + intervalMs - Date.now())) : intervalMs;
-      pollTimer = setTimeout(async () => {
+      pollTimer = setTimeout(() => {
         const conn = getKavitaConnection();
         if (conn.baseUrl && conn.apiKey) {
           if (!jobQueue.hasActiveType('scan-new')) jobQueue.enqueue('scan-new', {});

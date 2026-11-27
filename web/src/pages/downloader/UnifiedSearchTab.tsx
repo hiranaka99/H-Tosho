@@ -42,6 +42,11 @@ function chipClass(status: ProviderSearchStatus['status']): string {
       return 'border-danger/40 bg-danger/10 text-danger';
     case 'not-configured':
       return 'border-warning/40 bg-warning/10 text-warning';
+    case 'success':
+    case 'exhausted':
+    case 'searching':
+    case 'unsupported-query':
+    case 'not-applicable':
     default:
       return 'border-border bg-surface-2/50 text-muted';
   }
@@ -183,7 +188,7 @@ const UnifiedEntryCard = React.memo(function UnifiedEntryCard({
   const handleDownload = React.useCallback(() => onDownload(primary, entry.entryId), [onDownload, primary, entry.entryId]);
   const handleToggle = React.useCallback(() => onToggleGroup(entry), [onToggleGroup, entry]);
   const selection = React.useMemo(
-    () => ({ mode: (selectMode ? 'select' : 'browse') as 'select' | 'browse', selected, onToggle: handleToggle }),
+    () => ({ mode: selectMode ? ('select' as const) : ('browse' as const), selected, onToggle: handleToggle }),
     [selectMode, selected, handleToggle],
   );
   return (

@@ -46,8 +46,8 @@ interface MangaListItem {
   id: string;
   attributes?: {
     year?: number | string;
-    title?: Record<string, unknown>;
-    altTitles?: Array<Record<string, unknown>>;
+    title?: MangaDexLocalizedMap;
+    altTitles?: MangaDexLocalizedMap[];
     description?: { en?: string };
   };
   /** With `includes[]=cover_art`, cover_art relationships carry their fileName. */
@@ -115,10 +115,37 @@ export function parseDescriptionTags(description: string | null | undefined): st
  * the description consisted solely of tag blocks), or undefined when no tag
  * block was present (description stays untouched).
  */
+interface MangaDexLocalizedMap {
+  [lang: string]: string | undefined;
+}
+interface MangaDexTag {
+  attributes?: { name?: string | MangaDexLocalizedMap; group?: string };
+}
+interface MangaDexRelationship {
+  id?: string;
+  type?: string;
+  attributes?: { fileName?: string; name?: string };
+}
+interface MangaDexAttributes {
+  title?: MangaDexLocalizedMap;
+  altTitles?: MangaDexLocalizedMap[];
+  published?: string;
+  description?: MangaDexLocalizedMap;
+  tags?: MangaDexTag[];
+  status?: string;
+  year?: number | string | null;
+  originalLanguage?: string;
+}
+interface MangaDexManga {
+  id?: string | number;
+  attributes?: MangaDexAttributes;
+  relationships?: MangaDexRelationship[];
+}
+
 export function stripDescriptionTagLines(description: string | null | undefined): string | undefined {
   if (!description) return undefined;
   const lines = description.split('\n');
-  const drop = new Array<boolean>(lines.length).fill(false);
+  const drop = Array.from<boolean>({ length: lines.length }).fill(false);
   const markRun = (isLine: (l: string) => boolean): void => {
     let i = 0;
     while (i < lines.length) {
@@ -178,10 +205,10 @@ class MangaDexProvider extends BaseProvider {
   }
 
   /** Pick the best human title. English may live on the main `title` object or in `altTitles`. */
-  private pickTitle(a: any): string {
+  private pickTitle(a: MangaDexAttributes | undefined): string {
     const t = a?.title ?? {};
-    const alt: any[] = Array.isArray(a?.altTitles) ? a.altTitles : [];
-    const en = t.en || t.english || alt.find((x) => x?.en)?.en;
+    const alt = Array.isArray(a?.altTitles) ? a.altTitles : [];
+    const en = t.en || t.english || alt.find((x) => x.en)?.en;
     return en || t.original || t['ja-ro'] || t.romaji || alt[0]?.original || 'Unknown';
   }
 
@@ -191,9 +218,9 @@ class MangaDexProvider extends BaseProvider {
    * named after a romanized or alternate title still matches. The display
    * title from pickTitle is only one of these.
    */
-  private titleVariants(a: any): string[] {
+  private titleVariants(a: MangaDexAttributes | undefined): string[] {
     const t = a?.title ?? {};
-    const alts: any[] = Array.isArray(a?.altTitles) ? a.altTitles : [];
+    const alts = Array.isArray(a?.altTitles) ? a.altTitles : [];
     const out: string[] = [];
     const push = (v: unknown) => {
       if (typeof v === 'string' && v.trim()) out.push(v.trim());
@@ -204,20 +231,20 @@ class MangaDexProvider extends BaseProvider {
     push(t['ja-ro']);
     push(t.romaji);
     for (const alt of alts) {
-      push(alt?.en);
-      push(alt?.original);
-      push(alt?.['ja-ro']);
-      push(alt?.ja);
+      push(alt.en);
+      push(alt.original);
+      push(alt['ja-ro']);
+      push(alt.ja);
     }
     return [...new Set(out)];
   }
 
   /** MangaDex tag labels may be a plain string or a localized object ({en, ja, ...}). */
-  private tagLabel(t: any): string {
+  private tagLabel(t: MangaDexTag | undefined): string {
     const n = t?.attributes?.name;
     if (typeof n === 'string') return n;
     if (n && typeof n === 'object') {
-      return n.en || Object.values(n).find((v) => typeof v === 'string' && v.trim()) || '';
+      return n.en || Object.values(n).find((v): v is string => typeof v === 'string' && v.trim().length > 0) || '';
     }
     return '';
   }
@@ -420,11 +447,11 @@ class MangaDexProvider extends BaseProvider {
       providerSeriesId: item.mangaId,
       title: typeof item.title === 'string' ? item.title : 'Unknown',
       altTitles: item.altTitles.length ? item.altTitles : undefined,
-      type: 'MANGA' as SearchResult['type'],
+      type: 'MANGA' as const,
       year: item.year,
       coverUrl: item.coverUrl,
       summary: item.summary,
-    }) as SearchResult);
+    }));
   }
 
   private artist(item: { id: string; attributes?: { name?: string } }): ProviderArtist {
@@ -434,7 +461,7 @@ class MangaDexProvider extends BaseProvider {
 
   async searchArtists(name: string, page = 1): Promise<ArtistSearchPage> {
     const params = new URLSearchParams({ name, limit: '25', offset: String((page - 1) * 25), 'order[name]': 'asc' });
-    const data = await this.get<{ data: { id: string; attributes?: { name?: string } }[]; total: number; offset: number; limit: number }>(`/author?${params}`, { headers: this.headers() });
+    const data = await this.get<{ data: { id: string; attributes?: { name?: string } }[]; total: number; offset: number; limit: number }>(`/author?${params.toString()}`, { headers: this.headers() });
     return { items: data.data.map(item => this.artist(item)), page, hasNextPage: data.offset + data.limit < data.total };
   }
 
@@ -450,17 +477,17 @@ class MangaDexProvider extends BaseProvider {
     const params = new URLSearchParams({ authorOrArtist: artistId, limit: '25', offset: String((page - 1) * 25), 'order[title]': 'asc' });
     for (const rating of CONTENT_RATINGS) params.append('contentRating[]', rating);
     params.append('includes[]', 'cover_art');
-    const data = await this.get<{ data: MangaListItem[]; total: number; offset: number; limit: number }>(`/manga?${params}`, { headers: this.headers() });
+    const data = await this.get<{ data: MangaListItem[]; total: number; offset: number; limit: number }>(`/manga?${params.toString()}`, { headers: this.headers() });
     return { items: await this.mapSearchResults(data.data), page, hasNextPage: data.offset + data.limit < data.total };
   }
 
   private async mapMangaToSeriesMetadata(
-    m: any,
+    m: MangaDexManga,
     volumeCovers: VolumeCover[] | undefined,
     signal?: AbortSignal,
   ): Promise<SeriesMetadata> {
-    const providerSeriesId = String(m.id);
-    const a = m.attributes ?? {};
+    const providerSeriesId = String(m.id ?? '');
+    const a: MangaDexAttributes = m.attributes ?? {};
     const title = this.pickTitle(a);
     // The matcher scores every known variant (autoMatch.bestVariant), so the
     // ComicInfo.Series choices must cover the same set — otherwise a candidate
@@ -469,7 +496,7 @@ class MangaDexProvider extends BaseProvider {
     if (!titleOptions.includes(title)) titleOptions.unshift(title);
 
     let releaseDate: string | undefined;
-    const published = a.published as string | undefined;
+    const published = a.published;
     if (published) {
       const d = new Date(published);
       if (!Number.isNaN(d.getTime())) releaseDate = d.toISOString().slice(0, 10);
@@ -574,7 +601,7 @@ class MangaDexProvider extends BaseProvider {
     const volumeCoversPromise = this.fetchVolumeCovers(providerSeriesId, { signal }).catch(() => undefined);
     // MangaDex v5's relationship type is `cover_art` (not `cover`); including
     // it inlines the main cover's fileName, so no /cover/{id} lookup is needed.
-    const data = await this.get<{ data: any }>(
+    const data = await this.get<{ data?: MangaDexManga }>(
       `/manga/${providerSeriesId}?${this.includesParam(['cover_art', 'author', 'artist'])}`,
       this.init(signal),
     );
@@ -598,7 +625,7 @@ class MangaDexProvider extends BaseProvider {
       for (const id of chunk) params.append('ids[]', id);
       for (const rating of CONTENT_RATINGS) params.append('contentRating[]', rating);
       for (const inc of ['cover_art', 'author', 'artist']) params.append('includes[]', inc);
-      const data = await this.get<{ data?: any[] }>(`/manga?${params.toString()}`, this.init(signal));
+      const data = await this.get<{ data?: MangaDexManga[] }>(`/manga?${params.toString()}`, this.init(signal));
       const rows = data.data ?? [];
       const needCovers = rows
         .map((m) => String(m?.id ?? ''))

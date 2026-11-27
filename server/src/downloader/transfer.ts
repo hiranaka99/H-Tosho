@@ -28,7 +28,7 @@ export async function downloadPages(
   const delay = Math.max(0, settings.requestDelayMs || 0);
   const pageHeaders: Record<string, string> = { 'User-Agent': UA, ...gallery.requestHeaders };
   await fs.promises.mkdir(tmpDir, { recursive: true });
-  const out: { name: string; path: string }[] = new Array(total);
+  const out = Array.from<{ name: string; path: string }>({ length: total });
 
   // Real page names (with the extension of the *downloaded* image) persist in
   // a sidecar so a resumed run never re-derives names from the static page

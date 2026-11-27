@@ -332,11 +332,12 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
       if (connection() !== plan.connectionKey || !sameIdentity(finalIdentity,after)) problems.push('Identity changed during restore; observed values require review');
     } catch { problems.push('Could not verify current metadata after restore'); }
     if (after && before) {
-      const unverified = fields.filter(field => metadataValueKey(after!.fields[field],false) !== metadataValueKey(desired[field],false)
-        || after!.fields[field]?.nativeLocked !== (nativeLockFields.includes(field) ? desired[field]?.nativeLocked : before!.fields[field]?.nativeLocked));
+      const observedAfter = after;
+      const unverified = fields.filter(field => metadataValueKey(observedAfter.fields[field],false) !== metadataValueKey(desired[field],false)
+        || observedAfter.fields[field]?.nativeLocked !== (nativeLockFields.includes(field) ? desired[field]?.nativeLocked : before.fields[field]?.nativeLocked));
       if (unverified.length && startedWrite) problems.push(`Exact values or final native locks were not confirmed: ${unverified.join(', ')}`);
       const changedUnselected = Object.keys(before.fields).filter(field => !fields.includes(field as RestorableMetadataField)
-        && metadataValueKey(before!.fields[field]) !== metadataValueKey(after!.fields[field]));
+        && metadataValueKey(before.fields[field]) !== metadataValueKey(observedAfter.fields[field]));
       if (changedUnselected.length && startedWrite) problems.push(`Unselected metadata changed during restore: ${changedUnselected.join(', ')}`);
     }
   }
@@ -367,7 +368,7 @@ async function executeApprovedMetadataRestore(client: KavitaClient, command: Res
     }
   }
   const cancelled = failed && failure instanceof Error && failure.name === 'JobCancelled';
-  const changed = coverResult.changed || archiveChanged || (before && after && Object.keys(before.fields).some(field => metadataValueKey(before!.fields[field]) !== metadataValueKey(after!.fields[field])));
+  const changed = coverResult.changed || archiveChanged || (before && after && Object.keys(before.fields).some(field => metadataValueKey(before.fields[field]) !== metadataValueKey(after.fields[field])));
   const status = cancelled ? 'cancelled' : failed ? (!after && startedWrite ? 'unverified' : changed ? 'partial' : 'failed')
     : problems.length ? 'unverified' : 'completed';
   const message = [failed ? failure instanceof Error ? failure.message : String(failure) : '',...problems,...warnings].filter(Boolean).join('; ') || null;

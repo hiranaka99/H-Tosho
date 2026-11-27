@@ -79,10 +79,11 @@ function createGalleryStatusStore(): GalleryStatusStore {
     subscribe: (key, listener) => {
       let set = listeners.get(key);
       if (!set) { set = new Set(); listeners.set(key, set); }
-      set.add(listener);
+      const entrySet = set;
+      entrySet.add(listener);
       return () => {
-        set!.delete(listener);
-        if (set!.size === 0) listeners.delete(key);
+        entrySet.delete(listener);
+        if (entrySet.size === 0) listeners.delete(key);
       };
     },
     get: (key) => statuses.get(key),

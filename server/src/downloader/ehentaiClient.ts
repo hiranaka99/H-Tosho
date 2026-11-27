@@ -20,6 +20,7 @@
  */
 
 import dns from 'node:dns';
+import type http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs/promises';
 import zlib from 'node:zlib';
@@ -209,23 +210,23 @@ function pinnedGet(
   validateHost: (hostname: string, target: URL) => boolean,
   options: PinnedRequestOptions,
 ): Promise<PinnedResponse> {
-  const doRequest = (url: string, redirectCount: number): Promise<PinnedResponse> => {
+  const doRequest = async (url: string, redirectCount: number): Promise<PinnedResponse> => {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:') {
-      return Promise.reject(new EhentaiUpstreamError('Blocked: non-HTTPS redirect target.', 'blocked'));
+      throw new EhentaiUpstreamError('Blocked: non-HTTPS redirect target.', 'blocked');
     }
     if (parsed.port && parsed.port !== '443' && !options.allowNonStandardPort) {
-      return Promise.reject(new EhentaiUpstreamError('Blocked: redirect target uses a non-standard port.', 'blocked'));
+      throw new EhentaiUpstreamError('Blocked: redirect target uses a non-standard port.', 'blocked');
     }
     if (parsed.username || parsed.password) {
-      return Promise.reject(new EhentaiUpstreamError('Blocked: redirect target carries userinfo.', 'blocked'));
+      throw new EhentaiUpstreamError('Blocked: redirect target carries userinfo.', 'blocked');
     }
     if (!validateHost(parsed.hostname, parsed)) {
-      return Promise.reject(new EhentaiUpstreamError('Blocked: redirect target is not an authorized E-Hentai host.', 'blocked'));
+      throw new EhentaiUpstreamError('Blocked: redirect target is not an authorized E-Hentai host.', 'blocked');
     }
-    return resolvePinnedAddress(parsed.hostname).then((pinnedIp) => new Promise<PinnedResponse>((resolve, reject) => {
+    const pinnedIp = await resolvePinnedAddress(parsed.hostname);
+    return new Promise<PinnedResponse>((resolve, reject) => {
       let settled = false;
-      let timeout: ReturnType<typeof setTimeout>;
       const fail = (error: Error): void => {
         if (settled) return;
         settled = true;
@@ -245,7 +246,7 @@ function pinnedGet(
       const armTimeout = (): void => {
         if (!settled) timeout.refresh();
       };
-      timeout = setTimeout(() => {
+      const timeout = setTimeout(() => {
         try {
           req.destroy(new EhentaiUpstreamError('E-Hentai request timed out.', 'timeout'));
         } catch { /* already destroyed */ }
@@ -280,7 +281,7 @@ function pinnedGet(
             clearTimeout(timeout);
             cleanup();
             const next = new URL(location, url).toString();
-            void doRequest(next, redirectCount + 1).then(resolve, reject);
+            resolve(doRequest(next, redirectCount + 1));
             return;
           }
           const contentType = res.headers['content-type'] ?? null;
@@ -397,13 +398,13 @@ function pinnedGet(
         fail(error instanceof EhentaiUpstreamError ? error : new EhentaiUpstreamError('E-Hentai connection failed.', 'unavailable'));
       });
       req.end();
-    }));
+    });
   };
   return doRequest(startUrl, 0);
 }
 
 function collectResponseBody(
-  res: { headers: Record<string, string | string[] | undefined>; on: (event: any, listener: any) => any; destroy?: () => void },
+  res: Pick<http.IncomingMessage, 'headers' | 'on' | 'destroy'>,
   maxBytes: number,
   isSettled: () => boolean,
   onDone: (body: Buffer) => void,
@@ -411,8 +412,7 @@ function collectResponseBody(
   limitMessage: string,
   connErrorMessage: string,
 ): void {
-  const rawEncoding = res.headers['content-encoding'];
-  const encoding = (Array.isArray(rawEncoding) ? rawEncoding[0] : rawEncoding ?? '').toLowerCase().trim();
+  const encoding = (res.headers['content-encoding'] ?? '').toLowerCase().trim();
   const chunks: Buffer[] = [];
   let received = 0;
   let compressed = 0;

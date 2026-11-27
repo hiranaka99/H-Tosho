@@ -145,7 +145,7 @@ test('current preview assets stay authorized and pinned for unavailable previews
   assert.deepEqual(retainedPreviewCoverAsset(f.id, blocked.id, hash(external))!.data, external);
   assert.equal(retainedPreviewCoverAsset(f.id + 1, blocked.id, hash(external)), null);
   const preview = await createMetadataRestorePreview(f.client, f.id, operationId, { snapshot: 'before', fields: [], covers: [{ kind: 'volume', volumeId: f.volumeId, nativeLock: 'locked' }] });
-  const queued = enqueueMetadataRestore(f.id, preview.id, `pinned-${f.id}`, command => jobQueue.enqueue('restore-metadata', command), true);
+  enqueueMetadataRestore(f.id, preview.id, `pinned-${f.id}`, command => jobQueue.enqueue('restore-metadata', command), true);
   getDb().delete(schema.metadataRestorePreviews).where(eq(schema.metadataRestorePreviews.id, preview.id)).run();
   pruneUnusedCoverAssets();
   assert.deepEqual(retainedPreviewCoverAsset(f.id, preview.id, hash(external))!.data, external);

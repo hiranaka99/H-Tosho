@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
+import fs, { mkdtempSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { crc32, deflateRawSync } from 'node:zlib';
 import { describe, it } from 'node:test';
 
-import { pathContains, readComicInfo, readCoverImage, readZipEntries, readZipEntry, rewriteZipEntry, mergeCbzFiles, resolveSeriesHostDir } from '../src/lib/cbz.js';
+import { pathContains, readCoverImage, readZipEntries, readZipEntry, rewriteZipEntry, mergeCbzFiles, resolveSeriesHostDir } from '../src/lib/cbz.js';
 import { buildZip, buildZipFromFiles } from '../src/downloader/zip.js';
 import { parseComicInfo, renderComicInfoXml } from '../src/downloader/comicinfo.js';
 

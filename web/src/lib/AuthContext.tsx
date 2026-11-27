@@ -97,7 +97,7 @@ function AuthScreen({ setupRequired, onAuthenticated }: { setupRequired: boolean
           </div>
         </div>
         <CardContent>
-          <form className="flex flex-col gap-4" onSubmit={submit}>
+          <form className="flex flex-col gap-4" onSubmit={(event) => { void submit(event); }}>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="auth-username">Username</Label>
               <Input id="auth-username" name="username" autoComplete="username" autoFocus required maxLength={100} value={username} onChange={(event) => setUsername(event.target.value)} />

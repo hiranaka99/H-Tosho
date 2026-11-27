@@ -21,11 +21,7 @@ export function migrateDownloadQueueColumns(sqlite: Database.Database): void {
   ];
   for (const [col, def] of additions) {
     if (existing.has(col)) continue;
-    try {
-      sqlite.exec(`ALTER TABLE download_queue ADD COLUMN ${col} ${def}`);
-    } catch (err) {
-      throw err;
-    }
+    sqlite.exec(`ALTER TABLE download_queue ADD COLUMN ${col} ${def}`);
   }
 }
 
@@ -70,12 +66,8 @@ export function migrateRecommendationHistoryColumns(sqlite: Database.Database): 
     (sqlite.prepare('PRAGMA table_info(recommendation_history)').all() ?? []).map((c) => (c as { name: string }).name),
   );
   if (existing.size === 0 || existing.has('served_at')) return;
-  try {
-    sqlite.exec("ALTER TABLE recommendation_history ADD COLUMN served_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
-    sqlite.exec("UPDATE recommendation_history SET served_at = served_date || 'T00:00:00.000Z'");
-  } catch (err) {
-    throw err;
-  }
+  sqlite.exec("ALTER TABLE recommendation_history ADD COLUMN served_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
+  sqlite.exec("UPDATE recommendation_history SET served_at = served_date || 'T00:00:00.000Z'");
 }
 
 
@@ -93,13 +85,19 @@ export function recoverLegacyConfirmations(sqlite: Database.Database): void {
   sqlite.transaction(() => {
     for (const job of jobs) {
       try {
-        const payload = JSON.parse(job.payload_json);
-        const result = JSON.parse(job.result_json ?? '{}');
-        if (!payload?.providerId || !payload.providerSeriesId || result?.matched !== 1 || result.failed !== 0) continue;
-        const row = findMatch.get(payload.seriesId, 'matched') as { provider_id: string; provider_series_id: string; last_synced_at: string } | undefined;
+        const payload = JSON.parse(job.payload_json) as Record<string, unknown> | null;
+        const result = JSON.parse(job.result_json ?? '{}') as Record<string, unknown> | null;
+        if (
+          !payload || typeof payload.providerId !== 'string' || !payload.providerId
+          || typeof payload.providerSeriesId !== 'string' || !payload.providerSeriesId
+          || result?.matched !== 1 || result.failed !== 0
+        ) continue;
+        const seriesId = typeof payload.seriesId === 'number' || typeof payload.seriesId === 'string' ? payload.seriesId : null;
+        if (seriesId === null) continue;
+        const row = findMatch.get(seriesId, 'matched') as { provider_id: string; provider_series_id: string; last_synced_at: string } | undefined;
         if (!row || row.provider_id !== payload.providerId || row.provider_series_id !== payload.providerSeriesId) continue;
         const syncedAt = Date.parse(row.last_synced_at);
-        if (syncedAt >= Date.parse(job.started_at ?? '') && syncedAt <= Date.parse(job.finished_at ?? '')) confirm.run(payload.seriesId);
+        if (syncedAt >= Date.parse(job.started_at ?? '') && syncedAt <= Date.parse(job.finished_at ?? '')) confirm.run(seriesId);
       } catch {
         // Malformed legacy job records cannot establish an approval.
       }

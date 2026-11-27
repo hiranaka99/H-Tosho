@@ -65,7 +65,7 @@ function parseSpans(xml: string): DocumentSpans {
     const token = TAG_TOKEN_RE.exec(xml);
     if (!token) invalid();
     const end = start + token![0].length, name = token![2], closing = !!token![1];
-    const selfClosing = /\/$/.test(token![3]);
+    const selfClosing = token![3].endsWith('/');
     if (closing) {
       if (token![3].trim() || !stack.length || stack[stack.length-1].name !== name) invalid();
       const open = stack.pop()!;

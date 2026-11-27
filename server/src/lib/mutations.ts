@@ -10,11 +10,15 @@ export class MutationCoordinator {
 
   run<T>(resources: readonly string[], operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const keys = [...new Set(resources.length ? resources : ['*'])];
+    const abortError = () => {
+      const reason: unknown = signal?.reason;
+      return reason instanceof Error ? reason : new Error(typeof reason === 'string' && reason ? reason : 'Aborted');
+    };
     return new Promise<T>((resolve, reject) => {
-      if (signal?.aborted) { reject(signal.reason); return; }
+      if (signal?.aborted) { reject(abortError()); return; }
       const entry = { keys, start: () => {
         signal?.removeEventListener('abort', abort);
-        if (signal?.aborted) { reject(signal.reason); return; }
+        if (signal?.aborted) { reject(abortError()); return; }
         keys.forEach(key => this.active.add(key));
         void Promise.resolve().then(operation).then(resolve, reject).finally(() => {
           keys.forEach(key => this.active.delete(key));
@@ -23,7 +27,7 @@ export class MutationCoordinator {
       } };
       const abort = () => {
         const index = this.waiting.indexOf(entry);
-        if (index >= 0) { this.waiting.splice(index, 1); reject(signal?.reason); this.drain(); }
+        if (index >= 0) { this.waiting.splice(index, 1); reject(abortError()); this.drain(); }
       };
       signal?.addEventListener('abort', abort, { once: true });
       this.waiting.push(entry);

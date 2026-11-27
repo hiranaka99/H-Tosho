@@ -102,7 +102,7 @@ function bumpTerm(
 function parseEntries(json: string | null | undefined): unknown[] {
   if (!json) return [];
   try {
-    const v = JSON.parse(json);
+    const v: unknown = JSON.parse(json);
     return Array.isArray(v) ? v : [];
   } catch {
     return [];
@@ -185,7 +185,7 @@ function excludedDownloadKeys(): Set<string> {
 function looksLikeSearchableSeriesName(name: string, downloadedTitles: Set<string>): boolean {
   const trimmed = name.trim();
   if (!trimmed || trimmed.length > 60) return false;
-  if (/[\[\]]/.test(trimmed)) return false;
+  if (/[[\]]/.test(trimmed)) return false;
   if (downloadedTitles.has(trimmed.toLowerCase())) return false;
   return true;
 }
@@ -222,9 +222,10 @@ function buildDislikedTerms(): Record<string, number> {
 
   const parsedRows: { source: string; galleryId: string; artists: string[]; tags: string[] }[] = [];
   const legacyBySource = new Map<string, Set<string>>();
+  const entryText = (value: unknown) => (typeof value === 'string' ? value.trim() : typeof value === 'number' ? String(value) : '');
   for (const row of dismissed) {
-    const artists = parseEntries(row.artistsJson).map((a) => String(a ?? '').trim()).filter(Boolean);
-    const tags = parseEntries(row.tagsJson).map((t) => String(t ?? '').trim()).filter(Boolean);
+    const artists = parseEntries(row.artistsJson).map(entryText).filter(Boolean);
+    const tags = parseEntries(row.tagsJson).map(entryText).filter(Boolean);
     parsedRows.push({ source: row.source, galleryId: row.galleryId, artists, tags });
     if (!artists.length && !tags.length) {
       let ids = legacyBySource.get(row.source);
@@ -325,7 +326,7 @@ export function buildProfile(signals: KavitaSeriesSignal[]): TasteProfile {
     const parodies = parseEntries(row.parodiesJson);
     const seenArtists = new Set<string>();
     for (const raw of artists) {
-      const name = String(raw ?? '').trim();
+      const name = typeof raw === 'string' ? raw.trim() : typeof raw === 'number' ? String(raw) : '';
       if (!name || seenArtists.has(name.toLowerCase())) continue;
       seenArtists.add(name.toLowerCase());
       bumpTerm(terms, 'artist', name, row.source as DoujinSource, null, w);
@@ -347,7 +348,7 @@ export function buildProfile(signals: KavitaSeriesSignal[]): TasteProfile {
 
     const seenParodies = new Set<string>();
     for (const raw of parodies) {
-      const name = String(raw ?? '').trim();
+      const name = typeof raw === 'string' ? raw.trim() : typeof raw === 'number' ? String(raw) : '';
       const lower = name.toLowerCase();
       if (!name || lower === 'original' || lower === 'n/a' || seenParodies.has(lower)) continue;
       seenParodies.add(lower);

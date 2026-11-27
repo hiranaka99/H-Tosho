@@ -297,11 +297,11 @@ export function parseVolumeCoverDto(value: unknown): KavitaVolumeCoverDto {
     || ('name' in value && value.name !== null && value.name !== undefined && typeof value.name !== 'string')) throw new Error('Kavita volume-cover identity is unavailable or malformed');
   const chapters: KavitaVolumeCoverDto['chapters'] = [];
   let fileCount = 0;
-  for (const chapter of value.chapters) {
+  for (const chapter of value.chapters as unknown[]) {
     if (!chapter || typeof chapter !== 'object' || Array.isArray(chapter) || !('id' in chapter) || typeof chapter.id !== 'number' || !Number.isSafeInteger(chapter.id) || chapter.id <= 0
       || !('files' in chapter) || !Array.isArray(chapter.files)) throw new Error('Kavita volume chapter identity is malformed');
     const files: { id?: number; filePath: string }[] = [];
-    for (const file of chapter.files) {
+    for (const file of chapter.files as unknown[]) {
       if (++fileCount > 10000 || !file || typeof file !== 'object' || Array.isArray(file) || !('filePath' in file) || typeof file.filePath !== 'string' || !file.filePath
         || ('id' in file && file.id !== undefined && (typeof file.id !== 'number' || !Number.isSafeInteger(file.id) || file.id < 0))) throw new Error('Kavita volume file identity is malformed or exceeds the cover identity budget');
       files.push({ filePath: file.filePath, ...('id' in file && typeof file.id === 'number' ? { id: file.id } : {}) });

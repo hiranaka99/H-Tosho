@@ -9,15 +9,16 @@ import { validateMergeDownloads } from '../../jobs/mergeDownloads.js';
 import { resolveJobContext, errMsg, intParam } from './helpers.js';
 export const api = new Hono();
 api.post('/jobs', async (c) => {
-  const body = await c.req.json();
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return c.json({ error: 'Provide a job command object' }, 400);
+  const raw = await c.req.json<unknown>();
+  const body = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  if (!body) return c.json({ error: 'Provide a job command object' }, 400);
   let command;
-  try { command = parseJobCommand(body?.type, body); validateMergeDownloads('downloads' in command.payload ? command.payload.downloads : undefined); }
+  try { command = parseJobCommand(body.type, body); validateMergeDownloads('downloads' in command.payload ? command.payload.downloads : undefined); }
   catch (error) { return c.json({ error: errMsg(error) }, 400); }
   if (command.type === 'restore-metadata') return c.json({ error: 'Restore requires a reviewed metadata preview; use the series restore action' }, 409);
   if (command.type === 'check-watched-searches') return c.json({ error: 'Use the Following check action; scheduled checks are selected by the server' }, 409);
   const payload: JobPayload = command.payload;
-  if (body.type === 'merge-series' && payload.downloads?.length) {
+  if (command.type === 'merge-series' && payload.downloads?.length) {
     try {
       const identities = await prepareDuplicateCheck(payload.downloads);
       const check = findDuplicateReports(identities, payload.sourceFiles);

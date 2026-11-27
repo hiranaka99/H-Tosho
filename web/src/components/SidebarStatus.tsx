@@ -193,9 +193,9 @@ export function SidebarStatus({ live = true }: { live?: boolean }) {
   return (
     <div className="flex max-h-1/2 min-h-0 flex-col gap-3 overflow-y-auto border-t border-border p-3">
       <nav aria-label="Activity shortcuts" className="flex flex-col gap-1">
-        {activeJobs.length > 0 && <button type="button" onClick={() => navigate('/jobs?filter=active')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-primary hover:bg-surface-2">Active tasks · {activeJobs.length}</button>}
-        {attentionJobs.length > 0 && <button type="button" onClick={() => navigate('/jobs?filter=failed')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Needs attention · {attentionJobs.length}</button>}
-        {downloads.failed > 0 && <button type="button" onClick={() => navigate('/downloader?tab=downloads&status=failed')} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Failed downloads · {downloads.failed}</button>}
+        {activeJobs.length > 0 && <button type="button" onClick={() => { void navigate('/jobs?filter=active'); }} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-primary hover:bg-surface-2">Active tasks · {activeJobs.length}</button>}
+        {attentionJobs.length > 0 && <button type="button" onClick={() => { void navigate('/jobs?filter=failed'); }} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Needs attention · {attentionJobs.length}</button>}
+        {downloads.failed > 0 && <button type="button" onClick={() => { void navigate('/downloader?tab=downloads&status=failed'); }} className="flex items-center justify-between rounded-md px-2 py-2 text-left text-xs font-medium text-danger hover:bg-surface-2">Failed downloads · {downloads.failed}</button>}
       </nav>
       {activeJobs.length > 0 && (
         <div className="flex flex-col gap-2">
@@ -207,7 +207,7 @@ export function SidebarStatus({ live = true }: { live?: boolean }) {
       )}
       {downloads.shown > 0 && (
         <div className="flex flex-col gap-2">
-          <button type="button" onClick={() => navigate('/downloader?tab=downloads&status=active')} title="Open active downloads" className="group flex items-center gap-1.5 text-left">
+          <button type="button" onClick={() => { void navigate('/downloader?tab=downloads&status=active'); }} title="Open active downloads" className="group flex items-center gap-1.5 text-left">
             {downloads.downloading ? (
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" />
             ) : (

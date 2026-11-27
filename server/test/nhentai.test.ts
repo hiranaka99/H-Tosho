@@ -13,8 +13,6 @@ const { DEFAULT_DOWNLOADER, setDownloaderSettings } = await import('../src/servi
 
 type FetchHandler = (url: string, init: RequestInit | undefined) => Response | Promise<Response>;
 
-const originalFetch = globalThis.fetch;
-
 let requests: Array<{ url: string; init: RequestInit | undefined }>;
 let handler: FetchHandler;
 

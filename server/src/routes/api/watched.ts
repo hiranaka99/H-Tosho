@@ -66,7 +66,7 @@ api.get('/watched-searches/new', (c) => {
 api.post('/watched-searches', async (c) => {
   const body = await c.req.json().catch(() => null) as { source?: unknown; query?: unknown } | null;
   if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['source', 'query'].includes(key))) return c.json({ error: 'Provide source and query.' }, 400);
-  if (typeof body.source !== 'string' || !getDoujinProvider(body.source)) return c.json({ error: `Unknown source: ${body.source ?? ''}` }, 400);
+  if (typeof body.source !== 'string' || !getDoujinProvider(body.source)) return c.json({ error: `Unknown source: ${typeof body.source === 'string' ? body.source : ''}` }, 400);
   const query = typeof body.query === 'string' ? body.query.trim() : '';
   if (!query) return c.json({ error: 'query is required' }, 400);
   const added = addWatchedSearch(body.source as DoujinSource, query);

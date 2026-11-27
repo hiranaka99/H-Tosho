@@ -134,7 +134,7 @@ api.get('/cbz/series/:id', async (c) => {
   const [seriesResult, prefetchedLibs] = await Promise.all([
     client.getSeriesById(id).then(
       (series) => ({ ok: true as const, series }),
-      (error) => ({ ok: false as const, error }),
+      (error: unknown) => ({ ok: false as const, error }),
     ),
     client.getLibraries().catch(() => undefined),
   ]);

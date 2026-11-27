@@ -1,11 +1,9 @@
 import type { JobType, JobPayloads } from '../../../server/src/contracts/jobs';
 import type { ArtistProviderId, ArtistSearchPage, ArtistWorksPage } from '../../../server/src/contracts/artists';
 import type { MetadataRestorePreview, RestorePreviewRequest } from '../../../server/src/contracts/metadataRestore';
-import type { SuggestedFollow } from '../../../server/src/contracts/following';
-import type { MatchUpdate } from '../../../server/src/contracts/matchUpdates';
-export type { SuggestedFollow, MatchUpdate };
-export type { MatchUpdateChange } from '../../../server/src/contracts/matchUpdates';
-import type { FollowingFeedOptions, WatchedSearch, WatchedSearchPatch, WatchedSearchFolder, WatchedSearchFolderPatch, WatchedNewGallery, WatchedGalleryFeed } from '../../../server/src/contracts/following';
+import type { FollowingFeedOptions, SuggestedFollow, WatchedSearch, WatchedSearchPatch, WatchedSearchFolder, WatchedSearchFolderPatch, WatchedNewGallery, WatchedGalleryFeed } from '../../../server/src/contracts/following';
+import type { MatchUpdate, MatchUpdateChange } from '../../../server/src/contracts/matchUpdates';
+export type { SuggestedFollow, MatchUpdate, MatchUpdateChange };
 import type { MergeProtectionPreview, MergeProtectionRequest } from '../../../server/src/contracts/mergeProtection';
 import type { NotificationSettings } from '../../../server/src/contracts/notifications';
 export type { ArtistProviderId, ProviderArtist, ArtistSearchPage, ArtistWorksPage } from '../../../server/src/contracts/artists';
@@ -19,8 +17,7 @@ export type {
   UnifiedSearchPage,
   UnifiedSearchProgress,
 } from '../../../server/src/contracts/doujin';
-import type { DoujinSource, EhentaiSite } from '../../../server/src/contracts/doujin';
-import type { UnifiedSearchPage, UnifiedSearchProgress, UnifiedSearchStreamEvent } from '../../../server/src/contracts/doujin';
+import type { DoujinSource, EhentaiSite, UnifiedSearchPage, UnifiedSearchProgress, UnifiedSearchStreamEvent } from '../../../server/src/contracts/doujin';
 import type { EhentaiAccountView, EhentaiSessionInput, EhentaiSiteAccess } from '../../../server/src/contracts/ehentai';
 export type { EhentaiAccountView, EhentaiSessionInput, EhentaiSiteAccess };
 export type {
@@ -392,9 +389,11 @@ async function apiError(res: Response): Promise<ApiError> {
   let message = `HTTP ${res.status}`;
   let details: Record<string, unknown> = {};
   try {
-    const body = await res.json();
-    if (body && typeof body === 'object') details = body;
-    if (body && body.error) message = body.error;
+    const body: unknown = await res.json();
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+      details = body as Record<string, unknown>;
+      if (typeof details.error === 'string' && details.error) message = details.error;
+    }
   } catch {
     /* ignore */
   }
@@ -434,13 +433,12 @@ async function unifiedSearchStream(query: string, onProgress: (progress: Unified
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   const res = await fetch('/api' + path, {
     ...init,
     credentials: 'same-origin',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init.headers || {}),
-    },
+    headers,
   });
   if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event('htosho:unauthorized'));
   if (!res.ok) throw await apiError(res);

@@ -118,8 +118,8 @@ export function createApp(options: { webDist?: string | null } = {}): Hono {
     return c.json({ error: 'Internal server error' }, 500);
   });
 
-  const apiCompress = compress();
-  app.use('/api/*', (c, next) => {
+  const apiCompress = compress() as (c: Context<Record<string, never>, '/api/*', Record<string, never>>, next: Next) => Promise<Response | void>;
+  app.use('/api/*', (c: Context<Record<string, never>, '/api/*', Record<string, never>>, next: Next) => {
     if (c.req.path === '/api/downloads/events') return next();
     return apiCompress(c, next);
   });

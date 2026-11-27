@@ -46,7 +46,7 @@ export function readJobPayload(type: unknown, json: string, stateJson = '{}'): {
   // Only the server state column can authorize retained merge evidence.
   if (type === 'merge-series' && persistedState.mergeProtection !== undefined) {
     const protection = persistedState.mergeProtection;
-    const validFields = (value: unknown): boolean => Array.isArray(value) && value.every(field => PROTECTABLE_FIELDS.includes(field));
+    const validFields = (value: unknown): boolean => Array.isArray(value) && (value as unknown[]).every(field => typeof field === 'string' && PROTECTABLE_FIELDS.some(f => f === field));
     if (!record(protection) || typeof protection.connectionKey !== 'string' || !protection.connectionKey
       || typeof protection.targetDir !== 'string' || typeof protection.seriesName !== 'string'
       || !Array.isArray(protection.sourceSeriesIds) || !protection.sourceSeriesIds.every(id)

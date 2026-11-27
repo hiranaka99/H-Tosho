@@ -7,7 +7,7 @@ export function isActive(job: Job): boolean {
 /** A completed job whose recorded result carries warnings, errors or unconfirmed work. */
 export function hasWarnings(result: unknown): boolean {
   if (!result || typeof result !== 'object') return false;
-  return Object.entries(result).some(([key, value]) => {
+  return Object.entries(result as Record<string, unknown>).some(([key, value]) => {
     if (/^(warnings?|errors?|failed|notificationFailed|notificationUnknown|unknown)$/i.test(key)) {
       if (Array.isArray(value)) return value.length > 0;
       if (typeof value === 'object' && value !== null) return Object.keys(value).length > 0;

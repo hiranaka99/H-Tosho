@@ -19,11 +19,10 @@ import { galleryFilesystemName, sanitizeFilename } from './util.js';
 import { getDoujinProvider } from './providers.js';
 import type { DoujinGallery } from './types.js';
 import type { DoujinSource } from '../contracts/doujin.js';
-import { getDownloaderSettings, type DownloaderSettings } from '../services/settings.js';
+import { getDownloaderSettings, getKavitaConnection, type DownloaderSettings } from '../services/settings.js';
 import { recordGalleryTags } from '../services/recommendations.js';
 import { jobQueue } from '../jobs/queue.js';
 import { KavitaClient } from '../kavita/client.js';
-import { getKavitaConnection } from '../services/settings.js';
 import { resolveMergeProtection, requireMergeProtection } from '../services/mergeProtection.js';
 
 /**
@@ -70,23 +69,19 @@ const STAGING_MTIME_MARGIN_MS = 10_000;
 async function replacePublishedFile(staged: string, destination: string): Promise<void> {
   let backup: string | null = null;
   try {
-    try {
-      await fs.promises.access(destination);
-      backup = path.join(path.dirname(destination), `.${path.basename(destination)}.htosho-backup-${randomUUID()}`);
-      await fs.promises.rename(destination, backup);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-    try {
-      await fs.promises.rename(staged, destination);
-    } catch (error) {
-      if (backup) await fs.promises.rename(backup, destination).catch(() => {});
-      throw error;
-    }
-    if (backup) await fs.promises.rm(backup, { force: true }).catch(() => {});
+    await fs.promises.access(destination);
+    backup = path.join(path.dirname(destination), `.${path.basename(destination)}.htosho-backup-${randomUUID()}`);
+    await fs.promises.rename(destination, backup);
   } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  try {
+    await fs.promises.rename(staged, destination);
+  } catch (error) {
+    if (backup) await fs.promises.rename(backup, destination).catch(() => {});
     throw error;
   }
+  if (backup) await fs.promises.rm(backup, { force: true }).catch(() => {});
 }
 
 /** Live task subscriber; `serialized()` is the shared, memoized JSON of `task`. */
@@ -241,7 +236,7 @@ export class DownloadQueue {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        Promise.allSettled([...this.runPromises]),
+        Promise.allSettled(this.runPromises),
         new Promise<void>((resolve) => {
           timer = setTimeout(resolve, timeoutMs);
           timer.unref?.();
@@ -472,9 +467,9 @@ export class DownloadQueue {
     progressTotal: number;
     bytesCurrent: number;
     bytesTotal: number;
-  } | null {
+  } | undefined {
     const live = this.live.get(id);
-    if (!live) return null;
+    if (!live) return undefined;
     return {
       progressCurrent: live.progressCurrent,
       progressTotal: live.progressTotal,
@@ -491,7 +486,7 @@ export class DownloadQueue {
   ): DownloadTask | null {
     const db = getDb();
     const rev = this.revisionExpr(id);
-    const progress = status !== 'downloading' ? this.snapshotProgress(id) : null;
+    const progress = status !== 'downloading' ? this.snapshotProgress(id) : undefined;
     let updatedRow: DownloadRow | undefined;
     if (status === 'downloading') {
       const currentAttempt = knownAttempt ?? this.get(id)?.attempt ?? 0;
@@ -514,7 +509,7 @@ export class DownloadQueue {
           speed: 0,
           currentFile: null,
           phase: null,
-          ...(progress ?? {}),
+          ...progress,
           ...extraSet,
           revision: rev,
         })
@@ -528,7 +523,7 @@ export class DownloadQueue {
           speed: status === 'paused' ? 0 : null,
           currentFile: null,
           phase: null,
-          ...(progress ?? {}),
+          ...progress,
           ...extraSet,
           revision: rev,
         })
@@ -853,7 +848,7 @@ export class DownloadQueue {
           speed: 0,
           currentFile: null,
           phase: null,
-          ...(progress ?? {}),
+          ...progress,
           revision: this.revisionExpr(id),
         })
         .where(eq(schema.downloadQueue.id, id))
@@ -901,7 +896,7 @@ export class DownloadQueue {
         speed: 0,
         currentFile: null,
         phase: null,
-        ...(progress ?? {}),
+        ...progress,
         ...extraSet,
         revision: this.revisionExpr(id),
       })
@@ -1290,7 +1285,7 @@ export class DownloadQueue {
               currentFile: null,
               phase: null,
               startedAt: null,
-              ...(progress ?? {}),
+              ...progress,
               revision: this.revisionExpr(row.id),
             })
             .where(eq(schema.downloadQueue.id, row.id))
@@ -1304,14 +1299,14 @@ export class DownloadQueue {
           if (isTransientError(e)) {
             finalTask = this.scheduleAutoRetry(row.id, message, errorRetryAfterMs(e), {
               errorCode,
-              ...(progress ?? {}),
+              ...progress,
             });
           } else {
             finalTask = this.setStatus(row.id, 'failed', undefined, {
               errorMessage: message,
               errorCode,
               retryAt: null,
-              ...(progress ?? {}),
+              ...progress,
             });
           }
         }

@@ -673,7 +673,7 @@ export class AppUpdateManager {
 
     try {
       if (res.body && typeof res.body.getReader === 'function') {
-        const reader = res.body.getReader();
+        const reader = (res.body as { getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(): Promise<unknown>; releaseLock(): void } }).getReader();
         const fh = await fsp.open(partPath, 'w');
         try {
           for (;;) {

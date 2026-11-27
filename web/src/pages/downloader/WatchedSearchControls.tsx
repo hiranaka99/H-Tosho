@@ -183,8 +183,8 @@ export function WatchedTab({ onOpenSearch }: { onOpenSearch: (source: DoujinSour
     setSavingInterval(true);
     try {
       await api.saveWatchedSearchInterval(minutes);
-      qc.invalidateQueries({ queryKey: ['settings'] });
-      qc.invalidateQueries({ queryKey: ['watched-searches'] });
+      void qc.invalidateQueries({ queryKey: ['settings'] });
+      void qc.invalidateQueries({ queryKey: ['watched-searches'] });
       toast({ tone: 'success', title: 'Default check interval updated', description: minutes === 0 ? 'Automatic checks are off. Use Check now on Following to check manually.' : `Watches without their own interval are now checked every ${cadenceLabel(minutes)}.` });
     } catch (e) {
       void settingsQuery.refetch(); // snap the select back to the server value

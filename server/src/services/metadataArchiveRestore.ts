@@ -147,7 +147,7 @@ export async function prepareArchiveRestores(client: KavitaClient, current: Meta
       if (!saved.contentHash) throw new Error('This older snapshot has no archive content identity; archive restoration is unavailable');
       const target = prep?.target ?? targetByKey.get(await archiveResourceAsync(step.target));
       if (!target) throw new Error('Saved archive is no longer indexed at its original location; file moves cannot be reversed');
-      if (prep?.error) throw prep.error;
+      if (prep?.error) throw (prep.error instanceof Error ? prep.error : new Error(typeof prep.error === 'string' ? prep.error : JSON.stringify(prep.error) ?? 'Archive preparation failed'));
       const expected = prep?.expected ?? await captureArchiveSnapshot(target);
       if (expected.contentHash !== saved.contentHash) throw new Error('Archive page/content identity differs from the saved snapshot');
       validateRestoreXml(saved.xml); validateRestoreXml(expected.xml);

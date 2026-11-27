@@ -55,9 +55,10 @@ export async function resolveDuplicateGallery(source: DoujinSource, galleryId: s
   const provider = getDoujinProvider(source);
   if (!provider) throw new Error(`Unknown source: ${source}`);
   const key = duplicateCacheKey(source, galleryId);
+  const providerGetGallery = Reflect.get(provider, 'getGallery') as unknown;
   let cached = prepared.get(key);
-  if (!cached || cached.provider !== provider.getGallery || Date.now() - cached.at > 60_000) {
-    cached = { provider: provider.getGallery, at: Date.now(), gallery: provider.getGallery(galleryId) };
+  if (!cached || cached.provider !== providerGetGallery || Date.now() - cached.at > 60_000) {
+    cached = { provider: providerGetGallery, at: Date.now(), gallery: provider.getGallery(galleryId) };
     prepared.set(key, cached);
     while (prepared.size > 64) prepared.delete(prepared.keys().next().value!);
   }
@@ -692,7 +693,16 @@ function tagIdentities(): { key: string; identity: GalleryIdentity }[] {
     let profile = tagProfiles.get(key);
     if (!profile || profile.title !== row.title || profile.artistsJson !== row.artistsJson || profile.language !== row.language) {
       let identity: GalleryIdentity | null = { source: row.source, galleryId: row.galleryId, title: row.title ?? '', artists: [], language: row.language };
-      try { identity.artists = JSON.parse(row.artistsJson); } catch { identity = null; }
+      try {
+        const parsedArtists: unknown = JSON.parse(row.artistsJson);
+        if (Array.isArray(parsedArtists)) {
+          const artists = parsedArtists as unknown[];
+          if (artists.every((artist): artist is string => typeof artist === 'string')) identity.artists = artists;
+          else identity = null;
+        } else {
+          identity = null;
+        }
+      } catch { identity = null; }
       profile = { title: row.title, artistsJson: row.artistsJson, language: row.language, identity };
     }
     next.set(key, profile);

@@ -49,7 +49,7 @@ function currentSession(): ResolvedSession {
   let account: ReturnType<typeof getEhentaiAccountSnapshot>;
   try {
     account = getEhentaiAccountSnapshot();
-  } catch (error) {
+  } catch {
     throw new EhentaiUpstreamError('The E-Hentai account cannot be read. Re-save your account in Settings.', 'denied');
   }
   const { site, revision } = account;
@@ -678,12 +678,14 @@ export const ehentaiProvider: DoujinProvider = {
     if (!namespace && prefix.length < 2) return [];
     const { site, session } = currentSession();
     const response = await ehentaiTagSuggestions(namespace ? `${namespace}:${prefix}` : prefix, { site, session, signal, maxWaitMs: 2500 });
-    let data: { tags?: Record<string, { ns?: string; tn?: string }> };
+    let data: unknown;
     try { data = JSON.parse(response.body); } catch { throw new EhentaiUpstreamError('E-Hentai tag suggestions could not be read.', 'parse'); }
-    if (!data || !data.tags || typeof data.tags !== 'object') return [];
+    if (!data || typeof data !== 'object' || !('tags' in data) || !data.tags || typeof data.tags !== 'object') return [];
     const out: DoujinSuggestion[] = [];
-    for (const tag of Object.values(data.tags)) {
-      if (!tag || typeof tag.ns !== 'string' || typeof tag.tn !== 'string' || !tag.tn.trim() || tag.tn.includes('"')) continue;
+    for (const rawTag of Object.values(data.tags)) {
+      if (!rawTag || typeof rawTag !== 'object') continue;
+      const tag = rawTag as Record<string, unknown>;
+      if (typeof tag.ns !== 'string' || typeof tag.tn !== 'string' || !tag.tn.trim() || tag.tn.includes('"')) continue;
       if (namespace && namespace !== 'tag' && tag.ns !== namespace) continue;
       out.push({ source: 'ehentai', type: tag.ns, name: tag.tn, filter: `${tag.ns}:"${tag.tn}$"` });
       if (out.length >= Math.min(25, Math.max(1, limit))) break;

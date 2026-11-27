@@ -52,81 +52,86 @@ async function fixture(t: TestContext, options: FixtureOptions = {}): Promise<Re
     teamLocked: false, locationLocked: false, coverArtistLocked: true,
     futureMetadata: { keep: null, revision: 1 }, ...options.metadata,
   };
-  let state: RestoreFixture;
+  const state = {} as RestoreFixture;
   let metadataReads = 0;
-  const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url!, 'http://fixture');
-    const method = req.method!;
-    let body: MetadataDto | undefined;
-    if (method === 'POST') {
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(Buffer.from(chunk));
-      body = JSON.parse(Buffer.concat(chunks).toString());
-    }
-    state.requests.push({ method, path: url.pathname, body });
-    res.setHeader('Content-Type', 'application/json');
-    if (method === 'GET' && url.pathname === '/api/Series/42') {
-      res.end(JSON.stringify(state.series));
-      return;
-    }
-    if (method === 'GET' && url.pathname === '/api/Series/metadata') {
-      metadataReads++;
-      options.beforeMetadataRead?.(state, metadataReads);
-      res.end(JSON.stringify(metadataReads === options.nullMetadataRead ? null : state.metadata));
-      return;
-    }
-    if (method === 'GET' && url.pathname === '/api/Server/server-info-slim') {
-      res.end(JSON.stringify({ kavitaVersion: '0.9.1', installId: options.installationId }));
-      return;
-    }
-    if (method === 'GET' && url.pathname === '/api/Person') {
-      const name = url.searchParams.get('name')!;
-      options.onPerson?.(state, name);
-      res.statusCode = options.personStatus ?? 200;
-      res.end(JSON.stringify(options.people?.[name] ?? null));
-      return;
-    }
-    if (method === 'POST' && url.pathname === '/api/Series/update') {
-      const outcome = options.onTitlePost?.(state,body!);
-      if (!outcome?.skipApply) {
-        const renamed=state.series.name!==body!.name;
-        Object.assign(state.series,body);
-        if(renamed && !body!.sortNameLocked)state.series.sortName=body!.name as string;
+  const server = http.createServer((req, res) => {
+    void (async () => {
+      const url = new URL(req.url!, 'http://fixture');
+      const method = req.method!;
+      let body: MetadataDto | undefined;
+      if (method === 'POST') {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString());
       }
-      if (outcome?.dropResponse) { res.destroy(); return; }
-      res.statusCode = outcome?.status ?? 200; res.end('{}'); return;
-    }
-    if (method === 'POST' && url.pathname === '/api/Series/metadata') {
-      const payload = body!.seriesMetadata as MetadataDto;
-      state.posts.push(payload);
-      const index = state.posts.length;
-      const result = options.onPost?.(state, payload, index);
-      const outcome = typeof result === 'object' && result !== null ? result : undefined;
-      if (!outcome?.skipApply) {
-        // Model the supported Kavita 0.9 REST semantics, not provider patches.
-        const next = structuredClone(payload);
-        for (const field of ['writers', 'artists'] as const) {
-          const mapping = RESTORE_FIELD_MAPPINGS[field];
-          if (state.metadata[mapping.lock] === true && payload[mapping.lock] === true) next[mapping.key] = structuredClone(state.metadata[mapping.key]);
-        }
-        next.summary = typeof payload.summary === 'string' ? payload.summary.trim() : '';
-        next.language = payload.language ?? '';
-        next.webLinks = typeof payload.webLinks === 'string' ? payload.webLinks.split(',').filter(part => part.length > 0).map(part => part.trim()).join(',') : '';
-        if (typeof payload.releaseYear !== 'number' || payload.releaseYear < 1000) next.releaseYear = state.metadata.releaseYear;
-        for (const key of ['genres', 'tags', 'writers', 'pencillers']) {
-          const entries = next[key];
-          if (Array.isArray(entries)) next[key] = entries.map((entry, index) => ({ ...entry, id: Number(entry.id) || 100 + index }));
-        }
-        state.metadata = next;
-        options.afterApply?.(state, payload, index);
+      state.requests.push({ method, path: url.pathname, body });
+      res.setHeader('Content-Type', 'application/json');
+      if (method === 'GET' && url.pathname === '/api/Series/42') {
+        res.end(JSON.stringify(state.series));
+        return;
       }
-      if (outcome?.dropResponse) { res.destroy(); return; }
-      res.statusCode = outcome?.status ?? 200;
-      res.end(JSON.stringify({ ok: true }));
-      return;
-    }
-    res.statusCode = 404;
-    res.end(JSON.stringify({ error: 'Unexpected fixture request' }));
+      if (method === 'GET' && url.pathname === '/api/Series/metadata') {
+        metadataReads++;
+        options.beforeMetadataRead?.(state, metadataReads);
+        res.end(JSON.stringify(metadataReads === options.nullMetadataRead ? null : state.metadata));
+        return;
+      }
+      if (method === 'GET' && url.pathname === '/api/Server/server-info-slim') {
+        res.end(JSON.stringify({ kavitaVersion: '0.9.1', installId: options.installationId }));
+        return;
+      }
+      if (method === 'GET' && url.pathname === '/api/Person') {
+        const name = url.searchParams.get('name')!;
+        options.onPerson?.(state, name);
+        res.statusCode = options.personStatus ?? 200;
+        res.end(JSON.stringify(options.people?.[name] ?? null));
+        return;
+      }
+      if (method === 'POST' && url.pathname === '/api/Series/update') {
+        const outcome = options.onTitlePost?.(state,body!);
+        if (!outcome?.skipApply) {
+          const renamed=state.series.name!==body!.name;
+          Object.assign(state.series,body);
+          if(renamed && !body!.sortNameLocked)state.series.sortName=body!.name as string;
+        }
+        if (outcome?.dropResponse) { res.destroy(); return; }
+        res.statusCode = outcome?.status ?? 200; res.end('{}'); return;
+      }
+      if (method === 'POST' && url.pathname === '/api/Series/metadata') {
+        const payload = body!.seriesMetadata as MetadataDto;
+        state.posts.push(payload);
+        const index = state.posts.length;
+        const result = options.onPost?.(state, payload, index);
+        const outcome = typeof result === 'object' && result !== null ? result : undefined;
+        if (!outcome?.skipApply) {
+          // Model the supported Kavita 0.9 REST semantics, not provider patches.
+          const next = structuredClone(payload);
+          for (const field of ['writers', 'artists'] as const) {
+            const mapping = RESTORE_FIELD_MAPPINGS[field];
+            if (state.metadata[mapping.lock] === true && payload[mapping.lock] === true) next[mapping.key] = structuredClone(state.metadata[mapping.key]);
+          }
+          next.summary = typeof payload.summary === 'string' ? payload.summary.trim() : '';
+          next.language = payload.language ?? '';
+          next.webLinks = typeof payload.webLinks === 'string' ? payload.webLinks.split(',').filter(part => part.length > 0).map(part => part.trim()).join(',') : '';
+          if (typeof payload.releaseYear !== 'number' || payload.releaseYear < 1000) next.releaseYear = state.metadata.releaseYear;
+          for (const key of ['genres', 'tags', 'writers', 'pencillers']) {
+            const entries = next[key];
+            if (Array.isArray(entries)) next[key] = entries.map((entry, index) => ({ ...entry, id: Number(entry.id) || 100 + index }));
+          }
+          state.metadata = next;
+          options.afterApply?.(state, payload, index);
+        }
+        if (outcome?.dropResponse) { res.destroy(); return; }
+        res.statusCode = outcome?.status ?? 200;
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: 'Unexpected fixture request' }));
+    })().catch((err) => {
+      if (!res.headersSent) res.statusCode = 500;
+      res.end(err instanceof Error ? err.message : String(err));
+    });
   });
   const ready = Promise.withResolvers<void>();
   server.once('error', ready.reject);
@@ -141,7 +146,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}): Promise<Re
   });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('HTTP fixture did not bind a TCP port');
-  state = {
+  Object.assign(state, {
     client: new KavitaClient(`http://127.0.0.1:${address.port}`, 'fixture-key'),
     metadata,
     series: { id: 42, libraryId: 7, name: 'Fixture series', folderPath: '/library/Fixture series',nameLocked:false,
@@ -157,7 +162,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}): Promise<Re
       }
       return { series: { ...state.series }, fields };
     },
-  };
+  });
   return state;
 }
 

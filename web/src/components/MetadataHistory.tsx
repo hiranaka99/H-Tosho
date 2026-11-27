@@ -16,8 +16,11 @@ function value(cell:RecordedValue|undefined):string {
   if(!cell.present)return 'Field absent';
   if(cell.value===null)return 'Null';
   if(cell.value==='')return 'Empty text';
-  if(Array.isArray(cell.value))return cell.value.length?cell.value.map(item=>typeof item==='object'&&item!==null?String(item.name??item.title??JSON.stringify(item)):String(item)).join(', '):'Empty list';
-  return String(cell.value);
+  if(Array.isArray(cell.value))return cell.value.length?(cell.value as unknown[]).map(item=>{
+    const val=typeof item==='object'&&item!==null?((item as Record<string,unknown>).name??(item as Record<string,unknown>).title??item):item;
+    return val===null||val===undefined?'':typeof val==='string'||typeof val==='number'||typeof val==='boolean'?String(val):JSON.stringify(val)??'';
+  }).join(', '):'Empty list';
+  return typeof cell.value === 'string' || typeof cell.value === 'number' || typeof cell.value === 'boolean' ? String(cell.value) : JSON.stringify(cell.value) ?? '';
 }
 export function MetadataHistory({seriesId,id,open}:{seriesId:number;id:string;open:boolean}) {
   const [cursors,setCursors]=React.useState<(number|undefined)[]>([undefined]),[selected,setSelected]=React.useState<string|null>(null);
@@ -33,7 +36,7 @@ export function MetadataHistory({seriesId,id,open}:{seriesId:number;id:string;op
             <p className="text-sm font-medium">{origins[entry.origin]??entry.origin} · {entry.status}</p>
             <time dateTime={entry.createdAt} className="text-xs text-muted">{new Date(entry.createdAt).toLocaleString()}</time>
             {entry.jobId!=null&&<Button asChild size="sm" variant="ghost" className="min-h-11"><Link to={`/jobs?job=${entry.jobId}`}>Task #{entry.jobId}</Link></Button>}
-            {entry.restoredFromOperationId&&<p className="text-xs text-muted">Restored from <button type="button" className="min-h-11 break-all text-primary underline underline-offset-2" onClick={()=>setSelected(entry.restoredFromOperationId!)}>{entry.restoredFromOperationId}</button></p>}
+            {entry.restoredFromOperationId&&<p className="text-xs text-muted">Restored from <button type="button" className="min-h-11 break-all text-primary underline underline-offset-2" onClick={()=>setSelected(entry.restoredFromOperationId)}>{entry.restoredFromOperationId}</button></p>}
             <p className="mt-1 break-words text-xs text-muted">{entry.changedFields.length?entry.changedFields.map(field=>names[field]??field).join(', '):'No verified Kavita field changes'}</p>
           </div>
           <Button size="sm" variant="outline" aria-expanded={selected===entry.id} onClick={()=>setSelected(selected===entry.id?null:entry.id)}>View changes</Button>
@@ -54,7 +57,7 @@ export function MetadataHistory({seriesId,id,open}:{seriesId:number;id:string;op
         </div>:null)}
       </li>)}</ul>}
       {selected&&!list.data?.items.some(entry=>entry.id===selected)&&<div className="min-w-0 border-t border-border pt-3">{detail.isPending?<p role="status" className="text-sm">Loading source operation…</p>:detail.isError?<div role="alert"><p className="text-sm text-danger">Could not load the source operation.</p><Button className="min-h-11" variant="outline" onClick={()=>void detail.refetch()}>Retry source operation</Button></div>:detail.data?<><h3 className="break-all text-sm font-semibold">Source operation {detail.data.id}</h3><MetadataCoverHistory seriesId={seriesId} operationId={detail.data.id} history={detail.data.covers}/><MetadataRestoreReview key={`${seriesId}:${detail.data.id}`} seriesId={seriesId} detail={detail.data}/></>:null}</div>}
-      <div className="flex flex-wrap gap-2">{cursors.length>1&&<Button size="sm" variant="outline" onClick={()=>{setCursors(cursors.slice(0,-1));setSelected(null);}}>Newer changes</Button>}{list.data?.nextCursor&&<Button size="sm" variant="outline" onClick={()=>{setCursors([...cursors,list.data!.nextCursor!]);setSelected(null);}}>Older changes</Button>}</div>
+      <div className="flex flex-wrap gap-2">{cursors.length>1&&<Button size="sm" variant="outline" onClick={()=>{setCursors(cursors.slice(0,-1));setSelected(null);}}>Newer changes</Button>}{list.data?.nextCursor&&<Button size="sm" variant="outline" onClick={()=>{if(list.data?.nextCursor!=null){setCursors([...cursors,list.data.nextCursor]);setSelected(null);}}}>Older changes</Button>}</div>
     </div>}
   </section>;
 }

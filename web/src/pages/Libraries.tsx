@@ -78,7 +78,7 @@ function readLibraryState(): LibraryStateCache {
 
 /** Debounced sessionStorage write, so typing in the search box doesn't serialize on every keystroke. */
 function writeLibraryState(update: Partial<LibraryStateCache>) {
-  pendingLibraryState = { ...(pendingLibraryState ?? {}), ...update };
+  pendingLibraryState = pendingLibraryState ? { ...pendingLibraryState, ...update } : { ...update };
   clearTimeout(libraryStateTimer);
   libraryStateTimer = setTimeout(flushLibraryState, LIBRARY_STATE_WRITE_DELAY_MS);
 }
@@ -148,7 +148,7 @@ function CardActionMenu({ row, onPreview, onEdit, onUnmatch, onDelete }: { row: 
     const artist = row.artists?.[0];
     const fragment = artist ? buildTagSearchFragment(artist, 'artist', source) : null;
     setOpen(false);
-    if (fragment) navigate(`/downloader?source=${source}&q=${encodeURIComponent(fragment)}`);
+    if (fragment) void navigate(`/downloader?source=${source}&q=${encodeURIComponent(fragment)}`);
   };
 
   const menuKeys = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -251,6 +251,8 @@ function cardAction(row: SeriesRow, bucket: LibraryBucket): { label: string; ari
     case 'failed': return { label: 'Retry', aria: `Retry identification for ${row.name}`, needsAction: true };
     case 'unmatched': return { label: 'Identify', aria: `Identify ${row.name} with a provider`, needsAction: true };
     case 'review': return { label: 'Review', aria: `Review match for ${row.name}`, needsAction: true };
+    case 'matched':
+    case 'other':
     default: return { label: 'Details', aria: `Details for ${row.name}`, needsAction: false };
   }
 }
@@ -489,7 +491,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
     setSelected(id);
     setPage(readLibraryState().pages?.[String(id)] ?? 1);
     setChecked(new Set());
-    navigate(`/libraries/${id}`);
+    void navigate(`/libraries/${id}`);
   };
 
   const connection = useQuery({ queryKey: ['kavita-status'], queryFn: api.kavitaStatus });
@@ -534,9 +536,9 @@ export function Libraries({ review = false }: { review?: boolean }) {
     if (review || linkedSeriesId !== null || !libs.data || libs.data.length === 0) return;
     if (selected === null || !libs.data.some((l) => l.id === selected)) {
       if (searchParams.has('file')) setSelected(libs.data[0].id);
-      else navigate(`/libraries/${libs.data[0].id}${searchParams.size ? `?${searchParams}` : ''}`, { replace: true });
+      else void navigate(`/libraries/${libs.data[0].id}${searchParams.size ? `?${searchParams}` : ''}`, { replace: true });
     } else if (!libraryId && !searchParams.has('file')) {
-      navigate(`/libraries/${selected}${searchParams.size ? `?${searchParams}` : ''}`, { replace: true });
+      void navigate(`/libraries/${selected}${searchParams.size ? `?${searchParams}` : ''}`, { replace: true });
     }
   }, [libs.data, selected, libraryId, navigate, review, linkedSeriesId, searchParams]);
 
@@ -567,7 +569,7 @@ export function Libraries({ review = false }: { review?: boolean }) {
     if (selected === null) return;
     writeLibraryState({
       ...(review ? {} : { lastLibraryId: selected }),
-      pages: { ...(readLibraryState().pages ?? {}), [selected]: page },
+      pages: { ...readLibraryState().pages, [selected]: page },
     });
   }, [selected, page, review]);
   const isFiltering = (!review && statusFilter !== 'all') || query !== '';
@@ -656,9 +658,9 @@ export function Libraries({ review = false }: { review?: boolean }) {
   const unmatch = useMutation({
     mutationFn: (row: SeriesRow) => api.unmatch(row.id),
     onSuccess: (_res, row) => {
-      qc.invalidateQueries({ queryKey: ['library-series'] });
-      qc.invalidateQueries({ queryKey: ['libraries'] });
-      qc.invalidateQueries({ queryKey: ['low-confidence'] });
+      void qc.invalidateQueries({ queryKey: ['library-series'] });
+      void qc.invalidateQueries({ queryKey: ['libraries'] });
+      void qc.invalidateQueries({ queryKey: ['low-confidence'] });
       setUnmatchTarget(null);
       toast({ tone: 'success', title: 'Unmatched', description: row.name });
     },
@@ -681,9 +683,9 @@ export function Libraries({ review = false }: { review?: boolean }) {
       return { ok, failed };
     },
     onSuccess: ({ ok, failed }) => {
-      qc.invalidateQueries({ queryKey: ['library-series'] });
-      qc.invalidateQueries({ queryKey: ['libraries'] });
-      qc.invalidateQueries({ queryKey: ['low-confidence'] });
+      void qc.invalidateQueries({ queryKey: ['library-series'] });
+      void qc.invalidateQueries({ queryKey: ['libraries'] });
+      void qc.invalidateQueries({ queryKey: ['low-confidence'] });
       setBulkUnmatchOpen(false);
       setChecked(new Set());
       toast(failed ? { tone: 'danger', title: `Unmatched ${ok}, ${failed} failed`, description: 'Check the Tasks page or try the failed series again.' } : { tone: 'success', title: `Unmatched ${ok} series` });

@@ -313,7 +313,7 @@ function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
     signal.addEventListener('abort', onAbort, { once: true });
     promise.then(
       (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
-      (error) => { signal.removeEventListener('abort', onAbort); reject(error); },
+      (error) => { signal.removeEventListener('abort', onAbort); reject(error instanceof Error ? error : new Error(String(error))); },
     );
   });
 }
@@ -529,7 +529,7 @@ function awaitInflightSuggest(entry: SuggestInflight, signal?: AbortSignal): Pro
         settled = true;
         signal?.removeEventListener('abort', onAbort);
         entry.waiters--;
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       },
     );
   });
@@ -629,7 +629,7 @@ function directGalleryId(query: string): string | null {
 async function fetchSearchPage(query: string, page: number, sort?: DoujinSort, signal?: AbortSignal): Promise<ApiSearchResponse> {
   const params = new URLSearchParams({ query, page: String(page) });
   if (sort && ['popular', 'popular-week', 'popular-today', 'popular-month'].includes(sort)) params.set('sort', sort);
-  const res = await throttledFetchJson<ApiSearchResponse>('search', `${BASE}/api/v2/search?${params}`, { headers: headers(), ...(signal ? { signal } : {}) });
+  const res = await throttledFetchJson<ApiSearchResponse>('search', `${BASE}/api/v2/search?${params.toString()}`, { headers: headers(), ...(signal ? { signal } : {}) });
   if (res.status === 429) throw new Error('nHentai is rate-limiting this search. Set a valid nHentai API key in Settings to raise the limit, then try again.');
   if (res.status !== 200 || !Array.isArray(res.data?.result) || !Number.isSafeInteger(res.data.num_pages) || res.data.num_pages! < 0) {
     throw new Error(`nHentai search failed (HTTP ${res.status})`);
@@ -668,7 +668,7 @@ const artistListings = new Map<string, ArtistListing>();
 async function fetchArtistListingPage(entry: ArtistListing, artist: ApiTag, order: string): Promise<void> {
   const page = entry.nextPage;
   const params = new URLSearchParams({ tag_id: String(artist.id), sort: order, page: String(page), per_page: '100' });
-  const res = await throttledFetchJson<ApiSearchResponse>('listing', `${BASE}/api/v2/galleries/tagged?${params}`, { headers: headers() });
+  const res = await throttledFetchJson<ApiSearchResponse>('listing', `${BASE}/api/v2/galleries/tagged?${params.toString()}`, { headers: headers() });
   if (res.status !== 200 || !Array.isArray(res.data?.result) || !Number.isSafeInteger(res.data.num_pages) || res.data.num_pages! < 0) {
     throw new Error(`nHentai artist listing failed (HTTP ${res.status})`);
   }
@@ -850,8 +850,9 @@ export const nhentaiProvider: DoujinProvider = {
     const out: NhentaiSearchRow[] = [];
     const seen = new Set<string>();
 
+    const maxPages = Math.ceil(MAX_RESULTS / SEARCH_PAGE_SIZE);
     let page = 1;
-    do {
+    while (page <= maxPages) {
       // throttledFetchJson spaces pages through the shared throttle and retries
       // transient 429/5xx with capped exponential backoff, so a multi-page
       // search doesn't fail on a single throttled request.
@@ -868,9 +869,9 @@ export const nhentaiProvider: DoujinProvider = {
 
       const totalPages = res.num_pages ?? 0;
       page++;
-      if (page > totalPages || page > Math.ceil(MAX_RESULTS / SEARCH_PAGE_SIZE)) break;
+      if (page > totalPages) break;
       // Page spacing is enforced by the shared throttle — no extra pause needed.
-    } while (true);
+    }
 
     return out.slice(0, want);
   },

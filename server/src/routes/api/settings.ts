@@ -1,9 +1,26 @@
 import { Hono } from 'hono';
 import { getProvider } from '../../providers/registry.js';
-import { getNotificationSettings, getPollIntervalHours, getProviderPriorities, getWatchedSearchIntervalMinutes, parseNotificationSettings, getProviderSettings, setNotificationSettings, setPollIntervalHours, setProviderPriorities, setWatchedSearchIntervalMinutes, setProviderSetting } from '../../services/settings.js';
+import {
+  getNotificationSettings,
+  getPollIntervalHours,
+  getProviderPriorities,
+  getWatchedSearchIntervalMinutes,
+  parseNotificationSettings,
+  getProviderSettings,
+  setNotificationSettings,
+  setPollIntervalHours,
+  setProviderPriorities,
+  setWatchedSearchIntervalMinutes,
+  setProviderSetting,
+  getDownloaderSettings,
+  parseDownloaderSettings,
+  setDownloaderSettings,
+  getMatchRefreshIntervalDays,
+  setMatchRefreshIntervalDays,
+  MAX_MATCH_REFRESH_INTERVAL_DAYS,
+  NotificationSettingsConflict,
+} from '../../services/settings.js';
 import { testNotification } from '../../notify/dispatcher.js';
-import { getDownloaderSettings, parseDownloaderSettings, setDownloaderSettings, getMatchRefreshIntervalDays, setMatchRefreshIntervalDays, MAX_MATCH_REFRESH_INTERVAL_DAYS } from '../../services/settings.js';
-import { NotificationSettingsConflict } from '../../services/settings.js';
 import {
   getEhentaiAccountView, getStoredSession, removeEhentaiAccount, recordAccess, saveEhentaiAccount,
   EhentaiAccountConflict, EhentaiAccountCryptoError, EhentaiAccountError,
@@ -85,11 +102,13 @@ api.get('/settings', (c) => {
 
 api.put('/settings/priorities', async (c) => {
   const body = (await c.req.json().catch(() => null)) as { priorities?: unknown } | null;
-  const priorities = body?.priorities;
-  if (!Array.isArray(priorities) || priorities.some((id) => typeof id !== 'string' || !getProvider(id)) || new Set(priorities).size !== priorities.length) {
+  const rawPriorities = body?.priorities;
+  if (!Array.isArray(rawPriorities)) return c.json({ error: 'priorities must contain unique known providers' }, 400);
+  const priorities = rawPriorities as unknown[];
+  if (priorities.some((id): id is string => typeof id !== 'string' || !getProvider(id)) || new Set(priorities).size !== priorities.length) {
     return c.json({ error: 'priorities must contain unique known providers' }, 400);
   }
-  setProviderPriorities(priorities);
+  setProviderPriorities(priorities as string[]);
   return c.json({ ok: true });
 });
 
@@ -138,11 +157,12 @@ api.put('/settings/watched-search-interval', async (c) => {
 api.get('/settings/downloader', (c) => c.json(getDownloaderSettings()));
 
 api.put('/settings/downloader', async (c) => {
-  const body = await c.req.json().catch(() => null);
+  const raw = await c.req.json<unknown>().catch(() => null);
+  const body = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
   // Older clients omit mappings; preserve saved library access in that case.
-  const settings = parseDownloaderSettings(body && typeof body === 'object' && !Array.isArray(body)
+  const settings = parseDownloaderSettings(body
     ? { ...body, libraryPathMappings: body.libraryPathMappings === undefined ? getDownloaderSettings().libraryPathMappings : body.libraryPathMappings }
-    : body);
+    : raw);
   if (!settings) {
     return c.json({ error: 'Invalid downloader settings' }, 400);
   }
@@ -152,7 +172,7 @@ api.put('/settings/downloader', async (c) => {
 
 /** Update library mounts without replacing unrelated downloader settings. */
 api.put('/settings/library-path-mappings', async (c) => {
-  const body = await c.req.json().catch(() => null);
+  const body = await c.req.json<{ libraryPathMappings?: unknown } | null>().catch(() => null);
   if (!Array.isArray(body?.libraryPathMappings)) {
     return c.json({ error: 'Invalid library folder mappings' }, 400);
   }

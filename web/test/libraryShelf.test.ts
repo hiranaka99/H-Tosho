@@ -70,7 +70,7 @@ test('the review threshold comes from the caller and the legacy filter id still 
   assert.equal(normalizeStatusFilter('low-score'), 'review');
   assert.equal(normalizeStatusFilter('nonsense'), 'all');
   const index = prepareLibraryRows(triage, 'name', 0.9);
-  assert.deepEqual(filterLibraryRows(index, '', 'low-score', false).map(row => row.id).sort(), [11, 15]);
+  assert.deepEqual(filterLibraryRows(index, '', 'low-score', false).map(row => row.id).sort((a, b) => a - b), [11, 15]);
 });
 
 test('confidence sort lists failures, unmatched, then matches from least to most certain', () => {

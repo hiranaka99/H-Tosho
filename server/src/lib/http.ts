@@ -89,7 +89,11 @@ export interface StreamProgressHandlers {
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const abort = () => { clearTimeout(timer); reject(signal?.reason); };
+    const abort = () => {
+      clearTimeout(timer);
+      const reason: unknown = signal?.reason;
+      reject(reason instanceof Error ? reason : new Error(typeof reason === 'string' && reason ? reason : 'Aborted'));
+    };
     const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, ms);
     signal?.addEventListener('abort', abort, { once: true });
   });
@@ -174,7 +178,7 @@ export async function mapLimit<T, R>(
   limit: number,
   fn: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
-  const results = new Array<R>(items.length);
+  const results = Array.from<R>({ length: items.length });
   let next = 0;
   let failed = false;
   let firstError: unknown;

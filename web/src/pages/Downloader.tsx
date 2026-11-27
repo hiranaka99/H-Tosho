@@ -8,7 +8,7 @@ import * as React from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import { Search, Loader2, RotateCcw, CheckCircle2, Compass, Sparkles, CheckSquare, Settings2, Inbox, CheckCheck, FunnelX, Plus } from 'lucide-react';
-import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult } from '../lib/api';
+import { api, type DoujinSource, type DoujinSort, type DoujinSearchResult, type UnifiedSearchEntry } from '../lib/api';
 import type { WatchedSearch } from '../../../server/src/contracts/following';
 import { cn } from '../lib/utils';
 import { downloadErrorHelp } from '../lib/downloadErrors';
@@ -41,7 +41,6 @@ import { folderNameFrom } from '../lib/mergeNames';
 import type { MergeDownloadResult } from './downloader/MergeDownloadDialog';
 const MergeDownloadDialog = React.lazy(() => import('./downloader/MergeDownloadDialog').then((m) => ({ default: m.MergeDownloadDialog })));
 import { useDownloaderTransitions } from './downloader/motion';
-import type { UnifiedSearchEntry } from '../lib/api';
 const RESULTS_PAGE_SIZE = 25;
 const EMPTY_GALLERIES: DoujinSearchResult[] = [];
 
@@ -148,11 +147,11 @@ export function Downloader() {
     };
   }, [initialState]);
   const linkedQuery = searchParams.get('q');
-  const initialSource = React.useMemo<DoujinSource>(() => {
+  const [initialSource] = React.useState<DoujinSource>(() => {
     const requested = searchParams.get('source');
     if (requested && SOURCE_COLORS[requested as DoujinSource]) return requested as DoujinSource;
     return initialState.source && SOURCE_COLORS[initialState.source] ? initialState.source : 'hitomi';
-  }, []);
+  });
 
   // One Search tab: 'all' fans out to every source, a provider id searches just
   // that source (with its own sort and Watch). Deep links pin their source.
@@ -188,9 +187,9 @@ export function Downloader() {
     const saved = translation.current;
     return saved?.to === source ? { query: saved.output.query, issues: saved.issues } : null;
   });
-  function rememberSearch() {
+  const rememberSearch = React.useCallback(() => {
     searches.current = { ...searches.current, [source]: { query, searchKey, sort } };
-  }
+  }, [source, query, searchKey, sort]);
   const deepLink = JSON.stringify([searchParams.get('source'), linkedQuery]);
   const previousDeepLink = React.useRef(deepLink);
   React.useEffect(() => {
@@ -207,7 +206,7 @@ export function Downloader() {
     dispatchSearch({ type: 'replace', state: { source: nextSource, query: nextQuery, searchKey: trimmed || null, sort: sortsFor(nextSource).some(option => option.value === sort) ? sort : 'default' } });
     setScope(nextSource);
     setSelected(null);
-  }, [deepLink, searchParams, source]);
+  }, [deepLink, searchParams, source, sort, rememberSearch]);
   const [selected, setSelected] = React.useState<DoujinSearchResult | null>(null);
 
   // Unified search (all sources at once). State is isolated from native
@@ -387,7 +386,8 @@ export function Downloader() {
     setMergeIntoOpen(true);
   }, []);
   const clearSelection = selection.clear;
-  const cancelSelection = React.useCallback(() => { selection.clear(); setSelectMode(false); }, [selection.clear]);
+  const cancelSelection = React.useCallback(() => { clearSelection(); setSelectMode(false); }, [clearSelection]);
+  const handleStartDownload = React.useCallback((item: DoujinSearchResult) => { void doStartDownload(item); }, [doStartDownload]);
 
   // ---------------- unified search selection ----------------
   // An edition group is selected when any of its variants is; selecting it
@@ -584,7 +584,7 @@ export function Downloader() {
     if (carried) onNativeDraft(carried);
     setScope(next);
   });
-  const scopeItems = React.useMemo(() => [{ id: 'all' as SearchScope, label: 'All sources' }, ...sources.map(item => ({ id: item.id as SearchScope, label: item.label }))], [sources]);
+  const scopeItems = React.useMemo<{ id: SearchScope; label: string }[]>(() => [{ id: 'all', label: 'All sources' }, ...sources.map(item => ({ id: item.id, label: item.label }))], [sources]);
 
   const resultCount = searchResponse?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(resultCount / RESULTS_PAGE_SIZE));
@@ -736,7 +736,7 @@ export function Downloader() {
             />
           }
           onOpenEntry={openUnifiedEntry}
-          onDownload={doStartDownload}
+          onDownload={handleStartDownload}
           downloadStatus={downloadStatus}
           startingKeys={pendingKeys}
           ownershipFor={unifiedOwnership}
@@ -807,7 +807,7 @@ export function Downloader() {
                     priority={index < PRIORITY_COVERS}
                     onOpen={setSelected}
                     starting={pendingKeys.has(`${item.source}:${item.galleryId}`)}
-                    onDownload={doStartDownload}
+                    onDownload={handleStartDownload}
                     downloadSetup={downloadStatus}
                     quietAction
                     ownership={ownershipFor(item)} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(`${item.source}:${item.galleryId}`), onToggle: toggleGallerySelect }} />
@@ -927,7 +927,7 @@ export function Downloader() {
                     priority={index < PRIORITY_COVERS}
                     onOpen={setSelected}
                     starting={pendingKeys.has(`${item.source}:${item.galleryId}`)}
-                    onDownload={doStartDownload}
+                    onDownload={handleStartDownload}
                     downloadSetup={downloadStatus}
 
 
@@ -984,7 +984,7 @@ export function Downloader() {
                   {feedPageItems.map((item, index) => {
                     const key = `${item.source}:${item.galleryId}`, meta = feedMetaByKey.get(key);
                     return <div key={key} data-feed-card data-review-pending={reviewingKeys.has(key)} className="watched-discovery flex min-w-0 flex-col [&>article]:flex-1">
-                      <GalleryCard item={item} priority={index < PRIORITY_COVERS} onOpen={setSelected} starting={pendingKeys.has(key)} onDownload={doStartDownload} downloadSetup={downloadStatus} ownership={ownershipFor(item)} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(key), onToggle: toggleGallerySelect }} display="discovery" review={{ state: reviewingKeys.has(key) ? 'pending' : meta?.reviewedAt ? 'reviewed' : 'unreviewed', onChange: triageGallery }}
+                      <GalleryCard item={item} priority={index < PRIORITY_COVERS} onOpen={setSelected} starting={pendingKeys.has(key)} onDownload={handleStartDownload} downloadSetup={downloadStatus} ownership={ownershipFor(item)} selection={{ mode: selectMode ? 'select' : 'browse', selected: selectedGalleries.has(key), onToggle: toggleGallerySelect }} display="discovery" review={{ state: reviewingKeys.has(key) ? 'pending' : meta?.reviewedAt ? 'reviewed' : 'unreviewed', onChange: triageGallery }}
                         origin={meta ? { searchId: meta.searchId, label: meta.watchLabel, query: meta.query, foundAt: meta.foundAt, removed: meta.watchRemoved } : undefined} onOriginSelect={filterByWatch} />
                     </div>;
                   })}
@@ -1058,7 +1058,7 @@ export function Downloader() {
           inLibrary={libraryMatches.get(`${selected.source}:${selected.galleryId}`) === 'owned'}
           libraryMatch={libraryCopyFor(`${selected.source}:${selected.galleryId}`)}
           setup={setup}
-          onDownload={() => doStartDownload(selected)}
+          onDownload={() => { void doStartDownload(selected); }}
           onSearchTag={searchTagFragment}
         />
       )}
@@ -1086,7 +1086,7 @@ export function Downloader() {
             inLibrary={libraryMatches.get(key) === 'owned'}
             libraryMatch={libraryCopyFor(key)}
             setup={setup}
-            onDownload={() => doStartDownload(item)}
+            onDownload={() => { void doStartDownload(item); }}
             onSearchTag={searchTagFragment}
             searchAcrossSources
           />

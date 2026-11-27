@@ -67,7 +67,14 @@ test('a chapter cache reuses Kavita listings across rechecks, never retains fail
   assert.equal(f.chapterCalls.length, 6, 'no cache means every call reads Kavita');
 
   let fail = true;
-  const flaky = { ...f.client, getChaptersBySeries: async (id: number) => { if (fail) throw new Error('Kavita down'); return f.client.getChaptersBySeries(id); } } as unknown as KavitaClientType;
+  const flaky = Object.create(f.client, {
+    getChaptersBySeries: {
+      value: async (id: number) => {
+        if (fail) throw new Error('Kavita down');
+        return f.client.getChaptersBySeries(id);
+      },
+    },
+  }) as KavitaClientType;
   const failing = new MergeChapterCache(60_000);
   await assert.rejects(resolveMergeProtection(flaky, { sourceFiles: [f.source], targetDir: f.targetDir }, undefined, { chapterCache: failing }), /Kavita down/);
   fail = false;

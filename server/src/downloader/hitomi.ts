@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import vm from 'node:vm';
 import { hitomiNozomiPath, hitomiStateForTerm, normalizeHitomiQuery, parseHitomiSearch } from './hitomiSearch.js';
 import { fetchBuffer, mapLimit } from '../lib/http.js';
 import { getDownloaderSettings } from '../services/settings.js';
@@ -97,9 +98,11 @@ async function loadGG(force = false): Promise<GG> {
 
 async function loadFreshGG(): Promise<GG> {
   const code = await fetchText(`${API_BASE}/gg.js`);
-  // gg.js begins with 'use strict'; and assigns to a bare `gg`. Provide `gg`
-  // as a parameter so that assignment is legal within the function scope.
-  const gg: GG = new Function('gg', `${code}\nreturn gg;`)({});
+  // gg.js begins with 'use strict'; and assigns to a bare `gg`. Run in an
+  // isolated VM context with `gg` pre-defined so Node globals stay unreachable.
+  const context = vm.createContext({ gg: {} as Partial<GG> });
+  vm.runInContext(code, context, { timeout: 500 });
+  const gg = context.gg as GG;
   if (typeof gg.m !== 'function' || typeof gg.s !== 'function' || typeof gg.b !== 'string') {
     throw new Error('Failed to parse Hitomi gg.js CDN routing table.');
   }
@@ -208,7 +211,22 @@ interface HitomiFile {
   height?: number;
 }
 
-function parseGalleryInfo(text: string): any {
+interface HitomiGalleryInfo {
+  type?: string;
+  title?: string;
+  language?: string | null;
+  date?: string | number;
+  galleryurl?: string;
+  files?: HitomiFile[];
+  tags?: (HitomiTagEntry | string)[];
+  artists?: (HitomiTagEntry | string)[];
+  characters?: (HitomiTagEntry | string)[];
+  groups?: (HitomiTagEntry | string)[];
+  parodys?: (HitomiTagEntry | string)[];
+  parody?: (HitomiTagEntry | string)[];
+}
+
+function parseGalleryInfo(text: string): HitomiGalleryInfo {
   const start = text.indexOf('{');
   if (start < 0) throw new Error('Could not locate galleryinfo object.');
   // Find the matching closing brace (balanced, string-aware).
@@ -227,7 +245,7 @@ function parseGalleryInfo(text: string): any {
     else if (ch === '{') depth++;
     else if (ch === '}') {
       depth--;
-      if (depth === 0) return JSON.parse(text.slice(start, i + 1));
+      if (depth === 0) return JSON.parse(text.slice(start, i + 1)) as HitomiGalleryInfo;
     }
   }
   throw new Error('Could not parse galleryinfo object.');
@@ -311,7 +329,7 @@ function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
     signal.addEventListener('abort', onAbort, { once: true });
     promise.then(
       (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
-      (error) => { signal.removeEventListener('abort', onAbort); reject(error); },
+      (error) => { signal.removeEventListener('abort', onAbort); reject(error instanceof Error ? error : new Error(String(error))); },
     );
   });
 }
@@ -459,7 +477,7 @@ async function getGalleryIdsForTerm(term: string, version: string, signal?: Abor
       const dv = new DataView(d.buffer, d.byteOffset, d.byteLength);
       const count = dv.getInt32(0, false);
       if (count <= 0 || count > 10_000_000) return [];
-      const ids = new Array<number>(count);
+      const ids = Array.from<number>({ length: count });
       for (let i = 0; i < count; i++) ids[i] = dv.getInt32(4 + i * 4, false);
       return ids;
     }
@@ -497,7 +515,7 @@ function nozomiUrl(f: NozomiFilter): string {
 /** Parse a nozomi payload: big-endian int32 gallery-id list. */
 function parseNozomiIds(buf: Buffer): number[] {
   const count = Math.floor(buf.byteLength / 4);
-  const ids = new Array<number>(count);
+  const ids = Array.from<number>({ length: count });
   for (let i = 0; i < count; i++) ids[i] = buf.readInt32BE(i * 4);
   return ids;
 }
@@ -834,7 +852,7 @@ async function bannedIdSet(query: string, version: string, strict = false): Prom
       }
     }
   }));
-  if (strict && firstError) throw firstError;
+  if (strict && firstError) throw (firstError instanceof Error ? firstError : new Error(typeof firstError === 'string' ? firstError : JSON.stringify(firstError) ?? 'Unknown error'));
 
   const banned = new Set<number>();
   let complete = true;
@@ -1000,9 +1018,9 @@ async function resolveHitomiTagInfo(rawName: string): Promise<{ name: string; ns
 }
 
 const HITOMI_HYDRATE_CONCURRENCY = 12;
-const galleryInfoInflight = new Map<string, Promise<any>>();
+const galleryInfoInflight = new Map<string, Promise<HitomiGalleryInfo>>();
 
-async function loadGalleryInfo(id: number | string, signal?: AbortSignal): Promise<any> {
+async function loadGalleryInfo(id: number | string, signal?: AbortSignal): Promise<HitomiGalleryInfo> {
   const key = String(id);
   let pending = galleryInfoInflight.get(key);
   if (!pending) {
@@ -1053,7 +1071,7 @@ async function hydrateSearchIds(ids: number[], limit: number, opts?: DoujinSearc
         const parodies = (info.parodys ?? info.parody ?? []).map(tagValue).filter(Boolean).slice(0, 8);
         const groups = (info.groups ?? []).map(tagValue).filter(Boolean).slice(0, 8);
         out.push({
-          source: 'hitomi', galleryId: String(id), title: stripTags(info.title) || `Gallery ${id}`,
+          source: 'hitomi', galleryId: String(id), title: stripTags(info.title ?? '') || `Gallery ${id}`,
           coverUrl: coverUrlFor(gg, files), language: typeof info.language === 'string' && info.language ? info.language : undefined,
           tags,
           ...(tagNamespaces.some((ns) => ns !== undefined) ? { tagNamespaces } : {}),
@@ -1154,7 +1172,7 @@ export const hitomiProvider: DoujinProvider = {
     }
     if (/^(?:sort|order)by(?:key|direction)?:/.test(q)) {
       const values = /^(?:sort|order)by:$/.test(`${field}:`) ? ['date', 'datepublished', 'popular', 'random']
-        : /bydirection$/.test(field) ? ['asc', 'desc', 'random']
+        : field.endsWith('bydirection') ? ['asc', 'desc', 'random']
         : /\b(?:sort|order)by:popular/i.test(context ?? '') ? ['today', 'week', 'month', 'year'] : ['added', 'published'];
       return values.slice(0, limit).map(name => ({ source: 'hitomi', type: field, name, filter: `${field}:${name}` }));
     }
@@ -1222,7 +1240,7 @@ export const hitomiProvider: DoujinProvider = {
       }
     }
 
-    const title = stripTags(info.title) || `Gallery ${id}`;
+    const title = stripTags(info.title ?? '') || `Gallery ${id}`;
     const artists = (info.artists ?? []).map(tagValue).filter(Boolean);
     const characters = (info.characters ?? []).map(tagValue).filter(Boolean);
     const groups = (info.groups ?? []).map(tagValue).filter(Boolean);

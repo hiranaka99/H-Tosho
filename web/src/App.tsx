@@ -188,6 +188,7 @@ export default function App() {
     if (!navOpen || isDesktop) return;
     // Focus after the drawer's visible styles have committed, including the
     // reduced-motion fade. Focusing a still-hidden link can silently fail.
+    const trigger = navToggleRef.current;
     const focusFrame = requestAnimationFrame(() => {
       const nav = sidebarRef.current;
       (nav?.querySelector<HTMLElement>('a[aria-current="page"]') ?? nav?.querySelector<HTMLElement>('nav a'))?.focus();
@@ -196,7 +197,6 @@ export default function App() {
       cancelAnimationFrame(focusFrame);
       // Restore focus after the header has committed its accessible state.
       requestAnimationFrame(() => {
-        const trigger = navToggleRef.current;
         if (trigger?.getClientRects().length && trigger.getAttribute('aria-expanded') === 'false') trigger.focus();
       });
     };

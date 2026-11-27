@@ -19,11 +19,14 @@ export function createSchemaTables(sqlite: Database.Database): void {
       if (column.notNull) parts.push('NOT NULL');
       if (column.isUnique) parts.push('UNIQUE');
       if (column.default !== undefined) {
-        const value = column.default;
+        const value: unknown = column.default;
         const literal = value instanceof SQL ? dialect.sqlToQuery(value.inlineParams()).sql
           : typeof value === 'string' ? `'${value.replace(/'/g, "''")}'`
-          : typeof value === 'boolean' ? String(Number(value)) : String(value);
-        parts.push('DEFAULT', literal);
+          : typeof value === 'boolean' ? String(Number(value))
+          : typeof value === 'number' || typeof value === 'bigint' ? String(value)
+          : value === null ? 'NULL'
+          : JSON.stringify(value) ?? '';
+        if (literal) parts.push('DEFAULT', literal);
       }
       return parts.join(' ');
     });
@@ -394,10 +397,11 @@ export function splitLegacyJobState(sqlite: Database.Database): void {
   const update = sqlite.prepare('UPDATE jobs SET payload_json = ?, state_json = ? WHERE id = ?');
   for (const row of rows) {
     try {
-      const command = JSON.parse(row.payload_json);
-      if (!command || typeof command !== 'object' || Array.isArray(command)) continue;
-      const stored = JSON.parse(row.state_json ?? '{}');
-      const state: Record<string, unknown> = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+      const parsedCommand: unknown = JSON.parse(row.payload_json);
+      if (!parsedCommand || typeof parsedCommand !== 'object' || Array.isArray(parsedCommand)) continue;
+      const command = parsedCommand as Record<string, unknown>;
+      const stored: unknown = JSON.parse(row.state_json ?? '{}');
+      const state: Record<string, unknown> = stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored as Record<string, unknown>) : {};
       for (const key of ['context', 'contextPendingSeriesIds', 'mergeDownloadIds']) {
         if (command[key] !== undefined) { if (state[key] === undefined) state[key] = command[key]; delete command[key]; }
       }

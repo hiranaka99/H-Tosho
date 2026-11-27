@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import { mkdtempSync } from 'node:fs';
+import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -30,7 +29,7 @@ const {
 
 function referenceLevenshtein(a: string, b: string): number {
   let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
-  let curr = new Array<number>(b.length + 1);
+  let curr = Array.from<number>({ length: b.length + 1 });
   for (let i = 1; i <= a.length; i++) {
     curr[0] = i;
     for (let j = 1; j <= b.length; j++) {

@@ -27,12 +27,20 @@ export function getRecommendationFeedback(): RecommendationFeedback {
       .get();
     const raw = row?.valueJson ?? null;
     if (feedbackCache && feedbackCache.raw === raw) return cloneFeedback(feedbackCache.value);
-    const stored = JSON.parse(raw ?? '{}');
+    const parsedJson: unknown = JSON.parse(raw ?? '{}');
+    const stored = parsedJson && typeof parsedJson === 'object' && !Array.isArray(parsedJson) ? (parsedJson as Record<string, unknown>) : {};
+    const isLiked = (item: unknown): item is DoujinSearchResult => {
+      if (!item || typeof item !== 'object') return false;
+      const r = item as Record<string, unknown>;
+      return r.source === 'hitomi' && typeof r.galleryId === 'string'
+        && typeof r.title === 'string'
+        && Array.isArray(r.artists) && (r.artists as unknown[]).every(a => typeof a === 'string')
+        && Array.isArray(r.tags) && (r.tags as unknown[]).every(t => typeof t === 'string');
+    };
     const parsed: RecommendationFeedback = {
-      liked: (Array.isArray(stored.liked) ? stored.liked : []).filter((item: DoujinSearchResult) => item && item.source === 'hitomi' && typeof item.galleryId === 'string'
-        && typeof item.title === 'string' && Array.isArray(item.artists) && item.artists.every(a => typeof a === 'string') && Array.isArray(item.tags) && item.tags.every(t => typeof t === 'string')),
-      mutedArtists: (Array.isArray(stored.mutedArtists) ? stored.mutedArtists : []).filter((a: unknown) => typeof a === 'string'),
-      mutedTags: (Array.isArray(stored.mutedTags) ? stored.mutedTags : []).filter((t: unknown) => typeof t === 'string'),
+      liked: Array.isArray(stored.liked) ? (stored.liked as unknown[]).filter(isLiked) : [],
+      mutedArtists: Array.isArray(stored.mutedArtists) ? (stored.mutedArtists as unknown[]).filter((a): a is string => typeof a === 'string') : [],
+      mutedTags: Array.isArray(stored.mutedTags) ? (stored.mutedTags as unknown[]).filter((t): t is string => typeof t === 'string') : [],
     };
     feedbackCache = { raw, value: parsed };
     return cloneFeedback(parsed);

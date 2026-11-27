@@ -1,7 +1,7 @@
 import type { KavitaSeriesMetadataDto } from '../kavita/types.js';
 import { invalidateRecommendationSeries } from './recommendationSignals.js';
 import { onSettingChange } from './settings.js';
-import { invalidateSeriesCoverCache } from '../routes/api/kavita.js';
+import { invalidateSeriesCoverCache } from './seriesCoverCache.js';
 import {
   clearCachedSeriesMetadataForSignals,
   getCachedSeriesMetadataForSignals,

@@ -35,7 +35,7 @@ export function galleryFilesystemName(title: string, source: string, galleryId: 
  * Pull the first balanced JSON object out of a blob of text (e.g. a JS file
  * containing `var galleryinfo = { ... };`).
  */
-export function extractJsonObject(text: string): unknown | null {
+export function extractJsonObject(text: string): unknown {
   const start = text.indexOf('{');
   if (start < 0) return null;
   let depth = 0;
@@ -145,11 +145,15 @@ export function toIsoDate(raw: unknown): string | undefined {
     // Treat small numbers as unix seconds, large ones as milliseconds.
     const ms = raw < 1e12 ? raw * 1000 : raw;
     d = new Date(ms);
-  } else {
-    let norm = String(raw).trim().replace(' ', 'T');
+  } else if (raw instanceof Date) {
+    d = raw;
+  } else if (typeof raw === 'string') {
+    let norm = raw.trim().replace(' ', 'T');
     // Only expand an offset on a time; a date-only YYYY-MM-DD ends in -DD.
     norm = norm.replace(/(\d{2}:\d{2}(?::\d{2})?)([+-]\d{2})$/, '$1$2:00');
     d = new Date(norm);
+  } else {
+    return undefined;
   }
   if (Number.isNaN(d.getTime())) return undefined;
   return d.toISOString();

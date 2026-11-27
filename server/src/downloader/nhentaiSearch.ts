@@ -29,7 +29,11 @@ export function nhentaiArtistSearch(query: string): { slug: string; language: st
     if (!field) return null;
     let value = field[2];
     if (value.startsWith('"')) {
-      try { value = JSON.parse(value); } catch { return null; }
+      try {
+        const parsed: unknown = JSON.parse(value);
+        if (typeof parsed !== 'string') return null;
+        value = parsed;
+      } catch { return null; }
     }
     if (typeof value !== 'string' || !value.trim() || /[*?]/.test(value)) return null;
     if (/^artist/i.test(field[1])) {

@@ -69,7 +69,7 @@ export function computeRuntimeDepsHash(rootDir = REPO_ROOT) {
       integrity: entry.integrity ?? null,
       hasInstallScript: Boolean(entry.hasInstallScript),
     };
-    const nextDeps = { ...(entry.dependencies ?? {}), ...(entry.optionalDependencies ?? {}) };
+    const nextDeps = { ...entry.dependencies, ...entry.optionalDependencies };
     for (const child of Object.keys(nextDeps).sort()) {
       if (!visited.has(child)) queue.push(child);
     }

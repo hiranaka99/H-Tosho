@@ -116,7 +116,7 @@ export function MergeSeriesModal({ selected, onClose }: MergeSeriesModalProps) {
       });
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['jobs'] });
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
       toast({ tone: 'success', title: 'Merge queued', description: `${files?.length ?? 0} file(s) → ${targetDir}` });
       onClose();
     },

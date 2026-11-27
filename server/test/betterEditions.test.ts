@@ -7,7 +7,7 @@ import type { DoujinGallery, DoujinSearchResult } from '../src/downloader/types.
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-better-editions-'));
 process.env.HTOSHO_DATA_DIR = dataDir;
-const { initDb, getDb, schema } = await import('../src/db/index.js');
+const { closeDb, getDb, initDb, schema } = await import('../src/db/index.js');
 const { betterEditionReasons, findBetterEditions, findDuplicateReports, findKnownLibraryDuplicateKeys, invalidateDuplicateLibrary, lookupLibraryMatches, recordGalleryIdentity } = await import('../src/services/galleryDuplicates.js');
 const { censorshipEdition, withoutCensorshipLabels, unifiedTitleKey } = await import('../src/services/unifiedTitle.js');
 const { setDownloaderSettings, setKavitaConnection, DEFAULT_DOWNLOADER } = await import('../src/services/settings.js');
@@ -36,7 +36,7 @@ beforeEach(() => {
   invalidateDuplicateLibrary();
 });
 afterEach(() => { Object.assign(doujinProviders, originalProviders); });
-after(() => { (getDb() as any).$client.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
+after(() => { closeDb(); fs.rmSync(dataDir, { recursive: true, force: true }); });
 
 test('censorship editions come from title labels and source tags; conflicting labels never count', () => {
   assert.equal(censorshipEdition(['Title [English] [Decensored]']), 'uncensored');

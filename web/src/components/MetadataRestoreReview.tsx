@@ -12,12 +12,30 @@ import { COVER_RESTORE_CONVERSION_WARNING, type CoverCheckpoint, type CoverResto
 import { CoverRestoreSelectionControls, CoverRestorePreviewImages } from './CoverRestoreControls';
 
 const labels: Record<string, string> = { summary: 'Description', genres: 'Genres', tags: 'Tags', writers: 'Writers', artists: 'Artists', releaseDate: 'Release year', language: 'Language', status: 'Publication status', url: 'Source URL', title: 'Title', cover: 'Cover', archives: 'ComicInfo.xml' };
+function formatScalar(item: unknown): string {
+  return item === null || item === undefined
+    ? ''
+    : typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean'
+      ? String(item)
+      : JSON.stringify(item) ?? '';
+}
+
 function display(cell: RecordedValue): string {
   if (!cell.present) return 'Field absent';
   if (cell.value === null) return 'Null';
   if (cell.value === '') return 'Empty text';
-  if (Array.isArray(cell.value)) return cell.value.length ? cell.value.map(item => item && typeof item === 'object' ? String(item.name ?? item.title ?? JSON.stringify(item)) : String(item)).join(', ') : 'Empty list';
-  return String(cell.value);
+  if (Array.isArray(cell.value)) {
+    return cell.value.length
+      ? (cell.value as unknown[]).map((item) => {
+        if (item && typeof item === 'object') {
+          const rec = item as Record<string, unknown>;
+          return formatScalar(rec.name ?? rec.title ?? item);
+        }
+        return formatScalar(item);
+      }).join(', ')
+      : 'Empty list';
+  }
+  return formatScalar(cell.value);
 }
 
 export function MetadataRestoreReview({ seriesId, detail }: { seriesId: number; detail: MetadataHistoryDetail }) {
@@ -42,10 +60,10 @@ export function MetadataRestoreReview({ seriesId, detail }: { seriesId: number; 
   const expired = !!preview && now >= Date.parse(preview.expiresAt);
   const coverCheckpoints = React.useMemo<CoverCheckpoint[]>(() => [...(detail.covers?.series ? [detail.covers.series] : []), ...(detail.covers?.volumes ?? [])], [detail.covers]);
   const needsCoverReview = !!preview?.covers?.some(cover => cover.available);
-  function invalidate() {
+  const invalidate = React.useCallback(() => {
     generation.current++;
     setPreview(null); setReviewed(false); setCoverReviewed(false); setError(null); setTaskId(null);
-  }
+  }, []);
   React.useEffect(() => {
     if (!preview) return;
     const remaining = Date.parse(preview.expiresAt) - Date.now();
@@ -56,9 +74,10 @@ export function MetadataRestoreReview({ seriesId, detail }: { seriesId: number; 
     const timer = window.setTimeout(() => setNow(Date.now()), remaining + 50);
     return () => window.clearTimeout(timer);
   }, [preview]);
+  const policyRevision = policy.data?.revision;
   React.useEffect(() => {
-    if (preview && policy.data && preview.policyRevision !== policy.data.revision) invalidate();
-  }, [policy.data?.revision, preview]);
+    if (preview && policyRevision !== undefined && preview.policyRevision !== policyRevision) invalidate();
+  }, [policyRevision, preview, invalidate]);
   async function loadPreview() {
     const version = ++generation.current;
     setPending('preview'); setError(null); setPreview(null); setReviewed(false); setCoverReviewed(false);

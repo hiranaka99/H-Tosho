@@ -54,16 +54,20 @@ api.get('/recommendations/settings', (c) => c.json(getRecommendationSettings()))
 
 api.get('/recommendations/feedback', (c) => c.json(getRecommendationFeedback()));
 api.post('/recommendations/feedback', async (c) => {
-  const body = await c.req.json().catch(() => null);
+  const raw = await c.req.json<unknown>().catch(() => null);
+  const body = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
   const actions: FeedbackAction[] = ['like', 'unlike', 'mute-artist', 'unmute-artist', 'mute-tag', 'unmute-tag'];
-  if (!body || !actions.includes(body.action) || body.source !== 'hitomi'
+  const action = typeof body?.action === 'string' && (actions as readonly string[]).includes(body.action) ? (body.action as FeedbackAction) : null;
+  const artist = typeof body?.artist === 'string' ? body.artist : undefined;
+  const tag = typeof body?.tag === 'string' ? body.tag : undefined;
+  if (!body || !action || body.source !== 'hitomi'
     || typeof body.galleryId !== 'string' || !body.galleryId.trim() || body.galleryId.length > 200
-    || (body.action.includes('artist') && (typeof body.artist !== 'string' || !body.artist.trim() || body.artist.length > 200))
-    || (body.action.includes('tag') && (typeof body.tag !== 'string' || !body.tag.trim() || body.tag.length > 200))) {
+    || (action.includes('artist') && (!artist || !artist.trim() || artist.length > 200))
+    || (action.includes('tag') && (!tag || !tag.trim() || tag.length > 200))) {
     return c.json({ error: 'Invalid recommendation feedback' }, 400);
   }
   try {
-    const result = await applyRecommendationFeedback(body.action, { source: body.source, galleryId: body.galleryId.trim(), artist: body.artist, tag: body.tag });
+    const result = await applyRecommendationFeedback(action, { source: 'hitomi', galleryId: body.galleryId.trim(), artist, tag });
     return c.json({ ...result, recommendations: { ...result.recommendations, items: result.recommendations.items.map(rewriteDoujinCover) } });
   } catch (error) { return c.json({ error: errMsg(error) }, 400); }
 });

@@ -28,10 +28,13 @@ export class AniListClient {
     // A cancelled queued caller can leave immediately. Its reserved turn stays
     // in the chain and skips the request, so later callers cannot bypass pacing.
     return new Promise((resolve, reject) => {
-      const abort = () => reject(signal.reason);
+      const abort = () => {
+        const reason: unknown = signal.reason;
+        reject(reason instanceof Error ? reason : new Error(typeof reason === 'string' && reason ? reason : 'Aborted'));
+      };
       signal.addEventListener('abort', abort, { once: true });
       void run.then(value => { signal.removeEventListener('abort', abort); resolve(value); }, error => {
-        signal.removeEventListener('abort', abort); reject(error);
+        signal.removeEventListener('abort', abort); reject(error instanceof Error ? error : new Error(String(error)));
       });
       if (signal.aborted) abort();
     });

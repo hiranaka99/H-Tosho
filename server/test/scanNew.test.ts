@@ -15,7 +15,6 @@ const { setKavitaConnection } = await import('../src/services/settings.js');
 const { runJob } = await import('../src/jobs/executor.js');
 initDb();
 setKavitaConnection({ baseUrl: 'https://kavita.example', apiKey: 'secret' });
-const originalFetch = globalThis.fetch;
 
 function makeJob(id: number, payload: Record<string, unknown>): Job {
   return {

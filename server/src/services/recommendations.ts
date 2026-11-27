@@ -4,13 +4,12 @@ const recommendationMutations = new MutationCoordinator();
 import { and, asc, desc, eq, gte, inArray, lt, ne, sql } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import { getDoujinProvider } from '../downloader/providers.js';
-import type { DoujinGallery, DoujinSearchResult, DoujinSort } from '../downloader/types.js';
+import type { DoujinGallery, DoujinProvider, DoujinSearchResult, DoujinSort } from '../downloader/types.js';
 import type { DoujinSource } from '../contracts/doujin.js';
 import { mapLimit } from '../lib/http.js';
 import { getDownloaderSettings, onSettingChange, setRecommendationSettings } from './settings.js';
 import { buildKavitaSignals, clearRecommendationSignals, onRecommendationSeriesChange } from './recommendationSignals.js';
 import { buildEligibilityContext, eligibleRecommendations, type EligibilityContext } from './recommendationEligibility.js';
-import type { DoujinProvider } from '../downloader/types.js';
 import { rankCandidates, selectBalancedRecommendations, selectRecommendations } from './recommendationRanking.js';
 import type { Candidate } from './recommendationRanking.js';
 import { getRecommendationFeedback, saveRecommendationFeedback, type FeedbackAction, type RecommendationFeedback } from './recommendationFeedback.js';
@@ -640,7 +639,7 @@ function readHistory(): HistoryEntry[] {
   if (normalized.length) {
     return normalized.flatMap((row) => {
       try {
-        return parseHistoryEntry({ key: `${row.source}:${row.galleryId}`, date: row.servedDate, servedAt: row.servedAt, item: JSON.parse(row.itemJson) }) ?? [];
+        return parseHistoryEntry({ key: `${row.source}:${row.galleryId}`, date: row.servedDate, servedAt: row.servedAt, item: JSON.parse(row.itemJson) as unknown }) ?? [];
       } catch {
         return [];
       }
@@ -649,9 +648,9 @@ function readHistory(): HistoryEntry[] {
   const legacyRow = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, HISTORY_KEY)).get();
   if (!legacyRow) return [];
   try {
-    const parsed = JSON.parse(legacyRow.valueJson);
+    const parsed: unknown = JSON.parse(legacyRow.valueJson);
     if (!Array.isArray(parsed)) return [];
-    const entries = parsed.map(parseHistoryEntry).filter((entry): entry is HistoryEntry => entry !== null);
+    const entries = (parsed as unknown[]).map(parseHistoryEntry).filter((entry): entry is HistoryEntry => entry !== null);
     writeHistory(entries);
     db.delete(schema.keyValueStore).where(eq(schema.keyValueStore.key, HISTORY_KEY)).run();
     return entries;
@@ -667,7 +666,7 @@ function readHistoryItem(source: string, galleryId: string): RecommendationItem 
     .get();
   if (row) {
     try {
-      return parseHistoryEntry({ key: `${row.source}:${row.galleryId}`, date: row.servedDate, servedAt: row.servedAt, item: JSON.parse(row.itemJson) })?.item;
+      return parseHistoryEntry({ key: `${row.source}:${row.galleryId}`, date: row.servedDate, servedAt: row.servedAt, item: JSON.parse(row.itemJson) as unknown })?.item;
     } catch {
       return undefined;
     }
@@ -717,8 +716,8 @@ function readSeenItems(date: string): RecommendationItem[] {
   const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, seenKey(date))).get();
   if (!row) return [];
   try {
-    const parsed = JSON.parse(row.valueJson);
-    return Array.isArray(parsed) ? parsed.filter(isRecommendationItem) : [];
+    const parsed: unknown = JSON.parse(row.valueJson);
+    return Array.isArray(parsed) ? (parsed as unknown[]).filter(isRecommendationItem) : [];
   } catch {
     return [];
   }

@@ -9,11 +9,19 @@ import { downloadQueue } from '../../downloader/engine.js';
 import { kavitaConnectionKey } from '../../services/kavitaState.js';
 import { getDb, schema } from '../../db/index.js';
 import { KavitaClient } from '../../kavita/client.js';
-import { KAVITA_OPENAPI_VERSION, type KavitaSeries } from '../../kavita/types.js';
+import { KAVITA_OPENAPI_VERSION } from '../../kavita/types.js';
 import { getKavitaConnection, onSettingChange, setKavitaConnection } from '../../services/settings.js';
 import { kavitaSeriesSearchMetadata } from '../../services/seriesArtists.js';
+import {
+  getSeriesCoverEntry,
+  invalidateSeriesCoverCache,
+  seriesCoverInflight,
+  setSeriesCoverEntry,
+  type CachedSeriesCover,
+} from '../../services/seriesCoverCache.js';
 
 import { connectedClient, errMsg, intParam, kavitaCoverUrl } from './helpers.js';
+export { invalidateSeriesCoverCache };
 export const api = new Hono();
 
 // A large library's series list is megabytes of repetitive JSON; gzip shrinks it ~90%.
@@ -29,53 +37,6 @@ api.use('/kavita/libraries/:id/series', compress());
  */
 const MATCH_META_CACHE_MAX = 50_000;
 const matchMetaCache = new Map<number, { stamp: string; artists: string[]; tags: string[] }>();
-
-const COVER_CACHE_MAX_ENTRIES = 200;
-const COVER_CACHE_MAX_BYTES = 32 * 1024 * 1024;
-interface CachedSeriesCover {
-  seriesId: number;
-  data: Buffer;
-  contentType: string;
-  etag: string;
-}
-const seriesCoverCache = new Map<string, CachedSeriesCover>();
-let seriesCoverCacheBytes = 0;
-const seriesCoverInflight = new Map<string, Promise<CachedSeriesCover>>();
-
-function deleteSeriesCoverEntry(key: string): void {
-  const existing = seriesCoverCache.get(key);
-  if (!existing) return;
-  seriesCoverCache.delete(key);
-  seriesCoverCacheBytes -= existing.data.length;
-}
-
-function setSeriesCoverEntry(key: string, entry: CachedSeriesCover): void {
-  deleteSeriesCoverEntry(key);
-  if (entry.data.length > COVER_CACHE_MAX_BYTES) return;
-  while (seriesCoverCache.size >= COVER_CACHE_MAX_ENTRIES || (seriesCoverCacheBytes + entry.data.length > COVER_CACHE_MAX_BYTES && seriesCoverCache.size > 0)) {
-    const oldest = seriesCoverCache.keys().next().value;
-    if (oldest === undefined) break;
-    deleteSeriesCoverEntry(oldest);
-  }
-  seriesCoverCache.set(key, entry);
-  seriesCoverCacheBytes += entry.data.length;
-}
-
-export function invalidateSeriesCoverCache(seriesId?: number): void {
-  if (seriesId === undefined) {
-    seriesCoverCache.clear();
-    seriesCoverCacheBytes = 0;
-    seriesCoverInflight.clear();
-    return;
-  }
-  for (const [key, entry] of [...seriesCoverCache.entries()]) {
-    if (entry.seriesId === seriesId) deleteSeriesCoverEntry(key);
-  }
-  const marker = `\0${seriesId}\0`;
-  for (const key of [...seriesCoverInflight.keys()]) {
-    if (key.includes(marker)) seriesCoverInflight.delete(key);
-  }
-}
 
 onSettingChange('kavita-connection', () => {
   matchMetaCache.clear();
@@ -233,7 +194,7 @@ api.get('/kavita/libraries/:id/series', async (c) => {
   try {
     const libraryId = intParam(c.req.param('id'));
     if (libraryId === null) return c.json({ error: 'Invalid library id' }, 400);
-    const series = (await client.getSeries(libraryId)) as KavitaSeries[];
+    const series = await client.getSeries(libraryId);
     const seriesIds = series.map((s) => s.id);
     const db = getDb();
     const matchColumns = {
@@ -324,11 +285,8 @@ api.get('/kavita/series/:id/cover', async (c) => {
     if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
     const connKey = kavitaConnectionKey(getKavitaConnection().baseUrl);
     const cacheKey = `${connKey}\0${seriesId}\0${c.req.query('v') ?? ''}`;
-    let entry = seriesCoverCache.get(cacheKey);
-    if (entry) {
-      seriesCoverCache.delete(cacheKey);
-      seriesCoverCache.set(cacheKey, entry);
-    } else {
+    let entry = getSeriesCoverEntry(cacheKey);
+    if (!entry) {
       let pending = seriesCoverInflight.get(cacheKey);
       if (!pending) {
         pending = client.getSeriesCover(seriesId).then((cover) => {

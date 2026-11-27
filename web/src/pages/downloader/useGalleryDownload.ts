@@ -25,7 +25,7 @@ export function useGalleryDownload() {
   const status = setup.status;
   const ensureDownloadReady = React.useCallback(() => {
     if (status === 'ready') return true;
-    if (status === 'missing') navigate(DOWNLOADER_SETTINGS_URL);
+    if (status === 'missing') void navigate(DOWNLOADER_SETTINGS_URL);
     else toast({ tone: 'info', title: status === 'loading' ? 'Checking download settings' : 'Download settings unavailable', description: 'Retry the settings check before starting a download.' });
     return false;
   }, [status, navigate]);

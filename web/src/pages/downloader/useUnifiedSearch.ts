@@ -172,7 +172,7 @@ export function useUnifiedSearch(visible: boolean) {
   const [state, dispatch] = React.useReducer(reducer, undefined, () => {
     const saved = ((): { unifiedQuery?: string; unifiedSearchKey?: string | null } => {
       try {
-        return JSON.parse(sessionStorage.getItem('h-tosho:downloader-state') ?? '{}');
+        return JSON.parse(sessionStorage.getItem('h-tosho:downloader-state') ?? '{}') as { unifiedQuery?: string; unifiedSearchKey?: string | null };
       } catch {
         return {};
       }

@@ -2,23 +2,18 @@ import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { getDb, schema } from '../db/index.js';
 import type { KavitaClient } from '../kavita/client.js';
 import type { MetadataSnapshot } from '../contracts/metadataHistory.js';
-import { MAX_RETAINED_COVER_BYTES, MAX_RETAINED_COVER_STORE_BYTES,
+import { MAX_RETAINED_COVER_BYTES,
   type RecordedCover, type CoverHistory, type CoverCheckpoint, type CoverTarget } from '../contracts/metadataCovers.js';
 import { getKavitaConnection } from './settings.js';
 import { kavitaConnectionKey } from './kavitaState.js';
 import { observeCover, retainCoverObservation, retainCoverWithBudgetCheck, hasCoverAssetMetadata, sameCoverObservation, coverTargetKey, loadCoverAsset,
-  type CoverObservation } from './coverObservations.js';
+  coverMediaType, coverStorageBudget, type CoverObservation } from './coverObservations.js';
 import { mapLimit } from '../lib/http.js';
 import { PRUNE_UNUSED_COVER_ASSETS_SQL } from '../db/metadataRetention.js';
 
+export { coverMediaType, coverStorageBudget };
+
 const connection=()=>kavitaConnectionKey(getKavitaConnection().baseUrl);
-export function coverStorageBudget(value:string|undefined=process.env.HTOSHO_COVER_HISTORY_LIMIT_MIB):number {
-  if(value===undefined)return MAX_RETAINED_COVER_STORE_BYTES;
-  if(!/^\d+$/.test(value)||!Number.isSafeInteger(Number(value))||Number(value)<10||Number(value)>16_384) {
-    throw new Error('Cover-history storage limit must be an integer from 10 through 16384 MiB; the cover write was not started');
-  }
-  return Number(value)*1024*1024;
-}
 export type CoverCheckpointRow = typeof schema.metadataSeriesCovers.$inferSelect | typeof schema.metadataVolumeCovers.$inferSelect;
 type CoverCheckpointHistoryRow = Omit<typeof schema.metadataSeriesCovers.$inferSelect, 'beforeEvidenceJson' | 'afterEvidenceJson'>
   | Omit<typeof schema.metadataVolumeCovers.$inferSelect, 'beforeEvidenceJson' | 'afterEvidenceJson'>;
@@ -29,19 +24,6 @@ export interface CoverJournal {
   beginWrite(target: CoverTarget, lock: boolean, assetId?: string): void;
   acknowledge(target: CoverTarget): void;
   finish(): Promise<CoverJournalResult>;
-}
-
-/** Validate raster signatures, never accepting SVG/HTML under an image media type. Bytes remain unmodified. */
-export function coverMediaType(data:Buffer):string {
-  if(!data.length || data.length>MAX_RETAINED_COVER_BYTES)throw new Error('Cover history requires an image between 1 byte and 5 MiB');
-  if(data.length>=33 && data.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])) && data.toString('ascii',12,16)==='IHDR'
-    && data.toString('ascii',data.length-8,data.length-4)==='IEND')return 'image/png';
-  if(data.length>=4 && data[0]===255 && data[1]===216 && data[data.length-2]===255 && data[data.length-1]===217)return 'image/jpeg';
-  if(data.length>=20 && data.toString('ascii',0,4)==='RIFF' && data.toString('ascii',8,12)==='WEBP' && data.readUInt32LE(4)+8===data.length)return 'image/webp';
-  if(data.length>=14 && ['GIF87a','GIF89a'].includes(data.toString('ascii',0,6)) && data[data.length-1]===0x3b)return 'image/gif';
-  if(data.length>=16 && data.toString('ascii',4,8)==='ftyp' && data.readUInt32BE(0)<=data.length
-    && /avif|avis/.test(data.toString('ascii',8,Math.min(data.readUInt32BE(0),128))))return 'image/avif';
-  throw new Error('Cover response is not a supported complete PNG, JPEG, WebP, GIF or AVIF raster image');
 }
 
 export function getCoverCheckpoint(operationId: string, target: CoverTarget): CoverCheckpointRow | undefined {

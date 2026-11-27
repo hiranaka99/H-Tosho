@@ -61,7 +61,7 @@ export function pendingMatchSuggestionSeriesIds(seriesIds?: readonly number[]): 
   const out = new Set<number>();
   for (const row of suggestionRows) {
     if (settledStatuses.has(row.seriesId)) continue;
-    const candidates: CandidateMatch[] = JSON.parse(row.candidatesJson);
+    const candidates = JSON.parse(row.candidatesJson) as CandidateMatch[];
     if (candidates.some((item) => !rejected.has(`${row.seriesId}:${candidateKey(item)}`))) {
       out.add(row.seriesId);
     }
@@ -75,7 +75,7 @@ export function listMatchSuggestions() {
   const rejected = new Set(db.select().from(schema.rejectedMatchCandidates).where(eq(schema.rejectedMatchCandidates.connectionKey, connectionKey)).all().map(row => `${row.seriesId}:${candidateKey(row)}`));
   return db.select().from(schema.matchSuggestions).where(eq(schema.matchSuggestions.connectionKey, connectionKey)).all().flatMap(row => {
     if (['matched', 'syncing'].includes(statuses.get(row.seriesId) ?? '')) return [];
-    const candidates: CandidateMatch[] = JSON.parse(row.candidatesJson);
+    const candidates = JSON.parse(row.candidatesJson) as CandidateMatch[];
     const candidate = candidates.find(item => !rejected.has(`${row.seriesId}:${candidateKey(item)}`));
     if (!candidate) return [];
     const { candidatesJson: _, ...identity } = row;

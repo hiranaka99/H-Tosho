@@ -6,7 +6,7 @@ import { after, afterEach, beforeEach, test } from 'node:test';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'htosho-duplicates-'));
 process.env.HTOSHO_DATA_DIR = dataDir;
-const { initDb, getDb, schema } = await import('../src/db/index.js');
+const { closeDb, initDb, getDb, schema } = await import('../src/db/index.js');
 const { duplicateReasons, recordGalleryIdentity, prepareDuplicateCheck, findDuplicateReports, createDuplicateChecker, invalidateDuplicateLibrary, resolveDuplicateGallery, rememberDuplicateLibraryRoots, lookupLibraryMatches, findKnownLibraryDuplicateKeys } = await import('../src/services/galleryDuplicates.js');
 const { setDownloaderSettings, setKavitaConnection, DEFAULT_DOWNLOADER } = await import('../src/services/settings.js');
 const { doujinProviders } = await import('../src/downloader/providers.js');
@@ -39,7 +39,7 @@ beforeEach(() => {
   invalidateDuplicateLibrary();
 });
 afterEach(() => { Object.assign(doujinProviders, originalProviders); downloadQueue.enqueue = originalEnqueue; jobQueue.enqueue = originalJobEnqueue; });
-after(() => { (getDb() as any).$client.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
+after(() => { closeDb(); fs.rmSync(dataDir, { recursive: true, force: true }); });
 function owned(source: 'hitomi' | 'nhentai', id = '1', patch: Partial<DoujinGallery> = {}) {
   recordGalleryIdentity(gallery(source, id, patch));
   getDb().insert(schema.ownedGalleries).values({ source, galleryId: id }).run();
@@ -56,7 +56,7 @@ test('merged Lovemare chapters show library ownership before download without fe
   doujinProviders.hitomi.getGallery = async () => { requests++; throw Error('Lookup must not fetch a provider'); };
   const merged = path.join(folder, 'Lovemare');
   fs.mkdirSync(merged);
-  for (const [id, title, web] of [['101', 'Lovemare Jou', 'https://hitomi.la/doujinshi/lovemare-jou-101.html'], ['102', 'Lovemare Ge', 'https://hitomi.la/reader/102.html']]) {
+  for (const [_id, title, web] of [['101', 'Lovemare Jou', 'https://hitomi.la/doujinshi/lovemare-jou-101.html'], ['102', 'Lovemare Ge', 'https://hitomi.la/reader/102.html']]) {
     fs.writeFileSync(path.join(merged, `${title}.cbz`), buildZip([{ name: 'ComicInfo.xml', data: Buffer.from(`<ComicInfo><Series>Lovemare</Series><Title>${title}</Title><Writer>akatsuki myuuto</Writer><Web>${web}</Web><LanguageISO>ja</LanguageISO></ComicInfo>`) }, { name: '001.jpg', data: Buffer.from('image') }]));
   }
   const items = ['Jou', 'Ge', 'Extra'].map((part, index) => ({ source: 'hitomi' as const, galleryId: String(101 + index), title: `Lovemare ${part}`, artists: ['akatsuki myuuto'], language: 'Japanese', pageCount: 100 }));
@@ -215,7 +215,7 @@ test('download API blocks possible duplicates without starting work and supports
 });
 test('concurrent cross-source requests cannot both bypass review', async () => {
   const responses = await Promise.all([post('/downloads', { source: 'hitomi', galleryId: '1' }), post('/downloads', { source: 'nhentai', galleryId: '2' })]);
-  assert.deepEqual(responses.map(response => response.status).sort(), [202, 409]);
+  assert.deepEqual(responses.map(response => response.status).sort((a, b) => a - b), [202, 409]);
   assert.equal(queued, 1);
 });
 test('same-source duplicate guards remain authoritative even with an override', async () => {
@@ -235,7 +235,7 @@ test('merge API reviews duplicate downloads before queueing and persists per-gal
 });
 test('merge execution rechecks duplicates discovered after queueing before starting images', async () => {
   owned('hitomi');
-  await assert.rejects(prepareMergeDownloads({ id: 1, payload: { downloads: [{ source: 'nhentai', galleryId: '2', title: 'Incoming', chapter: '1' }] } } as any, () => {}), /Possible duplicate/);
+  await assert.rejects(prepareMergeDownloads({ id: 1, payload: { downloads: [{ source: 'nhentai', galleryId: '2', title: 'Incoming', chapter: '1' }] } } as unknown as Parameters<typeof prepareMergeDownloads>[0], () => {}), /Possible duplicate/);
   assert.equal(queued, 0);
 });
 test('duplicate API validates size and providers without fetching galleries', async () => {

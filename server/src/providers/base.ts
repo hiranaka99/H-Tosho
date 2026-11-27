@@ -35,12 +35,12 @@ export abstract class BaseProvider implements MetadataProvider {
   protected describeError(status: number, data: unknown): string {
     let detail = '';
     if (data && typeof data === 'object') {
-      const o = data as Record<string, any>;
-      detail =
-        o?.message ??
-        o?.detail ??
-        (Array.isArray(o?.errors) ? o.errors[0]?.message : undefined) ??
-        (o?.errors?.[0]?.detail ?? '');
+      const o = data as Record<string, unknown>;
+      const firstError = Array.isArray(o.errors) && o.errors.length > 0 && o.errors[0] && typeof o.errors[0] === 'object'
+        ? (o.errors[0] as Record<string, unknown>)
+        : undefined;
+      const rawDetail = o.message ?? o.detail ?? firstError?.message ?? firstError?.detail ?? '';
+      detail = typeof rawDetail === 'string' || typeof rawDetail === 'number' || typeof rawDetail === 'boolean' ? String(rawDetail) : '';
     } else if (typeof data === 'string') {
       detail = data;
     }

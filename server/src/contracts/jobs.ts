@@ -104,8 +104,10 @@ export function validateMergeDownloads(value: unknown): asserts value is MergeSe
   if (value === undefined) return;
   if (!Array.isArray(value)) throw new Error('downloads must be a list of galleries');
   const keys = new Set<string>();
-  for (const entry of value) {
-    if (!entry || !isDoujinSource(entry.source) || typeof entry.galleryId !== 'string' || !entry.galleryId.trim() || typeof entry.title !== 'string') throw new Error('Each merge download needs a supported source, galleryId, and title');
+  for (const item of value as unknown[]) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('Each merge download needs a supported source, galleryId, and title');
+    const entry = item as Record<string, unknown>;
+    if (!isDoujinSource(entry.source) || typeof entry.galleryId !== 'string' || !entry.galleryId.trim() || typeof entry.title !== 'string') throw new Error('Each merge download needs a supported source, galleryId, and title');
     if (entry.url !== undefined) {
       if (typeof entry.url !== 'string') throw new Error('Merge download urls must be strings');
       try {
@@ -171,6 +173,6 @@ export function parseJobCommand(type: unknown, value: unknown): JobCommand {
     validateMergeDownloads(payload.downloads);
     for (const field of ['chapters', 'existingChapters']) if (payload[field] && !Object.values(payload[field] as Record<string, string>).every(validMergeChapter)) throw new Error('Chapter numbers must be positive numbers or blank');
   }
-  if (type === 'merge-series' && (!payload.targetDir && !payload.seriesId || !(payload.sourceFiles as string[] | undefined)?.length && !(payload.downloads as unknown[] | undefined)?.length)) throw new Error('Merge requires a target and at least one archive or gallery');
+  if (type === 'merge-series' && (!payload.targetDir && !payload.seriesId || !payload.sourceFiles?.length && !(Array.isArray(payload.downloads) && payload.downloads.length))) throw new Error('Merge requires a target and at least one archive or gallery');
   return { type, payload } as JobCommand;
 }

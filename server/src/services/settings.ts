@@ -415,19 +415,26 @@ export const DEFAULT_DOWNLOADER: DownloaderSettings = {
 export function parseDownloaderSettings(value: unknown): DownloaderSettings | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const s = value as Record<string, unknown>;
-  const mappings = s.libraryPathMappings === undefined ? [] : s.libraryPathMappings;
-  if (!Array.isArray(mappings) || mappings.some((m) =>
-    !m || typeof m !== 'object' || typeof m.kavitaPath !== 'string' || typeof m.localPath !== 'string'
-    || !(path.posix.isAbsolute(m.kavitaPath.trim()) || path.win32.isAbsolute(m.kavitaPath.trim()))
-    || !path.isAbsolute(m.localPath.trim()) || m.kavitaPath.includes('\0') || m.localPath.includes('\0')
-    || m.kavitaPath.replace(/\\/g, '/').split('/').some((segment: string) => segment === '..' || segment === '.')
-  )) return null;
-  const libraryPathMappings: LibraryPathMapping[] = mappings.map((m) => ({ kavitaPath: m.kavitaPath.trim(), localPath: m.localPath.trim() }));
+  const rawMappings = s.libraryPathMappings === undefined ? [] : s.libraryPathMappings;
+  if (!Array.isArray(rawMappings)) return null;
+  const libraryPathMappings: LibraryPathMapping[] = [];
+  for (const m of rawMappings as unknown[]) {
+    if (!m || typeof m !== 'object') return null;
+    const { kavitaPath, localPath } = m as Record<string, unknown>;
+    if (
+      typeof kavitaPath !== 'string' || typeof localPath !== 'string'
+      || !(path.posix.isAbsolute(kavitaPath.trim()) || path.win32.isAbsolute(kavitaPath.trim()))
+      || !path.isAbsolute(localPath.trim()) || kavitaPath.includes('\0') || localPath.includes('\0')
+      || kavitaPath.replace(/\\/g, '/').split('/').some((segment) => segment === '..' || segment === '.')
+    ) return null;
+    libraryPathMappings.push({ kavitaPath: kavitaPath.trim(), localPath: localPath.trim() });
+  }
   const rootKey = (p: string) => {
     const normalized = p.replace(/\\/g, '/').replace(/\/+$/, '');
     return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
   };
   if (new Set(libraryPathMappings.map((m) => rootKey(m.kavitaPath))).size !== libraryPathMappings.length) return null;
+  const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && (v as unknown[]).every((tag) => typeof tag === 'string');
   if (
     typeof s.downloadDirectory !== 'string' ||
     (s.format !== 'cbz' && s.format !== 'folder') ||
@@ -436,9 +443,9 @@ export function parseDownloaderSettings(value: unknown): DownloaderSettings | nu
     !Number.isFinite(s.requestDelayMs) || Number(s.requestDelayMs) < 0 || Number(s.requestDelayMs) > 60_000 ||
     typeof s.autoSyncKavita !== 'boolean' ||
     typeof s.nhentaiApiKey !== 'string' ||
-    !Array.isArray(s.nhentaiBannedTags) || s.nhentaiBannedTags.some((tag) => typeof tag !== 'string') ||
-    !Array.isArray(s.hitomiBannedTags) || s.hitomiBannedTags.some((tag) => typeof tag !== 'string') ||
-    !Array.isArray(s.ehentaiBannedTags) || s.ehentaiBannedTags.some((tag) => typeof tag !== 'string')
+    !isStringArray(s.nhentaiBannedTags) ||
+    !isStringArray(s.hitomiBannedTags) ||
+    !isStringArray(s.ehentaiBannedTags)
   ) return null;
   return {
     downloadDirectory: s.downloadDirectory,

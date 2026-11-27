@@ -58,7 +58,7 @@ doujinProviders.hitomi = {
       tags: [], artists: ['Following Fixture Artist'], pageCount: 28,
     }));
   },
-  async searchChunk(query, cursor, limit, sort, opts, signal) {
+  async searchChunk(query, _cursor, limit, _sort, _opts, _signal) {
     if (query === UNIFIED_OK || query === UNIFIED_PARTIAL) {
       const items = query === UNIFIED_OK
         ? [
@@ -89,7 +89,7 @@ doujinProviders.hitomi = {
 doujinProviders.nhentai = {
   ...doujinProviders.nhentai,
   async search() { throw new Error('Live provider queries are disabled in browser tests'); },
-  async searchChunk(query, cursor, limit, sort, opts, signal) {
+  async searchChunk(query, _cursor, _limit, _sort, _opts, _signal) {
     if (query === `artist:"e2e-unified"`) {
       // Same fingerprint as hitomi's e2e-unified-1: groups into one entry.
       return unifiedChunk([

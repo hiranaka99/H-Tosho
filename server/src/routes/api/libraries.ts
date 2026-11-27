@@ -27,7 +27,7 @@ api.put('/libraries/:id/override', async (c) => {
   setLibraryOverride({
     libraryId: id,
     priority: (body.priority as string[] | undefined) ?? cur.priority,
-    autoMatch: (body.autoMatch as boolean | undefined) ?? cur.autoMatch });
+    autoMatch: body.autoMatch ?? cur.autoMatch });
   return c.json({ ok: true });
 });
 

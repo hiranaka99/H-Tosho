@@ -29,15 +29,17 @@ export default function NavigationGuardDialog({ blocker, drafts }: { blocker: Bl
             setError('');
             if (blocker.state === 'blocked') blocker.proceed();
           }}>Discard</Button>
-          <Button disabled={!drafts.canSave || saving} onClick={async () => {
-            setSaving(true);
-            setError('');
-            try {
-              await drafts.saveAll();
-              if (blocker.state === 'blocked') blocker.proceed();
-            } catch (cause) {
-              setError(cause instanceof Error ? cause.message : String(cause));
-            } finally { setSaving(false); }
+          <Button disabled={!drafts.canSave || saving} onClick={() => {
+            void (async () => {
+              setSaving(true);
+              setError('');
+              try {
+                await drafts.saveAll();
+                if (blocker.state === 'blocked') blocker.proceed();
+              } catch (cause) {
+                setError(cause instanceof Error ? cause.message : String(cause));
+              } finally { setSaving(false); }
+            })();
           }}>{saving ? 'Saving…' : 'Save & leave'}</Button>
         </div>
       </div>

@@ -35,7 +35,7 @@ const [first, second] = await Promise.all([
 const session = (first.status === 201 ? first : second).headers.get('set-cookie')!.split(';', 1)[0];
 
 test('concurrent setup admits exactly one account', () => {
-  assert.deepEqual([first.status, second.status].sort(), [201, 409]);
+  assert.deepEqual([first.status, second.status].sort((a, b) => a - b), [201, 409]);
 });
 
 test('repeated failed logins are throttled, even for the right password', async () => {

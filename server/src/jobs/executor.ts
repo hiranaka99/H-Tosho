@@ -1,4 +1,4 @@
-import { archiveMutations, archiveResource } from '../lib/mutations.js';
+import { archiveMutations, archiveResource, libraryMutations } from '../lib/mutations.js';
 import { inheritFieldPoliciesOwned } from '../services/fieldPolicies.js';
 import { resolveMergeProtection, requireMergeProtection, MergeChapterCache } from '../services/mergeProtection.js';
 import { withMetadataHistory, type MetadataJournal } from '../services/metadataHistory.js';
@@ -8,7 +8,6 @@ import { upsertMatch } from '../services/matchRecords.js';
 import { rememberTargets, rememberLibraries, rememberAvailableLibraries, rememberSeriesLibrary, throwIfJobCancelled, type Target } from './context.js';
 import { rescanLibraryContainingDir, rescanAndVerifyChapter, runKavitaLibraryScan, removeSourceSeriesFromKavita, rescanAndVerifyMerge } from '../kavita/libraryOperations.js';
 import { lastSegment, safeRealpath } from '../lib/paths.js';
-import { libraryMutations } from '../lib/mutations.js';
 import { invalidateDuplicateLibrary } from '../services/galleryDuplicates.js';
 import { eq, inArray } from 'drizzle-orm';
 import path from 'node:path';
@@ -40,6 +39,8 @@ import { prepareMergeDownloads, validMergeChapter, validateMergeDownloads } from
 
 type JobFor<T extends JobType> = Omit<Job, 'type' | 'payload'> & { type: T; payload: JobPayloads[T] & JobExecutionState };
 type ExecutableJob = { [T in JobType]: JobFor<T> }[JobType];
+type MatchingJobType = 'scan-new' | 'match-unmatched' | 'match-library' | 'match-series' | 'sync-series' | 'clear-overrides';
+type MatchingJob = Omit<Job, 'type'> & { type: MatchingJobType };
 
 interface MatchResult {
   seriesId: number;
@@ -281,11 +282,17 @@ async function executeTypedJob(typed: ExecutableJob, job: Job, log: LogFn, signa
       if (!client) throw new Error('Kavita is not configured');
       return runApplySeries(client, typed, log, signal);
     }
-    default: return runMatchingJob(typed, log, signal);
+    case 'scan-new':
+    case 'match-unmatched':
+    case 'match-library':
+    case 'match-series':
+    case 'sync-series':
+    case 'clear-overrides':
+      return runMatchingJob(typed, log, signal);
   }
 }
 
-async function runMatchingJob(job: Job, log: LogFn, signal?: AbortSignal): Promise<JobResult> {
+async function runMatchingJob(job: MatchingJob, log: LogFn, signal?: AbortSignal): Promise<JobResult> {
   const client = connectedClientOrNull();
   if (!client) throw new Error('Kavita is not configured');
 
@@ -331,7 +338,7 @@ async function runMatchingJob(job: Job, log: LogFn, signal?: AbortSignal): Promi
       );
       const listings = await mapLimit(libs, 4, async (lib) => {
         if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled();
-        return { lib, series: (await client.getSeries(lib.id)) as { id: number; name: string }[] };
+        return { lib, series: await client.getSeries(lib.id) };
       });
       if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled();
       const liveIds = new Set<number>();
@@ -378,7 +385,7 @@ async function runMatchingJob(job: Job, log: LogFn, signal?: AbortSignal): Promi
       const statusBySeries = new Map(rows.map((r) => [r.kavitaSeriesId, r.status]));
       const listings = await mapLimit(libs, 4, async (lib) => {
         if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled();
-        return { lib, series: (await client.getSeries(lib.id)) as { id: number; name: string }[] };
+        return { lib, series: await client.getSeries(lib.id) };
       });
       if (jobQueue.isCancelRequested(job.id)) throw new JobCancelled();
       for (const { lib, series } of listings) {
@@ -436,8 +443,6 @@ async function runMatchingJob(job: Job, log: LogFn, signal?: AbortSignal): Promi
       summary.cleared = libIds.length;
       return summary;
     }
-    default:
-      throw new Error('Unknown job type: ' + job.type);
   }
 
   rememberTargets(job, targets);
@@ -640,7 +645,7 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
   const chapters = job.payload.chapters;
   await journal?.captureArchives([...new Set([...sourceFiles,...listCbzFiles(targetDir)])]);
   throwIfJobCancelled(job.id);
-  const sourceSeriesIds = job.payload.mergeProtection!.sourceSeriesIds.filter(id => id !== job.payload.mergeProtection!.targetSeriesId);
+  const sourceSeriesIds = job.payload.mergeProtection.sourceSeriesIds.filter(id => id !== job.payload.mergeProtection!.targetSeriesId);
   throwIfJobCancelled(job.id);
   log('info', `Merging ${sourceFiles.length} file(s) into ${targetDir}`);
   const r = await mergeCbzFiles(sourceFiles, targetDir, chapters, stampName ?? lastSegment(targetDir), (source, destination) => {
@@ -705,15 +710,15 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
     await recheck();
     return job.payload.mergeProtection!.targetSeriesId!==id;
   });
-  const verified = await rescanAndVerifyMerge(targetDir, r.moved, log, { job, seriesId: job.payload.mergeProtection!.targetSeriesId ?? null, libraryId: job.payload.mergeProtection!.libraryId ?? null, seriesName: renamedSeries, beforeRename:async id=>{
+  const verified = await rescanAndVerifyMerge(targetDir, r.moved, log, { job, seriesId: job.payload.mergeProtection.targetSeriesId ?? null, libraryId: job.payload.mergeProtection.libraryId ?? null, seriesName: renamedSeries, beforeRename:async id=>{
     await recheck();
     if (job.payload.mergeProtection!.targetSeriesId !== id) throw new Error('Indexed merge target identity changed before its Kavita title could be updated');
   } });
-  if (!verified && job.payload.mergeProtection!.libraryId !== undefined) throw new Error('Merged archives were not verified in Kavita; retry to finish protection inheritance before syncing');
+  if (!verified && job.payload.mergeProtection.libraryId !== undefined) throw new Error('Merged archives were not verified in Kavita; retry to finish protection inheritance before syncing');
   if (verified) {
     await recheck();
-    if (job.payload.mergeProtection!.targetSeriesId!==verified.id || job.payload.mergeProtection!.libraryId!==verified.libraryId) throw new Error('Verified merge target ownership changed before protection inheritance');
-    const protection=job.payload.mergeProtection!;
+    if (job.payload.mergeProtection.targetSeriesId!==verified.id || job.payload.mergeProtection.libraryId!==verified.libraryId) throw new Error('Verified merge target ownership changed before protection inheritance');
+    const protection=job.payload.mergeProtection;
     const policy=inheritFieldPoliciesOwned(verified.id,protection.inheritedFields,protection.connectionKey,protection.policies);
     protection.inheritedFields=policy.lockedFields;
     protection.policies=[...protection.policies.filter(saved=>saved.seriesId!==verified.id),{seriesId:verified.id,revision:policy.revision,lockedFields:policy.lockedFields}];
@@ -726,7 +731,7 @@ async function runMergeSeriesJob(job: JobFor<'merge-series'>, log: LogFn, signal
   if (r.failed.length || chapterEditFailures) throw new Error('Merge metadata was only partially committed. Protection was retained; retry this job to finish remaining archive edits.');
   if (job.payload.downloads?.length && verified) {
     try { queueDownloadedMatchDiscovery(targetDir, renamedSeries ?? undefined); }
-    catch (error) { log('warn', `Could not queue match discovery: ${error instanceof Error ? error.message : error}`); }
+    catch (error) { log('warn', `Could not queue match discovery: ${error instanceof Error ? error.message : String(error)}`); }
   }
   return { processed: r.moved.length, matched: 0, failed: r.failed.length + chapterEditFailures,...(verified ? {} : {verificationSkipped:true}) };
 }

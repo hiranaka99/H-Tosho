@@ -147,7 +147,7 @@ test('cancelling a queued caller returns promptly without bypassing or poisoning
 test('the HTTP helper preserves caller cancellation during an in-flight request', async () => {
   const controller = new AbortController(), reason = new Error('Cancelled fetch');
   globalThis.fetch = async (_input, init) => new Promise((_resolve, reject) => {
-    init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason), { once: true });
+    init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason instanceof Error ? init!.signal!.reason : new Error('aborted')), { once: true });
   });
   const request = fetchJson('https://example.test', { signal: controller.signal });
   controller.abort(reason);

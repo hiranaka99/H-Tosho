@@ -18,15 +18,16 @@ export function parseEhentaiGdata(body: string): EhentaiGdataEntry[] | null {
   }
   if (!data || typeof data !== 'object' || !('gmetadata' in data) || !Array.isArray(data.gmetadata)) return null;
   const entries: EhentaiGdataEntry[] = [];
-  for (const item of data.gmetadata) {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+  for (const rawItem of data.gmetadata as unknown[]) {
+    if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) return null;
+    const item = rawItem as Record<string, unknown>;
     const fields = new Map<string, string>();
     for (const [key, value] of Object.entries(item)) {
       if (typeof value === 'string' || typeof value === 'number') fields.set(key, String(value));
     }
     const tags: EhentaiGdataEntry['tags'] = [];
     if (Array.isArray(item.tags)) {
-      for (const tag of item.tags) {
+      for (const tag of item.tags as unknown[]) {
         if (typeof tag !== 'string' || !tag.trim()) continue;
         const colon = tag.indexOf(':');
         tags.push({ namespace: colon >= 0 ? tag.slice(0, colon) : 'other', value: tag.slice(colon + 1) });

@@ -11,6 +11,32 @@ const MAX_SEARCH_LENGTH = 64;
  * MyAnimeList - REST API v2. Requires a Client ID (obtain at
  * https://myanimelist.net/devs). Auth uses `X-MAL-CLIENT-ID`.
  */
+interface MalImageSet {
+  large_image_url?: string;
+  image_url?: string;
+}
+
+interface MalNode {
+  id?: number | string;
+  mal_id?: number | string;
+  title?: string;
+  alternative_titles?: { en?: string; ja?: string; synonyms?: string[] };
+  media_type?: string;
+  type?: string;
+  start_date?: string;
+  synopsis?: string;
+  images?: { jpg?: MalImageSet };
+  main_picture?: { large?: string; medium?: string };
+  genres?: { name?: string }[];
+  tags?: { name?: string }[];
+  authors?: { node?: { first_name?: string; last_name?: string }; role?: string }[];
+  status?: string;
+}
+
+interface MalSearchEntry {
+  node?: MalNode;
+}
+
 class MyAnimeListProvider extends BaseProvider {
   id = 'myanimelist';
   name = 'MyAnimeList';
@@ -35,12 +61,12 @@ class MyAnimeListProvider extends BaseProvider {
   async testConnection(): Promise<void> {
     if (!this.credentials?.['clientId']) throw new Error('MyAnimeList: missing Client ID');
     // The /manga endpoint requires a `q` search term; use one to validate the key.
-    const data = await this.get<{ data: any[] }>('/manga?q=test&limit=1', { headers: this.headers() });
+    const data = await this.get<{ data?: MalSearchEntry[] }>('/manga?q=test&limit=1', { headers: this.headers() });
     if (!Array.isArray(data?.data)) throw new Error('MyAnimeList: bad response (check Client ID)');
   }
 
   /** Cover URL from either the approved-client `images.jpg` shape or the stub `main_picture` shape. */
-  private coverUrl(node: any): string | undefined {
+  private coverUrl(node: MalNode | undefined): string | undefined {
     return (
       node?.images?.jpg?.large_image_url ??
       node?.images?.jpg?.image_url ??
@@ -55,7 +81,7 @@ class MyAnimeListProvider extends BaseProvider {
     const keyword = characters.slice(0, MAX_SEARCH_LENGTH).join('').trimEnd();
     const params = new URLSearchParams({ q: keyword, limit: '20', nsfw: 'true',
       fields: 'alternative_titles,media_type,start_date,synopsis' });
-    const data = await this.get<{ data: any[] }>(`/manga?${params.toString()}`, {
+    const data = await this.get<{ data?: MalSearchEntry[] }>(`/manga?${params.toString()}`, {
       headers: this.headers(),
       ...(signal ? { signal } : {}),
     });
@@ -68,18 +94,19 @@ class MyAnimeListProvider extends BaseProvider {
         one_shot: 'MANGA',
         doujinshi: 'COMIC',
       };
+      const rawType = a.media_type ?? a.type;
       return {
         providerId: this.id,
         // Approved clients expose `mal_id`; the public stub exposes `id`.
-        providerSeriesId: String(a.mal_id ?? a.id),
+        providerSeriesId: String(a.mal_id ?? a.id ?? ''),
         title: a.title ?? 'Unknown',
         altTitles: [...new Set<string>([a.alternative_titles?.en, a.alternative_titles?.ja,
           ...(a.alternative_titles?.synonyms ?? [])].filter((title): title is string => typeof title === 'string' && !!title.trim()))],
-        type: typeMap[a.media_type ?? a.type] ?? 'MANGA',
+        type: (rawType ? typeMap[rawType] : undefined) ?? 'MANGA',
         year: a.start_date ? new Date(a.start_date).getFullYear() : undefined,
         coverUrl: this.coverUrl(a),
         summary: a.synopsis ?? undefined,
-      } as SearchResult;
+      };
     });
   }
 
@@ -88,7 +115,7 @@ class MyAnimeListProvider extends BaseProvider {
     // what the mapping below consumes so the payload stays small.
     const fields =
       'id,title,main_picture,alternative_titles,start_date,synopsis,genres,authors{first_name,last_name},status,media_type';
-    const data = await this.get<{ data: any }>(`/manga/${providerSeriesId}?fields=${encodeURIComponent(fields)}`, {
+    const data = await this.get<{ data?: MalNode } & MalNode>(`/manga/${providerSeriesId}?fields=${encodeURIComponent(fields)}`, {
       headers: this.headers(),
       ...(signal ? { signal } : {}),
     });
@@ -109,9 +136,9 @@ class MyAnimeListProvider extends BaseProvider {
     // (the node itself has no `name`).
     const authors: { name: string; role?: string }[] = (
       node.authors ?? []
-    ).map((p: { node?: { first_name?: string; last_name?: string }; role?: string }) => ({
-      name: `${p?.node?.first_name ?? ''} ${p?.node?.last_name ?? ''}`.trim(),
-      role: p?.role,
+    ).map((p) => ({
+      name: `${p.node?.first_name ?? ''} ${p.node?.last_name ?? ''}`.trim(),
+      role: p.role,
     }));
 
     return {
@@ -124,8 +151,8 @@ class MyAnimeListProvider extends BaseProvider {
       releaseDate,
       summary: node.synopsis?.trim(),
       coverUrl: this.coverUrl(node),
-      genres: (node.genres ?? []).map((g: any) => g.name).filter(Boolean),
-      tags: (node.tags ?? []).map((t: any) => t.name).filter(Boolean),
+      genres: (node.genres ?? []).map((g) => g.name).filter((name): name is string => Boolean(name)),
+      tags: (node.tags ?? []).map((t) => t.name).filter((name): name is string => Boolean(name)),
       writers: authors.filter((p) => p.role === 'Story' || p.role === 'Story & Art').map((p) => p.name).filter(Boolean),
       artists: authors.filter((p) => p.role === 'Art' || p.role === 'Story & Art').map((p) => p.name).filter(Boolean),
       readingDirection: 'RTL',
@@ -147,6 +174,7 @@ function mapMalStatus(status: string | undefined): SeriesMetadata['status'] {
       return 'HIATUS';
     case 'discontinued':
       return 'CANCELLED';
+    case undefined:
     default:
       return 'UNKNOWN';
   }

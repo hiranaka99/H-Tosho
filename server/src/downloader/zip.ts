@@ -286,7 +286,7 @@ export async function buildZipFromFiles(
     failure ??= error;
   }
   try {
-    if (failure !== undefined) throw failure;
+    if (failure !== undefined) throw (failure instanceof Error ? failure : new Error(typeof failure === 'string' ? failure : JSON.stringify(failure) ?? 'Zip build failed'));
     signal?.throwIfAborted();
     await fs.promises.rename(stagingPath, destPath);
   } finally {

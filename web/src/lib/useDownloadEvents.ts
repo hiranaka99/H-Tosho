@@ -85,6 +85,7 @@ export function useDownloadEvents(onStateChange?: (tasks: DownloadTask[]) => voi
 
     es.onmessage = (ev) => {
       try {
+        if (typeof ev.data !== 'string') return;
         const msg = JSON.parse(ev.data) as DownloadEvent;
         if (msg.type === 'snapshot') {
           flush(false);

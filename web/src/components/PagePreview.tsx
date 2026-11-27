@@ -65,7 +65,7 @@ export const PagePreview = React.memo(function PagePreview({ pages, fallbacks, n
   const token = `${src}:${attempt}`;
   const zoom = ZOOM_STEPS[zoomIndex];
   const scrollable = fit === 'width' || zoom > 1;
-  const options = React.useMemo(() => pages.map((_, index) => <option key={index} value={index}>{index + 1}</option>), [pages.length]);
+  const options = React.useMemo(() => Array.from({ length: pages.length }, (_, index) => <option key={index} value={index}>{index + 1}</option>), [pages.length]);
 
   const showPage = React.useCallback((index: number) => setPage(Math.max(0, Math.min(index, lastPage))), [lastPage]);
   const setFit = (next: Fit) => { preferredFit = next; setFitState(next); };
@@ -79,6 +79,7 @@ export const PagePreview = React.memo(function PagePreview({ pages, fallbacks, n
   React.useEffect(() => { if (memoryKey) rememberPage(memoryKey, currentPage); }, [memoryKey, currentPage]);
 
   // Measure the visible stage so fit-width and zoom can size the image in pixels.
+  const hasFailed = failed === token;
   React.useLayoutEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
@@ -87,7 +88,7 @@ export const PagePreview = React.memo(function PagePreview({ pages, fallbacks, n
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [src, failed === token]);
+  }, [src, hasFailed]);
 
   const size = natural?.token === token && viewport && viewport.w > 0 && viewport.h > 0 ? (() => {
     const base = fit === 'width' ? viewport.w / natural.w : Math.min(viewport.w / natural.w, viewport.h / natural.h);
@@ -99,17 +100,18 @@ export const PagePreview = React.memo(function PagePreview({ pages, fallbacks, n
 
   // Zooming keeps the point at the centre of the stage where it was; changing the fit starts at the top.
   const lastSize = React.useRef<{ token: string; fit: Fit; width: number } | null>(null);
+  const sizeWidth = size?.width;
   React.useLayoutEffect(() => {
     const el = viewportRef.current;
     const prev = lastSize.current;
-    lastSize.current = size ? { token, fit, width: size.width } : null;
-    if (!el || !size || !prev || prev.token !== token) return;
+    lastSize.current = sizeWidth !== undefined ? { token, fit, width: sizeWidth } : null;
+    if (!el || sizeWidth === undefined || !prev || prev.token !== token) return;
     if (prev.fit !== fit) { el.scrollTo({ top: 0, left: 0 }); return; }
-    if (prev.width === size.width) return;
-    const ratio = size.width / prev.width;
+    if (prev.width === sizeWidth) return;
+    const ratio = sizeWidth / prev.width;
     el.scrollLeft = (el.scrollLeft + el.clientWidth / 2) * ratio - el.clientWidth / 2;
     el.scrollTop = (el.scrollTop + el.clientHeight / 2) * ratio - el.clientHeight / 2;
-  }, [token, fit, size?.width]);
+  }, [token, fit, sizeWidth]);
 
   React.useEffect(() => {
     if (loaded !== token || failed === token) return;

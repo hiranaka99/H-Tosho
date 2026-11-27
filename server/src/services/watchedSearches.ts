@@ -198,8 +198,8 @@ export function listWatchedSearchFolders(): WatchedSearchFolder[] {
 export function addWatchedSearchFolder(name: string): WatchedSearchFolder {
   if (typeof name !== 'string' || !name.trim() || name.trim().length > 120) throw new FollowingError('Folder names require 1–120 characters.', 400);
   return getDb().transaction(tx => {
-    const max = tx.select({ position: sql<number>`coalesce(max(${schema.watchedSearchFolders.position}), -1)` }).from(schema.watchedSearchFolders).get()!;
-    return tx.insert(schema.watchedSearchFolders).values({ name: name.trim(), position: Number(max.position) + 1 }).returning().get()!;
+    const max = tx.select({ position: sql<number>`coalesce(max(${schema.watchedSearchFolders.position}), -1)` }).from(schema.watchedSearchFolders).get();
+    return tx.insert(schema.watchedSearchFolders).values({ name: name.trim(), position: Number(max?.position ?? -1) + 1 }).returning().get();
   });
 }
 
@@ -368,7 +368,7 @@ export async function checkWatchedSearches(
     try {
       let results: DoujinSearchResult[];
       try {
-        const provider = getDoujinProvider(watch.source as DoujinSource);
+        const provider = getDoujinProvider(watch.source);
         if (!provider) throw new Error(`Unknown source: ${watch.source}`);
         results = (await provider.search(watch.query, FOLLOWING_SEARCH_LIMIT)).slice(0, FOLLOWING_SEARCH_LIMIT);
       } catch (error) {
@@ -532,7 +532,7 @@ export async function checkWatchedSearches(
       if (!claimed) continue;
       const gallery = candidate.gallery;
       const label = [...new Set(current.map(watch => watch.displayName ?? watch.query))].join(', ');
-      const escape = (value: string, limit: number) => value.slice(0, limit).replace(/[\\`*_~\[\]()<>]/g, '\\$&');
+      const escape = (value: string, limit: number) => value.slice(0, limit).replace(/[\\`*_~[\]()<>]/g, '\\$&');
       const title = escape(gallery.title, 100);
       const url = gallery.url && /^https?:\/\//i.test(gallery.url) ? gallery.url.replace(/[()\s]/g, encodeURIComponent) : null;
       const better = betterEditions.get(`${candidate.source}:${gallery.galleryId}`);

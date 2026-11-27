@@ -1067,13 +1067,22 @@ async function moveFileAcross(src: string, dest: string): Promise<void> {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
     const staging = path.join(path.dirname(dest),`.cbzmerge-${randomUUID()}.tmp`);
+    let failed = false;
+    let primaryError: unknown;
     try {
       await fs.promises.copyFile(src, staging);
       await fs.promises.rename(staging, dest);
       await fs.promises.unlink(src);
-    } finally {
-      try { await fs.promises.unlink(staging); } catch(error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    } catch (error) {
+      failed = true;
+      primaryError = error;
     }
+    try {
+      await fs.promises.unlink(staging);
+    } catch (error) {
+      if (!failed && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (failed) throw primaryError;
   }
 }
 
@@ -1162,6 +1171,6 @@ export function editComicInfo(file: string, edit: { xml?: string; fields?: Recor
 /** Stream exact archive identity without buffering the whole CBZ in memory. */
 export async function hashArchiveFile(file:string,signal?:AbortSignal):Promise<string> {
   const hash=createHash('sha256');
-  for await (const chunk of fs.createReadStream(file,{signal})) hash.update(chunk);
+  for await (const chunk of fs.createReadStream(file,{signal}) as AsyncIterable<Buffer>) hash.update(chunk);
   return hash.digest('hex');
 }

@@ -26,7 +26,13 @@ export function isRestorableMetadataField(value: unknown): value is RestorableMe
 export function metadataValueKey(cell: RecordedValue | undefined, includeLock = true): string {
   if (!cell) return 'uncaptured';
   const value = Array.isArray(cell.value)
-    ? cell.value.map(item => item && typeof item === 'object' ? item.name ?? item.title : item).sort((a, b) => (JSON.stringify(a) ?? 'undefined').localeCompare(JSON.stringify(b) ?? 'undefined'))
+    ? (cell.value as unknown[]).map((item): unknown => {
+      if (item && typeof item === 'object') {
+        const rec = item as Record<string, unknown>;
+        return rec.name ?? rec.title;
+      }
+      return item;
+    }).sort((a, b) => (JSON.stringify(a) ?? 'undefined').localeCompare(JSON.stringify(b) ?? 'undefined'))
     : cell.value;
   return JSON.stringify({ present: cell.present, ...(cell.present ? { value } : {}), ...(includeLock && cell.nativeLocked !== undefined ? { nativeLocked: cell.nativeLocked } : {}) });
 }
@@ -44,9 +50,10 @@ export function getMetadataRestoreFieldAvailability(field: string, cell: Recorde
   if (!Object.prototype.hasOwnProperty.call(cell, 'value')) return unavailable('The captured field value is missing.');
   if (field === 'genres' || field === 'tags' || field === 'writers' || field === 'artists') {
     if (!Array.isArray(cell.value)) return unavailable('Kavita requires a list for this field; null cannot be restored as an empty list.');
-    const names = cell.value.map(item => typeof item === 'string' ? item
-      : item && typeof item === 'object' ? item[field === 'genres' || field === 'tags' ? 'title' : 'name'] : undefined);
-    if (names.some(name => typeof name !== 'string' || !name.trim())) return unavailable('Every captured list entry must have a non-blank name.');
+    const rawNames = (cell.value as unknown[]).map((item): unknown => typeof item === 'string' ? item
+      : item && typeof item === 'object' ? (item as Record<string, unknown>)[field === 'genres' || field === 'tags' ? 'title' : 'name'] : undefined);
+    if (!rawNames.every((name): name is string => typeof name === 'string' && Boolean(name.trim()))) return unavailable('Every captured list entry must have a non-blank name.');
+    const names = rawNames;
     if (names.some(name => name.trim() !== name)) return unavailable('Kavita trims list entry names; surrounding whitespace cannot be restored exactly.');
     if (new Set(names).size !== names.length) return unavailable('Kavita metadata lists cannot contain duplicate entries.');
   } else if (field === 'releaseDate') {

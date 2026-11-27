@@ -29,7 +29,7 @@ export function jobRecovery(job: { status: string; type: string; payload: Record
     const fields = job.payload.fields && typeof job.payload.fields === 'object' ? job.payload.fields as Record<string, unknown> : {};
     const title = typeof job.payload.selectedTitle === 'string' ? job.payload.selectedTitle : typeof fields.Series === 'string' ? fields.Series : '';
     if (title.trim()) actions.push({ label: 'Find conflicting title', href: `${target}${hasSeries ? '&' : '?'}q=${encodeURIComponent(title.trim())}` });
-    if (job.type === 'edit-comicinfo' && (hasSeries || file)) actions.unshift({ label: 'Edit ComicInfo title', href: `/libraries?${editor}` });
+    if (job.type === 'edit-comicinfo' && (hasSeries || file)) actions.unshift({ label: 'Edit ComicInfo title', href: `/libraries?${editor.toString()}` });
     else if (hasSeries) actions.unshift({ label: 'Choose another title', href: `${target}&action=identify` });
     return { explanation: 'Kavita already has a series with that title. Inspect the series or choose a different title before retrying.', actions };
   }

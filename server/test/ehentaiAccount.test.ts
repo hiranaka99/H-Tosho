@@ -255,7 +255,7 @@ test('a corrupted key is an explicit error, not a silent reset', async () => {
   }
 
   // The in-process record is intact: a re-save repairs and the view clears.
-  const current = (async () => (await (await app.request('/api/settings/ehentai', json('GET'))).json()))();
+  const current = (async () => (await app.request('/api/settings/ehentai', json('GET'))).json())();
   const revision = (await current).revision;
   const repair = await app.request('/api/settings/ehentai', json('PUT', { site: 'exhentai', session: SESSION, expectedRevision: revision }));
   assert.equal(repair.status, 200);

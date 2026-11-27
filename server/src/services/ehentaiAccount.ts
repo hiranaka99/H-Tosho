@@ -232,7 +232,7 @@ export function onEhentaiAccountChange(listener: AccountListener): () => void {
 }
 
 function notifyAccountChange(): void {
-  for (const listener of [...accountListeners]) {
+  for (const listener of Array.from(accountListeners)) {
     try {
       listener();
     } catch {

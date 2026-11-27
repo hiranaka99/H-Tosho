@@ -44,7 +44,7 @@ export function parseMergeProtectionRequest(value: unknown): MergeProtectionRequ
   if (body.targetDir !== undefined && (typeof body.targetDir !== 'string' || !path.isAbsolute(body.targetDir) || body.targetDir.includes('\0'))) throw new MergeProtectionError('An absolute target folder is required', 400);
   if (body.seriesName !== undefined && (typeof body.seriesName !== 'string' || !body.seriesName.trim() || /[\u0000-\u001f\u007f]/.test(body.seriesName))) throw new MergeProtectionError('Invalid merged series name', 400);
   if (!body.seriesId && !body.targetDir) throw new MergeProtectionError('Choose a merge target', 400);
-  return { ...body, ...(typeof body.seriesName === 'string' ? {seriesName:body.seriesName.trim()} : {}) } as MergeProtectionRequest;
+  return { ...body, ...(typeof body.seriesName === 'string' ? {seriesName:body.seriesName.trim()} : {}) };
 }
 
 /**
@@ -269,7 +269,7 @@ export async function resolveMergeProtection(client: KavitaClient, request: Merg
   const warnings = unassociatedArchives ? [`${unassociatedArchives} incoming archive(s) have no indexed series policy. New downloads are also outside source series protection until indexed.`] : [];
   const blocked = series.filter(item => item.titleChange && item.lockedFields.includes('title'));
   if (blocked.length) warnings.push('A protected title would change in ComicInfo.Series or Kavita. Explicitly unlock each affected title, then refresh this review.');
-  const containingLibraries=libraries.filter(lib => (lib.paths ?? (lib.path ? [lib.path] : [])).some(root => {const local=map(root);return !!local && pathContains(canonicalMergePath(local),canonicalMergePath(targetDir!));}));
+  const containingLibraries=libraries.filter(lib => (lib.paths ?? (lib.path ? [lib.path] : [])).some(root => {const local=map(root);return !!local && pathContains(canonicalMergePath(local),canonicalMergePath(targetDir));}));
   if (containingLibraries.length>1) throw new MergeProtectionError('Multiple Kavita libraries contain this target folder; choose an unambiguous mapped library before merging');
   const libraryId = target?.libraryId ?? containingLibraries[0]?.id;
   const indexable = libraryId !== undefined || !sourceIds.size && !inheritedFields.length;

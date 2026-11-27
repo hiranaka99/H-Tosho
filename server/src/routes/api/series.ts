@@ -7,7 +7,7 @@ import { retainedCoverAsset } from '../../services/metadataCovers.js';
 import { retainedPreviewCoverAsset } from '../../services/metadataCoverRestore.js';
 import { hasPendingMergeRecovery, recoverMergeProtectionForSeriesOwned } from '../../services/mergeProtection.js';
 import { libraryMutations } from '../../lib/mutations.js';
-import { parseJobCommand } from '../../contracts/jobs.js';
+import { parseJobCommand, type JobPayloads } from '../../contracts/jobs.js';
 import { Hono } from 'hono';
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
 import { getDb, schema } from '../../db/index.js';
@@ -102,7 +102,7 @@ api.get('/series/:id/field-locks', async (c) => {
 api.put('/series/:id/field-locks', async (c) => {
   const id = intParam(c.req.param('id'));
   if (id === null || id <= 0) return c.json({ error: 'Invalid series id' }, 400);
-  const body = await c.req.json().catch(() => null);
+  const body = await c.req.json<{ lockedFields?: unknown; expectedRevision?: unknown } | null>().catch(() => null);
   if (!body || typeof body !== 'object') return c.json({ error: 'Invalid field policy' }, 400);
   try {
     const client = connectedClient();
@@ -181,10 +181,10 @@ api.get('/series/:id', async (c) => {
       client.getSeriesMetadata(seriesId).catch(() => null),
     ]);
     const row = getDb().select().from(schema.seriesMatches).where(eq(schema.seriesMatches.kavitaSeriesId, seriesId)).get();
-    let metadata = null;
+    let metadata: unknown = null;
     if (row?.metadataJson) {
       try {
-        metadata = JSON.parse(row.metadataJson);
+        metadata = JSON.parse(row.metadataJson) as unknown;
       } catch {
         metadata = null;
       }
@@ -296,23 +296,29 @@ api.post('/series/:id/manual-match', async (c) => {
 api.post('/series/:id/apply', async (c) => {
   const client = connectedClient();
   if (!client) return c.json({ error: 'Kavita not configured' }, 503);
-  const body = await c.req.json();
-  if (!body || typeof body !== 'object' || !body.providerId || !body.providerSeriesId) return c.json({ error: 'providerId and providerSeriesId required' }, 400);
+  const raw = await c.req.json<unknown>();
+  const body = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  if (!body || !body.providerId || !body.providerSeriesId) return c.json({ error: 'providerId and providerSeriesId required' }, 400);
   const seriesId = intParam(c.req.param('id'));
   if (seriesId === null) return c.json({ error: 'Invalid series id' }, 400);
-  try { parseJobCommand('apply-series', { ...body, seriesId }); } catch (error) { return c.json({ error: errMsg(error) }, 400); }
+  let commandPayload: JobPayloads['apply-series'];
+  try {
+    const command = parseJobCommand('apply-series', { ...body, seriesId });
+    if (command.type !== 'apply-series') return c.json({ error: 'Invalid apply command' }, 400);
+    commandPayload = command.payload;
+  } catch (error) { return c.json({ error: errMsg(error) }, 400); }
   const targetPayload: JobPayload = { seriesId };
   const context = await resolveJobContext(targetPayload, client);
   const id = jobQueue.enqueue('apply-series', {
     seriesId,
     context,
     contextPendingSeriesIds: targetPayload.contextPendingSeriesIds,
-    providerId: body.providerId,
-    providerSeriesId: body.providerSeriesId,
-    selectedTitle: body.selectedTitle,
-    excludedFields: body.excludedFields,
-    cover: body.cover,
-    score: body.score });
+    providerId: commandPayload.providerId,
+    providerSeriesId: commandPayload.providerSeriesId,
+    selectedTitle: commandPayload.selectedTitle,
+    excludedFields: commandPayload.excludedFields,
+    cover: commandPayload.cover,
+    score: commandPayload.score });
   return c.json({ id });
 });
 

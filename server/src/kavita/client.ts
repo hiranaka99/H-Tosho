@@ -3,13 +3,16 @@ import { onSettingChange } from '../services/settings.js';
 import {
   KAVITA_MIN_SERVER_VERSION,
   KavitaLibraryType,
+  parseVolumeCoverDto,
   type KavitaChapterDto,
+  type KavitaCoverImage,
   type KavitaLibrary,
   type KavitaLibraryDto,
   type KavitaPersonDto,
   type KavitaSeries,
   type KavitaSeriesDto,
   type KavitaVolume,
+  type KavitaVolumeCoverDto,
   type KavitaVolumeDto,
   type KavitaSeriesMetadataDto,
   type KavitaServerInfo,
@@ -22,7 +25,6 @@ import {
   type MediaFormat,
   type SeriesMetadataPayload,
 } from './types.js';
-import { parseVolumeCoverDto, type KavitaVolumeCoverDto, type KavitaCoverImage } from './types.js';
 import type { MetadataSnapshot, RecordedValue } from '../contracts/metadataHistory.js';
 import { MAX_RETAINED_COVER_BYTES } from '../contracts/metadataCovers.js';
 import {
@@ -1017,12 +1019,14 @@ export class KavitaClient {
     const length = response.headers.get('content-length');
     if (length !== null && Number(length) > MAX_RETAINED_COVER_BYTES) { await response.body?.cancel(); throw new Error('Cover exceeds the 5 MiB history asset limit'); }
     if (!response.body) throw new Error('Cover history response has no image body');
-    const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+    const reader = (response.body as { getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(): Promise<unknown>; releaseLock(): void } }).getReader();
+    const chunks: Uint8Array[] = [];
     let size = 0;
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
+        if (!value) continue;
         size += value.byteLength;
         if (size > MAX_RETAINED_COVER_BYTES) throw new Error('Cover exceeds the 5 MiB history asset limit');
         chunks.push(value);

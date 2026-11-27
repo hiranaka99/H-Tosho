@@ -64,10 +64,11 @@ export function SettingsDraftsProvider({ children }: { children: React.ReactNode
       subscribeEntry: (id, listener) => {
         let set = entryListeners.get(id);
         if (!set) { set = new Set(); entryListeners.set(id, set); }
-        set.add(listener);
+        const idListeners = set;
+        idListeners.add(listener);
         return () => {
-          set!.delete(listener);
-          if (set!.size === 0) entryListeners.delete(id);
+          idListeners.delete(listener);
+          if (idListeners.size === 0) entryListeners.delete(id);
         };
       },
       entryRevision: (id) => entries.get(id)?.revision ?? 0,

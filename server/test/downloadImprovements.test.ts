@@ -328,7 +328,7 @@ test('pausing an active download frees its concurrency slot for queued work and 
     if (url === 'https://cdn.test/slot-a/1.jpg' && blockPage1) {
       page1Reached.resolve();
       await new Promise<void>((_, reject) => {
-        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason ?? new Error('aborted')), { once: true });
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason instanceof Error ? init.signal.reason : new Error('aborted')), { once: true });
       });
     }
     return new Response(Buffer.from(`img-${url}`), { status: 200, headers: { 'content-type': 'image/jpeg' } });
@@ -532,7 +532,7 @@ test('prioritize, pauseAll, resumeAll, retryFailed, clearCancelled, onSettingsCh
   globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
     shutStarted.resolve();
     await new Promise<void>((_, reject) => {
-      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason ?? new Error('aborted')), { once: true });
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason instanceof Error ? init.signal.reason : new Error('aborted')), { once: true });
     });
     return new Response(Buffer.from('never'));
   }) as typeof fetch;

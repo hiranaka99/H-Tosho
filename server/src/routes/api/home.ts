@@ -14,8 +14,8 @@ function firstHistoryError(detailsJson: string | null): string | null {
   if (!detailsJson) return null;
   try {
     const errors = (JSON.parse(detailsJson) as { errors?: unknown }).errors;
-    const first = Array.isArray(errors) ? errors.find(error => typeof error === 'string' && error.trim()) : undefined;
-    return typeof first === 'string' ? first.trim() : null;
+    const first = Array.isArray(errors) ? (errors as unknown[]).find((error): error is string => typeof error === 'string' && error.trim().length > 0) : undefined;
+    return first ? first.trim() : null;
   } catch { return null; }
 }
 
@@ -36,7 +36,7 @@ api.post('/home/matches/scan', c => {
 
 api.post('/home/matches/:id/reject', async c => {
   const id = intParam(c.req.param('id'));
-  const body = await c.req.json().catch(() => null);
+  const body = await c.req.json<{ providerId?: unknown; providerSeriesId?: unknown } | null>().catch(() => null);
   if (id === null || !body || typeof body.providerId !== 'string' || typeof body.providerSeriesId !== 'string' || !body.providerId.trim() || !body.providerSeriesId.trim()) return c.json({ error: 'Provide a series and provider candidate.' }, 400);
   if (!rejectMatchCandidate(id, body.providerId, body.providerSeriesId)) return c.json({ error: 'This candidate changed. Refresh and try again.' }, 409);
   return c.json({ ok: true });
@@ -44,7 +44,7 @@ api.post('/home/matches/:id/reject', async c => {
 
 api.delete('/home/matches/:id/reject', async c => {
   const id = intParam(c.req.param('id'));
-  const body = await c.req.json().catch(() => null);
+  const body = await c.req.json<{ providerId?: unknown; providerSeriesId?: unknown } | null>().catch(() => null);
   if (id === null || !body || typeof body.providerId !== 'string' || typeof body.providerSeriesId !== 'string' || !body.providerId.trim() || !body.providerSeriesId.trim()) return c.json({ error: 'Provide a series and provider candidate.' }, 400);
   restoreMatchCandidate(id, body.providerId, body.providerSeriesId);
   return c.json({ ok: true });

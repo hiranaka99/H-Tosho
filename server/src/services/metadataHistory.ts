@@ -35,7 +35,7 @@ export async function captureMetadataSnapshotWithRaw(client: KavitaClient, serie
     const source = (['title', 'sortName', 'localizedName'].includes(field) ? series : metadata) as unknown as Record<string, unknown>;
     fields[field] = {
       present: Object.hasOwn(source, key), ...(Object.hasOwn(source, key) ? { value: source[key] } : {}),
-      ...(lock && typeof source[lock] === 'boolean' ? { nativeLocked: source[lock] as boolean } : {}),
+      ...(lock && typeof source[lock] === 'boolean' ? { nativeLocked: source[lock] } : {}),
     };
   }
   return {
@@ -68,8 +68,20 @@ export interface MetadataJournal {
 
 function comparable(value: unknown): unknown {
   if (!Array.isArray(value)) return value;
-  return value.map(item => typeof item === 'object' && item !== null ? item.name ?? item.title : item)
-    .map(item => typeof item === 'string' ? item.trim().toLowerCase() : item).sort();
+  const asText = (item: unknown) => (item === null || item === undefined ? '' : typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean' ? String(item) : JSON.stringify(item) ?? '');
+  return (value as unknown[]).map((item): unknown => {
+    if (typeof item === 'object' && item !== null) {
+      const rec = item as Record<string, unknown>;
+      return rec.name ?? rec.title;
+    }
+    return item;
+  })
+    .map(item => typeof item === 'string' ? item.trim().toLowerCase() : item)
+    .sort((a, b) => {
+      const sa = asText(a);
+      const sb = asText(b);
+      return sa < sb ? -1 : sa > sb ? 1 : 0;
+    });
 }
 
 function unverifiedFields(after: MetadataSnapshot, desired: Record<string, unknown>): string[] {
@@ -100,7 +112,7 @@ export async function withMetadataHistory<T>(client: KavitaClient, seriesId: num
   const recordCoverField = () => {
     if (coverFieldRecorded) return;
     const row = db.select({ fieldsJson: schema.metadataOperations.fieldsJson }).from(schema.metadataOperations).where(eq(schema.metadataOperations.id, id)).get()!;
-    const fields: string[] = JSON.parse(row.fieldsJson);
+    const fields = JSON.parse(row.fieldsJson) as string[];
     if (!fields.includes('cover')) db.update(schema.metadataOperations).set({ fieldsJson: JSON.stringify([...fields, 'cover']) }).where(eq(schema.metadataOperations.id, id)).run();
     coverFieldRecorded=true;
   };
@@ -159,10 +171,10 @@ export async function withMetadataHistory<T>(client: KavitaClient, seriesId: num
 
 type Row = Omit<typeof schema.metadataOperations.$inferSelect, 'desiredJson' | 'connectionKey' | 'seriesId' | 'policyRevision' | 'version'>;
 function summary(row:Row, cover?: CoverHistory, parsedBefore?: MetadataSnapshot, parsedAfter?: MetadataSnapshot | null):MetadataHistoryEntry {
-  const before:MetadataSnapshot=parsedBefore ?? JSON.parse(row.beforeJson);
-  const after:MetadataSnapshot|null=parsedAfter !== undefined ? parsedAfter : (row.afterJson?JSON.parse(row.afterJson):null);
+  const before = parsedBefore ?? (JSON.parse(row.beforeJson) as MetadataSnapshot);
+  const after = parsedAfter !== undefined ? parsedAfter : (row.afterJson ? JSON.parse(row.afterJson) as MetadataSnapshot : null);
   return {id:row.id,sequence:row.sequence,origin:row.origin,status:row.status,createdAt:row.createdAt,finishedAt:row.finishedAt,
-    fields:JSON.parse(row.fieldsJson),changedFields:[...(after?Object.keys(before.fields).filter(field=>metadataValueKey(before.fields[field])!==metadataValueKey(after.fields[field])):[]),...((cover?.series?.changed || cover?.volumes.some(volume => volume.changed))?['cover']:[])],message:row.message,jobId:row.jobId,restoredFromOperationId:row.restoredFromOperationId};
+    fields:JSON.parse(row.fieldsJson) as string[],changedFields:[...(after?Object.keys(before.fields).filter(field=>metadataValueKey(before.fields[field])!==metadataValueKey(after.fields[field])):[]),...((cover?.series?.changed || cover?.volumes.some(volume => volume.changed))?['cover']:[])],message:row.message,jobId:row.jobId,restoredFromOperationId:row.restoredFromOperationId};
 }
 export function listMetadataHistory(seriesId:number,cursor?:number) {
   const rows=getDb().select({
@@ -197,7 +209,7 @@ export function metadataHistoryDetail(seriesId:number,id:string):MetadataHistory
       return {...result,available:false,nativeLockAvailable:false,reason:row.status === 'running'
         ? 'Source operation is still running' : 'After snapshot is unverified; per-field verification was not recorded'};
     }
-    return policy.lockedFields.includes(field as typeof policy.lockedFields[number])
+    return policy.lockedFields.includes(field)
       ? {...result, available:false, reason:'Protected by H-Tosho field policy', nativeLockAvailable:false} : result;
   });
   return {...summary(row, covers, before, after),before:publicSnapshot(before),after:after?publicSnapshot(after):null,...(covers?{covers}:{}),

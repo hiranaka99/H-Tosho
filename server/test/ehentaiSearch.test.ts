@@ -201,7 +201,7 @@ test('E-Hentai autocomplete uses native tag completion with scoped session cooki
     '272042': { ns: 'artist', tn: 'mana' }, '11604': { ns: 'artist', tn: 'manabe jouji' }, '1': { ns: 'female', tn: 'ignored' },
   } }) });
   const suggestions = await ehentaiProvider.suggest!('artists:"mana', 2);
-  assert.deepEqual(suggestions.map((s) => s.filter).sort(), ['artist:"mana$"', 'artist:"manabe jouji$"'].sort());
+  assert.deepEqual(suggestions.map((s) => s.filter).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ['artist:"mana$"', 'artist:"manabe jouji$"'].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
   assert.equal(requests[0].hostname, 'exhentai.org');
   assert.equal(requests[0].path, '/api.php');
   assert.deepEqual(JSON.parse(requests[0].body!), { method: 'tagsuggest', text: 'artist:mana' });
@@ -248,7 +248,7 @@ test('search hydrates list results through one gdata batch and applies bans', as
     { gid: '2222222', token: 'bbbbbbbbbb', title: 'Kept Gallery', pages: 8, language: 'Japanese', date: '2026-11-14 09:00' },
   ];
   const nextUrl = 'https://exhentai.org/?f_search=foo%20-artist%3A%22konboi%22%20language%3Aenglish%24&next=1111111';
-  route = (hostname, requestPath) => {
+  route = (hostname, _requestPath) => {
     if (hostname === 'api.e-hentai.org') {
       return { status: 200, body: gdataJson([
         { gid: '1111111', token: 'aaaaaaaaaa', language: 'English', pages: 12, uploadedTs: '1763278440', artist: 'konboi' },
@@ -545,7 +545,7 @@ test('viewer parsing selects the primary image and rejects navigation-only or qu
 
 test('getGallery parses the info page and exposes ordered lazy page refs', async () => {
   resetRequests();
-  route = (hostname, requestPath) => {
+  route = (_hostname, requestPath) => {
     if (requestPath.startsWith('/g/')) {
       return { status: 200, body: galleryPageHtml('6666666', 'eeeeeeeeee', ['1', '2', '3']) };
     }

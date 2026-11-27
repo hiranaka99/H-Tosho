@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { readFileSync } from 'node:fs';
 import { parseProviderArtistUrl } from '../src/contracts/artists.js';
 import { anilistProvider } from '../src/providers/anilist.js';
 import { mangaDexProvider } from '../src/providers/mangadex.js';

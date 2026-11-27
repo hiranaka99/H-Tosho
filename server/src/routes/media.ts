@@ -574,7 +574,10 @@ export function rewriteDoujinCover<T extends { source?: string; coverUrl?: strin
 export function rewriteDoujinPages(pages: string[], fallbacks?: (string | null)[]): { previewPages: string[]; previewFallbacks: (string | null)[] } {
   return {
     previewPages: pages.map(mediaProxyUrl),
-    previewFallbacks: pages.map((_, index) => fallbacks?.[index] ? mediaProxyUrl(fallbacks[index] as string) : null),
+    previewFallbacks: pages.map((_, index) => {
+      const fallback = fallbacks?.[index];
+      return fallback ? mediaProxyUrl(fallback) : null;
+    }),
   };
 }
 
