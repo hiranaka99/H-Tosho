@@ -19,12 +19,16 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "start": "npm run build && node server/dist/index.js",
     "test": "npm run test --workspaces --if-present",
-    "test:e2e": "npm run build && npm run test:e2e --workspace @h-tosho/web"
+    "test:e2e": "npm run build && npm run test:e2e --workspace @h-tosho/web",
+    "prepare": "husky"
   },
   "devDependencies": {
     "concurrently": "^10.0.6",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.2",
     "oxlint": "^1.95.0",
-    "oxlint-tsgolint": "^7.0.2009"
+    "oxlint-tsgolint": "^7.0.2009",
+    "prettier": "^3.10.1"
   },
   "engines": {
     "node": ">=22.22.0"
