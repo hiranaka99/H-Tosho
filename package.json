@@ -1,8 +1,9 @@
 {
   "name": "h-tosho",
   "private": true,
+  "license": "MIT",
   "type": "module",
-  "description": "Metadata fetcher & manager for Kavita (AniList, MangaUpdates, MangaDex, MyAnimeList)",
+  "description": "Metadata manager and companion app for Kavita libraries (AniList, MangaDex, MyAnimeList)",
   "workspaces": [
     "server",
     "web"
@@ -22,6 +23,7 @@
     "start": "npm run build && node server/dist/index.js",
     "test": "npm run test --workspaces --if-present",
     "test:e2e": "npm run build && npm run test:e2e --workspace @h-tosho/web",
+    "screenshots": "npm run build && npm run screenshots --workspace @h-tosho/web",
     "prepare": "husky"
   },
   "devDependencies": {
@@ -33,7 +35,7 @@
     "prettier": "^3.10.1"
   },
   "engines": {
-    "node": ">=22.22.0"
+    "node": ">=26.13.1"
   },
   "version": "4.3.3"
 }
