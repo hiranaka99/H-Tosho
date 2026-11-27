@@ -1,12 +1,12 @@
 # ---- Stage 1: build frontend + backend ------------------------------------
-# `node:22-slim` (glibc) is used because better-sqlite3 ships glibc prebuilds;
+# `node:26-slim` (glibc) is used because better-sqlite3 ships glibc prebuilds;
 # alpine/musl would force a node-gyp compile at build time.
-# The current 22.x image must satisfy package.json's Node >=22.22 requirement.
-FROM node:22-slim AS build
+# The current 26.x image must satisfy package.json's Node >=26.13.1 requirement.
+FROM node:26-slim AS build
 WORKDIR /app
 
 # Install workspace dependencies first for layer caching.
-# npm 12 (upgraded from the node:22-bundled 10.x) gates dependency install
+# npm 12 (upgraded from the npm 11 bundled with node:26) gates dependency install
 # scripts by default; the "allowScripts" policy in package.json explicitly
 # denies them, so better-sqlite3 v13 uses the N-API prebuilds shipped in its
 # tarball instead of compiling from source. This stage needs no python or
@@ -29,7 +29,7 @@ RUN npm run build --workspace @h-tosho/server \
     && node scripts/update-bundle.mjs --write-runtime-manifest /app/runtime-manifest.json --in-docker
 
 # ---- Stage 2: runtime -------------------------------------------------------
-FROM node:22-slim
+FROM node:26-slim
 WORKDIR /app
 ENV NODE_ENV=production
 ENV HTOSHO_DATA_DIR=/data

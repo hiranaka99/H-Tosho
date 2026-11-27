@@ -21,7 +21,7 @@ session cookies, API keys, and webhook URLs from anything you post.
 
 ## Development setup
 
-You need **Node.js 22.22 or newer** and **npm 12**, which CI uses
+You need **Node.js 26.13.1 or newer** and **npm 12**, which CI uses
 (`npm install -g npm@12`). Then:
 
 ```bash

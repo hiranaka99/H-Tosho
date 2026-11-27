@@ -87,7 +87,7 @@ If you want to download galleries or edit existing CBZ files, also set up the
 
 ### Without Docker
 
-Install **Node.js 22.22 or newer**, download or clone the repository, and run these
+Install **Node.js 26.13.1 or newer**, download or clone the repository, and run these
 commands from its folder:
 
 ```bash
