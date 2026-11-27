@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { setImmediate } from "node:timers/promises";
 import { after, afterEach, test, type TestContext } from "node:test";
 
 const dataDir = fs.mkdtempSync(
@@ -22,6 +21,10 @@ jobQueue.registerHandler(runJob);
 
 const originalFetch = globalThis.fetch;
 const originalTimeout = process.env.HTOSHO_EDIT_VERIFY_TIMEOUT_MS;
+// Keep a real event-loop turn available while Date and application timers are mocked.
+const realSetTimeout = globalThis.setTimeout;
+const yieldToIo = () =>
+  new Promise<void>((resolve) => realSetTimeout(resolve, 10));
 afterEach(() => {
   globalThis.fetch = originalFetch;
   if (originalTimeout === undefined)
@@ -109,9 +112,9 @@ async function edit(t: TestContext, options: Options = {}) {
         ? { Title: "Edited title", Number: "" }
         : { Number: options.number ?? "5" },
   });
-  // Let archive I/O and HTTP microtasks settle before advancing polling timers.
+  // Let real archive I/O and HTTP callbacks settle before advancing polling timers.
   for (let step = 0; step < 1000; step++) {
-    for (let flush = 0; flush < 20; flush++) await setImmediate();
+    await yieldToIo();
     const job = jobQueue.get(state.id)!;
     if (job.status !== "running" && job.status !== "queued") {
       return {

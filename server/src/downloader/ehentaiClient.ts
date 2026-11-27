@@ -310,21 +310,26 @@ function pinnedGet(
     const pinnedIp = await resolvePinnedAddress(parsed.hostname);
     return new Promise<PinnedResponse>((resolve, reject) => {
       let settled = false;
+      let activeRes: Pick<http.IncomingMessage, "destroy"> | null = null;
+      let streamDone: Promise<void> | null = null;
       const fail = (error: Error): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
         try {
+          activeRes?.destroy?.();
           req.destroy();
         } catch {
           /* already destroyed */
         }
         cleanup();
-        if (options.destPath)
-          void fs
-            .rm(`${options.destPath}.part`, { force: true })
-            .catch(() => undefined);
-        reject(error);
+        // Wait for any active .part writer to close and remove its temp file
+        // before rejecting so an immediate retry cannot race on the same path.
+        if (streamDone) {
+          void streamDone.finally(() => reject(error));
+        } else {
+          reject(error);
+        }
       };
       const onAbort = (): void => {
         fail(new RequestAbortedError());
@@ -404,11 +409,12 @@ function pinnedGet(
             return;
           }
           if (options.destPath) {
+            activeRes = res;
             const destPath = options.destPath;
             const partPath = `${destPath}.part`;
             armTimeout(); // headers received — start the idle window for the body
             options.onAttemptStart?.();
-            void (async () => {
+            const streamTask = (async () => {
               let fh: fs.FileHandle | null = null;
               let published = false;
               let writeError: Error | null = null;
@@ -508,6 +514,10 @@ function pinnedGet(
                 if (!published)
                   await fs.rm(partPath, { force: true }).catch(() => undefined);
               }
+              return { writeError, written };
+            })();
+            streamDone = streamTask.then(() => undefined);
+            void streamTask.then(({ writeError, written }) => {
               if (writeError) {
                 fail(writeError);
               } else if (!settled) {
@@ -521,7 +531,7 @@ function pinnedGet(
                   bytesWritten: written,
                 });
               }
-            })();
+            });
             return;
           }
           const lengthHeader = res.headers["content-length"];
