@@ -4,7 +4,7 @@
  * layer operate on, decoupled from any provider's raw API schema.
  */
 
-export type MediaType = 'MANGA' | 'NOVEL' | 'COMIC' | 'WEBTOON';
+export type MediaType = "MANGA" | "NOVEL" | "COMIC" | "WEBTOON";
 
 export interface SearchResult {
   providerId: string;
@@ -41,10 +41,10 @@ export interface SeriesMetadata {
   /** Person roles: Writer / Artist / Illustrator / etc. */
   writers: string[];
   artists: string[];
-  readingDirection?: 'LTR' | 'RTL' | 'TBR';
+  readingDirection?: "LTR" | "RTL" | "TBR";
   language?: string;
   /** ONGOING | COMPLETED | HIATUS | CANCELLED | UNKNOWN */
-  status?: 'ONGOING' | 'COMPLETED' | 'HIATUS' | 'CANCELLED' | 'UNKNOWN';
+  status?: "ONGOING" | "COMPLETED" | "HIATUS" | "CANCELLED" | "UNKNOWN";
   url?: string;
   /** Per-volume cover art (MangaDex only), one entry per volume number. */
   volumeCovers?: VolumeCover[];
@@ -82,16 +82,31 @@ export interface MetadataProvider {
   setCredentials(credentials: ProviderCredentials): void;
   /** Validate the currently-set credentials; throws on failure. */
   testConnection(): Promise<void>;
-  search(query: string, type?: MediaType, signal?: AbortSignal): Promise<SearchResult[]>;
-  getSeriesMetadata(providerSeriesId: string, signal?: AbortSignal): Promise<SeriesMetadata>;
+  search(
+    query: string,
+    type?: MediaType,
+    signal?: AbortSignal
+  ): Promise<SearchResult[]>;
+  getSeriesMetadata(
+    providerSeriesId: string,
+    signal?: AbortSignal
+  ): Promise<SeriesMetadata>;
   /** Optional batch metadata lookup for scheduled refresh. Missing ids fall back to getSeriesMetadata. */
   getSeriesMetadataBatch?(
     providerSeriesIds: string[],
     signal?: AbortSignal,
-    opts?: { skipVolumeCovers?: ReadonlySet<string> },
+    opts?: { skipVolumeCovers?: ReadonlySet<string> }
   ): Promise<Map<string, SeriesMetadata>>;
   getBookMetadata?(providerBookId: string): Promise<BookMetadata>;
-  searchArtists?(query: string, page?: number): Promise<import('../contracts/artists.js').ArtistSearchPage>;
-  getArtist?(artistId: string): Promise<import('../contracts/artists.js').ProviderArtist>;
-  getArtistWorks?(artistId: string, page?: number): Promise<import('../contracts/artists.js').ArtistWorksPage>;
+  searchArtists?(
+    query: string,
+    page?: number
+  ): Promise<import("../contracts/artists.js").ArtistSearchPage>;
+  getArtist?(
+    artistId: string
+  ): Promise<import("../contracts/artists.js").ProviderArtist>;
+  getArtistWorks?(
+    artistId: string,
+    page?: number
+  ): Promise<import("../contracts/artists.js").ArtistWorksPage>;
 }

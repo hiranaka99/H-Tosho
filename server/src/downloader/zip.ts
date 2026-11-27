@@ -1,8 +1,8 @@
-import { deflateRaw, deflateRawSync } from 'node:zlib';
-import { promisify } from 'node:util';
-import fs from 'node:fs';
-import path from 'node:path';
-import { crc32 } from '../lib/crc.js';
+import { deflateRaw, deflateRawSync } from "node:zlib";
+import { promisify } from "node:util";
+import fs from "node:fs";
+import path from "node:path";
+import { crc32 } from "../lib/crc.js";
 
 const deflateRawAsync = promisify(deflateRaw);
 // 0xffff in the EOCD entry count is the ZIP64 marker; readers (including
@@ -36,8 +36,11 @@ function dosDateTime(date: Date): { time: number; date: number } {
   const time =
     ((date.getHours() & 0x1f) << 11) |
     ((date.getMinutes() & 0x3f) << 5) |
-    ((Math.floor(date.getSeconds() / 2)) & 0x1f);
-  const d = (((year - 1980) & 0x7f) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+    (Math.floor(date.getSeconds() / 2) & 0x1f);
+  const d =
+    (((year - 1980) & 0x7f) << 9) |
+    ((date.getMonth() + 1) << 5) |
+    date.getDate();
   return { time, date: d };
 }
 
@@ -54,12 +57,18 @@ function encodeEntryWithPayload(
   payload: Buffer,
   method: number,
   offset: number,
-  now: { time: number; date: number },
+  now: { time: number; date: number }
 ): EncodedEntry {
-  const nameBuf = Buffer.from(name, 'utf8');
+  const nameBuf = Buffer.from(name, "utf8");
   const crc = crc32(data);
-  if (offset > MAX_ZIP32_OFFSET || payload.length > MAX_ZIP32_OFFSET || data.length > MAX_ZIP32_OFFSET) {
-    throw new Error('Archive exceeds the 4 GiB CBZ limit; use Image folder format for galleries this large.');
+  if (
+    offset > MAX_ZIP32_OFFSET ||
+    payload.length > MAX_ZIP32_OFFSET ||
+    data.length > MAX_ZIP32_OFFSET
+  ) {
+    throw new Error(
+      "Archive exceeds the 4 GiB CBZ limit; use Image folder format for galleries this large."
+    );
   }
 
   // Local file header (30 bytes + name). Every byte is written below.
@@ -106,7 +115,7 @@ function encodeEntry(
   data: Buffer,
   offset: number,
   now: { time: number; date: number },
-  tryDeflate: boolean,
+  tryDeflate: boolean
 ): EncodedEntry {
   // Prefer deflate only when it actually saves space; otherwise store.
   // Already-compressed payloads skip the deflate attempt entirely: it costs
@@ -128,7 +137,7 @@ async function encodeEntryAsync(
   data: Buffer,
   offset: number,
   now: { time: number; date: number },
-  tryDeflate: boolean,
+  tryDeflate: boolean
 ): Promise<EncodedEntry> {
   let method = 0;
   let payload = data;
@@ -155,7 +164,11 @@ const STORE_EXTENSIONS: Record<string, true> = {
   heif: true,
 };
 
-function endOfCentralDirectory(count: number, centralStart: number, centralSize: number): Buffer {
+function endOfCentralDirectory(
+  count: number,
+  centralStart: number,
+  centralSize: number
+): Buffer {
   const eocd = Buffer.allocUnsafe(22);
   eocd.writeUInt32LE(0x06054b50, 0); // signature
   eocd.writeUInt16LE(0, 4); // disk number
@@ -186,7 +199,11 @@ export function buildZip(entries: Entry[]): Buffer {
   let centralSize = 0;
   for (const b of central) centralSize += b.length;
 
-  return Buffer.concat([...parts, ...central, endOfCentralDirectory(entries.length, centralStart, centralSize)]);
+  return Buffer.concat([
+    ...parts,
+    ...central,
+    endOfCentralDirectory(entries.length, centralStart, centralSize),
+  ]);
 }
 
 /**
@@ -200,18 +217,22 @@ export async function buildZipFromFiles(
   files: { name: string; path: string }[],
   destPath: string,
   inlineEntries: Entry[] = [],
-  signal?: AbortSignal,
+  signal?: AbortSignal
 ): Promise<void> {
   signal?.throwIfAborted();
   const totalEntries = files.length + inlineEntries.length;
   if (totalEntries > MAX_ZIP32_ENTRIES) {
-    throw new Error('Archive exceeds the 65,534-entry CBZ limit; use Image folder format for galleries this large.');
+    throw new Error(
+      "Archive exceeds the 65,534-entry CBZ limit; use Image folder format for galleries this large."
+    );
   }
-  const stagingDir = await fs.promises.mkdtemp(path.join(path.dirname(destPath), '.htosho-zip-'));
-  const stagingPath = path.join(stagingDir, 'archive.cbz');
+  const stagingDir = await fs.promises.mkdtemp(
+    path.join(path.dirname(destPath), ".htosho-zip-")
+  );
+  const stagingPath = path.join(stagingDir, "archive.cbz");
   let out: fs.promises.FileHandle;
   try {
-    out = await fs.promises.open(stagingPath, 'wx');
+    out = await fs.promises.open(stagingPath, "wx");
   } catch (error) {
     await fs.promises.rm(stagingDir, { recursive: true, force: true });
     throw error;
@@ -226,29 +247,52 @@ export async function buildZipFromFiles(
     const write = async (buf: Buffer): Promise<void> => {
       let written = 0;
       while (written < buf.length) {
-        const result = await out.write(buf, written, buf.length - written, offset + written);
-        if (result.bytesWritten <= 0) throw new Error(`Could not write ZIP archive ${destPath}`);
+        const result = await out.write(
+          buf,
+          written,
+          buf.length - written,
+          offset + written
+        );
+        if (result.bytesWritten <= 0)
+          throw new Error(`Could not write ZIP archive ${destPath}`);
         written += result.bytesWritten;
       }
       offset += buf.length;
     };
     /** Header + payload in one writev; a short write finishes buffer by buffer. */
-    const writeEntry = async (local: Buffer, payload: Buffer): Promise<void> => {
+    const writeEntry = async (
+      local: Buffer,
+      payload: Buffer
+    ): Promise<void> => {
       const { bytesWritten } = await out.writev([local, payload], offset);
-      if (bytesWritten === local.length + payload.length) { offset += bytesWritten; return; }
+      if (bytesWritten === local.length + payload.length) {
+        offset += bytesWritten;
+        return;
+      }
       const rest = Buffer.concat([local, payload]).subarray(bytesWritten);
       offset += bytesWritten;
       await write(rest);
     };
-    const append = async (name: string, data: Buffer, tryDeflate: boolean): Promise<void> => {
+    const append = async (
+      name: string,
+      data: Buffer,
+      tryDeflate: boolean
+    ): Promise<void> => {
       signal?.throwIfAborted();
       const entryOffset = offset;
-      const spec = await encodeEntryAsync(name, data, entryOffset, now, tryDeflate);
+      const spec = await encodeEntryAsync(
+        name,
+        data,
+        entryOffset,
+        now,
+        tryDeflate
+      );
       await writeEntry(spec.local, spec.payload);
       central.push(spec.central);
     };
     const enqueueRead = (index: number): void => {
-      if (index >= files.length || pendingReads.has(index) || signal?.aborted) return;
+      if (index >= files.length || pendingReads.has(index) || signal?.aborted)
+        return;
       const read = fs.promises.readFile(files[index].path);
       read.catch(() => {}); // observed when awaited or settled below; never an unhandled rejection after an abort
       pendingReads.set(index, read);
@@ -262,7 +306,7 @@ export async function buildZipFromFiles(
       const data = await pendingReads.get(index)!;
       pendingReads.delete(index);
       enqueueRead(index + READ_AHEAD);
-      const ext = f.name.slice(f.name.lastIndexOf('.') + 1).toLowerCase();
+      const ext = f.name.slice(f.name.lastIndexOf(".") + 1).toLowerCase();
       await append(f.name, data, !STORE_EXTENSIONS[ext]);
     }
     for (const e of inlineEntries) await append(e.name, e.data, true);
@@ -272,9 +316,16 @@ export async function buildZipFromFiles(
     let centralSize = 0;
     for (const c of central) centralSize += c.length;
     if (centralStart > MAX_ZIP32_OFFSET || centralSize > MAX_ZIP32_OFFSET) {
-      throw new Error('Archive exceeds the 4 GiB CBZ limit; use Image folder format for galleries this large.');
+      throw new Error(
+        "Archive exceeds the 4 GiB CBZ limit; use Image folder format for galleries this large."
+      );
     }
-    await write(Buffer.concat([...central, endOfCentralDirectory(totalEntries, centralStart, centralSize)]));
+    await write(
+      Buffer.concat([
+        ...central,
+        endOfCentralDirectory(totalEntries, centralStart, centralSize),
+      ])
+    );
   } catch (error) {
     failure = error;
   }
@@ -286,7 +337,14 @@ export async function buildZipFromFiles(
     failure ??= error;
   }
   try {
-    if (failure !== undefined) throw (failure instanceof Error ? failure : new Error(typeof failure === 'string' ? failure : JSON.stringify(failure) ?? 'Zip build failed'));
+    if (failure !== undefined)
+      throw failure instanceof Error
+        ? failure
+        : new Error(
+            typeof failure === "string"
+              ? failure
+              : (JSON.stringify(failure) ?? "Zip build failed")
+          );
     signal?.throwIfAborted();
     await fs.promises.rename(stagingPath, destPath);
   } finally {

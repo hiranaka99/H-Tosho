@@ -5,7 +5,12 @@
  * lives in `../contracts/doujin.js`.
  */
 
-import type { DoujinSource, EhentaiSite, SearchChunk, SearchCursor } from '../contracts/doujin.js';
+import type {
+  DoujinSource,
+  EhentaiSite,
+  SearchChunk,
+  SearchCursor,
+} from "../contracts/doujin.js";
 
 /**
  * Optional result ordering for a source search. nHentai mirrors nhentai.net's
@@ -14,9 +19,26 @@ import type { DoujinSource, EhentaiSite, SearchChunk, SearchCursor } from '../co
  * server-side against the popularity index and never appended to the user's
  * query text. Each provider ignores values it does not support.
  */
-export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today' | 'popular-month' | 'popular-year' | 'date-published' | 'random';
+export type DoujinSort =
+  | "default"
+  | "popular"
+  | "popular-week"
+  | "popular-today"
+  | "popular-month"
+  | "popular-year"
+  | "date-published"
+  | "random";
 
-export const DOUJIN_SORTS: DoujinSort[] = ['default', 'popular', 'popular-week', 'popular-today', 'popular-month', 'popular-year', 'date-published', 'random'];
+export const DOUJIN_SORTS: DoujinSort[] = [
+  "default",
+  "popular",
+  "popular-week",
+  "popular-today",
+  "popular-month",
+  "popular-year",
+  "date-published",
+  "random",
+];
 
 /**
  * Verified provider capabilities advertised to the UI. `sorts` lists only the
@@ -26,7 +48,7 @@ export const DOUJIN_SORTS: DoujinSort[] = ['default', 'popular', 'popular-week',
  */
 export interface DoujinProviderMeta {
   sorts: DoujinSort[];
-  paging: 'offset' | 'cursor';
+  paging: "offset" | "cursor";
 }
 
 /** A tag/artist/group autocomplete suggestion (as shown by the source's own search box). */
@@ -110,8 +132,12 @@ export interface DoujinGallery extends DoujinSearchResult {
    */
   resolvePageUrl?: (
     index: number,
-    opts?: { forceRefresh?: boolean; signal?: AbortSignal },
-  ) => Promise<{ url: string; fallback?: string | null; fallbacks?: string[] } | null>;
+    opts?: { forceRefresh?: boolean; signal?: AbortSignal }
+  ) => Promise<{
+    url: string;
+    fallback?: string | null;
+    fallbacks?: string[];
+  } | null>;
   /**
    * Optional provider-managed page transfer. Used by sources that enforce their
    * own security/pacing/validation transport (e.g. E-Hentai DNS-pinned H@H
@@ -127,7 +153,7 @@ export interface DoujinGallery extends DoujinSearchResult {
       signal?: AbortSignal;
       onAttemptStart?: () => void;
       onProgress?: (receivedBytes: number, totalBytes: number | null) => void;
-    },
+    }
   ) => Promise<{ bytes: number; ext: string }>;
   /**
    * When true, a resolver failure (thrown error, or a null for a known index)
@@ -186,7 +212,12 @@ export interface DoujinProvider {
   /** Lookup by gallery id or URL string. */
   getGallery(idOrUrl: string): Promise<DoujinGallery>;
   /** Keyword/tag/artist search. `sort` is only honored by providers that support it. */
-  search(query: string, limit?: number, sort?: DoujinSort, opts?: DoujinSearchOptions): Promise<DoujinSearchResult[]>;
+  search(
+    query: string,
+    limit?: number,
+    sort?: DoujinSort,
+    opts?: DoujinSearchOptions
+  ): Promise<DoujinSearchResult[]>;
   /**
    * Bounded cursor search: up to `limit` items plus an opaque continuation
    * cursor the server issued. The cursor is bound server-side to the query,
@@ -200,7 +231,7 @@ export interface DoujinProvider {
     limit: number,
     sort?: DoujinSort,
     opts?: DoujinSearchOptions,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<SearchChunk<DoujinSearchResult>>;
   /** Optional full-count paging without hydrating the entire catalog match. */
   searchPage?(
@@ -208,12 +239,21 @@ export interface DoujinProvider {
     offset: number,
     limit: number,
     sort?: DoujinSort,
-    opts?: { exactTotal?: boolean; signal?: AbortSignal },
+    opts?: { exactTotal?: boolean; signal?: AbortSignal }
   ): Promise<{ items: DoujinSearchResult[]; total: number }>;
   /** Optional tag/artist autocomplete suggestions for a query prefix. */
-  suggest?(query: string, limit?: number, context?: string, signal?: AbortSignal): Promise<DoujinSuggestion[]>;
+  suggest?(
+    query: string,
+    limit?: number,
+    context?: string,
+    signal?: AbortSignal
+  ): Promise<DoujinSuggestion[]>;
   /** Recheck cached/history candidates against current provider exclusions. */
-  filterRecommendations?(items: DoujinSearchResult[]): Promise<DoujinSearchResult[]>;
+  filterRecommendations?(
+    items: DoujinSearchResult[]
+  ): Promise<DoujinSearchResult[]>;
   /** Resolve a bare tag name to its canonical provider namespace and global catalog count. */
-  resolveTagInfo?(name: string): Promise<{ name: string; ns: string; count: number } | null>;
+  resolveTagInfo?(
+    name: string
+  ): Promise<{ name: string; ns: string; count: number } | null>;
 }

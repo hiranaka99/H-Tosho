@@ -1,13 +1,43 @@
-import type { JobType, JobPayloads } from '../../../server/src/contracts/jobs';
-import type { ArtistProviderId, ArtistSearchPage, ArtistWorksPage } from '../../../server/src/contracts/artists';
-import type { MetadataRestorePreview, RestorePreviewRequest } from '../../../server/src/contracts/metadataRestore';
-import type { FollowingFeedOptions, SuggestedFollow, WatchedSearch, WatchedSearchPatch, WatchedSearchFolder, WatchedSearchFolderPatch, WatchedNewGallery, WatchedGalleryFeed } from '../../../server/src/contracts/following';
-import type { MatchUpdate, MatchUpdateChange } from '../../../server/src/contracts/matchUpdates';
+import type { JobType, JobPayloads } from "../../../server/src/contracts/jobs";
+import type {
+  ArtistProviderId,
+  ArtistSearchPage,
+  ArtistWorksPage,
+} from "../../../server/src/contracts/artists";
+import type {
+  MetadataRestorePreview,
+  RestorePreviewRequest,
+} from "../../../server/src/contracts/metadataRestore";
+import type {
+  FollowingFeedOptions,
+  SuggestedFollow,
+  WatchedSearch,
+  WatchedSearchPatch,
+  WatchedSearchFolder,
+  WatchedSearchFolderPatch,
+  WatchedNewGallery,
+  WatchedGalleryFeed,
+} from "../../../server/src/contracts/following";
+import type {
+  MatchUpdate,
+  MatchUpdateChange,
+} from "../../../server/src/contracts/matchUpdates";
 export type { SuggestedFollow, MatchUpdate, MatchUpdateChange };
-import type { MergeProtectionPreview, MergeProtectionRequest } from '../../../server/src/contracts/mergeProtection';
-import type { NotificationSettings } from '../../../server/src/contracts/notifications';
-export type { ArtistProviderId, ProviderArtist, ArtistSearchPage, ArtistWorksPage } from '../../../server/src/contracts/artists';
-export type { DoujinSource, EhentaiSite } from '../../../server/src/contracts/doujin';
+import type {
+  MergeProtectionPreview,
+  MergeProtectionRequest,
+} from "../../../server/src/contracts/mergeProtection";
+import type { NotificationSettings } from "../../../server/src/contracts/notifications";
+export type {
+  ArtistProviderId,
+  ProviderArtist,
+  ArtistSearchPage,
+  ArtistWorksPage,
+} from "../../../server/src/contracts/artists";
+export type {
+  DoujinSource,
+  EhentaiSite,
+} from "../../../server/src/contracts/doujin";
 export type {
   PublicDoujinSearchResult,
   GalleryVariant,
@@ -16,9 +46,19 @@ export type {
   UnifiedSearchEntry,
   UnifiedSearchPage,
   UnifiedSearchProgress,
-} from '../../../server/src/contracts/doujin';
-import type { DoujinSource, EhentaiSite, UnifiedSearchPage, UnifiedSearchProgress, UnifiedSearchStreamEvent } from '../../../server/src/contracts/doujin';
-import type { EhentaiAccountView, EhentaiSessionInput, EhentaiSiteAccess } from '../../../server/src/contracts/ehentai';
+} from "../../../server/src/contracts/doujin";
+import type {
+  DoujinSource,
+  EhentaiSite,
+  UnifiedSearchPage,
+  UnifiedSearchProgress,
+  UnifiedSearchStreamEvent,
+} from "../../../server/src/contracts/doujin";
+import type {
+  EhentaiAccountView,
+  EhentaiSessionInput,
+  EhentaiSiteAccess,
+} from "../../../server/src/contracts/ehentai";
 export type { EhentaiAccountView, EhentaiSessionInput, EhentaiSiteAccess };
 export type {
   AppUpdateStatus,
@@ -29,8 +69,8 @@ export type {
   UpdateJobPhase,
   UpdateProgress,
   UpdateReleaseInfo,
-} from '../../../server/src/contracts/appUpdate';
-import type { AppUpdateStatus } from '../../../server/src/contracts/appUpdate';
+} from "../../../server/src/contracts/appUpdate";
+import type { AppUpdateStatus } from "../../../server/src/contracts/appUpdate";
 // Typed client for the H-Tosho REST API.
 
 export interface KavitaConnection {
@@ -152,7 +192,11 @@ export interface Job {
   id: number;
   type: string;
   payload: Record<string, unknown>;
-  context?: { series: { id: number; name: string }[]; libraryId?: number; libraryName?: string };
+  context?: {
+    series: { id: number; name: string }[];
+    libraryId?: number;
+    libraryName?: string;
+  };
   status: string;
   progressCurrent: number;
   progressTotal: number;
@@ -162,7 +206,10 @@ export interface Job {
   createdAt: string;
   startedAt?: string | null;
   finishedAt?: string | null;
-  recovery?: { explanation: string; actions: { label: string; href: string }[] };
+  recovery?: {
+    explanation: string;
+    actions: { label: string; href: string }[];
+  };
 }
 
 export interface JobLog {
@@ -183,8 +230,8 @@ export interface SearchResult {
   summary?: string;
 }
 
-export type { SeriesMetadata } from '../../../server/src/providers/types';
-import type { SeriesMetadata } from '../../../server/src/providers/types';
+export type { SeriesMetadata } from "../../../server/src/providers/types";
+import type { SeriesMetadata } from "../../../server/src/providers/types";
 
 /** A scored match candidate (mirrors the server's CandidateMatch). */
 export interface MatchCandidate extends SearchResult {
@@ -210,16 +257,39 @@ export interface MatchSuggestion {
   checkedAt: string;
   candidate: MatchCandidate;
 }
-export interface HomeMatches { items: MatchSuggestion[]; configured: boolean; scan: Job | null }
-export interface HomeUpdates { items: MatchUpdate[]; configured: boolean; refresh: Job | null }
-export interface HomeActivity { id: string; title: string; action: string; createdAt: string; href: string; /** First error of a failed sync. */ detail?: string | null }
+export interface HomeMatches {
+  items: MatchSuggestion[];
+  configured: boolean;
+  scan: Job | null;
+}
+export interface HomeUpdates {
+  items: MatchUpdate[];
+  configured: boolean;
+  refresh: Job | null;
+}
+export interface HomeActivity {
+  id: string;
+  title: string;
+  action: string;
+  createdAt: string;
+  href: string;
+  /** First error of a failed sync. */ detail?: string | null;
+}
 
 // ---------------- Doujinshi downloader types ----------------
 // DoujinSource (the registered gallery sources) is imported from the shared
 // server contract so the web can never drift from the provider registry.
 
 /** Result ordering for a source search (nHentai and Hitomi support popularity sorts). */
-export type DoujinSort = 'default' | 'popular' | 'popular-week' | 'popular-today' | 'popular-month' | 'popular-year' | 'date-published' | 'random';
+export type DoujinSort =
+  | "default"
+  | "popular"
+  | "popular-week"
+  | "popular-today"
+  | "popular-month"
+  | "popular-year"
+  | "date-published"
+  | "random";
 
 export interface DoujinProvider {
   id: DoujinSource;
@@ -228,9 +298,9 @@ export interface DoujinProvider {
   /** Sort values this source accepts (the UI lists per-source sort options). */
   sorts?: string[];
   /** Paging model: offset (hitomi/nhentai) or opaque cursor (E-Hentai). */
-  paging?: 'offset' | 'cursor';
+  paging?: "offset" | "cursor";
   /** E-Hentai only: the family site of the saved account. */
-  site?: 'e-hentai' | 'exhentai';
+  site?: "e-hentai" | "exhentai";
   /** E-Hentai only: site-specific display name (E-Hentai vs ExHentai). */
   displayName?: string;
 }
@@ -293,7 +363,7 @@ export interface DoujinGallery {
 export interface DownloaderSettings {
   downloadDirectory: string;
   libraryPathMappings?: LibraryPathMapping[];
-  format: 'cbz' | 'folder';
+  format: "cbz" | "folder";
   maxConcurrentDownloads: number;
   maxImageConcurrency: number;
   requestDelayMs: number;
@@ -312,22 +382,49 @@ export interface LibraryPathMapping {
   localPath: string;
 }
 
-export type { DownloadStatus, DownloadTask, DownloadLibraryState, DownloadHistoryPage } from '../../../server/src/contracts/downloads';
-import type { DownloadTask, DownloadLibraryState, DownloadHistoryPage } from '../../../server/src/contracts/downloads';
+export type {
+  DownloadStatus,
+  DownloadTask,
+  DownloadLibraryState,
+  DownloadHistoryPage,
+} from "../../../server/src/contracts/downloads";
+import type {
+  DownloadTask,
+  DownloadLibraryState,
+  DownloadHistoryPage,
+} from "../../../server/src/contracts/downloads";
 
 /** A single frame pushed over the download SSE stream. */
 export type DownloadEvent =
-  | { type: 'snapshot'; tasks: DownloadTask[] }
-  | { type: 'task'; task: DownloadTask }
-  | { type: 'removed'; ids: number[] };
+  | { type: "snapshot"; tasks: DownloadTask[] }
+  | { type: "task"; task: DownloadTask }
+  | { type: "removed"; ids: number[] };
 
 export interface DuplicateMatch {
-  title: string; source: string; galleryId: string; artists: string[]; language?: string | null; pageCount?: number; path?: string; taskId?: number; status: string; reasons: string[]; confirmed?: boolean;
+  title: string;
+  source: string;
+  galleryId: string;
+  artists: string[];
+  language?: string | null;
+  pageCount?: number;
+  path?: string;
+  taskId?: number;
+  status: string;
+  reasons: string[];
+  confirmed?: boolean;
   /** The checked gallery is an uncensored/decensored edition of this owned copy. */
   betterEdition?: boolean;
 }
-export interface DuplicateReport { source: DoujinSource; galleryId: string; title: string; matches: DuplicateMatch[] }
-export interface DuplicateCheck { reports: DuplicateReport[]; warnings: string[] }
+export interface DuplicateReport {
+  source: DoujinSource;
+  galleryId: string;
+  title: string;
+  matches: DuplicateMatch[];
+}
+export interface DuplicateCheck {
+  reports: DuplicateReport[];
+  warnings: string[];
+}
 
 /** A gallery with a completed download task (duplicate-download guard). */
 export interface DownloadedGallery {
@@ -336,7 +433,6 @@ export interface DownloadedGallery {
   title: string | null;
   finishedAt: string | null;
 }
-
 
 /** One pick in a daily recommendation set (a search result plus why it matched). */
 export interface RecommendationItem extends DoujinSearchResult {
@@ -349,12 +445,17 @@ export interface RecommendationSet {
   date: string;
   generatedAt: string;
   /** Whether picks came from taste matches, popularity, or both. */
-  mode: 'library' | 'mixed' | 'popular';
-  profile: { artists: string[]; tags: string[]; series: string[]; language: string | null };
+  mode: "library" | "mixed" | "popular";
+  profile: {
+    artists: string[];
+    tags: string[];
+    series: string[];
+    language: string | null;
+  };
   items: RecommendationItem[];
   /** Number of least-recently-shown picks reused to keep the panel full. */
   repeatedCount: number;
-  degradedReason: 'same-day-pool-exhausted' | 'insufficient-eligible' | null;
+  degradedReason: "same-day-pool-exhausted" | "insufficient-eligible" | null;
   /** Keys (`source:galleryId`) of every owned gallery — drives the owned badges. */
   ownedKeys: string[];
   /** Keys (`source:galleryId`) permanently excluded by recommendation feedback. */
@@ -372,8 +473,17 @@ export interface RecommendationFeedback {
   mutedTags?: string[];
 }
 export interface FeedbackRequest {
-  action: 'like' | 'unlike' | 'mute-artist' | 'unmute-artist' | 'mute-tag' | 'unmute-tag';
-  source: DoujinSource; galleryId: string; artist?: string; tag?: string;
+  action:
+    | "like"
+    | "unlike"
+    | "mute-artist"
+    | "unmute-artist"
+    | "mute-tag"
+    | "unmute-tag";
+  source: DoujinSource;
+  galleryId: string;
+  artist?: string;
+  tag?: string;
 }
 
 export interface AuthStatus {
@@ -383,16 +493,23 @@ export interface AuthStatus {
 }
 
 export class ApiError extends Error {
-  constructor(message: string, public readonly details: Record<string, unknown>, public readonly status: number) { super(message); }
+  constructor(
+    message: string,
+    public readonly details: Record<string, unknown>,
+    public readonly status: number
+  ) {
+    super(message);
+  }
 }
 async function apiError(res: Response): Promise<ApiError> {
   let message = `HTTP ${res.status}`;
   let details: Record<string, unknown> = {};
   try {
     const body: unknown = await res.json();
-    if (body && typeof body === 'object' && !Array.isArray(body)) {
+    if (body && typeof body === "object" && !Array.isArray(body)) {
       details = body as Record<string, unknown>;
-      if (typeof details.error === 'string' && details.error) message = details.error;
+      if (typeof details.error === "string" && details.error)
+        message = details.error;
     }
   } catch {
     /* ignore */
@@ -403,103 +520,241 @@ async function apiError(res: Response): Promise<ApiError> {
 /** Start a unified search that reports each provider as it answers. Resolves
  *  with the complete first page; `onProgress` sees the partial cards first.
  *  The server may answer with a plain JSON page when nothing streamed. */
-async function unifiedSearchStream(query: string, onProgress: (progress: UnifiedSearchProgress) => void, signal?: AbortSignal): Promise<UnifiedSearchPage> {
-  const res = await fetch('/api/doujin/search/unified', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
+async function unifiedSearchStream(
+  query: string,
+  onProgress: (progress: UnifiedSearchProgress) => void,
+  signal?: AbortSignal
+): Promise<UnifiedSearchPage> {
+  const res = await fetch("/api/doujin/search/unified", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, stream: true }),
     signal,
   });
-  if (res.status === 401) window.dispatchEvent(new Event('htosho:unauthorized'));
+  if (res.status === 401)
+    window.dispatchEvent(new Event("htosho:unauthorized"));
   if (!res.ok) throw await apiError(res);
-  if (!res.headers.get('content-type')?.includes('ndjson') || !res.body) return res.json() as Promise<UnifiedSearchPage>;
+  if (!res.headers.get("content-type")?.includes("ndjson") || !res.body)
+    return res.json() as Promise<UnifiedSearchPage>;
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
-  let buffered = '';
+  let buffered = "";
   for (;;) {
     const { done, value } = await reader.read();
-    buffered += value ?? '';
-    const lines = buffered.split('\n');
-    buffered = done ? '' : lines.pop()!;
+    buffered += value ?? "";
+    const lines = buffered.split("\n");
+    buffered = done ? "" : lines.pop()!;
     for (const line of lines) {
       if (!line.trim()) continue;
       const event = JSON.parse(line) as UnifiedSearchStreamEvent;
-      if (event.type === 'progress') onProgress(event);
-      else if (event.type === 'page') return event.page;
-      else throw new ApiError(event.error, { error: event.error, ...(event.kind ? { kind: event.kind } : {}) }, event.status);
+      if (event.type === "progress") onProgress(event);
+      else if (event.type === "page") return event.page;
+      else
+        throw new ApiError(
+          event.error,
+          { error: event.error, ...(event.kind ? { kind: event.kind } : {}) },
+          event.status
+        );
     }
-    if (done) throw new ApiError('The search ended before every source answered. Try again.', {}, 502);
+    if (done)
+      throw new ApiError(
+        "The search ended before every source answered. Try again.",
+        {},
+        502
+      );
   }
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const res = await fetch('/api' + path, {
+  if (!headers.has("Content-Type"))
+    headers.set("Content-Type", "application/json");
+  const res = await fetch("/api" + path, {
     ...init,
-    credentials: 'same-origin',
+    credentials: "same-origin",
     headers,
   });
-  if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event('htosho:unauthorized'));
+  if (res.status === 401 && !path.startsWith("/auth/"))
+    window.dispatchEvent(new Event("htosho:unauthorized"));
   if (!res.ok) throw await apiError(res);
   return res.json() as Promise<T>;
 }
 
 export const api = {
-  metadataHistory: (id: number, cursor?: number) => request<{items: import('../../../server/src/contracts/metadataHistory').MetadataHistoryEntry[];nextCursor:number|null}>(`/series/${id}/metadata-history${cursor?`?cursor=${cursor}`:''}`),
-  metadataHistoryDetail: (id:number, operationId:string) => request<import('../../../server/src/contracts/metadataHistory').MetadataHistoryDetail>(`/series/${id}/metadata-history/${encodeURIComponent(operationId)}`),
-  metadataRestorePreview: (id: number, operationId: string, body: RestorePreviewRequest) => request<MetadataRestorePreview>(`/series/${id}/metadata-history/${encodeURIComponent(operationId)}/restore-preview`, { method: 'POST', body: JSON.stringify(body) }),
-  restoreMetadata: (id: number, body: { previewId: string; idempotencyKey: string; acceptCoverConversion?: boolean }) => request<{ id: number }>(`/series/${id}/metadata-restore`, { method: 'POST', body: JSON.stringify(body) }),
-  fieldPolicy: (id: number) => request<import('../../../server/src/contracts/metadata').FieldPolicy>(`/series/${id}/field-locks`),
-  saveFieldPolicy: (id: number, body: { lockedFields: import('../../../server/src/contracts/metadata').ProtectedField[]; expectedRevision: number }) => request<import('../../../server/src/contracts/metadata').FieldPolicy>(`/series/${id}/field-locks`, { method: 'PUT', body: JSON.stringify(body) }),
-  mergeProtectionPreview: (body: MergeProtectionRequest) => request<MergeProtectionPreview>('/merge-protection/preview', { method: 'POST', body: JSON.stringify(body) }),
-  homeMatches: () => request<HomeMatches>('/home/matches'),
-  scanMatchable: () => request<{ id: number; alreadyRunning: boolean }>('/home/matches/scan', { method: 'POST' }),
-  rejectMatchCandidate: (item: MatchSuggestion) => request<{ ok: boolean }>(`/home/matches/${item.seriesId}/reject`, { method: 'POST', body: JSON.stringify({ providerId: item.candidate.providerId, providerSeriesId: item.candidate.providerSeriesId }) }),
-  restoreMatchCandidate: (item: MatchSuggestion) => request<{ ok: boolean }>(`/home/matches/${item.seriesId}/reject`, { method: 'DELETE', body: JSON.stringify({ providerId: item.candidate.providerId, providerSeriesId: item.candidate.providerSeriesId }) }),
-  homeActivity: () => request<HomeActivity[]>('/home/activity'),
-  homeUpdates: () => request<HomeUpdates>('/home/updates'),
-  refreshMatchedSeries: () => request<{ id: number; alreadyRunning: boolean }>('/home/updates/refresh', { method: 'POST' }),
-  dismissMatchUpdate: (seriesId: number, dismissed: boolean) => request<{ ok: boolean }>(`/home/updates/${seriesId}/dismiss`, { method: dismissed ? 'POST' : 'DELETE' }),
-  suggestedFollows: () => request<{ items: SuggestedFollow[] }>('/watched-searches/suggestions'),
-  followSuggestedArtist: (artist: string, source: DoujinSource) => request<WatchedSearch>('/watched-searches/suggestions/follow', { method: 'POST', body: JSON.stringify({ artist, source }) }),
-  dismissSuggestedFollow: (artist: string, dismissed: boolean) => request<{ ok: boolean }>('/watched-searches/suggestions/dismiss', { method: 'POST', body: JSON.stringify({ artist, dismissed }) }),
-  authStatus: () => request<AuthStatus>('/auth/status'),
-  version: () => request<{ version: string | null }>('/version'),
-  appUpdateStatus: () => request<AppUpdateStatus>('/app-update/status'),
-  checkAppUpdate: () => request<AppUpdateStatus>('/app-update/check', { method: 'POST' }),
-  applyAppUpdate: (targetVersion: string) => request<AppUpdateStatus>('/app-update/apply', { method: 'POST', body: JSON.stringify({ targetVersion }) }),
-  dismissUpdateRollback: () => request<{ ok: boolean }>('/app-update/dismiss-rollback', { method: 'POST' }),
-  setup: (username: string, password: string) => request<{ authenticated: true; username: string }>('/auth/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),
-  login: (username: string, password: string) => request<{ authenticated: true; username: string }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
-  logout: () => request<{ authenticated: false }>('/auth/logout', { method: 'POST' }),
-  changeCredentials: (currentPassword: string, username: string, password: string) => request<{ authenticated: true; username: string }>('/auth/credentials', { method: 'PUT', body: JSON.stringify({ currentPassword, username, password }) }),
-  kavitaStatus: () => request<{
-    configured: boolean;
-    baseUrl?: string;
-    hasApiKey?: boolean;
-    version?: string | null;
-    apiVersion?: string;
-    error?: string | null;
-  }>('/kavita/status'),
+  metadataHistory: (id: number, cursor?: number) =>
+    request<{
+      items: import("../../../server/src/contracts/metadataHistory").MetadataHistoryEntry[];
+      nextCursor: number | null;
+    }>(`/series/${id}/metadata-history${cursor ? `?cursor=${cursor}` : ""}`),
+  metadataHistoryDetail: (id: number, operationId: string) =>
+    request<
+      import("../../../server/src/contracts/metadataHistory").MetadataHistoryDetail
+    >(`/series/${id}/metadata-history/${encodeURIComponent(operationId)}`),
+  metadataRestorePreview: (
+    id: number,
+    operationId: string,
+    body: RestorePreviewRequest
+  ) =>
+    request<MetadataRestorePreview>(
+      `/series/${id}/metadata-history/${encodeURIComponent(operationId)}/restore-preview`,
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+  restoreMetadata: (
+    id: number,
+    body: {
+      previewId: string;
+      idempotencyKey: string;
+      acceptCoverConversion?: boolean;
+    }
+  ) =>
+    request<{ id: number }>(`/series/${id}/metadata-restore`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  fieldPolicy: (id: number) =>
+    request<import("../../../server/src/contracts/metadata").FieldPolicy>(
+      `/series/${id}/field-locks`
+    ),
+  saveFieldPolicy: (
+    id: number,
+    body: {
+      lockedFields: import("../../../server/src/contracts/metadata").ProtectedField[];
+      expectedRevision: number;
+    }
+  ) =>
+    request<import("../../../server/src/contracts/metadata").FieldPolicy>(
+      `/series/${id}/field-locks`,
+      { method: "PUT", body: JSON.stringify(body) }
+    ),
+  mergeProtectionPreview: (body: MergeProtectionRequest) =>
+    request<MergeProtectionPreview>("/merge-protection/preview", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  homeMatches: () => request<HomeMatches>("/home/matches"),
+  scanMatchable: () =>
+    request<{ id: number; alreadyRunning: boolean }>("/home/matches/scan", {
+      method: "POST",
+    }),
+  rejectMatchCandidate: (item: MatchSuggestion) =>
+    request<{ ok: boolean }>(`/home/matches/${item.seriesId}/reject`, {
+      method: "POST",
+      body: JSON.stringify({
+        providerId: item.candidate.providerId,
+        providerSeriesId: item.candidate.providerSeriesId,
+      }),
+    }),
+  restoreMatchCandidate: (item: MatchSuggestion) =>
+    request<{ ok: boolean }>(`/home/matches/${item.seriesId}/reject`, {
+      method: "DELETE",
+      body: JSON.stringify({
+        providerId: item.candidate.providerId,
+        providerSeriesId: item.candidate.providerSeriesId,
+      }),
+    }),
+  homeActivity: () => request<HomeActivity[]>("/home/activity"),
+  homeUpdates: () => request<HomeUpdates>("/home/updates"),
+  refreshMatchedSeries: () =>
+    request<{ id: number; alreadyRunning: boolean }>("/home/updates/refresh", {
+      method: "POST",
+    }),
+  dismissMatchUpdate: (seriesId: number, dismissed: boolean) =>
+    request<{ ok: boolean }>(`/home/updates/${seriesId}/dismiss`, {
+      method: dismissed ? "POST" : "DELETE",
+    }),
+  suggestedFollows: () =>
+    request<{ items: SuggestedFollow[] }>("/watched-searches/suggestions"),
+  followSuggestedArtist: (artist: string, source: DoujinSource) =>
+    request<WatchedSearch>("/watched-searches/suggestions/follow", {
+      method: "POST",
+      body: JSON.stringify({ artist, source }),
+    }),
+  dismissSuggestedFollow: (artist: string, dismissed: boolean) =>
+    request<{ ok: boolean }>("/watched-searches/suggestions/dismiss", {
+      method: "POST",
+      body: JSON.stringify({ artist, dismissed }),
+    }),
+  authStatus: () => request<AuthStatus>("/auth/status"),
+  version: () => request<{ version: string | null }>("/version"),
+  appUpdateStatus: () => request<AppUpdateStatus>("/app-update/status"),
+  checkAppUpdate: () =>
+    request<AppUpdateStatus>("/app-update/check", { method: "POST" }),
+  applyAppUpdate: (targetVersion: string) =>
+    request<AppUpdateStatus>("/app-update/apply", {
+      method: "POST",
+      body: JSON.stringify({ targetVersion }),
+    }),
+  dismissUpdateRollback: () =>
+    request<{ ok: boolean }>("/app-update/dismiss-rollback", {
+      method: "POST",
+    }),
+  setup: (username: string, password: string) =>
+    request<{ authenticated: true; username: string }>("/auth/setup", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  login: (username: string, password: string) =>
+    request<{ authenticated: true; username: string }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  logout: () =>
+    request<{ authenticated: false }>("/auth/logout", { method: "POST" }),
+  changeCredentials: (
+    currentPassword: string,
+    username: string,
+    password: string
+  ) =>
+    request<{ authenticated: true; username: string }>("/auth/credentials", {
+      method: "PUT",
+      body: JSON.stringify({ currentPassword, username, password }),
+    }),
+  kavitaStatus: () =>
+    request<{
+      configured: boolean;
+      baseUrl?: string;
+      hasApiKey?: boolean;
+      version?: string | null;
+      apiVersion?: string;
+      error?: string | null;
+    }>("/kavita/status"),
   saveConnection: (conn: KavitaConnection) =>
-    request<{ saved: boolean; connected: boolean; test: string; canRestore: boolean }>('/kavita/connection', {
-      method: 'POST',
+    request<{
+      saved: boolean;
+      connected: boolean;
+      test: string;
+      canRestore: boolean;
+    }>("/kavita/connection", {
+      method: "POST",
       body: JSON.stringify(conn),
     }),
   testConnection: (conn: Partial<KavitaConnection>) =>
-    request<{ connected: boolean; test: string }>('/kavita/connection/test', {
-      method: 'POST',
+    request<{ connected: boolean; test: string }>("/kavita/connection/test", {
+      method: "POST",
       body: JSON.stringify(conn),
     }),
   restoreConnection: () =>
-    request<{ restored: boolean; baseUrl: string }>('/kavita/connection/restore', { method: 'POST' }),
-  libraries: () => request<KavitaLibrary[]>('/kavita/libraries'),
-  librarySeries: (libraryId: number) => request<SeriesRow[]>(`/kavita/libraries/${libraryId}/series`),
+    request<{ restored: boolean; baseUrl: string }>(
+      "/kavita/connection/restore",
+      { method: "POST" }
+    ),
+  libraries: () => request<KavitaLibrary[]>("/kavita/libraries"),
+  librarySeries: (libraryId: number) =>
+    request<SeriesRow[]>(`/kavita/libraries/${libraryId}/series`),
   libraryOverride: (id: number) =>
-    request<{ libraryId: number; priority: string[]; autoMatch: boolean }>(`/libraries/${id}/override`),
-  saveLibraryOverride: (id: number, patch: Partial<Omit<{ priority: string[]; autoMatch: boolean }, 'libraryId'>>) =>
-    request<{ ok: boolean }>(`/libraries/${id}/override`, { method: 'PUT', body: JSON.stringify(patch) }),
+    request<{ libraryId: number; priority: string[]; autoMatch: boolean }>(
+      `/libraries/${id}/override`
+    ),
+  saveLibraryOverride: (
+    id: number,
+    patch: Partial<
+      Omit<{ priority: string[]; autoMatch: boolean }, "libraryId">
+    >
+  ) =>
+    request<{ ok: boolean }>(`/libraries/${id}/override`, {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
 
   series: (id: number) =>
     request<{
@@ -510,208 +765,497 @@ export const api = {
     }>(`/series/${id}`),
   /** Provider covers H-Tosho last applied to this series, when still current. */
   appliedCover: (id: number) =>
-    request<{ coverUrl: string | null; volumeCoverUrls: string[] | null }>(`/series/${id}/applied-cover`),
+    request<{ coverUrl: string | null; volumeCoverUrls: string[] | null }>(
+      `/series/${id}/applied-cover`
+    ),
   identify: (id: number) => request<MatchOutcome>(`/series/${id}/identify`),
-  providerArtists: (provider: ArtistProviderId, query: string, page: number) => request<ArtistSearchPage>(`/providers/${provider}/artists?${new URLSearchParams({ query, page: String(page) })}`),
-  artistWorks: (provider: ArtistProviderId, artistId: string, page: number) => request<ArtistWorksPage>(`/providers/${provider}/artists/${encodeURIComponent(artistId)}/works?page=${page}`),
-  manualMatch: (id: number, url: string) => request<MatchCandidate>(`/series/${id}/manual-match`, {
-    method: 'POST',
-    body: JSON.stringify({ url }),
-  }),
+  providerArtists: (provider: ArtistProviderId, query: string, page: number) =>
+    request<ArtistSearchPage>(
+      `/providers/${provider}/artists?${new URLSearchParams({ query, page: String(page) })}`
+    ),
+  artistWorks: (provider: ArtistProviderId, artistId: string, page: number) =>
+    request<ArtistWorksPage>(
+      `/providers/${provider}/artists/${encodeURIComponent(artistId)}/works?page=${page}`
+    ),
+  manualMatch: (id: number, url: string) =>
+    request<MatchCandidate>(`/series/${id}/manual-match`, {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
   /** Queue Apply & Sync as a background job (the Kavita scan wait can take minutes). */
-  apply: (id: number, providerId: string, providerSeriesId: string, opts?: { selectedTitle?: string; excludedFields?: string[]; cover?: boolean; score?: number }) =>
+  apply: (
+    id: number,
+    providerId: string,
+    providerSeriesId: string,
+    opts?: {
+      selectedTitle?: string;
+      excludedFields?: string[];
+      cover?: boolean;
+      score?: number;
+    }
+  ) =>
     request<{ id: number }>(`/series/${id}/apply`, {
-      method: 'POST',
+      method: "POST",
       body: JSON.stringify({ providerId, providerSeriesId, ...opts }),
     }),
   /** Manually unmatch a series (drops the local match row). */
-  unmatch: (id: number) => request<{ ok: boolean; removed: boolean }>(`/series/${id}/match`, { method: 'DELETE' }),
+  unmatch: (id: number) =>
+    request<{ ok: boolean; removed: boolean }>(`/series/${id}/match`, {
+      method: "DELETE",
+    }),
   /** Matched series whose confidence is below the review threshold (local DB only). */
-  lowConfidenceCount: () => request<{ count: number; threshold: number }>('/series/low-confidence'),
-  reviewSeries: () => request<SeriesRow[]>('/series/needs-review'),
-  watchedSearches: () => request<WatchedSearch[]>('/watched-searches'),
+  lowConfidenceCount: () =>
+    request<{ count: number; threshold: number }>("/series/low-confidence"),
+  reviewSeries: () => request<SeriesRow[]>("/series/needs-review"),
+  watchedSearches: () => request<WatchedSearch[]>("/watched-searches"),
   addWatchedSearch: (source: DoujinSource, query: string) =>
-    request<WatchedSearch>('/watched-searches', { method: 'POST', body: JSON.stringify({ source, query }) }),
-  updateWatchedSearch: (id: number, patch: WatchedSearchPatch) => request<WatchedSearch>(`/watched-searches/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
-  removeWatchedSearch: (id: number, expectedRevision: number) => request<{ ok: boolean }>(`/watched-searches/${id}`, { method: 'DELETE', body: JSON.stringify({ expectedRevision }) }),
-  watchedSearchFolders: () => request<WatchedSearchFolder[]>('/watched-search-folders'),
-  addWatchedSearchFolder: (name: string) => request<WatchedSearchFolder>('/watched-search-folders', { method: 'POST', body: JSON.stringify({ name }) }),
-  updateWatchedSearchFolder: (id: number, patch: WatchedSearchFolderPatch) => request<WatchedSearchFolder>(`/watched-search-folders/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
-  removeWatchedSearchFolder: (id: number, expectedRevision: number) => request<{ ok: boolean }>(`/watched-search-folders/${id}`, { method: 'DELETE', body: JSON.stringify({ expectedRevision }) }),
-  checkWatchedSearches: () => request<{ id: number; alreadyRunning?: boolean }>('/watched-searches/check', { method: 'POST', body: JSON.stringify({}) }),
-  watchedCheckStatus: () => request<Job | null>('/watched-searches/check-status'),
+    request<WatchedSearch>("/watched-searches", {
+      method: "POST",
+      body: JSON.stringify({ source, query }),
+    }),
+  updateWatchedSearch: (id: number, patch: WatchedSearchPatch) =>
+    request<WatchedSearch>(`/watched-searches/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  removeWatchedSearch: (id: number, expectedRevision: number) =>
+    request<{ ok: boolean }>(`/watched-searches/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ expectedRevision }),
+    }),
+  watchedSearchFolders: () =>
+    request<WatchedSearchFolder[]>("/watched-search-folders"),
+  addWatchedSearchFolder: (name: string) =>
+    request<WatchedSearchFolder>("/watched-search-folders", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  updateWatchedSearchFolder: (id: number, patch: WatchedSearchFolderPatch) =>
+    request<WatchedSearchFolder>(`/watched-search-folders/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  removeWatchedSearchFolder: (id: number, expectedRevision: number) =>
+    request<{ ok: boolean }>(`/watched-search-folders/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ expectedRevision }),
+    }),
+  checkWatchedSearches: () =>
+    request<{ id: number; alreadyRunning?: boolean }>(
+      "/watched-searches/check",
+      { method: "POST", body: JSON.stringify({}) }
+    ),
+  watchedCheckStatus: () =>
+    request<Job | null>("/watched-searches/check-status"),
   watchedGalleryFeed: (options: FollowingFeedOptions) => {
     const params = new URLSearchParams();
-    if (options.view) params.set('view', options.view);
-    if (options.offset !== undefined) params.set('offset', String(options.offset));
-    if (options.limit !== undefined) params.set('limit', String(options.limit));
-    if (options.source) params.set('source', options.source);
-    if (options.searchId !== undefined) params.set('searchId', String(options.searchId));
-    if (options.folderId !== undefined) params.set('folderId', String(options.folderId));
+    if (options.view) params.set("view", options.view);
+    if (options.offset !== undefined)
+      params.set("offset", String(options.offset));
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.source) params.set("source", options.source);
+    if (options.searchId !== undefined)
+      params.set("searchId", String(options.searchId));
+    if (options.folderId !== undefined)
+      params.set("folderId", String(options.folderId));
     return request<WatchedGalleryFeed>(`/watched-searches/feed?${params}`);
   },
-  reviewWatchedGalleries: (items: { source: DoujinSource; galleryId: string }[], reviewed: boolean) => request<{ ok: boolean }>('/watched-searches/review', { method: 'POST', body: JSON.stringify({ items, reviewed }) }),
+  reviewWatchedGalleries: (
+    items: { source: DoujinSource; galleryId: string }[],
+    reviewed: boolean
+  ) =>
+    request<{ ok: boolean }>("/watched-searches/review", {
+      method: "POST",
+      body: JSON.stringify({ items, reviewed }),
+    }),
   watchedSearchNew: (limit?: number) =>
-    request<WatchedNewGallery[]>(`/watched-searches/new${limit ? `?limit=${limit}` : ''}`),
+    request<WatchedNewGallery[]>(
+      `/watched-searches/new${limit ? `?limit=${limit}` : ""}`
+    ),
 
   // ---------------- Recommendations ----------------
   /** Today's recommendation set (cached per local date server-side). */
-  recommendations: () => request<RecommendationSet>('/recommendations'),
+  recommendations: () => request<RecommendationSet>("/recommendations"),
   /** Re-roll today's picks with a fresh seed. */
-  refreshRecommendations: () => request<RecommendationSet>('/recommendations/refresh', { method: 'POST' }),
+  refreshRecommendations: () =>
+    request<RecommendationSet>("/recommendations/refresh", { method: "POST" }),
   /** Exclude a gallery from recommendations without marking it owned. */
   dismissGallery: (body: { source: DoujinSource; galleryId: string }) =>
-    request<RecommendationSet>('/recommendations/dismiss', { method: 'POST', body: JSON.stringify(body) }),
+    request<RecommendationSet>("/recommendations/dismiss", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   /** Reallow a previously dismissed gallery. */
   undoDismissGallery: (body: { source: DoujinSource; galleryId: string }) =>
-    request<RecommendationSet>('/recommendations/undo-dismiss', { method: 'POST', body: JSON.stringify(body) }),
-  recommendationSettings: () => request<RecommendationSettings>('/recommendations/settings'),
-  recommendationFeedback: () => request<RecommendationFeedback>('/recommendations/feedback'),
-  saveRecommendationFeedback: (body: FeedbackRequest) => request<{ feedback: RecommendationFeedback; recommendations: RecommendationSet }>('/recommendations/feedback', { method: 'POST', body: JSON.stringify(body) }),
+    request<RecommendationSet>("/recommendations/undo-dismiss", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  recommendationSettings: () =>
+    request<RecommendationSettings>("/recommendations/settings"),
+  recommendationFeedback: () =>
+    request<RecommendationFeedback>("/recommendations/feedback"),
+  saveRecommendationFeedback: (body: FeedbackRequest) =>
+    request<{
+      feedback: RecommendationFeedback;
+      recommendations: RecommendationSet;
+    }>("/recommendations/feedback", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   saveRecommendationSettings: (body: RecommendationSettings) =>
-    request<RecommendationSettings>('/recommendations/settings', { method: 'POST', body: JSON.stringify(body) }),
+    request<RecommendationSettings>("/recommendations/settings", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   /** Light Kavita library list (id + name) for the recommendation settings row. */
-  recommendationLibraries: () => request<{ id: number; name: string }[]>('/recommendations/libraries'),
+  recommendationLibraries: () =>
+    request<{ id: number; name: string }[]>("/recommendations/libraries"),
 
   /** Aggregated metadata a candidate would sync — same path as apply. */
   providerMetadata: (providerId: string, providerSeriesId: string) =>
-    request<SeriesMetadata>(`/providers/${providerId}/series/${providerSeriesId}`),
+    request<SeriesMetadata>(
+      `/providers/${providerId}/series/${providerSeriesId}`
+    ),
 
-  providers: () => request<ProviderInfo[]>('/providers'),
-  saveProvider: (id: string, setting: { enabled?: boolean; credentials?: Record<string, string> }) =>
-    request<{ ok: boolean }>(`/providers/${id}`, { method: 'PUT', body: JSON.stringify(setting) }),
-  testProvider: (id: string) => request<{ ok: boolean; error?: string }>(`/providers/${id}/test`, { method: 'POST' }),
-  settings: () => request<Settings>('/settings'),
-  savePriorities: (priorities: string[]) =>
-    request<{ ok: boolean }>('/settings/priorities', { method: 'PUT', body: JSON.stringify({ priorities }) }),
-  saveNotifications: (notifications: Settings['notifications']) =>
-    request<{ ok: boolean; notifications: NotificationSettings }>('/settings/notifications', {
-      method: 'PUT',
-      body: JSON.stringify({ notifications, expectedRevision: notifications.revision }),
+  providers: () => request<ProviderInfo[]>("/providers"),
+  saveProvider: (
+    id: string,
+    setting: { enabled?: boolean; credentials?: Record<string, string> }
+  ) =>
+    request<{ ok: boolean }>(`/providers/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(setting),
     }),
-  testNotifications: (notifications: Settings['notifications']) => request<{ discord: string }>('/settings/notifications/test', {
-    method: 'PUT',
-    body: JSON.stringify({ notifications }),
-  }),
+  testProvider: (id: string) =>
+    request<{ ok: boolean; error?: string }>(`/providers/${id}/test`, {
+      method: "POST",
+    }),
+  settings: () => request<Settings>("/settings"),
+  savePriorities: (priorities: string[]) =>
+    request<{ ok: boolean }>("/settings/priorities", {
+      method: "PUT",
+      body: JSON.stringify({ priorities }),
+    }),
+  saveNotifications: (notifications: Settings["notifications"]) =>
+    request<{ ok: boolean; notifications: NotificationSettings }>(
+      "/settings/notifications",
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          notifications,
+          expectedRevision: notifications.revision,
+        }),
+      }
+    ),
+  testNotifications: (notifications: Settings["notifications"]) =>
+    request<{ discord: string }>("/settings/notifications/test", {
+      method: "PUT",
+      body: JSON.stringify({ notifications }),
+    }),
   saveMatchRefreshInterval: (days: number) =>
-    request<{ ok: boolean }>('/settings/match-refresh-interval', { method: 'PUT', body: JSON.stringify({ days }) }),
+    request<{ ok: boolean }>("/settings/match-refresh-interval", {
+      method: "PUT",
+      body: JSON.stringify({ days }),
+    }),
   savePollInterval: (hours: number) =>
-    request<{ ok: boolean }>('/settings/poll-interval', { method: 'PUT', body: JSON.stringify({ hours }) }),
+    request<{ ok: boolean }>("/settings/poll-interval", {
+      method: "PUT",
+      body: JSON.stringify({ hours }),
+    }),
   saveWatchedSearchInterval: (minutes: number) =>
-    request<{ ok: boolean }>('/settings/watched-search-interval', { method: 'PUT', body: JSON.stringify({ minutes }) }),
+    request<{ ok: boolean }>("/settings/watched-search-interval", {
+      method: "PUT",
+      body: JSON.stringify({ minutes }),
+    }),
 
   enqueue: <T extends JobType>(type: T, payload: JobPayloads[NoInfer<T>]) =>
-    request<{ id: number }>('/jobs', { method: 'POST', body: JSON.stringify({ type, ...payload }) }),
-  jobs: () => request<Job[]>('/jobs'),
+    request<{ id: number }>("/jobs", {
+      method: "POST",
+      body: JSON.stringify({ type, ...payload }),
+    }),
+  jobs: () => request<Job[]>("/jobs"),
   job: (id: number) => request<{ job: Job; logs: JobLog[] }>(`/jobs/${id}`),
-  cancelJob: (id: number) => request<{ ok: boolean }>(`/jobs/${id}/cancel`, { method: 'POST' }),
-  retryJob: (id: number) => request<{ ok: boolean; id: number }>(`/jobs/${id}/retry`, { method: 'POST' }),
-  removeFailedJob: (id: number) => request<{ removed: number }>(`/jobs/${id}`, { method: 'DELETE' }),
-  clearFailedJobs: () => request<{ removed: number }>('/jobs/failed', { method: 'DELETE' }),
-  logs: () => request<JobLog[]>('/logs'),
+  cancelJob: (id: number) =>
+    request<{ ok: boolean }>(`/jobs/${id}/cancel`, { method: "POST" }),
+  retryJob: (id: number) =>
+    request<{ ok: boolean; id: number }>(`/jobs/${id}/retry`, {
+      method: "POST",
+    }),
+  removeFailedJob: (id: number) =>
+    request<{ removed: number }>(`/jobs/${id}`, { method: "DELETE" }),
+  clearFailedJobs: () =>
+    request<{ removed: number }>("/jobs/failed", { method: "DELETE" }),
+  logs: () => request<JobLog[]>("/logs"),
 
   // ---------------- Doujinshi downloader ----------------
-  downloaderSettings: () => request<DownloaderSettings>('/settings/downloader'),
-  saveDownloaderSettings: ({ libraryPathMappings: _mappings, ...settings }: DownloaderSettings) =>
-    request<{ ok: boolean; settings: DownloaderSettings }>('/settings/downloader', {
-      method: 'PUT',
-      body: JSON.stringify(settings),
-    }),
+  downloaderSettings: () => request<DownloaderSettings>("/settings/downloader"),
+  saveDownloaderSettings: ({
+    libraryPathMappings: _mappings,
+    ...settings
+  }: DownloaderSettings) =>
+    request<{ ok: boolean; settings: DownloaderSettings }>(
+      "/settings/downloader",
+      {
+        method: "PUT",
+        body: JSON.stringify(settings),
+      }
+    ),
   saveLibraryPathMappings: (libraryPathMappings: LibraryPathMapping[]) =>
-    request<{ libraryPathMappings: LibraryPathMapping[] }>('/settings/library-path-mappings', {
-      method: 'PUT',
-      body: JSON.stringify({ libraryPathMappings }),
-    }),
+    request<{ libraryPathMappings: LibraryPathMapping[] }>(
+      "/settings/library-path-mappings",
+      {
+        method: "PUT",
+        body: JSON.stringify({ libraryPathMappings }),
+      }
+    ),
   // ---------------- E-Hentai account (Settings) ----------------
   /** Public account view — never contains cookie values. */
-  ehentaiAccount: () => request<EhentaiAccountView>('/settings/ehentai'),
+  ehentaiAccount: () => request<EhentaiAccountView>("/settings/ehentai"),
   /** Save/replace the stored session. `expectedRevision` guards against concurrent saves.
    *  Omit `session` (with a saved account) to change only the site. */
-  saveEhentaiAccount: (body: { site?: EhentaiSite; session?: EhentaiSessionInput; expectedRevision: number }) =>
-    request<EhentaiAccountView>('/settings/ehentai', { method: 'PUT', body: JSON.stringify(body) }),
+  saveEhentaiAccount: (body: {
+    site?: EhentaiSite;
+    session?: EhentaiSessionInput;
+    expectedRevision: number;
+  }) =>
+    request<EhentaiAccountView>("/settings/ehentai", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
   /** Test access with the saved account, or a draft session (which is never stored). */
-  testEhentaiAccount: (mode: 'saved' | 'draft', session?: EhentaiSessionInput) =>
-    request<{ eHentai: EhentaiSiteAccess; exHentai: EhentaiSiteAccess; testedAt: string; saved: boolean }>('/settings/ehentai/test', {
-      method: 'POST',
+  testEhentaiAccount: (
+    mode: "saved" | "draft",
+    session?: EhentaiSessionInput
+  ) =>
+    request<{
+      eHentai: EhentaiSiteAccess;
+      exHentai: EhentaiSiteAccess;
+      testedAt: string;
+      saved: boolean;
+    }>("/settings/ehentai/test", {
+      method: "POST",
       body: JSON.stringify({ mode, ...(session ? { session } : {}) }),
     }),
   removeEhentaiAccount: (expectedRevision: number) =>
-    request<EhentaiAccountView>('/settings/ehentai', { method: 'DELETE', body: JSON.stringify({ expectedRevision }) }),
-  doujinProviders: () => request<DoujinProvider[]>('/doujin/providers'),
-  doujinSearch: (source: DoujinSource, query: string, sort?: DoujinSort) =>
-    request<DoujinSearchResult[]>('/doujin/search', {
-      method: 'POST',
-      body: JSON.stringify({ source, query, ...(sort && sort !== 'default' ? { sort } : {}) }),
+    request<EhentaiAccountView>("/settings/ehentai", {
+      method: "DELETE",
+      body: JSON.stringify({ expectedRevision }),
     }),
-  doujinSearchPage: (source: DoujinSource, query: string, offset: number, limit: number, sort?: DoujinSort) =>
-    request<{ items: DoujinSearchResult[]; total: number } | DoujinSearchResult[]>('/doujin/search', {
-      method: 'POST', body: JSON.stringify({ source, query, offset, limit, ...(sort && sort !== 'default' ? { sort } : {}) }),
-    }).then(result => Array.isArray(result) ? { items: result, total: result.length } : result),
-  doujinSuggestions: (source: DoujinSource | 'unified', query: string, context?: string, signal?: AbortSignal) =>
-    request<DoujinSuggestion[]>('/doujin/suggestions', {
-      method: 'POST',
-      body: JSON.stringify({ source, query, ...(context !== undefined ? { context } : {}) }),
+  doujinProviders: () => request<DoujinProvider[]>("/doujin/providers"),
+  doujinSearch: (source: DoujinSource, query: string, sort?: DoujinSort) =>
+    request<DoujinSearchResult[]>("/doujin/search", {
+      method: "POST",
+      body: JSON.stringify({
+        source,
+        query,
+        ...(sort && sort !== "default" ? { sort } : {}),
+      }),
+    }),
+  doujinSearchPage: (
+    source: DoujinSource,
+    query: string,
+    offset: number,
+    limit: number,
+    sort?: DoujinSort
+  ) =>
+    request<
+      { items: DoujinSearchResult[]; total: number } | DoujinSearchResult[]
+    >("/doujin/search", {
+      method: "POST",
+      body: JSON.stringify({
+        source,
+        query,
+        offset,
+        limit,
+        ...(sort && sort !== "default" ? { sort } : {}),
+      }),
+    }).then((result) =>
+      Array.isArray(result) ? { items: result, total: result.length } : result
+    ),
+  doujinSuggestions: (
+    source: DoujinSource | "unified",
+    query: string,
+    context?: string,
+    signal?: AbortSignal
+  ) =>
+    request<DoujinSuggestion[]>("/doujin/suggestions", {
+      method: "POST",
+      body: JSON.stringify({
+        source,
+        query,
+        ...(context !== undefined ? { context } : {}),
+      }),
       signal,
     }),
   /** Unified search across all sources: start with { query }, continue with
    *  { cursor, retry? }. The server replays the last served cursor. */
-  unifiedSearch: (body: { query?: string; cursor?: string; retry?: string }, signal?: AbortSignal) =>
-    request<UnifiedSearchPage>('/doujin/search/unified', {
-      method: 'POST',
+  unifiedSearch: (
+    body: { query?: string; cursor?: string; retry?: string },
+    signal?: AbortSignal
+  ) =>
+    request<UnifiedSearchPage>("/doujin/search/unified", {
+      method: "POST",
       body: JSON.stringify(body),
       signal,
     }),
   unifiedSearchStream,
   doujinGallery: (source: DoujinSource, idOrUrl: string) =>
-    request<DoujinGallery>('/doujin/gallery', {
-      method: 'POST',
+    request<DoujinGallery>("/doujin/gallery", {
+      method: "POST",
       body: JSON.stringify({ source, idOrUrl }),
     }),
-  startDownload: (body: { source: DoujinSource; galleryId: string; url?: string; title?: string; format?: 'cbz' | 'folder'; mergeFolder?: string; chapter?: number; allowDuplicate?: boolean }) =>
-    request<{ id: number; status: string }>('/downloads', { method: 'POST', body: JSON.stringify(body) }),
-  startMergedDownloads: (body: { mergeFolder: string; items: { source: DoujinSource; galleryId: string; url?: string; chapter?: number; allowDuplicate?: boolean }[] }) =>
-    request<{ items: { source: DoujinSource; galleryId: string; id?: number; error?: string }[] }>('/downloads/merged', { method: 'POST', body: JSON.stringify(body) }),
-  checkDuplicates: (items: { source: DoujinSource; galleryId: string; url?: string }[], refreshLibrary = false) => request<DuplicateCheck>('/downloads/duplicates', { method: 'POST', body: JSON.stringify({ items, refreshLibrary }) }),
-  libraryMatches: (items: DoujinSearchResult[]) => request<DuplicateCheck>('/downloads/library-matches', { method: 'POST', body: JSON.stringify({ items: items.map(({ source, galleryId, title, artists, language, pageCount, tags }) => ({ source, galleryId, title, artists, language, pageCount, ...(tags?.length ? { tags: tags.slice(0, 500) } : {}) })) }) }),
-  downloads: () => request<DownloadTask[]>('/downloads'),
+  startDownload: (body: {
+    source: DoujinSource;
+    galleryId: string;
+    url?: string;
+    title?: string;
+    format?: "cbz" | "folder";
+    mergeFolder?: string;
+    chapter?: number;
+    allowDuplicate?: boolean;
+  }) =>
+    request<{ id: number; status: string }>("/downloads", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  startMergedDownloads: (body: {
+    mergeFolder: string;
+    items: {
+      source: DoujinSource;
+      galleryId: string;
+      url?: string;
+      chapter?: number;
+      allowDuplicate?: boolean;
+    }[];
+  }) =>
+    request<{
+      items: {
+        source: DoujinSource;
+        galleryId: string;
+        id?: number;
+        error?: string;
+      }[];
+    }>("/downloads/merged", { method: "POST", body: JSON.stringify(body) }),
+  checkDuplicates: (
+    items: { source: DoujinSource; galleryId: string; url?: string }[],
+    refreshLibrary = false
+  ) =>
+    request<DuplicateCheck>("/downloads/duplicates", {
+      method: "POST",
+      body: JSON.stringify({ items, refreshLibrary }),
+    }),
+  libraryMatches: (items: DoujinSearchResult[]) =>
+    request<DuplicateCheck>("/downloads/library-matches", {
+      method: "POST",
+      body: JSON.stringify({
+        items: items.map(
+          ({
+            source,
+            galleryId,
+            title,
+            artists,
+            language,
+            pageCount,
+            tags,
+          }) => ({
+            source,
+            galleryId,
+            title,
+            artists,
+            language,
+            pageCount,
+            ...(tags?.length ? { tags: tags.slice(0, 500) } : {}),
+          })
+        ),
+      }),
+    }),
+  downloads: () => request<DownloadTask[]>("/downloads"),
   /** Older completed downloads beyond the live list, newest finish first. */
-  downloadHistory: (offset: number, limit = 50) => request<DownloadHistoryPage>(`/downloads/history?offset=${offset}&limit=${limit}`),
+  downloadHistory: (offset: number, limit = 50) =>
+    request<DownloadHistoryPage>(
+      `/downloads/history?offset=${offset}&limit=${limit}`
+    ),
   /** Kavita import state for completed downloads, keyed by task id. */
-  downloadLibrary: (ids: number[]) => request<Record<number, DownloadLibraryState>>(`/downloads/library?ids=${ids.join(',')}`),
+  downloadLibrary: (ids: number[]) =>
+    request<Record<number, DownloadLibraryState>>(
+      `/downloads/library?ids=${ids.join(",")}`
+    ),
   /** Completed galleries for the duplicate-download badges. */
-  downloadsCompleted: () => request<DownloadedGallery[]>('/downloads/completed'),
+  downloadsCompleted: () =>
+    request<DownloadedGallery[]>("/downloads/completed"),
   /** .cbz files on disk for a gallery (completed task first, per-gallery folder as fallback). */
   galleryFiles: (source: DoujinSource, galleryId: string, title: string) =>
-    request<{ files: string[] }>(`/downloads/gallery-files?source=${encodeURIComponent(source)}&galleryId=${encodeURIComponent(galleryId)}&title=${encodeURIComponent(title)}`),
+    request<{ files: string[] }>(
+      `/downloads/gallery-files?source=${encodeURIComponent(source)}&galleryId=${encodeURIComponent(galleryId)}&title=${encodeURIComponent(title)}`
+    ),
   download: (id: number) => request<DownloadTask>(`/downloads/${id}`),
-  downloadAction: (id: number, action: 'pause' | 'resume' | 'cancel' | 'retry') =>
-    request<{ ok: boolean }>(`/downloads/${id}/${action}`, { method: 'POST' }),
+  downloadAction: (
+    id: number,
+    action: "pause" | "resume" | "cancel" | "retry"
+  ) =>
+    request<{ ok: boolean }>(`/downloads/${id}/${action}`, { method: "POST" }),
   prioritizeDownload: (id: number) =>
-    request<{ ok: boolean }>(`/downloads/${id}/prioritize`, { method: 'POST' }),
-  pauseAllDownloads: () => request<{ ok: boolean; count: number }>('/downloads/pause-all', { method: 'POST' }),
-  resumeAllDownloads: () => request<{ ok: boolean; count: number }>('/downloads/resume-all', { method: 'POST' }),
-  retryFailedDownloads: () => request<{ ok: boolean; count: number }>('/downloads/retry-failed', { method: 'POST' }),
-  deleteDownload: (id: number) => request<{ ok: boolean }>(`/downloads/${id}`, { method: 'DELETE' }),
-  clearCompletedDownloads: () => request<{ ok: boolean; removed: number }>('/downloads/clear-completed', { method: 'POST' }),
-  clearCancelledDownloads: () => request<{ ok: boolean; removed: number }>('/downloads/clear-cancelled', { method: 'POST' }),
+    request<{ ok: boolean }>(`/downloads/${id}/prioritize`, { method: "POST" }),
+  pauseAllDownloads: () =>
+    request<{ ok: boolean; count: number }>("/downloads/pause-all", {
+      method: "POST",
+    }),
+  resumeAllDownloads: () =>
+    request<{ ok: boolean; count: number }>("/downloads/resume-all", {
+      method: "POST",
+    }),
+  retryFailedDownloads: () =>
+    request<{ ok: boolean; count: number }>("/downloads/retry-failed", {
+      method: "POST",
+    }),
+  deleteDownload: (id: number) =>
+    request<{ ok: boolean }>(`/downloads/${id}`, { method: "DELETE" }),
+  clearCompletedDownloads: () =>
+    request<{ ok: boolean; removed: number }>("/downloads/clear-completed", {
+      method: "POST",
+    }),
+  clearCancelledDownloads: () =>
+    request<{ ok: boolean; removed: number }>("/downloads/clear-cancelled", {
+      method: "POST",
+    }),
 
   // ---------------- ComicInfo editor ----------------
   /** Browse roots for the file picker (download dir + Kavita library paths). */
-  cbzRoots: () => request<{ roots: string[] }>('/cbz/roots'),
+  cbzRoots: () => request<{ roots: string[] }>("/cbz/roots"),
   /** List a directory's subdirectories and .cbz files. */
   cbzBrowse: (dir: string) =>
-    request<{ path: string; parent: string | null; dirs: string[]; files: string[] }>(`/cbz/browse?path=${encodeURIComponent(dir)}`),
+    request<{
+      path: string;
+      parent: string | null;
+      dirs: string[];
+      files: string[];
+    }>(`/cbz/browse?path=${encodeURIComponent(dir)}`),
   /** Read + parse the ComicInfo.xml embedded in a .cbz. */
   cbzComicInfo: (file: string) =>
-    request<{ path: string; hasEntry: boolean; fields: Record<string, string>; order: string[]; raw: string | null }>(
-      `/cbz/comicinfo?path=${encodeURIComponent(file)}`,
-    ),
+    request<{
+      path: string;
+      hasEntry: boolean;
+      fields: Record<string, string>;
+      order: string[];
+      raw: string | null;
+    }>(`/cbz/comicinfo?path=${encodeURIComponent(file)}`),
   /** .cbz archives on disk for a Kavita series (resolved host-side). */
   cbzSeriesFiles: (seriesId: number) =>
-    request<{ seriesId: number; name: string; dir: string | null; reason: string | null; files: string[]; chapterNumbers: Record<string, string> }>(`/cbz/series/${seriesId}`),
+    request<{
+      seriesId: number;
+      name: string;
+      dir: string | null;
+      reason: string | null;
+      files: string[];
+      chapterNumbers: Record<string, string>;
+    }>(`/cbz/series/${seriesId}`),
   /** Image entries (pages) of a .cbz, in reading order. */
   cbzImages: (file: string) =>
-    request<{ path: string; images: string[] }>(`/cbz/images?path=${encodeURIComponent(file)}`),
+    request<{ path: string; images: string[] }>(
+      `/cbz/images?path=${encodeURIComponent(file)}`
+    ),
   /** Same-origin URL serving one page image from a .cbz. */
-  cbzPageUrl: (file: string, name: string) => `/api/cbz/page?path=${encodeURIComponent(file)}&name=${encodeURIComponent(name)}`,
+  cbzPageUrl: (file: string, name: string) =>
+    `/api/cbz/page?path=${encodeURIComponent(file)}&name=${encodeURIComponent(name)}`,
 };

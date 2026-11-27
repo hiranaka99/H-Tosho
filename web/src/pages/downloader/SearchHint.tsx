@@ -2,7 +2,8 @@
 export function SearchHint({ id }: { id: string }) {
   return (
     <p id={id} className="break-words text-xs text-muted">
-      Filters: artist:, group:, parody:, character:, language: · “quoted phrase” · -exclude
+      Filters: artist:, group:, parody:, character:, language: · “quoted phrase”
+      · -exclude
     </p>
   );
 }

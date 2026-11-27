@@ -41,19 +41,19 @@ This plan does not include a new reader, automatic file replacement, automatic m
 
 ## 2. Existing architecture to build on
 
-| Area | Current implementation | Consequence for this work |
-| --- | --- | --- |
-| Metadata field selection | [contracts/metadata.ts](../server/src/contracts/metadata.ts) | Reuse `SyncField` and `EXCLUDABLE_FIELDS`; keep persistent protection separate from one-operation exclusions. |
-| Metadata application | [services/sync.ts](../server/src/services/sync.ts) | Provider apply/sync paths converge here. `ComicInfo.Series` can be rewritten before the remote metadata update, so protection and snapshot capture must precede that branch. |
-| Kavita writes | [kavita/client.ts](../server/src/kavita/client.ts), [kavita/types.ts](../server/src/kavita/types.ts) | Metadata updates merge into a full DTO; cover and archive workflows require verified target identities. |
-| Archive writes and concurrency | [lib/cbz.ts](../server/src/lib/cbz.ts), [lib/mutations.ts](../server/src/lib/mutations.ts) | Preserve atomic archive publication and the existing series/archive mutation ownership. |
-| Tasks | [contracts/jobs.ts](../server/src/contracts/jobs.ts), [jobs/queue.ts](../server/src/jobs/queue.ts), [jobs/executor.ts](../server/src/jobs/executor.ts) | Extend validated commands, execution state, conflict rules, cancellation, retry, and recovery together. |
-| Persistence | [db/schema.ts](../server/src/db/schema.ts), [db/migrations.ts](../server/src/db/migrations.ts), [db/index.ts](../server/src/db/index.ts) | Add new numbered transactional migrations; existing-install upgrades cannot rely on bootstrap alone. |
-| Connection identity | [services/kavitaState.ts](../server/src/services/kavitaState.ts) | Reuse `kavitaConnectionKey()`. New library-specific tables should carry their connection key explicitly. |
-| Following | [services/watchedSearches.ts](../server/src/services/watchedSearches.ts), [routes/api/watched.ts](../server/src/routes/api/watched.ts) | Preserve silent first-check seeding, retained discoveries, shared review state, filtering, and paging. |
-| Notifications and scheduling | [services/settings.ts](../server/src/services/settings.ts), [index.ts](../server/src/index.ts) | Replace the all-watches global timer with persisted due-work scheduling; separate source-check success from notification delivery. |
-| Existing artist identification | [contracts/artists.ts](../server/src/contracts/artists.ts), [ArtistWorksBrowser.tsx](../web/src/components/ArtistWorksBrowser.tsx) | Metadata-provider artist identities remain part of metadata identification. |
-| Frontend integration | [IdentifyModal.tsx](../web/src/components/IdentifyModal.tsx), [Libraries.tsx](../web/src/pages/Libraries.tsx), [WatchedSearchControls.tsx](../web/src/pages/downloader/WatchedSearchControls.tsx), [GalleryDetailModal.tsx](../web/src/pages/downloader/GalleryDetailModal.tsx), [api.ts](../web/src/lib/api.ts) | Extend established review, library, Following, and gallery flows rather than creating parallel versions. |
+| Area                           | Current implementation                                                                                                                                                                                                                                                                                           | Consequence for this work                                                                                                                                                    |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Metadata field selection       | [contracts/metadata.ts](../server/src/contracts/metadata.ts)                                                                                                                                                                                                                                                     | Reuse `SyncField` and `EXCLUDABLE_FIELDS`; keep persistent protection separate from one-operation exclusions.                                                                |
+| Metadata application           | [services/sync.ts](../server/src/services/sync.ts)                                                                                                                                                                                                                                                               | Provider apply/sync paths converge here. `ComicInfo.Series` can be rewritten before the remote metadata update, so protection and snapshot capture must precede that branch. |
+| Kavita writes                  | [kavita/client.ts](../server/src/kavita/client.ts), [kavita/types.ts](../server/src/kavita/types.ts)                                                                                                                                                                                                             | Metadata updates merge into a full DTO; cover and archive workflows require verified target identities.                                                                      |
+| Archive writes and concurrency | [lib/cbz.ts](../server/src/lib/cbz.ts), [lib/mutations.ts](../server/src/lib/mutations.ts)                                                                                                                                                                                                                       | Preserve atomic archive publication and the existing series/archive mutation ownership.                                                                                      |
+| Tasks                          | [contracts/jobs.ts](../server/src/contracts/jobs.ts), [jobs/queue.ts](../server/src/jobs/queue.ts), [jobs/executor.ts](../server/src/jobs/executor.ts)                                                                                                                                                           | Extend validated commands, execution state, conflict rules, cancellation, retry, and recovery together.                                                                      |
+| Persistence                    | [db/schema.ts](../server/src/db/schema.ts), [db/migrations.ts](../server/src/db/migrations.ts), [db/index.ts](../server/src/db/index.ts)                                                                                                                                                                         | Add new numbered transactional migrations; existing-install upgrades cannot rely on bootstrap alone.                                                                         |
+| Connection identity            | [services/kavitaState.ts](../server/src/services/kavitaState.ts)                                                                                                                                                                                                                                                 | Reuse `kavitaConnectionKey()`. New library-specific tables should carry their connection key explicitly.                                                                     |
+| Following                      | [services/watchedSearches.ts](../server/src/services/watchedSearches.ts), [routes/api/watched.ts](../server/src/routes/api/watched.ts)                                                                                                                                                                           | Preserve silent first-check seeding, retained discoveries, shared review state, filtering, and paging.                                                                       |
+| Notifications and scheduling   | [services/settings.ts](../server/src/services/settings.ts), [index.ts](../server/src/index.ts)                                                                                                                                                                                                                   | Replace the all-watches global timer with persisted due-work scheduling; separate source-check success from notification delivery.                                           |
+| Existing artist identification | [contracts/artists.ts](../server/src/contracts/artists.ts), [ArtistWorksBrowser.tsx](../web/src/components/ArtistWorksBrowser.tsx)                                                                                                                                                                               | Metadata-provider artist identities remain part of metadata identification.                                                                                                  |
+| Frontend integration           | [IdentifyModal.tsx](../web/src/components/IdentifyModal.tsx), [Libraries.tsx](../web/src/pages/Libraries.tsx), [WatchedSearchControls.tsx](../web/src/pages/downloader/WatchedSearchControls.tsx), [GalleryDetailModal.tsx](../web/src/pages/downloader/GalleryDetailModal.tsx), [api.ts](../web/src/lib/api.ts) | Extend established review, library, Following, and gallery flows rather than creating parallel versions.                                                                     |
 
 ### Important current limitations
 
@@ -99,13 +99,13 @@ This plan does not include a new reader, automatic file replacement, automatic m
 
 Label the feature **Protected from H-Tosho sync** so its scope is clear.
 
-| Operation | Policy |
-| --- | --- |
-| Automatic matching/sync and manual provider Apply & Sync | Skip protected fields, including their filesystem side effects. Apply eligible unprotected fields normally. |
-| Unmatch cleanup | Remove the identification link as requested, but retain protected metadata/covers and report what was retained. |
-| Direct, explicit ComicInfo editing | Remains a deliberate authoring workflow. Show protection status, preserve the protection afterward, and record the edit in metadata history. Do not infer authorization to bypass protection from a generic background-job flag. |
-| Metadata restore | Protected fields are excluded until the user explicitly unlocks them and refreshes the restore preview. No silent override. |
-| Explicit merge/rename | Show affected protected fields before queueing. Require explicit unlock for a protected target-title change; protection must not disappear because a series is merged. |
+| Operation                                                | Policy                                                                                                                                                                                                                           |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Automatic matching/sync and manual provider Apply & Sync | Skip protected fields, including their filesystem side effects. Apply eligible unprotected fields normally.                                                                                                                      |
+| Unmatch cleanup                                          | Remove the identification link as requested, but retain protected metadata/covers and report what was retained.                                                                                                                  |
+| Direct, explicit ComicInfo editing                       | Remains a deliberate authoring workflow. Show protection status, preserve the protection afterward, and record the edit in metadata history. Do not infer authorization to bypass protection from a generic background-job flag. |
+| Metadata restore                                         | Protected fields are excluded until the user explicitly unlocks them and refreshes the restore preview. No silent override.                                                                                                      |
+| Explicit merge/rename                                    | Show affected protected fields before queueing. Require explicit unlock for a protected target-title change; protection must not disappear because a series is merged.                                                           |
 
 Initial keys are the existing `SyncField` values: title, summary, genres, tags, writers, artists, releaseDate, language, status, and url. Clarify that `releaseDate` currently represents the pushed release year and that the generic artist field maps to Kavita's pencillers.
 
@@ -124,9 +124,9 @@ Proposed `series_field_policies` table:
 
 Proposed authenticated endpoints:
 
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /series/:id/field-locks` | Return protected keys, policy revision, and protection scope. |
+| Endpoint                      | Purpose                                                                          |
+| ----------------------------- | -------------------------------------------------------------------------------- |
+| `GET /series/:id/field-locks` | Return protected keys, policy revision, and protection scope.                    |
 | `PUT /series/:id/field-locks` | Replace the validated key set using `expectedRevision`; return the new revision. |
 
 The update operation must acquire the same series mutation ownership used by application. A successful lock-update acknowledgement establishes the boundary after which later operations must observe that policy; it does not retroactively cancel a write already committing.
@@ -163,11 +163,11 @@ A restore is a new recorded operation linked to its source revision. It must not
 
 Proposed storage:
 
-| Entity | Required data |
-| --- | --- |
-| `metadata_operations` | Opaque operation ID; connection/series/library identity; originating job reference; origin/action; snapshot schema version; requested/effective fields; protection revision; before and desired state; final verified after state; status; timestamps; parent/restored-from operation reference. |
-| `metadata_operation_steps` | Operation/step key; target identity; original and expected fingerprints; pending/applied/verified/failed/unknown state; error and verification details. Unique operation/step key. |
-| `metadata_assets` | Content hash, asset kind, media type, size, persistent relative location, timestamps. Covers and large original XML can be stored beneath `DATA_DIR/history-assets/`. |
+| Entity                     | Required data                                                                                                                                                                                                                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `metadata_operations`      | Opaque operation ID; connection/series/library identity; originating job reference; origin/action; snapshot schema version; requested/effective fields; protection revision; before and desired state; final verified after state; status; timestamps; parent/restored-from operation reference. |
+| `metadata_operation_steps` | Operation/step key; target identity; original and expected fingerprints; pending/applied/verified/failed/unknown state; error and verification details. Unique operation/step key.                                                                                                               |
+| `metadata_assets`          | Content hash, asset kind, media type, size, persistent relative location, timestamps. Covers and large original XML can be stored beneath `DATA_DIR/history-assets/`.                                                                                                                            |
 
 Commit the before state and requested write plan before the first external side effect. Snapshot payloads are immutable; only execution/checkpoint state may advance until the entry is finalized. A retry of finalized partial work creates a linked operation rather than rewriting the historical entry to look wholly successful.
 
@@ -215,13 +215,13 @@ Introduce a typed exact-value restoration writer rather than reusing provider ag
 
 Keep the existing summary-history endpoint compatible; use a distinct API for reversible operations:
 
-| Proposed endpoint/command | Purpose |
-| --- | --- |
-| `GET /series/:id/metadata-history?cursor=…` | Paginated durable history summaries. |
-| `GET /series/:id/metadata-history/:operationId` | Authorized field diff, verification, and restore availability. |
-| `POST /series/:id/metadata-history/:operationId/restore-preview` | Select snapshot/fields; produce a short-lived preview ID tied to current values and policy revision. |
-| `POST /series/:id/metadata-restore` | Consume a reviewed preview with an idempotency key; enqueue a restore Task. |
-| `restore-metadata` Task | Carry the connection, operation/preview identity, selected fields, and expected-state checks. Values come from retained server-side snapshots, not arbitrary client-supplied historical JSON. |
+| Proposed endpoint/command                                        | Purpose                                                                                                                                                                                       |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /series/:id/metadata-history?cursor=…`                      | Paginated durable history summaries.                                                                                                                                                          |
+| `GET /series/:id/metadata-history/:operationId`                  | Authorized field diff, verification, and restore availability.                                                                                                                                |
+| `POST /series/:id/metadata-history/:operationId/restore-preview` | Select snapshot/fields; produce a short-lived preview ID tied to current values and policy revision.                                                                                          |
+| `POST /series/:id/metadata-restore`                              | Consume a reviewed preview with an idempotency key; enqueue a restore Task.                                                                                                                   |
+| `restore-metadata` Task                                          | Carry the connection, operation/preview identity, selected fields, and expected-state checks. Values come from retained server-side snapshots, not arbitrary client-supplied historical JSON. |
 
 Preview expiry applies before confirmation/enqueue. Consuming a valid preview must atomically create a durable approved plan and pin its snapshots/assets. Ordinary queue delay must not expire that approved data; execution still checks fresh target identity, fingerprints, and protection. Release pins only when the operation is finalized or explicitly cancelled under the retention policy.
 
@@ -274,15 +274,15 @@ Folder filters use current membership for existing watches. Finds from removed w
 
 Proposed changes:
 
-| Entity/API | Change |
-| --- | --- |
-| `watched_search_folders` | Name, order, timestamps. |
-| `watched_searches` | Add `display_name`, `folder_id`, `paused_at`, nullable `interval_minutes`, `notification_mode`, `next_check_at`, `revision`; retain existing check/seen/result data. |
-| Discovery provenance | Retain readable watch-label snapshots alongside exact source/query provenance, including after watch removal. |
-| `PATCH /watched-searches/:id` | Revision-checked organization, pause, cadence, and delivery preferences. |
-| Folder CRUD routes | Create/rename/reorder/delete without deleting discoveries. |
-| Existing feed API | Add folder filtering and readable provenance; preserve filtering-before-deduplication/paging behavior. |
-| Check command | Extend the validated payload with target watch IDs and explicit manual/due mode; derive automatic mode internally for scheduled work. |
+| Entity/API                    | Change                                                                                                                                                               |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `watched_search_folders`      | Name, order, timestamps.                                                                                                                                             |
+| `watched_searches`            | Add `display_name`, `folder_id`, `paused_at`, nullable `interval_minutes`, `notification_mode`, `next_check_at`, `revision`; retain existing check/seen/result data. |
+| Discovery provenance          | Retain readable watch-label snapshots alongside exact source/query provenance, including after watch removal.                                                        |
+| `PATCH /watched-searches/:id` | Revision-checked organization, pause, cadence, and delivery preferences.                                                                                             |
+| Folder CRUD routes            | Create/rename/reorder/delete without deleting discoveries.                                                                                                           |
+| Existing feed API             | Add folder filtering and readable provenance; preserve filtering-before-deduplication/paging behavior.                                                               |
+| Check command                 | Extend the validated payload with target watch IDs and explicit manual/due mode; derive automatic mode internally for scheduled work.                                |
 
 Before adding a real source/query uniqueness index, reconcile any legacy duplicate watches transactionally, preserving discovery provenance and review history. Do not assume the existing service's duplicate check is a database constraint.
 
@@ -333,13 +333,13 @@ flowchart LR
     G --> H[Outbox and daily digest]
 ```
 
-| Milestone | Deliverable | Exit gate |
-| --- | --- | --- |
-| P0 — Foundation | Shared field/identity contracts, migration design, write-policy boundary, journal/asset format, supported Kavita payload fixtures | Fresh/upgrade migrations pass; identity, exact-clear and cover-read limitations are documented before UI promises them. |
-| P1 — Protection | Field policy persistence and enforcement across provider writes, title side effects, covers, unmatch; comparison controls | Queued/concurrent updates respect current protection; direct editing remains explicit and usable. |
-| P2 — History | Authoritative capture, browseable revisions, partial/interrupted states | Snapshots precede side effects; legacy entries are not falsely restorable; retention is separate from activity cleanup. |
-| P3 — Restore | Exact scalar/list restore, then title/archive and cover increments | Preview/execution conflicts, precise clears, identity checks, asset availability, and recovery gates pass for each enabled field family. |
-| P4 — Following | Organization, pause/cadence, due scheduler, outbox, optional digest | Existing history survives; local events/batches deduplicate; delivery status is truthful; no automatic downloads. |
+| Milestone       | Deliverable                                                                                                                       | Exit gate                                                                                                                                |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| P0 — Foundation | Shared field/identity contracts, migration design, write-policy boundary, journal/asset format, supported Kavita payload fixtures | Fresh/upgrade migrations pass; identity, exact-clear and cover-read limitations are documented before UI promises them.                  |
+| P1 — Protection | Field policy persistence and enforcement across provider writes, title side effects, covers, unmatch; comparison controls         | Queued/concurrent updates respect current protection; direct editing remains explicit and usable.                                        |
+| P2 — History    | Authoritative capture, browseable revisions, partial/interrupted states                                                           | Snapshots precede side effects; legacy entries are not falsely restorable; retention is separate from activity cleanup.                  |
+| P3 — Restore    | Exact scalar/list restore, then title/archive and cover increments                                                                | Preview/execution conflicts, precise clears, identity checks, asset availability, and recovery gates pass for each enabled field family. |
+| P4 — Following  | Organization, pause/cadence, due scheduler, outbox, optional digest                                                               | Existing history survives; local events/batches deduplicate; delivery status is truthful; no automatic downloads.                        |
 
 Following can be developed independently of restoration after P0. Do not wait for every feature to finish before shipping a fully tested increment; do not label the entire restore feature complete while enabled fields lack reliable restoration.
 
@@ -347,13 +347,13 @@ Following can be developed independently of restoration after P0. Do not wait fo
 
 ### Required coverage during implementation
 
-| Area | Reuse/extend existing coverage | New scenarios |
-| --- | --- | --- |
-| Metadata | `sync.test.ts`, `syncApply.test.ts`, `applyTitle.test.ts`, `unmatch.test.ts` | Persistent protection, exact clears, pre-write snapshots, selective restore, remote/file partial failure. |
-| Persistence/identity | `maintainability.test.ts`, `kavitaConnectionState.test.ts`, relevant migration tests | Fresh/upgrade rollback, same numeric IDs on two servers, legacy history, policy revisions, journal retention/asset GC. |
-| Tasks/archives | `queueHardening.test.ts`, `jobsRetry.test.ts`, `cbzEdit.test.ts`, `chapterVerification.test.ts` | New command validation, connection guards, interrupted journal reconciliation, read-only discovery dispatch, file fingerprint conflicts. |
-| Following | `watchedSearches.test.ts`, Following browser checks | Due scheduling, pause races, global-off, provenance, outbox/digest crash windows, timezone/DST. |
-| UI | Existing Home, Discover, Libraries, and artist browser fixtures | Locked rows, history conflicts/partial states, Following organization, keyboard and 44px mobile targets. |
+| Area                 | Reuse/extend existing coverage                                                                  | New scenarios                                                                                                                            |
+| -------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Metadata             | `sync.test.ts`, `syncApply.test.ts`, `applyTitle.test.ts`, `unmatch.test.ts`                    | Persistent protection, exact clears, pre-write snapshots, selective restore, remote/file partial failure.                                |
+| Persistence/identity | `maintainability.test.ts`, `kavitaConnectionState.test.ts`, relevant migration tests            | Fresh/upgrade rollback, same numeric IDs on two servers, legacy history, policy revisions, journal retention/asset GC.                   |
+| Tasks/archives       | `queueHardening.test.ts`, `jobsRetry.test.ts`, `cbzEdit.test.ts`, `chapterVerification.test.ts` | New command validation, connection guards, interrupted journal reconciliation, read-only discovery dispatch, file fingerprint conflicts. |
+| Following            | `watchedSearches.test.ts`, Following browser checks                                             | Due scheduling, pause races, global-off, provenance, outbox/digest crash windows, timezone/DST.                                          |
+| UI                   | Existing Home, Discover, Libraries, and artist browser fixtures                                 | Locked rows, history conflicts/partial states, Following organization, keyboard and 44px mobile targets.                                 |
 
 Use isolated SQLite databases, representative Kavita fixtures, provider fixtures, fake clocks, and controlled failures. Verify behavior, not private implementation details. Add assertions that every new discovery/notification path avoids download enqueue.
 

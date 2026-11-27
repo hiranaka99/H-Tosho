@@ -1,12 +1,12 @@
-import { eq } from 'drizzle-orm';
-import { switchKavitaState } from './kavitaState.js';
-import { getDb, schema } from '../db/index.js';
-import { allProviderIds, getProvider } from '../providers/registry.js';
-import type { ProviderCredentials } from '../providers/types.js';
-import path from 'node:path';
-import type { LibraryPathMapping } from '../lib/cbz.js';
-import { createHash } from 'node:crypto';
-import type { NotificationSettings } from '../contracts/notifications.js';
+import { eq } from "drizzle-orm";
+import { switchKavitaState } from "./kavitaState.js";
+import { getDb, schema } from "../db/index.js";
+import { allProviderIds, getProvider } from "../providers/registry.js";
+import type { ProviderCredentials } from "../providers/types.js";
+import path from "node:path";
+import type { LibraryPathMapping } from "../lib/cbz.js";
+import { createHash } from "node:crypto";
+import type { NotificationSettings } from "../contracts/notifications.js";
 
 export interface KavitaConnection {
   baseUrl: string;
@@ -57,40 +57,55 @@ function cachedSetting<T>(key: string, clone: (v: T) => T, load: () => T): T {
 }
 /** Ordered global provider priorities. */
 export function getProviderPriorities(): string[] {
-  return cachedSetting('provider-priorities', (v) => [...v], () => {
-    const db = getDb();
-    const rows = db.select().from(schema.providerPriorities).all();
-    if (rows.length === 0) return allProviderIds();
-    const map = new Map(rows.map((r) => [r.providerId, r.position]));
-    const known = allProviderIds()
-      .filter((id) => map.has(id))
-      .sort((a, b) => (map.get(a) ?? 0) - (map.get(b) ?? 0));
-    // Providers added to the registry after priorities were last saved have no
-    // stored position; append them in canonical order so they are still tried
-    // (at the end) instead of being silently excluded from matching.
-    for (const id of allProviderIds()) {
-      if (!map.has(id)) known.push(id);
+  return cachedSetting(
+    "provider-priorities",
+    (v) => [...v],
+    () => {
+      const db = getDb();
+      const rows = db.select().from(schema.providerPriorities).all();
+      if (rows.length === 0) return allProviderIds();
+      const map = new Map(rows.map((r) => [r.providerId, r.position]));
+      const known = allProviderIds()
+        .filter((id) => map.has(id))
+        .sort((a, b) => (map.get(a) ?? 0) - (map.get(b) ?? 0));
+      // Providers added to the registry after priorities were last saved have no
+      // stored position; append them in canonical order so they are still tried
+      // (at the end) instead of being silently excluded from matching.
+      for (const id of allProviderIds()) {
+        if (!map.has(id)) known.push(id);
+      }
+      return known;
     }
-    return known;
-  });
+  );
 }
 
 export function setProviderPriorities(orderedIds: string[]): void {
   const db = getDb();
-  db.transaction(tx => {
+  db.transaction((tx) => {
     tx.delete(schema.providerPriorities).run();
-    for (const [i, id] of orderedIds.entries()) tx.insert(schema.providerPriorities).values({ providerId: id, position: i }).run();
+    for (const [i, id] of orderedIds.entries())
+      tx.insert(schema.providerPriorities)
+        .values({ providerId: id, position: i })
+        .run();
   });
-  settingsCache.delete('provider-priorities');
+  settingsCache.delete("provider-priorities");
 }
 
 export function getKavitaConnection(): KavitaConnection {
-  return cachedSetting('kavita-connection', (v) => ({ ...v }), () => {
-    const db = getDb();
-    const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'kavita')).get();
-    if (!row) return { baseUrl: '', apiKey: '' };
-    return JSON.parse(row.valueJson) as KavitaConnection;
-  });
+  return cachedSetting(
+    "kavita-connection",
+    (v) => ({ ...v }),
+    () => {
+      const db = getDb();
+      const row = db
+        .select()
+        .from(schema.keyValueStore)
+        .where(eq(schema.keyValueStore.key, "kavita"))
+        .get();
+      if (!row) return { baseUrl: "", apiKey: "" };
+      return JSON.parse(row.valueJson) as KavitaConnection;
+    }
+  );
 }
 
 export function setKavitaConnection(conn: KavitaConnection): void {
@@ -99,34 +114,53 @@ export function setKavitaConnection(conn: KavitaConnection): void {
   db.transaction(() => {
     switchKavitaState(previous.baseUrl, conn.baseUrl);
     db.insert(schema.keyValueStore)
-      .values({ key: 'kavita', valueJson: JSON.stringify(conn) })
-      .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(conn) } })
+      .values({ key: "kavita", valueJson: JSON.stringify(conn) })
+      .onConflictDoUpdate({
+        target: schema.keyValueStore.key,
+        set: { valueJson: JSON.stringify(conn) },
+      })
       .run();
   });
-  for (const key of settingsCache.keys()) if (key.startsWith('library-override:')) settingsCache.delete(key);
-  settingsCache.delete('kavita-connection');
-  notifySettingChange('kavita-connection');
+  for (const key of settingsCache.keys())
+    if (key.startsWith("library-override:")) settingsCache.delete(key);
+  settingsCache.delete("kavita-connection");
+  notifySettingChange("kavita-connection");
 }
 
 export function getProviderSettings(): Record<string, ProviderSetting> {
-  return cachedSetting('provider-settings', (v) => structuredClone(v), () => {
-    const db = getDb();
-    const out: Record<string, ProviderSetting> = {};
-    // One read for every provider instead of one query per provider.
-    const rows = new Map(db.select().from(schema.providerCredentials).all().map((row) => [row.providerId, row] as const));
-    for (const p of allProviderIds()) {
-      const row = rows.get(p);
-      out[p] = {
-        providerId: p,
-        enabled: row?.enabled ?? true,
-        credentials: row ? (safeParseJson<ProviderCredentials>(row.credentialsJson) ?? {}) : {},
-      };
+  return cachedSetting(
+    "provider-settings",
+    (v) => structuredClone(v),
+    () => {
+      const db = getDb();
+      const out: Record<string, ProviderSetting> = {};
+      // One read for every provider instead of one query per provider.
+      const rows = new Map(
+        db
+          .select()
+          .from(schema.providerCredentials)
+          .all()
+          .map((row) => [row.providerId, row] as const)
+      );
+      for (const p of allProviderIds()) {
+        const row = rows.get(p);
+        out[p] = {
+          providerId: p,
+          enabled: row?.enabled ?? true,
+          credentials: row
+            ? (safeParseJson<ProviderCredentials>(row.credentialsJson) ?? {})
+            : {},
+        };
+      }
+      return out;
     }
-    return out;
-  });
+  );
 }
 
-export function setProviderSetting(providerId: string, setting: Partial<ProviderSetting>): void {
+export function setProviderSetting(
+  providerId: string,
+  setting: Partial<ProviderSetting>
+): void {
   const existing = getProviderSettings()[providerId] ?? {
     providerId,
     enabled: true,
@@ -152,7 +186,7 @@ export function setProviderSetting(providerId: string, setting: Partial<Provider
       },
     })
     .run();
-  settingsCache.delete('provider-settings');
+  settingsCache.delete("provider-settings");
 }
 
 /** Credentials map for the auto-matcher (enabled providers only). */
@@ -174,18 +208,26 @@ export function getCredentialMap(): {
 
 export function getLibraryOverride(libraryId: number): LibraryOverride | null {
   // Per-library key: called once per series inside the match loop.
-  return cachedSetting(`library-override:${libraryId}`, (v) => structuredClone(v), () => {
-    const db = getDb();
-    const row = db.select().from(schema.libraryOverrides).where(eq(schema.libraryOverrides.libraryId, libraryId)).get();
-    if (!row) return null;
-    const priority = safeParseJson<string[]>(row.priorityJson);
-    if (!priority) return null; // malformed override — fall back to global priorities
-    return {
-      libraryId,
-      priority,
-      autoMatch: row.autoMatch,
-    };
-  });
+  return cachedSetting(
+    `library-override:${libraryId}`,
+    (v) => structuredClone(v),
+    () => {
+      const db = getDb();
+      const row = db
+        .select()
+        .from(schema.libraryOverrides)
+        .where(eq(schema.libraryOverrides.libraryId, libraryId))
+        .get();
+      if (!row) return null;
+      const priority = safeParseJson<string[]>(row.priorityJson);
+      if (!priority) return null; // malformed override — fall back to global priorities
+      return {
+        libraryId,
+        priority,
+        autoMatch: row.autoMatch,
+      };
+    }
+  );
 }
 
 export function setLibraryOverride(lib: LibraryOverride): void {
@@ -208,19 +250,26 @@ export function setLibraryOverride(lib: LibraryOverride): void {
 }
 
 /** Effective provider order for a library (override-aware, enabled providers only). */
-export function providerOrderFor(libraryId?: number, enabledProviders?: string[]): string[] {
+export function providerOrderFor(
+  libraryId?: number,
+  enabledProviders?: string[]
+): string[] {
   // Callers that already fetched the credential map may pass its enabled list
   // to avoid a second full scan of the provider settings.
   const enabled = enabledProviders ?? getCredentialMap().enabledProviders;
   const base =
-    libraryId !== undefined ? getLibraryOverride(libraryId)?.priority ?? getProviderPriorities() : getProviderPriorities();
+    libraryId !== undefined
+      ? (getLibraryOverride(libraryId)?.priority ?? getProviderPriorities())
+      : getProviderPriorities();
   return base.filter((id) => enabled.includes(id));
 }
 
 export function clearLibraryOverrides(libraryIds: number[]): void {
   const db = getDb();
   for (const id of libraryIds) {
-    db.delete(schema.libraryOverrides).where(eq(schema.libraryOverrides.libraryId, id)).run();
+    db.delete(schema.libraryOverrides)
+      .where(eq(schema.libraryOverrides.libraryId, id))
+      .run();
     settingsCache.delete(`library-override:${id}`);
   }
 }
@@ -241,24 +290,37 @@ export const MAX_POLL_INTERVAL_HOURS = 24 * 24;
 
 /** Polling interval (hours) for detecting new series in Kavita. 0 disables. */
 export function getPollIntervalHours(): number {
-  return cachedSetting('poll-interval', (v) => v, () => {
-    const db = getDb();
-    const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'pollIntervalHours')).get();
-    if (!row) return DEFAULT_POLL_INTERVAL_HOURS;
-    const parsed = Number(safeParseJson<unknown>(row.valueJson));
-    return Number.isFinite(parsed) && parsed >= 0 ? Math.min(parsed, MAX_POLL_INTERVAL_HOURS) : DEFAULT_POLL_INTERVAL_HOURS;
-  });
+  return cachedSetting(
+    "poll-interval",
+    (v) => v,
+    () => {
+      const db = getDb();
+      const row = db
+        .select()
+        .from(schema.keyValueStore)
+        .where(eq(schema.keyValueStore.key, "pollIntervalHours"))
+        .get();
+      if (!row) return DEFAULT_POLL_INTERVAL_HOURS;
+      const parsed = Number(safeParseJson<unknown>(row.valueJson));
+      return Number.isFinite(parsed) && parsed >= 0
+        ? Math.min(parsed, MAX_POLL_INTERVAL_HOURS)
+        : DEFAULT_POLL_INTERVAL_HOURS;
+    }
+  );
 }
 
 export function setPollIntervalHours(hours: number): void {
   const safeHours = Math.min(Math.max(0, hours), MAX_POLL_INTERVAL_HOURS);
   const db = getDb();
   db.insert(schema.keyValueStore)
-    .values({ key: 'pollIntervalHours', valueJson: JSON.stringify(safeHours) })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(safeHours) } })
+    .values({ key: "pollIntervalHours", valueJson: JSON.stringify(safeHours) })
+    .onConflictDoUpdate({
+      target: schema.keyValueStore.key,
+      set: { valueJson: JSON.stringify(safeHours) },
+    })
     .run();
-  settingsCache.delete('poll-interval');
-  notifySettingChange('poll-interval');
+  settingsCache.delete("poll-interval");
+  notifySettingChange("poll-interval");
 }
 
 const DEFAULT_MATCH_REFRESH_INTERVAL_DAYS = 7;
@@ -266,22 +328,42 @@ export const MAX_MATCH_REFRESH_INTERVAL_DAYS = 60;
 
 /** Days between scheduled provider refreshes of matched series. 0 disables. */
 export function getMatchRefreshIntervalDays(): number {
-  return cachedSetting('match-refresh-interval', (v) => v, () => {
-    const row = getDb().select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'matchRefreshIntervalDays')).get();
-    if (!row) return DEFAULT_MATCH_REFRESH_INTERVAL_DAYS;
-    const parsed = Number(safeParseJson<unknown>(row.valueJson));
-    return Number.isInteger(parsed) && parsed >= 0 ? Math.min(parsed, MAX_MATCH_REFRESH_INTERVAL_DAYS) : DEFAULT_MATCH_REFRESH_INTERVAL_DAYS;
-  });
+  return cachedSetting(
+    "match-refresh-interval",
+    (v) => v,
+    () => {
+      const row = getDb()
+        .select()
+        .from(schema.keyValueStore)
+        .where(eq(schema.keyValueStore.key, "matchRefreshIntervalDays"))
+        .get();
+      if (!row) return DEFAULT_MATCH_REFRESH_INTERVAL_DAYS;
+      const parsed = Number(safeParseJson<unknown>(row.valueJson));
+      return Number.isInteger(parsed) && parsed >= 0
+        ? Math.min(parsed, MAX_MATCH_REFRESH_INTERVAL_DAYS)
+        : DEFAULT_MATCH_REFRESH_INTERVAL_DAYS;
+    }
+  );
 }
 
 export function setMatchRefreshIntervalDays(days: number): void {
-  const safeDays = Math.min(Math.max(0, Math.round(days)), MAX_MATCH_REFRESH_INTERVAL_DAYS);
-  getDb().insert(schema.keyValueStore)
-    .values({ key: 'matchRefreshIntervalDays', valueJson: JSON.stringify(safeDays) })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(safeDays) } })
+  const safeDays = Math.min(
+    Math.max(0, Math.round(days)),
+    MAX_MATCH_REFRESH_INTERVAL_DAYS
+  );
+  getDb()
+    .insert(schema.keyValueStore)
+    .values({
+      key: "matchRefreshIntervalDays",
+      valueJson: JSON.stringify(safeDays),
+    })
+    .onConflictDoUpdate({
+      target: schema.keyValueStore.key,
+      set: { valueJson: JSON.stringify(safeDays) },
+    })
     .run();
-  settingsCache.delete('match-refresh-interval');
-  notifySettingChange('match-refresh-interval');
+  settingsCache.delete("match-refresh-interval");
+  notifySettingChange("match-refresh-interval");
 }
 
 const DEFAULT_WATCHED_SEARCH_INTERVAL_MINUTES = 15;
@@ -289,31 +371,53 @@ export const MAX_WATCHED_SEARCH_INTERVAL_MINUTES = 24 * 60;
 
 /** Interval (minutes) at which watched searches are re-checked. 0 disables auto-checks. */
 export function getWatchedSearchIntervalMinutes(): number {
-  return cachedSetting('watched-search-interval', (v) => v, () => {
-    const db = getDb();
-    const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'watchedSearchIntervalMinutes')).get();
-    if (!row) return DEFAULT_WATCHED_SEARCH_INTERVAL_MINUTES;
-    const parsed = Number(safeParseJson<unknown>(row.valueJson));
-    return Number.isFinite(parsed) && parsed >= 0 ? Math.min(parsed, MAX_WATCHED_SEARCH_INTERVAL_MINUTES) : DEFAULT_WATCHED_SEARCH_INTERVAL_MINUTES;
-  });
+  return cachedSetting(
+    "watched-search-interval",
+    (v) => v,
+    () => {
+      const db = getDb();
+      const row = db
+        .select()
+        .from(schema.keyValueStore)
+        .where(eq(schema.keyValueStore.key, "watchedSearchIntervalMinutes"))
+        .get();
+      if (!row) return DEFAULT_WATCHED_SEARCH_INTERVAL_MINUTES;
+      const parsed = Number(safeParseJson<unknown>(row.valueJson));
+      return Number.isFinite(parsed) && parsed >= 0
+        ? Math.min(parsed, MAX_WATCHED_SEARCH_INTERVAL_MINUTES)
+        : DEFAULT_WATCHED_SEARCH_INTERVAL_MINUTES;
+    }
+  );
 }
 
 export function setWatchedSearchIntervalMinutes(minutes: number): void {
-  const safeMinutes = Math.min(Math.max(0, minutes), MAX_WATCHED_SEARCH_INTERVAL_MINUTES);
+  const safeMinutes = Math.min(
+    Math.max(0, minutes),
+    MAX_WATCHED_SEARCH_INTERVAL_MINUTES
+  );
   const db = getDb();
   db.insert(schema.keyValueStore)
-    .values({ key: 'watchedSearchIntervalMinutes', valueJson: JSON.stringify(safeMinutes) })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(safeMinutes) } })
+    .values({
+      key: "watchedSearchIntervalMinutes",
+      valueJson: JSON.stringify(safeMinutes),
+    })
+    .onConflictDoUpdate({
+      target: schema.keyValueStore.key,
+      set: { valueJson: JSON.stringify(safeMinutes) },
+    })
     .run();
-  settingsCache.delete('watched-search-interval');
-  notifySettingChange('watched-search-interval');
+  settingsCache.delete("watched-search-interval");
+  notifySettingChange("watched-search-interval");
 }
 
 type SettingListener = () => void;
 const settingListeners = new Map<string, Set<SettingListener>>();
 
 /** Subscribe to a cached setting changing; returns an unsubscribe function. */
-export function onSettingChange(key: string, listener: SettingListener): () => void {
+export function onSettingChange(
+  key: string,
+  listener: SettingListener
+): () => void {
   const listeners = settingListeners.get(key);
   if (listeners) listeners.add(listener);
   else settingListeners.set(key, new Set([listener]));
@@ -325,51 +429,100 @@ function notifySettingChange(key: string): void {
   for (const listener of settingListeners.get(key) ?? []) listener();
 }
 
-export type { NotificationSettings } from '../contracts/notifications.js';
+export type { NotificationSettings } from "../contracts/notifications.js";
 
 export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
-  discord: { enabled: false, webhookUrl: '' }, revision: 0, destinationIdentity: '',
+  discord: { enabled: false, webhookUrl: "" },
+  revision: 0,
+  destinationIdentity: "",
 };
-const destinationIdentity = (url: string) => url ? createHash('sha256').update(url).digest('hex') : '';
+const destinationIdentity = (url: string) =>
+  url ? createHash("sha256").update(url).digest("hex") : "";
 
 /** Legacy stored Discord-only settings remain valid; HTTP writes require revision review. */
-export function parseNotificationSettings(v: unknown): NotificationSettings | null {
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+export function parseNotificationSettings(
+  v: unknown
+): NotificationSettings | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
-  if (Object.keys(o).some(key => !['discord', 'revision', 'destinationIdentity'].includes(key))) return null;
+  if (
+    Object.keys(o).some(
+      (key) => !["discord", "revision", "destinationIdentity"].includes(key)
+    )
+  )
+    return null;
   const discord = o.discord as Record<string, unknown> | undefined;
-  if (!discord || Object.keys(discord).some(key => !['enabled', 'webhookUrl'].includes(key)) || typeof discord.enabled !== 'boolean' || typeof discord.webhookUrl !== 'string') return null;
-  if (o.revision !== undefined && (!Number.isSafeInteger(o.revision) || Number(o.revision) < 0)) return null;
-  return { discord: { enabled: discord.enabled, webhookUrl: discord.webhookUrl.trim() },
-    revision: Number(o.revision ?? 0), destinationIdentity: destinationIdentity(discord.webhookUrl.trim()) };
+  if (
+    !discord ||
+    Object.keys(discord).some(
+      (key) => !["enabled", "webhookUrl"].includes(key)
+    ) ||
+    typeof discord.enabled !== "boolean" ||
+    typeof discord.webhookUrl !== "string"
+  )
+    return null;
+  if (
+    o.revision !== undefined &&
+    (!Number.isSafeInteger(o.revision) || Number(o.revision) < 0)
+  )
+    return null;
+  return {
+    discord: {
+      enabled: discord.enabled,
+      webhookUrl: discord.webhookUrl.trim(),
+    },
+    revision: Number(o.revision ?? 0),
+    destinationIdentity: destinationIdentity(discord.webhookUrl.trim()),
+  };
 }
 
 export class NotificationSettingsConflict extends Error {}
 export function getNotificationSettings(): NotificationSettings {
-  return cachedSetting('notifications', v => structuredClone(v), () => {
-    const db = getDb();
-    const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'notifications')).get();
-    const parsed = row ? parseNotificationSettings(safeParseJson(row.valueJson)) : null;
-    return parsed ?? structuredClone(DEFAULT_NOTIFICATIONS);
-  });
+  return cachedSetting(
+    "notifications",
+    (v) => structuredClone(v),
+    () => {
+      const db = getDb();
+      const row = db
+        .select()
+        .from(schema.keyValueStore)
+        .where(eq(schema.keyValueStore.key, "notifications"))
+        .get();
+      const parsed = row
+        ? parseNotificationSettings(safeParseJson(row.valueJson))
+        : null;
+      return parsed ?? structuredClone(DEFAULT_NOTIFICATIONS);
+    }
+  );
 }
 
-export function setNotificationSettings(s: NotificationSettings | { discord: NotificationSettings['discord'] }, expectedRevision?: number): NotificationSettings {
+export function setNotificationSettings(
+  s: NotificationSettings | { discord: NotificationSettings["discord"] },
+  expectedRevision?: number
+): NotificationSettings {
   const previous = getNotificationSettings();
-  if (expectedRevision !== undefined && expectedRevision !== previous.revision) throw new NotificationSettingsConflict('Notification settings changed. Refresh and review the destination again.');
+  if (expectedRevision !== undefined && expectedRevision !== previous.revision)
+    throw new NotificationSettingsConflict(
+      "Notification settings changed. Refresh and review the destination again."
+    );
   const settings = parseNotificationSettings({ ...previous, ...s });
-  if (!settings) throw new Error('Invalid notification settings');
+  if (!settings) throw new Error("Invalid notification settings");
   settings.revision = previous.revision + 1;
   const db = getDb();
-  db.insert(schema.keyValueStore).values({ key: 'notifications', valueJson: JSON.stringify(settings) })
-      .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(settings) } }).run();
-  settingsCache.delete('notifications');
-  notifySettingChange('notifications');
+  db.insert(schema.keyValueStore)
+    .values({ key: "notifications", valueJson: JSON.stringify(settings) })
+    .onConflictDoUpdate({
+      target: schema.keyValueStore.key,
+      set: { valueJson: JSON.stringify(settings) },
+    })
+    .run();
+  settingsCache.delete("notifications");
+  notifySettingChange("notifications");
   return settings;
 }
 
 /** Output format for downloaded galleries. */
-export type DownloadFormat = 'cbz' | 'folder';
+export type DownloadFormat = "cbz" | "folder";
 
 /** Doujinshi downloader configuration. */
 export interface DownloaderSettings {
@@ -398,55 +551,86 @@ export interface DownloaderSettings {
 }
 
 export const DEFAULT_DOWNLOADER: DownloaderSettings = {
-  downloadDirectory: '',
+  downloadDirectory: "",
   libraryPathMappings: [],
-  format: 'cbz',
+  format: "cbz",
   maxConcurrentDownloads: 2,
   maxImageConcurrency: 4,
   requestDelayMs: 150,
   autoSyncKavita: false,
-  nhentaiApiKey: '',
+  nhentaiApiKey: "",
   nhentaiBannedTags: [],
   hitomiBannedTags: [],
   ehentaiBannedTags: [],
 };
 
 /** Validate the complete downloader configuration accepted from storage or HTTP. */
-export function parseDownloaderSettings(value: unknown): DownloaderSettings | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+export function parseDownloaderSettings(
+  value: unknown
+): DownloaderSettings | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const s = value as Record<string, unknown>;
-  const rawMappings = s.libraryPathMappings === undefined ? [] : s.libraryPathMappings;
+  const rawMappings =
+    s.libraryPathMappings === undefined ? [] : s.libraryPathMappings;
   if (!Array.isArray(rawMappings)) return null;
   const libraryPathMappings: LibraryPathMapping[] = [];
   for (const m of rawMappings as unknown[]) {
-    if (!m || typeof m !== 'object') return null;
+    if (!m || typeof m !== "object") return null;
     const { kavitaPath, localPath } = m as Record<string, unknown>;
     if (
-      typeof kavitaPath !== 'string' || typeof localPath !== 'string'
-      || !(path.posix.isAbsolute(kavitaPath.trim()) || path.win32.isAbsolute(kavitaPath.trim()))
-      || !path.isAbsolute(localPath.trim()) || kavitaPath.includes('\0') || localPath.includes('\0')
-      || kavitaPath.replace(/\\/g, '/').split('/').some((segment) => segment === '..' || segment === '.')
-    ) return null;
-    libraryPathMappings.push({ kavitaPath: kavitaPath.trim(), localPath: localPath.trim() });
+      typeof kavitaPath !== "string" ||
+      typeof localPath !== "string" ||
+      !(
+        path.posix.isAbsolute(kavitaPath.trim()) ||
+        path.win32.isAbsolute(kavitaPath.trim())
+      ) ||
+      !path.isAbsolute(localPath.trim()) ||
+      kavitaPath.includes("\0") ||
+      localPath.includes("\0") ||
+      kavitaPath
+        .replace(/\\/g, "/")
+        .split("/")
+        .some((segment) => segment === ".." || segment === ".")
+    )
+      return null;
+    libraryPathMappings.push({
+      kavitaPath: kavitaPath.trim(),
+      localPath: localPath.trim(),
+    });
   }
   const rootKey = (p: string) => {
-    const normalized = p.replace(/\\/g, '/').replace(/\/+$/, '');
-    return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
+    const normalized = p.replace(/\\/g, "/").replace(/\/+$/, "");
+    return /^[a-z]:\//i.test(normalized) || normalized.startsWith("//")
+      ? normalized.toLowerCase()
+      : normalized;
   };
-  if (new Set(libraryPathMappings.map((m) => rootKey(m.kavitaPath))).size !== libraryPathMappings.length) return null;
-  const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && (v as unknown[]).every((tag) => typeof tag === 'string');
   if (
-    typeof s.downloadDirectory !== 'string' ||
-    (s.format !== 'cbz' && s.format !== 'folder') ||
-    !Number.isInteger(s.maxConcurrentDownloads) || Number(s.maxConcurrentDownloads) < 1 || Number(s.maxConcurrentDownloads) > 10 ||
-    !Number.isInteger(s.maxImageConcurrency) || Number(s.maxImageConcurrency) < 1 || Number(s.maxImageConcurrency) > 20 ||
-    !Number.isFinite(s.requestDelayMs) || Number(s.requestDelayMs) < 0 || Number(s.requestDelayMs) > 60_000 ||
-    typeof s.autoSyncKavita !== 'boolean' ||
-    typeof s.nhentaiApiKey !== 'string' ||
+    new Set(libraryPathMappings.map((m) => rootKey(m.kavitaPath))).size !==
+    libraryPathMappings.length
+  )
+    return null;
+  const isStringArray = (v: unknown): v is string[] =>
+    Array.isArray(v) &&
+    (v as unknown[]).every((tag) => typeof tag === "string");
+  if (
+    typeof s.downloadDirectory !== "string" ||
+    (s.format !== "cbz" && s.format !== "folder") ||
+    !Number.isInteger(s.maxConcurrentDownloads) ||
+    Number(s.maxConcurrentDownloads) < 1 ||
+    Number(s.maxConcurrentDownloads) > 10 ||
+    !Number.isInteger(s.maxImageConcurrency) ||
+    Number(s.maxImageConcurrency) < 1 ||
+    Number(s.maxImageConcurrency) > 20 ||
+    !Number.isFinite(s.requestDelayMs) ||
+    Number(s.requestDelayMs) < 0 ||
+    Number(s.requestDelayMs) > 60_000 ||
+    typeof s.autoSyncKavita !== "boolean" ||
+    typeof s.nhentaiApiKey !== "string" ||
     !isStringArray(s.nhentaiBannedTags) ||
     !isStringArray(s.hitomiBannedTags) ||
     !isStringArray(s.ehentaiBannedTags)
-  ) return null;
+  )
+    return null;
   return {
     downloadDirectory: s.downloadDirectory,
     libraryPathMappings,
@@ -463,23 +647,38 @@ export function parseDownloaderSettings(value: unknown): DownloaderSettings | nu
 }
 
 export function getDownloaderSettings(): DownloaderSettings {
-  return cachedSetting('downloader', (v) => structuredClone(v), () => {
-    const db = getDb();
-    const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'downloader')).get();
-    if (!row) return { ...DEFAULT_DOWNLOADER };
-    const stored = safeParseJson<Partial<DownloaderSettings>>(row.valueJson);
-    return parseDownloaderSettings({ ...DEFAULT_DOWNLOADER, ...stored }) ?? { ...DEFAULT_DOWNLOADER };
-  });
+  return cachedSetting(
+    "downloader",
+    (v) => structuredClone(v),
+    () => {
+      const db = getDb();
+      const row = db
+        .select()
+        .from(schema.keyValueStore)
+        .where(eq(schema.keyValueStore.key, "downloader"))
+        .get();
+      if (!row) return { ...DEFAULT_DOWNLOADER };
+      const stored = safeParseJson<Partial<DownloaderSettings>>(row.valueJson);
+      return (
+        parseDownloaderSettings({ ...DEFAULT_DOWNLOADER, ...stored }) ?? {
+          ...DEFAULT_DOWNLOADER,
+        }
+      );
+    }
+  );
 }
 
 export function setDownloaderSettings(s: DownloaderSettings): void {
   const db = getDb();
   db.insert(schema.keyValueStore)
-    .values({ key: 'downloader', valueJson: JSON.stringify(s) })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(s) } })
+    .values({ key: "downloader", valueJson: JSON.stringify(s) })
+    .onConflictDoUpdate({
+      target: schema.keyValueStore.key,
+      set: { valueJson: JSON.stringify(s) },
+    })
     .run();
-  settingsCache.delete('downloader');
-  notifySettingChange('downloader');
+  settingsCache.delete("downloader");
+  notifySettingChange("downloader");
 }
 
 // ---------------- Recommendations ----------------
@@ -489,27 +688,44 @@ export interface RecommendationSettings {
   excludedLibraryIds: number[];
 }
 
-const DEFAULT_RECOMMENDATION_SETTINGS: RecommendationSettings = { excludedLibraryIds: [] };
+const DEFAULT_RECOMMENDATION_SETTINGS: RecommendationSettings = {
+  excludedLibraryIds: [],
+};
 
 export function getRecommendationSettings(): RecommendationSettings {
-  return cachedSetting('recommendations', (v) => structuredClone(v), () => {
-    const db = getDb();
-    const row = db.select().from(schema.keyValueStore).where(eq(schema.keyValueStore.key, 'recommendations')).get();
-    if (!row) return { ...DEFAULT_RECOMMENDATION_SETTINGS };
-    const stored = safeParseJson<Partial<RecommendationSettings>>(row.valueJson);
-    return {
-      excludedLibraryIds: Array.isArray(stored?.excludedLibraryIds) ? stored.excludedLibraryIds.filter((x) => typeof x === 'number') : [],
-    };
-  });
+  return cachedSetting(
+    "recommendations",
+    (v) => structuredClone(v),
+    () => {
+      const db = getDb();
+      const row = db
+        .select()
+        .from(schema.keyValueStore)
+        .where(eq(schema.keyValueStore.key, "recommendations"))
+        .get();
+      if (!row) return { ...DEFAULT_RECOMMENDATION_SETTINGS };
+      const stored = safeParseJson<Partial<RecommendationSettings>>(
+        row.valueJson
+      );
+      return {
+        excludedLibraryIds: Array.isArray(stored?.excludedLibraryIds)
+          ? stored.excludedLibraryIds.filter((x) => typeof x === "number")
+          : [],
+      };
+    }
+  );
 }
 
 export function setRecommendationSettings(s: RecommendationSettings): void {
   const db = getDb();
   db.insert(schema.keyValueStore)
-    .values({ key: 'recommendations', valueJson: JSON.stringify(s) })
-    .onConflictDoUpdate({ target: schema.keyValueStore.key, set: { valueJson: JSON.stringify(s) } })
+    .values({ key: "recommendations", valueJson: JSON.stringify(s) })
+    .onConflictDoUpdate({
+      target: schema.keyValueStore.key,
+      set: { valueJson: JSON.stringify(s) },
+    })
     .run();
-  settingsCache.delete('recommendations');
+  settingsCache.delete("recommendations");
 }
 
 export { getProvider };

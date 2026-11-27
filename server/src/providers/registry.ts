@@ -1,7 +1,7 @@
-import type { MetadataProvider, MediaType } from './types.js';
-import { anilistProvider } from './anilist.js';
-import { mangaDexProvider } from './mangadex.js';
-import { myAnimeListProvider } from './myanimelist.js';
+import type { MetadataProvider, MediaType } from "./types.js";
+import { anilistProvider } from "./anilist.js";
+import { mangaDexProvider } from "./mangadex.js";
+import { myAnimeListProvider } from "./myanimelist.js";
 
 /**
  * Provider registry: the single source of truth for which metadata sources

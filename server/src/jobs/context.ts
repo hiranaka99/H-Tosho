@@ -1,5 +1,5 @@
-import { jobQueue, JobCancelled, type Job, type JobContext } from './queue.js';
-import type { KavitaClient } from '../kavita/client.js';
+import { jobQueue, JobCancelled, type Job, type JobContext } from "./queue.js";
+import type { KavitaClient } from "../kavita/client.js";
 export interface Target {
   id: number;
   name: string;
@@ -19,22 +19,42 @@ export function throwIfJobCancelled(jobId: number): void {
 }
 
 export function rememberTargets(job: Job, targets: Target[]): void {
-  const explicitIds = new Set([...(job.payload.seriesId !== undefined ? [job.payload.seriesId] : []), ...(job.payload.seriesIds ?? [])]);
+  const explicitIds = new Set([
+    ...(job.payload.seriesId !== undefined ? [job.payload.seriesId] : []),
+    ...(job.payload.seriesIds ?? []),
+  ]);
   const libraryIds = new Set(targets.map((target) => target.libraryId));
-  const resolvedExplicit = explicitIds.size > 0 && targets.filter((target) => explicitIds.has(target.id)).length === explicitIds.size;
+  const resolvedExplicit =
+    explicitIds.size > 0 &&
+    targets.filter((target) => explicitIds.has(target.id)).length ===
+      explicitIds.size;
   rememberContext(job, {
     series: targets.map(({ id, name }) => ({ id, name })),
-    libraryId: job.payload.libraryId ?? job.context?.libraryId ?? (resolvedExplicit && libraryIds.size === 1 ? targets[0]?.libraryId : undefined),
+    libraryId:
+      job.payload.libraryId ??
+      job.context?.libraryId ??
+      (resolvedExplicit && libraryIds.size === 1
+        ? targets[0]?.libraryId
+        : undefined),
   });
 }
 
-export function rememberLibraries(job: Job, libraries: { id: number; name: string }[]): void {
-  const libraryId = job.payload.libraryId ?? job.context?.libraryId ?? (libraries.length === 1 ? libraries[0].id : undefined);
+export function rememberLibraries(
+  job: Job,
+  libraries: { id: number; name: string }[]
+): void {
+  const libraryId =
+    job.payload.libraryId ??
+    job.context?.libraryId ??
+    (libraries.length === 1 ? libraries[0].id : undefined);
   const library = libraries.find((entry) => entry.id === libraryId);
   rememberContext(job, { series: [], libraryId, libraryName: library?.name });
 }
 
-export async function rememberAvailableLibraries(job: Job, client: KavitaClient): Promise<void> {
+export async function rememberAvailableLibraries(
+  job: Job,
+  client: KavitaClient
+): Promise<void> {
   if (job.context?.libraryName) return;
   try {
     rememberLibraries(job, await client.getLibraries());
@@ -43,7 +63,11 @@ export async function rememberAvailableLibraries(job: Job, client: KavitaClient)
   }
 }
 
-export async function rememberSeriesLibrary(job: Job, client: KavitaClient, series: Target): Promise<void> {
+export async function rememberSeriesLibrary(
+  job: Job,
+  client: KavitaClient,
+  series: Target
+): Promise<void> {
   rememberTargets(job, [series]);
   await rememberAvailableLibraries(job, client);
 }

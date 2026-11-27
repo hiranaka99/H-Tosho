@@ -1,18 +1,32 @@
-import { classifyJobError, type JobErrorCode } from './errors.js';
-import { onSettingChange } from '../services/settings.js';
-import { settleMetadataRestoreJob } from '../services/metadataRestore.js';
-import { readJobPayload, persistMergeState } from './storage.js';
-import { and, asc, desc, eq, gt, inArray } from 'drizzle-orm';
-import { getDb, schema, type Db } from '../db/index.js';
-import { jobRecovery, type JobRecovery } from './recovery.js';
-import fs from 'node:fs';
-import { archiveResource } from '../lib/mutations.js';
-import { pathContains } from '../lib/paths.js';
+import { classifyJobError, type JobErrorCode } from "./errors.js";
+import { onSettingChange } from "../services/settings.js";
+import { settleMetadataRestoreJob } from "../services/metadataRestore.js";
+import { readJobPayload, persistMergeState } from "./storage.js";
+import { and, asc, desc, eq, gt, inArray } from "drizzle-orm";
+import { getDb, schema, type Db } from "../db/index.js";
+import { jobRecovery, type JobRecovery } from "./recovery.js";
+import fs from "node:fs";
+import { archiveResource } from "../lib/mutations.js";
+import { pathContains } from "../lib/paths.js";
 
-export { JOB_TYPES, isJobType } from '../contracts/jobs.js';
-export type { JobType, JobContext, JobPayload, JobCommand } from '../contracts/jobs.js';
-import { parseJobCommand, type JobType, type JobContext, type JobPayload, type JobCommand, type JobPayloads, type JobExecutionState } from '../contracts/jobs.js';
-export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export { JOB_TYPES, isJobType } from "../contracts/jobs.js";
+export type {
+  JobType,
+  JobContext,
+  JobPayload,
+  JobCommand,
+} from "../contracts/jobs.js";
+import {
+  parseJobCommand,
+  type JobType,
+  type JobContext,
+  type JobPayload,
+  type JobCommand,
+  type JobPayloads,
+  type JobExecutionState,
+} from "../contracts/jobs.js";
+export type JobStatus =
+  "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export interface Job {
   id: number;
@@ -40,19 +54,28 @@ export interface JobLog {
   createdAt: string;
 }
 
-export type LogFn = (level: 'info' | 'warn' | 'error' | 'success', message: string) => void;
-export type JobHandler = (job: Job, log: LogFn, signal?: AbortSignal) => Promise<unknown>;
+export type LogFn = (
+  level: "info" | "warn" | "error" | "success",
+  message: string
+) => void;
+export type JobHandler = (
+  job: Job,
+  log: LogFn,
+  signal?: AbortSignal
+) => Promise<unknown>;
 
 /** Thrown by the executor when a running job observes a cancellation request. */
 export class JobCancelled extends Error {
   constructor() {
-    super('Job cancelled');
-    this.name = 'JobCancelled';
+    super("Job cancelled");
+    this.name = "JobCancelled";
   }
 }
 
 export class JobConflict extends Error {
-  constructor(message = 'A sync is already running for this series') { super(message); }
+  constructor(message = "A sync is already running for this series") {
+    super(message);
+  }
 }
 
 const CONCURRENCY = 2;
@@ -60,7 +83,10 @@ const CONCURRENCY = 2;
 const JOB_LOG_LIMIT = 2000;
 /** Ids per IN (...) list, well under SQLite's bound-variable limit. */
 const ID_CHUNK = 500;
-const chunks = <T>(values: T[]): T[][] => Array.from({ length: Math.ceil(values.length / ID_CHUNK) }, (_, index) => values.slice(index * ID_CHUNK, (index + 1) * ID_CHUNK));
+const chunks = <T>(values: T[]): T[][] =>
+  Array.from({ length: Math.ceil(values.length / ID_CHUNK) }, (_, index) =>
+    values.slice(index * ID_CHUNK, (index + 1) * ID_CHUNK)
+  );
 
 interface JobRow {
   id: number;
@@ -92,7 +118,13 @@ function rowToJob(row: JobRow, payload: JobPayload): Job {
     createdAt: row.createdAt,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt,
-    recovery: jobRecovery({ status: row.status, type: row.type, payload: { ...payload }, errorMessage: row.errorMessage, errorCode: row.errorCode as JobErrorCode | null }),
+    recovery: jobRecovery({
+      status: row.status,
+      type: row.type,
+      payload: { ...payload },
+      errorMessage: row.errorMessage,
+      errorCode: row.errorCode as JobErrorCode | null,
+    }),
     context: payload.context,
   };
 }
@@ -100,7 +132,12 @@ function rowToJob(row: JobRow, payload: JobPayload): Job {
 function safeParse<T>(json: string, fallback: T): T {
   try {
     const parsed: unknown = JSON.parse(json);
-    if (fallback && typeof fallback === 'object' && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) return fallback;
+    if (
+      fallback &&
+      typeof fallback === "object" &&
+      (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    )
+      return fallback;
     return parsed as T;
   } catch {
     return fallback;
@@ -119,22 +156,30 @@ class JobQueue {
     this.historyId = 0;
   }
   private handler: JobHandler | null = null;
-  private mergeDownloadCanceller:((jobId:number)=>void)|null=null;
+  private mergeDownloadCanceller: ((jobId: number) => void) | null = null;
   private running = 0;
   private pumping = false;
   private cancelRequested = new Set<number>();
   private controllers = new Map<number, AbortController>();
-  private settledListeners = new Set<(event: { id: number; type: JobType; status: JobStatus }) => void>();
+  private settledListeners = new Set<
+    (event: { id: number; type: JobType; status: JobStatus }) => void
+  >();
   private historyDb: Db | null = null;
 
-  onSettled(listener: (event: { id: number; type: JobType; status: JobStatus }) => void): () => void {
+  onSettled(
+    listener: (event: { id: number; type: JobType; status: JobStatus }) => void
+  ): () => void {
     this.settledListeners.add(listener);
     return () => {
       this.settledListeners.delete(listener);
     };
   }
 
-  private emitSettled(event: { id: number; type: JobType; status: JobStatus }): void {
+  private emitSettled(event: {
+    id: number;
+    type: JobType;
+    status: JobStatus;
+  }): void {
     for (const listener of this.settledListeners) {
       try {
         listener(event);
@@ -155,28 +200,59 @@ class JobQueue {
       this.historyId = 0;
       this.historyNames.clear();
     }
-    const latest = db.select({ id: schema.syncHistory.id }).from(schema.syncHistory)
-      .orderBy(desc(schema.syncHistory.id)).limit(1).get();
+    const latest = db
+      .select({ id: schema.syncHistory.id })
+      .from(schema.syncHistory)
+      .orderBy(desc(schema.syncHistory.id))
+      .limit(1)
+      .get();
     if (!latest || latest.id <= this.historyId) return;
-    const rows = db.select({ id: schema.syncHistory.id, seriesId: schema.syncHistory.kavitaSeriesId, name: schema.syncHistory.seriesTitle })
-      .from(schema.syncHistory).where(gt(schema.syncHistory.id, this.historyId)).orderBy(asc(schema.syncHistory.id)).all();
+    const rows = db
+      .select({
+        id: schema.syncHistory.id,
+        seriesId: schema.syncHistory.kavitaSeriesId,
+        name: schema.syncHistory.seriesTitle,
+      })
+      .from(schema.syncHistory)
+      .where(gt(schema.syncHistory.id, this.historyId))
+      .orderBy(asc(schema.syncHistory.id))
+      .all();
     for (const row of rows) {
-      if (row.name?.trim()) this.historyNames.set(row.seriesId, row.name.trim());
+      if (row.name?.trim())
+        this.historyNames.set(row.seriesId, row.name.trim());
       this.historyId = row.id;
     }
   }
 
   /** Local-only recovery for legacy rows and unresolved explicit targets. */
   contextForPayload(payload: JobPayload): JobContext | undefined {
-    const ids = [...new Set([...(payload.seriesId !== undefined ? [payload.seriesId] : []), ...(payload.seriesIds ?? [])])];
-    if (!payload.context && !ids.length && payload.libraryId === undefined) return undefined;
-    const series = new Map((payload.context?.series ?? []).map((target) => [target.id, { ...target }]));
-    for (const id of ids) if (!series.has(id)) series.set(id, { id, name: `Series #${id}` });
-    if ([...series.values()].some((target) => !target.name.trim() || target.name === `Series #${target.id}`)) {
+    const ids = [
+      ...new Set([
+        ...(payload.seriesId !== undefined ? [payload.seriesId] : []),
+        ...(payload.seriesIds ?? []),
+      ]),
+    ];
+    if (!payload.context && !ids.length && payload.libraryId === undefined)
+      return undefined;
+    const series = new Map(
+      (payload.context?.series ?? []).map((target) => [
+        target.id,
+        { ...target },
+      ])
+    );
+    for (const id of ids)
+      if (!series.has(id)) series.set(id, { id, name: `Series #${id}` });
+    if (
+      [...series.values()].some(
+        (target) =>
+          !target.name.trim() || target.name === `Series #${target.id}`
+      )
+    ) {
       this.refreshHistoryNames();
       for (const target of series.values()) {
         if (!target.name.trim() || target.name === `Series #${target.id}`) {
-          target.name = this.historyNames.get(target.id) ?? `Series #${target.id}`;
+          target.name =
+            this.historyNames.get(target.id) ?? `Series #${target.id}`;
         }
       }
     }
@@ -192,8 +268,11 @@ class JobQueue {
    * already-decoded payload where that is exact, so list polls do not parse
    * every state column a second time.
    */
-  private stateHasContext(row: JobRow, decodedContext: JobContext | undefined): boolean {
-    const stateJson = row.stateJson ?? '{}';
+  private stateHasContext(
+    row: JobRow,
+    decodedContext: JobContext | undefined
+  ): boolean {
+    const stateJson = row.stateJson ?? "{}";
     // A top-level "context" key always appears literally in the JSON text.
     if (!stateJson.includes('"context"')) return false;
     // With no context in the command JSON, a decoded context can only have come
@@ -210,56 +289,99 @@ class JobQueue {
     // projection needs a private copy before it is handed out and modified.
     const payload = legacy ? structuredClone(legacy) : decoded.payload;
     const context = this.contextForPayload(payload);
-    const previousIds = new Set((payload.context?.series ?? []).filter((target) => target.name !== `Series #${target.id}`).map((target) => target.id));
+    const previousIds = new Set(
+      (payload.context?.series ?? [])
+        .filter((target) => target.name !== `Series #${target.id}`)
+        .map((target) => target.id)
+    );
     if (context && payload.contextPendingSeriesIds === undefined) {
-      payload.contextPendingSeriesIds = context.series.filter((target) => !previousIds.has(target.id)).map((target) => target.id);
+      payload.contextPendingSeriesIds = context.series
+        .filter((target) => !previousIds.has(target.id))
+        .map((target) => target.id);
     }
     if (context) {
       payload.context = context;
       // Projection only: GET/list never write persistent job state.
       if (!this.stateHasContext(row, decodedContext)) {
         this.legacyContexts.set(row.id, payload);
-        if (this.legacyContexts.size > 300) this.legacyContexts.delete(this.legacyContexts.keys().next().value!);
+        if (this.legacyContexts.size > 300)
+          this.legacyContexts.delete(this.legacyContexts.keys().next().value!);
       }
     }
-    return { ...rowToJob(row, payload), validationError: decoded.validationError };
+    return {
+      ...rowToJob(row, payload),
+      validationError: decoded.validationError,
+    };
   }
 
   /** Append discovered targets, upgrading placeholders but retaining original known names. */
   updateContext(jobId: number, context: JobContext): JobContext | undefined {
     const db = getDb();
-    const row = db.select({ payloadJson: schema.jobs.payloadJson, stateJson: schema.jobs.stateJson }).from(schema.jobs).where(eq(schema.jobs.id, jobId)).get();
+    const row = db
+      .select({
+        payloadJson: schema.jobs.payloadJson,
+        stateJson: schema.jobs.stateJson,
+      })
+      .from(schema.jobs)
+      .where(eq(schema.jobs.id, jobId))
+      .get();
     if (!row) return undefined;
-    const parsedState = safeParse<JobPayload>(row.stateJson ?? '{}', {});
-    const payload = { ...safeParse<JobPayload>(row.payloadJson, {}), ...parsedState };
+    const parsedState = safeParse<JobPayload>(row.stateJson ?? "{}", {});
+    const payload = {
+      ...safeParse<JobPayload>(row.payloadJson, {}),
+      ...parsedState,
+    };
     const previous = payload.context;
-    const series = new Map((previous?.series ?? []).map((target) => [target.id, target]));
+    const series = new Map(
+      (previous?.series ?? []).map((target) => [target.id, target])
+    );
     const pendingIds = new Set(payload.contextPendingSeriesIds ?? []);
     for (const target of context.series) {
       const known = series.get(target.id);
-      if (pendingIds.has(target.id) || !known?.name.trim() || known.name === `Series #${target.id}`) series.set(target.id, target);
+      if (
+        pendingIds.has(target.id) ||
+        !known?.name.trim() ||
+        known.name === `Series #${target.id}`
+      )
+        series.set(target.id, target);
       pendingIds.delete(target.id);
     }
-    const libraryId = previous?.libraryId ?? context.libraryId ?? payload.libraryId;
+    const libraryId =
+      previous?.libraryId ?? context.libraryId ?? payload.libraryId;
     payload.context = this.contextForPayload({
       ...payload,
       context: {
         series: [...series.values()],
         libraryId,
-        libraryName: previous?.libraryName ?? (libraryId === context.libraryId ? context.libraryName : undefined),
+        libraryName:
+          previous?.libraryName ??
+          (libraryId === context.libraryId ? context.libraryName : undefined),
       },
     });
     payload.contextPendingSeriesIds = [...pendingIds];
     this.legacyContexts.delete(jobId);
-    const state = { ...parsedState, context: payload.context, contextPendingSeriesIds: payload.contextPendingSeriesIds };
-    db.update(schema.jobs).set({ stateJson: JSON.stringify(state) }).where(eq(schema.jobs.id, jobId)).run();
+    const state = {
+      ...parsedState,
+      context: payload.context,
+      contextPendingSeriesIds: payload.contextPendingSeriesIds,
+    };
+    db.update(schema.jobs)
+      .set({ stateJson: JSON.stringify(state) })
+      .where(eq(schema.jobs.id, jobId))
+      .run();
     return payload.context;
   }
 
   /** Persist merge progress without overwriting independently resolved context. */
-  updateMergeState(jobId: number, state: Pick<JobPayload, 'mergeDownloadIds' | 'sourceFiles' | 'chapters' | 'mergeProtection'>): void {
+  updateMergeState(
+    jobId: number,
+    state: Pick<
+      JobPayload,
+      "mergeDownloadIds" | "sourceFiles" | "chapters" | "mergeProtection"
+    >
+  ): void {
     this.legacyContexts.delete(jobId);
-    persistMergeState(jobId,state);
+    persistMergeState(jobId, state);
   }
 
   /** Register the function that actually performs each job. */
@@ -268,26 +390,58 @@ class JobQueue {
     void this.pump();
   }
 
-  registerMergeDownloadCanceller(cancel:(jobId:number)=>void):void {
-    this.mergeDownloadCanceller=cancel;
+  registerMergeDownloadCanceller(cancel: (jobId: number) => void): void {
+    this.mergeDownloadCanceller = cancel;
   }
 
   /** Insert a new job and return its id. */
-  enqueue<T extends JobType>(type: T, payload: JobPayloads[NoInfer<T>] & JobExecutionState): number {
+  enqueue<T extends JobType>(
+    type: T,
+    payload: JobPayloads[NoInfer<T>] & JobExecutionState
+  ): number {
     const command = parseJobCommand(type, payload);
-    if (command.type === 'apply-series' && this.hasActiveSeriesJob(command.type, command.payload.seriesId)) throw new JobConflict();
+    if (
+      command.type === "apply-series" &&
+      this.hasActiveSeriesJob(command.type, command.payload.seriesId)
+    )
+      throw new JobConflict();
     const db = getDb();
     const context = this.contextForPayload(payload);
     if (context) {
-      const knownIds = new Set((payload.context?.series ?? []).filter((target) => target.name !== `Series #${target.id}`).map((target) => target.id));
-      payload = { ...payload, context, contextPendingSeriesIds: payload.contextPendingSeriesIds ?? context.series.filter((target) => !knownIds.has(target.id)).map((target) => target.id) };
+      const knownIds = new Set(
+        (payload.context?.series ?? [])
+          .filter((target) => target.name !== `Series #${target.id}`)
+          .map((target) => target.id)
+      );
+      payload = {
+        ...payload,
+        context,
+        contextPendingSeriesIds:
+          payload.contextPendingSeriesIds ??
+          context.series
+            .filter((target) => !knownIds.has(target.id))
+            .map((target) => target.id),
+      };
     }
     const res = db
       .insert(schema.jobs)
-      .values({ type, payloadJson: JSON.stringify(command.payload), stateJson: JSON.stringify({ context: payload.context, contextPendingSeriesIds: payload.contextPendingSeriesIds, mergeDownloadIds: payload.mergeDownloadIds, sourceFiles: payload.mergeDownloadIds ? payload.sourceFiles : undefined, chapters: payload.mergeDownloadIds ? payload.chapters : undefined }), status: 'queued' })
+      .values({
+        type,
+        payloadJson: JSON.stringify(command.payload),
+        stateJson: JSON.stringify({
+          context: payload.context,
+          contextPendingSeriesIds: payload.contextPendingSeriesIds,
+          mergeDownloadIds: payload.mergeDownloadIds,
+          sourceFiles: payload.mergeDownloadIds
+            ? payload.sourceFiles
+            : undefined,
+          chapters: payload.mergeDownloadIds ? payload.chapters : undefined,
+        }),
+        status: "queued",
+      })
       .run();
     const id = Number(res.lastInsertRowid);
-    this.log(id, 'info', `Job enqueued: ${type}`);
+    this.log(id, "info", `Job enqueued: ${type}`);
     // Approved restore plans and their job must commit before execution starts.
     queueMicrotask(() => void this.pump());
     return id;
@@ -298,51 +452,111 @@ class JobQueue {
   }
 
   get(id: number): Job | null {
-    const row = getDb().select().from(schema.jobs).where(eq(schema.jobs.id, id)).get();
+    const row = getDb()
+      .select()
+      .from(schema.jobs)
+      .where(eq(schema.jobs.id, id))
+      .get();
     return row ? this.hydrate(row) : null;
   }
 
   list(limit = 100): Job[] {
-    const rows = getDb().select().from(schema.jobs).orderBy(desc(schema.jobs.id)).limit(limit).all();
+    const rows = getDb()
+      .select()
+      .from(schema.jobs)
+      .orderBy(desc(schema.jobs.id))
+      .limit(limit)
+      .all();
     return rows.map((row) => this.hydrate(row));
   }
 
   latest(type: JobType): Job | null {
-    const row = getDb().select().from(schema.jobs).where(eq(schema.jobs.type, type)).orderBy(desc(schema.jobs.id)).limit(1).get();
+    const row = getDb()
+      .select()
+      .from(schema.jobs)
+      .where(eq(schema.jobs.type, type))
+      .orderBy(desc(schema.jobs.id))
+      .limit(1)
+      .get();
     return row ? this.hydrate(row) : null;
   }
 
   /** Timestamp of the newest job of a type without decoding payload/state blobs. */
   latestCreatedAt(type: JobType): string | null {
-    const row = getDb().select({ createdAt: schema.jobs.createdAt }).from(schema.jobs)
-      .where(eq(schema.jobs.type, type)).orderBy(desc(schema.jobs.id)).limit(1).get();
+    const row = getDb()
+      .select({ createdAt: schema.jobs.createdAt })
+      .from(schema.jobs)
+      .where(eq(schema.jobs.type, type))
+      .orderBy(desc(schema.jobs.id))
+      .limit(1)
+      .get();
     return row?.createdAt ?? null;
   }
 
   /** Queued or running jobs restricted to the given types (backed by idx_jobs_active). */
   activeByTypes(types: JobType[]): Job[] {
     if (!types.length) return [];
-    const rows = getDb().select().from(schema.jobs)
-      .where(and(inArray(schema.jobs.type, types), inArray(schema.jobs.status, ['queued', 'running']))).all();
+    const rows = getDb()
+      .select()
+      .from(schema.jobs)
+      .where(
+        and(
+          inArray(schema.jobs.type, types),
+          inArray(schema.jobs.status, ["queued", "running"])
+        )
+      )
+      .all();
     return rows.map((row) => this.hydrate(row));
   }
 
   /** Whether any job of this type is queued or running, without hydrating rows. */
   hasActiveType(type: JobType): boolean {
-    return !!getDb().select({ id: schema.jobs.id }).from(schema.jobs)
-      .where(and(eq(schema.jobs.type, type), inArray(schema.jobs.status, ['queued', 'running']))).limit(1).get();
+    return !!getDb()
+      .select({ id: schema.jobs.id })
+      .from(schema.jobs)
+      .where(
+        and(
+          eq(schema.jobs.type, type),
+          inArray(schema.jobs.status, ["queued", "running"])
+        )
+      )
+      .limit(1)
+      .get();
   }
 
   /** Active-job conflict check for one series, decoding only that type's payloads. */
-  private hasActiveSeriesJob(type: JobType, seriesId: number | undefined): boolean {
-    return getDb().select({ type: schema.jobs.type, payloadJson: schema.jobs.payloadJson, stateJson: schema.jobs.stateJson }).from(schema.jobs)
-      .where(and(eq(schema.jobs.type, type), inArray(schema.jobs.status, ['queued', 'running']))).all()
-      .some(row => readJobPayload(row.type, row.payloadJson, row.stateJson).payload.seriesId === seriesId);
+  private hasActiveSeriesJob(
+    type: JobType,
+    seriesId: number | undefined
+  ): boolean {
+    return getDb()
+      .select({
+        type: schema.jobs.type,
+        payloadJson: schema.jobs.payloadJson,
+        stateJson: schema.jobs.stateJson,
+      })
+      .from(schema.jobs)
+      .where(
+        and(
+          eq(schema.jobs.type, type),
+          inArray(schema.jobs.status, ["queued", "running"])
+        )
+      )
+      .all()
+      .some(
+        (row) =>
+          readJobPayload(row.type, row.payloadJson, row.stateJson).payload
+            .seriesId === seriesId
+      );
   }
 
   /** Jobs that are queued or currently running. */
   active(): Job[] {
-    const rows = getDb().select().from(schema.jobs).where(inArray(schema.jobs.status, ['queued', 'running'])).all();
+    const rows = getDb()
+      .select()
+      .from(schema.jobs)
+      .where(inArray(schema.jobs.status, ["queued", "running"]))
+      .all();
     return rows.map((row) => this.hydrate(row));
   }
 
@@ -354,28 +568,37 @@ class JobQueue {
   cancel(id: number): boolean {
     const job = this.get(id);
     if (!job) return false;
-    if (job.status === 'queued') {
+    if (job.status === "queued") {
       // Conditional update: the job may be claimed as running between the read
       // and the write — in that case fall through to the checkpoint path.
       const res = getDb()
         .update(schema.jobs)
-        .set({ status: 'cancelled', finishedAt: new Date().toISOString() })
-        .where(and(eq(schema.jobs.id, id), eq(schema.jobs.status, 'queued')))
+        .set({ status: "cancelled", finishedAt: new Date().toISOString() })
+        .where(and(eq(schema.jobs.id, id), eq(schema.jobs.status, "queued")))
         .run();
       if (Number(res.changes ?? 0) > 0) {
-        this.log(id, 'info', 'Job cancelled before start');
-        if (job.type === 'restore-metadata') settleMetadataRestoreJob(id, 'cancelled', 'Cancelled before restore started');
-        if (job.type==='merge-series') this.mergeDownloadCanceller?.(id);
-        this.emitSettled({ id, type: job.type, status: 'cancelled' });
+        this.log(id, "info", "Job cancelled before start");
+        if (job.type === "restore-metadata")
+          settleMetadataRestoreJob(
+            id,
+            "cancelled",
+            "Cancelled before restore started"
+          );
+        if (job.type === "merge-series") this.mergeDownloadCanceller?.(id);
+        this.emitSettled({ id, type: job.type, status: "cancelled" });
         return true;
       }
     }
     const current = this.get(id);
-    if (current?.status === 'running') {
+    if (current?.status === "running") {
       this.cancelRequested.add(id);
       this.controllers.get(id)?.abort(new JobCancelled());
-      this.log(id, 'info', 'Cancellation requested; stopping at next checkpoint');
-      if (current.type==='merge-series') this.mergeDownloadCanceller?.(id);
+      this.log(
+        id,
+        "info",
+        "Cancellation requested; stopping at next checkpoint"
+      );
+      if (current.type === "merge-series") this.mergeDownloadCanceller?.(id);
       return true;
     }
     return false;
@@ -388,38 +611,85 @@ class JobQueue {
    */
   retryJob(id: number): number | null {
     const job = this.get(id);
-    if (!job || job.status !== 'failed' || job.type === 'restore-metadata') return null;
+    if (!job || job.status !== "failed" || job.type === "restore-metadata")
+      return null;
     const newId = this.enqueue(job.type, job.payload);
-    if (job.type === 'merge-series') this.updateMergeState(newId, {mergeProtection:job.payload.mergeProtection,sourceFiles:job.payload.sourceFiles,chapters:job.payload.chapters,mergeDownloadIds:job.payload.mergeDownloadIds});
-    this.log(id, 'info', `Retried as job #${newId}`);
+    if (job.type === "merge-series")
+      this.updateMergeState(newId, {
+        mergeProtection: job.payload.mergeProtection,
+        sourceFiles: job.payload.sourceFiles,
+        chapters: job.payload.chapters,
+        mergeDownloadIds: job.payload.mergeDownloadIds,
+      });
+    this.log(id, "info", `Retried as job #${newId}`);
     return newId;
   }
 
   /** Remove failed history and its logs atomically; never delete active or successful work. */
   clearFailed(id?: number): number {
-    const failed = id === undefined
-      ? eq(schema.jobs.status, 'failed')
-      : and(eq(schema.jobs.id, id), eq(schema.jobs.status, 'failed'));
+    const failed =
+      id === undefined
+        ? eq(schema.jobs.status, "failed")
+        : and(eq(schema.jobs.id, id), eq(schema.jobs.status, "failed"));
     // Filesystem evidence checks run before the write transaction so it never
     // holds the database lock across disk I/O. Everything here is synchronous,
     // so no job can change state between the checks and the deletes; the
     // status guard below is kept regardless.
-    const candidates=getDb().select().from(schema.jobs).where(failed).all().filter(row=>{
-      const decoded=readJobPayload(row.type,row.payloadJson,row.stateJson);
-      if (row.type==='merge-series' && decoded.validationError && /"mergeProtection"\s*:/.test(row.stateJson)) return false;
-      const protection=decoded.payload.mergeProtection;
-      if (!protection || protection.completedTargetSeriesId!==undefined) return true;
-      const published=protection.archives.some(archive=>pathContains(archiveResource(protection.targetDir),archiveResource(archive.path)) && fs.existsSync(archive.path)) || protection.moves?.some(move=>fs.existsSync(move.destination));
-      return !published;
-    }).map(row=>row.id);
+    const candidates = getDb()
+      .select()
+      .from(schema.jobs)
+      .where(failed)
+      .all()
+      .filter((row) => {
+        const decoded = readJobPayload(
+          row.type,
+          row.payloadJson,
+          row.stateJson
+        );
+        if (
+          row.type === "merge-series" &&
+          decoded.validationError &&
+          /"mergeProtection"\s*:/.test(row.stateJson)
+        )
+          return false;
+        const protection = decoded.payload.mergeProtection;
+        if (!protection || protection.completedTargetSeriesId !== undefined)
+          return true;
+        const published =
+          protection.archives.some(
+            (archive) =>
+              pathContains(
+                archiveResource(protection.targetDir),
+                archiveResource(archive.path)
+              ) && fs.existsSync(archive.path)
+          ) ||
+          protection.moves?.some((move) => fs.existsSync(move.destination));
+        return !published;
+      })
+      .map((row) => row.id);
     if (!candidates.length) return 0;
     return getDb().transaction((tx) => {
-      let removed=0;
+      let removed = 0;
       for (const chunk of chunks(candidates)) {
-        const failedIds=tx.select({id:schema.jobs.id}).from(schema.jobs).where(and(inArray(schema.jobs.id,chunk),eq(schema.jobs.status,'failed'))).all().map(row=>row.id);
+        const failedIds = tx
+          .select({ id: schema.jobs.id })
+          .from(schema.jobs)
+          .where(
+            and(
+              inArray(schema.jobs.id, chunk),
+              eq(schema.jobs.status, "failed")
+            )
+          )
+          .all()
+          .map((row) => row.id);
         if (!failedIds.length) continue;
-        tx.delete(schema.jobLogs).where(inArray(schema.jobLogs.jobId, failedIds)).run();
-        removed+=tx.delete(schema.jobs).where(inArray(schema.jobs.id,failedIds)).run().changes;
+        tx.delete(schema.jobLogs)
+          .where(inArray(schema.jobLogs.jobId, failedIds))
+          .run();
+        removed += tx
+          .delete(schema.jobs)
+          .where(inArray(schema.jobs.id, failedIds))
+          .run().changes;
       }
       return removed;
     });
@@ -435,13 +705,18 @@ class JobQueue {
    */
   interruptRunningJobs(): number {
     const db = getDb();
-    const interrupted = db.update(schema.jobs)
-      .set({ status: 'failed', errorMessage: 'Interrupted by server restart', finishedAt: new Date().toISOString() })
-      .where(eq(schema.jobs.status, 'running'))
+    const interrupted = db
+      .update(schema.jobs)
+      .set({
+        status: "failed",
+        errorMessage: "Interrupted by server restart",
+        finishedAt: new Date().toISOString(),
+      })
+      .where(eq(schema.jobs.status, "running"))
       .returning({ id: schema.jobs.id, type: schema.jobs.type })
       .all();
     for (const job of interrupted) {
-      if (job.type === 'merge-series') this.mergeDownloadCanceller?.(job.id);
+      if (job.type === "merge-series") this.mergeDownloadCanceller?.(job.id);
     }
     return interrupted.length;
   }
@@ -452,16 +727,33 @@ class JobQueue {
   }
 
   setProgress(jobId: number, current: number, total: number): void {
-    getDb().update(schema.jobs).set({ progressCurrent: current, progressTotal: total }).where(eq(schema.jobs.id, jobId)).run();
+    getDb()
+      .update(schema.jobs)
+      .set({ progressCurrent: current, progressTotal: total })
+      .where(eq(schema.jobs.id, jobId))
+      .run();
   }
 
   /** The newest `limit` log lines of one job, oldest first. */
   logs(jobId: number, limit = JOB_LOG_LIMIT): JobLog[] {
-    return getDb().select().from(schema.jobLogs).where(eq(schema.jobLogs.jobId, jobId)).orderBy(desc(schema.jobLogs.id)).limit(limit).all().reverse();
+    return getDb()
+      .select()
+      .from(schema.jobLogs)
+      .where(eq(schema.jobLogs.jobId, jobId))
+      .orderBy(desc(schema.jobLogs.id))
+      .limit(limit)
+      .all()
+      .reverse();
   }
 
   recentLogs(limit = 300): JobLog[] {
-    return getDb().select().from(schema.jobLogs).orderBy(desc(schema.jobLogs.id)).limit(limit).all().reverse();
+    return getDb()
+      .select()
+      .from(schema.jobLogs)
+      .orderBy(desc(schema.jobLogs.id))
+      .limit(limit)
+      .all()
+      .reverse();
   }
 
   log(jobId: number, level: string, message: string): void {
@@ -470,10 +762,19 @@ class JobQueue {
 
   private claimNext(): Job | null {
     const db = getDb();
-    const row = db.select().from(schema.jobs).where(eq(schema.jobs.status, 'queued')).orderBy(asc(schema.jobs.id)).limit(1).get();
+    const row = db
+      .select()
+      .from(schema.jobs)
+      .where(eq(schema.jobs.status, "queued"))
+      .orderBy(asc(schema.jobs.id))
+      .limit(1)
+      .get();
     if (!row) return null;
-    db.update(schema.jobs).set({ status: 'running', startedAt: new Date().toISOString() }).where(eq(schema.jobs.id, row.id)).run();
-    return this.hydrate({ ...row, status: 'running' });
+    db.update(schema.jobs)
+      .set({ status: "running", startedAt: new Date().toISOString() })
+      .where(eq(schema.jobs.id, row.id))
+      .run();
+    return this.hydrate({ ...row, status: "running" });
   }
 
   private async pump(): Promise<void> {
@@ -496,44 +797,58 @@ class JobQueue {
     const log: LogFn = (level, message) => this.log(job.id, level, message);
     const controller = new AbortController();
     this.controllers.set(job.id, controller);
-    let terminalStatus: 'completed' | 'cancelled' | 'failed' = 'failed';
+    let terminalStatus: "completed" | "cancelled" | "failed" = "failed";
     let terminalError: string | undefined;
     try {
-      if (!this.handler) throw new Error('No job handler registered');
-      log('info', `Starting ${job.type}`);
-      if (job.validationError) throw new Error(`Invalid persisted job command: ${job.validationError}`);
+      if (!this.handler) throw new Error("No job handler registered");
+      log("info", `Starting ${job.type}`);
+      if (job.validationError)
+        throw new Error(
+          `Invalid persisted job command: ${job.validationError}`
+        );
       parseJobCommand(job.type, job.payload);
       const result = await this.handler(job, log, controller.signal);
       db.update(schema.jobs)
         .set({
-          status: 'completed',
+          status: "completed",
           resultJson: result === undefined ? null : JSON.stringify(result),
           finishedAt: new Date().toISOString(),
         })
         .where(eq(schema.jobs.id, job.id))
         .run();
-      terminalStatus = 'completed';
-      this.log(job.id, 'success', `Completed ${job.type}`);
+      terminalStatus = "completed";
+      this.log(job.id, "success", `Completed ${job.type}`);
     } catch (e) {
       if (e instanceof JobCancelled) {
-        db.update(schema.jobs).set({ status: 'cancelled', finishedAt: new Date().toISOString() }).where(eq(schema.jobs.id, job.id)).run();
-        terminalStatus = 'cancelled';
-        this.log(job.id, 'info', `Cancelled ${job.type}`);
+        db.update(schema.jobs)
+          .set({ status: "cancelled", finishedAt: new Date().toISOString() })
+          .where(eq(schema.jobs.id, job.id))
+          .run();
+        terminalStatus = "cancelled";
+        this.log(job.id, "info", `Cancelled ${job.type}`);
       } else {
         const message = e instanceof Error ? e.message : String(e);
         db.update(schema.jobs)
-          .set({ status: 'failed', errorMessage: message, errorCode: classifyJobError(message), finishedAt: new Date().toISOString() })
+          .set({
+            status: "failed",
+            errorMessage: message,
+            errorCode: classifyJobError(message),
+            finishedAt: new Date().toISOString(),
+          })
           .where(eq(schema.jobs.id, job.id))
           .run();
-        terminalStatus = 'failed';
+        terminalStatus = "failed";
         terminalError = message;
-        this.log(job.id, 'error', message);
+        this.log(job.id, "error", message);
       }
     } finally {
-      if (job.type === 'restore-metadata') {
+      if (job.type === "restore-metadata") {
         settleMetadataRestoreJob(job.id, terminalStatus, terminalError);
       }
-      if (job.type === 'merge-series' && (terminalStatus === 'failed' || terminalStatus === 'cancelled')) {
+      if (
+        job.type === "merge-series" &&
+        (terminalStatus === "failed" || terminalStatus === "cancelled")
+      ) {
         this.mergeDownloadCanceller?.(job.id);
       }
       this.cancelRequested.delete(job.id);
@@ -546,4 +861,4 @@ class JobQueue {
 }
 
 export const jobQueue = new JobQueue();
-onSettingChange('kavita-connection', () => jobQueue.clearContextCache());
+onSettingChange("kavita-connection", () => jobQueue.clearContextCache());

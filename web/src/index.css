@@ -6,43 +6,55 @@
 
 /* Self-hosted variable fonts. Load the Latin Extended subsets only when needed. */
 @font-face {
-  font-family: 'Roboto';
+  font-family: "Roboto";
   font-style: normal;
   font-weight: 400 700;
   font-display: swap;
-  src: url('/fonts/roboto-latin-ext-var.woff2') format('woff2');
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  src: url("/fonts/roboto-latin-ext-var.woff2") format("woff2");
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB,
+    U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 @font-face {
-  font-family: 'Roboto';
+  font-family: "Roboto";
   font-style: normal;
   font-weight: 400 700;
   font-display: swap;
-  src: url('/fonts/roboto-latin-var.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  src: url("/fonts/roboto-latin-var.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: 'Montserrat';
+  font-family: "Montserrat";
   font-style: normal;
   font-weight: 400 700;
   font-display: swap;
-  src: url('/fonts/montserrat-latin-ext-var.woff2') format('woff2');
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  src: url("/fonts/montserrat-latin-ext-var.woff2") format("woff2");
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB,
+    U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 @font-face {
-  font-family: 'Montserrat';
+  font-family: "Montserrat";
   font-style: normal;
   font-weight: 400 700;
   font-display: swap;
-  src: url('/fonts/montserrat-latin-var.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  src: url("/fonts/montserrat-latin-var.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: 'JetBrains Mono';
+  font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 100 800;
   font-display: swap;
-  src: url('/fonts/jetbrainsmono-var.woff2') format('woff2');
+  src: url("/fonts/jetbrainsmono-var.woff2") format("woff2");
 }
 
 /* Design tokens — semantic colors per theme. The `@theme inline` block below maps
@@ -131,36 +143,75 @@
   --animate-indeterminate: indeterminate 1.4s ease-in-out infinite;
 
   @keyframes fade-up {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
   @keyframes fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
   @keyframes scale-in {
-    from { opacity: 0; transform: translateY(-4px) scale(0.97); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
   }
   @keyframes slide-in-right {
-    from { opacity: 0; transform: translateX(24px); }
-    to { opacity: 1; transform: translateX(0); }
+    from {
+      opacity: 0;
+      transform: translateX(24px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
   }
   @keyframes shimmer {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(100%); }
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(100%);
+    }
   }
   @keyframes toast-progress {
-    from { transform: scaleX(1); }
-    to { transform: scaleX(0); }
+    from {
+      transform: scaleX(1);
+    }
+    to {
+      transform: scaleX(0);
+    }
   }
   @keyframes pulse-soft {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
   }
   @keyframes indeterminate {
-    from { transform: translateX(-100%); }
-    to { transform: translateX(400%); }
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(400%);
+    }
   }
 }
 
@@ -190,46 +241,50 @@
 .gallery-tag-chip {
   --tag-ink: light-dark(var(--color-slate-800), var(--color-slate-300));
   color: var(--tag-ink);
-  background-color: color-mix(in oklab, var(--tag-ink) var(--tag-tint, 20%), var(--surface));
+  background-color: color-mix(
+    in oklab,
+    var(--tag-ink) var(--tag-tint, 20%),
+    var(--surface)
+  );
 }
 
-.gallery-tag-chip[data-namespace='female'] {
+.gallery-tag-chip[data-namespace="female"] {
   --tag-ink: light-dark(var(--color-rose-800), var(--color-rose-300));
 }
 
-.gallery-tag-chip[data-namespace='male'] {
+.gallery-tag-chip[data-namespace="male"] {
   --tag-ink: light-dark(var(--color-sky-800), var(--color-sky-300));
 }
 
-.gallery-tag-chip[data-namespace='mixed'] {
+.gallery-tag-chip[data-namespace="mixed"] {
   --tag-ink: light-dark(var(--color-violet-800), var(--color-violet-300));
 }
 
-.gallery-tag-chip[data-namespace='artist'] {
+.gallery-tag-chip[data-namespace="artist"] {
   --tag-ink: light-dark(var(--color-amber-800), var(--color-amber-300));
 }
 
-.gallery-tag-chip[data-namespace='group'] {
+.gallery-tag-chip[data-namespace="group"] {
   --tag-ink: light-dark(var(--color-teal-800), var(--color-teal-300));
 }
 
-.gallery-tag-chip[data-namespace='character'] {
+.gallery-tag-chip[data-namespace="character"] {
   --tag-ink: light-dark(var(--color-emerald-800), var(--color-emerald-300));
 }
 
-.gallery-tag-chip:is([data-namespace='parody'], [data-namespace='series']) {
+.gallery-tag-chip:is([data-namespace="parody"], [data-namespace="series"]) {
   --tag-ink: light-dark(var(--color-indigo-800), var(--color-indigo-300));
 }
 
-.gallery-tag-chip[data-namespace='language'] {
+.gallery-tag-chip[data-namespace="language"] {
   --tag-ink: light-dark(var(--color-cyan-800), var(--color-cyan-300));
 }
 
-.gallery-tag-chip[data-namespace='cosplayer'] {
+.gallery-tag-chip[data-namespace="cosplayer"] {
   --tag-ink: light-dark(var(--color-fuchsia-800), var(--color-fuchsia-300));
 }
 
-.gallery-tag-chip:is([data-namespace='category'], [data-namespace='reclass']) {
+.gallery-tag-chip:is([data-namespace="category"], [data-namespace="reclass"]) {
   --tag-ink: light-dark(var(--color-orange-800), var(--color-orange-300));
 }
 
@@ -282,8 +337,13 @@ body {
 
 /* Touch layouts use real 44px targets; compact desktop controls stay compact. */
 @media (max-width: 1023px), (pointer: coarse) {
-  button, select, input:not([type='checkbox']):not([type='radio']), summary,
-  a[role='button'], nav a, #app-navigation a {
+  button,
+  select,
+  input:not([type="checkbox"]):not([type="radio"]),
+  summary,
+  a[role="button"],
+  nav a,
+  #app-navigation a {
     min-height: 44px;
   }
   .ui-button-icon {
@@ -335,7 +395,7 @@ body {
 }
 
 /* Keep keyboard focus visible inside horizontally scrollable choice groups. */
-:where([role='radiogroup'], [role='tablist']) :focus-visible {
+:where([role="radiogroup"], [role="tablist"]) :focus-visible {
   outline-offset: -2px;
 }
 
@@ -362,10 +422,15 @@ select {
   background-color: var(--skeleton-base);
 }
 .skeleton::after {
-  content: '';
+  content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(100deg, transparent 20%, var(--skeleton-hi) 50%, transparent 80%);
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    var(--skeleton-hi) 50%,
+    transparent 80%
+  );
   animation: shimmer 1.8s ease-in-out infinite;
 }
 
@@ -375,34 +440,57 @@ select {
   overflow: hidden;
 }
 .progress-stripes::after {
-  content: '';
+  content: "";
   position: absolute;
   inset: 0;
-  background-image: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.22), transparent);
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    rgb(255 255 255 / 0.22),
+    transparent
+  );
   animation: shimmer 1.5s linear infinite;
 }
 
 /* Inline stop confirmation: the bar shows how long it stays open before reverting. */
 @keyframes confirm-countdown {
-  from { transform: scaleX(1); }
-  to { transform: scaleX(0); }
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
 }
 .confirm-countdown {
   transform-origin: left;
   animation: confirm-countdown 6s linear forwards;
 }
 @media (prefers-reduced-motion: reduce) {
-  .confirm-countdown { display: none; }
+  .confirm-countdown {
+    display: none;
+  }
 }
 
 /* Radix dialog open/close — driven by data-state on the portal elements. */
 @keyframes dialog-in {
-  from { opacity: 0; transform: translateY(10px) scale(0.97); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 @keyframes dialog-out {
-  from { opacity: 1; transform: translateY(0) scale(1); }
-  to { opacity: 0; transform: translateY(6px) scale(0.98); }
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
 }
 .dialog-overlay[data-state="open"] {
   animation: fade-in 0.2s ease both;
@@ -419,12 +507,24 @@ select {
 
 /* Side sheet: same dialog primitive, entering from the trailing edge. */
 @keyframes sheet-in {
-  from { opacity: 0; transform: translateX(1.5rem); }
-  to { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(1.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 @keyframes sheet-out {
-  from { opacity: 1; transform: translateX(0); }
-  to { opacity: 0; transform: translateX(1rem); }
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(1rem);
+  }
 }
 .sheet-content[data-state="open"] {
   animation: sheet-in 0.28s var(--ease-out-soft) both;
@@ -469,11 +569,15 @@ select {
 }
 
 .ui-field {
-  transition: border-color 160ms ease, background-color 160ms ease;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease;
 }
 
 .ui-tab-indicator {
-  transition: transform 220ms var(--ease-out-soft), opacity 160ms ease;
+  transition:
+    transform 220ms var(--ease-out-soft),
+    opacity 160ms ease;
 }
 
 .ui-progress-fill {
@@ -490,7 +594,9 @@ select {
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 160ms ease, visibility 0s linear 160ms;
+  transition:
+    opacity 160ms ease,
+    visibility 0s linear 160ms;
 }
 
 .app-nav-scrim[data-state="open"] {
@@ -501,15 +607,21 @@ select {
 }
 
 .app-nav-indicator {
-  transition: transform 240ms var(--ease-out-soft), opacity 140ms ease-out;
+  transition:
+    transform 240ms var(--ease-out-soft),
+    opacity 140ms ease-out;
 }
 
 .app-nav-icon {
-  transition: transform 160ms var(--ease-out-soft), color 150ms ease-out;
+  transition:
+    transform 160ms var(--ease-out-soft),
+    color 150ms ease-out;
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .app-nav-link:hover .app-nav-icon { transform: translateX(2px); }
+  .app-nav-link:hover .app-nav-icon {
+    transform: translateX(2px);
+  }
 }
 
 @media (max-width: 1023px) {
@@ -518,7 +630,10 @@ select {
     opacity: 0;
     transform: translateX(-100%);
     box-shadow: none;
-    transition: transform 180ms ease-in, opacity 140ms ease-in, visibility 0s linear 180ms;
+    transition:
+      transform 180ms ease-in,
+      opacity 140ms ease-in,
+      visibility 0s linear 180ms;
   }
 
   .app-nav-drawer.app-nav-open {
@@ -526,11 +641,19 @@ select {
     opacity: 1;
     transform: translateX(0);
     box-shadow: 12px 0 32px var(--control-shadow);
-    transition: transform 280ms var(--ease-out-soft), opacity 180ms ease-out, visibility 0s;
+    transition:
+      transform 280ms var(--ease-out-soft),
+      opacity 180ms ease-out,
+      visibility 0s;
   }
 
-  .app-nav-drawer:not(.app-nav-open) :is(.animate-spin,
-    .animate-indeterminate, .ui-progress-indeterminate, .progress-stripes) {
+  .app-nav-drawer:not(.app-nav-open)
+    :is(
+      .animate-spin,
+      .animate-indeterminate,
+      .ui-progress-indeterminate,
+      .progress-stripes
+    ) {
     animation-play-state: paused;
   }
 }
@@ -553,16 +676,28 @@ select {
 }
 
 /* A hidden tab should not keep working on loading and countdown animations. */
-html[data-motion-paused] :is(.skeleton::after, .progress-stripes::after, .animate-spin,
-  .animate-shimmer, .animate-pulse-soft, .animate-indeterminate,
-  .ui-progress-indeterminate, .animate-toast-progress) {
+html[data-motion-paused]
+  :is(
+    .skeleton::after,
+    .progress-stripes::after,
+    .animate-spin,
+    .animate-shimmer,
+    .animate-pulse-soft,
+    .animate-indeterminate,
+    .ui-progress-indeterminate,
+    .animate-toast-progress
+  ) {
   animation-play-state: paused;
 }
 
 /* A drawn check confirms a gallery joined the merged-download selection. */
 @keyframes downloader-selection-check {
-  from { stroke-dashoffset: 24; }
-  to { stroke-dashoffset: 0; }
+  from {
+    stroke-dashoffset: 24;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
 }
 
 .downloader-selection-check path,
@@ -572,8 +707,12 @@ html[data-motion-paused] :is(.skeleton::after, .progress-stripes::after, .animat
 }
 
 @keyframes downloader-task-status {
-  from { opacity: 0.6; }
-  to { opacity: 1; }
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .downloader-task-status {
@@ -586,7 +725,9 @@ html[data-motion-paused] :is(.skeleton::after, .progress-stripes::after, .animat
   grid-template-rows: 0fr;
   opacity: 0;
   visibility: hidden;
-  transition: grid-template-rows 220ms var(--ease-out-soft), opacity 140ms ease-out,
+  transition:
+    grid-template-rows 220ms var(--ease-out-soft),
+    opacity 140ms ease-out,
     visibility 0s linear 220ms;
 }
 
@@ -597,13 +738,21 @@ html[data-motion-paused] :is(.skeleton::after, .progress-stripes::after, .animat
   transition-delay: 0s;
 }
 
-.watched-reveal-inner { min-height: 0; }
-.watched-reveal[data-clipping="true"] > .watched-reveal-inner { overflow: hidden; }
+.watched-reveal-inner {
+  min-height: 0;
+}
+.watched-reveal[data-clipping="true"] > .watched-reveal-inner {
+  overflow: hidden;
+}
 
-.watched-check-status { animation: downloader-task-status 140ms ease-out; }
+.watched-check-status {
+  animation: downloader-task-status 140ms ease-out;
+}
 
 .watched-discovery {
-  transition: opacity 140ms ease-out, transform 180ms var(--ease-out-soft);
+  transition:
+    opacity 140ms ease-out,
+    transform 180ms var(--ease-out-soft);
 }
 
 .watched-discovery[data-review-pending="true"] {
@@ -625,11 +774,15 @@ html[data-motion-paused] :is(.skeleton::after, .progress-stripes::after, .animat
    The ring lives on a pseudo-element and only its opacity animates, so the
    fade composites instead of repainting the card's shadow every frame. */
 @keyframes library-card-changed {
-  from { opacity: 1; }
-  to { opacity: 0; }
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }
 .library-card-changed::after {
-  content: '';
+  content: "";
   position: absolute;
   inset: -1px;
   border-radius: inherit;
@@ -639,7 +792,9 @@ html[data-motion-paused] :is(.skeleton::after, .progress-stripes::after, .animat
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .group:hover :is(.library-cover, .downloader-cover) { transform: scale(1.04); }
+  .group:hover :is(.library-cover, .downloader-cover) {
+    transform: scale(1.04);
+  }
 }
 
 /* Touch controls press in place; hover lift is reserved for precise pointers. */
@@ -660,14 +815,22 @@ html[data-motion-paused] :is(.skeleton::after, .progress-stripes::after, .animat
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .watched-reveal { transition: none; }
-  .watched-check-status { animation: downloader-task-status 100ms ease-out !important; }
+  .watched-reveal {
+    transition: none;
+  }
+  .watched-check-status {
+    animation: downloader-task-status 100ms ease-out !important;
+  }
   .watched-discovery {
     transform: none !important;
     transition: opacity 100ms ease-out !important;
   }
-  .app-nav-indicator { transition: none; }
-  .app-nav-icon { transform: none !important; }
+  .app-nav-indicator {
+    transition: none;
+  }
+  .app-nav-icon {
+    transform: none !important;
+  }
 
   .ui-progress-fill {
     transition: none;
@@ -679,8 +842,14 @@ html[data-motion-paused] :is(.skeleton::after, .progress-stripes::after, .animat
     animation: none;
   }
 
-  .library-cover, .downloader-cover { transform: none !important; }
-  .library-card-changed { animation: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 45%, transparent); }
+  .library-cover,
+  .downloader-cover {
+    transform: none !important;
+  }
+  .library-card-changed {
+    animation: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 45%, transparent);
+  }
 
   .ui-tab-indicator {
     transition: none !important;
@@ -735,7 +904,8 @@ html[data-motion-paused] :is(.skeleton::after, .progress-stripes::after, .animat
   .ui-field,
   .app-nav-scrim,
   .app-nav-drawer {
-    transition-property: background-color, border-color, color, opacity, visibility;
+    transition-property:
+      background-color, border-color, color, opacity, visibility;
     transition-duration: 100ms !important;
     transition-delay: 0s;
   }
@@ -753,16 +923,33 @@ html[data-motion-paused] :is(.skeleton::after, .progress-stripes::after, .animat
 /* Settings save bar: pinned above the page bottom while sections have changes. */
 .settings-save-bar {
   bottom: max(0.75rem, env(safe-area-inset-bottom));
-  box-shadow: 0 6px 20px var(--control-shadow), 0 1px 2px var(--control-shadow);
+  box-shadow:
+    0 6px 20px var(--control-shadow),
+    0 1px 2px var(--control-shadow);
   animation: settings-save-bar-in 220ms var(--ease-out-soft) both;
 }
 @keyframes settings-save-bar-in {
-  from { opacity: 0.4; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0.4;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .settings-save-bar { animation: settings-save-bar-fade 100ms ease-out both; }
-  @keyframes settings-save-bar-fade { from { opacity: 0.6; } to { opacity: 1; } }
+  .settings-save-bar {
+    animation: settings-save-bar-fade 100ms ease-out both;
+  }
+  @keyframes settings-save-bar-fade {
+    from {
+      opacity: 0.6;
+    }
+    to {
+      opacity: 1;
+    }
+  }
 }
 
 .cv-row {

@@ -3,16 +3,16 @@
  * Imported by both the server and the web frontend (no Node/browser I/O).
  */
 
-export type InstallMode = 'docker' | 'git' | 'standalone' | 'development';
+export type InstallMode = "docker" | "git" | "standalone" | "development";
 
 export type DockerReplacementReasonCode =
-  | 'dockerfile-changed'
-  | 'runtime-deps-changed'
-  | 'node-version-unsupported'
-  | 'release-requires-image'
-  | 'missing-update-bundle'
-  | 'legacy-image'
-  | 'data-dir-readonly';
+  | "dockerfile-changed"
+  | "runtime-deps-changed"
+  | "node-version-unsupported"
+  | "release-requires-image"
+  | "missing-update-bundle"
+  | "legacy-image"
+  | "data-dir-readonly";
 
 export interface DockerReplacementReason {
   code: DockerReplacementReasonCode;
@@ -48,17 +48,17 @@ export interface UpdateReleaseInfo {
 }
 
 export type UpdateJobPhase =
-  | 'idle'
-  | 'checking'
-  | 'downloading'
-  | 'verifying'
-  | 'extracting'
-  | 'fetching-git'
-  | 'installing-deps'
-  | 'building'
-  | 'restarting'
-  | 'completed'
-  | 'failed';
+  | "idle"
+  | "checking"
+  | "downloading"
+  | "verifying"
+  | "extracting"
+  | "fetching-git"
+  | "installing-deps"
+  | "building"
+  | "restarting"
+  | "completed"
+  | "failed";
 
 export interface UpdateProgress {
   phase: UpdateJobPhase;
@@ -130,9 +130,12 @@ export interface ParsedSemver {
   prerelease: string[];
 }
 
-const SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
+const SEMVER_RE =
+  /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
 
-export function parseSemver(raw: string | null | undefined): ParsedSemver | null {
+export function parseSemver(
+  raw: string | null | undefined
+): ParsedSemver | null {
   if (!raw) return null;
   const match = SEMVER_RE.exec(raw.trim());
   if (!match) return null;
@@ -140,12 +143,15 @@ export function parseSemver(raw: string | null | undefined): ParsedSemver | null
     major: Number(match[1]),
     minor: Number(match[2]),
     patch: Number(match[3]),
-    prerelease: match[4] ? match[4].split('.').filter(Boolean) : [],
+    prerelease: match[4] ? match[4].split(".").filter(Boolean) : [],
   };
 }
 
 /** Standard SemVer 2.0.0 comparison (-1 if a < b, 0 if equal, 1 if a > b). Returns null if either is invalid. */
-export function compareSemver(a: string | null | undefined, b: string | null | undefined): -1 | 0 | 1 | null {
+export function compareSemver(
+  a: string | null | undefined,
+  b: string | null | undefined
+): -1 | 0 | 1 | null {
   const pa = parseSemver(a);
   const pb = parseSemver(b);
   if (!pa || !pb) return null;
@@ -172,18 +178,27 @@ export function compareSemver(a: string | null | undefined, b: string | null | u
   return 0;
 }
 
-export function isNewerVersion(candidate: string | null | undefined, current: string | null | undefined): boolean {
+export function isNewerVersion(
+  candidate: string | null | undefined,
+  current: string | null | undefined
+): boolean {
   return compareSemver(candidate, current) === 1;
 }
 
 /** Extract the minimum version from an engines.node range such as `>=22.22.0`. */
-export function parseMinNodeVersion(range: string | null | undefined): string | null {
+export function parseMinNodeVersion(
+  range: string | null | undefined
+): string | null {
   if (!range) return null;
-  const match = />=\s*v?(\d+\.\d+\.\d+)/.exec(range) ?? /v?(\d+\.\d+\.\d+)/.exec(range);
+  const match =
+    />=\s*v?(\d+\.\d+\.\d+)/.exec(range) ?? /v?(\d+\.\d+\.\d+)/.exec(range);
   return match ? match[1] : null;
 }
 
-export function satisfiesMinNodeVersion(currentNode: string, minNode: string | null | undefined): boolean {
+export function satisfiesMinNodeVersion(
+  currentNode: string,
+  minNode: string | null | undefined
+): boolean {
   const required = parseMinNodeVersion(minNode);
   if (!required) return true;
   const cmp = compareSemver(currentNode, required);
@@ -203,51 +218,72 @@ export interface DockerCompatibilityInput {
  * Determine whether updating a Docker installation requires completely replacing
  * the Docker image instead of applying an in-app bundle overlay.
  */
-export function evaluateDockerCompatibility(input: DockerCompatibilityInput): DockerReplacementReason[] {
+export function evaluateDockerCompatibility(
+  input: DockerCompatibilityInput
+): DockerReplacementReason[] {
   const reasons: DockerReplacementReason[] = [];
 
   if (!input.bootstrapped || !input.localRuntime) {
     reasons.push({
-      code: 'legacy-image',
-      summary: 'This Docker image predates in-app bundle updates and must be replaced once to enable them.',
+      code: "legacy-image",
+      summary:
+        "This Docker image predates in-app bundle updates and must be replaced once to enable them.",
     });
   }
 
   if (!input.releaseManifest || !input.hasBundleAsset) {
     reasons.push({
-      code: 'missing-update-bundle',
-      summary: 'This release does not ship an in-app update bundle, so the Docker image must be replaced.',
+      code: "missing-update-bundle",
+      summary:
+        "This release does not ship an in-app update bundle, so the Docker image must be replaced.",
     });
   }
 
   if (input.releaseManifest) {
     if (input.releaseManifest.requiresImageReplacement) {
       reasons.push({
-        code: 'release-requires-image',
-        summary: input.releaseManifest.imageReplacementReason?.trim()
-          || 'This release explicitly requires replacing the Docker image.',
+        code: "release-requires-image",
+        summary:
+          input.releaseManifest.imageReplacementReason?.trim() ||
+          "This release explicitly requires replacing the Docker image.",
       });
     }
 
-    if (input.releaseManifest.minNodeVersion && !satisfiesMinNodeVersion(input.nodeVersion, input.releaseManifest.minNodeVersion)) {
-      const required = parseMinNodeVersion(input.releaseManifest.minNodeVersion) ?? input.releaseManifest.minNodeVersion;
+    if (
+      input.releaseManifest.minNodeVersion &&
+      !satisfiesMinNodeVersion(
+        input.nodeVersion,
+        input.releaseManifest.minNodeVersion
+      )
+    ) {
+      const required =
+        parseMinNodeVersion(input.releaseManifest.minNodeVersion) ??
+        input.releaseManifest.minNodeVersion;
       reasons.push({
-        code: 'node-version-unsupported',
+        code: "node-version-unsupported",
         summary: `This release requires Node.js ${required} or newer, but this container is running Node.js ${input.nodeVersion}.`,
       });
     }
 
     if (input.localRuntime) {
-      if (input.localRuntime.dockerfileSha256 !== input.releaseManifest.dockerfileSha256) {
+      if (
+        input.localRuntime.dockerfileSha256 !==
+        input.releaseManifest.dockerfileSha256
+      ) {
         reasons.push({
-          code: 'dockerfile-changed',
-          summary: 'The Dockerfile, base image, or system packages changed in this release.',
+          code: "dockerfile-changed",
+          summary:
+            "The Dockerfile, base image, or system packages changed in this release.",
         });
       }
-      if (input.localRuntime.runtimeDepsSha256 !== input.releaseManifest.runtimeDepsSha256) {
+      if (
+        input.localRuntime.runtimeDepsSha256 !==
+        input.releaseManifest.runtimeDepsSha256
+      ) {
         reasons.push({
-          code: 'runtime-deps-changed',
-          summary: 'Server runtime dependencies or native modules (such as better-sqlite3) changed in this release.',
+          code: "runtime-deps-changed",
+          summary:
+            "Server runtime dependencies or native modules (such as better-sqlite3) changed in this release.",
         });
       }
     }
@@ -255,20 +291,21 @@ export function evaluateDockerCompatibility(input: DockerCompatibilityInput): Do
 
   if (!input.dataDirWritable) {
     reasons.push({
-      code: 'data-dir-readonly',
-      summary: 'The container data directory is not writable, so an in-app update cannot be staged.',
+      code: "data-dir-readonly",
+      summary:
+        "The container data directory is not writable, so an in-app update cannot be staged.",
     });
   }
 
   return reasons;
 }
 
-export const UPDATE_BUNDLE_ASSET_NAME = 'h-tosho-update-bundle.zip';
-export const UPDATE_MANIFEST_ASSET_NAME = 'h-tosho-update-manifest.json';
+export const UPDATE_BUNDLE_ASSET_NAME = "h-tosho-update-bundle.zip";
+export const UPDATE_MANIFEST_ASSET_NAME = "h-tosho-update-manifest.json";
 
 export const IDLE_UPDATE_PROGRESS: UpdateProgress = {
-  phase: 'idle',
-  message: '',
+  phase: "idle",
+  message: "",
   targetVersion: null,
   startedAt: null,
   finishedAt: null,

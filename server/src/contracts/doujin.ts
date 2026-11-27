@@ -16,13 +16,16 @@
 
 /** The three logical download providers. E-Hentai and ExHentai are two sites
  *  within the single `ehentai` provider — never a fourth source. */
-export const DOUJIN_SOURCES = ['hitomi', 'nhentai', 'ehentai'] as const;
+export const DOUJIN_SOURCES = ["hitomi", "nhentai", "ehentai"] as const;
 
 export type DoujinSource = (typeof DOUJIN_SOURCES)[number];
 
 /** Runtime guard for untrusted input (client payloads, persisted rows). */
 export function isDoujinSource(value: unknown): value is DoujinSource {
-  return typeof value === 'string' && (DOUJIN_SOURCES as readonly string[]).includes(value);
+  return (
+    typeof value === "string" &&
+    (DOUJIN_SOURCES as readonly string[]).includes(value)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -30,17 +33,20 @@ export function isDoujinSource(value: unknown): value is DoujinSource {
 // ---------------------------------------------------------------------------
 
 /** The two access sites of the single `ehentai` logical provider. */
-export const EHENTAI_SITES = ['e-hentai', 'exhentai'] as const;
+export const EHENTAI_SITES = ["e-hentai", "exhentai"] as const;
 
 export type EhentaiSite = (typeof EHENTAI_SITES)[number];
 
 export function isEhentaiSite(value: unknown): value is EhentaiSite {
-  return typeof value === 'string' && (EHENTAI_SITES as readonly string[]).includes(value);
+  return (
+    typeof value === "string" &&
+    (EHENTAI_SITES as readonly string[]).includes(value)
+  );
 }
 
 const EHENTAI_HOSTS: Record<EhentaiSite, string> = {
-  'e-hentai': 'e-hentai.org',
-  exhentai: 'exhentai.org',
+  "e-hentai": "e-hentai.org",
+  exhentai: "exhentai.org",
 };
 
 export function ehentaiHost(site: EhentaiSite): string {
@@ -73,8 +79,10 @@ export interface EhentaiGalleryIdentity {
 }
 
 /** Validate and canonicalize a bare `<gid>-<token>` gallery ID. */
-export function parseEhentaiGalleryId(input: unknown): EhentaiGalleryIdentity | null {
-  if (typeof input !== 'string' || input.length > 64) return null;
+export function parseEhentaiGalleryId(
+  input: unknown
+): EhentaiGalleryIdentity | null {
+  if (typeof input !== "string" || input.length > 64) return null;
   const m = /^(\d+)-([0-9a-fA-F]{10}|[0-9a-fA-F]{12})$/.exec(input.trim());
   if (!m) return null;
   const gid = m[1];
@@ -98,26 +106,45 @@ export interface EhentaiGalleryUrl extends EhentaiGalleryIdentity {
  * malformed gid/token. A bare numeric ID is not a locator.
  */
 export function parseEhentaiGalleryUrl(raw: unknown): EhentaiGalleryUrl | null {
-  if (typeof raw !== 'string' || raw.length > 1024) return null;
+  if (typeof raw !== "string" || raw.length > 1024) return null;
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
     return null;
   }
-  if (url.protocol !== 'https:') return null;
+  if (url.protocol !== "https:") return null;
   const site = ehentaiSiteForHost(url.hostname);
   if (!site) return null;
-  if (url.port !== '' || url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') return null;
-  const m = /^\/g\/(\d+)\/([0-9a-fA-F]{10}|[0-9a-fA-F]{12})\/?$/.exec(url.pathname);
+  if (
+    url.port !== "" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.search !== "" ||
+    url.hash !== ""
+  )
+    return null;
+  const m = /^\/g\/(\d+)\/([0-9a-fA-F]{10}|[0-9a-fA-F]{12})\/?$/.exec(
+    url.pathname
+  );
   if (!m) return null;
   const gid = m[1];
   const token = m[2].toLowerCase();
   if (!GID_RE.test(gid) || !TOKEN_RE.test(token)) return null;
-  return { gid, token, canonicalId: `${gid}-${token}`, site, url: ehentaiGalleryUrl(site, gid, token) };
+  return {
+    gid,
+    token,
+    canonicalId: `${gid}-${token}`,
+    site,
+    url: ehentaiGalleryUrl(site, gid, token),
+  };
 }
 
-export function ehentaiGalleryUrl(site: EhentaiSite, gid: string, token: string): string {
+export function ehentaiGalleryUrl(
+  site: EhentaiSite,
+  gid: string,
+  token: string
+): string {
   return `https://${EHENTAI_HOSTS[site]}/g/${gid}/${token.toLowerCase()}/`;
 }
 
@@ -166,20 +193,36 @@ export function toPublicSearchResult(r: {
   uploadedAt?: string | null;
   site?: string | null;
 }): PublicDoujinSearchResult | null {
-  if (!isDoujinSource(r.source) || typeof r.galleryId !== 'string' || !r.galleryId.trim() || typeof r.title !== 'string') return null;
+  if (
+    !isDoujinSource(r.source) ||
+    typeof r.galleryId !== "string" ||
+    !r.galleryId.trim() ||
+    typeof r.title !== "string"
+  )
+    return null;
   const out: PublicDoujinSearchResult = {
     source: r.source,
     galleryId: r.galleryId,
     title: r.title,
-    coverUrl: typeof r.coverUrl === 'string' && r.coverUrl ? r.coverUrl : null,
-    language: typeof r.language === 'string' && r.language ? r.language : null,
-    tags: Array.isArray(r.tags) ? r.tags.filter((t) => typeof t === 'string') : [],
-    artists: Array.isArray(r.artists) ? r.artists.filter((a) => typeof a === 'string') : [],
-    pageCount: typeof r.pageCount === 'number' && Number.isFinite(r.pageCount) && r.pageCount >= 0 ? r.pageCount : null,
-    url: typeof r.url === 'string' && r.url ? r.url : null,
-    uploadedAt: typeof r.uploadedAt === 'string' && r.uploadedAt ? r.uploadedAt : null,
+    coverUrl: typeof r.coverUrl === "string" && r.coverUrl ? r.coverUrl : null,
+    language: typeof r.language === "string" && r.language ? r.language : null,
+    tags: Array.isArray(r.tags)
+      ? r.tags.filter((t) => typeof t === "string")
+      : [],
+    artists: Array.isArray(r.artists)
+      ? r.artists.filter((a) => typeof a === "string")
+      : [],
+    pageCount:
+      typeof r.pageCount === "number" &&
+      Number.isFinite(r.pageCount) &&
+      r.pageCount >= 0
+        ? r.pageCount
+        : null,
+    url: typeof r.url === "string" && r.url ? r.url : null,
+    uploadedAt:
+      typeof r.uploadedAt === "string" && r.uploadedAt ? r.uploadedAt : null,
   };
-  if (r.source === 'ehentai' && isEhentaiSite(r.site)) out.site = r.site;
+  if (r.source === "ehentai" && isEhentaiSite(r.site)) out.site = r.site;
   return out;
 }
 
@@ -215,7 +258,10 @@ export interface CommonSearchQuery {
   /** Quoted phrases. */
   phrases: string[];
   /** Supported shared filters. */
-  filters: Array<{ namespace: 'artist' | 'group' | 'parody' | 'character' | 'language'; value: string }>;
+  filters: Array<{
+    namespace: "artist" | "group" | "parody" | "character" | "language";
+    value: string;
+  }>;
   /** Negated terms: `-term` for keywords, `{namespace, value}` for filters. */
   exclusions: Array<{ namespace: string | null; value: string }>;
 }
@@ -238,15 +284,15 @@ export interface GalleryVariant {
 }
 
 export type ProviderLaneStatus =
-  | 'searching' // still running (only in streamed progress events)
-  | 'success' // results delivered; more may follow
-  | 'exhausted' // provider returned all of its results
-  | 'failed' // provider error (sanitized message)
-  | 'unavailable' // provider temporarily unreachable
-  | 'not-configured' // e.g. ExHentai selected but no valid session
-  | 'rate-limited' // provider pacing/quota exhausted for this search
-  | 'unsupported-query' // a shared filter cannot be represented without widening
-  | 'not-applicable'; // the input (e.g. another provider's gallery URL) does not apply
+  | "searching" // still running (only in streamed progress events)
+  | "success" // results delivered; more may follow
+  | "exhausted" // provider returned all of its results
+  | "failed" // provider error (sanitized message)
+  | "unavailable" // provider temporarily unreachable
+  | "not-configured" // e.g. ExHentai selected but no valid session
+  | "rate-limited" // provider pacing/quota exhausted for this search
+  | "unsupported-query" // a shared filter cannot be represented without widening
+  | "not-applicable"; // the input (e.g. another provider's gallery URL) does not apply
 
 export interface ProviderSearchStatus {
   source: DoujinSource;
@@ -301,6 +347,6 @@ export interface UnifiedSearchProgress {
  *  any number of `progress`, then exactly one `page` or `error`. The final
  *  page repeats every item of the request, so it alone is complete. */
 export type UnifiedSearchStreamEvent =
-  | ({ type: 'progress' } & UnifiedSearchProgress)
-  | { type: 'page'; page: UnifiedSearchPage }
-  | { type: 'error'; error: string; status: number; kind?: string };
+  | ({ type: "progress" } & UnifiedSearchProgress)
+  | { type: "page"; page: UnifiedSearchPage }
+  | { type: "error"; error: string; status: number; kind?: string };

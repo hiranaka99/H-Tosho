@@ -1,6 +1,6 @@
-import { getNotificationSettings } from '../services/settings.js';
-import { getProvider } from '../providers/registry.js';
-import { sleep } from '../lib/http.js';
+import { getNotificationSettings } from "../services/settings.js";
+import { getProvider } from "../providers/registry.js";
+import { sleep } from "../lib/http.js";
 
 export interface EmbedField {
   name: string;
@@ -29,7 +29,7 @@ const DISCORD_FIELDS_MAX = 25;
 const WEBHOOK_TIMEOUT_MS = 10_000;
 
 function truncate(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 /** Human-friendly provider name for an id ("mangadex" → "MangaDex"); unknown ids pass through. */
 export function providerName(id: string): string {
@@ -38,35 +38,66 @@ export function providerName(id: string): string {
 
 /** Payload property names a Kavita sync can push, mapped to human labels for notifications. */
 const PUSHED_FIELD_LABELS: Record<string, string> = {
-  name: 'Title',
-  summary: 'Summary',
-  genres: 'Genres',
-  tags: 'Tags',
-  writers: 'Writers',
-  artists: 'Artists',
-  releaseYear: 'Release year',
-  language: 'Language',
-  publicationStatus: 'Publication status',
-  webLinks: 'Web link',
-  cover: 'Cover',
+  name: "Title",
+  summary: "Summary",
+  genres: "Genres",
+  tags: "Tags",
+  writers: "Writers",
+  artists: "Artists",
+  releaseYear: "Release year",
+  language: "Language",
+  publicationStatus: "Publication status",
+  webLinks: "Web link",
+  cover: "Cover",
 };
 
 /** "summary, tags, volumeCovers:3" → "Summary, Tags, 3 volume covers". */
 export function formatPushedFields(pushed: string[]): string {
   return pushed
-    .map((f) => (f.startsWith('volumeCovers:') ? `${f.slice('volumeCovers:'.length)} volume covers` : PUSHED_FIELD_LABELS[f] ?? f))
-    .join(', ');
+    .map((f) =>
+      f.startsWith("volumeCovers:")
+        ? `${f.slice("volumeCovers:".length)} volume covers`
+        : (PUSHED_FIELD_LABELS[f] ?? f)
+    )
+    .join(", ");
 }
 
-export type NotificationOutcome = { status: 'disabled' } | { status: 'delivered'; receiptId: string | null };
+export type NotificationOutcome =
+  { status: "disabled" } | { status: "delivered"; receiptId: string | null };
 export class NotificationFailure extends Error {
-  constructor(message: string, readonly outcome: 'failed' | 'unknown', readonly retryable = false, readonly retryAfterMs?: number) { super(message); }
+  constructor(
+    message: string,
+    readonly outcome: "failed" | "unknown",
+    readonly retryable = false,
+    readonly retryAfterMs?: number
+  ) {
+    super(message);
+  }
 }
-export async function notify(n: Notification, expected?: { revision: number; destinationIdentity: string }): Promise<NotificationOutcome> {
+export async function notify(
+  n: Notification,
+  expected?: { revision: number; destinationIdentity: string }
+): Promise<NotificationOutcome> {
   const settings = getNotificationSettings();
-  if (!settings.discord.enabled || !settings.discord.webhookUrl) return { status: 'disabled' };
-  if (expected && (settings.revision !== expected.revision || settings.destinationIdentity !== expected.destinationIdentity)) throw new NotificationFailure('Notification settings changed before sending.', 'failed');
-  return { status: 'delivered', receiptId: await sendDiscord(n, settings.discord.webhookUrl, expected !== undefined) };
+  if (!settings.discord.enabled || !settings.discord.webhookUrl)
+    return { status: "disabled" };
+  if (
+    expected &&
+    (settings.revision !== expected.revision ||
+      settings.destinationIdentity !== expected.destinationIdentity)
+  )
+    throw new NotificationFailure(
+      "Notification settings changed before sending.",
+      "failed"
+    );
+  return {
+    status: "delivered",
+    receiptId: await sendDiscord(
+      n,
+      settings.discord.webhookUrl,
+      expected !== undefined
+    ),
+  };
 }
 
 /** Most background sends that may wait behind a slow webhook before new ones are dropped. */
@@ -80,68 +111,142 @@ let backgroundPending = 0;
  * slow or rate-limited webhook paces itself without delaying the caller.
  * Failures are reported through onError and never reject.
  */
-export function notifyInBackground(n: Notification, onError: (error: unknown) => void): void {
+export function notifyInBackground(
+  n: Notification,
+  onError: (error: unknown) => void
+): void {
   if (backgroundPending >= BACKGROUND_MAX_PENDING) {
-    onError(new Error('Too many notifications are waiting to send; this one was skipped'));
+    onError(
+      new Error(
+        "Too many notifications are waiting to send; this one was skipped"
+      )
+    );
     return;
   }
   backgroundPending++;
   backgroundChain = backgroundChain
     .then(() => notify(n))
-    .then(() => undefined, (error: unknown) => { try { onError(error); } catch { /* reporting is best-effort */ } })
-    .finally(() => { backgroundPending--; });
+    .then(
+      () => undefined,
+      (error: unknown) => {
+        try {
+          onError(error);
+        } catch {
+          /* reporting is best-effort */
+        }
+      }
+    )
+    .finally(() => {
+      backgroundPending--;
+    });
 }
 
 /** A network timeout can follow acceptance. It is ambiguous, never a safe automatic replay. */
-async function postDiscord(webhookUrl: string, embed: Record<string, unknown>, acknowledged: boolean): Promise<string | null> {
+async function postDiscord(
+  webhookUrl: string,
+  embed: Record<string, unknown>,
+  acknowledged: boolean
+): Promise<string | null> {
   let url: URL;
-  try { url = new URL(webhookUrl); } catch { throw new NotificationFailure('Invalid Discord webhook URL; no request was sent.', 'failed'); }
-  if (!['http:', 'https:'].includes(url.protocol)) throw new NotificationFailure('Invalid Discord webhook protocol; no request was sent.', 'failed');
-  if (acknowledged) url.searchParams.set('wait', 'true');
+  try {
+    url = new URL(webhookUrl);
+  } catch {
+    throw new NotificationFailure(
+      "Invalid Discord webhook URL; no request was sent.",
+      "failed"
+    );
+  }
+  if (!["http:", "https:"].includes(url.protocol))
+    throw new NotificationFailure(
+      "Invalid Discord webhook protocol; no request was sent.",
+      "failed"
+    );
+  if (acknowledged) url.searchParams.set("wait", "true");
   let res: Response;
   try {
-    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'H-Tosho', allowed_mentions: { parse: [] }, embeds: [embed] }),
-      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS) });
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: "H-Tosho",
+        allowed_mentions: { parse: [] },
+        embeds: [embed],
+      }),
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+    });
   } catch {
-    throw new NotificationFailure('Discord acknowledgement unavailable; the message may have been accepted.', 'unknown');
+    throw new NotificationFailure(
+      "Discord acknowledgement unavailable; the message may have been accepted.",
+      "unknown"
+    );
   }
   if (!res.ok) {
     // A missing or blank header must reach the 5s fallback; Number(null) is 0.
-    const retryAfterHeader = res.headers.get('retry-after')?.trim();
+    const retryAfterHeader = res.headers.get("retry-after")?.trim();
     const retryAfter = retryAfterHeader ? Number(retryAfterHeader) : Number.NaN;
     // Never include remote response bodies or webhook credentials in persisted errors.
-    throw new NotificationFailure(`Discord webhook HTTP ${res.status}`, 'failed', res.status === 429 || res.status >= 500,
-      res.status === 429 ? Math.min(300_000, Math.max(1_000, Number.isFinite(retryAfter) ? retryAfter * 1000 : 5_000)) : undefined);
+    throw new NotificationFailure(
+      `Discord webhook HTTP ${res.status}`,
+      "failed",
+      res.status === 429 || res.status >= 500,
+      res.status === 429
+        ? Math.min(
+            300_000,
+            Math.max(
+              1_000,
+              Number.isFinite(retryAfter) ? retryAfter * 1000 : 5_000
+            )
+          )
+        : undefined
+    );
   }
   if (!acknowledged) return null;
-  const receipt = await res.json().catch(() => null) as { id?: unknown } | null;
-  if (!receipt || typeof receipt.id !== 'string' || !receipt.id) throw new NotificationFailure('Discord returned no message receipt; delivery is uncertain.', 'unknown');
+  const receipt = (await res.json().catch(() => null)) as {
+    id?: unknown;
+  } | null;
+  if (!receipt || typeof receipt.id !== "string" || !receipt.id)
+    throw new NotificationFailure(
+      "Discord returned no message receipt; delivery is uncertain.",
+      "unknown"
+    );
   return receipt.id;
 }
 
-async function sendDiscord(n: Notification, webhookUrl: string, acknowledged = false): Promise<string | null> {
+async function sendDiscord(
+  n: Notification,
+  webhookUrl: string,
+  acknowledged = false
+): Promise<string | null> {
   const embed: Record<string, unknown> = {
     title: truncate(n.title, DISCORD_TITLE_MAX),
     color: n.success ? EMBED_COLOR_OK : EMBED_COLOR_ERR,
     timestamp: new Date(Date.now()).toISOString(),
-    footer: { text: 'H-Tosho' },
+    footer: { text: "H-Tosho" },
   };
-  if (n.description) embed.description = truncate(n.description, DISCORD_DESCRIPTION_MAX);
+  if (n.description)
+    embed.description = truncate(n.description, DISCORD_DESCRIPTION_MAX);
   const fields = (n.fields ?? [])
-    .filter((f) => f.value.trim() !== '')
+    .filter((f) => f.value.trim() !== "")
     .slice(0, DISCORD_FIELDS_MAX)
     .map((f) => {
-      const out: Record<string, unknown> = { name: truncate(f.name, DISCORD_FIELD_NAME_MAX), value: truncate(f.value, DISCORD_FIELD_VALUE_MAX) };
+      const out: Record<string, unknown> = {
+        name: truncate(f.name, DISCORD_FIELD_NAME_MAX),
+        value: truncate(f.value, DISCORD_FIELD_VALUE_MAX),
+      };
       if (f.inline) out.inline = true;
       return out;
     });
   if (fields.length) embed.fields = fields;
   if (n.coverUrl) embed.thumbnail = { url: n.coverUrl };
-  try { return await postDiscord(webhookUrl, embed, acknowledged); }
-  catch (error) {
+  try {
+    return await postDiscord(webhookUrl, embed, acknowledged);
+  } catch (error) {
     // Unacknowledged metadata/test sends retain their one bounded 429 retry.
-    if (!acknowledged && error instanceof NotificationFailure && error.message === 'Discord webhook HTTP 429') {
+    if (
+      !acknowledged &&
+      error instanceof NotificationFailure &&
+      error.message === "Discord webhook HTTP 429"
+    ) {
       await sleep(Math.min(error.retryAfterMs ?? 5_000, 30_000));
       return postDiscord(webhookUrl, embed, false);
     }
@@ -149,18 +254,23 @@ async function sendDiscord(n: Notification, webhookUrl: string, acknowledged = f
   }
 }
 
-
-export async function testNotification(settings = getNotificationSettings()): Promise<{ discord: string }> {
-  const out = { discord: 'disabled' };
+export async function testNotification(
+  settings = getNotificationSettings()
+): Promise<{ discord: string }> {
+  const out = { discord: "disabled" };
   if (settings.discord.enabled && settings.discord.webhookUrl) {
     try {
       await sendDiscord(
-        { title: 'H-Tosho', description: 'Discord webhook works.', success: true },
-        settings.discord.webhookUrl,
+        {
+          title: "H-Tosho",
+          description: "Discord webhook works.",
+          success: true,
+        },
+        settings.discord.webhookUrl
       );
-      out.discord = 'ok';
+      out.discord = "ok";
     } catch (e) {
-      out.discord = e instanceof Error ? e.message : 'failed';
+      out.discord = e instanceof Error ? e.message : "failed";
     }
   }
   return out;

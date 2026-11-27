@@ -1,12 +1,15 @@
-import { recoverLegacyConfirmations } from './legacyColumns.js';
-import { pruneMetadataHistory } from './metadataRetention.js';
-import { migrateSchema, splitLegacyJobState } from './migrations.js';
-import Database from 'better-sqlite3';
-import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import * as schema from './schema.js';
+import { recoverLegacyConfirmations } from "./legacyColumns.js";
+import { pruneMetadataHistory } from "./metadataRetention.js";
+import { migrateSchema, splitLegacyJobState } from "./migrations.js";
+import Database from "better-sqlite3";
+import {
+  drizzle,
+  type BetterSQLite3Database,
+} from "drizzle-orm/better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import * as schema from "./schema.js";
 
 /**
  * H-Tosho persists state in SQLite via Drizzle ORM using the
@@ -25,18 +28,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 // The module lives in <server>/<src|dist>/db/, so two levels up is the server
 // package root (identical layout for source and compiled output).
-export const DATA_DIR = process.env.HTOSHO_DATA_DIR ?? path.join(__dirname, '..', '..', 'data');
+export const DATA_DIR =
+  process.env.HTOSHO_DATA_DIR ?? path.join(__dirname, "..", "..", "data");
 
 /** Canonical database filename (kept in sync across legacy renames). */
-const DB_FILENAME = 'htosho.db';
+const DB_FILENAME = "htosho.db";
 
 /**
  * Legacy database filenames that may exist from earlier versions of the app.
  * Their data is migrated into the canonical file on first run so nothing is lost.
  */
-const LEGACY_DB_FILENAMES = ['kavisync.db', 'h-tosho.db'];
+const LEGACY_DB_FILENAMES = ["kavisync.db", "h-tosho.db"];
 
-const TMP_DIR = path.join(DATA_DIR, 'tmp');
+const TMP_DIR = path.join(DATA_DIR, "tmp");
 
 let tmpDirReady = false;
 /** The scratch directory, created on first use rather than on every call. */
@@ -59,20 +63,20 @@ export function initDb(): Db {
   const dbFile = path.join(DATA_DIR, DB_FILENAME);
   migrateLegacyDatabases(dbFile);
   const sqlite = new Database(dbFile);
-  sqlite.pragma('auto_vacuum = INCREMENTAL');
-  sqlite.pragma('journal_mode = WAL');
+  sqlite.pragma("auto_vacuum = INCREMENTAL");
+  sqlite.pragma("journal_mode = WAL");
   // Standard WAL pairing: crash-safe, only a power loss may lose the last
   // transactions.
-  sqlite.pragma('synchronous = NORMAL');
-  sqlite.pragma('foreign_keys = ON');
+  sqlite.pragma("synchronous = NORMAL");
+  sqlite.pragma("foreign_keys = ON");
   // Tolerate brief lock contention from concurrent readers (SSE snapshots, UI polls).
-  sqlite.pragma('busy_timeout = 5000');
-  sqlite.pragma('cache_size = -64000');
-  sqlite.pragma('temp_store = MEMORY');
-  sqlite.pragma('mmap_size = 268435456');
+  sqlite.pragma("busy_timeout = 5000");
+  sqlite.pragma("cache_size = -64000");
+  sqlite.pragma("temp_store = MEMORY");
+  sqlite.pragma("mmap_size = 268435456");
   migrateSchema(sqlite);
   pruneOldData(sqlite);
-  sqlite.pragma('optimize = 0x10002');
+  sqlite.pragma("optimize = 0x10002");
   sqliteHandle = sqlite;
   db = drizzle(sqlite, { schema });
   return db;
@@ -89,17 +93,19 @@ export function pruneDatabase(): void {
 
 const PRUNE_INTERVAL_MS = 86_400_000;
 /** Daily retention sweep for servers that stay up for weeks. Returns a stop function. */
-export function startDatabaseMaintenance(intervalMs = PRUNE_INTERVAL_MS): () => void {
+export function startDatabaseMaintenance(
+  intervalMs = PRUNE_INTERVAL_MS
+): () => void {
   const timer = setInterval(() => {
     try {
       pruneDatabase();
       if (sqliteHandle?.open) {
-        sqliteHandle.pragma('incremental_vacuum(500)');
-        sqliteHandle.pragma('wal_checkpoint(PASSIVE)');
-        sqliteHandle.pragma('optimize');
+        sqliteHandle.pragma("incremental_vacuum(500)");
+        sqliteHandle.pragma("wal_checkpoint(PASSIVE)");
+        sqliteHandle.pragma("optimize");
       }
     } catch (error) {
-      console.warn('[h-tosho] database retention sweep failed:', error);
+      console.warn("[h-tosho] database retention sweep failed:", error);
     }
   }, intervalMs);
   timer.unref();
@@ -112,7 +118,11 @@ export function closeDb(): void {
   sqliteHandle = null;
   db = null;
   if (handle?.open) {
-    try { handle.pragma('optimize'); } catch { /* ignore */ }
+    try {
+      handle.pragma("optimize");
+    } catch {
+      /* ignore */
+    }
     handle.close();
   }
 }
@@ -128,20 +138,34 @@ const HISTORY_RETENTION_DAYS = 90;
  * comparison against both default-generated and app-written timestamps.
  */
 function pruneOldData(sqlite: Database.Database): void {
-  const cutoff = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 19).replace('T', ' ');
+  const cutoff = (days: number): string =>
+    new Date(Date.now() - days * 86_400_000)
+      .toISOString()
+      .slice(0, 19)
+      .replace("T", " ");
   const jobCutoff = cutoff(JOB_RETENTION_DAYS);
   const historyCutoff = cutoff(HISTORY_RETENTION_DAYS);
   sqlite.transaction(() => {
-    const expiredJobIds = (sqlite.prepare(
-      `SELECT id FROM jobs WHERE status IN ('completed','failed','cancelled') AND finished_at < ?`,
-    ).all(jobCutoff) as { id: number }[]).map(row => row.id);
+    const expiredJobIds = (
+      sqlite
+        .prepare(
+          `SELECT id FROM jobs WHERE status IN ('completed','failed','cancelled') AND finished_at < ?`
+        )
+        .all(jobCutoff) as { id: number }[]
+    ).map((row) => row.id);
     for (let i = 0; i < expiredJobIds.length; i += 400) {
       const chunk = expiredJobIds.slice(i, i + 400);
-      const placeholders = chunk.map(() => '?').join(',');
-      sqlite.prepare(`DELETE FROM job_logs WHERE job_id IN (${placeholders})`).run(...chunk);
-      sqlite.prepare(`DELETE FROM jobs WHERE id IN (${placeholders})`).run(...chunk);
+      const placeholders = chunk.map(() => "?").join(",");
+      sqlite
+        .prepare(`DELETE FROM job_logs WHERE job_id IN (${placeholders})`)
+        .run(...chunk);
+      sqlite
+        .prepare(`DELETE FROM jobs WHERE id IN (${placeholders})`)
+        .run(...chunk);
     }
-    sqlite.prepare(`DELETE FROM sync_history WHERE created_at < ?`).run(historyCutoff);
+    sqlite
+      .prepare(`DELETE FROM sync_history WHERE created_at < ?`)
+      .run(historyCutoff);
   })();
   pruneMetadataHistory(sqlite);
 }
@@ -158,16 +182,16 @@ function pruneOldData(sqlite: Database.Database): void {
  */
 function migrateLegacyDatabases(canonicalFile: string): void {
   const tables = [
-    'provider_credentials',
-    'provider_priorities',
-    'field_config',
-    'library_overrides',
-    'series_matches',
-    'jobs',
-    'job_logs',
-    'sync_history',
-    'download_queue',
-    'key_value_store',
+    "provider_credentials",
+    "provider_priorities",
+    "field_config",
+    "library_overrides",
+    "series_matches",
+    "jobs",
+    "job_logs",
+    "sync_history",
+    "download_queue",
+    "key_value_store",
   ];
 
   for (const legacyFile of collectLegacyDatabaseFiles(canonicalFile)) {
@@ -188,26 +212,35 @@ function migrateLegacyDatabases(canonicalFile: string): void {
       // intersection below always has something to match against.
       migrateSchema(target);
       // ATTACH lets us copy rows across databases in a single statement.
-      target.exec(`ATTACH DATABASE '${legacyFile.replace(/'/g, "''")}' AS legacy`);
+      target.exec(
+        `ATTACH DATABASE '${legacyFile.replace(/'/g, "''")}' AS legacy`
+      );
       const copyAll = destination.transaction(() => {
         for (const table of tables) {
-          const exists = src.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table);
+          const exists = src
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+            )
+            .get(table);
           if (!exists) continue;
 
           // Intersect columns present in both the legacy and canonical tables so
           // that minor schema drift never aborts the migration.
-          const sourceCols = (src.prepare(`PRAGMA table_info(${table})`).all() ?? [])
-            .map((c) => (c as { name: string }).name);
+          const sourceCols = (
+            src.prepare(`PRAGMA table_info(${table})`).all() ?? []
+          ).map((c) => (c as { name: string }).name);
           const targetCols = new Set(
-            (destination.prepare(`PRAGMA table_info(${table})`).all() ?? []).map(
-              (c: unknown) => (c as { name: string }).name,
-            ),
+            (
+              destination.prepare(`PRAGMA table_info(${table})`).all() ?? []
+            ).map((c: unknown) => (c as { name: string }).name)
           );
           const cols = sourceCols.filter((n) => targetCols.has(n));
           if (cols.length === 0) continue;
 
-          const colList = cols.join(', ');
-          destination.exec(`INSERT OR IGNORE INTO ${table} (${colList}) SELECT ${colList} FROM legacy.${table}`);
+          const colList = cols.join(", ");
+          destination.exec(
+            `INSERT OR IGNORE INTO ${table} (${colList}) SELECT ${colList} FROM legacy.${table}`
+          );
         }
         splitLegacyJobState(destination);
         recoverLegacyConfirmations(destination);
@@ -215,16 +248,19 @@ function migrateLegacyDatabases(canonicalFile: string): void {
           SELECT source, gallery_id FROM gallery_tags UNION SELECT source, gallery_id FROM download_queue WHERE status = 'completed'`);
       });
       copyAll();
-      target.exec('DETACH DATABASE legacy');
+      target.exec("DETACH DATABASE legacy");
       target.close();
       migrated = true;
     } catch (err) {
       // Never let a migration problem prevent startup.
-      console.warn(`[h-tosho] failed to migrate legacy database ${legacyFile}:`, err);
+      console.warn(
+        `[h-tosho] failed to migrate legacy database ${legacyFile}:`,
+        err
+      );
     } finally {
       // Force the WAL into the main file before archiving so nothing is lost.
       try {
-        source?.pragma('wal_checkpoint(TRUNCATE)');
+        source?.pragma("wal_checkpoint(TRUNCATE)");
       } catch {
         /* ignore */
       }
@@ -234,20 +270,27 @@ function migrateLegacyDatabases(canonicalFile: string): void {
 
     if (!migrated || !source) {
       // Leave the original in place rather than archive data we failed to copy.
-      console.warn(`[h-tosho] skipping archival of ${label} because migration did not complete`);
+      console.warn(
+        `[h-tosho] skipping archival of ${label} because migration did not complete`
+      );
       continue;
     }
 
     try {
       fs.renameSync(legacyFile, `${legacyFile}.migrated`);
       // Move any leftover WAL/SHM sidecars along with the file.
-      for (const suffix of ['-wal', '-shm']) {
+      for (const suffix of ["-wal", "-shm"]) {
         const side = legacyFile + suffix;
         if (fs.existsSync(side)) fs.renameSync(side, `${side}.migrated`);
       }
-      console.log(`[h-tosho] migrated legacy database ${label} -> ${DB_FILENAME}`);
+      console.log(
+        `[h-tosho] migrated legacy database ${label} -> ${DB_FILENAME}`
+      );
     } catch (err) {
-      console.warn(`[h-tosho] could not archive legacy database ${label}:`, err);
+      console.warn(
+        `[h-tosho] could not archive legacy database ${label}:`,
+        err
+      );
     }
   }
 }
@@ -268,7 +311,7 @@ function collectLegacyDatabaseFiles(canonicalFile: string): string[] {
   // The dev server historically ran with cwd=server/, which placed the database
   // at <serverRoot>/server/data. Relative to the canonical dir (<serverRoot>/data)
   // that alternate location is ../server/data.
-  const altDir = path.join(canonicalDir, '..', 'server', 'data');
+  const altDir = path.join(canonicalDir, "..", "server", "data");
   for (const dir of [canonicalDir, altDir]) {
     let entries: string[];
     try {
@@ -281,7 +324,7 @@ function collectLegacyDatabaseFiles(canonicalFile: string): string[] {
       const full = path.join(dir, entry);
       if (!fs.existsSync(full)) continue;
       // Skip the canonical file itself and anything already archived.
-      if (full === canonicalFile || full.endsWith('.migrated')) continue;
+      if (full === canonicalFile || full.endsWith(".migrated")) continue;
       if (seen.has(full)) continue;
       seen.add(full);
       out.push(full);

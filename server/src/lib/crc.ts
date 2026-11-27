@@ -1,4 +1,4 @@
-import * as zlib from 'node:zlib';
+import * as zlib from "node:zlib";
 
 /**
  * Shared CRC-32 (IEEE 802.3, the ZIP polynomial). Used by the CBZ writer
@@ -34,5 +34,5 @@ function jsCrc32(buf: Buffer): number {
 const native = zlib as unknown as { crc32?: (buf: Buffer) => number };
 
 export function crc32(buf: Buffer): number {
-  return typeof native.crc32 === 'function' ? native.crc32(buf) : jsCrc32(buf);
+  return typeof native.crc32 === "function" ? native.crc32(buf) : jsCrc32(buf);
 }
