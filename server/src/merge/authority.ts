@@ -1,46 +1,35 @@
 import fs from "node:fs";
 import path from "node:path";
-import { kavitaNormalizeName, type KavitaClient } from "../kavita/client.js";
-import type { KavitaChapterDto } from "../kavita/types.js";
 import type {
-  MergeProtectionRequest,
   MergeProtectionPreview,
-  MergeProtectionState,
+  MergeProtectionRequest,
   MergeProtectionSeries,
+  MergeProtectionState,
 } from "../contracts/mergeProtection.js";
 import { PROTECTABLE_FIELDS } from "../contracts/metadata.js";
-import { getDownloaderSettings, getKavitaConnection } from "./settings.js";
-import { kavitaConnectionKey } from "./kavitaState.js";
-import {
-  getFieldPolicies,
-  inheritFieldPoliciesOwned,
-} from "./fieldPolicies.js";
-import { archiveResource, archiveResourceAsync } from "../lib/mutations.js";
+import { kavitaNormalizeName } from "../kavita/client.js";
+import { mapKavitaPathToLocalPath } from "../kavita/libraryPaths.js";
+import type { KavitaChapterDto } from "../kavita/types.js";
 import {
   listCbzFilesAsync,
   readComicInfo,
   resolveExistingFile,
-  hashArchiveFile,
 } from "../lib/cbz.js";
-import { pathContains, safeRealpath, lastSegment } from "../lib/paths.js";
-import { mapKavitaPathToLocalPath } from "../kavita/libraryPaths.js";
 import { comicInfoSeries } from "../lib/comicInfoRestore.js";
-import { getDb, schema } from "../db/index.js";
-import { and, eq, sql } from "drizzle-orm";
-import { readJobPayload, persistMergeState } from "../jobs/storage.js";
 import { mapLimit } from "../lib/http.js";
-
-export class MergeProtectionError extends Error {
-  constructor(
-    message: string,
-    readonly status: 400 | 409 | 502 = 409
-  ) {
-    super(message);
-  }
-}
+import { archiveResource, archiveResourceAsync } from "../lib/mutations.js";
+import { lastSegment, pathContains, safeRealpath } from "../lib/paths.js";
+import { getFieldPolicies } from "../services/fieldPolicies.js";
+import {
+  ProtectedMergeError,
+  type KavitaMergePort,
+  type KavitaMergeSession,
+  type MergeSettingsPort,
+} from "./types.js";
+import { isPositiveId } from "../lib/guards.js";
 
 /** Resolve existing ancestors too: a not-yet-created child can still escape through a symlink. */
-function canonicalMergePath(file: string): string {
+export function canonicalMergePath(file: string): string {
   let ancestor = path.resolve(file);
   const suffix: string[] = [];
   while (!fs.existsSync(ancestor)) {
@@ -51,13 +40,12 @@ function canonicalMergePath(file: string): string {
   }
   return path.join(safeRealpath(ancestor), ...suffix);
 }
-const positiveId = (value: unknown): value is number =>
-  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
 export function parseMergeProtectionRequest(
   value: unknown
 ): MergeProtectionRequest {
   if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new MergeProtectionError("Invalid merge protection request", 400);
+    throw new ProtectedMergeError("Invalid merge protection request", 400);
   const body = value as Record<string, unknown>;
   if (
     Object.keys(body).some(
@@ -70,21 +58,23 @@ export function parseMergeProtectionRequest(
           "seriesName",
         ].includes(key)
     )
-  )
-    throw new MergeProtectionError("Unknown merge protection field", 400);
-  if (body.seriesId !== undefined && !positiveId(body.seriesId))
-    throw new MergeProtectionError("Invalid target series", 400);
+  ) {
+    throw new ProtectedMergeError("Unknown merge protection field", 400);
+  }
+  if (body.seriesId !== undefined && !isPositiveId(body.seriesId))
+    throw new ProtectedMergeError("Invalid target series", 400);
   if (
     body.sourceSeriesIds !== undefined &&
     (!Array.isArray(body.sourceSeriesIds) ||
       body.sourceSeriesIds.length > 500 ||
-      !body.sourceSeriesIds.every(positiveId) ||
+      !body.sourceSeriesIds.every(isPositiveId) ||
       new Set(body.sourceSeriesIds).size !== body.sourceSeriesIds.length)
-  )
-    throw new MergeProtectionError(
+  ) {
+    throw new ProtectedMergeError(
       "Choose up to 500 unique positive source series IDs",
       400
     );
+  }
   if (
     body.sourceFiles !== undefined &&
     (!Array.isArray(body.sourceFiles) ||
@@ -94,27 +84,27 @@ export function parseMergeProtectionRequest(
           !path.isAbsolute(file) ||
           file.includes("\0")
       ))
-  )
-    throw new MergeProtectionError("Invalid source archive paths", 400);
+  ) {
+    throw new ProtectedMergeError("Invalid source archive paths", 400);
+  }
   if (
     body.targetDir !== undefined &&
     (typeof body.targetDir !== "string" ||
       !path.isAbsolute(body.targetDir) ||
       body.targetDir.includes("\0"))
-  )
-    throw new MergeProtectionError(
-      "An absolute target folder is required",
-      400
-    );
+  ) {
+    throw new ProtectedMergeError("An absolute target folder is required", 400);
+  }
   if (
     body.seriesName !== undefined &&
     (typeof body.seriesName !== "string" ||
       !body.seriesName.trim() ||
       /[\u0000-\u001f\u007f]/.test(body.seriesName))
-  )
-    throw new MergeProtectionError("Invalid merged series name", 400);
+  ) {
+    throw new ProtectedMergeError("Invalid merged series name", 400);
+  }
   if (!body.seriesId && !body.targetDir)
-    throw new MergeProtectionError("Choose a merge target", 400);
+    throw new ProtectedMergeError("Choose a merge target", 400);
   return {
     ...body,
     ...(typeof body.seriesName === "string"
@@ -124,22 +114,25 @@ export function parseMergeProtectionRequest(
 }
 
 /**
- * Short-lived reuse of Kavita chapter listings across back-to-back rechecks of
- * one merge step (for example the per-archive publication guard). Only the
- * Kavita chapter responses are reused; libraries, series identities, local
- * files, ComicInfo and field policies are re-read on every resolution. The TTL
- * keeps reuse within the staleness a single full-library fetch already has.
- * Callers clear it wherever Kavita is expected to change (scans, deletes).
+ * Internal short-lived reuse of Kavita chapter listings across back-to-back
+ * rechecks of one merge step. Only Kavita chapter responses are reused;
+ * libraries, series identities, local files, ComicInfo, and Field Policies
+ * are re-read fresh on every resolution.
  */
 export class MergeChapterCache {
   private entries = new Map<
     number,
     { at: number; connection: string; chapters: Promise<KavitaChapterDto[]> }
   >();
-  constructor(readonly ttlMs = 5_000) {}
+  constructor(
+    readonly ttlMs = 5_000,
+    private readonly now: () => number = Date.now
+  ) {}
+
   clear(): void {
     this.entries.clear();
   }
+
   load(
     connection: string,
     seriesId: number,
@@ -149,12 +142,11 @@ export class MergeChapterCache {
     if (
       hit &&
       hit.connection === connection &&
-      Date.now() - hit.at <= this.ttlMs
+      this.now() - hit.at <= this.ttlMs
     )
       return hit.chapters;
-    const entry = { at: Date.now(), connection, chapters: fetch() };
+    const entry = { at: this.now(), connection, chapters: fetch() };
     this.entries.set(seriesId, entry);
-    // Never retain a failed lookup; the next recheck asks Kavita again.
     entry.chapters.catch(() => {
       if (this.entries.get(seriesId) === entry) this.entries.delete(seriesId);
     });
@@ -162,26 +154,31 @@ export class MergeChapterCache {
   }
 }
 
-/** Read-only authority resolution. Folder/name hints alone never establish archive ownership. */
-export async function resolveMergeProtection(
-  client: KavitaClient,
-  request: MergeProtectionRequest,
-  previous?: MergeProtectionState,
-  options?: { chapterCache?: MergeChapterCache }
-): Promise<{
+export interface ResolvedMergeAuthority {
   preview: MergeProtectionPreview;
   state: MergeProtectionState;
   targetDir: string;
   libraryId?: number;
-}> {
-  const key = kavitaConnectionKey(getKavitaConnection().baseUrl);
-  if (!key || (previous && previous.connectionKey !== key))
-    throw new MergeProtectionError(
+}
+
+/** Read-only authority resolution. Folder/name hints alone never establish archive ownership. */
+export async function resolveMergeAuthority(
+  session: KavitaMergeSession,
+  kavitaPort: KavitaMergePort,
+  settings: MergeSettingsPort,
+  request: MergeProtectionRequest,
+  previous?: MergeProtectionState,
+  chapterCache?: MergeChapterCache
+): Promise<ResolvedMergeAuthority> {
+  const key = session.connectionKey;
+  if (!key || (previous && previous.connectionKey !== key)) {
+    throw new ProtectedMergeError(
       "Kavita connection changed; reload the merge review"
     );
-  const dl = getDownloaderSettings();
+  }
+  const dl = settings.getDownloaderPaths();
   const mappings = dl.libraryPathMappings ?? [];
-  const libraries = await client.getLibraries();
+  const libraries = await session.getLibraries();
   const nativeRoots = libraries
     .flatMap((library) => library.paths ?? (library.path ? [library.path] : []))
     .filter(
@@ -215,7 +212,7 @@ export async function resolveMergeProtection(
   const all = (
     await Promise.all(
       libraries.map(async (library) =>
-        (await client.getSeries(library.id)).map((series) => ({
+        (await session.getSeries(library.id)).map((series) => ({
           ...series,
           libraryId: library.id,
         }))
@@ -223,17 +220,18 @@ export async function resolveMergeProtection(
     )
   ).flat();
   if (
-    libraries.some((library) => !positiveId(library.id)) ||
+    libraries.some((library) => !isPositiveId(library.id)) ||
     all.some(
-      (series) => !positiveId(series.id) || !positiveId(series.libraryId)
+      (series) => !isPositiveId(series.id) || !isPositiveId(series.libraryId)
     ) ||
     new Set(libraries.map((library) => library.id)).size !== libraries.length ||
     new Set(all.map((series) => series.id)).size !== all.length
-  )
-    throw new MergeProtectionError(
+  ) {
+    throw new ProtectedMergeError(
       "Kavita returned an invalid or ambiguous library/series identity",
       502
     );
+  }
   const seriesDirectory = (series: (typeof all)[number]): string | null => {
     if (!series.folderPath) return null;
     const absolute = map(series.folderPath);
@@ -251,11 +249,12 @@ export async function resolveMergeProtection(
         (candidate): candidate is string => !!candidate && allowed(candidate)
       );
     if (candidates.length > 1)
-      throw new MergeProtectionError(
+      throw new ProtectedMergeError(
         "Series folder mapping is ambiguous; configure one authoritative library mapping"
       );
     return candidates[0] ?? null;
   };
+
   const resourceCache = new Map<string, string>();
   const cachedResource = (file: string): string => {
     let hit = resourceCache.get(file);
@@ -267,12 +266,13 @@ export async function resolveMergeProtection(
   };
   const xmlCache = new Map<string, string | null>();
   const cachedReadComicInfo = async (file: string): Promise<string | null> => {
-    const key = cachedResource(file);
-    if (xmlCache.has(key)) return xmlCache.get(key)!;
+    const resourceKey = cachedResource(file);
+    if (xmlCache.has(resourceKey)) return xmlCache.get(resourceKey)!;
     const xml = await readComicInfo(file);
-    xmlCache.set(key, xml);
+    xmlCache.set(resourceKey, xml);
     return xml;
   };
+
   let target =
     request.seriesId === undefined
       ? undefined
@@ -284,21 +284,24 @@ export async function resolveMergeProtection(
     !previous?.identities.some(
       (identity) => identity.seriesId === request.seriesId
     )
-  )
-    throw new MergeProtectionError(
+  ) {
+    throw new ProtectedMergeError(
       "Target series no longer exists; refresh the merge review"
     );
+  }
   let targetDir = request.targetDir;
   if (target) {
     const mapped = seriesDirectory(target);
-    if (!mapped || !allowed(mapped) || !fs.existsSync(mapped))
-      throw new MergeProtectionError(
+    if (!mapped || !allowed(mapped) || !fs.existsSync(mapped)) {
+      throw new ProtectedMergeError(
         "Could not locate the indexed target folder; check library mappings"
       );
-    if (targetDir && archiveResource(targetDir) !== archiveResource(mapped))
-      throw new MergeProtectionError(
+    }
+    if (targetDir && archiveResource(targetDir) !== archiveResource(mapped)) {
+      throw new ProtectedMergeError(
         "Target folder does not match the selected series"
       );
+    }
     targetDir = mapped;
   }
   targetDir ??= previous?.targetDir;
@@ -306,18 +309,21 @@ export async function resolveMergeProtection(
     !targetDir ||
     !allowed(targetDir) ||
     roots.some((root) => archiveResource(root) === archiveResource(targetDir!))
-  )
-    throw new MergeProtectionError(
+  ) {
+    throw new ProtectedMergeError(
       "Target must be inside an allowed library or output folder, not the root itself"
     );
+  }
   targetDir = canonicalMergePath(targetDir);
   if (
     previous &&
     archiveResource(previous.targetDir) !== archiveResource(targetDir)
-  )
-    throw new MergeProtectionError(
+  ) {
+    throw new ProtectedMergeError(
       "Merge destination changed; refresh the review"
     );
+  }
+
   const targetFiles = await listCbzFilesAsync(targetDir);
   const sourceFiles = [...new Set(request.sourceFiles ?? [])];
   const seriesDirs = new Map<(typeof all)[number], string | null>();
@@ -353,6 +359,7 @@ export async function resolveMergeProtection(
       resourceCache.set(file, await archiveResourceAsync(file));
     }
   );
+
   const targetValues = new Set<string>();
   const incoming = new Set(
     [
@@ -370,6 +377,7 @@ export async function resolveMergeProtection(
       if (value) targetValues.add(value);
     }
   );
+
   const explicitIds = new Set<number>([
     ...(request.seriesId !== undefined ? [request.seriesId] : []),
     ...(request.sourceSeriesIds ?? []),
@@ -421,33 +429,31 @@ export async function resolveMergeProtection(
   });
 
   const indexed = new Map<string, number>();
-  const chapterCache = options?.chapterCache;
   const chapterBatches = await mapLimit(candidateSeries, 8, async (series) => ({
     seriesId: series.id,
     chapters: await (chapterCache
       ? chapterCache.load(key, series.id, () =>
-          client.getChaptersBySeries(series.id)
+          session.getChaptersBySeries(series.id)
         )
-      : client.getChaptersBySeries(series.id)),
+      : session.getChaptersBySeries(series.id)),
   }));
   const indexedFiles: { seriesId: number; local: string }[] = [];
   for (const { seriesId, chapters } of chapterBatches) {
-    for (const chapter of chapters)
+    for (const chapter of chapters) {
       for (const file of chapter.files ?? []) {
         if (!file.filePath)
-          throw new MergeProtectionError(
+          throw new ProtectedMergeError(
             "Kavita returned an archive without a path; review cannot establish protection"
           );
         const local = map(file.filePath);
         if (!local)
-          throw new MergeProtectionError(
+          throw new ProtectedMergeError(
             "Map Kavita library paths before reviewing this merge"
           );
         indexedFiles.push({ seriesId, local });
       }
+    }
   }
-  // Resolve every indexed archive identity without blocking the event loop;
-  // the results seed the same per-call cache the synchronous lookups use.
   await mapLimit(
     [...new Set(indexedFiles.map((item) => item.local))].filter(
       (file) => !resourceCache.has(file)
@@ -460,12 +466,14 @@ export async function resolveMergeProtection(
   for (const { seriesId, local } of indexedFiles) {
     const identity = cachedResource(local);
     const owner = indexed.get(identity);
-    if (owner !== undefined && owner !== seriesId)
-      throw new MergeProtectionError(
+    if (owner !== undefined && owner !== seriesId) {
+      throw new ProtectedMergeError(
         "An archive is indexed under multiple series; rescan Kavita before merging"
       );
+    }
     indexed.set(identity, seriesId);
   }
+
   const targetOwners = new Set(
     targetFiles
       .map((file) => indexed.get(cachedResource(file)))
@@ -473,7 +481,7 @@ export async function resolveMergeProtection(
   );
   if (target) targetOwners.add(target.id);
   if (targetOwners.size > 1)
-    throw new MergeProtectionError(
+    throw new ProtectedMergeError(
       "Target folder contains multiple indexed series; resolve their grouping before merging"
     );
   if (!target && targetOwners.size)
@@ -485,11 +493,12 @@ export async function resolveMergeProtection(
       return local !== null && cachedResource(local) === targetKey;
     });
     if (candidates.length > 1)
-      throw new MergeProtectionError(
+      throw new ProtectedMergeError(
         "Multiple indexed series share this target folder; rescan and resolve grouping first"
       );
     target = candidates[0];
   }
+
   const savedArchives = new Map(
     previous?.archives.map((item) => [
       cachedResource(item.path),
@@ -504,13 +513,14 @@ export async function resolveMergeProtection(
       !allowed(file) ||
       !resolveExistingFile(file) ||
       !file.toLowerCase().endsWith(".cbz")
-    )
-      throw new MergeProtectionError(
+    ) {
+      throw new ProtectedMergeError(
         `Source archive is missing or outside allowed folders: ${file}`
       );
-    const identity = cachedResource(file),
-      current = indexed.get(identity),
-      saved = savedArchives.get(identity);
+    }
+    const identity = cachedResource(file);
+    const current = indexed.get(identity);
+    const saved = savedArchives.get(identity);
     if (
       saved !== undefined &&
       current !== undefined &&
@@ -518,10 +528,11 @@ export async function resolveMergeProtection(
       current !== target?.id &&
       current !== previous?.targetSeriesId &&
       current !== previous?.completedTargetSeriesId
-    )
-      throw new MergeProtectionError(
+    ) {
+      throw new ProtectedMergeError(
         "Archive ownership changed since this merge began"
       );
+    }
     const owner = saved ?? current;
     archives.push({
       path: canonicalMergePath(file),
@@ -530,18 +541,21 @@ export async function resolveMergeProtection(
     if (owner !== undefined && owner !== target?.id) sourceIds.add(owner);
     if (owner === undefined) unassociatedArchives++;
   }
-  for (const id of request.sourceSeriesIds ?? [])
+  for (const id of request.sourceSeriesIds ?? []) {
     if (
       !archives.some((file) => file.seriesId === id) &&
       !previous?.sourceSeriesIds.includes(id)
-    )
-      throw new MergeProtectionError(
+    ) {
+      throw new ProtectedMergeError(
         "Selected source series does not own an incoming indexed archive; refresh the file list"
       );
-  if (!request.seriesName && targetValues.size > 1)
-    throw new MergeProtectionError(
+    }
+  }
+  if (!request.seriesName && targetValues.size > 1) {
+    throw new ProtectedMergeError(
       "Target archives disagree on ComicInfo.Series; choose a name after reviewing their protection"
     );
+  }
   const seriesName =
     request.seriesName ??
     [...targetValues][0] ??
@@ -562,14 +576,14 @@ export async function resolveMergeProtection(
     previous?.identities.map((identity) => [identity.seriesId, identity]) ?? []
   );
   for (const id of relevant) {
-    const live = all.find((item) => item.id === id),
-      policy = policyMap.get(id) ?? { lockedFields: [], revision: 0 };
+    const live = all.find((item) => item.id === id);
+    const policy = policyMap.get(id) ?? { lockedFields: [], revision: 0 };
     if (live) {
       const folder = seriesDirs.get(live) ?? null;
       const identity = identities.get(id);
       const regrouped =
         id === target?.id &&
-        folder &&
+        !!folder &&
         cachedResource(folder) === cachedResource(targetDir) &&
         archives.some(
           (archive) =>
@@ -588,10 +602,11 @@ export async function resolveMergeProtection(
               cachedResource(identity.folderPath) !==
                 cachedResource(folder)))) &&
         !regrouped
-      )
-        throw new MergeProtectionError(
+      ) {
+        throw new ProtectedMergeError(
           "Indexed series identity changed since this merge began; refresh before retrying"
         );
+      }
       identities.set(id, {
         seriesId: id,
         libraryId: live.libraryId,
@@ -632,11 +647,12 @@ export async function resolveMergeProtection(
       revision: policy.revision,
     });
   }
+
   const inheritedFields = PROTECTABLE_FIELDS.filter((field) =>
     [...policies.values()].some((policy) => policy.lockedFields.includes(field))
   );
-  if (kavitaConnectionKey(getKavitaConnection().baseUrl) !== key)
-    throw new MergeProtectionError(
+  if (kavitaPort.connectionKey() !== key)
+    throw new ProtectedMergeError(
       "Kavita connection changed during merge review"
     );
   const warnings = unassociatedArchives
@@ -647,10 +663,11 @@ export async function resolveMergeProtection(
   const blocked = series.filter(
     (item) => item.titleChange && item.lockedFields.includes("title")
   );
-  if (blocked.length)
+  if (blocked.length) {
     warnings.push(
       "A protected title would change in ComicInfo.Series or Kavita. Explicitly unlock each affected title, then refresh this review."
     );
+  }
   const containingLibraries = libraries.filter((lib) =>
     (lib.paths ?? (lib.path ? [lib.path] : [])).some((root) => {
       const local = map(root);
@@ -660,19 +677,21 @@ export async function resolveMergeProtection(
       );
     })
   );
-  if (containingLibraries.length > 1)
-    throw new MergeProtectionError(
+  if (containingLibraries.length > 1) {
+    throw new ProtectedMergeError(
       "Multiple Kavita libraries contain this target folder; choose an unambiguous mapped library before merging"
     );
+  }
   const libraryId = target?.libraryId ?? containingLibraries[0]?.id;
   const indexable =
     libraryId !== undefined || (!sourceIds.size && !inheritedFields.length);
-  if (libraryId === undefined)
+  if (libraryId === undefined) {
     warnings.push(
       indexable
         ? "This output folder is outside mapped Kavita libraries. These unassociated archives can be merged locally, but no indexed series or inherited policy is claimed."
         : "Choose a mapped Kavita library folder before merging indexed sources or inheriting protection."
     );
+  }
   const state: MergeProtectionState = {
     connectionKey: key,
     sourceSeriesIds: [...sourceIds],
@@ -702,227 +721,11 @@ export async function resolveMergeProtection(
   };
 }
 
-export function requireMergeProtection(preview: MergeProtectionPreview): void {
-  if (!preview.canQueue)
-    throw new MergeProtectionError(
+export function requireMergeAuthority(preview: MergeProtectionPreview): void {
+  if (!preview.canQueue) {
+    throw new ProtectedMergeError(
       preview.warnings.join(" ") ||
         "Merge protection could not be verified; refresh the review before queueing or retrying"
     );
-}
-
-function queryIncompleteMergeRows(key: string) {
-  const stateColumn = schema.jobs.stateJson;
-  const retained = (field: string) =>
-    sql`(case when json_valid(${stateColumn}) then json_extract(${stateColumn}, ${`$.mergeProtection.${field}`}) end)`;
-  return getDb()
-    .select({
-      id: schema.jobs.id,
-      type: schema.jobs.type,
-      status: schema.jobs.status,
-      payloadJson: schema.jobs.payloadJson,
-      stateJson: schema.jobs.stateJson,
-    })
-    .from(schema.jobs)
-    .where(
-      and(
-        eq(schema.jobs.type, "merge-series"),
-        sql`${retained("connectionKey")} = ${key}`,
-        sql`not (${schema.jobs.status} = 'completed' and ${retained("completedTargetSeriesId")} is not null)`
-      )
-    )
-    .all();
-}
-
-/** Fast read-only probe so endpoints can skip libraryMutations locks when no merge recovery exists. */
-export function hasPendingMergeRecovery(): boolean {
-  const key = kavitaConnectionKey(getKavitaConnection().baseUrl);
-  if (!key) return false;
-  const rows = queryIncompleteMergeRows(key);
-  if (!rows.length) return false;
-  return rows.some((row) => {
-    const state = readJobPayload(row.type, row.payloadJson, row.stateJson)
-      .payload.mergeProtection;
-    if (!state || state.connectionKey !== key) return false;
-    const targetKey = archiveResource(state.targetDir);
-    return (
-      state.archives.some(
-        (archive) =>
-          pathContains(targetKey, archiveResource(archive.path)) &&
-          fs.existsSync(archive.path)
-      ) || (state.moves ?? []).some((move) => fs.existsSync(move.destination))
-    );
-  });
-}
-
-/** Before a later sync/unmatch, finish inheritance for a merge that indexed after failure.
- * The caller owns its existing series boundary; this function never nests ownership. */
-export async function recoverMergeProtectionForSeriesOwned(
-  client: KavitaClient,
-  seriesId: number
-): Promise<void> {
-  const key = kavitaConnectionKey(getKavitaConnection().baseUrl);
-  const mappings = getDownloaderSettings().libraryPathMappings ?? [];
-  // A job that itself completed moved every archive and inherited protection
-  // onto its verified target; nothing is left to finish. Failed, cancelled and
-  // active retry-family members stay eligible even when a sibling completed.
-  // The JSON prefilter is a strict superset of the decoded checks below.
-  const rows = queryIncompleteMergeRows(key);
-  const intents = rows
-    .map((row) => ({
-      row,
-      decoded: readJobPayload(row.type, row.payloadJson, row.stateJson),
-    }))
-    .filter(
-      (item) =>
-        item.decoded.payload.mergeProtection?.connectionKey === key &&
-        item.decoded.payload.mergeProtection.completedTargetSeriesId !==
-          seriesId
-    )
-    // Only an archive that exists in its target folder, or a recorded move
-    // destination that exists, can be indexed under this series. Without one
-    // the loop below always skips the intent, so Kavita need not be asked.
-    .filter(({ decoded }) => {
-      const retainedState = decoded.payload.mergeProtection!;
-      return (
-        retainedState.archives.some(
-          (archive) =>
-            pathContains(
-              archiveResource(retainedState.targetDir),
-              archiveResource(archive.path)
-            ) && fs.existsSync(archive.path)
-        ) ||
-        (retainedState.moves ?? []).some((move) =>
-          fs.existsSync(move.destination)
-        )
-      );
-    });
-  if (!intents.length) return;
-  const chapters = await client.getChaptersBySeries(seriesId);
-  const indexed = new Set(
-    chapters.flatMap((chapter) =>
-      (chapter.files ?? []).flatMap((file) =>
-        file.filePath
-          ? [
-              archiveResource(
-                mapKavitaPathToLocalPath(file.filePath, mappings) ??
-                  file.filePath
-              ),
-            ]
-          : []
-      )
-    )
-  );
-  for (const { row, decoded } of intents) {
-    const state = decoded.payload.mergeProtection!;
-    const published = state.archives.filter(
-      (archive) =>
-        pathContains(
-          archiveResource(state.targetDir),
-          archiveResource(archive.path)
-        ) && fs.existsSync(archive.path)
-    );
-    const proposedArchives = [...state.archives];
-    for (const move of state.moves ?? []) {
-      if (
-        !indexed.has(archiveResource(move.destination)) ||
-        !fs.existsSync(move.destination) ||
-        published.some(
-          (archive) =>
-            archiveResource(archive.path) === archiveResource(move.destination)
-        )
-      )
-        continue;
-      const source = state.archives.find(
-        (archive) =>
-          archiveResource(archive.path) === archiveResource(move.source)
-      );
-      if (!source)
-        throw new MergeProtectionError(
-          "Pending publication has no retained source identity"
-        );
-      // This is a read-only fingerprint check. The caller may already own the
-      // selected archives; reacquiring their coordinator would deadlock.
-      if (
-        move.status === "pending" &&
-        (await hashArchiveFile(move.destination)) !== move.sha256
-      )
-        throw new MergeProtectionError(
-          "Pending archive changed before its policy could be inherited; review and retry the merge"
-        );
-      const archive = { ...source, path: move.destination };
-      published.push(archive);
-      if (!fs.existsSync(move.source)) {
-        proposedArchives.splice(proposedArchives.indexOf(source), 1, archive);
-        move.status = "published";
-      } else proposedArchives.push(archive);
-    }
-    if (
-      !published.some((archive) => indexed.has(archiveResource(archive.path)))
-    )
-      continue;
-    if (decoded.validationError)
-      throw new MergeProtectionError(
-        "Retained merge protection is invalid; repair it before syncing"
-      );
-    if (
-      !published.every((archive) => indexed.has(archiveResource(archive.path)))
-    )
-      throw new MergeProtectionError(
-        "An unfinished merge is still split between indexed series; retry it before syncing"
-      );
-    if (kavitaConnectionKey(getKavitaConnection().baseUrl) !== key)
-      throw new MergeProtectionError(
-        "Kavita connection changed while recovering merge protection"
-      );
-    const checked = await resolveMergeProtection(
-      client,
-      {
-        targetDir: state.targetDir,
-        sourceFiles: published.map((archive) => archive.path),
-        seriesName: state.seriesName,
-      },
-      { ...state, archives: proposedArchives }
-    );
-    if (checked.state.targetSeriesId !== seriesId)
-      throw new MergeProtectionError(
-        "Late merge target identity is ambiguous; rescan and retry before syncing"
-      );
-    const policy = inheritFieldPoliciesOwned(
-      seriesId,
-      checked.state.inheritedFields,
-      key,
-      checked.state.policies
-    );
-    checked.state.inheritedFields = policy.lockedFields;
-    checked.state.policies = [
-      ...checked.state.policies.filter((saved) => saved.seriesId !== seriesId),
-      {
-        seriesId,
-        revision: policy.revision,
-        lockedFields: policy.lockedFields,
-      },
-    ];
-    checked.state.completedTargetSeriesId = seriesId;
-    const moved = new Map(
-      (checked.state.moves ?? [])
-        .filter((move) => move.status === "published")
-        .map((move) => [move.source, move.destination])
-    );
-    const sourceFiles = decoded.payload.sourceFiles?.map(
-      (file) => moved.get(file) ?? file
-    );
-    const restoredChapters = decoded.payload.chapters
-      ? Object.fromEntries(
-          Object.entries(decoded.payload.chapters).map(([file, number]) => [
-            moved.get(file) ?? file,
-            number,
-          ])
-        )
-      : undefined;
-    persistMergeState(row.id, {
-      mergeProtection: checked.state,
-      sourceFiles,
-      chapters: restoredChapters,
-    });
   }
 }

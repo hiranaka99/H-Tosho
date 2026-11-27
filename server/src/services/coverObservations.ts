@@ -133,8 +133,18 @@ function volumeMembership(volume: KavitaVolumeCoverDto): string {
   return createHash("sha256").update(JSON.stringify(references)).digest("hex");
 }
 
+/** The Kavita reads a cover observation needs. */
+export type CoverObservationClient = Pick<
+  KavitaClient,
+  | "getSeriesDto"
+  | "getServerInfo"
+  | "getSeriesCoverForHistory"
+  | "getVolumeCoverForHistory"
+  | "getVolumeForCoverHistory"
+>;
+
 export async function observeCover(
-  client: KavitaClient,
+  client: CoverObservationClient,
   seriesId: number,
   target: CoverTarget,
   expected: MetadataSnapshot,

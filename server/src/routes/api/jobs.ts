@@ -1,4 +1,7 @@
-import { parseJobCommand } from "../../contracts/jobs.js";
+import {
+  parseJobCommand,
+  validateMergeDownloads,
+} from "../../contracts/jobs.js";
 import {
   prepareDuplicateCheck,
   findDuplicateReports,
@@ -7,7 +10,6 @@ import { Hono } from "hono";
 import { desc } from "drizzle-orm";
 import { getDb, schema } from "../../db/index.js";
 import { jobQueue, type JobPayload } from "../../jobs/queue.js";
-import { validateMergeDownloads } from "../../jobs/mergeDownloads.js";
 
 import { resolveJobContext, errMsg, intParam } from "./helpers.js";
 export const api = new Hono();

@@ -1,6 +1,5 @@
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { getDb, schema } from "../db/index.js";
-import type { KavitaClient } from "../kavita/client.js";
 import type { MetadataSnapshot } from "../contracts/metadataHistory.js";
 import {
   MAX_RETAINED_COVER_BYTES,
@@ -22,6 +21,7 @@ import {
   coverMediaType,
   coverStorageBudget,
   type CoverObservation,
+  type CoverObservationClient,
 } from "./coverObservations.js";
 import { mapLimit } from "../lib/http.js";
 import { PRUNE_UNUSED_COVER_ASSETS_SQL } from "../db/metadataRetention.js";
@@ -126,7 +126,7 @@ function ensureCheckpoint(operationId: string, target: CoverTarget): void {
 
 /** The caller owns the parent series mutation boundary; original bytes remain unmodified. */
 export function coverJournal(
-  client: KavitaClient,
+  client: CoverObservationClient,
   operationId: string,
   seriesId: number,
   expected: MetadataSnapshot,

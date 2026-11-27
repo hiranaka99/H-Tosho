@@ -1,42 +1,43 @@
-import {
-  prepareDuplicateCheck,
-  findDuplicateReports,
-} from "../services/galleryDuplicates.js";
 import fs from "node:fs";
-import { downloadQueue } from "../downloader/engine.js";
-import { getDownloaderSettings } from "../services/settings.js";
-import { JobCancelled, jobQueue, type Job, type LogFn } from "./queue.js";
-import { getDb, schema } from "../db/index.js";
-import { and, eq } from "drizzle-orm";
+import { JobCancelled } from "../jobs/lifecycle.js";
+import type { Job, LogFn } from "../jobs/queue.js";
+import { persistMergeState } from "./stateStore.js";
+import type {
+  MergeLibraryIndexPort,
+  MergeDownloadPort,
+  MergeJobPort,
+  MergeSettingsPort,
+  ResolvedMergeTiming,
+} from "./types.js";
 
-export {
-  validMergeChapter,
-  validateMergeDownloads,
-} from "../contracts/jobs.js";
-
-/** Safety-net re-check while waiting on downloads; events normally wake the wait first. */
-const FALLBACK_POLL_MS = 30_000;
-
-/** All galleries must finish before any archives move or existing chapter drafts commit. */
-export async function prepareMergeDownloads(
+/** All merge downloads must finish before any archives move or existing chapter drafts commit. */
+export async function stageMergeDownloads(
+  deps: {
+    downloads: MergeDownloadPort;
+    jobs: MergeJobPort;
+    settings: MergeSettingsPort;
+    libraryIndex: MergeLibraryIndexPort;
+  },
+  timing: ResolvedMergeTiming,
   job: Job,
   log: LogFn,
   signal?: AbortSignal
 ): Promise<{ files: string[]; chapters: Record<string, string> }> {
   const plans = job.payload.downloads ?? [];
   if (!plans.length) return { files: [], chapters: {} };
-  if (!getDownloaderSettings().downloadDirectory.trim())
+  if (!deps.settings.getDownloaderPaths().downloadDirectory.trim()) {
     throw new Error(
       "Set an output folder in Downloader settings before starting merge downloads."
     );
-  const queue = downloadQueue;
+  }
+  const queue = deps.downloads;
   const tracked: {
     plan: (typeof plans)[number];
     id: number;
     owned: boolean;
   }[] = [];
   const checkCancelled = () => {
-    if (signal?.aborted || jobQueue.isCancelRequested(job.id))
+    if (signal?.aborted || deps.jobs.isCancelRequested(job.id))
       throw new JobCancelled();
   };
   const archiveExists = (task: ReturnType<typeof queue.get>) =>
@@ -47,10 +48,13 @@ export async function prepareMergeDownloads(
       ...job.payload.mergeDownloadIds,
       [key]: id,
     };
-    jobQueue.updateMergeState(job.id, {
-      mergeDownloadIds: job.payload.mergeDownloadIds,
-    });
+    persistMergeState(
+      job.id,
+      { mergeDownloadIds: job.payload.mergeDownloadIds },
+      (ids) => deps.jobs.invalidateContextCache(ids)
+    );
   };
+
   try {
     type ClassifiedPlan =
       | {
@@ -71,8 +75,9 @@ export async function prepareMergeDownloads(
       if (
         task &&
         (task.source !== plan.source || task.galleryId !== plan.galleryId)
-      )
+      ) {
         throw new Error("Merge download checkpoint does not match its gallery");
+      }
       if (!task) {
         const done = queue.findCompleted(plan.source, plan.galleryId);
         task =
@@ -80,29 +85,20 @@ export async function prepareMergeDownloads(
           (done && archiveExists(done) ? done : null);
       }
       if (task?.mergeJobId != null && task.mergeJobId !== job.id) {
-        const owner = jobQueue.get(task.mergeJobId);
-        if (owner?.status === "queued" || owner?.status === "running")
+        const owner = deps.jobs.get(task.mergeJobId);
+        if (owner?.status === "queued" || owner?.status === "running") {
           throw new Error(
             `${plan.title} is already assigned to merge job #${owner.id}. Finish or cancel that merge in Jobs first.`
           );
+        }
       }
       if (
         saved !== undefined &&
         task?.mergeJobId != null &&
         task.mergeJobId !== job.id
       ) {
-        // A verified retry assumes its inactive predecessor's reservation, never
-        // an independent task. The owner conflict above remains authoritative.
-        getDb()
-          .update(schema.downloadQueue)
-          .set({ mergeJobId: job.id })
-          .where(
-            and(
-              eq(schema.downloadQueue.id, task.id),
-              eq(schema.downloadQueue.mergeJobId, task.mergeJobId)
-            )
-          )
-          .run();
+        // A verified retry assumes its inactive predecessor's reservation, never an independent task.
+        queue.reassignMergeJob(task.id, task.mergeJobId, job.id);
         task = queue.get(task.id);
       }
       if (
@@ -140,16 +136,14 @@ export async function prepareMergeDownloads(
           c.kind === "need-download" && !c.plan.allowDuplicate
       )
       .map((c) => c.plan);
-    const hasMatchByKey = new Set<string>();
-    if (plansToCheck.length > 0) {
-      const identities = await prepareDuplicateCheck(plansToCheck);
-      checkCancelled();
-      const check = findDuplicateReports(identities, job.payload.sourceFiles);
-      for (const report of check.reports) {
-        if (report.matches.length)
-          hasMatchByKey.add(`${report.source}:${report.galleryId}`);
-      }
-    }
+    const hasMatchByKey =
+      plansToCheck.length > 0
+        ? await deps.libraryIndex.checkDownloadDuplicates(
+            plansToCheck,
+            job.payload.sourceFiles
+          )
+        : new Set<string>();
+    checkCancelled();
 
     for (const item of classified) {
       if (item.kind === "reuse") {
@@ -163,17 +157,18 @@ export async function prepareMergeDownloads(
       }
       const { plan, key } = item;
       if (!plan.allowDuplicate) {
-        // An independent task may have appeared while metadata was resolving.
+        // An independent task may have appeared while duplicate metadata was resolving.
         const raced =
           queue.findActive(plan.source, plan.galleryId) ??
           queue.findCompleted(plan.source, plan.galleryId);
         if (raced && (raced.status !== "completed" || archiveExists(raced))) {
           if (raced.mergeJobId != null && raced.mergeJobId !== job.id) {
-            const owner = jobQueue.get(raced.mergeJobId);
-            if (owner?.status === "queued" || owner?.status === "running")
+            const owner = deps.jobs.get(raced.mergeJobId);
+            if (owner?.status === "queued" || owner?.status === "running") {
               throw new Error(
                 `${plan.title} is already assigned to merge job #${owner.id}.`
               );
+            }
           }
           tracked.push({
             plan,
@@ -183,26 +178,25 @@ export async function prepareMergeDownloads(
           remember(key, raced.id);
           continue;
         }
-        if (hasMatchByKey.has(key))
+        if (hasMatchByKey.has(key)) {
           throw new Error(
             `Possible duplicate for ${plan.title}. Review this gallery in Downloader before queueing the merge again.`
           );
+        }
       }
-      const id = queue.enqueue(
-        plan.source,
-        plan.galleryId,
-        plan.title,
-        "cbz",
-        undefined,
-        plan.chapter.trim() ? Number(plan.chapter) : undefined,
-        0,
-        job.id,
-        plan.url
-      );
+      const id = queue.enqueueForMerge({
+        source: plan.source,
+        galleryId: plan.galleryId,
+        title: plan.title,
+        chapter: plan.chapter.trim() ? Number(plan.chapter) : undefined,
+        mergeJobId: job.id,
+        url: plan.url,
+      });
       tracked.push({ plan, id, owned: true });
       remember(key, id);
       log("info", `Download queued: ${plan.title} (task #${id})`);
     }
+
     let lastComplete = -1;
     const completedOutputs = new Map<number, string>();
     for (;;) {
@@ -225,22 +219,17 @@ export async function prepareMergeDownloads(
         }
         if (task.status !== "completed" || queue.isRunning(task.id)) continue;
         if (!archiveExists(task)) {
-          // An existing folder-format task is allowed to finish, then this plan
-          // downloads a CBZ copy. No concurrent duplicate writer is introduced.
           if (task.outputFormat === "folder") {
-            entry.id = queue.enqueue(
-              entry.plan.source,
-              entry.plan.galleryId,
-              entry.plan.title,
-              "cbz",
-              undefined,
-              entry.plan.chapter.trim()
+            entry.id = queue.enqueueForMerge({
+              source: entry.plan.source,
+              galleryId: entry.plan.galleryId,
+              title: entry.plan.title,
+              chapter: entry.plan.chapter.trim()
                 ? Number(entry.plan.chapter)
                 : undefined,
-              0,
-              job.id,
-              entry.plan.url
-            );
+              mergeJobId: job.id,
+              url: entry.plan.url,
+            });
             entry.owned = true;
             remember(`${entry.plan.source}:${entry.plan.galleryId}`, entry.id);
             log(
@@ -258,7 +247,7 @@ export async function prepareMergeDownloads(
       }
       if (complete !== lastComplete) {
         lastComplete = complete;
-        jobQueue.setProgress(job.id, complete, tracked.length);
+        deps.jobs.setProgress(job.id, complete, tracked.length);
       }
       if (complete === tracked.length) break;
       const watchedIds = new Set(tracked.map((entry) => entry.id));
@@ -283,9 +272,7 @@ export async function prepareMergeDownloads(
         const unsubRemovals = queue.subscribeRemovals((ids) => {
           if (ids.some((id) => watchedIds.has(id))) done();
         });
-        // Task updates, removals and cancellation wake this wait directly; the
-        // timer is only a fallback for an update that never broadcasts.
-        const timer = setTimeout(done, FALLBACK_POLL_MS);
+        const timer = setTimeout(done, timing.downloadFallbackPollMs);
         signal?.addEventListener("abort", done, { once: true });
       });
     }
@@ -304,8 +291,7 @@ export async function prepareMergeDownloads(
     );
     return { files, chapters };
   } catch (error) {
-    // Stop only downloads owned by this merge, including delayed automatic
-    // retries. Downloads the user started independently keep their own state.
+    // Stop only downloads owned by this merge; independent downloads keep their own state.
     for (const entry of tracked) if (entry.owned) queue.cancel(entry.id);
     throw error;
   }

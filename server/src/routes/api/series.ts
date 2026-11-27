@@ -19,11 +19,7 @@ import {
 import type { RestorePreviewRequest } from "../../contracts/metadataRestore.js";
 import { retainedCoverAsset } from "../../services/metadataCovers.js";
 import { retainedPreviewCoverAsset } from "../../services/metadataCoverRestore.js";
-import {
-  hasPendingMergeRecovery,
-  recoverMergeProtectionForSeriesOwned,
-} from "../../services/mergeProtection.js";
-import { libraryMutations } from "../../lib/mutations.js";
+import { protectedMerge } from "../../merge/index.js";
 import { parseJobCommand, type JobPayloads } from "../../contracts/jobs.js";
 import { Hono } from "hono";
 import { and, desc, eq, lt, sql } from "drizzle-orm";
@@ -195,12 +191,7 @@ api.get("/series/:id/field-locks", async (c) => {
   const id = intParam(c.req.param("id"));
   if (id === null || id <= 0)
     return c.json({ error: "Invalid series id" }, 400);
-  const client = connectedClient();
-  if (client && hasPendingMergeRecovery()) {
-    await libraryMutations.run([`series:${id}`], () =>
-      recoverMergeProtectionForSeriesOwned(client, id)
-    );
-  }
+  await protectedMerge.recoverSeries(id);
   return c.json(getFieldPolicy(id));
 });
 api.put("/series/:id/field-locks", async (c) => {
@@ -213,11 +204,7 @@ api.put("/series/:id/field-locks", async (c) => {
   if (!body || typeof body !== "object")
     return c.json({ error: "Invalid field policy" }, 400);
   try {
-    const client = connectedClient();
-    if (client)
-      await libraryMutations.run([`series:${id}`], () =>
-        recoverMergeProtectionForSeriesOwned(client, id)
-      );
+    await protectedMerge.recoverSeries(id);
     return c.json(
       await saveFieldPolicy(id, body.lockedFields, body.expectedRevision)
     );

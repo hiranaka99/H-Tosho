@@ -85,16 +85,36 @@ behaviour is documented in the [README](../README.md); release history is in the
 - `services/fieldPolicies.ts` stores revisioned, connection-scoped protected
   fields. Provider sync, title/CBZ rewrites, covers and unmatch skip protected
   fields at execution time, not only in the review UI.
-- `services/mergeProtection.ts` resolves indexed source/target policy and XML
-  title effects for library, path-only and gallery merges before publication.
-  Server-derived identity, policy union and move intents persist in separate
-  job execution state; archive hashes reconcile unfinished move checkpoints
-  after restart. Publication guards run under existing archive ownership,
-  without nested coordinator deadlocks. Verified regrouping transfers current
-  source/target protection before later sync; late-index recovery is idempotent
-  and does not resurrect a deliberate later unlock. Merge name confirmation uses
-  actual post-write readback. ComicInfo authoring remains explicit,
-  protection-preserving and series-journaled.
+- `merge/` is the **Protected Merge** module (see the
+  [glossary](../GLOSSARY.md)). Callers import from `merge/index.ts` only: the
+  wired `protectedMerge` instance (`preview`, `registerMergedDownloads`,
+  `guardDownloadPublication`, `executeMergeJob`, `recoverSeries` /
+  `recoverSeriesWithinLock`, `jobLifecycleHook`), `ProtectedMergeError` for
+  HTTP status mapping, and the types in `merge/types.ts`. Kavita, settings,
+  the download queue, jobs and the library index reach the module through the
+  ports defined there; tests build their own instance with
+  `createProtectedMerge()` and in-memory adapters.
+- Inside the module, `authority.ts` resolves indexed source/target **Field
+  Policies** and XML title effects for library, path-only and gallery merges
+  before publication. `stateStore.ts` keeps server-derived identity, policy
+  union and **Move Intents** in `jobs.state_json`, never in the command, and
+  updates every attempt in a **Retry Family** together; archive hashes reconcile
+  unfinished moves after restart. `staging.ts` waits for downloads outside
+  library ownership, then the commit runs under exclusive ownership.
+  `verification.ts` rescans until every moved archive is indexed. Verified
+  regrouping transfers current source/target protection before later sync;
+  late-index recovery is idempotent and does not resurrect a deliberate later
+  unlock. Merge name confirmation uses actual post-write readback. ComicInfo
+  authoring remains explicit, protection-preserving and series-journaled.
+- Generic code stays merge-free through two seams. `jobs/lifecycle.ts` lets a
+  job type seed its initial state, hydrate it, carry it into retries, refuse
+  retry or clearing, and release resources when a job stops or settles; Protected Merge
+  and metadata restore register hooks there. `downloader/publishGuard.ts` lets
+  the engine publish every download, CBZ or folder, through the installed
+  Protected Merge guard; without one, a download that belongs to a merge fails
+  instead of publishing unprotected. Both are installed
+  when `merge/index.ts` loads; the server entry imports it, so they are in
+  place before startup runs.
 
 ## Metadata history and restore
 

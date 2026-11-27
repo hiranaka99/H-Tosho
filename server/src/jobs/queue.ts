@@ -1,13 +1,12 @@
 import { classifyJobError, type JobErrorCode } from "./errors.js";
 import { onSettingChange } from "../services/settings.js";
-import { settleMetadataRestoreJob } from "../services/metadataRestore.js";
-import { readJobPayload, persistMergeState } from "./storage.js";
+import { readJobPayload } from "./storage.js";
+import { JobCancelled, getJobLifecycleHook } from "./lifecycle.js";
 import { and, asc, desc, eq, gt, inArray } from "drizzle-orm";
 import { getDb, schema, type Db } from "../db/index.js";
 import { jobRecovery, type JobRecovery } from "./recovery.js";
-import fs from "node:fs";
-import { archiveResource } from "../lib/mutations.js";
-import { pathContains } from "../lib/paths.js";
+
+export { JobCancelled };
 
 export { JOB_TYPES, isJobType } from "../contracts/jobs.js";
 export type {
@@ -63,14 +62,6 @@ export type JobHandler = (
   log: LogFn,
   signal?: AbortSignal
 ) => Promise<unknown>;
-
-/** Thrown by the executor when a running job observes a cancellation request. */
-export class JobCancelled extends Error {
-  constructor() {
-    super("Job cancelled");
-    this.name = "JobCancelled";
-  }
-}
 
 export class JobConflict extends Error {
   constructor(message = "A sync is already running for this series") {
@@ -156,7 +147,6 @@ class JobQueue {
     this.historyId = 0;
   }
   private handler: JobHandler | null = null;
-  private mergeDownloadCanceller: ((jobId: number) => void) | null = null;
   private running = 0;
   private pumping = false;
   private cancelRequested = new Set<number>();
@@ -282,7 +272,13 @@ class JobQueue {
   }
 
   private hydrate(row: JobRow): Job {
-    const decoded = readJobPayload(row.type, row.payloadJson, row.stateJson);
+    const hook = getJobLifecycleHook(row.type as JobType);
+    const decoded = readJobPayload(
+      row.type,
+      row.payloadJson,
+      row.stateJson,
+      hook?.hydrateState
+    );
     const decodedContext = decoded.payload.context;
     const legacy = this.legacyContexts.get(row.id);
     // decoded.payload is freshly parsed for this call; only the shared cached
@@ -372,16 +368,13 @@ class JobQueue {
     return payload.context;
   }
 
-  /** Persist merge progress without overwriting independently resolved context. */
-  updateMergeState(
-    jobId: number,
-    state: Pick<
-      JobPayload,
-      "mergeDownloadIds" | "sourceFiles" | "chapters" | "mergeProtection"
-    >
-  ): void {
-    this.legacyContexts.delete(jobId);
-    persistMergeState(jobId, state);
+  /** Drop cached legacy projections after a job-type module updates `state_json` directly. */
+  invalidateContextCache(jobIds: number | readonly number[]): void {
+    if (typeof jobIds === "number") {
+      this.legacyContexts.delete(jobIds);
+      return;
+    }
+    for (const jobId of jobIds) this.legacyContexts.delete(jobId);
   }
 
   /** Register the function that actually performs each job. */
@@ -390,14 +383,11 @@ class JobQueue {
     void this.pump();
   }
 
-  registerMergeDownloadCanceller(cancel: (jobId: number) => void): void {
-    this.mergeDownloadCanceller = cancel;
-  }
-
   /** Insert a new job and return its id. */
   enqueue<T extends JobType>(
     type: T,
-    payload: JobPayloads[NoInfer<T>] & JobExecutionState
+    payload: JobPayloads[NoInfer<T>] & JobExecutionState,
+    extraState?: Record<string, unknown>
   ): number {
     const command = parseJobCommand(type, payload);
     if (
@@ -423,20 +413,19 @@ class JobQueue {
             .map((target) => target.id),
       };
     }
+    const hookInitial = getJobLifecycleHook(type)?.initialState?.(payload);
+    const state = {
+      context: payload.context,
+      contextPendingSeriesIds: payload.contextPendingSeriesIds,
+      ...hookInitial,
+      ...extraState,
+    };
     const res = db
       .insert(schema.jobs)
       .values({
         type,
         payloadJson: JSON.stringify(command.payload),
-        stateJson: JSON.stringify({
-          context: payload.context,
-          contextPendingSeriesIds: payload.contextPendingSeriesIds,
-          mergeDownloadIds: payload.mergeDownloadIds,
-          sourceFiles: payload.mergeDownloadIds
-            ? payload.sourceFiles
-            : undefined,
-          chapters: payload.mergeDownloadIds ? payload.chapters : undefined,
-        }),
+        stateJson: JSON.stringify(state),
         status: "queued",
       })
       .run();
@@ -447,8 +436,16 @@ class JobQueue {
     return id;
   }
 
-  enqueueCommand(command: JobCommand, state: JobExecutionState = {}): number {
-    return this.enqueue(command.type, { ...command.payload, ...state });
+  enqueueCommand(
+    command: JobCommand,
+    state: JobExecutionState = {},
+    extraState?: Record<string, unknown>
+  ): number {
+    return this.enqueue(
+      command.type,
+      { ...command.payload, ...state },
+      extraState
+    );
   }
 
   get(id: number): Job | null {
@@ -578,13 +575,9 @@ class JobQueue {
         .run();
       if (Number(res.changes ?? 0) > 0) {
         this.log(id, "info", "Job cancelled before start");
-        if (job.type === "restore-metadata")
-          settleMetadataRestoreJob(
-            id,
-            "cancelled",
-            "Cancelled before restore started"
-          );
-        if (job.type === "merge-series") this.mergeDownloadCanceller?.(id);
+        const hook = getJobLifecycleHook(job.type);
+        hook?.onSettled?.(id, "cancelled", "Cancelled before start");
+        hook?.onStopped?.(id, "cancelled");
         this.emitSettled({ id, type: job.type, status: "cancelled" });
         return true;
       }
@@ -598,7 +591,7 @@ class JobQueue {
         "info",
         "Cancellation requested; stopping at next checkpoint"
       );
-      if (current.type === "merge-series") this.mergeDownloadCanceller?.(id);
+      getJobLifecycleHook(current.type)?.onStopped?.(id, "cancelled");
       return true;
     }
     return false;
@@ -611,16 +604,11 @@ class JobQueue {
    */
   retryJob(id: number): number | null {
     const job = this.get(id);
-    if (!job || job.status !== "failed" || job.type === "restore-metadata")
-      return null;
-    const newId = this.enqueue(job.type, job.payload);
-    if (job.type === "merge-series")
-      this.updateMergeState(newId, {
-        mergeProtection: job.payload.mergeProtection,
-        sourceFiles: job.payload.sourceFiles,
-        chapters: job.payload.chapters,
-        mergeDownloadIds: job.payload.mergeDownloadIds,
-      });
+    if (!job || job.status !== "failed") return null;
+    const hook = getJobLifecycleHook(job.type);
+    if (hook?.retryable === false) return null;
+    const carriedState = hook?.stateForRetry?.(job);
+    const newId = this.enqueue(job.type, job.payload, carriedState);
     this.log(id, "info", `Retried as job #${newId}`);
     return newId;
   }
@@ -631,40 +619,18 @@ class JobQueue {
       id === undefined
         ? eq(schema.jobs.status, "failed")
         : and(eq(schema.jobs.id, id), eq(schema.jobs.status, "failed"));
-    // Filesystem evidence checks run before the write transaction so it never
-    // holds the database lock across disk I/O. Everything here is synchronous,
-    // so no job can change state between the checks and the deletes; the
-    // status guard below is kept regardless.
+    // Lifecycle checks run before the write transaction so it never holds the
+    // database lock across disk I/O. Everything here is synchronous, so no job
+    // can change state between the checks and the deletes; the status guard
+    // below is kept regardless.
     const candidates = getDb()
       .select()
       .from(schema.jobs)
       .where(failed)
       .all()
       .filter((row) => {
-        const decoded = readJobPayload(
-          row.type,
-          row.payloadJson,
-          row.stateJson
-        );
-        if (
-          row.type === "merge-series" &&
-          decoded.validationError &&
-          /"mergeProtection"\s*:/.test(row.stateJson)
-        )
-          return false;
-        const protection = decoded.payload.mergeProtection;
-        if (!protection || protection.completedTargetSeriesId !== undefined)
-          return true;
-        const published =
-          protection.archives.some(
-            (archive) =>
-              pathContains(
-                archiveResource(protection.targetDir),
-                archiveResource(archive.path)
-              ) && fs.existsSync(archive.path)
-          ) ||
-          protection.moves?.some((move) => fs.existsSync(move.destination));
-        return !published;
+        const hook = getJobLifecycleHook(row.type as JobType);
+        return hook?.canClearFailed ? hook.canClearFailed(row) : true;
       })
       .map((row) => row.id);
     if (!candidates.length) return 0;
@@ -698,10 +664,7 @@ class JobQueue {
   /**
    * Startup recovery: jobs still marked 'running' were orphaned by a crash or
    * restart (no process is executing them). Mark them failed so the UI shows
-   * no ghosts. Interrupted merges release their downloads exactly as a
-   * failing merge does at runtime; otherwise those downloads would finish and
-   * then fail at publication against the dead job. Retrying the merge
-   * re-adopts them and resumes from their saved pages.
+   * no ghosts and notify job-type hooks so owned resources are released.
    */
   interruptRunningJobs(): number {
     const db = getDb();
@@ -716,7 +679,10 @@ class JobQueue {
       .returning({ id: schema.jobs.id, type: schema.jobs.type })
       .all();
     for (const job of interrupted) {
-      if (job.type === "merge-series") this.mergeDownloadCanceller?.(job.id);
+      getJobLifecycleHook(job.type as JobType)?.onStopped?.(
+        job.id,
+        "interrupted"
+      );
     }
     return interrupted.length;
   }
@@ -842,14 +808,10 @@ class JobQueue {
         this.log(job.id, "error", message);
       }
     } finally {
-      if (job.type === "restore-metadata") {
-        settleMetadataRestoreJob(job.id, terminalStatus, terminalError);
-      }
-      if (
-        job.type === "merge-series" &&
-        (terminalStatus === "failed" || terminalStatus === "cancelled")
-      ) {
-        this.mergeDownloadCanceller?.(job.id);
+      const hook = getJobLifecycleHook(job.type);
+      hook?.onSettled?.(job.id, terminalStatus, terminalError);
+      if (terminalStatus === "failed" || terminalStatus === "cancelled") {
+        hook?.onStopped?.(job.id, terminalStatus);
       }
       this.cancelRequested.delete(job.id);
       this.controllers.delete(job.id);

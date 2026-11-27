@@ -12,8 +12,12 @@ process.env.HTOSHO_DATA_DIR = fs.mkdtempSync(
 );
 const { initDb } = await import("../src/db/index.js");
 const { setKavitaConnection } = await import("../src/services/settings.js");
-const { getFieldPolicy, saveFieldPolicy, FieldPolicyConflict } =
-  await import("../src/services/fieldPolicies.js");
+const {
+  getFieldPolicy,
+  saveFieldPolicy,
+  FieldPolicyConflict,
+  inheritFieldPoliciesOwned,
+} = await import("../src/services/fieldPolicies.js");
 const { applyResolvedSeriesMatch } = await import("../src/services/sync.js");
 const { libraryMutations } = await import("../src/lib/mutations.js");
 const { migrateSchema } = await import("../src/db/migrations.js");
@@ -174,4 +178,39 @@ test("new policy table upgrades an existing migration stamp and survives repeat 
     1
   );
   sqlite.close();
+});
+
+test("policy transfer rereads newer source locks and does not resurrect a source unlock", async () => {
+  const sourceId = 9101,
+    targetId = 9102,
+    laterTargetId = 9103;
+  const source = await saveFieldPolicy(sourceId, ["summary"], 0);
+  await saveFieldPolicy(targetId, ["tags"], 0);
+  // Evidence captured when the merge was reviewed; the source changes afterwards.
+  const evidence = [{ seriesId: sourceId, lockedFields: source.lockedFields }];
+  await saveFieldPolicy(sourceId, ["title", "summary"], source.revision);
+  await libraryMutations.run([`series:${targetId}`], async () =>
+    inheritFieldPoliciesOwned(
+      targetId,
+      source.lockedFields,
+      "https://policy.test",
+      evidence
+    )
+  );
+  assert.deepEqual(getFieldPolicy(targetId).lockedFields, [
+    "title",
+    "summary",
+    "tags",
+  ]);
+
+  await saveFieldPolicy(sourceId, [], getFieldPolicy(sourceId).revision);
+  await libraryMutations.run([`series:${laterTargetId}`], async () =>
+    inheritFieldPoliciesOwned(
+      laterTargetId,
+      source.lockedFields,
+      "https://policy.test",
+      evidence
+    )
+  );
+  assert.deepEqual(getFieldPolicy(laterTargetId).lockedFields, []);
 });

@@ -10,7 +10,7 @@ import { streamSSE } from "hono/streaming";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb, schema } from "../../db/index.js";
 import { getDownloaderSettings } from "../../services/settings.js";
 import { downloadQueue } from "../../downloader/engine.js";
@@ -22,17 +22,14 @@ import {
   sanitizeFilename,
 } from "../../downloader/util.js";
 import { mapLimit } from "../../lib/http.js";
-import { jobQueue } from "../../jobs/queue.js";
-import type { MergeProtectionState } from "../../contracts/mergeProtection.js";
 import {
-  MergeChapterCache,
-  resolveMergeProtection,
-  requireMergeProtection,
-  MergeProtectionError,
-} from "../../services/mergeProtection.js";
+  protectedMerge,
+  ProtectedMergeError,
+  type AttachedMergeDownload,
+} from "../../merge/index.js";
 
 import { downloadLibraryStates } from "../../services/downloadLibraryState.js";
-import { connectedClient, errMsg, intParam } from "./helpers.js";
+import { errMsg, intParam } from "./helpers.js";
 export const api = new Hono();
 api.post("/downloads/library-matches", async (c) => {
   const body = await c.req.json<{ items?: unknown[] } | null>();
@@ -165,77 +162,18 @@ type DownloadInput = {
   priority?: number;
   allowDuplicate?: boolean;
 };
-interface MergeDownloadGroup {
-  protection: MergeProtectionState;
-  plans: {
-    source: DoujinSource;
-    galleryId: string;
-    title: string;
-    chapter: string;
-    allowDuplicate: boolean;
-    url?: string;
-  }[];
-  ids: Record<string, number>;
-}
-
-async function prepareMergeGroup(
-  folder: string,
-  chapterCache?: MergeChapterCache
-): Promise<MergeDownloadGroup> {
-  const client = connectedClient();
-  if (!folder.trim() || /[\\/\u0000-\u001f\u007f]/.test(folder))
-    throw new MergeProtectionError(
-      "mergeFolder must be a plain series name without control characters",
-      400
-    );
-  if (!client)
-    throw new MergeProtectionError(
-      "Kavita is required to review merged download protection"
-    );
-  const dl = getDownloaderSettings();
-  if (!dl.downloadDirectory.trim())
-    throw new MergeProtectionError(
-      "Set an output folder in Downloader settings before starting merged downloads",
-      400
-    );
-  const targetDir = path.join(
-    path.resolve(dl.downloadDirectory),
-    sanitizeFilename(folder, "merged")
-  );
-  const reviewed = await resolveMergeProtection(
-    client,
-    { targetDir, seriesName: folder },
-    undefined,
-    chapterCache ? { chapterCache } : undefined
-  );
-  requireMergeProtection(reviewed.preview);
-  return { protection: reviewed.state, plans: [], ids: {} };
-}
-
-/** Siblings are registered before one protected merge commitment can start. */
-function commitMergeGroup(group: MergeDownloadGroup): void {
-  if (!group.plans.length) return;
-  const id = jobQueue.enqueue("merge-series", {
-    targetDir: group.protection.targetDir,
-    seriesName: group.protection.seriesName,
-    downloads: group.plans,
-  });
-  jobQueue.updateMergeState(id, {
-    mergeProtection: group.protection,
-    mergeDownloadIds: group.ids,
-  });
-  getDb()
-    .update(schema.downloadQueue)
-    .set({ mergeJobId: id })
-    .where(inArray(schema.downloadQueue.id, Object.values(group.ids)))
-    .run();
-}
 
 /** Resolve and validate before starting workers, so a batch is registered together. */
 async function prepareDownload(
   body: DownloadInput,
-  group?: MergeDownloadGroup
-): Promise<Response | ((checker?: DuplicateChecker) => Response)> {
+  managedByProtectedMerge = false
+): Promise<
+  | Response
+  | ((
+      checker?: DuplicateChecker,
+      attach?: (entry: AttachedMergeDownload) => void
+    ) => Response)
+> {
   const respond = (value: unknown, status: number) =>
     Response.json(value, { status });
   if (
@@ -360,7 +298,10 @@ async function prepareDownload(
       },
     ]);
     // A batch passes one checker shared by all of its items (see /downloads/merged).
-    return (checker?: DuplicateChecker) => {
+    return (
+      checker?: DuplicateChecker,
+      attach?: (entry: AttachedMergeDownload) => void
+    ) => {
       // Another request can finish its preflight while the batch is resolving.
       if (
         downloadQueue.findCompleted(source, body.galleryId) ||
@@ -391,24 +332,24 @@ async function prepareDownload(
         body.galleryId,
         identities[0].title,
         outputFormat,
-        group ? undefined : mergeFolder,
+        managedByProtectedMerge ? undefined : mergeFolder,
         chapter,
         priority,
         undefined,
         sourceUrl
       );
+      // Link straight after the insert: if anything below throws, the merged
+      // registration then cancels this row instead of leaving it unprotected.
+      attach?.({
+        downloadId: id,
+        source,
+        galleryId: body.galleryId,
+        title: identities[0].title,
+        chapter: chapter === undefined ? "" : String(chapter),
+        allowDuplicate: body.allowDuplicate === true,
+        url: sourceUrl,
+      });
       checker?.noteQueued(identities[0], id);
-      if (group) {
-        group.plans.push({
-          source,
-          galleryId: body.galleryId,
-          title: identities[0].title,
-          chapter: chapter === undefined ? "" : String(chapter),
-          allowDuplicate: body.allowDuplicate === true,
-          url: sourceUrl,
-        });
-        group.ids[`${source}:${body.galleryId}`] = id;
-      }
       return respond({ id, status: "queued" }, 202);
     };
   } catch (error) {
@@ -430,34 +371,21 @@ api.post("/downloads", async (c) => {
   )
     return c.json({ error: "Merged downloads require CBZ output" }, 400);
   try {
-    const hasMergeFolder =
-      typeof body?.mergeFolder === "string" &&
-      body.mergeFolder.trim().length > 0;
-    const chapterCache = hasMergeFolder ? new MergeChapterCache() : undefined;
-    const group = hasMergeFolder
-      ? await prepareMergeGroup(body.mergeFolder!.trim(), chapterCache)
-      : undefined;
-    const prepared = await prepareDownload(body, group);
-    if (group) {
-      const checked = await resolveMergeProtection(
-        connectedClient()!,
-        {
-          targetDir: group.protection.targetDir,
-          seriesName: group.protection.seriesName,
-        },
-        group.protection,
-        chapterCache ? { chapterCache } : undefined
-      );
-      requireMergeProtection(checked.preview);
-      group.protection = checked.state;
+    const mergeFolder =
+      typeof body.mergeFolder === "string" ? body.mergeFolder.trim() : "";
+    if (!mergeFolder) {
+      const prepared = await prepareDownload(body);
+      return typeof prepared === "function" ? prepared() : prepared;
     }
-    const response = typeof prepared === "function" ? prepared() : prepared;
-    if (group) commitMergeGroup(group);
-    return response;
+    return await protectedMerge.registerMergedDownloads(mergeFolder, {
+      prepare: () => prepareDownload(body, true),
+      enqueue: (prepared, attach) =>
+        typeof prepared === "function" ? prepared(undefined, attach) : prepared,
+    });
   } catch (error) {
     return c.json(
       { error: errMsg(error) },
-      error instanceof MergeProtectionError ? error.status : 502
+      error instanceof ProtectedMergeError ? error.status : 502
     );
   }
 });
@@ -497,55 +425,38 @@ api.post("/downloads/merged", async (c) => {
       .size !== validItems.length
   )
     return c.json({ error: "Provide 1–100 distinct galleries." }, 400);
-  const chapterCache = new MergeChapterCache();
-  let group: MergeDownloadGroup;
   try {
-    group = await prepareMergeGroup(mergeFolder.trim(), chapterCache);
-  } catch (error) {
-    return c.json(
-      { error: errMsg(error) },
-      error instanceof MergeProtectionError ? error.status : 502
-    );
-  }
-  const prepared = await mapLimit(validItems, 3, (item) =>
-    prepareDownload({ ...item, format: "cbz", mergeFolder }, group)
-  );
-  try {
-    const checked = await resolveMergeProtection(
-      connectedClient()!,
+    const responses = await protectedMerge.registerMergedDownloads(
+      mergeFolder.trim(),
       {
-        targetDir: group.protection.targetDir,
-        seriesName: group.protection.seriesName,
-      },
-      group.protection,
-      { chapterCache }
+        prepare: () =>
+          mapLimit(validItems, 3, (item) =>
+            prepareDownload({ ...item, format: "cbz", mergeFolder }, true)
+          ),
+        enqueue: (prepared, attach) => {
+          const checker = prepared.some((item) => typeof item === "function")
+            ? createDuplicateChecker()
+            : undefined;
+          return prepared.map((item) =>
+            typeof item === "function" ? item(checker, attach) : item
+          );
+        },
+      }
     );
-    requireMergeProtection(checked.preview);
-    group.protection = checked.state;
+    const items = await Promise.all(
+      responses.map(async (response, index) => ({
+        source: validItems[index].source,
+        galleryId: validItems[index].galleryId,
+        ...((await response.json()) as Record<string, unknown>),
+      }))
+    );
+    return c.json({ items }, 202);
   } catch (error) {
     return c.json(
       { error: errMsg(error) },
-      error instanceof MergeProtectionError ? error.status : 502
+      error instanceof ProtectedMergeError ? error.status : 502
     );
   }
-  // No await between inserts and durable merge linkage. One duplicate snapshot
-  // serves the whole batch; each enqueue is added to it, so later items still
-  // see earlier ones exactly as a per-item check would.
-  const checker = prepared.some((item) => typeof item === "function")
-    ? createDuplicateChecker()
-    : undefined;
-  const responses = prepared.map((item) =>
-    typeof item === "function" ? item(checker) : item
-  );
-  commitMergeGroup(group);
-  const items = await Promise.all(
-    responses.map(async (response, index) => ({
-      source: validItems[index].source,
-      galleryId: validItems[index].galleryId,
-      ...((await response.json()) as Record<string, unknown>),
-    }))
-  );
-  return c.json({ items }, 202);
 });
 
 // Every active and failed task, plus the newest completed ones; older history is paged.

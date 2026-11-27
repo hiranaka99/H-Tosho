@@ -8,14 +8,14 @@ import { libraryMutations } from "../lib/mutations.js";
 import { getFieldPolicy } from "./fieldPolicies.js";
 import { EXCLUDABLE_FIELDS } from "../contracts/metadata.js";
 import { withMetadataHistory } from "./metadataHistory.js";
-import { recoverMergeProtectionForSeriesOwned } from "./mergeProtection.js";
+import { protectedMerge } from "../merge/index.js";
 import { mapLimit } from "../lib/http.js";
 export function removeSeriesMatch(
   client: KavitaClient,
   seriesId: number
 ): Promise<{ removed: boolean }> {
   return libraryMutations.run([`series:${seriesId}`], async () => {
-    await recoverMergeProtectionForSeriesOwned(client, seriesId);
+    await protectedMerge.recoverSeriesWithinLock(seriesId);
     if (
       !getDb()
         .select({ id: schema.seriesMatches.id })

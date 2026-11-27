@@ -8,6 +8,7 @@ import { closeDb, initDb, startDatabaseMaintenance } from "./db/index.js";
 import { createApp } from "./app.js";
 import { jobQueue } from "./jobs/queue.js";
 import { runJob } from "./jobs/executor.js";
+import "./merge/index.js";
 import {
   getCredentialMap,
   getKavitaConnection,

@@ -22,6 +22,7 @@ import {
 import { getKavitaConnection } from "./settings.js";
 import { kavitaConnectionKey } from "./kavitaState.js";
 import { getFieldPolicy } from "./fieldPolicies.js";
+import type { CoverObservationClient } from "./coverObservations.js";
 import {
   coverJournal,
   coverHistoryBatch,
@@ -53,8 +54,16 @@ const keys: Record<string, [string, string?]> = {
   status: ["publicationStatus", "publicationStatusLocked"],
   url: ["webLinks"],
 };
+export type MetadataSnapshotClient = Pick<
+  KavitaClient,
+  "getSeriesDto" | "getSeriesMetadata"
+>;
+/** Snapshot reads plus the cover reads the operation's cover journal may make. */
+export type MetadataHistoryClient = MetadataSnapshotClient &
+  CoverObservationClient;
+
 export async function captureMetadataSnapshotWithRaw(
-  client: KavitaClient,
+  client: MetadataSnapshotClient,
   seriesId: number,
   verifyMetadataIdentity = false
 ): Promise<{ snapshot: MetadataSnapshot; metadata: KavitaSeriesMetadataDto }> {
@@ -102,7 +111,7 @@ export async function captureMetadataSnapshotWithRaw(
   };
 }
 export async function captureMetadataSnapshot(
-  client: KavitaClient,
+  client: MetadataSnapshotClient,
   seriesId: number,
   verifyMetadataIdentity = false
 ): Promise<MetadataSnapshot> {
@@ -177,7 +186,7 @@ function unverifiedFields(
 
 /** The caller owns the series mutation boundary. Journal preparation fails closed. */
 export async function withMetadataHistory<T>(
-  client: KavitaClient,
+  client: MetadataHistoryClient,
   seriesId: number,
   origin: string,
   desired: Record<string, unknown>,

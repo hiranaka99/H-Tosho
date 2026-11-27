@@ -26,7 +26,7 @@ const { downloadQueue } = await import("../src/downloader/engine.js");
 const { jobQueue } = await import("../src/jobs/queue.js");
 const { api } = await import("../src/routes/api.js");
 const { buildZip } = await import("../src/downloader/zip.js");
-const { prepareMergeDownloads } = await import("../src/jobs/mergeDownloads.js");
+const { createProtectedMerge } = await import("../src/merge/index.js");
 import type { DoujinGallery } from "../src/downloader/types.js";
 initDb();
 const originalProviders = { ...doujinProviders };
@@ -628,11 +628,105 @@ test("merge API reviews duplicate downloads before queueing and persists per-gal
 });
 test("merge execution rechecks duplicates discovered after queueing before starting images", async () => {
   owned("hitomi");
+  const targetDir = path.join(dataDir, "dup-merge-target");
+  fs.mkdirSync(targetDir, { recursive: true });
+  const merge = createProtectedMerge({
+    kavita: {
+      connectionKey: () => "https://dup.test",
+      current: () => ({
+        connectionKey: "https://dup.test",
+        getLibraries: async () => [
+          { id: 7, name: "Lib", path: dataDir, paths: [dataDir] },
+        ],
+        getSeries: async () => [
+          { id: 50, libraryId: 7, name: "Target", folderPath: targetDir },
+        ],
+        getSeriesById: async () => ({
+          id: 50,
+          libraryId: 7,
+          name: "Target",
+          folderPath: targetDir,
+        }),
+        getChaptersBySeries: async () => [],
+        scanLibrary: async () => {},
+        scanSeries: async () => {},
+        deleteSeries: async () => {},
+        updateSeriesMetadata: async () => {},
+        isTaskRunning: async () => false,
+        getSeriesDto: async () => ({
+          id: 50,
+          libraryId: 7,
+          name: "Target",
+          folderPath: targetDir,
+        }),
+        getSeriesMetadata: async () => ({ seriesId: 50 }),
+      }),
+    },
+    settings: {
+      getDownloaderPaths: () => ({
+        downloadDirectory: dataDir,
+        libraryPathMappings: [],
+      }),
+    },
+    downloads: {
+      get: (id) => downloadQueue.get(id),
+      findActive: (s, g) => downloadQueue.findActive(s, g),
+      findCompleted: (s, g) => downloadQueue.findCompleted(s, g),
+      hasPendingRetry: (id) => downloadQueue.hasPendingRetry(id),
+      isRunning: (id) => downloadQueue.isRunning(id),
+      enqueueForMerge: (p) =>
+        downloadQueue.enqueue(
+          p.source,
+          p.galleryId,
+          p.title,
+          "cbz",
+          undefined,
+          p.chapter,
+          0,
+          p.mergeJobId,
+          p.url
+        ),
+      retry: (id) => downloadQueue.retry(id),
+      cancel: (id) => downloadQueue.cancel(id),
+      cancelByMergeJob: () => {},
+      attachToMergeJob: () => {},
+      reassignMergeJob: () => {},
+      markOutputPublished: () => {},
+      subscribe: (l) => downloadQueue.subscribe((t) => l(t)),
+      subscribeRemovals: (l) => downloadQueue.subscribeRemovals(l),
+    },
+    jobs: {
+      get: (id) => jobQueue.get(id),
+      enqueueMergeJob: (cmd, state) =>
+        jobQueue.enqueue("merge-series", cmd, state),
+      setProgress: (id, c, t) => jobQueue.setProgress(id, c, t),
+      isCancelRequested: (id) => jobQueue.isCancelRequested(id),
+      updateContext: (id, ctx) => {
+        jobQueue.updateContext(id, ctx);
+      },
+      invalidateContextCache: (ids) => jobQueue.invalidateContextCache(ids),
+    },
+    libraryIndex: {
+      checkDownloadDuplicates: async (plans, sourceFiles) => {
+        const check = findDuplicateReports(
+          await prepareDuplicateCheck(plans),
+          sourceFiles
+        );
+        return new Set(
+          check.reports
+            .filter((r) => r.matches.length)
+            .map((r) => `${r.source}:${r.galleryId}`)
+        );
+      },
+    },
+  });
   await assert.rejects(
-    prepareMergeDownloads(
+    merge.executeMergeJob(
       {
         id: 1,
+        type: "merge-series",
         payload: {
+          seriesId: 50,
           downloads: [
             {
               source: "nhentai",
@@ -642,7 +736,15 @@ test("merge execution rechecks duplicates discovered after queueing before start
             },
           ],
         },
-      } as unknown as Parameters<typeof prepareMergeDownloads>[0],
+        status: "running",
+        progressCurrent: 0,
+        progressTotal: 0,
+        result: null,
+        errorMessage: null,
+        createdAt: "",
+        startedAt: "",
+        finishedAt: null,
+      },
       () => {}
     ),
     /Possible duplicate/

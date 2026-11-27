@@ -1,9 +1,5 @@
 import { pathContains } from "../lib/paths.js";
-import {
-  archiveMutations,
-  archiveResource,
-  libraryMutations,
-} from "../lib/mutations.js";
+import { archiveMutations, archiveResource } from "../lib/mutations.js";
 import { downloadPages } from "./transfer.js";
 import {
   DownloadPausedError,
@@ -60,16 +56,10 @@ import type { DoujinGallery } from "./types.js";
 import type { DoujinSource } from "../contracts/doujin.js";
 import {
   getDownloaderSettings,
-  getKavitaConnection,
   type DownloaderSettings,
 } from "../services/settings.js";
 import { recordGalleryTags } from "../services/recommendations.js";
-import { jobQueue } from "../jobs/queue.js";
-import { KavitaClient } from "../kavita/client.js";
-import {
-  resolveMergeProtection,
-  requireMergeProtection,
-} from "../services/mergeProtection.js";
+import { guardDownloadPublication } from "./publishGuard.js";
 
 /**
  * Doujinshi download queue engine.
@@ -1748,6 +1738,26 @@ export class DownloadQueue {
       path.join(base, ".htosho-download-")
     );
     const comicInfo = generateComicInfoXml(gallery, this.mergeOptions(row));
+    // Every publication, CBZ or folder, goes through the installed guard.
+    const publish = <T>(commit: () => Promise<T>): Promise<T> =>
+      guardDownloadPublication(
+        {
+          downloadId: row.id,
+          targetDir: dir,
+          previousOutputPath: row.outputPath,
+          mergeJobId: row.mergeJobId,
+          legacyMergeFolder: row.mergeFolder,
+        },
+        async () => {
+          if (ctx.cancelled) throw new Error("Cancelled by user");
+          if (ctx.paused) throw new DownloadPausedError();
+          if (ctx.shuttingDown) throw new DownloadShutdownError();
+          ctx.committing = true;
+          await fs.promises.mkdir(dir, { recursive: true });
+          return commit();
+        },
+        ctx.controller.signal
+      );
     try {
       if (row.outputFormat === "folder") {
         await mapLimit(images, 4, (img) => {
@@ -1766,21 +1776,21 @@ export class DownloadQueue {
         if (ctx.cancelled) throw new Error("Cancelled by user");
         if (ctx.paused) throw new DownloadPausedError();
         if (ctx.shuttingDown) throw new DownloadShutdownError();
-        ctx.committing = true;
-        await fs.promises.mkdir(dir, { recursive: true });
-        // Preserve unrelated files in an existing gallery folder. Each name is
-        // distinct, so replacements are independent; a little parallelism
-        // keeps large galleries from paying hundreds of serial rename trips.
-        await mapLimit(
-          [...images.map((img) => img.name), "ComicInfo.xml"],
-          4,
-          (name) =>
-            replacePublishedFile(
-              path.join(stagingDir, name),
-              path.join(dir, name)
-            )
-        );
-        return dir;
+        return await publish(async () => {
+          // Preserve unrelated files in an existing gallery folder. Each name is
+          // distinct, so replacements are independent; a little parallelism
+          // keeps large galleries from paying hundreds of serial rename trips.
+          await mapLimit(
+            [...images.map((img) => img.name), "ComicInfo.xml"],
+            4,
+            (name) =>
+              replacePublishedFile(
+                path.join(stagingDir, name),
+                path.join(dir, name)
+              )
+          );
+          return dir;
+        });
       }
 
       const file = destination;
@@ -1794,74 +1804,10 @@ export class DownloadQueue {
       if (ctx.cancelled) throw new Error("Cancelled by user");
       if (ctx.paused) throw new DownloadPausedError();
       if (ctx.shuttingDown) throw new DownloadShutdownError();
-      const publish = async () => {
-        const current = this.readRow(row.id);
-        const mergeJob =
-          current?.mergeJobId != null ? jobQueue.get(current.mergeJobId) : null;
-        if (
-          mergeJob &&
-          (mergeJob.validationError ||
-            mergeJob.status === "failed" ||
-            mergeJob.status === "cancelled")
-        )
-          throw new Error(
-            mergeJob.status === "cancelled"
-              ? "Cancelled by user"
-              : "Merge job cannot authorize this download publication; retry the merge after reviewing its failure"
-          );
-        if (row.mergeFolder || mergeJob) {
-          const conn = getKavitaConnection();
-          if (!conn.baseUrl || !conn.apiKey)
-            throw new Error(
-              "Kavita is required to verify merged download protection"
-            );
-          const client = new KavitaClient(conn.baseUrl, conn.apiKey);
-          const request = mergeJob
-            ? {
-                seriesId: mergeJob.payload.seriesId,
-                targetDir: mergeJob.payload.targetDir,
-                sourceFiles: mergeJob.payload.sourceFiles,
-                sourceSeriesIds: mergeJob.payload.sourceSeriesIds,
-                seriesName: mergeJob.payload.seriesName,
-              }
-            : { targetDir: dir, seriesName: row.mergeFolder! };
-          const checked = await resolveMergeProtection(
-            client,
-            request,
-            mergeJob?.payload.mergeProtection
-          );
-          requireMergeProtection(checked.preview);
-          if (mergeJob)
-            jobQueue.updateMergeState(mergeJob.id, {
-              mergeProtection: checked.state,
-            });
-        }
-        if (ctx.cancelled) throw new Error("Cancelled by user");
-        if (ctx.paused) throw new DownloadPausedError();
-        if (ctx.shuttingDown) throw new DownloadShutdownError();
-        ctx.committing = true;
-        await fs.promises.mkdir(dir, { recursive: true });
+      return await publish(async () => {
         await replacePublishedFile(stagedFile, file);
         return file;
-      };
-      // Legacy direct-merge tasks acquire library BEFORE archive ownership and
-      // only after pages/packing finish. New jobs publish protected targets in
-      // the executor; their downloads only publish independent staging files.
-      if (row.mergeFolder)
-        return await libraryMutations.run(
-          ["*"],
-          () =>
-            archiveMutations.run(
-              [
-                archiveResource(dir),
-                ...(row.outputPath ? [archiveResource(row.outputPath)] : []),
-              ],
-              publish,
-              ctx.controller.signal
-            ),
-          ctx.controller.signal
-        );
-      return await publish();
+      });
     } finally {
       await fs.promises.rm(stagingDir, { recursive: true, force: true });
     }
@@ -1896,12 +1842,3 @@ function pickLiveFields(t: DownloadTask): LiveFields {
 
 /** Shared singleton wired to live settings at construction time. */
 export const downloadQueue = new DownloadQueue(() => getDownloaderSettings());
-
-jobQueue.registerMergeDownloadCanceller((jobId) => {
-  for (const task of getDb()
-    .select({ id: schema.downloadQueue.id })
-    .from(schema.downloadQueue)
-    .where(eq(schema.downloadQueue.mergeJobId, jobId))
-    .all())
-    downloadQueue.cancel(task.id);
-});

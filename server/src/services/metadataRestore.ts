@@ -22,11 +22,7 @@ import { getFieldPolicy } from "./fieldPolicies.js";
 import { getKavitaConnection } from "./settings.js";
 import { kavitaConnectionKey } from "./kavitaState.js";
 import { RESTORABLE_COMICINFO_FIELDS } from "../lib/comicInfoRestore.js";
-import {
-  libraryMutations,
-  archiveMutations,
-  archiveResource,
-} from "../lib/mutations.js";
+import { archiveMutations, archiveResource } from "../lib/mutations.js";
 import {
   captureArchiveSnapshot,
   restoreComicInfoArchive,
@@ -53,7 +49,8 @@ import {
   type CoverJournal,
   type CoverJournalResult,
 } from "./metadataCovers.js";
-import { recoverMergeProtectionForSeriesOwned } from "./mergeProtection.js";
+import { protectedMerge } from "../merge/index.js";
+import { registerJobLifecycleHook } from "../jobs/lifecycle.js";
 import { retainCoverObservation, coverTargetKey } from "./coverObservations.js";
 
 const PREVIEW_LIFETIME_MS = 15 * 60_000;
@@ -262,9 +259,7 @@ export async function createMetadataRestorePreview(
       ? (JSON.parse(source.afterJson) as MetadataSnapshot)
       : null;
   let current: MetadataSnapshot;
-  await libraryMutations.run([`series:${seriesId}`], () =>
-    recoverMergeProtectionForSeriesOwned(client, seriesId)
-  );
+  await protectedMerge.recoverSeries(seriesId);
   try {
     current = await capture(client, seriesId);
   } catch {
@@ -654,7 +649,7 @@ async function executeApprovedMetadataRestore(
     checkCancelled();
     if (connection() !== plan.connectionKey)
       conflict("Kavita connection changed after preview");
-    await recoverMergeProtectionForSeriesOwned(client, command.seriesId);
+    await protectedMerge.recoverSeriesWithinLock(command.seriesId);
     before = await capture(client, command.seriesId);
     if (connection() !== plan.connectionKey)
       conflict("Kavita connection changed after preview");
@@ -1129,3 +1124,10 @@ export function interruptMetadataRestore(): void {
   });
   expirePreviews();
 }
+
+registerJobLifecycleHook("restore-metadata", {
+  // An approved plan runs once; a failed restore needs a fresh preview, not a copy.
+  retryable: false,
+  onSettled: (jobId, status, error) =>
+    settleMetadataRestoreJob(jobId, status, error),
+});

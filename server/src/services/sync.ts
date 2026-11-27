@@ -1,6 +1,6 @@
 import { upsertMatch, recordHistory } from "./matchRecords.js";
 import { getFieldPolicy } from "./fieldPolicies.js";
-import { recoverMergeProtectionForSeriesOwned } from "./mergeProtection.js";
+import { protectedMerge } from "../merge/index.js";
 import {
   withMetadataHistory,
   describeMetadataPatch,
@@ -485,7 +485,7 @@ export async function applyResolvedSeriesMatch(
 ): Promise<ApplySeriesResult> {
   if (opts.signal?.aborted || opts.isCancelled?.())
     throw opts.signal?.reason ?? new JobCancelled();
-  await recoverMergeProtectionForSeriesOwned(client, opts.seriesId);
+  await protectedMerge.recoverSeriesWithinLock(opts.seriesId);
   if (
     opts.selectedTitle &&
     !(meta.titleOptions ?? [meta.title]).includes(opts.selectedTitle.trim())
